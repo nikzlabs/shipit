@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useWebSocket } from "./hooks/useWebSocket.js";
 import { useResizablePanel } from "./hooks/useResizablePanel.js";
+import { useSearch } from "./hooks/useSearch.js";
 import { MessageInput } from "./components/MessageInput.js";
 import { MessageList, type ChatMessage } from "./components/MessageList.js";
 import { PreviewFrame, type PreviewStatus } from "./components/PreviewFrame.js";
@@ -9,6 +10,7 @@ import { AuthOverlay } from "./components/AuthOverlay.js";
 import { SessionSelector, type SessionInfo } from "./components/SessionSelector.js";
 import { DocsViewer } from "./components/DocsViewer.js";
 import { ResizeHandle } from "./components/ResizeHandle.js";
+import { SearchBar } from "./components/SearchBar.js";
 import { activityFromTool, type StreamingActivity } from "./components/StreamingIndicator.js";
 
 type RightTab = "preview" | "docs";
@@ -38,6 +40,27 @@ export default function App() {
     minFraction: 0.25,
     storageKey: "vibe-panel-split",
   });
+
+  const [searchOpen, setSearchOpen] = useState(false);
+  const search = useSearch(messages);
+
+  // Ctrl+F / Cmd+F to toggle search bar
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        e.preventDefault();
+        setSearchOpen((prev) => {
+          if (prev) {
+            search.clear();
+            return false;
+          }
+          return true;
+        });
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [search]);
 
   // Process incoming WebSocket messages
   useEffect(() => {
@@ -308,7 +331,27 @@ export default function App() {
           className="flex flex-col min-w-0 border-r border-gray-800"
           style={{ width: `${fraction * 100}%` }}
         >
-          <MessageList messages={messages} isLoading={isLoading} activity={activity} />
+          {searchOpen && (
+            <SearchBar
+              query={search.query}
+              onQueryChange={search.setQuery}
+              matches={search.matches}
+              currentMatchIndex={search.currentMatchIndex}
+              onNext={search.goToNext}
+              onPrev={search.goToPrev}
+              onClose={() => {
+                setSearchOpen(false);
+                search.clear();
+              }}
+            />
+          )}
+          <MessageList
+            messages={messages}
+            isLoading={isLoading}
+            activity={activity}
+            searchMatches={search.matches}
+            currentMatch={search.currentMatch}
+          />
           <GitHistory
             commits={gitCommits}
             onRollback={handleRollback}
