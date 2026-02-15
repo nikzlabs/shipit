@@ -28,8 +28,12 @@ src/
 │   ├── auth.ts              →  auth.test.ts
 │   └── markdown.ts          →  markdown.test.ts
 └── client/
-    └── hooks/
-        └── useSearch.ts     →  useSearch.test.ts
+    ├── hooks/
+    │   └── useSearch.ts     →  useSearch.test.ts
+    └── components/
+        ├── MessageList.tsx  →  MessageList.test.tsx
+        ├── DiffBlock.tsx    →  DiffBlock.test.tsx
+        └── GitHistory.tsx   →  GitHistory.test.tsx
 ```
 
 ## Test Projects
@@ -56,13 +60,17 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | Module | Tests | What's covered |
 |--------|-------|----------------|
 | `useSearch` | 16 | Matching, case-insensitivity, navigation cycling, clear |
+| `MessageList` | 17 | Empty state, user/assistant messages, tool rendering (Edit/Write/Bash/Read/Grep), thinking indicator, activity labels, search highlights |
+| `DiffBlock` | 12 | File header, edit/write labels, removed/added lines, multi-line diffs, separator, write mode, empty fallback |
+| `GitHistory` | 14 | Collapsed/expanded toggle, onRefresh, commit display (abbreviated hash, relative dates), rollback confirmation, blur reset |
 
 ## Writing New Tests
 
-1. Create a `*.test.ts` file next to the module
+1. Create a `*.test.ts` (or `*.test.tsx` for components) file next to the module
 2. Server tests run in Node — use real file I/O with `os.tmpdir()` for isolation
-3. Client tests run in jsdom — use `renderHook` from `@testing-library/react`
+3. Client tests run in jsdom — use `renderHook` for hooks, `render` for components
 4. For modules that spawn processes, mock `node:child_process` with `vi.mock()`
+5. **Always** call `cleanup` from `@testing-library/react` in `afterEach` — automatic cleanup does not work reliably with the current Vitest project config
 
 ### Testability Patterns
 
@@ -71,6 +79,36 @@ Several modules accept optional constructor parameters for test isolation:
 - `SessionManager(sessionsFile?)` — override the JSON file path
 - `GitManager(workspaceDir?)` — override the workspace directory
 - `extractAuthUrl(text)` — exported pure function for URL pattern testing
+
+### jsdom Limitations
+
+jsdom doesn't implement all browser APIs. Common workarounds needed:
+
+- **`scrollIntoView`** — not implemented; stub it in `beforeAll`:
+  ```ts
+  beforeAll(() => {
+    Element.prototype.scrollIntoView = () => {};
+  });
+  ```
+- **`localStorage`** — works in jsdom, but consider clearing in `afterEach` if your component persists state
+- **CSS animations** — not rendered; test class names rather than visual effects
+
+### Example: Testing a React Component
+
+```tsx
+import { describe, it, expect, afterEach } from "vitest";
+import { render, screen, cleanup } from "@testing-library/react";
+import { MyComponent } from "./MyComponent.js";
+
+afterEach(cleanup);
+
+describe("MyComponent", () => {
+  it("renders text", () => {
+    render(<MyComponent label="hello" />);
+    expect(screen.getByText("hello")).toBeInTheDocument();
+  });
+});
+```
 
 ### Example: Testing a Server Module
 
