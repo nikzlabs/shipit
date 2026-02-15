@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useWebSocket } from "./hooks/useWebSocket.js";
+import { useResizablePanel } from "./hooks/useResizablePanel.js";
 import { MessageInput } from "./components/MessageInput.js";
 import { MessageList, type ChatMessage } from "./components/MessageList.js";
 import { PreviewFrame, type PreviewStatus } from "./components/PreviewFrame.js";
@@ -7,6 +8,7 @@ import { GitHistory, type GitCommit } from "./components/GitHistory.js";
 import { AuthOverlay } from "./components/AuthOverlay.js";
 import { SessionSelector, type SessionInfo } from "./components/SessionSelector.js";
 import { DocsViewer } from "./components/DocsViewer.js";
+import { ResizeHandle } from "./components/ResizeHandle.js";
 import { activityFromTool, type StreamingActivity } from "./components/StreamingIndicator.js";
 
 type RightTab = "preview" | "docs";
@@ -30,6 +32,12 @@ export default function App() {
   const [docContent, setDocContent] = useState<string | null>(null);
   const [activity, setActivity] = useState<StreamingActivity | undefined>(undefined);
   const sessionIdRef = useRef<string | undefined>(undefined);
+
+  const { fraction, isDragging, onMouseDown, containerRef } = useResizablePanel({
+    initialFraction: 0.5,
+    minFraction: 0.25,
+    storageKey: "vibe-panel-split",
+  });
 
   // Process incoming WebSocket messages
   useEffect(() => {
@@ -293,10 +301,13 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main content: two-column layout */}
-      <div className="flex flex-1 min-h-0">
+      {/* Main content: two-column resizable layout */}
+      <div ref={containerRef} className="flex flex-1 min-h-0">
         {/* Left column — Chat */}
-        <div className="flex flex-col flex-1 min-w-0 border-r border-gray-800">
+        <div
+          className="flex flex-col min-w-0 border-r border-gray-800"
+          style={{ width: `${fraction * 100}%` }}
+        >
           <MessageList messages={messages} isLoading={isLoading} activity={activity} />
           <GitHistory
             commits={gitCommits}
@@ -306,8 +317,14 @@ export default function App() {
           <MessageInput onSend={handleSend} disabled={isLoading || status !== "open"} activity={isLoading ? activity : undefined} />
         </div>
 
+        {/* Drag handle */}
+        <ResizeHandle isDragging={isDragging} onMouseDown={onMouseDown} />
+
         {/* Right column — Tabbed (Preview / Docs) */}
-        <div className="w-1/2 min-w-0 hidden md:flex flex-col bg-gray-900">
+        <div
+          className="min-w-0 hidden md:flex flex-col bg-gray-900"
+          style={{ width: `${(1 - fraction) * 100}%` }}
+        >
           {/* Tab bar */}
           <div className="flex border-b border-gray-700 bg-gray-900">
             <button
