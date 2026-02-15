@@ -70,20 +70,3 @@ export async function scanPorts(
 
   return results.filter((r) => r.open).map((r) => r.port);
 }
-
-/**
- * Scan for a running dev server and return the first detected port, or null.
- *
- * This is the primary API for the preview auto-detection feature:
- *   - Scans DEFAULT_SCAN_PORTS, excluding the provided ports
- *   - Returns the first listening port (lowest in the scan order)
- *   - Returns null if no dev servers are detected
- *
- * @param excludePorts - Ports to skip (e.g., [3000] for the Fastify server)
- */
-export async function detectDevServer(
-  excludePorts: number[] = [],
-): Promise<number | null> {
-  const openPorts = await scanPorts(DEFAULT_SCAN_PORTS, excludePorts);
-  return openPorts.length > 0 ? openPorts[0] : null;
-}

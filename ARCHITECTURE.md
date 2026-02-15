@@ -73,7 +73,7 @@ ShipIt is a browser-based IDE for "vibe coding" — you talk to Claude in a chat
 | `markdown.ts` | `findMarkdownFiles` — recursive `.md` file scanner (skips node_modules, .git) |
 | `file-tree.ts` | `scanFileTree` — recursive workspace directory scanner, returns tree of `FileTreeNode` objects |
 | `vite-manager.ts` | `ViteManager` class — Vite dev server lifecycle (start, stop, restart) |
-| `port-scanner.ts` | Port auto-detection — `checkPort`, `scanPorts`, `detectDevServer` for finding non-Vite dev servers |
+| `port-scanner.ts` | Port auto-detection — `checkPort`, `scanPorts` for finding non-Vite dev servers |
 | `types.ts` | Shared TypeScript types for all WebSocket and Claude event payloads |
 
 The server is intentionally thin — it's a bridge between the browser and the Claude CLI. No database, no REST API.
@@ -529,10 +529,9 @@ The preview pane works with any dev server, not just Vite. After each Claude tur
 
 ### How It Works
 
-1. **`port-scanner.ts`** provides three functions:
+1. **`port-scanner.ts`** provides two functions:
    - `checkPort(port)` — TCP connect probe with 300ms timeout. Returns `true` if a server is listening.
    - `scanPorts(ports, excludePorts)` — Checks multiple ports concurrently, returns the list of open ones.
-   - `detectDevServer(excludePorts)` — Scans `DEFAULT_SCAN_PORTS` and returns the first open port, or `null`.
 
 2. **After each Claude turn** (`done` event in `index.ts`), the server calls `detectPorts()` (defaulting to `scanPorts(DEFAULT_SCAN_PORTS, ...)`), excluding the Fastify server port and the managed Vite port. All detected ports are tracked and included in the `preview_status` message.
 
@@ -562,10 +561,10 @@ The `detectPorts` function is injectable via `AppDeps` for testing. Integration 
 
 ### Key Files
 
-- **`src/server/port-scanner.ts`** — Port scanning utilities.
-- **`src/server/index.ts`** — Integration: calls `detectPort` in the `done` handler, `getPreviewStatus()` for building preview messages.
-- **`src/client/components/PreviewFrame.tsx`** — Shows source indicator and updated placeholder text.
-- **`src/client/App.tsx`** — Passes `source` through to `PreviewFrame`.
+- **`src/server/port-scanner.ts`** — Port scanning utilities (`checkPort`, `scanPorts`, `DEFAULT_SCAN_PORTS`).
+- **`src/server/index.ts`** — Integration: calls `detectPorts` in the `done` handler, `getPreviewStatus()` builds preview messages with all detected ports.
+- **`src/client/components/PreviewFrame.tsx`** — Preview iframe with port selector dropdown (when multiple ports available), source indicator, reload button.
+- **`src/client/App.tsx`** — Derives `detectedPorts` from `preview` state, manages `selectedPort` selection, passes both to `PreviewFrame`.
 
 ## Tech Stack
 
