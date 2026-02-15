@@ -99,6 +99,17 @@ class TestClient {
     return msgs;
   }
 
+  /** Get the next message that is NOT a log_entry — useful for tests that predate the terminal feature. */
+  async receiveSkipLogs(timeoutMs = 3000): Promise<WsServerMessage> {
+    const deadline = Date.now() + timeoutMs;
+    while (true) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error("receiveSkipLogs() timed out");
+      const msg = await this.receive(remaining);
+      if (msg.type !== "log_entry") return msg;
+    }
+  }
+
   /** Send a typed client message. */
   send(msg: WsClientMessage): void {
     this.ws.send(JSON.stringify(msg));
@@ -512,15 +523,15 @@ describe("Integration: WebSocket flow", () => {
       tools: ["Write"],
     });
 
-    // Should receive claude_event + session_started
-    const msgs = await client.receiveN(2);
-
-    const claudeEvent = msgs.find((m) => m.type === "claude_event");
+    // Should receive claude_event + session_started (skip any log_entry messages)
+    const claudeEvent = await client.receiveSkipLogs();
     expect(claudeEvent).toBeDefined();
+    expect(claudeEvent.type).toBe("claude_event");
     expect((claudeEvent as any).event.type).toBe("system");
 
-    const sessionStarted = msgs.find((m) => m.type === "session_started");
+    const sessionStarted = await client.receiveSkipLogs();
     expect(sessionStarted).toBeDefined();
+    expect(sessionStarted.type).toBe("session_started");
     expect((sessionStarted as any).session.id).toBe("test-session-123");
     expect((sessionStarted as any).session.title).toBe("Hello Claude");
 
@@ -558,14 +569,14 @@ describe("Integration: WebSocket flow", () => {
       },
     });
 
-    // Consume the claude_event for the assistant message
-    await client.receive();
+    // Consume the claude_event for the assistant message (skip log_entry messages)
+    await client.receiveSkipLogs();
 
     // Now simulate done — this triggers auto-commit
     lastClaude.emit("done", 0);
 
-    // Wait for the async auto-commit
-    const msg = await client.receive();
+    // Wait for the async auto-commit (skip log_entry messages)
+    const msg = await client.receiveSkipLogs();
 
     expect(msg.type).toBe("git_committed");
     expect((msg as any).message).toBe("I created new-file.txt for you");
@@ -583,7 +594,8 @@ describe("Integration: WebSocket flow", () => {
 
     lastClaude.emit("error", new Error("spawn ENOENT"));
 
-    const msg = await client.receive();
+    // Skip log_entry messages to get the error
+    const msg = await client.receiveSkipLogs();
 
     expect(msg.type).toBe("error");
     expect((msg as any).message).toContain("Claude process error");
@@ -659,8 +671,9 @@ describe("Integration: WebSocket flow", () => {
       subtype: "init",
       session_id: "track-session",
     });
-    // Consume claude_event + session_started
-    await client.receiveN(2);
+    // Consume claude_event + session_started (skip log_entry messages)
+    await client.receiveSkipLogs(); // claude_event
+    await client.receiveSkipLogs(); // session_started
 
     const sessionsBefore = sessionManager.list();
     const lastUsedBefore = sessionsBefore[0].lastUsedAt;
@@ -674,8 +687,8 @@ describe("Integration: WebSocket flow", () => {
       subtype: "success",
       session_id: "track-session",
     });
-    // Consume the claude_event
-    await client.receive();
+    // Consume the claude_event (skip log_entry messages)
+    await client.receiveSkipLogs();
 
     const sessionsAfter = sessionManager.list();
     expect(sessionsAfter[0].lastUsedAt >= lastUsedBefore).toBe(true);
@@ -1112,5 +1125,196 @@ describe("Integration: Periodic port scanning", () => {
     });
 
     client.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Terminal/logs relay tests
+// ---------------------------------------------------------------------------
+
+describe("Integration: Terminal/logs relay", () => {
+  let app: FastifyInstance;
+  let port: number;
+  let tmpDir: string;
+  let gitManager: GitManager;
+  let sessionManager: SessionManager;
+  let lastClaude: FakeClaudeProcess;
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-logs-"));
+
+    gitManager = new GitManager(tmpDir);
+    await gitManager.init();
+
+    const sessionsFile = path.join(tmpDir, "sessions.json");
+    sessionManager = new SessionManager(sessionsFile);
+
+    app = await buildApp({
+      gitManager,
+      sessionManager,
+      viteManager: new StubViteManager() as unknown as ViteManager,
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      claudeFactory: () => {
+        lastClaude = new FakeClaudeProcess();
+        return lastClaude as unknown as ClaudeProcess;
+      },
+      workspaceDir: tmpDir,
+      serveStatic: false,
+      startVite: false,
+      portScanIntervalMs: 0,
+    });
+
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+    const match = address.match(/:(\d+)$/);
+    port = match ? Number(match[1]) : 0;
+  });
+
+  afterEach(async () => {
+    await app.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("relays Claude stderr as log_entry to client", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "test" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Consume the server "Claude process started" log entry
+    const startLog = await client.receive();
+    expect(startLog.type).toBe("log_entry");
+    expect((startLog as any).source).toBe("server");
+
+    // Simulate stderr from Claude CLI
+    lastClaude.emit("log", "stderr", "Debug: loading model");
+
+    const msg = await client.receive();
+    expect(msg.type).toBe("log_entry");
+    expect((msg as any).source).toBe("stderr");
+    expect((msg as any).text).toBe("Debug: loading model");
+    expect((msg as any).timestamp).toBeTruthy();
+
+    client.close();
+  });
+
+  it("relays non-JSON stdout as log_entry to client", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "test" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Consume "Claude process started" log entry
+    await client.receive();
+
+    // Simulate non-JSON stdout from Claude CLI
+    lastClaude.emit("log", "stdout", "Warning: experimental feature");
+
+    const msg = await client.receive();
+    expect(msg.type).toBe("log_entry");
+    expect((msg as any).source).toBe("stdout");
+    expect((msg as any).text).toBe("Warning: experimental feature");
+
+    client.close();
+  });
+
+  it("sends server lifecycle log entries (process start/exit)", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "test" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Should receive "Claude process started" log
+    const startLog = await client.receive();
+    expect(startLog.type).toBe("log_entry");
+    expect((startLog as any).source).toBe("server");
+    expect((startLog as any).text).toBe("Claude process started");
+
+    // Simulate Claude finishing
+    lastClaude.emit("done", 0);
+
+    // Should receive "Claude process exited" log
+    // (may also receive git_committed — drain until we find the exit log)
+    let exitLog: any = null;
+    for (let i = 0; i < 5; i++) {
+      const msg = await client.receive();
+      if (msg.type === "log_entry" && (msg as any).text.includes("exited")) {
+        exitLog = msg;
+        break;
+      }
+    }
+
+    expect(exitLog).not.toBeNull();
+    expect(exitLog.source).toBe("server");
+    expect(exitLog.text).toBe("Claude process exited with code 0");
+
+    client.close();
+  });
+
+  it("sends buffered logs to newly connected clients", async () => {
+    // First client triggers some log entries
+    const client1 = await TestClient.connect(port);
+    await client1.receive(); // preview_status
+
+    client1.send({ type: "send_message", text: "generate logs" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Consume the "Claude process started" log
+    await client1.receive();
+
+    // Add more logs via CLI output
+    lastClaude.emit("log", "stderr", "Loading model...");
+    await client1.receive(); // consume the stderr log
+
+    // Now a second client connects — should receive buffered logs
+    const client2 = await TestClient.connect(port);
+    const preview = await client2.receive(); // preview_status
+    expect(preview.type).toBe("preview_status");
+
+    // Should receive the buffered log entries
+    const log1 = await client2.receive();
+    expect(log1.type).toBe("log_entry");
+    expect((log1 as any).text).toBe("Claude process started");
+
+    const log2 = await client2.receive();
+    expect(log2.type).toBe("log_entry");
+    expect((log2 as any).text).toBe("Loading model...");
+
+    client1.close();
+    client2.close();
+  });
+
+  it("clear_logs empties the log buffer", async () => {
+    // Generate some logs
+    const client1 = await TestClient.connect(port);
+    await client1.receive(); // preview_status
+
+    client1.send({ type: "send_message", text: "test" });
+    await new Promise((r) => setTimeout(r, 50));
+    await client1.receive(); // "Claude process started" log
+
+    // Clear logs
+    client1.send({ type: "clear_logs" } as any);
+    await new Promise((r) => setTimeout(r, 50));
+
+    // New client should not receive any buffered logs
+    const client2 = await TestClient.connect(port);
+    const preview = await client2.receive(); // preview_status
+    expect(preview.type).toBe("preview_status");
+
+    // Wait a bit — should not receive any log entries
+    let gotLog = false;
+    try {
+      const msg = await client2.receive(200);
+      if (msg.type === "log_entry") gotLog = true;
+    } catch {
+      // Timeout — expected, no logs to receive
+    }
+    expect(gotLog).toBe(false);
+
+    client1.close();
+    client2.close();
   });
 });
