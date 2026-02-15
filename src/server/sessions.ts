@@ -1,0 +1,76 @@
+import fs from "node:fs";
+import path from "node:path";
+import type { SessionInfo } from "./types.js";
+
+const SESSIONS_FILE = path.join("/workspace", ".vibe-sessions.json");
+
+/**
+ * Manages session persistence. Stores session metadata in a JSON file
+ * so users can list, resume, and start new sessions.
+ */
+export class SessionManager {
+  private sessions: SessionInfo[] = [];
+
+  constructor() {
+    this.load();
+  }
+
+  /** Load sessions from disk. */
+  private load(): void {
+    try {
+      if (fs.existsSync(SESSIONS_FILE)) {
+        const raw = fs.readFileSync(SESSIONS_FILE, "utf-8");
+        this.sessions = JSON.parse(raw);
+      }
+    } catch {
+      this.sessions = [];
+    }
+  }
+
+  /** Persist sessions to disk. */
+  private save(): void {
+    try {
+      fs.writeFileSync(SESSIONS_FILE, JSON.stringify(this.sessions, null, 2));
+    } catch (err: any) {
+      console.error("[sessions] failed to save:", err.message);
+    }
+  }
+
+  /** List all known sessions, most recently used first. */
+  list(): SessionInfo[] {
+    return [...this.sessions].sort(
+      (a, b) => new Date(b.lastUsedAt).getTime() - new Date(a.lastUsedAt).getTime()
+    );
+  }
+
+  /** Track a session — creates it if new, updates lastUsedAt if existing. */
+  track(id: string, title?: string): SessionInfo {
+    const now = new Date().toISOString();
+    const existing = this.sessions.find((s) => s.id === id);
+    if (existing) {
+      existing.lastUsedAt = now;
+      if (title) existing.title = title;
+      this.save();
+      return existing;
+    }
+
+    const session: SessionInfo = {
+      id,
+      title: title || "New session",
+      createdAt: now,
+      lastUsedAt: now,
+    };
+    this.sessions.unshift(session);
+    this.save();
+    return session;
+  }
+
+  /** Delete a session by id. */
+  delete(id: string): boolean {
+    const idx = this.sessions.findIndex((s) => s.id === id);
+    if (idx === -1) return false;
+    this.sessions.splice(idx, 1);
+    this.save();
+    return true;
+  }
+}

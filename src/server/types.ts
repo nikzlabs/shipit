@@ -60,6 +60,15 @@ export interface GitCommitInfo {
   author: string;
 }
 
+// ---- Session types ----
+
+export interface SessionInfo {
+  id: string;
+  title: string;
+  createdAt: string;
+  lastUsedAt: string;
+}
+
 // ---- WebSocket message types (client ↔ server) ----
 
 export interface WsSendMessage {
@@ -77,7 +86,26 @@ export interface WsRollback {
   commitHash: string;
 }
 
-export type WsClientMessage = WsSendMessage | WsGetGitLog | WsRollback;
+export interface WsListSessions {
+  type: "list_sessions";
+}
+
+export interface WsNewSession {
+  type: "new_session";
+}
+
+export interface WsDeleteSession {
+  type: "delete_session";
+  sessionId: string;
+}
+
+export type WsClientMessage =
+  | WsSendMessage
+  | WsGetGitLog
+  | WsRollback
+  | WsListSessions
+  | WsNewSession
+  | WsDeleteSession;
 
 export interface WsClaudeEvent {
   type: "claude_event";
@@ -123,6 +151,16 @@ export interface WsAuthComplete {
   type: "auth_complete";
 }
 
+export interface WsSessionList {
+  type: "session_list";
+  sessions: SessionInfo[];
+}
+
+export interface WsSessionStarted {
+  type: "session_started";
+  session: SessionInfo;
+}
+
 export type WsServerMessage =
   | WsClaudeEvent
   | WsError
@@ -131,4 +169,6 @@ export type WsServerMessage =
   | WsGitCommitted
   | WsRollbackComplete
   | WsAuthRequired
-  | WsAuthComplete;
+  | WsAuthComplete
+  | WsSessionList
+  | WsSessionStarted;

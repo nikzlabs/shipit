@@ -5,6 +5,7 @@ import { MessageList, type ChatMessage } from "./components/MessageList.js";
 import { PreviewFrame, type PreviewStatus } from "./components/PreviewFrame.js";
 import { GitHistory, type GitCommit } from "./components/GitHistory.js";
 import { AuthOverlay } from "./components/AuthOverlay.js";
+import { SessionSelector, type SessionInfo } from "./components/SessionSelector.js";
 
 function getWsUrl(): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -18,6 +19,7 @@ export default function App() {
   const [preview, setPreview] = useState<PreviewStatus | null>(null);
   const [gitCommits, setGitCommits] = useState<GitCommit[]>([]);
   const [authUrl, setAuthUrl] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const sessionIdRef = useRef<string | undefined>(undefined);
 
   // Process incoming WebSocket messages
@@ -129,6 +131,21 @@ export default function App() {
     if (data.type === "auth_complete") {
       setAuthUrl(null);
     }
+
+    if (data.type === "session_list") {
+      setSessions(data.sessions);
+    }
+
+    if (data.type === "session_started") {
+      sessionIdRef.current = data.session.id;
+      setSessions((prev) => {
+        const exists = prev.some((s) => s.id === data.session.id);
+        if (exists) {
+          return prev.map((s) => (s.id === data.session.id ? data.session : s));
+        }
+        return [data.session, ...prev];
+      });
+    }
   }, [lastMessage, send]);
 
   const handleSend = useCallback(
@@ -155,13 +172,50 @@ export default function App() {
     [send]
   );
 
+  const handleSessionRefresh = useCallback(() => {
+    send({ type: "list_sessions" });
+  }, [send]);
+
+  const handleSessionResume = useCallback(
+    (sessionId: string) => {
+      sessionIdRef.current = sessionId;
+      setMessages([]);
+      setIsLoading(false);
+    },
+    []
+  );
+
+  const handleSessionNew = useCallback(() => {
+    sessionIdRef.current = undefined;
+    setMessages([]);
+    setIsLoading(false);
+    send({ type: "new_session" });
+  }, [send]);
+
+  const handleSessionDelete = useCallback(
+    (sessionId: string) => {
+      send({ type: "delete_session", sessionId });
+    },
+    [send]
+  );
+
   return (
     <div className="flex flex-col h-screen bg-gray-950 text-gray-100">
       {authUrl && <AuthOverlay url={authUrl} />}
 
       {/* Header */}
       <header className="flex items-center justify-between px-6 py-3 border-b border-gray-800">
-        <h1 className="text-lg font-semibold tracking-tight">Vibe</h1>
+        <div className="flex items-center gap-4">
+          <h1 className="text-lg font-semibold tracking-tight">Vibe</h1>
+          <SessionSelector
+            sessions={sessions}
+            currentSessionId={sessionIdRef.current}
+            onResume={handleSessionResume}
+            onNew={handleSessionNew}
+            onDelete={handleSessionDelete}
+            onRefresh={handleSessionRefresh}
+          />
+        </div>
         <div className="flex items-center gap-3">
           {preview?.running && (
             <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-900 text-emerald-300">

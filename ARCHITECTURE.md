@@ -134,6 +134,6 @@ Planned for future phases (see `DESIGN.md`):
 - [x] Live preview iframe (Vite dev server manager)
 - [x] Git integration (auto-commit, history panel, rollback)
 - [x] OAuth flow detection
-- [ ] Session list/resume UI
+- [x] Session list/resume UI
 - [ ] File change diffs
 - [ ] Cost/duration display
