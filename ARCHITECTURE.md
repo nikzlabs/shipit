@@ -89,7 +89,7 @@ The server is intentionally thin — it's a bridge between the browser and the C
 | `hooks/useMediaQuery.ts` | Responsive breakpoint detection via `matchMedia`, plus `useIsMobile()` convenience wrapper |
 | `hooks/useNotification.ts` | Background tab notifications — tab title change and browser Notification on Claude completion |
 | `components/ResizeHandle.tsx` | Vertical drag handle rendered between the chat and preview/docs panels |
-| `components/MessageList.tsx` | Renders chat messages, tool invocations, streaming indicators |
+| `components/MessageList.tsx` | Renders chat messages (with syntax-highlighted code blocks), tool invocations, streaming indicators |
 | `components/StreamingIndicator.tsx` | Typing dots, thinking indicator, tool spinner, activity label derivation |
 | `components/DiffBlock.tsx` | Inline file change diff display (red/green lines for Edit and Write tools) |
 | `components/MessageInput.tsx` | Auto-resizing textarea, Enter-to-send, activity status bar |
@@ -329,6 +329,34 @@ The search feature lets users find text within the chat conversation using Ctrl+
 - **Substring match** — simple `indexOf` loop rather than regex, so user input is treated as literal text (no escaping issues).
 - **Scroll-to-match** — uses `scrollIntoView({ block: "center" })` so the current match appears centered in the chat scroll area.
 - **Match index clamping** — when the messages array changes (new messages arrive) and the match count shrinks, the current index is automatically clamped to stay in bounds.
+
+## Code Block Syntax Highlighting
+
+Claude's responses often contain fenced code blocks (`` ```language ... ``` ``). These are rendered with syntax highlighting powered by [highlight.js](https://highlightjs.org/).
+
+### How It Works
+
+1. **`parseMessageSegments(text)`** in `MessageList.tsx` splits message text into alternating `TextSegment` and `CodeSegment` objects using a regex that matches fenced code blocks. Each segment tracks its character offset in the original text.
+2. **`CodeBlock` component** renders each code segment: `hljs.highlight()` (when the language is specified) or `hljs.highlightAuto()` (when omitted) produces HTML, rendered via `dangerouslySetInnerHTML` inside `<pre><code class="hljs">`.
+3. **Text segments** continue to render through `HighlightedText` with full search match support. Search match offsets are adjusted per segment via `getSegmentMatches()`.
+4. **Messages without code blocks** skip the segment pipeline entirely and render as before (single `HighlightedText` with `whitespace-pre-wrap`).
+
+### Styling
+
+- Code blocks use `bg-gray-950` (darker than the message bubble's `bg-gray-800`) for visual contrast.
+- A language label bar appears above code blocks when a language is specified.
+- The `github-dark` highlight.js theme (`highlight.js/styles/github-dark.css`) provides token colors.
+- The `hljs` class on `<code>` elements ensures highlight.js theme styles apply correctly.
+
+### Streaming Behavior
+
+During streaming, unclosed code blocks (opening `` ``` `` without closing) are treated as plain text until the closing fence arrives. This causes a visual transition from raw text to highlighted code when the block completes — acceptable since it matches user expectations during real-time streaming.
+
+### Key Design Decisions
+
+- **highlight.js over shiki**: highlight.js is simpler to integrate (synchronous API, CSS themes) and supports 190+ languages out of the box. Shiki offers better accuracy via TextMate grammars but requires async initialization and WASM.
+- **Segment-based rendering**: Rather than full markdown rendering (which would require reworking search highlighting), the text is split into segments. This preserves the existing `HighlightedText` search infrastructure while adding code highlighting.
+- **No inline code highlighting**: Single-backtick inline code is not highlighted — only fenced code blocks. This keeps the implementation focused and avoids disrupting the flow of plain text.
 
 ## Background Tab Notifications
 
