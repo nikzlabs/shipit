@@ -1,4 +1,4 @@
-# Vibe — A Vibe Coding IDE Powered by Claude Code CLI
+# ShipIt — A Vibe Coding IDE Powered by Claude Code CLI
 
 ## Vision
 
@@ -172,7 +172,7 @@ On first run, OAuth flow triggers via the web UI. After authentication, credenti
 ## Project Structure
 
 ```
-vibe/
+shipit/
 ├── DESIGN.md
 ├── Dockerfile
 ├── docker-compose.yml
