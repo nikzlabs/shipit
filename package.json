@@ -13,7 +13,8 @@
     "@fastify/websocket": "^11.0.2",
     "fastify": "^5.2.1",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "simple-git": "^3.31.1"
   },
   "devDependencies": {
     "@types/node": "^22.13.4",
