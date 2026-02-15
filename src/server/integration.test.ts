@@ -168,6 +168,7 @@ class FakeClaudeProcess extends EventEmitter {
   public lastPrompt = "";
   public lastSessionId: string | undefined;
   public killed = false;
+  public stdinData: string[] = [];
 
   run(prompt: string, sessionId?: string) {
     this.runCalled = true;
@@ -177,6 +178,10 @@ class FakeClaudeProcess extends EventEmitter {
 
   kill() {
     this.killed = true;
+  }
+
+  writeStdin(data: string) {
+    this.stdinData.push(data);
   }
 }
 
@@ -743,6 +748,89 @@ describe("Integration: WebSocket flow", () => {
 
     const sessionsAfter = sessionManager.list();
     expect(sessionsAfter[0].lastUsedAt >= lastUsedBefore).toBe(true);
+
+    client.close();
+  });
+
+  // ---- AskUserQuestion / answer_question flow ----
+
+  it("answer_question writes to stdin when Claude process is running", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Start a Claude message flow
+    client.send({ type: "send_message", text: "Ask me something" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Claude is now running — send an answer
+    client.send({ type: "answer_question", toolUseId: "tool-1", answers: { "0": "Redis" } });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(lastClaude.stdinData).toEqual(["Redis\n"]);
+
+    client.close();
+  });
+
+  it("answer_question starts new Claude process when no process is running", async () => {
+    // Pre-populate a session so we can resume
+    sessionManager.track("existing-sess", "Test session");
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Start and immediately finish a Claude turn to set currentSessionId
+    client.send({ type: "send_message", text: "First message", sessionId: "existing-sess" });
+    await new Promise((r) => setTimeout(r, 50));
+    const firstClaude = lastClaude;
+
+    // Simulate Claude finishing
+    firstClaude.emit("done", 0);
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Now Claude is null — send an answer
+    client.send({ type: "answer_question", toolUseId: "tool-2", answers: { "0": "PostgreSQL" } });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // A new ClaudeProcess should have been created
+    expect(lastClaude).not.toBe(firstClaude);
+    expect(lastClaude.runCalled).toBe(true);
+    expect(lastClaude.lastPrompt).toBe("PostgreSQL");
+    expect(lastClaude.lastSessionId).toBe("existing-sess");
+
+    client.close();
+  });
+
+  it("answer_question returns error for empty answer", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "answer_question", toolUseId: "tool-3", answers: {} });
+    const msg = await client.receive();
+
+    expect(msg.type).toBe("error");
+    expect((msg as any).message).toBe("Answer cannot be empty");
+
+    client.close();
+  });
+
+  it("answer_question with multiple answers joins them", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Start a Claude message flow
+    client.send({ type: "send_message", text: "test" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Send an answer with multiple values
+    client.send({
+      type: "answer_question",
+      toolUseId: "tool-4",
+      answers: { "0": "Auth", "1": "Cache" },
+    });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Should write both answers joined by comma
+    expect(lastClaude.stdinData).toEqual(["Auth, Cache\n"]);
 
     client.close();
   });

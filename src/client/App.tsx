@@ -502,6 +502,24 @@ export default function App() {
     [send]
   );
 
+  const handleAnswerQuestion = useCallback(
+    (toolUseId: string, answers: Record<string, string>) => {
+      // Format the answer as readable text for the chat history
+      const answerParts = Object.values(answers);
+      const answerText = answerParts.join(", ");
+      send({
+        type: "answer_question",
+        toolUseId,
+        answers,
+      });
+      // Show the user's answer as a message in the chat
+      setMessages((prev) => [...prev, { role: "user", text: answerText }]);
+      setIsLoading(true);
+      setActivity({ label: "Thinking..." });
+    },
+    [send]
+  );
+
   const handleClearLogs = useCallback(() => {
     setLogEntries([]);
     send({ type: "clear_logs" });
@@ -641,6 +659,7 @@ export default function App() {
         searchMatches={search.matches}
         currentMatch={search.currentMatch}
         onEditMessage={handleEditMessage}
+        onAnswerQuestion={handleAnswerQuestion}
       />
       <GitHistory
         commits={gitCommits}

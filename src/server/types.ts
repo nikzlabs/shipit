@@ -128,6 +128,12 @@ export interface WsGetFileContent {
   path: string;
 }
 
+export interface WsAnswerQuestion {
+  type: "answer_question";
+  toolUseId: string;
+  answers: Record<string, string>;
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsGetGitLog
@@ -141,7 +147,8 @@ export type WsClientMessage =
   | WsGetChatHistory
   | WsGetFileTree
   | WsGetFileContent
-  | WsClearLogs;
+  | WsClearLogs
+  | WsAnswerQuestion;
 
 export interface WsClaudeEvent {
   type: "claude_event";
