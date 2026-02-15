@@ -78,9 +78,10 @@ The server is intentionally thin — it's a bridge between the browser and the C
 |------|------|
 | `App.tsx` | Root component — chat state, session tracking, tab management, event dispatch |
 | `hooks/useWebSocket.ts` | WebSocket lifecycle (connect, reconnect, send/receive JSON) |
-| `components/MessageList.tsx` | Renders chat messages, tool invocations, loading indicator |
+| `components/MessageList.tsx` | Renders chat messages, tool invocations, streaming indicators |
+| `components/StreamingIndicator.tsx` | Typing dots, thinking indicator, tool spinner, activity label derivation |
 | `components/DiffBlock.tsx` | Inline file change diff display (red/green lines for Edit and Write tools) |
-| `components/MessageInput.tsx` | Auto-resizing textarea, Enter-to-send, disabled while streaming |
+| `components/MessageInput.tsx` | Auto-resizing textarea, Enter-to-send, activity status bar |
 | `components/PreviewFrame.tsx` | iframe pointing to Vite dev server with reload button |
 | `components/DocsViewer.tsx` | Markdown file browser and renderer (using `marked`) |
 | `components/GitHistory.tsx` | Collapsible git commit list with rollback buttons |
@@ -174,6 +175,53 @@ All client-server communication uses JSON over a single WebSocket connection at 
 2. Add the handler in `src/server/index.ts` inside the `socket.on("message")` callback
 3. Add the client-side handler in the `useEffect` in `src/client/App.tsx` that processes `lastMessage`
 4. Wire up the UI component to call `send()` with the new message type
+
+## Streaming UX & Activity Tracking
+
+The streaming UX provides real-time visual feedback while Claude is working. It's built on three layers:
+
+### Activity State Machine
+
+The `activity` state in `App.tsx` tracks what Claude is currently doing, derived from Claude CLI events:
+
+```
+send_message → { label: "Thinking..." }
+     │
+     ▼
+system.init → (no change)
+     │
+     ▼
+assistant (text only) → { label: "Thinking..." }
+assistant (tool_use)  → { label: "Editing .../file.ts", tool: "Edit" }
+     │
+     ▼
+user (tool result) → { label: "Processing results..." }
+     │
+     ▼
+result → activity = undefined (idle)
+```
+
+The activity label is derived from the *last* tool_use block in each assistant event via `activityFromTool()` in `StreamingIndicator.tsx`. This gives context-specific labels like "Editing src/app.ts", "Running command...", "Searching code...", etc.
+
+### Visual Indicators
+
+| Location | What | When |
+|----------|------|------|
+| Chat (ThinkingIndicator) | Bouncing dots + activity label | Loading, no assistant message yet |
+| Chat (TypingDots) | Inline bouncing dots | On streaming assistant messages |
+| Chat (ToolSpinner) | Spinning border on last tool | Tool is actively executing |
+| Input bar | Bouncing dots + activity label | Claude is working (input disabled) |
+
+### Key Components
+
+- **`StreamingIndicator.tsx`** — All streaming UI primitives (`TypingDots`, `ThinkingIndicator`, `ToolSpinner`, `activityFromTool`)
+- **`MessageList.tsx`** — Consumes `activity` prop for the thinking indicator, passes `isStreaming` to tool items
+- **`MessageInput.tsx`** — Consumes `activity` prop to show status above the disabled input
+- **`index.css`** — CSS keyframe animations: `typing-bounce` (dots), `spin-slow` (tool spinner)
+
+### Adding a New Tool Label
+
+To add activity tracking for a new Claude CLI tool, add a case to `activityFromTool()` in `src/client/components/StreamingIndicator.tsx`. The function receives the tool name and its input object, and returns a `StreamingActivity` with a human-readable label.
 
 ## Session Management
 

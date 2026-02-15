@@ -1,11 +1,15 @@
 import { useState, useRef, useEffect } from "react";
+import { TypingDots, type StreamingActivity } from "./StreamingIndicator.js";
 
 export function MessageInput({
   onSend,
   disabled,
+  activity,
 }: {
   onSend: (text: string) => void;
   disabled: boolean;
+  /** When set, Claude is actively working — show status above input. */
+  activity?: StreamingActivity;
 }) {
   const [text, setText] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -35,6 +39,14 @@ export function MessageInput({
 
   return (
     <div className="border-t border-gray-800 px-6 py-4">
+      {/* Activity status bar — shown while Claude is working */}
+      {activity && (
+        <div className="flex items-center gap-2 mb-2 text-xs text-gray-400 max-w-3xl mx-auto">
+          <TypingDots />
+          <span>{activity.label}</span>
+        </div>
+      )}
+
       <div className="flex items-end gap-3 max-w-3xl mx-auto">
         <textarea
           ref={textareaRef}
