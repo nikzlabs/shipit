@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 /** A component that always throws on render, for testing the boundary. */
-function ThrowingChild({ message }: { message: string }) {
+function ThrowingChild({ message }: { message: string }): React.JSX.Element {
   throw new Error(message);
 }
 

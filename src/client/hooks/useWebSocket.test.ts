@@ -112,7 +112,7 @@ describe("useWebSocket", () => {
   });
 
   it("auto-reconnects after backoff delay", () => {
-    const { result } = renderHook(() => useWebSocket("ws://test"));
+    renderHook(() => useWebSocket("ws://test"));
     act(() => latestWs().simulateOpen());
 
     const wsBefore = FakeWebSocket.instances.length;
@@ -127,7 +127,7 @@ describe("useWebSocket", () => {
   });
 
   it("uses exponential backoff: 2s, 4s, 8s", () => {
-    const { result } = renderHook(() => useWebSocket("ws://test"));
+    renderHook(() => useWebSocket("ws://test"));
     act(() => latestWs().simulateOpen());
 
     // First disconnect — 2s backoff
@@ -166,7 +166,7 @@ describe("useWebSocket", () => {
   });
 
   it("caps backoff at 30 seconds", () => {
-    const { result } = renderHook(() => useWebSocket("ws://test"));
+    renderHook(() => useWebSocket("ws://test"));
     act(() => latestWs().simulateOpen());
 
     // Create many failed reconnect attempts to push backoff high

@@ -3,7 +3,6 @@ import fastifyWebsocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
 import path from "node:path";
 import fs from "node:fs/promises";
-import { fileURLToPath } from "node:url";
 import { ClaudeProcess } from "./claude.js";
 import { ViteManager } from "./vite-manager.js";
 import { GitManager } from "./git.js";
@@ -13,9 +12,11 @@ import { ChatHistoryManager } from "./chat-history.js";
 import { findMarkdownFiles } from "./markdown.js";
 import { scanFileTree } from "./file-tree.js";
 import { detectDevServer } from "./port-scanner.js";
-import type { WsClientMessage, WsServerMessage, ClaudeEvent } from "./types.js";
+import type { WsClientMessage, WsServerMessage, ClaudeEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse } from "./types.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+function getErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 const WORKSPACE = "/workspace";
 
@@ -254,8 +255,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           // Collect assistant text and tool use blocks for commit message + persistence
           if (event.type === "assistant") {
             const text = (event.message?.content ?? [])
-              .filter((b: any) => b.type === "text")
-              .map((b: any) => b.text)
+              .filter((b: ClaudeContentBlock): b is ClaudeContentBlockText => b.type === "text")
+              .map((b) => b.text)
               .join("");
             if (text) {
               turnSummary = text;
@@ -263,7 +264,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             }
 
             const toolBlocks = (event.message?.content ?? [])
-              .filter((b: any) => b.type === "tool_use");
+              .filter((b: ClaudeContentBlock): b is ClaudeContentBlockToolUse => b.type === "tool_use");
             if (toolBlocks.length > 0) {
               accumulatedToolUse = toolBlocks;
             }
@@ -303,8 +304,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             if (hash) {
               send({ type: "git_committed", hash, message: firstLine });
             }
-          } catch (err: any) {
-            console.error("[git] auto-commit failed:", err.message);
+          } catch (err) {
+            console.error("[git] auto-commit failed:", getErrorMessage(err));
           }
 
           // Restart Vite after Claude finishes in case new files were created
@@ -321,8 +322,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
               detectedPort = port;
               broadcastPreviewStatus();
             }
-          } catch (err: any) {
-            console.error("[port-scanner] scan failed:", err.message);
+          } catch (err) {
+            console.error("[port-scanner] scan failed:", getErrorMessage(err));
           }
         });
 
@@ -354,8 +355,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         try {
           const commits = await gitManager.log();
           send({ type: "git_log", commits });
-        } catch (err: any) {
-          send({ type: "error", message: `Git log failed: ${err.message}` });
+        } catch (err) {
+          send({ type: "error", message: `Git log failed: ${getErrorMessage(err)}` });
         }
       }
 
@@ -366,8 +367,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
           // Restart Vite after rollback since files changed
           viteManager.restart();
-        } catch (err: any) {
-          send({ type: "error", message: `Rollback failed: ${err.message}` });
+        } catch (err) {
+          send({ type: "error", message: `Rollback failed: ${getErrorMessage(err)}` });
         }
       }
 
@@ -395,8 +396,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         try {
           const files = await findMarkdownFiles(workspaceDir);
           send({ type: "doc_list", files });
-        } catch (err: any) {
-          send({ type: "error", message: `Failed to list docs: ${err.message}` });
+        } catch (err) {
+          send({ type: "error", message: `Failed to list docs: ${getErrorMessage(err)}` });
         }
       }
 
@@ -409,8 +410,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           }
           const content = await fs.readFile(safePath, "utf-8");
           send({ type: "doc_content", path: msg.path, content });
-        } catch (err: any) {
-          send({ type: "error", message: `Failed to read doc: ${err.message}` });
+        } catch (err) {
+          send({ type: "error", message: `Failed to read doc: ${getErrorMessage(err)}` });
         }
       }
 
@@ -418,8 +419,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         try {
           const tree = await scanFileTree(workspaceDir);
           send({ type: "file_tree", tree });
-        } catch (err: any) {
-          send({ type: "error", message: `Failed to scan file tree: ${err.message}` });
+        } catch (err) {
+          send({ type: "error", message: `Failed to scan file tree: ${getErrorMessage(err)}` });
         }
       }
     });
