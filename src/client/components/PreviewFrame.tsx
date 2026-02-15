@@ -4,6 +4,8 @@ export interface PreviewStatus {
   running: boolean;
   port: number;
   url: string;
+  /** "vite" for the managed Vite server, "detected" for auto-detected ports. */
+  source?: "vite" | "detected";
 }
 
 export function PreviewFrame({ preview }: { preview: PreviewStatus | null }) {
@@ -14,9 +16,9 @@ export function PreviewFrame({ preview }: { preview: PreviewStatus | null }) {
       <div className="flex items-center justify-center h-full text-gray-500 text-sm">
         <div className="text-center space-y-2">
           <div className="text-2xl">&#9654;</div>
-          <p>Preview will appear here when a Vite project is running in /workspace.</p>
+          <p>Preview will appear here when a dev server is running in /workspace.</p>
           <p className="text-xs text-gray-600">
-            Ask Claude to create a project to get started.
+            Ask Claude to create a project to get started. Vite, Express, Next.js, and other servers are auto-detected.
           </p>
         </div>
       </div>
@@ -29,6 +31,9 @@ export function PreviewFrame({ preview }: { preview: PreviewStatus | null }) {
         <span className="flex items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-green-500" />
           localhost:{preview.port}
+          {preview.source === "detected" && (
+            <span className="text-yellow-400">(auto-detected)</span>
+          )}
         </span>
         <button
           onClick={() => setRefreshKey((k) => k + 1)}

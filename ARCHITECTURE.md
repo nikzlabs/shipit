@@ -73,6 +73,7 @@ Vibe is a browser-based IDE for "vibe coding" — you talk to Claude in a chat i
 | `markdown.ts` | `findMarkdownFiles` — recursive `.md` file scanner (skips node_modules, .git) |
 | `file-tree.ts` | `scanFileTree` — recursive workspace directory scanner, returns tree of `FileTreeNode` objects |
 | `vite-manager.ts` | `ViteManager` class — Vite dev server lifecycle (start, stop, restart) |
+| `port-scanner.ts` | Port auto-detection — `checkPort`, `scanPorts`, `detectDevServer` for finding non-Vite dev servers |
 | `types.ts` | Shared TypeScript types for all WebSocket and Claude event payloads |
 
 The server is intentionally thin — it's a bridge between the browser and the Claude CLI. No database, no REST API.
@@ -91,7 +92,7 @@ The server is intentionally thin — it's a bridge between the browser and the C
 | `components/StreamingIndicator.tsx` | Typing dots, thinking indicator, tool spinner, activity label derivation |
 | `components/DiffBlock.tsx` | Inline file change diff display (red/green lines for Edit and Write tools) |
 | `components/MessageInput.tsx` | Auto-resizing textarea, Enter-to-send, activity status bar |
-| `components/PreviewFrame.tsx` | iframe pointing to Vite dev server with reload button |
+| `components/PreviewFrame.tsx` | iframe pointing to dev server (Vite or auto-detected) with reload button and source indicator |
 | `components/DocsViewer.tsx` | Markdown file browser and renderer (using `marked`) |
 | `components/FileTree.tsx` | Workspace file tree browser — expandable/collapsible directory tree with folder/file icons |
 | `components/GitHistory.tsx` | Collapsible git commit list with rollback buttons |
@@ -174,7 +175,7 @@ All client-server communication uses JSON over a single WebSocket connection at 
 |------|--------|---------|
 | `claude_event` | `event` | Relayed Claude CLI NDJSON event |
 | `error` | `message` | Error description |
-| `preview_status` | `running`, `port`, `url` | Vite dev server status |
+| `preview_status` | `running`, `port`, `url`, `source?` | Dev server status — `source` is `"vite"` (managed), `"detected"` (port scan), or omitted (not running) |
 | `git_log` | `commits[]` | Full git commit history |
 | `git_committed` | `hash`, `message` | New auto-commit after Claude turn |
 | `rollback_complete` | `commitHash` | Rollback succeeded |
@@ -465,6 +466,45 @@ Within each directory level, entries are sorted with directories first, then fil
 - **`src/server/types.ts`** — `FileTreeNode` type and `WsFileTree` / `WsGetFileTree` message types.
 - **`src/client/components/FileTree.tsx`** — React component: `TreeNode` (recursive), `FileTree` (root wrapper with empty state and header).
 - **`src/client/App.tsx`** — State management: `fileTree` state, `file_tree` message handler, tab switching, auto-refresh on commit.
+
+## Preview Port Auto-Detection
+
+The preview pane works with any dev server, not just Vite. After each Claude turn, the server scans common dev ports to find running servers that Claude may have started (e.g., Express on 3001, Django on 8000).
+
+### How It Works
+
+1. **`port-scanner.ts`** provides three functions:
+   - `checkPort(port)` — TCP connect probe with 300ms timeout. Returns `true` if a server is listening.
+   - `scanPorts(ports, excludePorts)` — Checks multiple ports concurrently, returns the list of open ones.
+   - `detectDevServer(excludePorts)` — Scans `DEFAULT_SCAN_PORTS` and returns the first open port, or `null`.
+
+2. **After each Claude turn** (`done` event in `index.ts`), the server calls `detectPort()` (defaulting to `detectDevServer`), excluding the Fastify server port and the managed Vite port.
+
+3. **Priority logic** in `getPreviewStatus()`:
+   - If Vite is running → use Vite (source: `"vite"`)
+   - Else if a port was detected → use that port (source: `"detected"`)
+   - Else → not running
+
+4. **The client** receives `preview_status` with the `source` field and shows:
+   - A green badge for Vite, yellow badge for auto-detected servers
+   - An "(auto-detected)" label in the preview bar
+
+### Scanned Ports
+
+`DEFAULT_SCAN_PORTS`: 3001, 4000, 4200, 5000, 5173, 5174, 8000, 8080, 8888
+
+Port 3000 is excluded because it's the Vibe server's own port. The managed Vite port (5173) is also excluded from scanning when Vite is already running.
+
+### Dependency Injection
+
+The `detectPort` function is injectable via `AppDeps` for testing. Integration tests inject a stub that returns a controlled port number, avoiding real TCP scanning.
+
+### Key Files
+
+- **`src/server/port-scanner.ts`** — Port scanning utilities.
+- **`src/server/index.ts`** — Integration: calls `detectPort` in the `done` handler, `getPreviewStatus()` for building preview messages.
+- **`src/client/components/PreviewFrame.tsx`** — Shows source indicator and updated placeholder text.
+- **`src/client/App.tsx`** — Passes `source` through to `PreviewFrame`.
 
 ## Tech Stack
 
