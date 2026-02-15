@@ -25,8 +25,8 @@ export class GitManager {
     const isRepo = await this.git.checkIsRepo();
     if (!isRepo) {
       await this.git.init();
-      await this.git.addConfig("user.email", "vibe@local");
-      await this.git.addConfig("user.name", "Vibe");
+      await this.git.addConfig("user.email", "shipit@local");
+      await this.git.addConfig("user.name", "ShipIt");
       // Disable commit signing — the workspace repo doesn't need GPG/SSH signatures
       await this.git.addConfig("commit.gpgsign", "false");
       // Create initial commit so rollback always has a base
