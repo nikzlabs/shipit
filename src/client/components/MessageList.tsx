@@ -20,6 +20,8 @@ export interface ChatMessage {
   text: string;
   toolUse?: ToolUseBlock[];
   streaming?: boolean;
+  /** When true, this message represents an error (CLI crash, WS drop, etc.) */
+  isError?: boolean;
 }
 
 function ToolUseItem({ tool, isLast, isStreaming }: { tool: ToolUseBlock; isLast: boolean; isStreaming: boolean }) {
@@ -195,7 +197,9 @@ export function MessageList({
           <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
             <div
               className={`max-w-2xl rounded-lg px-4 py-3 text-sm whitespace-pre-wrap ${
-                msg.role === "user"
+                msg.isError
+                  ? "bg-red-900/60 text-red-200 border border-red-700/50"
+                  : msg.role === "user"
                   ? "bg-blue-600 text-white"
                   : "bg-gray-800 text-gray-100"
               }`}

@@ -29,7 +29,7 @@
 ## Phase 6: Test Depth
 - [x] Component-level tests — React component tests (MessageList, DiffBlock, GitHistory) with @testing-library/react
 - [x] Integration/E2E tests — full WebSocket flow from client to server, Fastify test harness (19 tests via `buildApp()` DI)
-- [ ] Error boundary / error state UI — handle WebSocket drops and Claude CLI crashes mid-stream
+- [x] Error boundary / error state UI — handle WebSocket drops and Claude CLI crashes mid-stream
 - [ ] Mobile responsiveness — resizable panel layout adaptation for mobile viewports
 - [ ] Reconnection UI — visible indicator of WebSocket connection state
 
