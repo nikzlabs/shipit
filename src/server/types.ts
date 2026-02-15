@@ -117,6 +117,11 @@ export interface WsGetFileTree {
   type: "get_file_tree";
 }
 
+export interface WsGetFileContent {
+  type: "get_file_content";
+  path: string;
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsGetGitLog
@@ -127,7 +132,8 @@ export type WsClientMessage =
   | WsListDocs
   | WsGetDoc
   | WsGetChatHistory
-  | WsGetFileTree;
+  | WsGetFileTree
+  | WsGetFileContent;
 
 export interface WsClaudeEvent {
   type: "claude_event";
@@ -230,6 +236,14 @@ export interface WsFileTree {
   tree: FileTreeNode[];
 }
 
+export interface WsFileContent {
+  type: "file_content";
+  path: string;
+  content: string;
+  /** When true, the file is binary and `content` contains a human-readable message instead of file data. */
+  isBinary?: boolean;
+}
+
 export type WsServerMessage =
   | WsClaudeEvent
   | WsError
@@ -244,4 +258,5 @@ export type WsServerMessage =
   | WsDocList
   | WsDocContent
   | WsChatHistory
-  | WsFileTree;
+  | WsFileTree
+  | WsFileContent;

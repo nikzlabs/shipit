@@ -12,6 +12,7 @@ import { AuthOverlay } from "./components/AuthOverlay.js";
 import { SessionSelector, type SessionInfo } from "./components/SessionSelector.js";
 import { DocsViewer } from "./components/DocsViewer.js";
 import { FileTree, type FileTreeNode } from "./components/FileTree.js";
+import { FileContentViewer } from "./components/FileContentViewer.js";
 import { ResizeHandle } from "./components/ResizeHandle.js";
 import { SearchBar } from "./components/SearchBar.js";
 import { activityFromTool, type StreamingActivity } from "./components/StreamingIndicator.js";
@@ -64,6 +65,9 @@ export default function App() {
   const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
   const [docContent, setDocContent] = useState<string | null>(null);
   const [fileTree, setFileTree] = useState<FileTreeNode[]>([]);
+  const [viewingFile, setViewingFile] = useState<string | null>(null);
+  const [viewingFileContent, setViewingFileContent] = useState<string | null>(null);
+  const [viewingFileBinary, setViewingFileBinary] = useState(false);
   const [activity, setActivity] = useState<StreamingActivity | undefined>(undefined);
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
@@ -290,6 +294,10 @@ export default function App() {
       // Refresh file tree if the Files tab is active (files likely changed)
       if (rightTab === "files") {
         send({ type: "get_file_tree" });
+        // Re-fetch the viewed file's content so it stays up to date
+        if (viewingFile) {
+          send({ type: "get_file_content", path: viewingFile });
+        }
       }
     }
 
@@ -334,6 +342,11 @@ export default function App() {
       setFileTree(data.tree);
     }
 
+    if (data.type === "file_content") {
+      setViewingFileContent(data.content);
+      setViewingFileBinary(data.isBinary ?? false);
+    }
+
     if (data.type === "chat_history") {
       // Replace messages with the persisted history (loaded messages are never streaming)
       const loaded: ChatMessage[] = data.messages.map((m: WsChatHistoryMessage) => ({
@@ -345,7 +358,7 @@ export default function App() {
       }));
       setMessages(loaded);
     }
-  }, [lastMessage, send, rightTab, notify]);
+  }, [lastMessage, send, rightTab, viewingFile, notify]);
 
   const handleSend = useCallback(
     (text: string) => {
@@ -435,6 +448,22 @@ export default function App() {
     send({ type: "get_file_tree" });
   }, [send]);
 
+  const handleFileClick = useCallback(
+    (filePath: string) => {
+      setViewingFile(filePath);
+      setViewingFileContent(null);
+      setViewingFileBinary(false);
+      send({ type: "get_file_content", path: filePath });
+    },
+    [send]
+  );
+
+  const handleFileViewerClose = useCallback(() => {
+    setViewingFile(null);
+    setViewingFileContent(null);
+    setViewingFileBinary(false);
+  }, []);
+
   const handleDocSelect = useCallback(
     (filePath: string) => {
       setSelectedDoc(filePath);
@@ -512,10 +541,19 @@ export default function App() {
             onSelectFile={handleDocSelect}
             onRefresh={handleDocRefresh}
           />
+        ) : viewingFile ? (
+          <FileContentViewer
+            filePath={viewingFile}
+            content={viewingFileContent}
+            isBinary={viewingFileBinary}
+            onClose={handleFileViewerClose}
+          />
         ) : (
           <FileTree
             tree={fileTree}
             onRefresh={handleFileTreeRefresh}
+            onFileClick={handleFileClick}
+            selectedFile={viewingFile}
           />
         )}
       </div>

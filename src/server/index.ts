@@ -464,6 +464,42 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           send({ type: "error", message: `Failed to scan file tree: ${getErrorMessage(err)}` });
         }
       }
+
+      if (msg.type === "get_file_content") {
+        try {
+          const safePath = path.resolve(workspaceDir, msg.path);
+          if (!safePath.startsWith(workspaceDir + "/")) {
+            send({ type: "error", message: "Invalid path" });
+            return;
+          }
+          // Guard against large files (>1 MB)
+          const stat = await fs.stat(safePath);
+          if (stat.size > 1_048_576) {
+            send({
+              type: "file_content",
+              path: msg.path,
+              content: `File is too large to display (${(stat.size / 1_048_576).toFixed(1)} MB). Maximum supported size is 1 MB.`,
+              isBinary: true,
+            });
+            return;
+          }
+          // Read raw bytes to detect binary content
+          const buf = await fs.readFile(safePath);
+          const hasNullByte = buf.includes(0);
+          if (hasNullByte) {
+            send({
+              type: "file_content",
+              path: msg.path,
+              content: "Binary file — cannot display.",
+              isBinary: true,
+            });
+            return;
+          }
+          send({ type: "file_content", path: msg.path, content: buf.toString("utf-8") });
+        } catch (err) {
+          send({ type: "error", message: `Failed to read file: ${getErrorMessage(err)}` });
+        }
+      }
     });
 
     socket.on("close", () => {
