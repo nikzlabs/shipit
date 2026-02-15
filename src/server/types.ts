@@ -240,6 +240,8 @@ export interface WsFileContent {
   type: "file_content";
   path: string;
   content: string;
+  /** When true, the file is binary and `content` contains a human-readable message instead of file data. */
+  isBinary?: boolean;
 }
 
 export type WsServerMessage =

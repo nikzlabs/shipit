@@ -67,6 +67,7 @@ export default function App() {
   const [fileTree, setFileTree] = useState<FileTreeNode[]>([]);
   const [viewingFile, setViewingFile] = useState<string | null>(null);
   const [viewingFileContent, setViewingFileContent] = useState<string | null>(null);
+  const [viewingFileBinary, setViewingFileBinary] = useState(false);
   const [activity, setActivity] = useState<StreamingActivity | undefined>(undefined);
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
@@ -293,6 +294,10 @@ export default function App() {
       // Refresh file tree if the Files tab is active (files likely changed)
       if (rightTab === "files") {
         send({ type: "get_file_tree" });
+        // Re-fetch the viewed file's content so it stays up to date
+        if (viewingFile) {
+          send({ type: "get_file_content", path: viewingFile });
+        }
       }
     }
 
@@ -339,6 +344,7 @@ export default function App() {
 
     if (data.type === "file_content") {
       setViewingFileContent(data.content);
+      setViewingFileBinary(data.isBinary ?? false);
     }
 
     if (data.type === "chat_history") {
@@ -352,7 +358,7 @@ export default function App() {
       }));
       setMessages(loaded);
     }
-  }, [lastMessage, send, rightTab, notify]);
+  }, [lastMessage, send, rightTab, viewingFile, notify]);
 
   const handleSend = useCallback(
     (text: string) => {
@@ -446,6 +452,7 @@ export default function App() {
     (filePath: string) => {
       setViewingFile(filePath);
       setViewingFileContent(null);
+      setViewingFileBinary(false);
       send({ type: "get_file_content", path: filePath });
     },
     [send]
@@ -454,6 +461,7 @@ export default function App() {
   const handleFileViewerClose = useCallback(() => {
     setViewingFile(null);
     setViewingFileContent(null);
+    setViewingFileBinary(false);
   }, []);
 
   const handleDocSelect = useCallback(
@@ -537,6 +545,7 @@ export default function App() {
           <FileContentViewer
             filePath={viewingFile}
             content={viewingFileContent}
+            isBinary={viewingFileBinary}
             onClose={handleFileViewerClose}
           />
         ) : (

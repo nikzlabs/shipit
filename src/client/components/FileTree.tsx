@@ -1,11 +1,7 @@
 import { useState, useCallback } from "react";
+import type { FileTreeNode } from "../../server/types.js";
 
-export interface FileTreeNode {
-  name: string;
-  path: string;
-  type: "file" | "directory";
-  children?: FileTreeNode[];
-}
+export type { FileTreeNode };
 
 export interface FileTreeProps {
   tree: FileTreeNode[];

@@ -454,6 +454,42 @@ describe("Integration: WebSocket flow", () => {
     client.close();
   });
 
+  it("get_file_content returns isBinary for binary files", async () => {
+    // Write a file with null bytes (binary indicator)
+    const buf = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0d, 0x0a]);
+    fs.writeFileSync(path.join(tmpDir, "image.png"), buf);
+
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "get_file_content", path: "image.png" });
+    const msg = await client.receive();
+
+    expect(msg.type).toBe("file_content");
+    expect((msg as any).isBinary).toBe(true);
+    expect((msg as any).content).toContain("Binary file");
+
+    client.close();
+  });
+
+  it("get_file_content returns isBinary for large files", async () => {
+    // Write a file over 1 MB
+    const bigContent = "x".repeat(1_048_577);
+    fs.writeFileSync(path.join(tmpDir, "big.txt"), bigContent);
+
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "get_file_content", path: "big.txt" });
+    const msg = await client.receive();
+
+    expect(msg.type).toBe("file_content");
+    expect((msg as any).isBinary).toBe(true);
+    expect((msg as any).content).toContain("too large");
+
+    client.close();
+  });
+
   // ---- Claude message flow ----
 
   it("send_message creates a ClaudeProcess and relays events", async () => {
