@@ -51,6 +51,15 @@ export type ClaudeEvent =
   | ClaudeUserEvent
   | ClaudeResultEvent;
 
+// ---- Git types ----
+
+export interface GitCommitInfo {
+  hash: string;
+  message: string;
+  date: string;
+  author: string;
+}
+
 // ---- WebSocket message types (client ↔ server) ----
 
 export interface WsSendMessage {
@@ -59,7 +68,16 @@ export interface WsSendMessage {
   sessionId?: string;
 }
 
-export type WsClientMessage = WsSendMessage;
+export interface WsGetGitLog {
+  type: "get_git_log";
+}
+
+export interface WsRollback {
+  type: "rollback";
+  commitHash: string;
+}
+
+export type WsClientMessage = WsSendMessage | WsGetGitLog | WsRollback;
 
 export interface WsClaudeEvent {
   type: "claude_event";
@@ -78,4 +96,26 @@ export interface WsPreviewStatus {
   url: string;
 }
 
-export type WsServerMessage = WsClaudeEvent | WsError | WsPreviewStatus;
+export interface WsGitLog {
+  type: "git_log";
+  commits: GitCommitInfo[];
+}
+
+export interface WsGitCommitted {
+  type: "git_committed";
+  hash: string;
+  message: string;
+}
+
+export interface WsRollbackComplete {
+  type: "rollback_complete";
+  commitHash: string;
+}
+
+export type WsServerMessage =
+  | WsClaudeEvent
+  | WsError
+  | WsPreviewStatus
+  | WsGitLog
+  | WsGitCommitted
+  | WsRollbackComplete;
