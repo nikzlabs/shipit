@@ -105,4 +105,41 @@ describe("FileTree", () => {
     render(<FileTree tree={tree} onRefresh={() => {}} />);
     expect(screen.getByText("hello.txt")).toBeInTheDocument();
   });
+
+  it("calls onFileClick when a file is clicked", () => {
+    const onFileClick = vi.fn();
+    render(<FileTree tree={sampleTree} onRefresh={() => {}} onFileClick={onFileClick} />);
+    // index.ts is visible (src is auto-expanded)
+    fireEvent.click(screen.getByText("index.ts"));
+    expect(onFileClick).toHaveBeenCalledWith("src/index.ts");
+  });
+
+  it("calls onFileClick for root-level files", () => {
+    const onFileClick = vi.fn();
+    render(<FileTree tree={sampleTree} onRefresh={() => {}} onFileClick={onFileClick} />);
+    fireEvent.click(screen.getByText("package.json"));
+    expect(onFileClick).toHaveBeenCalledWith("package.json");
+  });
+
+  it("highlights selected file", () => {
+    render(
+      <FileTree tree={sampleTree} onRefresh={() => {}} selectedFile="src/index.ts" />
+    );
+    const fileButton = screen.getByText("index.ts").closest("button");
+    expect(fileButton?.className).toContain("bg-blue-900");
+  });
+
+  it("does not highlight non-selected files", () => {
+    render(
+      <FileTree tree={sampleTree} onRefresh={() => {}} selectedFile="src/index.ts" />
+    );
+    const fileButton = screen.getByText("package.json").closest("button");
+    expect(fileButton?.className).not.toContain("bg-blue-900");
+  });
+
+  it("renders files as buttons for clickability", () => {
+    render(<FileTree tree={sampleTree} onRefresh={() => {}} onFileClick={() => {}} />);
+    const fileButton = screen.getByText("index.ts").closest("button");
+    expect(fileButton).not.toBeNull();
+  });
 });
