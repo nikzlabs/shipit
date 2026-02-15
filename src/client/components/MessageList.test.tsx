@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, beforeAll } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
-import { MessageList, type ChatMessage, type ToolUseBlock } from "./MessageList.js";
+import { MessageList, parseMessageSegments, type ChatMessage, type ToolUseBlock } from "./MessageList.js";
 
 // jsdom doesn't implement scrollIntoView
 beforeAll(() => {
@@ -292,6 +292,188 @@ describe("MessageList", () => {
       // The full text should be present (split across text nodes)
       expect(screen.getByText(/abc/)).toBeInTheDocument();
       expect(screen.getByText(/xyz/)).toBeInTheDocument();
+    });
+
+    it("highlights text in non-code segments when message has code blocks", () => {
+      const text = "find hello here\n```js\ncode\n```\nmore text";
+      const messages = [msg("assistant", text)];
+      // "hello" starts at index 5 in the original text, within the first text segment
+      const searchMatches = [{ messageIndex: 0, start: 5, length: 5 }];
+
+      const { container } = render(
+        <MessageList
+          messages={messages}
+          isLoading={false}
+          searchMatches={searchMatches}
+        />
+      );
+      const marks = container.querySelectorAll("mark.search-highlight");
+      expect(marks).toHaveLength(1);
+      expect(marks[0].textContent).toBe("hello");
+    });
+  });
+
+  describe("parseMessageSegments", () => {
+    it("returns a single text segment for plain text", () => {
+      const segments = parseMessageSegments("hello world");
+      expect(segments).toEqual([
+        { type: "text", content: "hello world", offset: 0 },
+      ]);
+    });
+
+    it("parses a fenced code block with language", () => {
+      const text = "before\n```typescript\nconst x = 1;\n```\nafter";
+      const segments = parseMessageSegments(text);
+      expect(segments).toHaveLength(3);
+      expect(segments[0]).toEqual({ type: "text", content: "before\n", offset: 0 });
+      expect(segments[1]).toEqual({
+        type: "code",
+        content: "const x = 1;\n",
+        language: "typescript",
+        offset: 7,
+      });
+      expect(segments[2]).toEqual({ type: "text", content: "\nafter", offset: 37 });
+    });
+
+    it("parses a code block without language", () => {
+      const text = "```\nsome code\n```";
+      const segments = parseMessageSegments(text);
+      expect(segments).toHaveLength(1);
+      expect(segments[0]).toEqual({
+        type: "code",
+        content: "some code\n",
+        language: "",
+        offset: 0,
+      });
+    });
+
+    it("parses multiple code blocks", () => {
+      const text = "intro\n```js\na();\n```\nmiddle\n```py\nb()\n```\nend";
+      const segments = parseMessageSegments(text);
+      expect(segments).toHaveLength(5);
+      expect(segments[0].type).toBe("text");
+      expect(segments[1].type).toBe("code");
+      expect((segments[1] as { language: string }).language).toBe("js");
+      expect(segments[2].type).toBe("text");
+      expect(segments[3].type).toBe("code");
+      expect((segments[3] as { language: string }).language).toBe("py");
+      expect(segments[4].type).toBe("text");
+    });
+
+    it("handles text that starts with a code block", () => {
+      const text = "```bash\nls -la\n```\nsome text";
+      const segments = parseMessageSegments(text);
+      expect(segments).toHaveLength(2);
+      expect(segments[0].type).toBe("code");
+      expect(segments[1]).toEqual({
+        type: "text",
+        content: "\nsome text",
+        offset: 18,
+      });
+    });
+
+    it("handles unclosed code blocks as plain text", () => {
+      const text = "before\n```python\ndef foo():\n  pass";
+      const segments = parseMessageSegments(text);
+      expect(segments).toHaveLength(1);
+      expect(segments[0]).toEqual({
+        type: "text",
+        content: text,
+        offset: 0,
+      });
+    });
+
+    it("returns empty text segment for empty string", () => {
+      const segments = parseMessageSegments("");
+      expect(segments).toEqual([{ type: "text", content: "", offset: 0 }]);
+    });
+  });
+
+  describe("code block rendering", () => {
+    it("renders fenced code blocks as <pre><code> elements", () => {
+      const text = "Here is code:\n```javascript\nconst x = 1;\n```";
+      const { container } = render(
+        <MessageList
+          messages={[msg("assistant", text)]}
+          isLoading={false}
+        />
+      );
+      const codeElements = container.querySelectorAll("pre code.hljs");
+      expect(codeElements).toHaveLength(1);
+    });
+
+    it("shows the language label for code blocks", () => {
+      const text = "```python\nprint('hi')\n```";
+      render(
+        <MessageList
+          messages={[msg("assistant", text)]}
+          isLoading={false}
+        />
+      );
+      expect(screen.getByText("python")).toBeInTheDocument();
+    });
+
+    it("does not show a language label when language is omitted", () => {
+      const text = "```\nsome code\n```";
+      const { container } = render(
+        <MessageList
+          messages={[msg("assistant", text)]}
+          isLoading={false}
+        />
+      );
+      // Code block should exist
+      expect(container.querySelectorAll("pre code.hljs")).toHaveLength(1);
+      // No language label div (border-b is only present when language label shown)
+      expect(container.querySelector(".border-b.border-gray-700\\/50")).toBeNull();
+    });
+
+    it("renders text around code blocks normally", () => {
+      const text = "Before code\n```js\nvar x;\n```\nAfter code";
+      render(
+        <MessageList
+          messages={[msg("assistant", text)]}
+          isLoading={false}
+        />
+      );
+      expect(screen.getByText(/Before code/)).toBeInTheDocument();
+      expect(screen.getByText(/After code/)).toBeInTheDocument();
+    });
+
+    it("preserves whitespace-pre-wrap for messages without code blocks", () => {
+      render(
+        <MessageList
+          messages={[msg("assistant", "plain text message")]}
+          isLoading={false}
+        />
+      );
+      const bubble = screen.getByText("plain text message").closest("div[class*='bg-']");
+      expect(bubble?.className).toContain("whitespace-pre-wrap");
+    });
+
+    it("removes whitespace-pre-wrap from parent when code blocks are present", () => {
+      const text = "text\n```js\ncode\n```";
+      const { container } = render(
+        <MessageList
+          messages={[msg("assistant", text)]}
+          isLoading={false}
+        />
+      );
+      // The message bubble should NOT have whitespace-pre-wrap on the parent
+      const bubble = container.querySelector("div[class*='bg-gray-800']");
+      expect(bubble?.className).not.toContain("whitespace-pre-wrap");
+    });
+
+    it("applies highlight.js syntax highlighting to code content", () => {
+      const text = "```javascript\nconst x = 42;\n```";
+      const { container } = render(
+        <MessageList
+          messages={[msg("assistant", text)]}
+          isLoading={false}
+        />
+      );
+      const codeEl = container.querySelector("pre code.hljs");
+      // highlight.js wraps tokens in <span> tags with hljs-* classes
+      expect(codeEl?.innerHTML).toContain("hljs-");
     });
   });
 });

@@ -68,7 +68,7 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | Module | Tests | What's covered |
 |--------|-------|----------------|
 | `useSearch` | 16 | Matching, case-insensitivity, navigation cycling, clear |
-| `MessageList` | 20 | Empty state, user/assistant messages, tool rendering (Edit/Write/Bash/Read/Grep), thinking indicator, activity labels, search highlights, error message styling |
+| `MessageList` | 33 | Empty state, user/assistant messages, tool rendering (Edit/Write/Bash/Read/Grep), thinking indicator, activity labels, search highlights, error message styling, `parseMessageSegments` unit tests, code block rendering with highlight.js, language labels, search highlighting with code blocks |
 | `DiffBlock` | 12 | File header, edit/write labels, removed/added lines, multi-line diffs, separator, write mode, empty fallback |
 | `GitHistory` | 14 | Collapsed/expanded toggle, onRefresh, commit display (abbreviated hash, relative dates), rollback confirmation, blur reset |
 | `ErrorBoundary` | 7 | Render children, catch errors, fallback UI, reload button, recover button, error message display |
