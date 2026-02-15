@@ -22,7 +22,7 @@
 - [x] Streaming UX polish (typing indicators, partial renders)
 
 ## Phase 5: Next Up
-- [ ] Resizable panels
+- [x] Resizable panels
 - [ ] Search in chat history
 - [ ] Test coverage
 
