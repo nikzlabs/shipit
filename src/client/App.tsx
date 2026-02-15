@@ -3,6 +3,7 @@ import { useWebSocket } from "./hooks/useWebSocket.js";
 import { MessageInput } from "./components/MessageInput.js";
 import { MessageList, type ChatMessage } from "./components/MessageList.js";
 import { PreviewFrame, type PreviewStatus } from "./components/PreviewFrame.js";
+import { GitHistory, type GitCommit } from "./components/GitHistory.js";
 
 function getWsUrl(): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -14,6 +15,7 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [preview, setPreview] = useState<PreviewStatus | null>(null);
+  const [gitCommits, setGitCommits] = useState<GitCommit[]>([]);
   const sessionIdRef = useRef<string | undefined>(undefined);
 
   // Process incoming WebSocket messages
@@ -100,7 +102,24 @@ export default function App() {
         { role: "assistant", text: `Error: ${data.message}`, streaming: false },
       ]);
     }
-  }, [lastMessage]);
+
+    if (data.type === "git_log") {
+      setGitCommits(data.commits);
+    }
+
+    if (data.type === "git_committed") {
+      // Prepend the new commit to the list
+      setGitCommits((prev) => [
+        { hash: data.hash, message: data.message, date: new Date().toISOString(), author: "Vibe" },
+        ...prev,
+      ]);
+    }
+
+    if (data.type === "rollback_complete") {
+      // Refresh the git log after rollback
+      send({ type: "get_git_log" });
+    }
+  }, [lastMessage, send]);
 
   const handleSend = useCallback(
     (text: string) => {
@@ -111,6 +130,17 @@ export default function App() {
         text,
         sessionId: sessionIdRef.current,
       });
+    },
+    [send]
+  );
+
+  const handleGitRefresh = useCallback(() => {
+    send({ type: "get_git_log" });
+  }, [send]);
+
+  const handleRollback = useCallback(
+    (hash: string) => {
+      send({ type: "rollback", commitHash: hash });
     },
     [send]
   );
@@ -145,6 +175,11 @@ export default function App() {
         {/* Left column — Chat */}
         <div className="flex flex-col flex-1 min-w-0 border-r border-gray-800">
           <MessageList messages={messages} isLoading={isLoading} />
+          <GitHistory
+            commits={gitCommits}
+            onRollback={handleRollback}
+            onRefresh={handleGitRefresh}
+          />
           <MessageInput onSend={handleSend} disabled={isLoading || status !== "open"} />
         </div>
 
