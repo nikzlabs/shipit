@@ -40,6 +40,7 @@ src/
         ├── GitHistory.tsx       →  GitHistory.test.tsx
         ├── ErrorBoundary.tsx    →  ErrorBoundary.test.tsx
         ├── ConnectionBanner.tsx →  ConnectionBanner.test.tsx
+        ├── PreviewFrame.tsx      →  PreviewFrame.test.tsx
         ├── MobileTabBar.tsx     →  MobileTabBar.test.tsx
         └── KeyboardShortcutsOverlay.tsx → KeyboardShortcutsOverlay.test.tsx
 ```
@@ -62,7 +63,7 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | `GitManager` | 12 | Init, auto-commit, log, rollback, empty-commit handling |
 | `AuthManager` | 11 | URL pattern matching, `extractAuthUrl` extraction and cleanup |
 | `findMarkdownFiles` | 7 | Recursive scan, directory skipping, sorting |
-| Integration (E2E) | 19 | Full WebSocket flow: connect, sessions, git, docs, Claude lifecycle, multi-client, path traversal, disconnect cleanup |
+| Integration (E2E) | 24 | Full WebSocket flow: connect, sessions, git, docs, Claude lifecycle, multi-client, path traversal, disconnect cleanup, port auto-detection with multi-port support |
 
 ### Client Tests
 
@@ -73,6 +74,7 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | `DiffBlock` | 12 | File header, edit/write labels, removed/added lines, multi-line diffs, separator, write mode, empty fallback |
 | `GitHistory` | 14 | Collapsed/expanded toggle, onRefresh, commit display (abbreviated hash, relative dates), rollback confirmation, blur reset |
 | `ErrorBoundary` | 7 | Render children, catch errors, fallback UI, reload button, recover button, error message display |
+| `PreviewFrame` | 13 | Placeholder states (null/not running), iframe rendering, auto-detected label, single-port display, multi-port dropdown selector, port selection callback, selectedPort override, Vite+detected port combination, Reload button |
 | `ConnectionBanner` | 16 | Hidden when open, reconnecting message, connection lost message, role=alert, color variants, attempt count display, "Reconnect now" button, reconnected success flash with auto-hide |
 | `useWebSocket` | 14 | Connect lifecycle, status transitions, send/receive, exponential backoff timing (2s→4s→8s→30s cap), reconnect attempt counter, manual `reconnect()`, backoff timer cancellation |
 | `useMediaQuery` | 5 | Match/no-match, live updates on change, cleanup on unmount, re-subscribe on query change |

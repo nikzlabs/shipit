@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import net from "node:net";
-import { checkPort, scanPorts, detectDevServer, DEFAULT_SCAN_PORTS } from "./port-scanner.js";
+import { checkPort, scanPorts, DEFAULT_SCAN_PORTS } from "./port-scanner.js";
 
 /**
  * Spin up a TCP server on an ephemeral port. Returns the server and its port.
@@ -105,36 +105,6 @@ describe("port-scanner", () => {
     it("returns empty array for empty port list", async () => {
       const result = await scanPorts([]);
       expect(result).toEqual([]);
-    });
-  });
-
-  describe("detectDevServer", () => {
-    let server: net.Server;
-    let serverPort: number;
-
-    beforeEach(async () => {
-      const r = await createTestServer();
-      server = r.server;
-      serverPort = r.port;
-    });
-
-    afterEach(() => {
-      server.close();
-    });
-
-    it("returns null when no dev servers are detected on default ports", async () => {
-      // Default ports are unlikely to be in use in CI/test environments
-      // Exclude the test server's port just in case it happens to be a default port
-      const result = await detectDevServer([serverPort]);
-      // We can't guarantee no default ports are open, but in a clean environment this should be null
-      // So just verify it returns a number or null
-      expect(result === null || typeof result === "number").toBe(true);
-    });
-
-    it("excludes specified ports", async () => {
-      // If our test server happened to be on a default port, excluding it should not return it
-      const result = await detectDevServer([serverPort]);
-      expect(result).not.toBe(serverPort);
     });
   });
 
