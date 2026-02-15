@@ -24,6 +24,7 @@
 ## Phase 5: Next Up
 - [ ] Resizable panels
 - [ ] Search in chat history
+- [ ] Test coverage
 
 ## Nice to Have
 - [ ] Cost display per turn (from result.total_cost_usd)
