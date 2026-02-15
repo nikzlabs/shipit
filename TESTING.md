@@ -43,7 +43,8 @@ src/
         ├── PreviewFrame.tsx      →  PreviewFrame.test.tsx
         ├── MobileTabBar.tsx     →  MobileTabBar.test.tsx
         ├── KeyboardShortcutsOverlay.tsx → KeyboardShortcutsOverlay.test.tsx
-        └── FileContentViewer.tsx → FileContentViewer.test.tsx
+        ├── FileContentViewer.tsx → FileContentViewer.test.tsx
+        └── TerminalPanel.tsx    →  TerminalPanel.test.tsx
 ```
 
 ## Test Projects
@@ -60,11 +61,11 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | Module | Tests | What's covered |
 |--------|-------|----------------|
 | `SessionManager` | 11 | CRUD operations, persistence, sorting, corruption recovery |
-| `ClaudeProcess` | 14 | NDJSON parsing, line buffering, auth detection, spawn args, kill |
+| `ClaudeProcess` | 18 | NDJSON parsing, line buffering, auth detection, spawn args, kill, log emission (stderr, non-JSON stdout, empty stderr skipping, no log for valid JSON) |
 | `GitManager` | 12 | Init, auto-commit, log, rollback, empty-commit handling |
 | `AuthManager` | 11 | URL pattern matching, `extractAuthUrl` extraction and cleanup |
 | `findMarkdownFiles` | 7 | Recursive scan, directory skipping, sorting |
-| Integration (E2E) | 30 | Full WebSocket flow: connect, sessions, git, docs, file content viewer (read, nested path, path traversal, non-existent file, binary detection, large file guard), Claude lifecycle, multi-client, path traversal, disconnect cleanup, port auto-detection with multi-port support |
+| Integration (E2E) | 39 | Full WebSocket flow: connect, sessions, git, docs, file content viewer (read, nested path, path traversal, non-existent file, binary detection, large file guard), Claude lifecycle, multi-client, path traversal, disconnect cleanup, port auto-detection with multi-port support, periodic port scanning, terminal/logs relay (stderr, stdout, server lifecycle logs, log buffering for new clients, clear_logs) |
 
 ### Client Tests
 
@@ -85,6 +86,7 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | `KeyboardShortcutsOverlay` | 18 | Dialog rendering, accessibility (role=dialog, aria-label), shortcut group display (General, Chat, Search), individual shortcut entries, close on Escape/`?`/backdrop click/close button, no close on inner content click, kbd elements rendering, listener cleanup on unmount |
 | `FileContentViewer` | 11 | File path display, close button, loading state, code element with hljs class, pre wrapper, syntax highlighting for TypeScript, empty file, path title attribute, JSON highlighting, binary file message display, large file message display |
 | `FileTree` (additions) | +5 | onFileClick callback, root-level file click, selected file highlighting, non-selected file styling, file buttons for clickability |
+| `TerminalPanel` | 9 | Header rendering, clear button, empty state, log entry text display, source labels (`[err]`/`[out]`/`[srv]`), timestamps, monospace font, entry ordering, no empty state when entries exist |
 
 ## Writing New Tests
 

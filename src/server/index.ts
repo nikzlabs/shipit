@@ -12,7 +12,7 @@ import { ChatHistoryManager } from "./chat-history.js";
 import { findMarkdownFiles } from "./markdown.js";
 import { scanFileTree } from "./file-tree.js";
 import { scanPorts, DEFAULT_SCAN_PORTS } from "./port-scanner.js";
-import type { WsClientMessage, WsServerMessage, ClaudeEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse } from "./types.js";
+import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse } from "./types.js";
 
 function getErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -110,6 +110,24 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     for (const ws of clients) {
       if (ws.readyState === 1) ws.send(payload);
     }
+  };
+
+  // ---- Terminal/logs buffer ----
+  const MAX_LOG_ENTRIES = 500;
+  let logBuffer: WsLogEntry[] = [];
+
+  const broadcastLog = (source: WsLogEntry["source"], text: string) => {
+    const entry: WsLogEntry = {
+      type: "log_entry",
+      source,
+      text,
+      timestamp: new Date().toISOString(),
+    };
+    logBuffer.push(entry);
+    if (logBuffer.length > MAX_LOG_ENTRIES) {
+      logBuffer = logBuffer.slice(-MAX_LOG_ENTRIES);
+    }
+    broadcast(entry);
   };
 
   // Track all auto-detected dev server ports (non-Vite)
@@ -259,6 +277,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     // Send current preview status on connect
     send(getPreviewStatus());
 
+    // Send buffered log entries so new clients see existing terminal output
+    for (const entry of logBuffer) {
+      send(entry);
+    }
+
     socket.on("message", async (raw: Buffer) => {
       let msg: WsClientMessage;
       try {
@@ -279,6 +302,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         accumulatedToolUse = [];
         const userText = msg.text;
         claude = claudeFactory();
+        broadcastLog("server", "Claude process started");
+
+        // Relay CLI stderr and non-JSON stdout lines to the terminal panel
+        claude.on("log", (source: "stderr" | "stdout", text: string) => {
+          broadcastLog(source, text);
+        });
 
         // If the client already knows the session, use it for persistence
         if (msg.sessionId) {
@@ -346,6 +375,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
         claude.on("done", async (code: number | null) => {
           console.log("[claude] process exited with code", code);
+          broadcastLog("server", `Claude process exited with code ${code}`);
           claude = null;
 
           // Auto-commit after Claude turn
@@ -376,6 +406,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
         claude.on("error", (err: Error) => {
           console.error("[claude] process error:", err.message);
+          broadcastLog("server", `Claude process error: ${err.message}`);
           const errorMsg = `Claude process error: ${err.message}`;
           send({ type: "error", message: errorMsg });
           // Persist the error so it shows up in history
@@ -499,6 +530,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         } catch (err) {
           send({ type: "error", message: `Failed to read file: ${getErrorMessage(err)}` });
         }
+      }
+
+      if (msg.type === "clear_logs") {
+        logBuffer = [];
       }
     });
 

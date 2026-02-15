@@ -13,6 +13,7 @@ import { SessionSelector, type SessionInfo } from "./components/SessionSelector.
 import { DocsViewer } from "./components/DocsViewer.js";
 import { FileTree, type FileTreeNode } from "./components/FileTree.js";
 import { FileContentViewer } from "./components/FileContentViewer.js";
+import { TerminalPanel, type LogEntry } from "./components/TerminalPanel.js";
 import { ResizeHandle } from "./components/ResizeHandle.js";
 import { SearchBar } from "./components/SearchBar.js";
 import { activityFromTool, type StreamingActivity } from "./components/StreamingIndicator.js";
@@ -21,7 +22,7 @@ import { MobileTabBar, type MobilePanel } from "./components/MobileTabBar.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
 import type { WsServerMessage, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage } from "../server/types.js";
 
-type RightTab = "preview" | "docs" | "files";
+type RightTab = "preview" | "docs" | "files" | "terminal";
 
 const SESSION_STORAGE_KEY = "vibe-current-session";
 
@@ -69,6 +70,7 @@ export default function App() {
   const [viewingFileContent, setViewingFileContent] = useState<string | null>(null);
   const [viewingFileBinary, setViewingFileBinary] = useState(false);
   const [activity, setActivity] = useState<StreamingActivity | undefined>(undefined);
+  const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
   const historyLoadedRef = useRef(false);
@@ -358,6 +360,14 @@ export default function App() {
       }));
       setMessages(loaded);
     }
+
+    if (data.type === "log_entry") {
+      setLogEntries((prev) => {
+        const next = [...prev, { source: data.source, text: data.text, timestamp: data.timestamp }];
+        // Cap at 500 entries on the client to avoid memory growth
+        return next.length > 500 ? next.slice(-500) : next;
+      });
+    }
   }, [lastMessage, send, rightTab, viewingFile, notify]);
 
   const handleSend = useCallback(
@@ -473,6 +483,11 @@ export default function App() {
     [send]
   );
 
+  const handleClearLogs = useCallback(() => {
+    setLogEntries([]);
+    send({ type: "clear_logs" });
+  }, [send]);
+
   // Request data when switching to docs or files tab
   const handleTabChange = useCallback(
     (tab: RightTab) => {
@@ -522,6 +537,16 @@ export default function App() {
         >
           Files
         </button>
+        <button
+          onClick={() => handleTabChange("terminal")}
+          className={`px-4 py-2 text-sm font-medium transition-colors ${
+            rightTab === "terminal"
+              ? "text-gray-100 border-b-2 border-blue-500"
+              : "text-gray-500 hover:text-gray-300"
+          }`}
+        >
+          Terminal
+        </button>
       </div>
 
       {/* Tab content */}
@@ -540,6 +565,11 @@ export default function App() {
             content={docContent}
             onSelectFile={handleDocSelect}
             onRefresh={handleDocRefresh}
+          />
+        ) : rightTab === "terminal" ? (
+          <TerminalPanel
+            entries={logEntries}
+            onClear={handleClearLogs}
           />
         ) : viewingFile ? (
           <FileContentViewer
