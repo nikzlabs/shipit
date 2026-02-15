@@ -111,6 +111,24 @@ describe("SessionManager", () => {
     expect(mgr.list()).toEqual([]);
   });
 
+  it("renames a session by id", () => {
+    const mgr = new SessionManager(sessionsFile);
+    mgr.track("sess-1", "Original");
+    const renamed = mgr.rename("sess-1", "Renamed");
+    expect(renamed).not.toBeNull();
+    expect(renamed!.id).toBe("sess-1");
+    expect(renamed!.title).toBe("Renamed");
+
+    // Verify persistence
+    const mgr2 = new SessionManager(sessionsFile);
+    expect(mgr2.list()[0].title).toBe("Renamed");
+  });
+
+  it("returns null when renaming a non-existent session", () => {
+    const mgr = new SessionManager(sessionsFile);
+    expect(mgr.rename("nonexistent", "New name")).toBeNull();
+  });
+
   it("returns a copy from list() (not the internal array)", () => {
     const mgr = new SessionManager(sessionsFile);
     mgr.track("sess-1");
