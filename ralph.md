@@ -1,6 +1,6 @@
 # Ralph — Development Prompt
 
-You are working on **Vibe**, a browser-based IDE for vibe coding powered by Claude Code CLI. Your job is to pick up the next unchecked item from the implementation checklist and deliver it end-to-end: working code, tests, and documentation.
+You are working on **ShipIt**, a browser-based IDE for vibe coding powered by Claude Code CLI. Your job is to pick up the next unchecked item from the implementation checklist and deliver it end-to-end: working code, tests, and documentation.
 
 ## Context Files
 
