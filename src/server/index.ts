@@ -12,6 +12,7 @@ import { ChatHistoryManager } from "./chat-history.js";
 import { findMarkdownFiles } from "./markdown.js";
 import { scanFileTree } from "./file-tree.js";
 import { scanPorts, DEFAULT_SCAN_PORTS } from "./port-scanner.js";
+import { listTemplates, getTemplate, applyTemplate } from "./templates.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse } from "./types.js";
 
 function getErrorMessage(err: unknown): string {
@@ -543,6 +544,32 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           send({ type: "file_content", path: msg.path, content: buf.toString("utf-8") });
         } catch (err) {
           send({ type: "error", message: `Failed to read file: ${getErrorMessage(err)}` });
+        }
+      }
+
+      if (msg.type === "list_templates") {
+        send({ type: "template_list", templates: listTemplates() });
+      }
+
+      if (msg.type === "apply_template") {
+        const templateId = msg.templateId;
+        if (!templateId || typeof templateId !== "string" || !templateId.trim()) {
+          send({ type: "error", message: "Template ID is required" });
+          return;
+        }
+        const template = getTemplate(templateId.trim());
+        if (!template) {
+          send({ type: "error", message: `Unknown template: ${templateId}` });
+          return;
+        }
+        try {
+          await applyTemplate(template, workspaceDir);
+          await gitManager.autoCommit(`Apply template: ${template.name}`);
+          // Restart Vite so it picks up the new project files
+          viteManager.restart();
+          send({ type: "template_applied", templateId: template.id, name: template.name });
+        } catch (err) {
+          send({ type: "error", message: `Failed to apply template: ${getErrorMessage(err)}` });
         }
       }
 
