@@ -8,6 +8,7 @@ import {
   ToolSpinner,
   type StreamingActivity,
 } from "./StreamingIndicator.js";
+import { AskUserQuestion, type AskQuestionItem } from "./AskUserQuestion.js";
 import type { SearchMatch } from "../hooks/useSearch.js";
 
 export interface ToolUseBlock {
@@ -26,7 +27,7 @@ export interface ChatMessage {
   isError?: boolean;
 }
 
-function ToolUseItem({ tool, isLast, isStreaming }: { tool: ToolUseBlock; isLast: boolean; isStreaming: boolean }) {
+function ToolUseItem({ tool, isLast, isStreaming, onAnswerQuestion, isQuestionDisabled }: { tool: ToolUseBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void; isQuestionDisabled: boolean }) {
   // Show a spinner on the last tool when the message is still streaming
   const inProgress = isLast && isStreaming;
 
@@ -53,6 +54,18 @@ function ToolUseItem({ tool, isLast, isStreaming }: { tool: ToolUseBlock; isLast
         <DiffBlock filePath={filePath} newString={preview} isWrite />
         {inProgress && <ToolProgressBar tool={tool.name} />}
       </div>
+    );
+  }
+
+  if (tool.name === "AskUserQuestion" && Array.isArray(tool.input.questions)) {
+    const questions = tool.input.questions as AskQuestionItem[];
+    return (
+      <AskUserQuestion
+        toolUseId={tool.id}
+        questions={questions}
+        onAnswer={onAnswerQuestion ?? (() => {})}
+        disabled={isQuestionDisabled || isStreaming}
+      />
     );
   }
 
@@ -330,6 +343,7 @@ export function MessageList({
   searchMatches,
   currentMatch,
   onEditMessage,
+  onAnswerQuestion,
 }: {
   messages: ChatMessage[];
   isLoading: boolean;
@@ -337,6 +351,7 @@ export function MessageList({
   searchMatches?: SearchMatch[];
   currentMatch?: SearchMatch;
   onEditMessage?: (messageIndex: number, newText: string) => void;
+  onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const currentMatchRef = useRef<HTMLElement | null>(null);
@@ -478,14 +493,21 @@ export function MessageList({
 
               {msg.toolUse && msg.toolUse.length > 0 && (
                 <div className="mt-2 space-y-1">
-                  {msg.toolUse.map((tool, toolIdx) => (
-                    <ToolUseItem
-                      key={tool.id}
-                      tool={tool}
-                      isLast={toolIdx === msg.toolUse!.length - 1}
-                      isStreaming={!!msg.streaming}
-                    />
-                  ))}
+                  {msg.toolUse.map((tool, toolIdx) => {
+                    // Questions are interactive only on the last assistant message, when not loading/streaming
+                    const isLastMessage = i === messages.length - 1;
+                    const questionDisabled = !isLastMessage || isLoading || !!msg.streaming;
+                    return (
+                      <ToolUseItem
+                        key={tool.id}
+                        tool={tool}
+                        isLast={toolIdx === msg.toolUse!.length - 1}
+                        isStreaming={!!msg.streaming}
+                        onAnswerQuestion={onAnswerQuestion}
+                        isQuestionDisabled={questionDisabled}
+                      />
+                    );
+                  })}
                 </div>
               )}
 

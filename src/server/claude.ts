@@ -15,7 +15,7 @@ export class ClaudeProcess extends EventEmitter {
       "-p", prompt,
       "--output-format", "stream-json",
       "--verbose",
-      "--allowedTools", "Write,Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch",
+      "--allowedTools", "Write,Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch,AskUserQuestion",
     ];
 
     if (sessionId) {
@@ -25,7 +25,7 @@ export class ClaudeProcess extends EventEmitter {
     this.proc = spawn("claude", args, {
       cwd: "/workspace",
       env: { ...process.env, HOME: "/root" },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
 
     this.buffer = "";
@@ -67,6 +67,13 @@ export class ClaudeProcess extends EventEmitter {
       this.emit("error", err);
       this.proc = null;
     });
+  }
+
+  /** Write data to the running process's stdin. */
+  writeStdin(data: string): void {
+    if (this.proc?.stdin && !this.proc.stdin.destroyed) {
+      this.proc.stdin.write(data);
+    }
   }
 
   /** Kill the running process if any. */

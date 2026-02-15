@@ -547,6 +547,119 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         }
       }
 
+      if (msg.type === "answer_question") {
+        const answerParts = Object.values(msg.answers);
+        const answerText = answerParts.join(", ");
+
+        if (!answerText.trim()) {
+          send({ type: "error", message: "Answer cannot be empty" });
+          return;
+        }
+
+        if (claude) {
+          // Claude is still running — write answer to stdin (it may be blocking on input)
+          claude.writeStdin(answerText + "\n");
+        } else {
+          // Claude has finished — send the answer as a new prompt with --resume
+          turnSummary = "";
+          accumulatedText = "";
+          accumulatedToolUse = [];
+          claude = claudeFactory();
+          broadcastLog("server", "Claude process started");
+
+          claude.on("log", (source: "stderr" | "stdout", text: string) => {
+            broadcastLog(source, text);
+          });
+
+          // Persist the user answer
+          if (currentSessionId) {
+            chatHistoryManager.append(currentSessionId, { role: "user", text: answerText });
+          }
+
+          claude.on("event", (event: ClaudeEvent) => {
+            send({ type: "claude_event", event });
+
+            if (event.type === "system" && event.subtype === "init" && event.session_id) {
+              currentSessionId = event.session_id;
+              const title = answerText.slice(0, 80) || "Answer";
+              const session = sessionManager.track(event.session_id, title);
+              send({ type: "session_started", session });
+            }
+
+            if (event.type === "assistant") {
+              const text = (event.message?.content ?? [])
+                .filter((b: ClaudeContentBlock): b is ClaudeContentBlockText => b.type === "text")
+                .map((b) => b.text)
+                .join("");
+              if (text) {
+                turnSummary = text;
+                accumulatedText = text;
+              }
+
+              const toolBlocks = (event.message?.content ?? [])
+                .filter((b: ClaudeContentBlock): b is ClaudeContentBlockToolUse => b.type === "tool_use");
+              if (toolBlocks.length > 0) {
+                accumulatedToolUse = toolBlocks;
+              }
+            }
+
+            if (event.type === "result" && event.session_id) {
+              currentSessionId = event.session_id;
+              sessionManager.track(event.session_id);
+              if (accumulatedText || accumulatedToolUse.length > 0) {
+                chatHistoryManager.append(event.session_id, {
+                  role: "assistant",
+                  text: accumulatedText,
+                  toolUse: accumulatedToolUse.length > 0 ? accumulatedToolUse : undefined,
+                });
+              }
+            }
+          });
+
+          claude.on("done", async (code: number | null) => {
+            console.log("[claude] process exited with code", code);
+            broadcastLog("server", `Claude process exited with code ${code}`);
+            claude = null;
+
+            try {
+              const firstLine = turnSummary.split("\n")[0]?.slice(0, 120) || "Claude turn";
+              const hash = await gitManager.autoCommit(firstLine);
+              if (hash) {
+                send({ type: "git_committed", hash, message: firstLine });
+              }
+            } catch (err) {
+              console.error("[git] auto-commit failed:", getErrorMessage(err));
+            }
+
+            if (!viteManager.running) {
+              viteManager.start();
+            }
+            await runPortScan();
+          });
+
+          claude.on("auth_required", () => {
+            send({ type: "error", message: "Authentication required. Starting OAuth flow..." });
+            authManager.startOAuthFlow();
+          });
+
+          claude.on("error", (err: Error) => {
+            console.error("[claude] process error:", err.message);
+            broadcastLog("server", `Claude process error: ${err.message}`);
+            send({ type: "error", message: `Claude process error: ${err.message}` });
+            if (currentSessionId) {
+              chatHistoryManager.append(currentSessionId, {
+                role: "assistant",
+                text: `Error: ${err.message}`,
+                isError: true,
+              });
+            }
+            claude = null;
+          });
+
+          claude.run(answerText, currentSessionId);
+        }
+      }
+
       if (msg.type === "list_templates") {
         send({ type: "template_list", templates: listTemplates() });
       }

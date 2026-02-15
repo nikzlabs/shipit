@@ -139,6 +139,12 @@ export interface WsGetFileContent {
   path: string;
 }
 
+export interface WsAnswerQuestion {
+  type: "answer_question";
+  toolUseId: string;
+  answers: Record<string, string>;
+}
+
 export interface WsListTemplates {
   type: "list_templates";
 }
@@ -162,6 +168,7 @@ export type WsClientMessage =
   | WsGetFileTree
   | WsGetFileContent
   | WsClearLogs
+  | WsAnswerQuestion
   | WsListTemplates
   | WsApplyTemplate;
 
