@@ -7,6 +7,7 @@ import { ClaudeProcess } from "./claude.js";
 import { ViteManager } from "./vite-manager.js";
 import { GitManager } from "./git.js";
 import { AuthManager } from "./auth.js";
+import { SessionManager } from "./sessions.js";
 import type { WsClientMessage, WsServerMessage, ClaudeEvent } from "./types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -22,6 +23,9 @@ async function main() {
 
   // ---- Vite dev server manager ----
   const viteManager = new ViteManager();
+
+  // ---- Session manager ----
+  const sessionManager = new SessionManager();
 
   // ---- Auth manager ----
   const authManager = new AuthManager();
@@ -127,10 +131,18 @@ async function main() {
         }
 
         turnSummary = "";
+        const userText = msg.text;
         claude = new ClaudeProcess();
 
         claude.on("event", (event: ClaudeEvent) => {
           send({ type: "claude_event", event });
+
+          // Track session when we get the session_id from init event
+          if (event.type === "system" && event.subtype === "init" && event.session_id) {
+            const title = userText.slice(0, 80) || "New session";
+            const session = sessionManager.track(event.session_id, title);
+            send({ type: "session_started", session });
+          }
 
           // Collect assistant text for commit message
           if (event.type === "assistant") {
@@ -139,6 +151,11 @@ async function main() {
               .map((b: any) => b.text)
               .join("");
             if (text) turnSummary = text;
+          }
+
+          // Also track session on result event (updates lastUsedAt for resumed sessions)
+          if (event.type === "result" && event.session_id) {
+            sessionManager.track(event.session_id);
           }
         });
 
@@ -197,6 +214,20 @@ async function main() {
         } catch (err: any) {
           send({ type: "error", message: `Rollback failed: ${err.message}` });
         }
+      }
+
+      if (msg.type === "list_sessions") {
+        send({ type: "session_list", sessions: sessionManager.list() });
+      }
+
+      if (msg.type === "new_session") {
+        // Client clears its sessionId — next send_message will start a fresh session
+        send({ type: "session_list", sessions: sessionManager.list() });
+      }
+
+      if (msg.type === "delete_session") {
+        sessionManager.delete(msg.sessionId);
+        send({ type: "session_list", sessions: sessionManager.list() });
       }
     });
 
