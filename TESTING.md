@@ -32,9 +32,11 @@ src/
     ├── hooks/
     │   └── useSearch.ts     →  useSearch.test.ts
     └── components/
-        ├── MessageList.tsx  →  MessageList.test.tsx
-        ├── DiffBlock.tsx    →  DiffBlock.test.tsx
-        └── GitHistory.tsx   →  GitHistory.test.tsx
+        ├── MessageList.tsx      →  MessageList.test.tsx
+        ├── DiffBlock.tsx        →  DiffBlock.test.tsx
+        ├── GitHistory.tsx       →  GitHistory.test.tsx
+        ├── ErrorBoundary.tsx    →  ErrorBoundary.test.tsx
+        └── ConnectionBanner.tsx →  ConnectionBanner.test.tsx
 ```
 
 ## Test Projects
@@ -62,9 +64,11 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | Module | Tests | What's covered |
 |--------|-------|----------------|
 | `useSearch` | 16 | Matching, case-insensitivity, navigation cycling, clear |
-| `MessageList` | 17 | Empty state, user/assistant messages, tool rendering (Edit/Write/Bash/Read/Grep), thinking indicator, activity labels, search highlights |
+| `MessageList` | 20 | Empty state, user/assistant messages, tool rendering (Edit/Write/Bash/Read/Grep), thinking indicator, activity labels, search highlights, error message styling |
 | `DiffBlock` | 12 | File header, edit/write labels, removed/added lines, multi-line diffs, separator, write mode, empty fallback |
 | `GitHistory` | 14 | Collapsed/expanded toggle, onRefresh, commit display (abbreviated hash, relative dates), rollback confirmation, blur reset |
+| `ErrorBoundary` | 7 | Render children, catch errors, fallback UI, reload button, recover button, error message display |
+| `ConnectionBanner` | 6 | Hidden when open, reconnecting message, connection lost message, role=alert, color variants |
 
 ## Writing New Tests
 
