@@ -127,13 +127,3 @@ npx vite             # Port 5173, proxies /ws → localhost:3000
 # Production (Docker)
 docker compose up --build   # Builds + runs on port 3000
 ```
-
-## What's Not Here Yet
-
-Planned for future phases (see `DESIGN.md`):
-- [x] Live preview iframe (Vite dev server manager)
-- [x] Git integration (auto-commit, history panel, rollback)
-- [x] OAuth flow detection
-- [x] Session list/resume UI
-- [ ] File change diffs
-- [ ] Cost/duration display
