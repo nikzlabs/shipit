@@ -9,6 +9,7 @@ import { ViteManager } from "./vite-manager.js";
 import { GitManager } from "./git.js";
 import { AuthManager } from "./auth.js";
 import { SessionManager } from "./sessions.js";
+import { ChatHistoryManager } from "./chat-history.js";
 import { findMarkdownFiles } from "./markdown.js";
 import type { WsClientMessage, WsServerMessage, ClaudeEvent } from "./types.js";
 
@@ -29,6 +30,8 @@ export interface AppDeps {
   sessionManager?: SessionManager;
   /** Auth manager instance. Defaults to `new AuthManager()`. */
   authManager?: AuthManager;
+  /** Chat history manager instance. Defaults to `new ChatHistoryManager()`. */
+  chatHistoryManager?: ChatHistoryManager;
   /** Factory for creating ClaudeProcess instances. Defaults to `() => new ClaudeProcess()`. */
   claudeFactory?: () => ClaudeProcess;
   /** Workspace directory for doc file operations. Defaults to `/workspace`. */
@@ -70,6 +73,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Session manager ----
   const sessionManager = deps.sessionManager ?? new SessionManager();
+
+  // ---- Chat history manager ----
+  const chatHistoryManager = deps.chatHistoryManager ?? new ChatHistoryManager();
 
   // ---- Auth manager ----
   const authManager = deps.authManager ?? new AuthManager();
@@ -147,6 +153,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     clients.add(socket);
     let claude: ClaudeProcess | null = null;
     let turnSummary = "";
+    let currentSessionId: string | undefined;
+    // Accumulate the assistant response across streaming events for persistence
+    let accumulatedText = "";
+    let accumulatedToolUse: Array<{ type: "tool_use"; id: string; name: string; input: Record<string, unknown> }> = [];
 
     const send = (msg: WsServerMessage) => {
       if (socket.readyState === 1) {
@@ -178,33 +188,74 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         }
 
         turnSummary = "";
+        accumulatedText = "";
+        accumulatedToolUse = [];
         const userText = msg.text;
         claude = claudeFactory();
+
+        // If the client already knows the session, use it for persistence
+        if (msg.sessionId) {
+          currentSessionId = msg.sessionId;
+        }
+
+        // Persist the user message once we know the session
+        const persistUserMessage = (sessionId: string) => {
+          chatHistoryManager.append(sessionId, { role: "user", text: userText });
+        };
 
         claude.on("event", (event: ClaudeEvent) => {
           send({ type: "claude_event", event });
 
           // Track session when we get the session_id from init event
           if (event.type === "system" && event.subtype === "init" && event.session_id) {
+            currentSessionId = event.session_id;
             const title = userText.slice(0, 80) || "New session";
             const session = sessionManager.track(event.session_id, title);
             send({ type: "session_started", session });
+            // Now we know the session ID — persist the user message
+            persistUserMessage(event.session_id);
           }
 
-          // Collect assistant text for commit message
+          // Collect assistant text and tool use blocks for commit message + persistence
           if (event.type === "assistant") {
             const text = (event.message?.content ?? [])
               .filter((b: any) => b.type === "text")
               .map((b: any) => b.text)
               .join("");
-            if (text) turnSummary = text;
+            if (text) {
+              turnSummary = text;
+              accumulatedText = text;
+            }
+
+            const toolBlocks = (event.message?.content ?? [])
+              .filter((b: any) => b.type === "tool_use");
+            if (toolBlocks.length > 0) {
+              accumulatedToolUse = toolBlocks;
+            }
           }
 
-          // Also track session on result event (updates lastUsedAt for resumed sessions)
+          // On result: persist the final assistant message and update session
           if (event.type === "result" && event.session_id) {
+            currentSessionId = event.session_id;
             sessionManager.track(event.session_id);
+
+            // For resumed sessions, the user message was persisted on send_message
+            // if currentSessionId was already set. For new sessions, it was persisted
+            // in the system.init handler above. Now persist the assistant response.
+            if (accumulatedText || accumulatedToolUse.length > 0) {
+              chatHistoryManager.append(event.session_id, {
+                role: "assistant",
+                text: accumulatedText,
+                toolUse: accumulatedToolUse.length > 0 ? accumulatedToolUse : undefined,
+              });
+            }
           }
         });
+
+        // For resumed sessions (sessionId already known), persist user message immediately
+        if (msg.sessionId) {
+          persistUserMessage(msg.sessionId);
+        }
 
         claude.on("done", async (code: number | null) => {
           console.log("[claude] process exited with code", code);
@@ -235,7 +286,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
         claude.on("error", (err: Error) => {
           console.error("[claude] process error:", err.message);
-          send({ type: "error", message: `Claude process error: ${err.message}` });
+          const errorMsg = `Claude process error: ${err.message}`;
+          send({ type: "error", message: errorMsg });
+          // Persist the error so it shows up in history
+          if (currentSessionId) {
+            chatHistoryManager.append(currentSessionId, {
+              role: "assistant",
+              text: `Error: ${err.message}`,
+              isError: true,
+            });
+          }
           claude = null;
         });
 
@@ -274,7 +334,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
       if (msg.type === "delete_session") {
         sessionManager.delete(msg.sessionId);
+        chatHistoryManager.delete(msg.sessionId);
         send({ type: "session_list", sessions: sessionManager.list() });
+      }
+
+      if (msg.type === "get_chat_history") {
+        const messages = chatHistoryManager.load(msg.sessionId);
+        send({ type: "chat_history", sessionId: msg.sessionId, messages });
       }
 
       if (msg.type === "list_docs") {

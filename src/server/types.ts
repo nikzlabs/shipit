@@ -108,6 +108,11 @@ export interface WsGetDoc {
   path: string;
 }
 
+export interface WsGetChatHistory {
+  type: "get_chat_history";
+  sessionId: string;
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsGetGitLog
@@ -116,7 +121,8 @@ export type WsClientMessage =
   | WsNewSession
   | WsDeleteSession
   | WsListDocs
-  | WsGetDoc;
+  | WsGetDoc
+  | WsGetChatHistory;
 
 export interface WsClaudeEvent {
   type: "claude_event";
@@ -183,6 +189,24 @@ export interface WsDocContent {
   content: string;
 }
 
+export interface WsChatHistoryMessage {
+  role: "user" | "assistant";
+  text: string;
+  toolUse?: Array<{
+    type: "tool_use";
+    id: string;
+    name: string;
+    input: Record<string, unknown>;
+  }>;
+  isError?: boolean;
+}
+
+export interface WsChatHistory {
+  type: "chat_history";
+  sessionId: string;
+  messages: WsChatHistoryMessage[];
+}
+
 export type WsServerMessage =
   | WsClaudeEvent
   | WsError
@@ -195,4 +219,5 @@ export type WsServerMessage =
   | WsSessionList
   | WsSessionStarted
   | WsDocList
-  | WsDocContent;
+  | WsDocContent
+  | WsChatHistory;
