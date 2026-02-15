@@ -11,6 +11,7 @@ import { AuthManager } from "./auth.js";
 import { SessionManager } from "./sessions.js";
 import { ChatHistoryManager } from "./chat-history.js";
 import { findMarkdownFiles } from "./markdown.js";
+import { scanFileTree } from "./file-tree.js";
 import type { WsClientMessage, WsServerMessage, ClaudeEvent } from "./types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -363,6 +364,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           send({ type: "doc_content", path: msg.path, content });
         } catch (err: any) {
           send({ type: "error", message: `Failed to read doc: ${err.message}` });
+        }
+      }
+
+      if (msg.type === "get_file_tree") {
+        try {
+          const tree = await scanFileTree(workspaceDir);
+          send({ type: "file_tree", tree });
+        } catch (err: any) {
+          send({ type: "error", message: `Failed to scan file tree: ${err.message}` });
         }
       }
     });

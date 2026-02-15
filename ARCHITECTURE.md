@@ -71,6 +71,7 @@ Vibe is a browser-based IDE for "vibe coding" — you talk to Claude in a chat i
 | `sessions.ts` | `SessionManager` class — session CRUD, JSON file persistence |
 | `chat-history.ts` | `ChatHistoryManager` class — per-session chat message persistence to disk |
 | `markdown.ts` | `findMarkdownFiles` — recursive `.md` file scanner (skips node_modules, .git) |
+| `file-tree.ts` | `scanFileTree` — recursive workspace directory scanner, returns tree of `FileTreeNode` objects |
 | `vite-manager.ts` | `ViteManager` class — Vite dev server lifecycle (start, stop, restart) |
 | `types.ts` | Shared TypeScript types for all WebSocket and Claude event payloads |
 
@@ -92,6 +93,7 @@ The server is intentionally thin — it's a bridge between the browser and the C
 | `components/MessageInput.tsx` | Auto-resizing textarea, Enter-to-send, activity status bar |
 | `components/PreviewFrame.tsx` | iframe pointing to Vite dev server with reload button |
 | `components/DocsViewer.tsx` | Markdown file browser and renderer (using `marked`) |
+| `components/FileTree.tsx` | Workspace file tree browser — expandable/collapsible directory tree with folder/file icons |
 | `components/GitHistory.tsx` | Collapsible git commit list with rollback buttons |
 | `components/SessionSelector.tsx` | Session management — list, resume, new, delete |
 | `components/SearchBar.tsx` | Search input with match count, prev/next navigation, keyboard shortcuts |
@@ -164,6 +166,7 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `list_docs` | — | List `.md` files in /workspace |
 | `get_doc` | `path` | Request content of a markdown file |
 | `get_chat_history` | `sessionId` | Request persisted chat messages for a session |
+| `get_file_tree` | — | Request workspace directory tree |
 
 ### Server → Client Messages
 
@@ -182,6 +185,7 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `doc_list` | `files[]` | List of markdown file paths |
 | `doc_content` | `path`, `content` | Raw markdown file content |
 | `chat_history` | `sessionId`, `messages[]` | Persisted chat messages for a session |
+| `file_tree` | `tree[]` | Workspace directory tree (array of `FileTreeNode`) |
 
 ### Adding a New Message Type
 
@@ -426,6 +430,41 @@ Chat messages are persisted to disk per session so conversations survive page re
 - **Per-session files**: Each session gets its own JSON file rather than a single monolithic store. This keeps individual files small and makes cleanup trivial.
 - **No streaming state in persisted messages**: The `streaming` flag is transient UI state and is always set to `false` when loading history.
 - **localStorage for session continuity**: The current session ID is saved to `localStorage` so page reloads automatically restore the last active session's chat.
+
+## File Tree Sidebar
+
+The Files tab in the right panel shows the workspace directory structure as an expandable tree. This is a read-only navigational aid — consistent with the "pure vibe coding" philosophy, users see what files exist without editing them directly.
+
+### How It Works
+
+1. **`scanFileTree` function** (`src/server/file-tree.ts`) recursively scans the workspace directory and returns an array of `FileTreeNode` objects. Each node has a `name`, `path` (relative to workspace), `type` ("file" or "directory"), and optional `children` array.
+2. **Client requests the tree** via `{ type: "get_file_tree" }` when the user clicks the "Files" tab. The server responds with `{ type: "file_tree", tree }`.
+3. **`FileTree` component** (`src/client/components/FileTree.tsx`) renders the tree with expand/collapse buttons, folder/file icons, and indentation based on depth.
+4. **Auto-refresh**: When Claude finishes a turn and a `git_committed` event arrives, the file tree is automatically refreshed if the Files tab is active.
+
+### Filtered Directories
+
+The scanner skips directories that add noise without value:
+- `node_modules`, `.git`, `.vibe-chat-history`, `dist`, `.next`, `.cache`, `.vite`
+- Hidden files/directories (starting with `.`) except `.env` and `.env.local`
+
+### Tree Sorting
+
+Within each directory level, entries are sorted with directories first, then files, both groups sorted alphabetically. This matches the convention used by VS Code and other IDEs.
+
+### UI Behavior
+
+- **Auto-expand**: Root-level directories (depth 0) are auto-expanded on first render. Deeper directories start collapsed.
+- **Toggle**: Clicking a directory name toggles its expanded/collapsed state.
+- **Empty state**: When the workspace has no files, a placeholder message suggests asking Claude to create a project.
+- **Reload button**: Manual refresh button in the header bar re-scans the filesystem.
+
+### Key Files
+
+- **`src/server/file-tree.ts`** — `scanFileTree(dir)`: recursive async directory scanner.
+- **`src/server/types.ts`** — `FileTreeNode` type and `WsFileTree` / `WsGetFileTree` message types.
+- **`src/client/components/FileTree.tsx`** — React component: `TreeNode` (recursive), `FileTree` (root wrapper with empty state and header).
+- **`src/client/App.tsx`** — State management: `fileTree` state, `file_tree` message handler, tab switching, auto-refresh on commit.
 
 ## Tech Stack
 
