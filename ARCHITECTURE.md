@@ -80,7 +80,7 @@ The server is intentionally thin — it's a bridge between the browser and the C
 | File | Role |
 |------|------|
 | `App.tsx` | Root component — chat state, session tracking, tab management, resizable layout, event dispatch |
-| `hooks/useWebSocket.ts` | WebSocket lifecycle (connect, reconnect, send/receive JSON) |
+| `hooks/useWebSocket.ts` | WebSocket lifecycle — connect, exponential-backoff reconnect, manual reconnect, send/receive JSON |
 | `hooks/useResizablePanel.ts` | Drag-to-resize logic for the two-column layout (persists to localStorage) |
 | `hooks/useSearch.ts` | Chat search logic — substring matching, match navigation, state management |
 | `hooks/useMediaQuery.ts` | Responsive breakpoint detection via `matchMedia`, plus `useIsMobile()` convenience wrapper |
@@ -95,7 +95,7 @@ The server is intentionally thin — it's a bridge between the browser and the C
 | `components/SessionSelector.tsx` | Session management — list, resume, new, delete |
 | `components/SearchBar.tsx` | Search input with match count, prev/next navigation, keyboard shortcuts |
 | `components/ErrorBoundary.tsx` | React Error Boundary — catches unhandled render errors, shows fallback with reload/recover |
-| `components/ConnectionBanner.tsx` | Full-width banner shown when WebSocket is disconnected or reconnecting |
+| `components/ConnectionBanner.tsx` | Full-width banner for WebSocket state — disconnected (with attempt count + "Reconnect now"), reconnecting, and brief "Reconnected" success flash |
 | `components/MobileTabBar.tsx` | Bottom navigation bar for mobile: switch between Chat and Preview panels |
 | `components/AuthOverlay.tsx` | Full-screen overlay for OAuth authentication flow |
 
@@ -334,14 +334,41 @@ The app handles three categories of runtime errors:
 
 This prevents the white-screen-of-death. Must be a class component because React only supports error boundaries via `getDerivedStateFromError` / `componentDidCatch`.
 
-### 2. WebSocket Disconnection During Streaming
+### 2. WebSocket Disconnection & Reconnection
+
+#### Mid-Stream Disconnection
 
 When the WebSocket connection drops while Claude is actively responding (`isLoading === true`), `App.tsx` detects the status transition from `"open"` to `"closed"` and:
 1. Marks any in-flight streaming message as `streaming: false`
 2. Appends an error message (`isError: true`) explaining the connection was lost
 3. Clears `isLoading` and `activity` so the UI isn't stuck
 
-The `ConnectionBanner` component (`src/client/components/ConnectionBanner.tsx`) provides a persistent full-width banner below the header whenever the WebSocket is in `"closed"` or `"connecting"` state, so the user always knows the connection status at a glance.
+#### Automatic Reconnection (`useWebSocket`)
+
+The `useWebSocket` hook (`src/client/hooks/useWebSocket.ts`) handles reconnection automatically with exponential backoff:
+
+```
+Attempt 0 → 2s delay
+Attempt 1 → 4s delay
+Attempt 2 → 8s delay
+Attempt 3 → 16s delay
+Attempt 4+ → 30s cap
+```
+
+The hook exposes `reconnectAttempt` (consecutive failed attempts since last success, resets to 0 on open) and `reconnect()` (bypasses backoff timer, reconnects immediately, resets attempt counter). Jitter is intentionally omitted — a single browser tab doesn't cause thundering-herd problems.
+
+#### Visual Feedback (`ConnectionBanner`)
+
+The `ConnectionBanner` component (`src/client/components/ConnectionBanner.tsx`) provides a persistent full-width banner below the header with four states:
+
+| WsStatus | Visual | Details |
+|----------|--------|---------|
+| `open` (steady) | Hidden | Normal state |
+| `open` (just reconnected) | Green "Reconnected" | Auto-hides after 3s |
+| `connecting` | Yellow "Reconnecting..." | Shown during WebSocket handshake |
+| `closed` | Red "Connection lost" | Shows attempt count (if >1) and a "Reconnect now" button |
+
+The header also contains a small colored pill (`green`/`yellow`/`red`) showing the raw connection status. The `MessageInput` is disabled whenever `status !== "open"`, preventing the user from sending messages into the void.
 
 ### 3. Claude CLI Errors
 

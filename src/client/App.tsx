@@ -24,7 +24,7 @@ function getWsUrl(): string {
 }
 
 export default function App() {
-  const { send, lastMessage, status } = useWebSocket(getWsUrl());
+  const { send, lastMessage, status, reconnectAttempt, reconnect } = useWebSocket(getWsUrl());
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [preview, setPreview] = useState<PreviewStatus | null>(null);
@@ -446,7 +446,7 @@ export default function App() {
         </div>
       </header>
 
-      <ConnectionBanner status={status} />
+      <ConnectionBanner status={status} reconnectAttempt={reconnectAttempt} onReconnect={reconnect} />
 
       {isMobile ? (
         /* ── Mobile: single panel with bottom tab bar ── */
