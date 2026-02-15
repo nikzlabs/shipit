@@ -12,6 +12,7 @@ import { DocsViewer } from "./components/DocsViewer.js";
 import { ResizeHandle } from "./components/ResizeHandle.js";
 import { SearchBar } from "./components/SearchBar.js";
 import { activityFromTool, type StreamingActivity } from "./components/StreamingIndicator.js";
+import { ConnectionBanner } from "./components/ConnectionBanner.js";
 
 type RightTab = "preview" | "docs";
 
@@ -61,6 +62,37 @@ export default function App() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [search]);
+
+  // Handle WebSocket disconnection during streaming —
+  // if the connection drops while Claude is responding, clean up the
+  // loading state and show an error message so the user isn't stuck.
+  const prevStatusRef = useRef(status);
+  useEffect(() => {
+    const wasOpen = prevStatusRef.current === "open";
+    prevStatusRef.current = status;
+
+    if (wasOpen && status === "closed" && isLoading) {
+      setIsLoading(false);
+      setActivity(undefined);
+      setMessages((prev) => {
+        // Mark any streaming assistant message as no longer streaming
+        const last = prev[prev.length - 1];
+        const updated =
+          last && last.role === "assistant" && last.streaming
+            ? [...prev.slice(0, -1), { ...last, streaming: false }]
+            : prev;
+        return [
+          ...updated,
+          {
+            role: "assistant" as const,
+            text: "Error: Connection lost while Claude was responding. Your message may be incomplete.",
+            streaming: false,
+            isError: true,
+          },
+        ];
+      });
+    }
+  }, [status, isLoading]);
 
   // Process incoming WebSocket messages
   useEffect(() => {
@@ -156,10 +188,18 @@ export default function App() {
     if (data.type === "error") {
       setIsLoading(false);
       setActivity(undefined);
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", text: `Error: ${data.message}`, streaming: false },
-      ]);
+      // Mark any in-flight streaming message as done, then append the error
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        const updated =
+          last && last.role === "assistant" && last.streaming
+            ? [...prev.slice(0, -1), { ...last, streaming: false }]
+            : prev;
+        return [
+          ...updated,
+          { role: "assistant", text: `Error: ${data.message}`, streaming: false, isError: true },
+        ];
+      });
     }
 
     if (data.type === "git_log") {
@@ -323,6 +363,8 @@ export default function App() {
           </span>
         </div>
       </header>
+
+      <ConnectionBanner status={status} />
 
       {/* Main content: two-column resizable layout */}
       <div ref={containerRef} className="flex flex-1 min-h-0">

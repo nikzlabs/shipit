@@ -93,6 +93,8 @@ The server is intentionally thin — it's a bridge between the browser and the C
 | `components/GitHistory.tsx` | Collapsible git commit list with rollback buttons |
 | `components/SessionSelector.tsx` | Session management — list, resume, new, delete |
 | `components/SearchBar.tsx` | Search input with match count, prev/next navigation, keyboard shortcuts |
+| `components/ErrorBoundary.tsx` | React Error Boundary — catches unhandled render errors, shows fallback with reload/recover |
+| `components/ConnectionBanner.tsx` | Full-width banner shown when WebSocket is disconnected or reconnecting |
 | `components/AuthOverlay.tsx` | Full-screen overlay for OAuth authentication flow |
 
 ### Claude CLI Events (NDJSON)
@@ -286,6 +288,39 @@ The search feature lets users find text within the chat conversation using Ctrl+
 - **Substring match** — simple `indexOf` loop rather than regex, so user input is treated as literal text (no escaping issues).
 - **Scroll-to-match** — uses `scrollIntoView({ block: "center" })` so the current match appears centered in the chat scroll area.
 - **Match index clamping** — when the messages array changes (new messages arrive) and the match count shrinks, the current index is automatically clamped to stay in bounds.
+
+## Error Handling & Recovery
+
+The app handles three categories of runtime errors:
+
+### 1. React Render Errors (ErrorBoundary)
+
+`ErrorBoundary` (`src/client/components/ErrorBoundary.tsx`) wraps the entire `<App />` in `main.tsx`. If any component throws during rendering, the boundary catches it and shows a full-screen fallback with:
+- The error message
+- A **Reload Page** button (hard refresh)
+- A **Try to Recover** button (clears the error state and re-renders the tree)
+
+This prevents the white-screen-of-death. Must be a class component because React only supports error boundaries via `getDerivedStateFromError` / `componentDidCatch`.
+
+### 2. WebSocket Disconnection During Streaming
+
+When the WebSocket connection drops while Claude is actively responding (`isLoading === true`), `App.tsx` detects the status transition from `"open"` to `"closed"` and:
+1. Marks any in-flight streaming message as `streaming: false`
+2. Appends an error message (`isError: true`) explaining the connection was lost
+3. Clears `isLoading` and `activity` so the UI isn't stuck
+
+The `ConnectionBanner` component (`src/client/components/ConnectionBanner.tsx`) provides a persistent full-width banner below the header whenever the WebSocket is in `"closed"` or `"connecting"` state, so the user always knows the connection status at a glance.
+
+### 3. Claude CLI Errors
+
+When the CLI process crashes or returns an error, the server sends `{ type: "error", message }` over WebSocket. The client:
+1. Marks any in-flight streaming message as `streaming: false`
+2. Appends the error as a message with `isError: true`
+3. Error messages render with distinct red styling (`bg-red-900`, red border) so they're visually distinguished from normal assistant messages
+
+### Error Message Styling
+
+Messages with `isError: true` get a red background and border in `MessageList.tsx`, making them visually distinct from normal assistant responses. This applies to both server-sent errors and client-detected connection losses.
 
 ## Session Management
 
