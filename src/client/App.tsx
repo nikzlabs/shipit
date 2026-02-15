@@ -3,6 +3,7 @@ import { useWebSocket } from "./hooks/useWebSocket.js";
 import { useResizablePanel } from "./hooks/useResizablePanel.js";
 import { useSearch } from "./hooks/useSearch.js";
 import { useIsMobile } from "./hooks/useMediaQuery.js";
+import { useNotification } from "./hooks/useNotification.js";
 import { MessageInput } from "./components/MessageInput.js";
 import { MessageList, type ChatMessage } from "./components/MessageList.js";
 import { PreviewFrame, type PreviewStatus } from "./components/PreviewFrame.js";
@@ -75,6 +76,8 @@ export default function App() {
 
   const [searchOpen, setSearchOpen] = useState(false);
   const search = useSearch(messages);
+
+  const { notify, requestPermission } = useNotification();
 
   // Ctrl+F / Cmd+F to toggle search bar
   useEffect(() => {
@@ -218,6 +221,7 @@ export default function App() {
       if (event.type === "result") {
         setIsLoading(false);
         setActivity(undefined);
+        notify("Claude has finished responding.");
         // Mark the last assistant message as no longer streaming
         setMessages((prev) => {
           const last = prev[prev.length - 1];
@@ -314,10 +318,11 @@ export default function App() {
       }));
       setMessages(loaded);
     }
-  }, [lastMessage, send, rightTab]);
+  }, [lastMessage, send, rightTab, notify]);
 
   const handleSend = useCallback(
     (text: string) => {
+      requestPermission();
       setMessages((prev) => [...prev, { role: "user", text }]);
       setIsLoading(true);
       setActivity({ label: "Thinking..." });
@@ -327,7 +332,7 @@ export default function App() {
         sessionId: sessionIdRef.current,
       });
     },
-    [send]
+    [send, requestPermission]
   );
 
   const handleGitRefresh = useCallback(() => {
