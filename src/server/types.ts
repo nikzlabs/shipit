@@ -113,6 +113,10 @@ export interface WsGetChatHistory {
   sessionId: string;
 }
 
+export interface WsGetFileTree {
+  type: "get_file_tree";
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsGetGitLog
@@ -122,7 +126,8 @@ export type WsClientMessage =
   | WsDeleteSession
   | WsListDocs
   | WsGetDoc
-  | WsGetChatHistory;
+  | WsGetChatHistory
+  | WsGetFileTree;
 
 export interface WsClaudeEvent {
   type: "claude_event";
@@ -207,6 +212,20 @@ export interface WsChatHistory {
   messages: WsChatHistoryMessage[];
 }
 
+// ---- File tree types ----
+
+export interface FileTreeNode {
+  name: string;
+  path: string;
+  type: "file" | "directory";
+  children?: FileTreeNode[];
+}
+
+export interface WsFileTree {
+  type: "file_tree";
+  tree: FileTreeNode[];
+}
+
 export type WsServerMessage =
   | WsClaudeEvent
   | WsError
@@ -220,4 +239,5 @@ export type WsServerMessage =
   | WsSessionStarted
   | WsDocList
   | WsDocContent
-  | WsChatHistory;
+  | WsChatHistory
+  | WsFileTree;
