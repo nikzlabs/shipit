@@ -112,10 +112,23 @@ export interface WsRollbackComplete {
   commitHash: string;
 }
 
+// ---- Auth types ----
+
+export interface WsAuthRequired {
+  type: "auth_required";
+  url: string;
+}
+
+export interface WsAuthComplete {
+  type: "auth_complete";
+}
+
 export type WsServerMessage =
   | WsClaudeEvent
   | WsError
   | WsPreviewStatus
   | WsGitLog
   | WsGitCommitted
-  | WsRollbackComplete;
+  | WsRollbackComplete
+  | WsAuthRequired
+  | WsAuthComplete;

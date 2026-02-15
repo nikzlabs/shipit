@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { ClaudeProcess } from "./claude.js";
 import { ViteManager } from "./vite-manager.js";
 import { GitManager } from "./git.js";
+import { AuthManager } from "./auth.js";
 import type { WsClientMessage, WsServerMessage, ClaudeEvent } from "./types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -22,9 +23,21 @@ async function main() {
   // ---- Vite dev server manager ----
   const viteManager = new ViteManager();
 
-  // Track connected WebSocket clients so we can broadcast preview status
+  // ---- Auth manager ----
+  const authManager = new AuthManager();
+  const hasCredentials = authManager.checkCredentials();
+  console.log("[server] Claude credentials found:", hasCredentials);
+
+  // Track connected WebSocket clients so we can broadcast
   // Using basic type since ws types aren't installed separately
   const clients = new Set<{ readyState: number; send: (data: string) => void }>();
+
+  const broadcast = (msg: WsServerMessage) => {
+    const payload = JSON.stringify(msg);
+    for (const ws of clients) {
+      if (ws.readyState === 1) ws.send(payload);
+    }
+  };
 
   const broadcastPreviewStatus = () => {
     const msg: WsServerMessage = {
@@ -46,6 +59,15 @@ async function main() {
 
   viteManager.on("stopped", () => {
     broadcastPreviewStatus();
+  });
+
+  // ---- Auth event handlers ----
+  authManager.on("auth_url", (url: string) => {
+    broadcast({ type: "auth_required", url });
+  });
+
+  authManager.on("auth_complete", () => {
+    broadcast({ type: "auth_complete" });
   });
 
   // Start the Vite dev server
@@ -141,6 +163,12 @@ async function main() {
           }
         });
 
+        claude.on("auth_required", () => {
+          console.log("[server] Claude CLI requires authentication, starting OAuth flow");
+          send({ type: "error", message: "Authentication required. Starting OAuth flow..." });
+          authManager.startOAuthFlow();
+        });
+
         claude.on("error", (err: Error) => {
           console.error("[claude] process error:", err.message);
           send({ type: "error", message: `Claude process error: ${err.message}` });
@@ -185,6 +213,7 @@ async function main() {
   // Graceful shutdown
   const shutdown = () => {
     viteManager.stop();
+    authManager.kill();
     process.exit(0);
   };
   process.on("SIGTERM", shutdown);
