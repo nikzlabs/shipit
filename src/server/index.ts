@@ -464,6 +464,20 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           send({ type: "error", message: `Failed to scan file tree: ${getErrorMessage(err)}` });
         }
       }
+
+      if (msg.type === "get_file_content") {
+        try {
+          const safePath = path.resolve(workspaceDir, msg.path);
+          if (!safePath.startsWith(workspaceDir + "/")) {
+            send({ type: "error", message: "Invalid path" });
+            return;
+          }
+          const content = await fs.readFile(safePath, "utf-8");
+          send({ type: "file_content", path: msg.path, content });
+        } catch (err) {
+          send({ type: "error", message: `Failed to read file: ${getErrorMessage(err)}` });
+        }
+      }
     });
 
     socket.on("close", () => {

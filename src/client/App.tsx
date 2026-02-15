@@ -12,6 +12,7 @@ import { AuthOverlay } from "./components/AuthOverlay.js";
 import { SessionSelector, type SessionInfo } from "./components/SessionSelector.js";
 import { DocsViewer } from "./components/DocsViewer.js";
 import { FileTree, type FileTreeNode } from "./components/FileTree.js";
+import { FileContentViewer } from "./components/FileContentViewer.js";
 import { ResizeHandle } from "./components/ResizeHandle.js";
 import { SearchBar } from "./components/SearchBar.js";
 import { activityFromTool, type StreamingActivity } from "./components/StreamingIndicator.js";
@@ -64,6 +65,8 @@ export default function App() {
   const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
   const [docContent, setDocContent] = useState<string | null>(null);
   const [fileTree, setFileTree] = useState<FileTreeNode[]>([]);
+  const [viewingFile, setViewingFile] = useState<string | null>(null);
+  const [viewingFileContent, setViewingFileContent] = useState<string | null>(null);
   const [activity, setActivity] = useState<StreamingActivity | undefined>(undefined);
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
@@ -334,6 +337,10 @@ export default function App() {
       setFileTree(data.tree);
     }
 
+    if (data.type === "file_content") {
+      setViewingFileContent(data.content);
+    }
+
     if (data.type === "chat_history") {
       // Replace messages with the persisted history (loaded messages are never streaming)
       const loaded: ChatMessage[] = data.messages.map((m: WsChatHistoryMessage) => ({
@@ -435,6 +442,20 @@ export default function App() {
     send({ type: "get_file_tree" });
   }, [send]);
 
+  const handleFileClick = useCallback(
+    (filePath: string) => {
+      setViewingFile(filePath);
+      setViewingFileContent(null);
+      send({ type: "get_file_content", path: filePath });
+    },
+    [send]
+  );
+
+  const handleFileViewerClose = useCallback(() => {
+    setViewingFile(null);
+    setViewingFileContent(null);
+  }, []);
+
   const handleDocSelect = useCallback(
     (filePath: string) => {
       setSelectedDoc(filePath);
@@ -512,10 +533,18 @@ export default function App() {
             onSelectFile={handleDocSelect}
             onRefresh={handleDocRefresh}
           />
+        ) : viewingFile ? (
+          <FileContentViewer
+            filePath={viewingFile}
+            content={viewingFileContent}
+            onClose={handleFileViewerClose}
+          />
         ) : (
           <FileTree
             tree={fileTree}
             onRefresh={handleFileTreeRefresh}
+            onFileClick={handleFileClick}
+            selectedFile={viewingFile}
           />
         )}
       </div>
