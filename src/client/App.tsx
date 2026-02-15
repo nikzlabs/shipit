@@ -18,6 +18,7 @@ import { activityFromTool, type StreamingActivity } from "./components/Streaming
 import { ConnectionBanner } from "./components/ConnectionBanner.js";
 import { MobileTabBar, type MobilePanel } from "./components/MobileTabBar.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
+import type { WsServerMessage, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files";
 
@@ -159,9 +160,9 @@ export default function App() {
   useEffect(() => {
     if (!lastMessage) return;
 
-    let data: any;
+    let data: WsServerMessage;
     try {
-      data = JSON.parse(lastMessage.data);
+      data = JSON.parse(lastMessage.data) as WsServerMessage;
     } catch {
       return;
     }
@@ -185,12 +186,12 @@ export default function App() {
 
       if (event.type === "assistant") {
         const textBlocks = (event.message?.content ?? [])
-          .filter((b: any) => b.type === "text")
-          .map((b: any) => b.text)
+          .filter((b: ClaudeContentBlock): b is ClaudeContentBlockText => b.type === "text")
+          .map((b) => b.text)
           .join("");
 
         const toolUseBlocks = (event.message?.content ?? [])
-          .filter((b: any) => b.type === "tool_use");
+          .filter((b: ClaudeContentBlock): b is ClaudeContentBlockToolUse => b.type === "tool_use");
 
         // Update activity based on what's in this event
         if (toolUseBlocks.length > 0) {
@@ -325,7 +326,7 @@ export default function App() {
 
     if (data.type === "chat_history") {
       // Replace messages with the persisted history (loaded messages are never streaming)
-      const loaded: ChatMessage[] = data.messages.map((m: any) => ({
+      const loaded: ChatMessage[] = data.messages.map((m: WsChatHistoryMessage) => ({
         role: m.role,
         text: m.text,
         toolUse: m.toolUse,
