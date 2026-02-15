@@ -10,13 +10,14 @@ import { GitHistory, type GitCommit } from "./components/GitHistory.js";
 import { AuthOverlay } from "./components/AuthOverlay.js";
 import { SessionSelector, type SessionInfo } from "./components/SessionSelector.js";
 import { DocsViewer } from "./components/DocsViewer.js";
+import { FileTree, type FileTreeNode } from "./components/FileTree.js";
 import { ResizeHandle } from "./components/ResizeHandle.js";
 import { SearchBar } from "./components/SearchBar.js";
 import { activityFromTool, type StreamingActivity } from "./components/StreamingIndicator.js";
 import { ConnectionBanner } from "./components/ConnectionBanner.js";
 import { MobileTabBar, type MobilePanel } from "./components/MobileTabBar.js";
 
-type RightTab = "preview" | "docs";
+type RightTab = "preview" | "docs" | "files";
 
 const SESSION_STORAGE_KEY = "vibe-current-session";
 
@@ -57,6 +58,7 @@ export default function App() {
   const [docFiles, setDocFiles] = useState<string[]>([]);
   const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
   const [docContent, setDocContent] = useState<string | null>(null);
+  const [fileTree, setFileTree] = useState<FileTreeNode[]>([]);
   const [activity, setActivity] = useState<StreamingActivity | undefined>(undefined);
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
@@ -253,6 +255,10 @@ export default function App() {
         { hash: data.hash, message: data.message, date: new Date().toISOString(), author: "Vibe" },
         ...prev,
       ]);
+      // Refresh file tree if the Files tab is active (files likely changed)
+      if (rightTab === "files") {
+        send({ type: "get_file_tree" });
+      }
     }
 
     if (data.type === "rollback_complete") {
@@ -292,6 +298,10 @@ export default function App() {
       setDocContent(data.content);
     }
 
+    if (data.type === "file_tree") {
+      setFileTree(data.tree);
+    }
+
     if (data.type === "chat_history") {
       // Replace messages with the persisted history (loaded messages are never streaming)
       const loaded: ChatMessage[] = data.messages.map((m: any) => ({
@@ -303,7 +313,7 @@ export default function App() {
       }));
       setMessages(loaded);
     }
-  }, [lastMessage, send]);
+  }, [lastMessage, send, rightTab]);
 
   const handleSend = useCallback(
     (text: string) => {
@@ -365,6 +375,10 @@ export default function App() {
     send({ type: "list_docs" });
   }, [send]);
 
+  const handleFileTreeRefresh = useCallback(() => {
+    send({ type: "get_file_tree" });
+  }, [send]);
+
   const handleDocSelect = useCallback(
     (filePath: string) => {
       setSelectedDoc(filePath);
@@ -374,18 +388,21 @@ export default function App() {
     [send]
   );
 
-  // Request doc list when switching to docs tab
+  // Request data when switching to docs or files tab
   const handleTabChange = useCallback(
     (tab: RightTab) => {
       setRightTab(tab);
       if (tab === "docs" && docFiles.length === 0) {
         send({ type: "list_docs" });
       }
+      if (tab === "files") {
+        send({ type: "get_file_tree" });
+      }
     },
     [send, docFiles.length]
   );
 
-  // Shared right-panel content (Preview / Docs with tab bar)
+  // Shared right-panel content (Preview / Docs / Files with tab bar)
   const rightPanel = (
     <>
       {/* Tab bar */}
@@ -410,19 +427,34 @@ export default function App() {
         >
           Docs
         </button>
+        <button
+          onClick={() => handleTabChange("files")}
+          className={`px-4 py-2 text-sm font-medium transition-colors ${
+            rightTab === "files"
+              ? "text-gray-100 border-b-2 border-blue-500"
+              : "text-gray-500 hover:text-gray-300"
+          }`}
+        >
+          Files
+        </button>
       </div>
 
       {/* Tab content */}
       <div className="flex-1 min-h-0">
         {rightTab === "preview" ? (
           <PreviewFrame preview={preview} />
-        ) : (
+        ) : rightTab === "docs" ? (
           <DocsViewer
             files={docFiles}
             selectedFile={selectedDoc}
             content={docContent}
             onSelectFile={handleDocSelect}
             onRefresh={handleDocRefresh}
+          />
+        ) : (
+          <FileTree
+            tree={fileTree}
+            onRefresh={handleFileTreeRefresh}
           />
         )}
       </div>

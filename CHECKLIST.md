@@ -35,7 +35,7 @@
 
 ## Phase 7: UX & Beyond
 - [x] Persistent chat history — persist messages to the server so they survive page reloads
-- [ ] File tree sidebar — show the /workspace file tree alongside the preview
+- [x] File tree sidebar — show the /workspace file tree alongside the preview
 - [ ] Preview port auto-detection — detect when a non-Vite dev server starts on a different port
 - [ ] Notification when Claude finishes — browser notification or tab title change for background tabs
 - [ ] Code block syntax highlighting — add highlight.js or shiki for code blocks in Claude responses
