@@ -472,8 +472,30 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             send({ type: "error", message: "Invalid path" });
             return;
           }
-          const content = await fs.readFile(safePath, "utf-8");
-          send({ type: "file_content", path: msg.path, content });
+          // Guard against large files (>1 MB)
+          const stat = await fs.stat(safePath);
+          if (stat.size > 1_048_576) {
+            send({
+              type: "file_content",
+              path: msg.path,
+              content: `File is too large to display (${(stat.size / 1_048_576).toFixed(1)} MB). Maximum supported size is 1 MB.`,
+              isBinary: true,
+            });
+            return;
+          }
+          // Read raw bytes to detect binary content
+          const buf = await fs.readFile(safePath);
+          const hasNullByte = buf.includes(0);
+          if (hasNullByte) {
+            send({
+              type: "file_content",
+              path: msg.path,
+              content: "Binary file — cannot display.",
+              isBinary: true,
+            });
+            return;
+          }
+          send({ type: "file_content", path: msg.path, content: buf.toString("utf-8") });
         } catch (err) {
           send({ type: "error", message: `Failed to read file: ${getErrorMessage(err)}` });
         }

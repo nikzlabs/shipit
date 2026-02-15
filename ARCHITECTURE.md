@@ -553,11 +553,21 @@ When a file is selected, it gets a blue highlight in the file tree (`bg-blue-900
 - **`src/client/components/FileTree.tsx`** — `onFileClick` and `selectedFile` props for click-to-view.
 - **`src/client/App.tsx`** — `viewingFile`/`viewingFileContent` state, message handler, conditional rendering.
 
+### Safety Guards
+
+- **Path traversal protection**: Uses the same `path.resolve()` + `startsWith()` check as the `get_doc` handler, preventing reads outside `/workspace`.
+- **Large file guard**: Files over 1 MB are rejected with a friendly message (`isBinary: true` + size info). Prevents sending huge payloads over WebSocket.
+- **Binary file detection**: The server reads the raw buffer first and checks for null bytes. Binary files (images, compiled output) get a "Binary file — cannot display" message instead of garbled text.
+
+### Auto-refresh on Commit
+
+When a `git_committed` event arrives while the file viewer is open, `App.tsx` re-requests the file content so the viewer stays up to date. This means if Claude edits the file you're viewing, you see the change immediately.
+
 ### Key Design Decisions
 
 - **Reuses highlight.js**: The same library already used for code block highlighting in `MessageList.tsx`. No new dependencies.
 - **Server-side file read**: Content is fetched from the server rather than using a hypothetical client-side FS API. This keeps the architecture consistent — the server is the only thing that touches the filesystem.
-- **Path traversal protection**: Uses the same `path.resolve()` + `startsWith()` check as the `get_doc` handler, preventing reads outside `/workspace`.
+- **Single source of truth for `FileTreeNode`**: The type is defined in `src/server/types.ts` and re-exported from `FileTree.tsx` — no duplication.
 - **No editing**: This is deliberately read-only. Editing is Claude's job in the vibe coding model.
 
 ## Preview Port Auto-Detection

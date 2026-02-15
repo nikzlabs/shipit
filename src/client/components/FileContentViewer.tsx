@@ -4,6 +4,7 @@ import hljs from "highlight.js";
 export interface FileContentViewerProps {
   filePath: string;
   content: string | null;
+  isBinary?: boolean;
   onClose: () => void;
 }
 
@@ -40,7 +41,7 @@ function languageFromPath(filePath: string): string | undefined {
   return undefined;
 }
 
-export function FileContentViewer({ filePath, content, onClose }: FileContentViewerProps) {
+export function FileContentViewer({ filePath, content, isBinary, onClose }: FileContentViewerProps) {
   const highlighted = useMemo(() => {
     if (content === null) return "";
     const lang = languageFromPath(filePath);
@@ -79,6 +80,10 @@ export function FileContentViewer({ filePath, content, onClose }: FileContentVie
         {content === null ? (
           <div className="flex items-center justify-center h-full text-gray-500 text-sm">
             Loading...
+          </div>
+        ) : isBinary ? (
+          <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+            <p>{content}</p>
           </div>
         ) : (
           <pre className="p-4 text-sm leading-relaxed">

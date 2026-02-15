@@ -91,4 +91,31 @@ describe("FileContentViewer", () => {
     const spans = codeEl!.querySelectorAll("span");
     expect(spans.length).toBeGreaterThan(0);
   });
+
+  it("shows binary file message instead of code when isBinary is true", () => {
+    const { container } = render(
+      <FileContentViewer
+        filePath="image.png"
+        content="Binary file — cannot display."
+        isBinary={true}
+        onClose={() => {}}
+      />
+    );
+    expect(screen.getByText("Binary file — cannot display.")).toBeInTheDocument();
+    // Should NOT render a code element
+    const codeEl = container.querySelector("code.hljs");
+    expect(codeEl).toBeNull();
+  });
+
+  it("shows large file message when isBinary is true for size limit", () => {
+    render(
+      <FileContentViewer
+        filePath="big.dat"
+        content="File is too large to display (2.5 MB). Maximum supported size is 1 MB."
+        isBinary={true}
+        onClose={() => {}}
+      />
+    );
+    expect(screen.getByText(/too large to display/)).toBeInTheDocument();
+  });
 });
