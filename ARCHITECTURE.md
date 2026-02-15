@@ -76,10 +76,15 @@ The server is intentionally thin — it's a bridge between the browser and the C
 
 | File | Role |
 |------|------|
-| `App.tsx` | Root component — chat state, session tracking, event dispatch |
+| `App.tsx` | Root component — chat state, session tracking, tab management, event dispatch |
 | `hooks/useWebSocket.ts` | WebSocket lifecycle (connect, reconnect, send/receive JSON) |
 | `components/MessageList.tsx` | Renders chat messages, tool invocations, loading indicator |
 | `components/MessageInput.tsx` | Auto-resizing textarea, Enter-to-send, disabled while streaming |
+| `components/PreviewFrame.tsx` | iframe pointing to Vite dev server with reload button |
+| `components/DocsViewer.tsx` | Markdown file browser and renderer (using `marked`) |
+| `components/GitHistory.tsx` | Collapsible git commit list with rollback buttons |
+| `components/SessionSelector.tsx` | Session management — list, resume, new, delete |
+| `components/AuthOverlay.tsx` | Full-screen overlay for OAuth authentication flow |
 
 ### Claude CLI Events (NDJSON)
 
@@ -89,6 +94,47 @@ The server is intentionally thin — it's a bridge between the browser and the C
 | `assistant` | Claude responds | Text blocks + tool_use blocks |
 | `user` | Tool results | Tool execution output |
 | `result` | Turn complete | `session_id`, `total_cost_usd`, `duration_ms` |
+
+## WebSocket Message Protocol
+
+All client-server communication uses JSON over a single WebSocket connection at `/ws`. Types are defined in `src/server/types.ts`.
+
+### Client → Server Messages
+
+| Type | Fields | Purpose |
+|------|--------|---------|
+| `send_message` | `text`, `sessionId?` | Send a user message to Claude CLI |
+| `get_git_log` | — | Request git commit history |
+| `rollback` | `commitHash` | Roll back workspace to a specific commit |
+| `list_sessions` | — | List all saved sessions |
+| `new_session` | — | Clear current session, start fresh |
+| `delete_session` | `sessionId` | Delete a saved session |
+| `list_docs` | — | List `.md` files in /workspace |
+| `get_doc` | `path` | Request content of a markdown file |
+
+### Server → Client Messages
+
+| Type | Fields | Purpose |
+|------|--------|---------|
+| `claude_event` | `event` | Relayed Claude CLI NDJSON event |
+| `error` | `message` | Error description |
+| `preview_status` | `running`, `port`, `url` | Vite dev server status |
+| `git_log` | `commits[]` | Full git commit history |
+| `git_committed` | `hash`, `message` | New auto-commit after Claude turn |
+| `rollback_complete` | `commitHash` | Rollback succeeded |
+| `auth_required` | `url` | OAuth URL for user to authenticate |
+| `auth_complete` | — | OAuth flow finished |
+| `session_list` | `sessions[]` | List of saved sessions |
+| `session_started` | `session` | Session created or resumed |
+| `doc_list` | `files[]` | List of markdown file paths |
+| `doc_content` | `path`, `content` | Raw markdown file content |
+
+### Adding a New Message Type
+
+1. Add the interface to `src/server/types.ts` (both `WsClientMessage` and/or `WsServerMessage` unions)
+2. Add the handler in `src/server/index.ts` inside the `socket.on("message")` callback
+3. Add the client-side handler in the `useEffect` in `src/client/App.tsx` that processes `lastMessage`
+4. Wire up the UI component to call `send()` with the new message type
 
 ## Session Management
 
