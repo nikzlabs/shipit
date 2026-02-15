@@ -1296,7 +1296,7 @@ describe("Integration: Terminal/logs relay", () => {
     await client1.receive(); // "Claude process started" log
 
     // Clear logs
-    client1.send({ type: "clear_logs" } as any);
+    client1.send({ type: "clear_logs" });
     await new Promise((r) => setTimeout(r, 50));
 
     // New client should not receive any buffered logs

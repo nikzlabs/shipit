@@ -649,9 +649,11 @@ Each log entry has a `source` field indicating where it originated:
 - **Timestamp** (HH:MM:SS) in muted gray
 - **Source label** (`[err]`, `[out]`, `[srv]`) color-coded: red for stderr, gray for stdout, blue for server
 - **Log text** with `whitespace-pre-wrap` to preserve formatting
+- **Source filter**: Toggleable filter buttons for each source type in the header bar. Color-coded active/inactive states. At least one source must remain active (prevents hiding all). Shows a filter-specific empty state ("No logs match the current filter") when all visible entries are filtered out.
 - **Auto-scroll**: Scrolls to bottom as new entries arrive, unless the user has scrolled up
 - **Clear button**: Resets both client state and server buffer
 - **Empty state**: "No output yet" placeholder when no logs exist
+- **Unread badge**: When the Terminal tab is not active, a blue badge shows the count of new log entries since the tab was last viewed. Resets when switching to the Terminal tab.
 
 ### Key Files
 

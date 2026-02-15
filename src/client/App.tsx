@@ -71,6 +71,7 @@ export default function App() {
   const [viewingFileBinary, setViewingFileBinary] = useState(false);
   const [activity, setActivity] = useState<StreamingActivity | undefined>(undefined);
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
+  const [unreadLogCount, setUnreadLogCount] = useState(0);
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
   const historyLoadedRef = useRef(false);
@@ -367,6 +368,10 @@ export default function App() {
         // Cap at 500 entries on the client to avoid memory growth
         return next.length > 500 ? next.slice(-500) : next;
       });
+      // Increment unread count when terminal tab is not active
+      if (rightTab !== "terminal") {
+        setUnreadLogCount((prev) => prev + 1);
+      }
     }
   }, [lastMessage, send, rightTab, viewingFile, notify]);
 
@@ -498,6 +503,9 @@ export default function App() {
       if (tab === "files") {
         send({ type: "get_file_tree" });
       }
+      if (tab === "terminal") {
+        setUnreadLogCount(0);
+      }
     },
     [send, docFiles.length]
   );
@@ -539,13 +547,18 @@ export default function App() {
         </button>
         <button
           onClick={() => handleTabChange("terminal")}
-          className={`px-4 py-2 text-sm font-medium transition-colors ${
+          className={`px-4 py-2 text-sm font-medium transition-colors relative ${
             rightTab === "terminal"
               ? "text-gray-100 border-b-2 border-blue-500"
               : "text-gray-500 hover:text-gray-300"
           }`}
         >
           Terminal
+          {unreadLogCount > 0 && rightTab !== "terminal" && (
+            <span className="ml-1.5 inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-blue-600 text-white">
+              {unreadLogCount > 99 ? "99+" : unreadLogCount}
+            </span>
+          )}
         </button>
       </div>
 
