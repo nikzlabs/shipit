@@ -54,8 +54,8 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [preview, setPreview] = useState<PreviewStatus | null>(null);
-  const [detectedPorts, setDetectedPorts] = useState<number[]>([]);
   const [selectedPort, setSelectedPort] = useState<number | null>(null);
+  const detectedPorts = preview?.detectedPorts ?? [];
   const [gitCommits, setGitCommits] = useState<GitCommit[]>([]);
   const [authUrl, setAuthUrl] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -177,15 +177,13 @@ export default function App() {
         source: data.source,
         detectedPorts: data.detectedPorts,
       });
-      setDetectedPorts(data.detectedPorts ?? []);
       // Reset user selection if the selected port is no longer available
-      if (selectedPort !== null) {
+      setSelectedPort((prev) => {
+        if (prev === null) return null;
         const allAvailable = [...(data.detectedPorts ?? [])];
         if (data.source === "vite") allAvailable.push(data.port);
-        if (!allAvailable.includes(selectedPort)) {
-          setSelectedPort(null);
-        }
-      }
+        return allAvailable.includes(prev) ? prev : null;
+      });
     }
 
     if (data.type === "claude_event") {
@@ -347,7 +345,7 @@ export default function App() {
       }));
       setMessages(loaded);
     }
-  }, [lastMessage, send, rightTab, notify, selectedPort]);
+  }, [lastMessage, send, rightTab, notify]);
 
   const handleSend = useCallback(
     (text: string) => {
