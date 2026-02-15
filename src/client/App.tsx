@@ -20,6 +20,7 @@ import { activityFromTool, type StreamingActivity } from "./components/Streaming
 import { ConnectionBanner } from "./components/ConnectionBanner.js";
 import { MobileTabBar, type MobilePanel } from "./components/MobileTabBar.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
+import { TemplateSelector, type TemplateInfo } from "./components/TemplateSelector.js";
 import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal";
@@ -72,6 +73,9 @@ export default function App() {
   const [activity, setActivity] = useState<StreamingActivity | undefined>(undefined);
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const [unreadLogCount, setUnreadLogCount] = useState(0);
+  const [templates, setTemplates] = useState<TemplateInfo[]>([]);
+  const [applyingTemplate, setApplyingTemplate] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(!getSavedSessionId());
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
   const historyLoadedRef = useRef(false);
@@ -133,6 +137,13 @@ export default function App() {
       historyLoadedRef.current = false;
     }
   }, [status, send]);
+
+  // Request templates when connected and the template picker is shown
+  useEffect(() => {
+    if (status === "open" && showTemplates && templates.length === 0) {
+      send({ type: "list_templates" });
+    }
+  }, [status, showTemplates, templates.length, send]);
 
   // Handle WebSocket disconnection during streaming —
   // if the connection drops while Claude is responding, clean up the
@@ -270,6 +281,7 @@ export default function App() {
     if (data.type === "error") {
       setIsLoading(false);
       setActivity(undefined);
+      setApplyingTemplate(false);
       // Mark any in-flight streaming message as done, then append the error
       setMessages((prev) => {
         const last = prev[prev.length - 1];
@@ -369,6 +381,17 @@ export default function App() {
       setMessages(loaded);
     }
 
+    if (data.type === "template_list") {
+      setTemplates(data.templates as TemplateInfo[]);
+    }
+
+    if (data.type === "template_applied") {
+      setApplyingTemplate(false);
+      setShowTemplates(false);
+      // Refresh file tree in case user is on that tab
+      send({ type: "get_file_tree" });
+    }
+
     if (data.type === "log_entry") {
       setLogEntries((prev) => {
         const next = [...prev, { source: data.source, text: data.text, timestamp: data.timestamp }];
@@ -385,6 +408,7 @@ export default function App() {
   const handleSend = useCallback(
     (text: string) => {
       requestPermission();
+      setShowTemplates(false);
       setMessages((prev) => [...prev, { role: "user", text }]);
       setIsLoading(true);
       setActivity({ label: "Thinking..." });
@@ -437,6 +461,7 @@ export default function App() {
       saveSessionId(sessionId);
       setMessages([]);
       setIsLoading(false);
+      setShowTemplates(false);
       // Load persisted chat history for this session
       send({ type: "get_chat_history", sessionId });
     },
@@ -448,8 +473,25 @@ export default function App() {
     saveSessionId(undefined);
     setMessages([]);
     setIsLoading(false);
+    setShowTemplates(true);
     send({ type: "new_session" });
-  }, [send]);
+    // Request templates for the picker
+    if (templates.length === 0) {
+      send({ type: "list_templates" });
+    }
+  }, [send, templates.length]);
+
+  const handleTemplateSelect = useCallback(
+    (templateId: string) => {
+      setApplyingTemplate(true);
+      send({ type: "apply_template", templateId });
+    },
+    [send],
+  );
+
+  const handleTemplateDismiss = useCallback(() => {
+    setShowTemplates(false);
+  }, []);
 
   const handleSessionDelete = useCallback(
     (sessionId: string) => {
@@ -635,6 +677,9 @@ export default function App() {
     </>
   );
 
+  // Show template picker for new sessions with no messages
+  const showTemplatePicker = showTemplates && messages.length === 0 && !isLoading;
+
   // Shared chat panel content
   const chatPanel = (
     <>
@@ -652,15 +697,24 @@ export default function App() {
           }}
         />
       )}
-      <MessageList
-        messages={messages}
-        isLoading={isLoading}
-        activity={activity}
-        searchMatches={search.matches}
-        currentMatch={search.currentMatch}
-        onEditMessage={handleEditMessage}
-        onAnswerQuestion={handleAnswerQuestion}
-      />
+      {showTemplatePicker ? (
+        <TemplateSelector
+          templates={templates}
+          onSelect={handleTemplateSelect}
+          onDismiss={handleTemplateDismiss}
+          applying={applyingTemplate}
+        />
+      ) : (
+        <MessageList
+          messages={messages}
+          isLoading={isLoading}
+          activity={activity}
+          searchMatches={search.matches}
+          currentMatch={search.currentMatch}
+          onEditMessage={handleEditMessage}
+          onAnswerQuestion={handleAnswerQuestion}
+        />
+      )}
       <GitHistory
         commits={gitCommits}
         onRollback={handleRollback}
