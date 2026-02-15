@@ -23,7 +23,7 @@
 
 ## Phase 5: Next Up
 - [x] Resizable panels
-- [ ] Search in chat history
+- [x] Search in chat history
 - [ ] Test coverage
 
 ## Nice to Have

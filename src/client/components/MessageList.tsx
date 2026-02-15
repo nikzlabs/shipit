@@ -6,6 +6,7 @@ import {
   ToolSpinner,
   type StreamingActivity,
 } from "./StreamingIndicator.js";
+import type { SearchMatch } from "../hooks/useSearch.js";
 
 export interface ToolUseBlock {
   type: "tool_use";
@@ -87,20 +88,97 @@ function ToolProgressBar({ tool }: { tool: string }) {
   );
 }
 
+/**
+ * Render message text with search match highlights.
+ *
+ * Takes the raw text and the list of matches for this specific message,
+ * and returns an array of React nodes with <mark> tags around matches.
+ * The "current" match (the one actively navigated to) gets an extra CSS
+ * class and a ref for scroll-into-view.
+ */
+function HighlightedText({
+  text,
+  matches,
+  currentMatch,
+  currentMatchRef,
+}: {
+  text: string;
+  matches: SearchMatch[];
+  currentMatch?: SearchMatch;
+  currentMatchRef: React.RefObject<HTMLElement | null>;
+}) {
+  if (matches.length === 0) return <>{text}</>;
+
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+
+  for (const match of matches) {
+    if (match.start > cursor) {
+      parts.push(text.slice(cursor, match.start));
+    }
+    const isCurrent =
+      currentMatch &&
+      currentMatch.messageIndex === match.messageIndex &&
+      currentMatch.start === match.start;
+    parts.push(
+      <mark
+        key={`${match.start}-${match.length}`}
+        ref={isCurrent ? currentMatchRef as React.RefObject<HTMLElement> : undefined}
+        className={
+          isCurrent
+            ? "search-highlight search-highlight--current"
+            : "search-highlight"
+        }
+      >
+        {text.slice(match.start, match.start + match.length)}
+      </mark>
+    );
+    cursor = match.start + match.length;
+  }
+
+  if (cursor < text.length) {
+    parts.push(text.slice(cursor));
+  }
+
+  return <>{parts}</>;
+}
+
 export function MessageList({
   messages,
   isLoading,
   activity,
+  searchMatches,
+  currentMatch,
 }: {
   messages: ChatMessage[];
   isLoading: boolean;
   activity?: StreamingActivity;
+  searchMatches?: SearchMatch[];
+  currentMatch?: SearchMatch;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const currentMatchRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
+
+  // Scroll to the current search match when it changes
+  useEffect(() => {
+    if (currentMatch && currentMatchRef.current) {
+      currentMatchRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [currentMatch]);
+
+  // Group search matches by message index for efficient lookup
+  const matchesByMessage = new Map<number, SearchMatch[]>();
+  if (searchMatches) {
+    for (const m of searchMatches) {
+      const arr = matchesByMessage.get(m.messageIndex) ?? [];
+      arr.push(m);
+      matchesByMessage.set(m.messageIndex, arr);
+    }
+  }
 
   return (
     <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
@@ -110,38 +188,47 @@ export function MessageList({
         </div>
       )}
 
-      {messages.map((msg, i) => (
-        <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-          <div
-            className={`max-w-2xl rounded-lg px-4 py-3 text-sm whitespace-pre-wrap ${
-              msg.role === "user"
-                ? "bg-blue-600 text-white"
-                : "bg-gray-800 text-gray-100"
-            }`}
-          >
-            {msg.text}
+      {messages.map((msg, i) => {
+        const msgMatches = matchesByMessage.get(i) ?? [];
 
-            {msg.toolUse && msg.toolUse.length > 0 && (
-              <div className="mt-2 space-y-1">
-                {msg.toolUse.map((tool, toolIdx) => (
-                  <ToolUseItem
-                    key={tool.id}
-                    tool={tool}
-                    isLast={toolIdx === msg.toolUse!.length - 1}
-                    isStreaming={!!msg.streaming}
-                  />
-                ))}
-              </div>
-            )}
+        return (
+          <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+            <div
+              className={`max-w-2xl rounded-lg px-4 py-3 text-sm whitespace-pre-wrap ${
+                msg.role === "user"
+                  ? "bg-blue-600 text-white"
+                  : "bg-gray-800 text-gray-100"
+              }`}
+            >
+              <HighlightedText
+                text={msg.text}
+                matches={msgMatches}
+                currentMatch={currentMatch}
+                currentMatchRef={currentMatchRef}
+              />
 
-            {msg.streaming && (
-              <span className="inline-flex items-center ml-1 align-middle">
-                <TypingDots />
-              </span>
-            )}
+              {msg.toolUse && msg.toolUse.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {msg.toolUse.map((tool, toolIdx) => (
+                    <ToolUseItem
+                      key={tool.id}
+                      tool={tool}
+                      isLast={toolIdx === msg.toolUse!.length - 1}
+                      isStreaming={!!msg.streaming}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {msg.streaming && (
+                <span className="inline-flex items-center ml-1 align-middle">
+                  <TypingDots />
+                </span>
+              )}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
 
       {/* Thinking indicator — shown when loading and no assistant message has arrived yet */}
       {isLoading && messages[messages.length - 1]?.role === "user" && (
