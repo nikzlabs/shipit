@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useWebSocket } from "./hooks/useWebSocket.js";
 import { MessageInput } from "./components/MessageInput.js";
 import { MessageList, type ChatMessage } from "./components/MessageList.js";
+import { PreviewFrame, type PreviewStatus } from "./components/PreviewFrame.js";
 
 function getWsUrl(): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -12,6 +13,7 @@ export default function App() {
   const { send, lastMessage, status } = useWebSocket(getWsUrl());
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [preview, setPreview] = useState<PreviewStatus | null>(null);
   const sessionIdRef = useRef<string | undefined>(undefined);
 
   // Process incoming WebSocket messages
@@ -23,6 +25,14 @@ export default function App() {
       data = JSON.parse(lastMessage.data);
     } catch {
       return;
+    }
+
+    if (data.type === "preview_status") {
+      setPreview({
+        running: data.running,
+        port: data.port,
+        url: data.url,
+      });
     }
 
     if (data.type === "claude_event") {
@@ -110,24 +120,39 @@ export default function App() {
       {/* Header */}
       <header className="flex items-center justify-between px-6 py-3 border-b border-gray-800">
         <h1 className="text-lg font-semibold tracking-tight">Vibe</h1>
-        <span
-          className={`text-xs px-2 py-0.5 rounded-full ${
-            status === "open"
-              ? "bg-green-900 text-green-300"
-              : status === "connecting"
-              ? "bg-yellow-900 text-yellow-300"
-              : "bg-red-900 text-red-300"
-          }`}
-        >
-          {status}
-        </span>
+        <div className="flex items-center gap-3">
+          {preview?.running && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-900 text-emerald-300">
+              preview :{ preview.port}
+            </span>
+          )}
+          <span
+            className={`text-xs px-2 py-0.5 rounded-full ${
+              status === "open"
+                ? "bg-green-900 text-green-300"
+                : status === "connecting"
+                ? "bg-yellow-900 text-yellow-300"
+                : "bg-red-900 text-red-300"
+            }`}
+          >
+            {status}
+          </span>
+        </div>
       </header>
 
-      {/* Chat area */}
-      <MessageList messages={messages} isLoading={isLoading} />
+      {/* Main content: two-column layout */}
+      <div className="flex flex-1 min-h-0">
+        {/* Left column — Chat */}
+        <div className="flex flex-col flex-1 min-w-0 border-r border-gray-800">
+          <MessageList messages={messages} isLoading={isLoading} />
+          <MessageInput onSend={handleSend} disabled={isLoading || status !== "open"} />
+        </div>
 
-      {/* Input */}
-      <MessageInput onSend={handleSend} disabled={isLoading || status !== "open"} />
+        {/* Right column — Live Preview */}
+        <div className="w-1/2 min-w-0 hidden md:flex flex-col bg-gray-900">
+          <PreviewFrame preview={preview} />
+        </div>
+      </div>
     </div>
   );
 }
