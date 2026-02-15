@@ -87,6 +87,7 @@ The server is intentionally thin — it's a bridge between the browser and the C
 | `hooks/useResizablePanel.ts` | Drag-to-resize logic for the two-column layout (persists to localStorage) |
 | `hooks/useSearch.ts` | Chat search logic — substring matching, match navigation, state management |
 | `hooks/useMediaQuery.ts` | Responsive breakpoint detection via `matchMedia`, plus `useIsMobile()` convenience wrapper |
+| `hooks/useNotification.ts` | Background tab notifications — tab title change and browser Notification on Claude completion |
 | `components/ResizeHandle.tsx` | Vertical drag handle rendered between the chat and preview/docs panels |
 | `components/MessageList.tsx` | Renders chat messages, tool invocations, streaming indicators |
 | `components/StreamingIndicator.tsx` | Typing dots, thinking indicator, tool spinner, activity label derivation |
@@ -328,6 +329,32 @@ The search feature lets users find text within the chat conversation using Ctrl+
 - **Substring match** — simple `indexOf` loop rather than regex, so user input is treated as literal text (no escaping issues).
 - **Scroll-to-match** — uses `scrollIntoView({ block: "center" })` so the current match appears centered in the chat scroll area.
 - **Match index clamping** — when the messages array changes (new messages arrive) and the match count shrinks, the current index is automatically clamped to stay in bounds.
+
+## Background Tab Notifications
+
+When Claude finishes responding while the user is on a different browser tab, the app provides two forms of notification:
+
+### Tab Title Change
+
+The document title changes from "ShipIt" to "\u2713 Claude finished \u2014 ShipIt" when a `result` event fires while the tab is hidden. This is visible in the browser's tab bar. The original title is restored when the user returns to the tab via the `visibilitychange` event.
+
+### Browser Notification
+
+If the user has granted notification permission, a native `Notification` is sent with the body "Claude has finished responding." Permission is requested lazily \u2014 the first time the user sends a message, `Notification.requestPermission()` is called. This avoids prompting on page load when the user hasn't interacted yet.
+
+### How It Works
+
+1. **`useNotification` hook** (`src/client/hooks/useNotification.ts`) tracks tab visibility via `document.hidden` and the `visibilitychange` event. It exposes two functions:
+   - `notify(body)` \u2014 if the tab is hidden, changes the document title and sends a browser notification (if permitted).
+   - `requestPermission()` \u2014 calls `Notification.requestPermission()` if permission is `"default"`.
+2. **`App.tsx`** calls `notify()` when a `result` event is received, and `requestPermission()` inside `handleSend`.
+
+### Key Design Decisions
+
+- **No server involvement** \u2014 notifications are purely client-side, driven by existing `result` events.
+- **Lazy permission request** \u2014 triggered on first message send, not on page load, for a better UX.
+- **Title-only when notifications are denied** \u2014 the tab title change works without any permissions and is the primary notification mechanism.
+- **No notification when tab is visible** \u2014 avoids unnecessary distractions when the user is already watching.
 
 ## Error Handling & Recovery
 
