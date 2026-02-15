@@ -152,6 +152,7 @@ export default function App() {
         running: data.running,
         port: data.port,
         url: data.url,
+        source: data.source,
       });
     }
 
@@ -513,7 +514,11 @@ export default function App() {
         </div>
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
           {preview?.running && (
-            <span className="hidden sm:inline text-xs px-2 py-0.5 rounded-full bg-emerald-900 text-emerald-300">
+            <span className={`hidden sm:inline text-xs px-2 py-0.5 rounded-full ${
+              preview.source === "detected"
+                ? "bg-yellow-900 text-yellow-300"
+                : "bg-emerald-900 text-emerald-300"
+            }`}>
               preview :{preview.port}
             </span>
           )}

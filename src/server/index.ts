@@ -12,6 +12,7 @@ import { SessionManager } from "./sessions.js";
 import { ChatHistoryManager } from "./chat-history.js";
 import { findMarkdownFiles } from "./markdown.js";
 import { scanFileTree } from "./file-tree.js";
+import { detectDevServer } from "./port-scanner.js";
 import type { WsClientMessage, WsServerMessage, ClaudeEvent } from "./types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -41,6 +42,14 @@ export interface AppDeps {
   serveStatic?: boolean;
   /** Whether to start the Vite dev server. Defaults to true. */
   startVite?: boolean;
+  /**
+   * Port detection function called after each Claude turn to find non-Vite dev
+   * servers. Defaults to `detectDevServer`. Inject a stub in tests to avoid
+   * real port scanning.
+   */
+  detectPort?: (excludePorts: number[]) => Promise<number | null>;
+  /** Port the Fastify server is listening on, excluded from port scans. Defaults to 3000. */
+  serverPort?: number;
 }
 
 /**
@@ -57,6 +66,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     workspaceDir = WORKSPACE,
     serveStatic: shouldServeStatic = true,
     startVite = true,
+    detectPort = detectDevServer,
+    serverPort = 3000,
   } = deps;
 
   const app = Fastify({ logger: false });
@@ -93,14 +104,42 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
   };
 
-  const broadcastPreviewStatus = () => {
-    const msg: WsServerMessage = {
+  // Track the last auto-detected dev server port (non-Vite)
+  let detectedPort: number | null = null;
+
+  /**
+   * Build the current preview status message. Vite takes priority when running;
+   * otherwise fall back to any port found by the port scanner.
+   */
+  const getPreviewStatus = (): WsServerMessage => {
+    if (viteManager.running) {
+      return {
+        type: "preview_status",
+        running: true,
+        port: viteManager.port,
+        url: `http://localhost:${viteManager.port}`,
+        source: "vite",
+      };
+    }
+    if (detectedPort !== null) {
+      return {
+        type: "preview_status",
+        running: true,
+        port: detectedPort,
+        url: `http://localhost:${detectedPort}`,
+        source: "detected",
+      };
+    }
+    return {
       type: "preview_status",
-      running: viteManager.running,
+      running: false,
       port: viteManager.port,
       url: `http://localhost:${viteManager.port}`,
     };
-    const payload = JSON.stringify(msg);
+  };
+
+  const broadcastPreviewStatus = () => {
+    const payload = JSON.stringify(getPreviewStatus());
     for (const ws of clients) {
       if (ws.readyState === 1) ws.send(payload);
     }
@@ -166,12 +205,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     };
 
     // Send current preview status on connect
-    send({
-      type: "preview_status",
-      running: viteManager.running,
-      port: viteManager.port,
-      url: `http://localhost:${viteManager.port}`,
-    });
+    send(getPreviewStatus());
 
     socket.on("message", async (raw: Buffer) => {
       let msg: WsClientMessage;
@@ -276,6 +310,19 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           // Restart Vite after Claude finishes in case new files were created
           if (!viteManager.running) {
             viteManager.start();
+          }
+
+          // Scan for non-Vite dev servers that Claude may have started.
+          // Exclude our own Fastify port and the managed Vite port.
+          try {
+            const excludePorts = [serverPort, viteManager.port];
+            const port = await detectPort(excludePorts);
+            if (port !== detectedPort) {
+              detectedPort = port;
+              broadcastPreviewStatus();
+            }
+          } catch (err: any) {
+            console.error("[port-scanner] scan failed:", err.message);
           }
         });
 
