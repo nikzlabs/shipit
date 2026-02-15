@@ -79,6 +79,7 @@ The server is intentionally thin — it's a bridge between the browser and the C
 | `App.tsx` | Root component — chat state, session tracking, tab management, event dispatch |
 | `hooks/useWebSocket.ts` | WebSocket lifecycle (connect, reconnect, send/receive JSON) |
 | `components/MessageList.tsx` | Renders chat messages, tool invocations, loading indicator |
+| `components/DiffBlock.tsx` | Inline file change diff display (red/green lines for Edit and Write tools) |
 | `components/MessageInput.tsx` | Auto-resizing textarea, Enter-to-send, disabled while streaming |
 | `components/PreviewFrame.tsx` | iframe pointing to Vite dev server with reload button |
 | `components/DocsViewer.tsx` | Markdown file browser and renderer (using `marked`) |
@@ -88,12 +89,50 @@ The server is intentionally thin — it's a bridge between the browser and the C
 
 ### Claude CLI Events (NDJSON)
 
+The Claude CLI with `--output-format stream-json` emits newline-delimited JSON to stdout. Each line is one of these event types:
+
 | Event type | When | Key data |
 |-----------|------|----------|
 | `system` (init) | Session start | `session_id`, model, available tools |
 | `assistant` | Claude responds | Text blocks + tool_use blocks |
 | `user` | Tool results | Tool execution output |
 | `result` | Turn complete | `session_id`, `total_cost_usd`, `duration_ms` |
+
+#### `assistant` Event — Content Blocks
+
+The `assistant` event's `message.content` is an array of content blocks. Each block is one of:
+
+**Text block** — Claude's natural language response:
+```json
+{ "type": "text", "text": "I'll create that file for you." }
+```
+
+**Tool use block** — a tool invocation with its inputs:
+```json
+{
+  "type": "tool_use",
+  "id": "toolu_abc123",
+  "name": "Edit",
+  "input": {
+    "file_path": "/workspace/src/app.ts",
+    "old_string": "const x = 1;",
+    "new_string": "const x = 2;"
+  }
+}
+```
+
+Key tools and their `input` fields relevant for rendering:
+
+| Tool | Input fields | Notes |
+|------|-------------|-------|
+| `Edit` | `file_path`, `old_string`, `new_string` | Rendered as inline diff (red/green) |
+| `Write` | `file_path`, `content` | Rendered as all-green addition block |
+| `Read` | `file_path` | Shown as compact one-liner |
+| `Bash` | `command` | Shown as compact one-liner (first 80 chars) |
+| `Glob` | `pattern` | Shown as compact one-liner |
+| `Grep` | `pattern`, `path` | Shown as compact one-liner |
+
+The `DiffBlock` component (`src/client/components/DiffBlock.tsx`) handles rendering `Edit` and `Write` tool uses as inline diffs in the chat. Other tools fall back to a compact single-line display in `MessageList.tsx`.
 
 ## WebSocket Message Protocol
 
