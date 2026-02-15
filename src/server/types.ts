@@ -133,7 +133,8 @@ export type WsClientMessage =
   | WsGetDoc
   | WsGetChatHistory
   | WsGetFileTree
-  | WsGetFileContent;
+  | WsGetFileContent
+  | WsClearLogs;
 
 export interface WsClaudeEvent {
   type: "claude_event";
@@ -244,6 +245,20 @@ export interface WsFileContent {
   isBinary?: boolean;
 }
 
+// ---- Terminal/logs types ----
+
+export interface WsLogEntry {
+  type: "log_entry";
+  /** Where the log line originated. */
+  source: "stderr" | "stdout" | "server";
+  text: string;
+  timestamp: string;
+}
+
+export interface WsClearLogs {
+  type: "clear_logs";
+}
+
 export type WsServerMessage =
   | WsClaudeEvent
   | WsError
@@ -259,4 +274,5 @@ export type WsServerMessage =
   | WsDocContent
   | WsChatHistory
   | WsFileTree
-  | WsFileContent;
+  | WsFileContent
+  | WsLogEntry;

@@ -264,4 +264,69 @@ describe("ClaudeProcess", () => {
       expect(errors[0].message).toBe("spawn ENOENT");
     });
   });
+
+  describe("log emission", () => {
+    it("emits log event for stderr output", () => {
+      const mockProc = createMockProcess();
+      mockSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const logs: Array<{ source: string; text: string }> = [];
+      claude.on("log", (source: string, text: string) => logs.push({ source, text }));
+
+      claude.run("test");
+
+      mockProc.stderr.emit("data", Buffer.from("Some debug output\n"));
+
+      expect(logs).toHaveLength(1);
+      expect(logs[0]).toEqual({ source: "stderr", text: "Some debug output" });
+    });
+
+    it("emits log event for non-JSON stdout lines", () => {
+      const mockProc = createMockProcess();
+      mockSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const logs: Array<{ source: string; text: string }> = [];
+      claude.on("log", (source: string, text: string) => logs.push({ source, text }));
+
+      claude.run("test");
+
+      mockProc.stdout.emit("data", Buffer.from("not valid json\n"));
+
+      expect(logs).toHaveLength(1);
+      expect(logs[0]).toEqual({ source: "stdout", text: "not valid json" });
+    });
+
+    it("does not emit log for valid JSON stdout lines", () => {
+      const mockProc = createMockProcess();
+      mockSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const logs: Array<{ source: string; text: string }> = [];
+      claude.on("log", (source: string, text: string) => logs.push({ source, text }));
+
+      claude.run("test");
+
+      const event = { type: "system", subtype: "init", session_id: "abc" };
+      mockProc.stdout.emit("data", Buffer.from(JSON.stringify(event) + "\n"));
+
+      expect(logs).toHaveLength(0);
+    });
+
+    it("does not emit log for empty stderr", () => {
+      const mockProc = createMockProcess();
+      mockSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const logs: Array<{ source: string; text: string }> = [];
+      claude.on("log", (source: string, text: string) => logs.push({ source, text }));
+
+      claude.run("test");
+
+      mockProc.stderr.emit("data", Buffer.from("   \n"));
+
+      expect(logs).toHaveLength(0);
+    });
+  });
 });
