@@ -24,7 +24,7 @@
 ## Phase 5: Next Up
 - [x] Resizable panels
 - [x] Search in chat history
-- [ ] Test coverage
+- [x] Test coverage — Vitest, 71 tests across 6 server/client modules
 
 ## Nice to Have
 - [ ] Cost display per turn (from result.total_cost_usd)

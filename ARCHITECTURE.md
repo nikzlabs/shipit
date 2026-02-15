@@ -68,6 +68,9 @@ Vibe is a browser-based IDE for "vibe coding" — you talk to Claude in a chat i
 | `claude.ts` | `ClaudeProcess` class — spawns CLI, parses NDJSON stream, emits events |
 | `git.ts` | `GitManager` class — auto-commit after turns, git log, rollback |
 | `auth.ts` | `AuthManager` class — OAuth flow detection, credential checking, auth URL capture |
+| `sessions.ts` | `SessionManager` class — session CRUD, JSON file persistence |
+| `markdown.ts` | `findMarkdownFiles` — recursive `.md` file scanner (skips node_modules, .git) |
+| `vite-manager.ts` | `ViteManager` class — Vite dev server lifecycle (start, stop, restart) |
 | `types.ts` | Shared TypeScript types for all WebSocket and Claude event payloads |
 
 The server is intentionally thin — it's a bridge between the browser and the Claude CLI. No database, no REST API.
@@ -299,6 +302,7 @@ The search feature lets users find text within the chat conversation using Ctrl+
 | Frontend | React 19, Vite 6, Tailwind CSS 4, TypeScript |
 | AI | Claude Code CLI (globally installed in container) |
 | Runtime | Node 20, Docker |
+| Testing | Vitest 4, @testing-library/react, jsdom |
 | Dev | `tsx` (dev server), Vite dev proxy for WebSocket |
 
 ## Docker Setup
@@ -312,6 +316,10 @@ The Dockerfile installs Claude Code CLI globally, pre-builds the React frontend,
 ## Build & Run
 
 ```bash
+# Tests
+npm test             # Run all tests (server + client)
+npm run test:watch   # Watch mode
+
 # Development (no Docker)
 npm run dev          # tsx runs Fastify, serves pre-built client
 
