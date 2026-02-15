@@ -105,8 +105,8 @@ export class ChatHistoryManager {
     try {
       this.ensureDir();
       fs.writeFileSync(this.filePath(sessionId), JSON.stringify(messages, null, 2));
-    } catch (err: any) {
-      console.error("[chat-history] failed to save:", err.message);
+    } catch (err) {
+      console.error("[chat-history] failed to save:", err instanceof Error ? err.message : String(err));
     }
   }
 }

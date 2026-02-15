@@ -13,8 +13,8 @@ function makeCommit(overrides?: Partial<GitCommit>): GitCommit {
 }
 
 describe("GitHistory", () => {
-  let onRollback: ReturnType<typeof vi.fn>;
-  let onRefresh: ReturnType<typeof vi.fn>;
+  let onRollback: (hash: string) => void;
+  let onRefresh: () => void;
 
   beforeEach(() => {
     onRollback = vi.fn();

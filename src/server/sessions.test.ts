@@ -40,7 +40,6 @@ describe("SessionManager", () => {
   it("updates lastUsedAt and title when tracking an existing session", () => {
     const mgr = new SessionManager(sessionsFile);
     const original = mgr.track("sess-1", "Original title");
-    const originalLastUsed = original.lastUsedAt;
 
     // Track again with new title
     const updated = mgr.track("sess-1", "Updated title");

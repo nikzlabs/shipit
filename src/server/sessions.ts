@@ -36,8 +36,8 @@ export class SessionManager {
   private save(): void {
     try {
       fs.writeFileSync(this.sessionsFile, JSON.stringify(this.sessions, null, 2));
-    } catch (err: any) {
-      console.error("[sessions] failed to save:", err.message);
+    } catch (err) {
+      console.error("[sessions] failed to save:", err instanceof Error ? err.message : String(err));
     }
   }
 
