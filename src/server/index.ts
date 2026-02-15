@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ClaudeProcess } from "./claude.js";
 import { ViteManager } from "./vite-manager.js";
+import { GitManager } from "./git.js";
 import type { WsClientMessage, WsServerMessage, ClaudeEvent } from "./types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -13,6 +14,10 @@ async function main() {
   const app = Fastify({ logger: true });
 
   await app.register(fastifyWebsocket);
+
+  // ---- Git manager ----
+  const gitManager = new GitManager();
+  await gitManager.init();
 
   // ---- Vite dev server manager ----
   const viteManager = new ViteManager();
@@ -68,6 +73,7 @@ async function main() {
     console.log("[ws] client connected");
     clients.add(socket);
     let claude: ClaudeProcess | null = null;
+    let turnSummary = "";
 
     const send = (msg: WsServerMessage) => {
       if (socket.readyState === 1) {
@@ -83,7 +89,7 @@ async function main() {
       url: `http://localhost:${viteManager.port}`,
     });
 
-    socket.on("message", (raw: Buffer) => {
+    socket.on("message", async (raw: Buffer) => {
       let msg: WsClientMessage;
       try {
         msg = JSON.parse(raw.toString());
@@ -98,18 +104,38 @@ async function main() {
           claude.kill();
         }
 
+        turnSummary = "";
         claude = new ClaudeProcess();
 
         claude.on("event", (event: ClaudeEvent) => {
           send({ type: "claude_event", event });
+
+          // Collect assistant text for commit message
+          if (event.type === "assistant") {
+            const text = (event.message?.content ?? [])
+              .filter((b: any) => b.type === "text")
+              .map((b: any) => b.text)
+              .join("");
+            if (text) turnSummary = text;
+          }
         });
 
-        claude.on("done", (code: number | null) => {
+        claude.on("done", async (code: number | null) => {
           console.log("[claude] process exited with code", code);
           claude = null;
 
+          // Auto-commit after Claude turn
+          try {
+            const firstLine = turnSummary.split("\n")[0]?.slice(0, 120) || "Claude turn";
+            const hash = await gitManager.autoCommit(firstLine);
+            if (hash) {
+              send({ type: "git_committed", hash, message: firstLine });
+            }
+          } catch (err: any) {
+            console.error("[git] auto-commit failed:", err.message);
+          }
+
           // Restart Vite after Claude finishes in case new files were created
-          // (e.g. Claude scaffolded a new project with package.json + vite config)
           if (!viteManager.running) {
             viteManager.start();
           }
@@ -122,6 +148,27 @@ async function main() {
         });
 
         claude.run(msg.text, msg.sessionId);
+      }
+
+      if (msg.type === "get_git_log") {
+        try {
+          const commits = await gitManager.log();
+          send({ type: "git_log", commits });
+        } catch (err: any) {
+          send({ type: "error", message: `Git log failed: ${err.message}` });
+        }
+      }
+
+      if (msg.type === "rollback") {
+        try {
+          await gitManager.rollback(msg.commitHash);
+          send({ type: "rollback_complete", commitHash: msg.commitHash });
+
+          // Restart Vite after rollback since files changed
+          viteManager.restart();
+        } catch (err: any) {
+          send({ type: "error", message: `Rollback failed: ${err.message}` });
+        }
       }
     });
 

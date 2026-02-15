@@ -66,6 +66,7 @@ Vibe is a browser-based IDE for "vibe coding" — you talk to Claude in a chat i
 |------|------|
 | `index.ts` | Fastify server — WebSocket route, static file serving, SPA fallback |
 | `claude.ts` | `ClaudeProcess` class — spawns CLI, parses NDJSON stream, emits events |
+| `git.ts` | `GitManager` class — auto-commit after turns, git log, rollback |
 | `types.ts` | Shared TypeScript types for all WebSocket and Claude event payloads |
 
 The server is intentionally thin — it's a bridge between the browser and the Claude CLI. No database, no auth, no REST API.
@@ -130,7 +131,7 @@ docker compose up --build   # Builds + runs on port 3000
 
 Planned for future phases (see `DESIGN.md`):
 - [x] Live preview iframe (Vite dev server manager)
-- [ ] Git integration (auto-commit, history panel, rollback)
+- [x] Git integration (auto-commit, history panel, rollback)
 - [ ] OAuth flow detection
 - [ ] Session list/resume UI
 - [ ] File change diffs
