@@ -1,5 +1,5 @@
 services:
-  vibe:
+  shipit:
     build: .
     ports:
       - "3000:3000"

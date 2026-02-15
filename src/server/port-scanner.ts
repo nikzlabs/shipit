@@ -14,7 +14,7 @@ import net from "node:net";
  *   8080  - Common alternative HTTP (Spring Boot, Vue CLI)
  *   8888  - Jupyter, custom servers
  *
- * Port 3000 is excluded by default because Vibe's own Fastify server uses it.
+ * Port 3000 is excluded by default because ShipIt's own Fastify server uses it.
  */
 export const DEFAULT_SCAN_PORTS = [3001, 4000, 4200, 5000, 5173, 5174, 8000, 8080, 8888];
 
