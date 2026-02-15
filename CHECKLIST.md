@@ -18,7 +18,7 @@
 - [x] OAuth flow detection and browser redirect
 - [x] Session management (list, resume, new)
 - [x] Docs tab (markdown viewer)
-- [ ] Inline file change display in chat (diff blocks)
+- [x] Inline file change display in chat (diff blocks)
 - [ ] Streaming UX polish (typing indicators, partial renders)
 
 ## Phase 5: Nice-to-haves
