@@ -76,8 +76,10 @@ The server is intentionally thin — it's a bridge between the browser and the C
 
 | File | Role |
 |------|------|
-| `App.tsx` | Root component — chat state, session tracking, tab management, event dispatch |
+| `App.tsx` | Root component — chat state, session tracking, tab management, resizable layout, event dispatch |
 | `hooks/useWebSocket.ts` | WebSocket lifecycle (connect, reconnect, send/receive JSON) |
+| `hooks/useResizablePanel.ts` | Drag-to-resize logic for the two-column layout (persists to localStorage) |
+| `components/ResizeHandle.tsx` | Vertical drag handle rendered between the chat and preview/docs panels |
 | `components/MessageList.tsx` | Renders chat messages, tool invocations, streaming indicators |
 | `components/StreamingIndicator.tsx` | Typing dots, thinking indicator, tool spinner, activity label derivation |
 | `components/DiffBlock.tsx` | Inline file change diff display (red/green lines for Edit and Write tools) |
@@ -222,6 +224,31 @@ The activity label is derived from the *last* tool_use block in each assistant e
 ### Adding a New Tool Label
 
 To add activity tracking for a new Claude CLI tool, add a case to `activityFromTool()` in `src/client/components/StreamingIndicator.tsx`. The function receives the tool name and its input object, and returns a `StreamingActivity` with a human-readable label.
+
+## Resizable Panels
+
+The two-column layout (chat on the left, preview/docs on the right) is resizable via a vertical drag handle.
+
+### How It Works
+
+1. `useResizablePanel` hook (`src/client/hooks/useResizablePanel.ts`) manages the split state as a fraction (0–1) representing the left panel's width.
+2. On `mousedown` on the handle, global `mousemove`/`mouseup` listeners compute the new fraction from the cursor position relative to the container.
+3. The fraction is clamped to a configurable `minFraction` (default 0.25) so neither panel can collapse below 25%.
+4. Both panels use inline `style={{ width }}` with percentage values instead of Tailwind width classes, so the layout updates every frame during drag.
+5. `userSelect: none` is applied to the body during drag to prevent accidental text selection.
+6. The final position is persisted to `localStorage` (key: `vibe-panel-split`) on mouse-up so it survives page reloads.
+
+### Key Files
+
+- **`hooks/useResizablePanel.ts`** — The hook: state, mouse event wiring, localStorage persistence.
+- **`components/ResizeHandle.tsx`** — The visual handle: 8px transparent hit area with a 2px centered indicator line.
+- **`index.css`** — `.resize-handle` class sets width and cursor.
+
+### Adding Another Resizable Split
+
+To add a vertical (top/bottom) or additional horizontal split:
+1. Use the same `useResizablePanel` hook with a different `storageKey`.
+2. For vertical splits, the hook would need modification to track `clientY` / `rect.height` instead of `clientX` / `rect.width`.
 
 ## Session Management
 

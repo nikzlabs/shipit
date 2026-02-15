@@ -33,3 +33,14 @@
 .tool-spinner {
   animation: spin-slow 1s linear infinite;
 }
+
+/* Resize handle — vertical divider between panels */
+.resize-handle {
+  width: 8px;
+  cursor: col-resize;
+  flex-shrink: 0;
+}
+
+.resize-handle--active {
+  cursor: col-resize;
+}
