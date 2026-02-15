@@ -99,6 +99,12 @@ export interface WsDeleteSession {
   sessionId: string;
 }
 
+export interface WsRenameSession {
+  type: "rename_session";
+  sessionId: string;
+  title: string;
+}
+
 export interface WsListDocs {
   type: "list_docs";
 }
@@ -129,6 +135,7 @@ export type WsClientMessage =
   | WsListSessions
   | WsNewSession
   | WsDeleteSession
+  | WsRenameSession
   | WsListDocs
   | WsGetDoc
   | WsGetChatHistory
@@ -191,6 +198,11 @@ export interface WsSessionList {
 
 export interface WsSessionStarted {
   type: "session_started";
+  session: SessionInfo;
+}
+
+export interface WsSessionRenamed {
+  type: "session_renamed";
   session: SessionInfo;
 }
 
@@ -270,6 +282,7 @@ export type WsServerMessage =
   | WsAuthComplete
   | WsSessionList
   | WsSessionStarted
+  | WsSessionRenamed
   | WsDocList
   | WsDocContent
   | WsChatHistory

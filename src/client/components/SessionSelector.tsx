@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 
 export interface SessionInfo {
   id: string;
@@ -13,6 +13,7 @@ export function SessionSelector({
   onResume,
   onNew,
   onDelete,
+  onRename,
   onRefresh,
 }: {
   sessions: SessionInfo[];
@@ -20,9 +21,45 @@ export function SessionSelector({
   onResume: (sessionId: string) => void;
   onNew: () => void;
   onDelete: (sessionId: string) => void;
+  onRename: (sessionId: string, title: string) => void;
   onRefresh: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const editInputRef = useRef<HTMLInputElement>(null);
+  // Tracks whether editing was already resolved (submitted or cancelled)
+  // so onBlur doesn't double-fire after a backdrop click or Escape.
+  const editResolvedRef = useRef(false);
+
+  useEffect(() => {
+    if (editingId && editInputRef.current) {
+      editResolvedRef.current = false;
+      editInputRef.current.focus();
+      editInputRef.current.select();
+    }
+  }, [editingId]);
+
+  const startEditing = (session: SessionInfo) => {
+    setEditingId(session.id);
+    setEditTitle(session.title);
+  };
+
+  const submitRename = () => {
+    if (editResolvedRef.current) return;
+    editResolvedRef.current = true;
+    if (editingId && editTitle.trim()) {
+      onRename(editingId, editTitle.trim());
+    }
+    setEditingId(null);
+    setEditTitle("");
+  };
+
+  const cancelEditing = () => {
+    editResolvedRef.current = true;
+    setEditingId(null);
+    setEditTitle("");
+  };
 
   return (
     <div className="relative">
@@ -53,7 +90,7 @@ export function SessionSelector({
       {open && (
         <>
           {/* Backdrop to close dropdown */}
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="fixed inset-0 z-40" onClick={() => { setOpen(false); cancelEditing(); }} />
 
           <div className="absolute top-full left-0 mt-1 w-72 bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden">
             {/* New session button */}
@@ -77,6 +114,7 @@ export function SessionSelector({
               ) : (
                 sessions.map((session) => {
                   const isCurrent = session.id === currentSessionId;
+                  const isEditing = editingId === session.id;
                   return (
                     <div
                       key={session.id}
@@ -84,34 +122,68 @@ export function SessionSelector({
                         isCurrent ? "bg-gray-800/60" : ""
                       }`}
                     >
-                      <button
-                        onClick={() => {
-                          if (!isCurrent) onResume(session.id);
-                          setOpen(false);
-                        }}
-                        className="flex-1 min-w-0 text-left"
-                      >
-                        <p className={`truncate ${isCurrent ? "text-emerald-300" : "text-gray-300"}`}>
-                          {isCurrent && <span className="mr-1">&bull;</span>}
-                          {session.title}
-                        </p>
-                        <p className="text-gray-600 mt-0.5">
-                          {formatRelativeDate(session.lastUsedAt)}
-                        </p>
-                      </button>
-                      {!isCurrent && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onDelete(session.id);
-                          }}
-                          className="shrink-0 p-1 rounded text-gray-600 opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-gray-700 transition-all"
-                          title="Delete session"
+                      {isEditing ? (
+                        <form
+                          className="flex-1 min-w-0"
+                          onSubmit={(e) => { e.preventDefault(); submitRename(); }}
                         >
-                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                          </svg>
+                          <input
+                            ref={editInputRef}
+                            type="text"
+                            value={editTitle}
+                            onChange={(e) => setEditTitle(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === "Escape") cancelEditing(); }}
+                            onBlur={submitRename}
+                            className="w-full bg-gray-800 text-gray-100 text-xs px-2 py-1 rounded border border-gray-600 focus:border-blue-500 focus:outline-none"
+                            maxLength={120}
+                          />
+                        </form>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            if (!isCurrent) onResume(session.id);
+                            setOpen(false);
+                          }}
+                          className="flex-1 min-w-0 text-left"
+                        >
+                          <p className={`truncate ${isCurrent ? "text-emerald-300" : "text-gray-300"}`}>
+                            {isCurrent && <span className="mr-1">&bull;</span>}
+                            {session.title}
+                          </p>
+                          <p className="text-gray-600 mt-0.5">
+                            {formatRelativeDate(session.lastUsedAt)}
+                          </p>
                         </button>
+                      )}
+                      {!isEditing && (
+                        <div className="shrink-0 flex items-center gap-0.5">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              startEditing(session);
+                            }}
+                            className="p-1 rounded text-gray-600 opacity-0 group-hover:opacity-100 hover:text-blue-400 hover:bg-gray-700 transition-all"
+                            title="Rename session"
+                          >
+                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487z" />
+                            </svg>
+                          </button>
+                          {!isCurrent && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onDelete(session.id);
+                              }}
+                              className="p-1 rounded text-gray-600 opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-gray-700 transition-all"
+                              title="Delete session"
+                            >
+                              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                            </button>
+                          )}
+                        </div>
                       )}
                     </div>
                   );

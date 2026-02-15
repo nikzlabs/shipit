@@ -309,6 +309,57 @@ describe("Integration: WebSocket flow", () => {
     client.close();
   });
 
+  it("rename_session renames a session and returns updated session", async () => {
+    sessionManager.track("sess-1", "Original title");
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "rename_session", sessionId: "sess-1", title: "New title" });
+    const msg = await client.receive();
+
+    expect(msg.type).toBe("session_renamed");
+    expect((msg as any).session.id).toBe("sess-1");
+    expect((msg as any).session.title).toBe("New title");
+
+    // Verify the session was actually renamed in the manager
+    const sessions = sessionManager.list();
+    expect(sessions[0].title).toBe("New title");
+
+    client.close();
+  });
+
+  it("rename_session returns error for non-existent session", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "rename_session", sessionId: "nonexistent", title: "Nope" });
+    const msg = await client.receive();
+
+    expect(msg.type).toBe("error");
+    expect((msg as any).message).toBe("Session not found");
+
+    client.close();
+  });
+
+  it("rename_session rejects empty title", async () => {
+    sessionManager.track("sess-1", "Original title");
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "rename_session", sessionId: "sess-1", title: "   " });
+    const msg = await client.receive();
+
+    expect(msg.type).toBe("error");
+    expect((msg as any).message).toBe("Session title cannot be empty");
+
+    // Verify the title was NOT changed
+    expect(sessionManager.list()[0].title).toBe("Original title");
+
+    client.close();
+  });
+
   // ---- Git operations ----
 
   it("get_git_log returns commit history", async () => {

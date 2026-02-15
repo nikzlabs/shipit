@@ -70,6 +70,15 @@ export class SessionManager {
     return session;
   }
 
+  /** Rename a session. Returns the updated session, or null if not found. */
+  rename(id: string, title: string): SessionInfo | null {
+    const session = this.sessions.find((s) => s.id === id);
+    if (!session) return null;
+    session.title = title;
+    this.save();
+    return session;
+  }
+
   /** Delete a session by id. */
   delete(id: string): boolean {
     const idx = this.sessions.findIndex((s) => s.id === id);
