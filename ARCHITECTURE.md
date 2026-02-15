@@ -97,6 +97,7 @@ The server is intentionally thin — it's a bridge between the browser and the C
 | `components/DocsViewer.tsx` | Markdown file browser and renderer (using `marked`) |
 | `components/FileTree.tsx` | Workspace file tree browser — expandable/collapsible directory tree with folder/file icons, click-to-view files |
 | `components/FileContentViewer.tsx` | Read-only file content viewer with syntax highlighting (highlight.js) |
+| `components/TerminalPanel.tsx` | Terminal/logs panel — shows Claude CLI stderr/stdout and server lifecycle events in a monospace terminal-like pane |
 | `components/GitHistory.tsx` | Collapsible git commit list with rollback buttons |
 | `components/SessionSelector.tsx` | Session management — list, resume, new, delete |
 | `components/SearchBar.tsx` | Search input with match count, prev/next navigation, keyboard shortcuts |
@@ -171,6 +172,7 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `get_chat_history` | `sessionId` | Request persisted chat messages for a session |
 | `get_file_tree` | — | Request workspace directory tree |
 | `get_file_content` | `path` | Request contents of a file in /workspace |
+| `clear_logs` | — | Clear the server-side terminal log buffer |
 
 ### Server → Client Messages
 
@@ -191,6 +193,7 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `chat_history` | `sessionId`, `messages[]` | Persisted chat messages for a session |
 | `file_tree` | `tree[]` | Workspace directory tree (array of `FileTreeNode`) |
 | `file_content` | `path`, `content` | Raw file content for the file viewer |
+| `log_entry` | `source`, `text`, `timestamp` | Terminal log line — `source` is `"stderr"`, `"stdout"`, or `"server"` |
 
 ### Adding a New Message Type
 
@@ -616,6 +619,49 @@ The `detectPorts` function is injectable via `AppDeps` for testing. Integration 
 - **`src/server/index.ts`** — Integration: `runPortScan()` shared between the `done` handler and the periodic interval, `getPreviewStatus()` builds preview messages with all detected ports, interval lifecycle tied to client connections.
 - **`src/client/components/PreviewFrame.tsx`** — Preview iframe with port selector dropdown (when multiple ports available), source indicator, reload button.
 - **`src/client/App.tsx`** — Derives `detectedPorts` from `preview` state, manages `selectedPort` selection, passes both to `PreviewFrame`.
+
+## Terminal/Logs Panel
+
+The Terminal tab in the right panel shows Claude CLI output (stderr and non-JSON stdout) in a terminal-like pane. This is useful for debugging — it surfaces diagnostic output that would otherwise only appear in the server's console.
+
+### Log Sources
+
+Each log entry has a `source` field indicating where it originated:
+
+| Source | Meaning |
+|--------|---------|
+| `stderr` | Claude CLI stderr output (debug info, warnings, error messages) |
+| `stdout` | Non-JSON lines from Claude CLI stdout (anything that isn't valid NDJSON — typically CLI status messages) |
+| `server` | Server lifecycle events: process start, exit (with exit code), and process errors |
+
+### Data Flow
+
+1. **`ClaudeProcess`** (`src/server/claude.ts`) emits `"log"` events for stderr output and non-JSON stdout lines (in addition to the existing `"event"` and `"auth_required"` emissions).
+2. **`index.ts`** listens for `"log"` events on each `ClaudeProcess` instance and calls `broadcastLog()`, which wraps the text in a `WsLogEntry` message with a timestamp and broadcasts it to all connected WebSocket clients.
+3. **Server lifecycle events** (process started, exited, errored) are also emitted via `broadcastLog()` with `source: "server"`.
+4. **Log buffer**: The server maintains a circular buffer of the most recent 500 log entries. When a new client connects, the entire buffer is sent so the client sees historical output.
+5. **`clear_logs`** client message empties the server-side buffer.
+6. **`App.tsx`** accumulates `log_entry` messages in state (capped at 500 on the client side) and passes them to `TerminalPanel`.
+
+### UI Component
+
+`TerminalPanel` (`src/client/components/TerminalPanel.tsx`) renders log entries in a monospace font with:
+- **Timestamp** (HH:MM:SS) in muted gray
+- **Source label** (`[err]`, `[out]`, `[srv]`) color-coded: red for stderr, gray for stdout, blue for server
+- **Log text** with `whitespace-pre-wrap` to preserve formatting
+- **Source filter**: Toggleable filter buttons for each source type in the header bar. Color-coded active/inactive states. At least one source must remain active (prevents hiding all). Shows a filter-specific empty state ("No logs match the current filter") when all visible entries are filtered out.
+- **Auto-scroll**: Scrolls to bottom as new entries arrive, unless the user has scrolled up
+- **Clear button**: Resets both client state and server buffer
+- **Empty state**: "No output yet" placeholder when no logs exist
+- **Unread badge**: When the Terminal tab is not active, a blue badge shows the count of new log entries since the tab was last viewed. Resets when switching to the Terminal tab.
+
+### Key Files
+
+- **`src/server/claude.ts`** — Emits `"log"` events for stderr and non-JSON stdout.
+- **`src/server/types.ts`** — `WsLogEntry` (server→client) and `WsClearLogs` (client→server) message types.
+- **`src/server/index.ts`** — `broadcastLog()` helper, 500-entry circular log buffer, sends buffer on client connect, `clear_logs` handler.
+- **`src/client/components/TerminalPanel.tsx`** — Terminal UI component with auto-scroll and source-colored labels.
+- **`src/client/App.tsx`** — Terminal tab in right panel, `logEntries` state, `log_entry` message handler.
 
 ## Tech Stack
 

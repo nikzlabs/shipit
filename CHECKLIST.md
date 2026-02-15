@@ -44,7 +44,7 @@
 - [x] Preview port selector — when multiple ports are detected, let the user choose which one to preview (currently shows first found)
 - [x] Periodic port scanning — scan on an interval, not just after Claude turns, to catch servers started via Bash tool mid-turn
 - [x] File content viewer — clicking a file in the Files tab could show its contents in a read-only viewer
-- [ ] Terminal/logs panel — show Claude CLI stdout/stderr in a terminal-like pane for debugging
+- [x] Terminal/logs panel — show Claude CLI stdout/stderr in a terminal-like pane for debugging
 - [ ] Session rename — currently titles are auto-generated from the first message
 - [ ] Workspace project templates — quick-start templates (Vite + React, Next.js, Express) to avoid the cold-start friction
 
