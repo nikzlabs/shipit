@@ -100,6 +100,11 @@ export function activityFromTool(toolName: string, input: Record<string, unknown
         label: `Searching web...`,
         tool: toolName,
       };
+    case "AskUserQuestion":
+      return {
+        label: "Waiting for your answer...",
+        tool: toolName,
+      };
     default:
       return {
         label: `Using ${toolName}...`,
