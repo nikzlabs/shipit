@@ -6,6 +6,18 @@ export interface UseWebSocketReturn {
   send: (data: unknown) => void;
   lastMessage: MessageEvent | null;
   status: WsStatus;
+  /** Number of consecutive reconnect attempts since last successful connection. */
+  reconnectAttempt: number;
+  /** Manually trigger an immediate reconnect (resets backoff timer). */
+  reconnect: () => void;
+}
+
+/**
+ * Exponential backoff: 2s, 4s, 8s, 16s, capped at 30s.
+ * Jitter is intentionally omitted — a single browser tab doesn't cause thundering-herd.
+ */
+function backoffMs(attempt: number): number {
+  return Math.min(2000 * Math.pow(2, attempt), 30_000);
 }
 
 export function useWebSocket(url: string): UseWebSocketReturn {
@@ -13,21 +25,41 @@ export function useWebSocket(url: string): UseWebSocketReturn {
   const [status, setStatus] = useState<WsStatus>("connecting");
   const [lastMessage, setLastMessage] = useState<MessageEvent | null>(null);
   const [connectAttempt, setConnectAttempt] = useState(0);
+  const reconnectAttemptRef = useRef(0);
+  const [reconnectAttempt, setReconnectAttempt] = useState(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const ws = new WebSocket(url);
     wsRef.current = ws;
     setStatus("connecting");
 
-    ws.onopen = () => setStatus("open");
+    ws.onopen = () => {
+      setStatus("open");
+      reconnectAttemptRef.current = 0;
+      setReconnectAttempt(0);
+    };
+
     ws.onclose = () => {
       setStatus("closed");
-      // Auto-reconnect after 2 seconds
-      setTimeout(() => setConnectAttempt((n) => n + 1), 2000);
+      const attempt = reconnectAttemptRef.current;
+      reconnectAttemptRef.current = attempt + 1;
+      setReconnectAttempt(attempt + 1);
+
+      const delay = backoffMs(attempt);
+      reconnectTimerRef.current = setTimeout(
+        () => setConnectAttempt((n) => n + 1),
+        delay,
+      );
     };
+
     ws.onmessage = (event) => setLastMessage(event);
 
     return () => {
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
       ws.close();
     };
   }, [url, connectAttempt]);
@@ -38,5 +70,17 @@ export function useWebSocket(url: string): UseWebSocketReturn {
     }
   }, []);
 
-  return { send, lastMessage, status };
+  const reconnect = useCallback(() => {
+    // Clear any pending backoff timer and trigger an immediate reconnect
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    // Reset attempt counter so the next auto-reconnect starts fresh
+    reconnectAttemptRef.current = 0;
+    setReconnectAttempt(0);
+    setConnectAttempt((n) => n + 1);
+  }, []);
+
+  return { send, lastMessage, status, reconnectAttempt, reconnect };
 }
