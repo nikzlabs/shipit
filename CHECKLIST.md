@@ -19,7 +19,7 @@
 - [x] Session management (list, resume, new)
 - [x] Docs tab (markdown viewer)
 - [x] Inline file change display in chat (diff blocks)
-- [ ] Streaming UX polish (typing indicators, partial renders)
+- [x] Streaming UX polish (typing indicators, partial renders)
 
 ## Phase 5: Nice-to-haves
 - [ ] Cost display per turn (from result.total_cost_usd)
