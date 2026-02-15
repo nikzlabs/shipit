@@ -41,9 +41,9 @@ describe("port-scanner", () => {
     });
 
     it("returns false for a port that is not listening", async () => {
-      // Use a port that's almost certainly not listening
-      // (ephemeral port range, pick one that's very unlikely to be in use)
-      const closedPort = openPort + 1000;
+      // Use a port that's almost certainly not listening but stays within valid range (1–65535).
+      // Wrap around if adding 1000 would exceed the max port number.
+      const closedPort = openPort + 1000 <= 65535 ? openPort + 1000 : openPort - 1000;
       const result = await checkPort(closedPort);
       expect(result).toBe(false);
     });

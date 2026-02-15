@@ -1,4 +1,4 @@
-import { useMemo, useEffect, useRef } from "react";
+import { useMemo, useEffect, useRef, useState, useCallback } from "react";
 import hljs from "highlight.js";
 import "highlight.js/styles/github-dark.css";
 import { DiffBlock } from "./DiffBlock.js";
@@ -250,21 +250,110 @@ function HighlightedText({
   return <>{parts}</>;
 }
 
+/** Inline editor for a user message being edited. */
+function MessageEditor({
+  initialText,
+  onSave,
+  onCancel,
+}: {
+  initialText: string;
+  onSave: (text: string) => void;
+  onCancel: () => void;
+}) {
+  const [text, setText] = useState(initialText);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (el) {
+      el.focus();
+      el.style.height = "auto";
+      el.style.height = Math.min(el.scrollHeight, 200) + "px";
+    }
+  }, []);
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (el) {
+      el.style.height = "auto";
+      el.style.height = Math.min(el.scrollHeight, 200) + "px";
+    }
+  }, [text]);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      const trimmed = text.trim();
+      if (trimmed) onSave(trimmed);
+    }
+    if (e.key === "Escape") {
+      onCancel();
+    }
+  };
+
+  return (
+    <div className="w-full max-w-2xl">
+      <textarea
+        ref={textareaRef}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={handleKeyDown}
+        rows={1}
+        className="w-full resize-none rounded-lg bg-blue-700 border border-blue-400 px-4 py-3 text-sm text-white placeholder-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400"
+      />
+      <div className="flex justify-end gap-2 mt-1">
+        <button
+          onClick={onCancel}
+          className="text-xs px-3 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={() => {
+            const trimmed = text.trim();
+            if (trimmed) onSave(trimmed);
+          }}
+          disabled={!text.trim()}
+          className="text-xs px-3 py-1 rounded bg-blue-500 text-white hover:bg-blue-400 disabled:opacity-50 transition-colors"
+        >
+          Save & Send
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function MessageList({
   messages,
   isLoading,
   activity,
   searchMatches,
   currentMatch,
+  onEditMessage,
 }: {
   messages: ChatMessage[];
   isLoading: boolean;
   activity?: StreamingActivity;
   searchMatches?: SearchMatch[];
   currentMatch?: SearchMatch;
+  onEditMessage?: (messageIndex: number, newText: string) => void;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const currentMatchRef = useRef<HTMLElement | null>(null);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+
+  const handleEditSave = useCallback(
+    (index: number, newText: string) => {
+      setEditingIndex(null);
+      onEditMessage?.(index, newText);
+    },
+    [onEditMessage]
+  );
+
+  // Cancel editing when loading starts (message was sent)
+  useEffect(() => {
+    if (isLoading) setEditingIndex(null);
+  }, [isLoading]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -287,6 +376,9 @@ export function MessageList({
     }
   }
 
+  // Whether edit/retry actions are available (not loading, handler provided)
+  const canEdit = !isLoading && !!onEditMessage;
+
   return (
     <div className="flex-1 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-4">
       {messages.length === 0 && !isLoading && (
@@ -299,9 +391,44 @@ export function MessageList({
         const msgMatches = matchesByMessage.get(i) ?? [];
         const segments = parseMessageSegments(msg.text);
         const hasCodeBlocks = segments.some((s) => s.type === "code");
+        const isEditing = editingIndex === i;
+        const showEditActions = canEdit && msg.role === "user" && !msg.isError && !isEditing;
 
         return (
-          <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+          <div key={i} className={`group flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+            {/* Edit/Retry buttons — shown on hover for user messages */}
+            {showEditActions && (
+              <div className="hidden group-hover:flex items-center gap-1 mr-2 shrink-0">
+                <button
+                  onClick={() => setEditingIndex(i)}
+                  className="p-1 rounded text-gray-500 hover:text-gray-300 hover:bg-gray-700 transition-colors"
+                  title="Edit message"
+                  aria-label="Edit message"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                  </svg>
+                </button>
+                <button
+                  onClick={() => onEditMessage?.(i, msg.text)}
+                  className="p-1 rounded text-gray-500 hover:text-gray-300 hover:bg-gray-700 transition-colors"
+                  title="Retry message"
+                  aria-label="Retry message"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </button>
+              </div>
+            )}
+
+            {isEditing ? (
+              <MessageEditor
+                initialText={msg.text}
+                onSave={(newText) => handleEditSave(i, newText)}
+                onCancel={() => setEditingIndex(null)}
+              />
+            ) : (
             <div
               className={`max-w-2xl rounded-lg px-4 py-3 text-sm ${
                 !hasCodeBlocks ? "whitespace-pre-wrap" : ""
@@ -368,6 +495,7 @@ export function MessageList({
                 </span>
               )}
             </div>
+            )}
           </div>
         );
       })}
