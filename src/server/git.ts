@@ -1,6 +1,6 @@
 import simpleGit, { type SimpleGit, type LogResult } from "simple-git";
 
-const WORKSPACE_DIR = "/workspace";
+const DEFAULT_WORKSPACE_DIR = "/workspace";
 
 export interface GitCommitInfo {
   hash: string;
@@ -12,21 +12,27 @@ export interface GitCommitInfo {
 export class GitManager {
   private git: SimpleGit;
 
-  constructor() {
-    this.git = simpleGit(WORKSPACE_DIR);
+  /**
+   * @param workspaceDir - Git working directory. Defaults to `/workspace`.
+   *   Override in tests to use a temp directory.
+   */
+  constructor(workspaceDir?: string) {
+    this.git = simpleGit(workspaceDir ?? DEFAULT_WORKSPACE_DIR);
   }
 
-  /** Ensure /workspace is a git repo with at least one commit. */
+  /** Ensure the workspace is a git repo with at least one commit. */
   async init(): Promise<void> {
     const isRepo = await this.git.checkIsRepo();
     if (!isRepo) {
       await this.git.init();
       await this.git.addConfig("user.email", "vibe@local");
       await this.git.addConfig("user.name", "Vibe");
+      // Disable commit signing — the workspace repo doesn't need GPG/SSH signatures
+      await this.git.addConfig("commit.gpgsign", "false");
       // Create initial commit so rollback always has a base
       await this.git.add(".");
       await this.git.commit("Initial commit", { "--allow-empty": null });
-      console.log("[git] Initialized new repo in", WORKSPACE_DIR);
+      console.log("[git] Initialized repo");
     }
   }
 
