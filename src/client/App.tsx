@@ -352,6 +352,25 @@ export default function App() {
     [send, requestPermission]
   );
 
+  const handleEditMessage = useCallback(
+    (messageIndex: number, newText: string) => {
+      requestPermission();
+      // Truncate messages from the edited index onward, then append the new user message
+      setMessages((prev) => [
+        ...prev.slice(0, messageIndex),
+        { role: "user" as const, text: newText },
+      ]);
+      setIsLoading(true);
+      setActivity({ label: "Thinking..." });
+      send({
+        type: "send_message",
+        text: newText,
+        sessionId: sessionIdRef.current,
+      });
+    },
+    [send, requestPermission]
+  );
+
   const handleGitRefresh = useCallback(() => {
     send({ type: "get_git_log" });
   }, [send]);
@@ -507,6 +526,7 @@ export default function App() {
         activity={activity}
         searchMatches={search.matches}
         currentMatch={search.currentMatch}
+        onEditMessage={handleEditMessage}
       />
       <GitHistory
         commits={gitCommits}

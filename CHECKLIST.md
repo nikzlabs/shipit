@@ -40,7 +40,7 @@
 - [x] Notification when Claude finishes — browser notification or tab title change for background tabs
 - [x] Code block syntax highlighting — add highlight.js or shiki for code blocks in Claude responses
 - [x] Keyboard shortcuts help — a `?` overlay showing all available shortcuts
-- [ ] Message editing/retry — let users edit and resend previous prompts
+- [x] Message editing/retry — let users edit and resend previous prompts
 
 ## Nice to Have
 - [ ] Cost display per turn (from result.total_cost_usd)
