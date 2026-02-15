@@ -39,6 +39,7 @@ export class ClaudeProcess extends EventEmitter {
       const text = chunk.toString().trim();
       if (!text) return;
       console.error("[claude stderr]", text);
+      this.emit("log", "stderr", text);
 
       // Detect auth-related errors — CLI exits with auth messages when not logged in
       const lc = text.toLowerCase();
@@ -97,8 +98,9 @@ export class ClaudeProcess extends EventEmitter {
         const event: ClaudeEvent = JSON.parse(trimmed);
         this.emit("event", event);
       } catch {
-        // Not valid JSON — skip
+        // Not valid JSON — relay as stdout log
         console.warn("[claude] non-JSON line:", trimmed.slice(0, 120));
+        this.emit("log", "stdout", trimmed);
       }
     }
   }
