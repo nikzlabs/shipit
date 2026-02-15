@@ -342,6 +342,24 @@ describe("Integration: WebSocket flow", () => {
     client.close();
   });
 
+  it("rename_session rejects empty title", async () => {
+    sessionManager.track("sess-1", "Original title");
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "rename_session", sessionId: "sess-1", title: "   " });
+    const msg = await client.receive();
+
+    expect(msg.type).toBe("error");
+    expect((msg as any).message).toBe("Session title cannot be empty");
+
+    // Verify the title was NOT changed
+    expect(sessionManager.list()[0].title).toBe("Original title");
+
+    client.close();
+  });
+
   // ---- Git operations ----
 
   it("get_git_log returns commit history", async () => {
