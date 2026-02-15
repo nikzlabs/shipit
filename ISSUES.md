@@ -28,3 +28,23 @@ Claude may reference or build on information from messages the user can no longe
 **Workaround**: The current behavior is acceptable and matches what ChatGPT does. Documented in `ARCHITECTURE.md` under "Message Editing & Retry".
 
 **Files**: `src/client/App.tsx` (`handleEditMessage`), `src/client/components/MessageList.tsx` (`MessageEditor`)
+
+### 2. Periodic port scanner: overlapping scans not guarded
+
+**Severity**: Low — only a concern if `DEFAULT_SCAN_PORTS` grows significantly
+
+The periodic scanner uses `setInterval` with no guard against overlapping scans. If a scan takes longer than the interval, a second scan starts before the first completes. Currently safe because each scan checks 9 ports concurrently with a 300ms TCP timeout, finishing well within the 5-second interval. But if `DEFAULT_SCAN_PORTS` grows or network conditions degrade (e.g., running inside a high-latency container), overlapping scans could cause redundant broadcasts or stale data races.
+
+**Fix**: Add an `isScanning` boolean guard in `runPortScan()` to skip the scan if one is already in progress.
+
+**Files**: `src/server/index.ts` (`runPortScan`, `startPortScanInterval`)
+
+### 3. Preview status broadcasts not throttled
+
+**Severity**: Low — unlikely in practice
+
+If a port rapidly appears and disappears (e.g., a server restarting in a loop), every change triggers a `preview_status` broadcast to all connected clients. There is no debounce or throttle, so clients could receive a burst of status messages causing unnecessary re-renders and iframe reloads.
+
+**Fix**: Add a debounce (e.g., 500ms) to `broadcastPreviewStatus()` so rapid changes are collapsed into a single broadcast.
+
+**Files**: `src/server/index.ts` (`broadcastPreviewStatus`, `runPortScan`)
