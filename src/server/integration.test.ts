@@ -51,7 +51,7 @@ class TestClient {
 
   private constructor(ws: WebSocket) {
     this.ws = ws;
-    ws.on("message", (data) => {
+    ws.on("message", (data: WebSocket.Data) => {
       const msg: WsServerMessage = JSON.parse(data.toString());
       const waiter = this.waiters.shift();
       if (waiter) {
