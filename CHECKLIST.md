@@ -39,7 +39,7 @@
 - [x] Preview port auto-detection — detect when a non-Vite dev server starts on a different port
 - [x] Notification when Claude finishes — browser notification or tab title change for background tabs
 - [x] Code block syntax highlighting — add highlight.js or shiki for code blocks in Claude responses
-- [ ] Keyboard shortcuts help — a `?` overlay showing all available shortcuts
+- [x] Keyboard shortcuts help — a `?` overlay showing all available shortcuts
 - [ ] Message editing/retry — let users edit and resend previous prompts
 
 ## Nice to Have

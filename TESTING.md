@@ -40,7 +40,8 @@ src/
         ├── GitHistory.tsx       →  GitHistory.test.tsx
         ├── ErrorBoundary.tsx    →  ErrorBoundary.test.tsx
         ├── ConnectionBanner.tsx →  ConnectionBanner.test.tsx
-        └── MobileTabBar.tsx     →  MobileTabBar.test.tsx
+        ├── MobileTabBar.tsx     →  MobileTabBar.test.tsx
+        └── KeyboardShortcutsOverlay.tsx → KeyboardShortcutsOverlay.test.tsx
 ```
 
 ## Test Projects
@@ -78,6 +79,7 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | `useIsMobile` | 1 | Returns true for mobile viewport query |
 | `useNotification` | 11 | Tab title change on hidden/visible, title restoration, browser Notification dispatch, permission gating (granted/denied/default), requestPermission, Notification API unavailability, visibilitychange listener cleanup |
 | `MobileTabBar` | 7 | Tab rendering, active tab highlighting, click callbacks, accessibility (nav landmark, aria-current), SVG icons |
+| `KeyboardShortcutsOverlay` | 18 | Dialog rendering, accessibility (role=dialog, aria-label), shortcut group display (General, Chat, Search), individual shortcut entries, close on Escape/`?`/backdrop click/close button, no close on inner content click, kbd elements rendering, listener cleanup on unmount |
 
 ## Writing New Tests
 
