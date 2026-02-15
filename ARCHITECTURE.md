@@ -95,7 +95,8 @@ The server is intentionally thin — it's a bridge between the browser and the C
 | `components/MessageInput.tsx` | Auto-resizing textarea, Enter-to-send, activity status bar |
 | `components/PreviewFrame.tsx` | iframe pointing to dev server (Vite or auto-detected) with reload button and source indicator |
 | `components/DocsViewer.tsx` | Markdown file browser and renderer (using `marked`) |
-| `components/FileTree.tsx` | Workspace file tree browser — expandable/collapsible directory tree with folder/file icons |
+| `components/FileTree.tsx` | Workspace file tree browser — expandable/collapsible directory tree with folder/file icons, click-to-view files |
+| `components/FileContentViewer.tsx` | Read-only file content viewer with syntax highlighting (highlight.js) |
 | `components/GitHistory.tsx` | Collapsible git commit list with rollback buttons |
 | `components/SessionSelector.tsx` | Session management — list, resume, new, delete |
 | `components/SearchBar.tsx` | Search input with match count, prev/next navigation, keyboard shortcuts |
@@ -169,6 +170,7 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `get_doc` | `path` | Request content of a markdown file |
 | `get_chat_history` | `sessionId` | Request persisted chat messages for a session |
 | `get_file_tree` | — | Request workspace directory tree |
+| `get_file_content` | `path` | Request contents of a file in /workspace |
 
 ### Server → Client Messages
 
@@ -188,6 +190,7 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `doc_content` | `path`, `content` | Raw markdown file content |
 | `chat_history` | `sessionId`, `messages[]` | Persisted chat messages for a session |
 | `file_tree` | `tree[]` | Workspace directory tree (array of `FileTreeNode`) |
+| `file_content` | `path`, `content` | Raw file content for the file viewer |
 
 ### Adding a New Message Type
 
@@ -522,6 +525,40 @@ Within each directory level, entries are sorted with directories first, then fil
 - **`src/server/types.ts`** — `FileTreeNode` type and `WsFileTree` / `WsGetFileTree` message types.
 - **`src/client/components/FileTree.tsx`** — React component: `TreeNode` (recursive), `FileTree` (root wrapper with empty state and header).
 - **`src/client/App.tsx`** — State management: `fileTree` state, `file_tree` message handler, tab switching, auto-refresh on commit.
+
+## File Content Viewer
+
+Clicking a file in the Files tab opens a read-only viewer showing the file's contents with syntax highlighting. This lets users inspect files without leaving the browser — consistent with the "pure vibe coding" philosophy where Claude writes the code and users review it.
+
+### How It Works
+
+1. **Click handler**: When the user clicks a file in `FileTree`, `App.tsx` sends `{ type: "get_file_content", path }` over WebSocket.
+2. **Server handler**: The server resolves the path relative to the workspace directory, validates against path traversal (same pattern as `get_doc`), reads the file, and responds with `{ type: "file_content", path, content }`.
+3. **`FileContentViewer` component** renders the content inside a `<pre><code class="hljs">` block with syntax highlighting via `hljs.highlight()` (when the language is known from the file extension) or `hljs.highlightAuto()` (for unknown extensions).
+4. **Closing the viewer** returns to the file tree view. The viewer and tree share the same tab space — when a file is selected, the viewer replaces the tree; clicking "Close" brings back the tree.
+
+### Language Detection
+
+`languageFromPath()` maps file extensions to highlight.js language names. Common extensions are mapped explicitly (`.ts` → TypeScript, `.json` → JSON, `.py` → Python, etc.). Files without a recognized extension fall back to `highlightAuto()`. Special-case filenames like `Dockerfile` are also handled.
+
+### Selected File Highlighting
+
+When a file is selected, it gets a blue highlight in the file tree (`bg-blue-900/50`). File rows are rendered as `<button>` elements so they're clickable and keyboard-accessible.
+
+### Key Files
+
+- **`src/server/index.ts`** — `get_file_content` handler: path validation, file read, response.
+- **`src/server/types.ts`** — `WsGetFileContent`, `WsFileContent` message types.
+- **`src/client/components/FileContentViewer.tsx`** — Read-only viewer with syntax highlighting.
+- **`src/client/components/FileTree.tsx`** — `onFileClick` and `selectedFile` props for click-to-view.
+- **`src/client/App.tsx`** — `viewingFile`/`viewingFileContent` state, message handler, conditional rendering.
+
+### Key Design Decisions
+
+- **Reuses highlight.js**: The same library already used for code block highlighting in `MessageList.tsx`. No new dependencies.
+- **Server-side file read**: Content is fetched from the server rather than using a hypothetical client-side FS API. This keeps the architecture consistent — the server is the only thing that touches the filesystem.
+- **Path traversal protection**: Uses the same `path.resolve()` + `startsWith()` check as the `get_doc` handler, preventing reads outside `/workspace`.
+- **No editing**: This is deliberately read-only. Editing is Claude's job in the vibe coding model.
 
 ## Preview Port Auto-Detection
 

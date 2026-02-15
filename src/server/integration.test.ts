@@ -393,6 +393,67 @@ describe("Integration: WebSocket flow", () => {
     client.close();
   });
 
+  // ---- File content viewer ----
+
+  it("get_file_content returns file content", async () => {
+    fs.writeFileSync(path.join(tmpDir, "hello.ts"), "const x = 42;");
+
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "get_file_content", path: "hello.ts" });
+    const msg = await client.receive();
+
+    expect(msg.type).toBe("file_content");
+    expect((msg as any).path).toBe("hello.ts");
+    expect((msg as any).content).toBe("const x = 42;");
+
+    client.close();
+  });
+
+  it("get_file_content returns nested file content", async () => {
+    fs.mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "src", "app.ts"), "export default {};");
+
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "get_file_content", path: "src/app.ts" });
+    const msg = await client.receive();
+
+    expect(msg.type).toBe("file_content");
+    expect((msg as any).path).toBe("src/app.ts");
+    expect((msg as any).content).toBe("export default {};");
+
+    client.close();
+  });
+
+  it("get_file_content rejects path traversal", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "get_file_content", path: "../../etc/passwd" });
+    const msg = await client.receive();
+
+    expect(msg.type).toBe("error");
+    expect((msg as any).message).toBe("Invalid path");
+
+    client.close();
+  });
+
+  it("get_file_content returns error for non-existent file", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "get_file_content", path: "no-such-file.ts" });
+    const msg = await client.receive();
+
+    expect(msg.type).toBe("error");
+    expect((msg as any).message).toContain("Failed to read file");
+
+    client.close();
+  });
+
   // ---- Claude message flow ----
 
   it("send_message creates a ClaudeProcess and relays events", async () => {

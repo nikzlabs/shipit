@@ -42,7 +42,8 @@ src/
         ├── ConnectionBanner.tsx →  ConnectionBanner.test.tsx
         ├── PreviewFrame.tsx      →  PreviewFrame.test.tsx
         ├── MobileTabBar.tsx     →  MobileTabBar.test.tsx
-        └── KeyboardShortcutsOverlay.tsx → KeyboardShortcutsOverlay.test.tsx
+        ├── KeyboardShortcutsOverlay.tsx → KeyboardShortcutsOverlay.test.tsx
+        └── FileContentViewer.tsx → FileContentViewer.test.tsx
 ```
 
 ## Test Projects
@@ -63,7 +64,7 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | `GitManager` | 12 | Init, auto-commit, log, rollback, empty-commit handling |
 | `AuthManager` | 11 | URL pattern matching, `extractAuthUrl` extraction and cleanup |
 | `findMarkdownFiles` | 7 | Recursive scan, directory skipping, sorting |
-| Integration (E2E) | 24 | Full WebSocket flow: connect, sessions, git, docs, Claude lifecycle, multi-client, path traversal, disconnect cleanup, port auto-detection with multi-port support |
+| Integration (E2E) | 28 | Full WebSocket flow: connect, sessions, git, docs, file content viewer (read, nested path, path traversal, non-existent file), Claude lifecycle, multi-client, path traversal, disconnect cleanup, port auto-detection with multi-port support |
 
 ### Client Tests
 
@@ -82,6 +83,8 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | `useNotification` | 11 | Tab title change on hidden/visible, title restoration, browser Notification dispatch, permission gating (granted/denied/default), requestPermission, Notification API unavailability, visibilitychange listener cleanup |
 | `MobileTabBar` | 7 | Tab rendering, active tab highlighting, click callbacks, accessibility (nav landmark, aria-current), SVG icons |
 | `KeyboardShortcutsOverlay` | 18 | Dialog rendering, accessibility (role=dialog, aria-label), shortcut group display (General, Chat, Search), individual shortcut entries, close on Escape/`?`/backdrop click/close button, no close on inner content click, kbd elements rendering, listener cleanup on unmount |
+| `FileContentViewer` | 9 | File path display, close button, loading state, code element with hljs class, pre wrapper, syntax highlighting for TypeScript, empty file, path title attribute, JSON highlighting |
+| `FileTree` (additions) | +5 | onFileClick callback, root-level file click, selected file highlighting, non-selected file styling, file buttons for clickability |
 
 ## Writing New Tests
 
@@ -250,6 +253,7 @@ The `FakeClaudeProcess` is controlled by the test — you call `lastClaude.emit(
 | Sessions | list, new, delete |
 | Git | log, rollback (verifies file system state) |
 | Docs | list markdown files, get content |
+| File content viewer | read file, nested path, path traversal rejection, non-existent file error |
 | Claude flow | `send_message` → events relayed, session tracking, auto-commit on done |
 | Claude errors | Error event relay, auth detection |
 | Process lifecycle | Kill previous process on new message, kill on disconnect |

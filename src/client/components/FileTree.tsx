@@ -10,6 +10,8 @@ export interface FileTreeNode {
 export interface FileTreeProps {
   tree: FileTreeNode[];
   onRefresh: () => void;
+  onFileClick?: (filePath: string) => void;
+  selectedFile?: string | null;
 }
 
 /** Icon for collapsed directory */
@@ -54,7 +56,17 @@ function ChevronIcon({ expanded }: { expanded: boolean }) {
   );
 }
 
-function TreeNode({ node, depth }: { node: FileTreeNode; depth: number }) {
+function TreeNode({
+  node,
+  depth,
+  onFileClick,
+  selectedFile,
+}: {
+  node: FileTreeNode;
+  depth: number;
+  onFileClick?: (filePath: string) => void;
+  selectedFile?: string | null;
+}) {
   const [expanded, setExpanded] = useState(depth < 1);
 
   const toggle = useCallback(() => {
@@ -78,7 +90,7 @@ function TreeNode({ node, depth }: { node: FileTreeNode; depth: number }) {
         {expanded && node.children && (
           <div>
             {node.children.map((child) => (
-              <TreeNode key={child.path} node={child} depth={depth + 1} />
+              <TreeNode key={child.path} node={child} depth={depth + 1} onFileClick={onFileClick} selectedFile={selectedFile} />
             ))}
           </div>
         )}
@@ -86,19 +98,26 @@ function TreeNode({ node, depth }: { node: FileTreeNode; depth: number }) {
     );
   }
 
+  const isSelected = selectedFile === node.path;
+
   return (
-    <div
-      className="flex items-center gap-1.5 py-1 px-2 text-sm text-gray-400"
+    <button
+      onClick={() => onFileClick?.(node.path)}
+      className={`flex items-center gap-1.5 w-full text-left py-1 px-2 text-sm transition-colors ${
+        isSelected
+          ? "bg-blue-900/50 text-blue-200"
+          : "text-gray-400 hover:bg-gray-800"
+      }`}
       style={{ paddingLeft: paddingLeft + 16 }}
       title={node.path}
     >
       <FileIcon />
       <span className="truncate">{node.name}</span>
-    </div>
+    </button>
   );
 }
 
-export function FileTree({ tree, onRefresh }: FileTreeProps) {
+export function FileTree({ tree, onRefresh, onFileClick, selectedFile }: FileTreeProps) {
   if (tree.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-gray-500 text-sm">
@@ -136,7 +155,7 @@ export function FileTree({ tree, onRefresh }: FileTreeProps) {
       {/* Tree content */}
       <div className="flex-1 overflow-y-auto py-1">
         {tree.map((node) => (
-          <TreeNode key={node.path} node={node} depth={0} />
+          <TreeNode key={node.path} node={node} depth={0} onFileClick={onFileClick} selectedFile={selectedFile} />
         ))}
       </div>
     </div>
