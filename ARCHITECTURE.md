@@ -83,6 +83,7 @@ The server is intentionally thin — it's a bridge between the browser and the C
 | `hooks/useWebSocket.ts` | WebSocket lifecycle (connect, reconnect, send/receive JSON) |
 | `hooks/useResizablePanel.ts` | Drag-to-resize logic for the two-column layout (persists to localStorage) |
 | `hooks/useSearch.ts` | Chat search logic — substring matching, match navigation, state management |
+| `hooks/useMediaQuery.ts` | Responsive breakpoint detection via `matchMedia`, plus `useIsMobile()` convenience wrapper |
 | `components/ResizeHandle.tsx` | Vertical drag handle rendered between the chat and preview/docs panels |
 | `components/MessageList.tsx` | Renders chat messages, tool invocations, streaming indicators |
 | `components/StreamingIndicator.tsx` | Typing dots, thinking indicator, tool spinner, activity label derivation |
@@ -95,6 +96,7 @@ The server is intentionally thin — it's a bridge between the browser and the C
 | `components/SearchBar.tsx` | Search input with match count, prev/next navigation, keyboard shortcuts |
 | `components/ErrorBoundary.tsx` | React Error Boundary — catches unhandled render errors, shows fallback with reload/recover |
 | `components/ConnectionBanner.tsx` | Full-width banner shown when WebSocket is disconnected or reconnecting |
+| `components/MobileTabBar.tsx` | Bottom navigation bar for mobile: switch between Chat and Preview panels |
 | `components/AuthOverlay.tsx` | Full-screen overlay for OAuth authentication flow |
 
 ### Claude CLI Events (NDJSON)
@@ -251,11 +253,41 @@ The two-column layout (chat on the left, preview/docs on the right) is resizable
 - **`components/ResizeHandle.tsx`** — The visual handle: 8px transparent hit area with a 2px centered indicator line.
 - **`index.css`** — `.resize-handle` class sets width and cursor.
 
+### Touch Support
+
+The resize handle also supports touch events for tablet users. On `touchstart`, global `touchmove`/`touchend` listeners mirror the mouse logic, computing the split fraction from `touch.clientX`. The `ResizeHandle` component accepts an optional `onTouchStart` prop forwarded from the hook.
+
 ### Adding Another Resizable Split
 
 To add a vertical (top/bottom) or additional horizontal split:
 1. Use the same `useResizablePanel` hook with a different `storageKey`.
 2. For vertical splits, the hook would need modification to track `clientY` / `rect.height` instead of `clientX` / `rect.width`.
+
+## Mobile Responsiveness
+
+On viewports narrower than 768px (Tailwind `md` breakpoint), the two-column layout switches to a single-panel view with a bottom tab bar for navigation.
+
+### How It Works
+
+1. **`useIsMobile` hook** (`src/client/hooks/useMediaQuery.ts`) uses `window.matchMedia("(max-width: 767px)")` to detect mobile viewports and re-render when the viewport crosses the breakpoint.
+2. **`App.tsx`** conditionally renders either:
+   - **Mobile**: A single full-width panel (chat or preview/docs) with a `MobileTabBar` at the bottom for switching.
+   - **Desktop**: The side-by-side resizable split layout with `ResizeHandle`.
+3. **`MobileTabBar` component** (`src/client/components/MobileTabBar.tsx`) renders a fixed bottom navigation bar with Chat and Preview tabs.
+4. **Responsive spacing**: Components like `MessageList`, `MessageInput`, and the header use responsive Tailwind classes (`px-3 sm:px-6`, `gap-2 sm:gap-3`) for tighter padding on small screens.
+
+### Key Files
+
+- **`hooks/useMediaQuery.ts`** — `useMediaQuery(query)` generic hook and `useIsMobile()` convenience wrapper.
+- **`components/MobileTabBar.tsx`** — Bottom tab bar with Chat/Preview tabs, SVG icons, `aria-current` for accessibility.
+- **`App.tsx`** — Conditional layout rendering based on `isMobile`.
+
+### Key Design Decisions
+
+- **Single panel, not stacked**: On mobile, showing both panels stacked vertically wastes screen space. A tab bar switch is more natural on phones.
+- **No resize handle on mobile**: The drag handle is hidden because there's only one panel visible.
+- **Touch on tablets**: Tablets (≥768px) still get the desktop layout with the resize handle, but with touch event support so dragging works without a mouse.
+- **Bottom tab bar**: Follows the native mobile app pattern (iOS/Android) for primary navigation, placed at the bottom for thumb reach.
 
 ## Search in Chat History
 

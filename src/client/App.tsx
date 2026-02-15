@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useWebSocket } from "./hooks/useWebSocket.js";
 import { useResizablePanel } from "./hooks/useResizablePanel.js";
 import { useSearch } from "./hooks/useSearch.js";
+import { useIsMobile } from "./hooks/useMediaQuery.js";
 import { MessageInput } from "./components/MessageInput.js";
 import { MessageList, type ChatMessage } from "./components/MessageList.js";
 import { PreviewFrame, type PreviewStatus } from "./components/PreviewFrame.js";
@@ -13,6 +14,7 @@ import { ResizeHandle } from "./components/ResizeHandle.js";
 import { SearchBar } from "./components/SearchBar.js";
 import { activityFromTool, type StreamingActivity } from "./components/StreamingIndicator.js";
 import { ConnectionBanner } from "./components/ConnectionBanner.js";
+import { MobileTabBar, type MobilePanel } from "./components/MobileTabBar.js";
 
 type RightTab = "preview" | "docs";
 
@@ -36,11 +38,14 @@ export default function App() {
   const [activity, setActivity] = useState<StreamingActivity | undefined>(undefined);
   const sessionIdRef = useRef<string | undefined>(undefined);
 
-  const { fraction, isDragging, onMouseDown, containerRef } = useResizablePanel({
+  const { fraction, isDragging, onMouseDown, onTouchStart, containerRef } = useResizablePanel({
     initialFraction: 0.5,
     minFraction: 0.25,
     storageKey: "vibe-panel-split",
   });
+
+  const isMobile = useIsMobile();
+  const [mobilePanel, setMobilePanel] = useState<MobilePanel>("chat");
 
   const [searchOpen, setSearchOpen] = useState(false);
   const search = useSearch(messages);
@@ -327,14 +332,91 @@ export default function App() {
     [send, docFiles.length]
   );
 
+  // Shared right-panel content (Preview / Docs with tab bar)
+  const rightPanel = (
+    <>
+      {/* Tab bar */}
+      <div className="flex border-b border-gray-700 bg-gray-900">
+        <button
+          onClick={() => handleTabChange("preview")}
+          className={`px-4 py-2 text-sm font-medium transition-colors ${
+            rightTab === "preview"
+              ? "text-gray-100 border-b-2 border-blue-500"
+              : "text-gray-500 hover:text-gray-300"
+          }`}
+        >
+          Preview
+        </button>
+        <button
+          onClick={() => handleTabChange("docs")}
+          className={`px-4 py-2 text-sm font-medium transition-colors ${
+            rightTab === "docs"
+              ? "text-gray-100 border-b-2 border-blue-500"
+              : "text-gray-500 hover:text-gray-300"
+          }`}
+        >
+          Docs
+        </button>
+      </div>
+
+      {/* Tab content */}
+      <div className="flex-1 min-h-0">
+        {rightTab === "preview" ? (
+          <PreviewFrame preview={preview} />
+        ) : (
+          <DocsViewer
+            files={docFiles}
+            selectedFile={selectedDoc}
+            content={docContent}
+            onSelectFile={handleDocSelect}
+            onRefresh={handleDocRefresh}
+          />
+        )}
+      </div>
+    </>
+  );
+
+  // Shared chat panel content
+  const chatPanel = (
+    <>
+      {searchOpen && (
+        <SearchBar
+          query={search.query}
+          onQueryChange={search.setQuery}
+          matches={search.matches}
+          currentMatchIndex={search.currentMatchIndex}
+          onNext={search.goToNext}
+          onPrev={search.goToPrev}
+          onClose={() => {
+            setSearchOpen(false);
+            search.clear();
+          }}
+        />
+      )}
+      <MessageList
+        messages={messages}
+        isLoading={isLoading}
+        activity={activity}
+        searchMatches={search.matches}
+        currentMatch={search.currentMatch}
+      />
+      <GitHistory
+        commits={gitCommits}
+        onRollback={handleRollback}
+        onRefresh={handleGitRefresh}
+      />
+      <MessageInput onSend={handleSend} disabled={isLoading || status !== "open"} activity={isLoading ? activity : undefined} />
+    </>
+  );
+
   return (
     <div className="flex flex-col h-screen bg-gray-950 text-gray-100">
       {authUrl && <AuthOverlay url={authUrl} />}
 
       {/* Header */}
-      <header className="flex items-center justify-between px-6 py-3 border-b border-gray-800">
-        <div className="flex items-center gap-4">
-          <h1 className="text-lg font-semibold tracking-tight">Vibe</h1>
+      <header className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-gray-800">
+        <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+          <h1 className="text-lg font-semibold tracking-tight shrink-0">Vibe</h1>
           <SessionSelector
             sessions={sessions}
             currentSessionId={sessionIdRef.current}
@@ -344,10 +426,10 @@ export default function App() {
             onRefresh={handleSessionRefresh}
           />
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
           {preview?.running && (
-            <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-900 text-emerald-300">
-              preview :{ preview.port}
+            <span className="hidden sm:inline text-xs px-2 py-0.5 rounded-full bg-emerald-900 text-emerald-300">
+              preview :{preview.port}
             </span>
           )}
           <span
@@ -366,90 +448,41 @@ export default function App() {
 
       <ConnectionBanner status={status} />
 
-      {/* Main content: two-column resizable layout */}
-      <div ref={containerRef} className="flex flex-1 min-h-0">
-        {/* Left column — Chat */}
-        <div
-          className="flex flex-col min-w-0 border-r border-gray-800"
-          style={{ width: `${fraction * 100}%` }}
-        >
-          {searchOpen && (
-            <SearchBar
-              query={search.query}
-              onQueryChange={search.setQuery}
-              matches={search.matches}
-              currentMatchIndex={search.currentMatchIndex}
-              onNext={search.goToNext}
-              onPrev={search.goToPrev}
-              onClose={() => {
-                setSearchOpen(false);
-                search.clear();
-              }}
-            />
-          )}
-          <MessageList
-            messages={messages}
-            isLoading={isLoading}
-            activity={activity}
-            searchMatches={search.matches}
-            currentMatch={search.currentMatch}
-          />
-          <GitHistory
-            commits={gitCommits}
-            onRollback={handleRollback}
-            onRefresh={handleGitRefresh}
-          />
-          <MessageInput onSend={handleSend} disabled={isLoading || status !== "open"} activity={isLoading ? activity : undefined} />
-        </div>
-
-        {/* Drag handle */}
-        <ResizeHandle isDragging={isDragging} onMouseDown={onMouseDown} />
-
-        {/* Right column — Tabbed (Preview / Docs) */}
-        <div
-          className="min-w-0 hidden md:flex flex-col bg-gray-900"
-          style={{ width: `${(1 - fraction) * 100}%` }}
-        >
-          {/* Tab bar */}
-          <div className="flex border-b border-gray-700 bg-gray-900">
-            <button
-              onClick={() => handleTabChange("preview")}
-              className={`px-4 py-2 text-sm font-medium transition-colors ${
-                rightTab === "preview"
-                  ? "text-gray-100 border-b-2 border-blue-500"
-                  : "text-gray-500 hover:text-gray-300"
-              }`}
-            >
-              Preview
-            </button>
-            <button
-              onClick={() => handleTabChange("docs")}
-              className={`px-4 py-2 text-sm font-medium transition-colors ${
-                rightTab === "docs"
-                  ? "text-gray-100 border-b-2 border-blue-500"
-                  : "text-gray-500 hover:text-gray-300"
-              }`}
-            >
-              Docs
-            </button>
-          </div>
-
-          {/* Tab content */}
-          <div className="flex-1 min-h-0">
-            {rightTab === "preview" ? (
-              <PreviewFrame preview={preview} />
+      {isMobile ? (
+        /* ── Mobile: single panel with bottom tab bar ── */
+        <>
+          <div className="flex flex-col flex-1 min-h-0">
+            {mobilePanel === "chat" ? (
+              <div className="flex flex-col flex-1 min-h-0">{chatPanel}</div>
             ) : (
-              <DocsViewer
-                files={docFiles}
-                selectedFile={selectedDoc}
-                content={docContent}
-                onSelectFile={handleDocSelect}
-                onRefresh={handleDocRefresh}
-              />
+              <div className="flex flex-col flex-1 min-h-0 bg-gray-900">{rightPanel}</div>
             )}
           </div>
+          <MobileTabBar activePanel={mobilePanel} onChangePanel={setMobilePanel} />
+        </>
+      ) : (
+        /* ── Desktop: side-by-side resizable layout ── */
+        <div ref={containerRef} className="flex flex-1 min-h-0">
+          {/* Left column — Chat */}
+          <div
+            className="flex flex-col min-w-0 border-r border-gray-800"
+            style={{ width: `${fraction * 100}%` }}
+          >
+            {chatPanel}
+          </div>
+
+          {/* Drag handle */}
+          <ResizeHandle isDragging={isDragging} onMouseDown={onMouseDown} onTouchStart={onTouchStart} />
+
+          {/* Right column — Tabbed (Preview / Docs) */}
+          <div
+            className="min-w-0 flex flex-col bg-gray-900"
+            style={{ width: `${(1 - fraction) * 100}%` }}
+          >
+            {rightPanel}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
