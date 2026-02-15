@@ -170,9 +170,11 @@ interface AppDeps {
   sessionManager?: SessionManager; // Session persistence (default: /workspace/.vibe-sessions.json)
   authManager?: AuthManager;     // OAuth flow (default: real CLI)
   claudeFactory?: () => ClaudeProcess; // How to create Claude processes
+  detectPorts?: (excludePorts: number[]) => Promise<number[]>; // Port scanner (default: real TCP scan)
   workspaceDir?: string;         // Directory for docs (default: /workspace)
   serveStatic?: boolean;         // Serve dist/client files (default: true)
   startVite?: boolean;           // Auto-start Vite dev server (default: true)
+  portScanIntervalMs?: number;   // Periodic scan interval, 0 to disable (default: 5000)
 }
 ```
 
@@ -253,3 +255,5 @@ The `FakeClaudeProcess` is controlled by the test — you call `lastClaude.emit(
 | Process lifecycle | Kill previous process on new message, kill on disconnect |
 | Multi-client | Each client gets own `preview_status` |
 | Session tracking | `result` event updates `lastUsedAt` |
+| Port auto-detection | Detected after turn, no broadcast when unchanged, port changes between turns, new client gets current state, multiple ports |
+| Periodic port scanning | Mid-turn detection, interval start/stop tied to client connections, no broadcast when unchanged, detects port appear/disappear |
