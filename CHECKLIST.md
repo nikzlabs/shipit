@@ -41,6 +41,13 @@
 - [x] Code block syntax highlighting — add highlight.js or shiki for code blocks in Claude responses
 - [x] Keyboard shortcuts help — a `?` overlay showing all available shortcuts
 - [x] Message editing/retry — let users edit and resend previous prompts
+- [ ] Preview port selector — when multiple ports are detected, let the user choose which one to preview (currently shows first found)
+- [ ] Periodic port scanning — scan on an interval, not just after Claude turns, to catch servers started via Bash tool mid-turn
+- [ ] File content viewer — clicking a file in the Files tab could show its contents in a read-only viewer
+- [ ] Terminal/logs panel — show Claude CLI stdout/stderr in a terminal-like pane for debugging
+- [ ] Multi-file diff view — when Claude edits multiple files in one turn, show a grouped diff summary
+- [ ] Session rename — currently titles are auto-generated from the first message
+- [ ] Workspace project templates — quick-start templates (Vite + React, Next.js, Express) to avoid the cold-start friction
 
 ## Nice to Have
 - [ ] Cost display per turn (from result.total_cost_usd)
