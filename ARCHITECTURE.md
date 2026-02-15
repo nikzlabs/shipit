@@ -597,6 +597,29 @@ Pressing `?` (when not focused on an input field) toggles a modal overlay listin
 - **Input guard** — the `?` listener checks `e.target.tagName` to avoid capturing keystrokes while the user is typing in the chat input or search bar.
 - **Accessible** — uses `role="dialog"`, `aria-label`, and a visible close button labeled "Esc".
 
+## Message Editing & Retry
+
+Users can edit or retry any previous user message. Hovering over a user message reveals edit (pencil) and retry (refresh) buttons.
+
+### How It Works
+
+1. **Edit**: Clicking the pencil icon replaces the message bubble with an inline `MessageEditor` — a textarea pre-filled with the original text. The user modifies the text and submits via "Save & Send" or Enter. Escape or "Cancel" dismisses the editor.
+2. **Retry**: Clicking the refresh icon immediately resends the same message text without opening the editor.
+3. **On submit (edit or retry)**: `App.tsx`'s `handleEditMessage(index, newText)` truncates the `messages` array to before the edited message, appends a new user message with the (possibly modified) text, and sends it via `send_message`. All messages after the edited one (including Claude's responses) are removed from the UI.
+4. **Claude context**: Since the CLI uses `--resume`, Claude retains its full conversation history server-side. The edited/retried message is sent as a new turn. This means Claude sees the full prior conversation plus the new message — it doesn't "forget" earlier messages that were removed from the UI.
+
+### Key Design Decisions
+
+- **No server changes**: Editing is purely a client-side operation. No new WebSocket message types are needed.
+- **Truncation, not replacement**: Rather than trying to modify Claude's conversation history (which would require CLI-level support), we truncate the UI and send a new message. This is the same approach used by ChatGPT and similar UIs.
+- **Buttons hidden during loading**: Edit/retry buttons are suppressed while Claude is responding to avoid conflicting sends.
+- **Hover reveal**: Buttons use `group-hover:flex` to appear on hover, keeping the UI clean when not interacting.
+
+### Key Files
+
+- **`src/client/components/MessageList.tsx`** — `MessageEditor` component (inline textarea editor), edit/retry button rendering, `editingIndex` state.
+- **`src/client/App.tsx`** — `handleEditMessage` callback: truncates messages and sends the new text.
+
 ## Build & Run
 
 ```bash
