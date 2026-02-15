@@ -15,6 +15,7 @@
     "@fastify/websocket": "^11.0.2",
     "@tailwindcss/typography": "^0.5.19",
     "fastify": "^5.2.1",
+    "highlight.js": "^11.11.1",
     "marked": "^17.0.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
