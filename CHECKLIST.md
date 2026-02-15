@@ -24,7 +24,11 @@
 ## Phase 5: Next Up
 - [x] Resizable panels
 - [x] Search in chat history
-- [ ] Test coverage
+- [x] Test coverage — Vitest, 71 tests across 6 server/client modules
+
+## Phase 6: Test Depth
+- [ ] Component-level tests — React component tests (MessageList, DiffBlock, GitHistory) with @testing-library/react
+- [ ] Integration/E2E tests — full WebSocket flow from client to server, Fastify test harness
 
 ## Nice to Have
 - [ ] Cost display per turn (from result.total_cost_usd)

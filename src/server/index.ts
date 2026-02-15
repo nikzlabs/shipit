@@ -9,30 +9,12 @@ import { ViteManager } from "./vite-manager.js";
 import { GitManager } from "./git.js";
 import { AuthManager } from "./auth.js";
 import { SessionManager } from "./sessions.js";
+import { findMarkdownFiles } from "./markdown.js";
 import type { WsClientMessage, WsServerMessage, ClaudeEvent } from "./types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const WORKSPACE = "/workspace";
-
-/** Recursively find .md files in a directory, skipping node_modules and .git */
-async function findMarkdownFiles(dir: string, prefix = ""): Promise<string[]> {
-  const entries = await fs.readdir(dir, { withFileTypes: true });
-  const results: string[] = [];
-
-  for (const entry of entries) {
-    if (entry.name === "node_modules" || entry.name === ".git") continue;
-    const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-
-    if (entry.isDirectory()) {
-      results.push(...await findMarkdownFiles(path.join(dir, entry.name), relativePath));
-    } else if (entry.name.endsWith(".md")) {
-      results.push(relativePath);
-    }
-  }
-
-  return results.sort();
-}
 
 async function main() {
   const app = Fastify({ logger: true });

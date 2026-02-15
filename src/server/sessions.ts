@@ -2,24 +2,29 @@ import fs from "node:fs";
 import path from "node:path";
 import type { SessionInfo } from "./types.js";
 
-const SESSIONS_FILE = path.join("/workspace", ".vibe-sessions.json");
+const DEFAULT_SESSIONS_FILE = path.join("/workspace", ".vibe-sessions.json");
 
 /**
  * Manages session persistence. Stores session metadata in a JSON file
  * so users can list, resume, and start new sessions.
+ *
+ * @param sessionsFile - Path to the JSON file for persistence.
+ *   Defaults to `/workspace/.vibe-sessions.json`. Override in tests.
  */
 export class SessionManager {
   private sessions: SessionInfo[] = [];
+  private sessionsFile: string;
 
-  constructor() {
+  constructor(sessionsFile?: string) {
+    this.sessionsFile = sessionsFile ?? DEFAULT_SESSIONS_FILE;
     this.load();
   }
 
   /** Load sessions from disk. */
   private load(): void {
     try {
-      if (fs.existsSync(SESSIONS_FILE)) {
-        const raw = fs.readFileSync(SESSIONS_FILE, "utf-8");
+      if (fs.existsSync(this.sessionsFile)) {
+        const raw = fs.readFileSync(this.sessionsFile, "utf-8");
         this.sessions = JSON.parse(raw);
       }
     } catch {
@@ -30,7 +35,7 @@ export class SessionManager {
   /** Persist sessions to disk. */
   private save(): void {
     try {
-      fs.writeFileSync(SESSIONS_FILE, JSON.stringify(this.sessions, null, 2));
+      fs.writeFileSync(this.sessionsFile, JSON.stringify(this.sessions, null, 2));
     } catch (err: any) {
       console.error("[sessions] failed to save:", err.message);
     }
