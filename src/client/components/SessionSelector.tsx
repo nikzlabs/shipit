@@ -28,9 +28,13 @@ export function SessionSelector({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const editInputRef = useRef<HTMLInputElement>(null);
+  // Tracks whether editing was already resolved (submitted or cancelled)
+  // so onBlur doesn't double-fire after a backdrop click or Escape.
+  const editResolvedRef = useRef(false);
 
   useEffect(() => {
     if (editingId && editInputRef.current) {
+      editResolvedRef.current = false;
       editInputRef.current.focus();
       editInputRef.current.select();
     }
@@ -42,6 +46,8 @@ export function SessionSelector({
   };
 
   const submitRename = () => {
+    if (editResolvedRef.current) return;
+    editResolvedRef.current = true;
     if (editingId && editTitle.trim()) {
       onRename(editingId, editTitle.trim());
     }
@@ -50,6 +56,7 @@ export function SessionSelector({
   };
 
   const cancelEditing = () => {
+    editResolvedRef.current = true;
     setEditingId(null);
     setEditTitle("");
   };

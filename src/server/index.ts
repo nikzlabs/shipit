@@ -460,11 +460,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       }
 
       if (msg.type === "rename_session") {
-        const renamed = sessionManager.rename(msg.sessionId, msg.title);
-        if (renamed) {
-          send({ type: "session_renamed", session: renamed });
+        const trimmed = msg.title.trim();
+        if (!trimmed) {
+          send({ type: "error", message: "Session title cannot be empty" });
         } else {
-          send({ type: "error", message: "Session not found" });
+          const renamed = sessionManager.rename(msg.sessionId, trimmed);
+          if (renamed) {
+            send({ type: "session_renamed", session: renamed });
+          } else {
+            send({ type: "error", message: "Session not found" });
+          }
         }
       }
 
