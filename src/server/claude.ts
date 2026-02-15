@@ -56,8 +56,8 @@ export class ClaudeProcess extends EventEmitter {
     });
 
     this.proc.on("close", (code) => {
-      // Drain any remaining buffer
-      this.drainLines();
+      // Drain any remaining buffer, flushing the final (possibly unterminated) line
+      this.drainLines(true);
       this.emit("done", code);
       this.proc = null;
     });
@@ -76,10 +76,19 @@ export class ClaudeProcess extends EventEmitter {
     }
   }
 
-  private drainLines(): void {
+  /**
+   * Parse complete NDJSON lines from the buffer.
+   * @param flush - If true, also attempt to parse the final unterminated segment
+   *   (used on process close to avoid losing the last event).
+   */
+  private drainLines(flush = false): void {
     const lines = this.buffer.split("\n");
-    // Keep the last (possibly incomplete) chunk in the buffer
-    this.buffer = lines.pop() ?? "";
+    // Keep the last (possibly incomplete) chunk unless flushing
+    if (!flush) {
+      this.buffer = lines.pop() ?? "";
+    } else {
+      this.buffer = "";
+    }
 
     for (const line of lines) {
       const trimmed = line.trim();

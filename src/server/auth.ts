@@ -6,13 +6,29 @@ import path from "node:path";
 /**
  * Regex patterns to detect OAuth/verification URLs in Claude CLI output.
  * The CLI prints a URL the user must visit to authenticate.
+ * Exported for testing.
  */
-const URL_PATTERNS = [
+export const AUTH_URL_PATTERNS = [
   /https:\/\/console\.anthropic\.com\S+/,
   /https:\/\/claude\.ai\/oauth\S*/,
   /https?:\/\/\S*auth\S*verify\S*/i,
   /https?:\/\/\S*login\S*/i,
 ];
+
+/**
+ * Extract an OAuth/auth URL from arbitrary text output.
+ * Returns the cleaned URL or `null` if no auth URL is found.
+ * Exported for testing.
+ */
+export function extractAuthUrl(text: string): string | null {
+  for (const pattern of AUTH_URL_PATTERNS) {
+    const match = text.match(pattern);
+    if (match) {
+      return match[0].replace(/[)\]}>'"]+$/, ""); // strip trailing punctuation
+    }
+  }
+  return null;
+}
 
 /** Path where Claude CLI stores credentials. */
 const CLAUDE_CONFIG_DIR = "/root/.claude";
@@ -62,15 +78,11 @@ export class AuthManager extends EventEmitter {
       const text = chunk.toString();
       console.log("[auth output]", text.trim());
 
-      // Look for OAuth URLs in the output
-      for (const pattern of URL_PATTERNS) {
-        const match = text.match(pattern);
-        if (match) {
-          const url = match[0].replace(/[)\]}>'"]+$/, ""); // strip trailing punctuation
-          console.log("[auth] Detected auth URL:", url);
-          this.emit("auth_url", url);
-          return;
-        }
+      const url = extractAuthUrl(text);
+      if (url) {
+        console.log("[auth] Detected auth URL:", url);
+        this.emit("auth_url", url);
+        return;
       }
     };
 
