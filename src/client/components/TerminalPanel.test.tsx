@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { TerminalPanel, type LogEntry } from "./TerminalPanel.js";
 
 beforeEach(() => {
@@ -95,5 +95,103 @@ describe("TerminalPanel", () => {
     const thirdIdx = textContent.indexOf("third");
     expect(firstIdx).toBeLessThan(secondIdx);
     expect(secondIdx).toBeLessThan(thirdIdx);
+  });
+
+  describe("source filtering", () => {
+    it("renders filter buttons for each source", () => {
+      render(<TerminalPanel entries={[]} onClear={() => {}} />);
+      const filterGroup = screen.getByRole("group", { name: /filter log sources/i });
+      expect(filterGroup).toBeInTheDocument();
+      // All three filter buttons should be present
+      const buttons = filterGroup.querySelectorAll("button");
+      expect(buttons).toHaveLength(3);
+    });
+
+    it("filter buttons have aria-pressed=true by default", () => {
+      render(<TerminalPanel entries={[]} onClear={() => {}} />);
+      const filterGroup = screen.getByRole("group", { name: /filter log sources/i });
+      const buttons = filterGroup.querySelectorAll("button");
+      buttons.forEach((btn) => {
+        expect(btn.getAttribute("aria-pressed")).toBe("true");
+      });
+    });
+
+    it("clicking a filter button hides entries of that source", () => {
+      const entries: LogEntry[] = [
+        entry("stderr", "error line"),
+        entry("stdout", "output line"),
+        entry("server", "server line"),
+      ];
+      render(<TerminalPanel entries={entries} onClear={() => {}} />);
+
+      // All entries visible initially
+      expect(screen.getByText("error line")).toBeInTheDocument();
+      expect(screen.getByText("output line")).toBeInTheDocument();
+      expect(screen.getByText("server line")).toBeInTheDocument();
+
+      // Click the "err" filter button to hide stderr
+      const filterGroup = screen.getByRole("group", { name: /filter log sources/i });
+      const errButton = filterGroup.querySelector("button[aria-pressed='true']") as HTMLButtonElement;
+      fireEvent.click(errButton);
+
+      // stderr entry should be hidden
+      expect(screen.queryByText("error line")).toBeNull();
+      // others still visible
+      expect(screen.getByText("output line")).toBeInTheDocument();
+      expect(screen.getByText("server line")).toBeInTheDocument();
+    });
+
+    it("clicking a hidden filter button shows entries again", () => {
+      const entries: LogEntry[] = [
+        entry("stderr", "error line"),
+        entry("stdout", "output line"),
+      ];
+      render(<TerminalPanel entries={entries} onClear={() => {}} />);
+
+      const filterGroup = screen.getByRole("group", { name: /filter log sources/i });
+      const errButton = filterGroup.querySelector("button") as HTMLButtonElement;
+
+      // Hide stderr
+      fireEvent.click(errButton);
+      expect(screen.queryByText("error line")).toBeNull();
+
+      // Show stderr again
+      fireEvent.click(errButton);
+      expect(screen.getByText("error line")).toBeInTheDocument();
+    });
+
+    it("prevents hiding all sources", () => {
+      const entries: LogEntry[] = [
+        entry("stderr", "error line"),
+        entry("stdout", "output line"),
+        entry("server", "server line"),
+      ];
+      render(<TerminalPanel entries={entries} onClear={() => {}} />);
+
+      const filterGroup = screen.getByRole("group", { name: /filter log sources/i });
+      const buttons = Array.from(filterGroup.querySelectorAll("button")) as HTMLButtonElement[];
+
+      // Hide first two sources
+      fireEvent.click(buttons[0]); // hide stderr
+      fireEvent.click(buttons[1]); // hide stdout
+
+      // Try to hide the last one — should not work
+      fireEvent.click(buttons[2]);
+
+      // server entries should still be visible (can't hide all)
+      expect(screen.getByText("server line")).toBeInTheDocument();
+    });
+
+    it("shows filter-specific empty state when all entries are filtered out", () => {
+      const entries: LogEntry[] = [entry("stderr", "only stderr")];
+      render(<TerminalPanel entries={entries} onClear={() => {}} />);
+
+      // Hide stderr
+      const filterGroup = screen.getByRole("group", { name: /filter log sources/i });
+      const errButton = filterGroup.querySelector("button") as HTMLButtonElement;
+      fireEvent.click(errButton);
+
+      expect(screen.getByText(/No logs match the current filter/)).toBeInTheDocument();
+    });
   });
 });
