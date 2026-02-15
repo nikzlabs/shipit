@@ -44,3 +44,17 @@
 .resize-handle--active {
   cursor: col-resize;
 }
+
+/* Search highlight — background color on matched text */
+.search-highlight {
+  background-color: rgba(250, 204, 21, 0.4);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* Active/current match — brighter to distinguish from other matches */
+.search-highlight--current {
+  background-color: rgba(250, 204, 21, 0.8);
+  color: #111;
+}
