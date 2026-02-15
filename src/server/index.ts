@@ -44,13 +44,19 @@ export interface AppDeps {
   /** Whether to start the Vite dev server. Defaults to true. */
   startVite?: boolean;
   /**
-   * Port detection function called after each Claude turn to find non-Vite dev
-   * servers. Returns all detected ports. Defaults to scanning DEFAULT_SCAN_PORTS.
-   * Inject a stub in tests to avoid real port scanning.
+   * Port detection function called after each Claude turn and periodically to
+   * find non-Vite dev servers. Returns all detected ports. Defaults to scanning
+   * DEFAULT_SCAN_PORTS. Inject a stub in tests to avoid real port scanning.
    */
   detectPorts?: (excludePorts: number[]) => Promise<number[]>;
   /** Port the Fastify server is listening on, excluded from port scans. Defaults to 3000. */
   serverPort?: number;
+  /**
+   * Interval in milliseconds for periodic port scanning. Set to 0 to disable.
+   * The scanner runs while at least one WebSocket client is connected.
+   * Defaults to 5000 (5 seconds).
+   */
+  portScanIntervalMs?: number;
 }
 
 /**
@@ -69,6 +75,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     startVite = true,
     detectPorts = (excludePorts: number[]) => scanPorts(DEFAULT_SCAN_PORTS, excludePorts),
     serverPort = 3000,
+    portScanIntervalMs = 5000,
   } = deps;
 
   const app = Fastify({ logger: false });
@@ -107,6 +114,43 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // Track all auto-detected dev server ports (non-Vite)
   let detectedPorts: number[] = [];
+
+  /**
+   * Run a port scan and broadcast if the set of detected ports changed.
+   * Shared between the post-turn scan and the periodic interval scanner.
+   */
+  const runPortScan = async () => {
+    try {
+      const excludeList = [serverPort, viteManager.port];
+      const ports = await detectPorts(excludeList);
+      const changed =
+        ports.length !== detectedPorts.length ||
+        ports.some((p, i) => p !== detectedPorts[i]);
+      if (changed) {
+        detectedPorts = ports;
+        broadcastPreviewStatus();
+      }
+    } catch (err) {
+      console.error("[port-scanner] scan failed:", getErrorMessage(err));
+    }
+  };
+
+  // ---- Periodic port scanning ----
+  // Scans on an interval while at least one WebSocket client is connected,
+  // catching dev servers started mid-turn (e.g. via Bash tool).
+  let portScanTimer: ReturnType<typeof setInterval> | null = null;
+
+  const startPortScanInterval = () => {
+    if (portScanTimer || portScanIntervalMs <= 0) return;
+    portScanTimer = setInterval(runPortScan, portScanIntervalMs);
+  };
+
+  const stopPortScanInterval = () => {
+    if (portScanTimer) {
+      clearInterval(portScanTimer);
+      portScanTimer = null;
+    }
+  };
 
   /**
    * Build the current preview status message. Vite takes priority when running;
@@ -194,6 +238,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   app.get("/ws", { websocket: true }, (socket) => {
     console.log("[ws] client connected");
     clients.add(socket);
+
+    // Start periodic port scanning when the first client connects
+    if (clients.size === 1) {
+      startPortScanInterval();
+    }
     let claude: ClaudeProcess | null = null;
     let turnSummary = "";
     let currentSessionId: string | undefined;
@@ -316,21 +365,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           }
 
           // Scan for non-Vite dev servers that Claude may have started.
-          // Exclude our own Fastify port and the managed Vite port.
-          try {
-            const excludeList = [serverPort, viteManager.port];
-            const ports = await detectPorts(excludeList);
-            // Broadcast if the set of detected ports changed
-            const changed =
-              ports.length !== detectedPorts.length ||
-              ports.some((p, i) => p !== detectedPorts[i]);
-            if (changed) {
-              detectedPorts = ports;
-              broadcastPreviewStatus();
-            }
-          } catch (err) {
-            console.error("[port-scanner] scan failed:", getErrorMessage(err));
-          }
+          await runPortScan();
         });
 
         claude.on("auth_required", () => {
@@ -438,6 +473,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         claude.kill();
         claude = null;
       }
+
+      // Stop periodic port scanning when the last client disconnects
+      if (clients.size === 0) {
+        stopPortScanInterval();
+      }
     });
   });
 
@@ -445,6 +485,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // process.on() to avoid MaxListeners warnings when buildApp() is called
   // repeatedly in tests.
   app.addHook("onClose", async () => {
+    stopPortScanInterval();
     viteManager.stop();
     authManager.kill();
   });

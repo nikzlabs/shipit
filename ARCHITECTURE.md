@@ -525,7 +525,7 @@ Within each directory level, entries are sorted with directories first, then fil
 
 ## Preview Port Auto-Detection
 
-The preview pane works with any dev server, not just Vite. After each Claude turn, the server scans common dev ports to find running servers that Claude may have started (e.g., Express on 3001, Django on 8000).
+The preview pane works with any dev server, not just Vite. The server detects non-Vite dev servers in two ways: after each Claude turn completes, and via periodic background scanning while clients are connected. This catches servers started mid-turn (e.g., via the Bash tool) without waiting for Claude to finish.
 
 ### How It Works
 
@@ -533,7 +533,11 @@ The preview pane works with any dev server, not just Vite. After each Claude tur
    - `checkPort(port)` — TCP connect probe with 300ms timeout. Returns `true` if a server is listening.
    - `scanPorts(ports, excludePorts)` — Checks multiple ports concurrently, returns the list of open ones.
 
-2. **After each Claude turn** (`done` event in `index.ts`), the server calls `detectPorts()` (defaulting to `scanPorts(DEFAULT_SCAN_PORTS, ...)`), excluding the Fastify server port and the managed Vite port. All detected ports are tracked and included in the `preview_status` message.
+2. **Port scanning triggers** — the server calls `runPortScan()` (which uses the injectable `detectPorts` function) in two situations:
+   - **After each Claude turn** (`done` event) — immediate scan when Claude finishes.
+   - **Periodic interval** (every 5 seconds by default) — runs while at least one WebSocket client is connected. The interval starts when the first client connects and stops when the last disconnects. This catches servers started mid-turn by tools like Bash. The interval is configurable via `portScanIntervalMs` in `AppDeps` (set to 0 to disable, useful in tests).
+
+   Both paths exclude the Fastify server port and the managed Vite port. A broadcast only happens when the set of detected ports changes.
 
 3. **Priority logic** in `getPreviewStatus()`:
    - If Vite is running → use Vite (source: `"vite"`), include `detectedPorts` if any
@@ -557,12 +561,12 @@ When multiple ports are available (either multiple detected ports, or Vite plus 
 
 ### Dependency Injection
 
-The `detectPorts` function is injectable via `AppDeps` for testing. Integration tests inject a stub that returns a controlled port array, avoiding real TCP scanning.
+The `detectPorts` function is injectable via `AppDeps` for testing. Integration tests inject a stub that returns a controlled port array, avoiding real TCP scanning. The `portScanIntervalMs` option controls the periodic scan interval — set to 0 in most test suites to avoid interference, and to a short value (e.g., 200ms) in the periodic scanning tests.
 
 ### Key Files
 
 - **`src/server/port-scanner.ts`** — Port scanning utilities (`checkPort`, `scanPorts`, `DEFAULT_SCAN_PORTS`).
-- **`src/server/index.ts`** — Integration: calls `detectPorts` in the `done` handler, `getPreviewStatus()` builds preview messages with all detected ports.
+- **`src/server/index.ts`** — Integration: `runPortScan()` shared between the `done` handler and the periodic interval, `getPreviewStatus()` builds preview messages with all detected ports, interval lifecycle tied to client connections.
 - **`src/client/components/PreviewFrame.tsx`** — Preview iframe with port selector dropdown (when multiple ports available), source indicator, reload button.
 - **`src/client/App.tsx`** — Derives `detectedPorts` from `preview` state, manages `selectedPort` selection, passes both to `PreviewFrame`.
 
