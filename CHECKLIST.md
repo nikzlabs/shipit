@@ -19,12 +19,15 @@
 - [x] Session management (list, resume, new)
 - [x] Docs tab (markdown viewer)
 - [x] Inline file change display in chat (diff blocks)
-- [ ] Streaming UX polish (typing indicators, partial renders)
+- [x] Streaming UX polish (typing indicators, partial renders)
 
-## Phase 5: Nice-to-haves
+## Phase 5: Next Up
+- [ ] Resizable panels
+- [ ] Search in chat history
+- [ ] Test coverage
+
+## Nice to Have
 - [ ] Cost display per turn (from result.total_cost_usd)
 - [ ] Duration display
 - [ ] Dark/light theme
-- [ ] Resizable panels
-- [ ] Search in chat history
 - [ ] Export conversation

@@ -7,6 +7,7 @@ import { GitHistory, type GitCommit } from "./components/GitHistory.js";
 import { AuthOverlay } from "./components/AuthOverlay.js";
 import { SessionSelector, type SessionInfo } from "./components/SessionSelector.js";
 import { DocsViewer } from "./components/DocsViewer.js";
+import { activityFromTool, type StreamingActivity } from "./components/StreamingIndicator.js";
 
 type RightTab = "preview" | "docs";
 
@@ -27,6 +28,7 @@ export default function App() {
   const [docFiles, setDocFiles] = useState<string[]>([]);
   const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
   const [docContent, setDocContent] = useState<string | null>(null);
+  const [activity, setActivity] = useState<StreamingActivity | undefined>(undefined);
   const sessionIdRef = useRef<string | undefined>(undefined);
 
   // Process incoming WebSocket messages
@@ -64,6 +66,14 @@ export default function App() {
         const toolUseBlocks = (event.message?.content ?? [])
           .filter((b: any) => b.type === "tool_use");
 
+        // Update activity based on what's in this event
+        if (toolUseBlocks.length > 0) {
+          const lastTool = toolUseBlocks[toolUseBlocks.length - 1];
+          setActivity(activityFromTool(lastTool.name, lastTool.input));
+        } else if (textBlocks) {
+          setActivity({ label: "Thinking..." });
+        }
+
         if (textBlocks || toolUseBlocks.length > 0) {
           setMessages((prev) => {
             // If the last message is from the assistant and we're still loading,
@@ -93,8 +103,14 @@ export default function App() {
         }
       }
 
+      // Track tool result events — Claude is processing results
+      if (event.type === "user") {
+        setActivity({ label: "Processing results..." });
+      }
+
       if (event.type === "result") {
         setIsLoading(false);
+        setActivity(undefined);
         // Mark the last assistant message as no longer streaming
         setMessages((prev) => {
           const last = prev[prev.length - 1];
@@ -108,6 +124,7 @@ export default function App() {
 
     if (data.type === "error") {
       setIsLoading(false);
+      setActivity(undefined);
       setMessages((prev) => [
         ...prev,
         { role: "assistant", text: `Error: ${data.message}`, streaming: false },
@@ -167,6 +184,7 @@ export default function App() {
     (text: string) => {
       setMessages((prev) => [...prev, { role: "user", text }]);
       setIsLoading(true);
+      setActivity({ label: "Thinking..." });
       send({
         type: "send_message",
         text,
@@ -279,13 +297,13 @@ export default function App() {
       <div className="flex flex-1 min-h-0">
         {/* Left column — Chat */}
         <div className="flex flex-col flex-1 min-w-0 border-r border-gray-800">
-          <MessageList messages={messages} isLoading={isLoading} />
+          <MessageList messages={messages} isLoading={isLoading} activity={activity} />
           <GitHistory
             commits={gitCommits}
             onRollback={handleRollback}
             onRefresh={handleGitRefresh}
           />
-          <MessageInput onSend={handleSend} disabled={isLoading || status !== "open"} />
+          <MessageInput onSend={handleSend} disabled={isLoading || status !== "open"} activity={isLoading ? activity : undefined} />
         </div>
 
         {/* Right column — Tabbed (Preview / Docs) */}
