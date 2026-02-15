@@ -24,14 +24,14 @@
 ## Phase 5: Next Up
 - [x] Resizable panels
 - [x] Search in chat history
-- [x] Test coverage — Vitest, 133 tests across server/client modules + integration
+- [x] Test coverage — Vitest, 186 tests across server/client modules + integration
 
 ## Phase 6: Test Depth
 - [x] Component-level tests — React component tests (MessageList, DiffBlock, GitHistory) with @testing-library/react
 - [x] Integration/E2E tests — full WebSocket flow from client to server, Fastify test harness (19 tests via `buildApp()` DI)
 - [x] Error boundary / error state UI — handle WebSocket drops and Claude CLI crashes mid-stream
 - [x] Mobile responsiveness — resizable panel layout adaptation for mobile viewports
-- [ ] Reconnection UI — visible indicator of WebSocket connection state
+- [x] Reconnection UI — visible indicator of WebSocket connection state
 
 ## Phase 7: UX & Beyond
 - [ ] Persistent chat history — persist messages to the server so they survive page reloads

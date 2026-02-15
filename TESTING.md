@@ -30,6 +30,7 @@ src/
 │   └── index.ts             →  integration.test.ts   (WebSocket E2E)
 └── client/
     ├── hooks/
+    │   ├── useWebSocket.ts  →  useWebSocket.test.ts
     │   ├── useSearch.ts     →  useSearch.test.ts
     │   └── useMediaQuery.ts →  useMediaQuery.test.ts
     └── components/
@@ -70,7 +71,8 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | `DiffBlock` | 12 | File header, edit/write labels, removed/added lines, multi-line diffs, separator, write mode, empty fallback |
 | `GitHistory` | 14 | Collapsed/expanded toggle, onRefresh, commit display (abbreviated hash, relative dates), rollback confirmation, blur reset |
 | `ErrorBoundary` | 7 | Render children, catch errors, fallback UI, reload button, recover button, error message display |
-| `ConnectionBanner` | 6 | Hidden when open, reconnecting message, connection lost message, role=alert, color variants |
+| `ConnectionBanner` | 16 | Hidden when open, reconnecting message, connection lost message, role=alert, color variants, attempt count display, "Reconnect now" button, reconnected success flash with auto-hide |
+| `useWebSocket` | 14 | Connect lifecycle, status transitions, send/receive, exponential backoff timing (2s→4s→8s→30s cap), reconnect attempt counter, manual `reconnect()`, backoff timer cancellation |
 | `useMediaQuery` | 5 | Match/no-match, live updates on change, cleanup on unmount, re-subscribe on query change |
 | `useIsMobile` | 1 | Returns true for mobile viewport query |
 | `MobileTabBar` | 7 | Tab rendering, active tab highlighting, click callbacks, accessibility (nav landmark, aria-current), SVG icons |
