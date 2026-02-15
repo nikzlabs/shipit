@@ -17,6 +17,7 @@ import { SearchBar } from "./components/SearchBar.js";
 import { activityFromTool, type StreamingActivity } from "./components/StreamingIndicator.js";
 import { ConnectionBanner } from "./components/ConnectionBanner.js";
 import { MobileTabBar, type MobilePanel } from "./components/MobileTabBar.js";
+import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
 
 type RightTab = "preview" | "docs" | "files";
 
@@ -75,6 +76,7 @@ export default function App() {
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>("chat");
 
   const [searchOpen, setSearchOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const search = useSearch(messages);
 
   const { notify, requestPermission } = useNotification();
@@ -96,6 +98,20 @@ export default function App() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [search]);
+
+  // ? to toggle keyboard shortcuts overlay (only when not typing in an input)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "?" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const tag = (e.target as HTMLElement)?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        e.preventDefault();
+        setShortcutsOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   // On WebSocket connect, restore chat history for the saved session
   useEffect(() => {
@@ -503,6 +519,7 @@ export default function App() {
   return (
     <div className="flex flex-col h-screen bg-gray-950 text-gray-100">
       {authUrl && <AuthOverlay url={authUrl} />}
+      {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
 
       {/* Header */}
       <header className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-gray-800">
