@@ -1,4 +1,4 @@
-import Fastify from "fastify";
+import Fastify, { type FastifyInstance } from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
 import path from "node:path";
@@ -16,28 +16,67 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const WORKSPACE = "/workspace";
 
-async function main() {
-  const app = Fastify({ logger: true });
+/**
+ * Dependencies that can be injected for testing. Every field is optional —
+ * production uses real implementations, tests can supply mocks/stubs.
+ */
+export interface AppDeps {
+  /** Git manager instance. Defaults to `new GitManager()` with init(). */
+  gitManager?: GitManager;
+  /** Vite dev server manager. Defaults to `new ViteManager()` with auto-start. */
+  viteManager?: ViteManager;
+  /** Session manager instance. Defaults to `new SessionManager()`. */
+  sessionManager?: SessionManager;
+  /** Auth manager instance. Defaults to `new AuthManager()`. */
+  authManager?: AuthManager;
+  /** Factory for creating ClaudeProcess instances. Defaults to `() => new ClaudeProcess()`. */
+  claudeFactory?: () => ClaudeProcess;
+  /** Workspace directory for doc file operations. Defaults to `/workspace`. */
+  workspaceDir?: string;
+  /** Whether to serve static files from dist/client. Defaults to true. */
+  serveStatic?: boolean;
+  /** Whether to start the Vite dev server. Defaults to true. */
+  startVite?: boolean;
+}
+
+/**
+ * Build and configure the Fastify app with all routes and WebSocket handlers.
+ * Returns the app instance without starting it — call `app.listen()` separately.
+ *
+ * This separation enables integration testing: tests can call `buildApp({ ... })`
+ * with mock dependencies, then use `app.inject()` or connect WebSocket clients
+ * to the app without spawning real child processes.
+ */
+export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
+  const {
+    claudeFactory = () => new ClaudeProcess(),
+    workspaceDir = WORKSPACE,
+    serveStatic: shouldServeStatic = true,
+    startVite = true,
+  } = deps;
+
+  const app = Fastify({ logger: false });
 
   await app.register(fastifyWebsocket);
 
   // ---- Git manager ----
-  const gitManager = new GitManager();
-  await gitManager.init();
+  const gitManager = deps.gitManager ?? new GitManager();
+  if (!deps.gitManager) {
+    await gitManager.init();
+  }
 
   // ---- Vite dev server manager ----
-  const viteManager = new ViteManager();
+  const viteManager = deps.viteManager ?? new ViteManager();
 
   // ---- Session manager ----
-  const sessionManager = new SessionManager();
+  const sessionManager = deps.sessionManager ?? new SessionManager();
 
   // ---- Auth manager ----
-  const authManager = new AuthManager();
+  const authManager = deps.authManager ?? new AuthManager();
   const hasCredentials = authManager.checkCredentials();
   console.log("[server] Claude credentials found:", hasCredentials);
 
   // Track connected WebSocket clients so we can broadcast
-  // Using basic type since ws types aren't installed separately
   const clients = new Set<{ readyState: number; send: (data: string) => void }>();
 
   const broadcast = (msg: WsServerMessage) => {
@@ -78,24 +117,28 @@ async function main() {
     broadcast({ type: "auth_complete" });
   });
 
-  // Start the Vite dev server
-  viteManager.start();
+  // Start the Vite dev server (skipped in tests)
+  if (startVite) {
+    viteManager.start();
+  }
 
   // Serve the built client files from dist/client/
-  const clientDir = path.resolve(process.cwd(), "dist/client");
-  try {
-    await app.register(fastifyStatic, {
-      root: clientDir,
-      prefix: "/",
-      wildcard: false,
-    });
-    // SPA fallback — serve index.html for non-file routes
-    app.setNotFoundHandler((_req, reply) => {
-      reply.sendFile("index.html", clientDir);
-    });
-  } catch {
-    // Client build may not exist during dev; that's fine
-    console.log("[server] No built client found at", clientDir);
+  if (shouldServeStatic) {
+    const clientDir = path.resolve(process.cwd(), "dist/client");
+    try {
+      await app.register(fastifyStatic, {
+        root: clientDir,
+        prefix: "/",
+        wildcard: false,
+      });
+      // SPA fallback — serve index.html for non-file routes
+      app.setNotFoundHandler((_req, reply) => {
+        reply.sendFile("index.html", clientDir);
+      });
+    } catch {
+      // Client build may not exist during dev; that's fine
+      console.log("[server] No built client found at", clientDir);
+    }
   }
 
   // ---- WebSocket route ----
@@ -136,7 +179,7 @@ async function main() {
 
         turnSummary = "";
         const userText = msg.text;
-        claude = new ClaudeProcess();
+        claude = claudeFactory();
 
         claude.on("event", (event: ClaudeEvent) => {
           send({ type: "claude_event", event });
@@ -236,7 +279,7 @@ async function main() {
 
       if (msg.type === "list_docs") {
         try {
-          const files = await findMarkdownFiles("/workspace");
+          const files = await findMarkdownFiles(workspaceDir);
           send({ type: "doc_list", files });
         } catch (err: any) {
           send({ type: "error", message: `Failed to list docs: ${err.message}` });
@@ -245,8 +288,8 @@ async function main() {
 
       if (msg.type === "get_doc") {
         try {
-          const safePath = path.resolve("/workspace", msg.path);
-          if (!safePath.startsWith("/workspace/")) {
+          const safePath = path.resolve(workspaceDir, msg.path);
+          if (!safePath.startsWith(workspaceDir + "/")) {
             send({ type: "error", message: "Invalid path" });
             return;
           }
@@ -268,10 +311,24 @@ async function main() {
     });
   });
 
-  // Graceful shutdown
-  const shutdown = () => {
+  // Graceful shutdown — register once via app hook rather than per-call
+  // process.on() to avoid MaxListeners warnings when buildApp() is called
+  // repeatedly in tests.
+  app.addHook("onClose", async () => {
     viteManager.stop();
     authManager.kill();
+  });
+
+  return app;
+}
+
+// Only start the server when this file is the entry point (not when imported by tests).
+// Vitest sets process.env.VITEST; alternatively check import.meta.url vs process.argv[1].
+if (!process.env.VITEST) {
+  const app = await buildApp({ serveStatic: true, startVite: true });
+
+  const shutdown = () => {
+    app.close();
     process.exit(0);
   };
   process.on("SIGTERM", shutdown);
@@ -281,8 +338,3 @@ async function main() {
   await app.listen({ port, host: "0.0.0.0" });
   console.log(`[server] listening on http://0.0.0.0:${port}`);
 }
-
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
