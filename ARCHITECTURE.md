@@ -1,8 +1,8 @@
-# Vibe — High-Level Architecture
+# ShipIt — High-Level Architecture
 
 ## What Is This?
 
-Vibe is a browser-based IDE for "vibe coding" — you talk to Claude in a chat interface and it writes code in real-time inside a Docker container. Think of it as a hosted Claude Code session with a React frontend.
+ShipIt is a browser-based IDE for "vibe coding" — you talk to Claude in a chat interface and it writes code in real-time inside a Docker container. Think of it as a hosted Claude Code session with a React frontend.
 
 ## System Overview
 
@@ -493,7 +493,7 @@ The preview pane works with any dev server, not just Vite. After each Claude tur
 
 `DEFAULT_SCAN_PORTS`: 3001, 4000, 4200, 5000, 5173, 5174, 8000, 8080, 8888
 
-Port 3000 is excluded because it's the Vibe server's own port. The managed Vite port (5173) is also excluded from scanning when Vite is already running.
+Port 3000 is excluded because it's the ShipIt server's own port. The managed Vite port (5173) is also excluded from scanning when Vite is already running.
 
 ### Dependency Injection
 
