@@ -30,13 +30,15 @@ src/
 │   └── index.ts             →  integration.test.ts   (WebSocket E2E)
 └── client/
     ├── hooks/
-    │   └── useSearch.ts     →  useSearch.test.ts
+    │   ├── useSearch.ts     →  useSearch.test.ts
+    │   └── useMediaQuery.ts →  useMediaQuery.test.ts
     └── components/
         ├── MessageList.tsx      →  MessageList.test.tsx
         ├── DiffBlock.tsx        →  DiffBlock.test.tsx
         ├── GitHistory.tsx       →  GitHistory.test.tsx
         ├── ErrorBoundary.tsx    →  ErrorBoundary.test.tsx
-        └── ConnectionBanner.tsx →  ConnectionBanner.test.tsx
+        ├── ConnectionBanner.tsx →  ConnectionBanner.test.tsx
+        └── MobileTabBar.tsx     →  MobileTabBar.test.tsx
 ```
 
 ## Test Projects
@@ -69,6 +71,9 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | `GitHistory` | 14 | Collapsed/expanded toggle, onRefresh, commit display (abbreviated hash, relative dates), rollback confirmation, blur reset |
 | `ErrorBoundary` | 7 | Render children, catch errors, fallback UI, reload button, recover button, error message display |
 | `ConnectionBanner` | 6 | Hidden when open, reconnecting message, connection lost message, role=alert, color variants |
+| `useMediaQuery` | 5 | Match/no-match, live updates on change, cleanup on unmount, re-subscribe on query change |
+| `useIsMobile` | 1 | Returns true for mobile viewport query |
+| `MobileTabBar` | 7 | Tab rendering, active tab highlighting, click callbacks, accessibility (nav landmark, aria-current), SVG icons |
 
 ## Writing New Tests
 
