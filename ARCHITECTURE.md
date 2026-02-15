@@ -79,6 +79,7 @@ The server is intentionally thin — it's a bridge between the browser and the C
 | `App.tsx` | Root component — chat state, session tracking, tab management, resizable layout, event dispatch |
 | `hooks/useWebSocket.ts` | WebSocket lifecycle (connect, reconnect, send/receive JSON) |
 | `hooks/useResizablePanel.ts` | Drag-to-resize logic for the two-column layout (persists to localStorage) |
+| `hooks/useSearch.ts` | Chat search logic — substring matching, match navigation, state management |
 | `components/ResizeHandle.tsx` | Vertical drag handle rendered between the chat and preview/docs panels |
 | `components/MessageList.tsx` | Renders chat messages, tool invocations, streaming indicators |
 | `components/StreamingIndicator.tsx` | Typing dots, thinking indicator, tool spinner, activity label derivation |
@@ -88,6 +89,7 @@ The server is intentionally thin — it's a bridge between the browser and the C
 | `components/DocsViewer.tsx` | Markdown file browser and renderer (using `marked`) |
 | `components/GitHistory.tsx` | Collapsible git commit list with rollback buttons |
 | `components/SessionSelector.tsx` | Session management — list, resume, new, delete |
+| `components/SearchBar.tsx` | Search input with match count, prev/next navigation, keyboard shortcuts |
 | `components/AuthOverlay.tsx` | Full-screen overlay for OAuth authentication flow |
 
 ### Claude CLI Events (NDJSON)
@@ -249,6 +251,38 @@ The two-column layout (chat on the left, preview/docs on the right) is resizable
 To add a vertical (top/bottom) or additional horizontal split:
 1. Use the same `useResizablePanel` hook with a different `storageKey`.
 2. For vertical splits, the hook would need modification to track `clientY` / `rect.height` instead of `clientX` / `rect.width`.
+
+## Search in Chat History
+
+The search feature lets users find text within the chat conversation using Ctrl+F (Cmd+F on macOS).
+
+### How It Works
+
+1. **`useSearch` hook** (`src/client/hooks/useSearch.ts`) performs case-insensitive substring matching across all `ChatMessage.text` values. It returns an array of `SearchMatch` objects, each with a `messageIndex` (which message), `start` (character offset), and `length`.
+2. **`SearchBar` component** (`src/client/components/SearchBar.tsx`) renders a slide-down input bar at the top of the chat column with match count, prev/next navigation, and close button.
+3. **`MessageList`** receives `searchMatches` and `currentMatch` props. It groups matches by message index, then renders `HighlightedText` — a component that splits message text into plain and `<mark>` segments. The "current" match gets a brighter highlight and a ref used for `scrollIntoView`.
+4. **`App.tsx`** owns the `searchOpen` boolean and the `useSearch` hook. It listens for Ctrl+F to toggle the search bar.
+
+### Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| Ctrl+F / Cmd+F | Open / close search bar |
+| Enter | Go to next match |
+| Shift+Enter | Go to previous match |
+| Escape | Close search bar |
+
+### CSS Classes (`index.css`)
+
+- `.search-highlight` — semi-transparent yellow background on all matches
+- `.search-highlight--current` — brighter yellow with dark text on the actively navigated match
+
+### Key Design Decisions
+
+- **Client-side only** — no server involvement; search runs entirely in the browser against the in-memory `messages` array.
+- **Substring match** — simple `indexOf` loop rather than regex, so user input is treated as literal text (no escaping issues).
+- **Scroll-to-match** — uses `scrollIntoView({ block: "center" })` so the current match appears centered in the chat scroll area.
+- **Match index clamping** — when the messages array changes (new messages arrive) and the match count shrinks, the current index is automatically clamped to stay in bounds.
 
 ## Session Management
 
