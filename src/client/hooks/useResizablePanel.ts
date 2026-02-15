@@ -16,6 +16,8 @@ export interface UseResizablePanelReturn {
   isDragging: boolean;
   /** Attach to the resize handle's onMouseDown */
   onMouseDown: (e: React.MouseEvent) => void;
+  /** Attach to the resize handle's onTouchStart for mobile/tablet drag */
+  onTouchStart: (e: React.TouchEvent) => void;
   /** Ref to attach to the container element that holds both panels */
   containerRef: React.RefObject<HTMLDivElement | null>;
 }
@@ -98,6 +100,42 @@ export function useResizablePanel(
     [minFraction, storageKey]
   );
 
+  // Touch support — mirrors mouse logic but uses touch events
+  const onTouchStart = useCallback(
+    (e: React.TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      setIsDragging(true);
+
+      const onTouchMove = (moveEvent: TouchEvent) => {
+        const container = containerRef.current;
+        if (!container || moveEvent.touches.length !== 1) return;
+        const rect = container.getBoundingClientRect();
+        let newFraction = (moveEvent.touches[0].clientX - rect.left) / rect.width;
+        newFraction = Math.max(minFraction, Math.min(1 - minFraction, newFraction));
+        setFraction(newFraction);
+      };
+
+      const onTouchEnd = () => {
+        setIsDragging(false);
+        document.removeEventListener("touchmove", onTouchMove);
+        document.removeEventListener("touchend", onTouchEnd);
+        document.removeEventListener("touchcancel", onTouchEnd);
+        if (storageKey) {
+          try {
+            localStorage.setItem(storageKey, persistRef.current.toString());
+          } catch {
+            // ignore
+          }
+        }
+      };
+
+      document.addEventListener("touchmove", onTouchMove, { passive: true });
+      document.addEventListener("touchend", onTouchEnd);
+      document.addEventListener("touchcancel", onTouchEnd);
+    },
+    [minFraction, storageKey]
+  );
+
   // Disable text selection while dragging
   useEffect(() => {
     if (isDragging) {
@@ -109,5 +147,5 @@ export function useResizablePanel(
     }
   }, [isDragging]);
 
-  return { fraction, isDragging, onMouseDown, containerRef };
+  return { fraction, isDragging, onMouseDown, onTouchStart, containerRef };
 }

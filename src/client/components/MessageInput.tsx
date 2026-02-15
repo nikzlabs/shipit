@@ -38,7 +38,7 @@ export function MessageInput({
   };
 
   return (
-    <div className="border-t border-gray-800 px-6 py-4">
+    <div className="border-t border-gray-800 px-3 sm:px-6 py-3 sm:py-4">
       {/* Activity status bar — shown while Claude is working */}
       {activity && (
         <div className="flex items-center gap-2 mb-2 text-xs text-gray-400 max-w-3xl mx-auto">
@@ -47,7 +47,7 @@ export function MessageInput({
         </div>
       )}
 
-      <div className="flex items-end gap-3 max-w-3xl mx-auto">
+      <div className="flex items-end gap-2 sm:gap-3 max-w-3xl mx-auto">
         <textarea
           ref={textareaRef}
           value={text}
