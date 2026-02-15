@@ -27,7 +27,7 @@
 - [x] Test coverage — Vitest, 71 tests across 6 server/client modules
 
 ## Phase 6: Test Depth
-- [ ] Component-level tests — React component tests (MessageList, DiffBlock, GitHistory) with @testing-library/react
+- [x] Component-level tests — React component tests (MessageList, DiffBlock, GitHistory) with @testing-library/react
 - [ ] Integration/E2E tests — full WebSocket flow from client to server, Fastify test harness
 
 ## Nice to Have
