@@ -54,6 +54,8 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [preview, setPreview] = useState<PreviewStatus | null>(null);
+  const [detectedPorts, setDetectedPorts] = useState<number[]>([]);
+  const [selectedPort, setSelectedPort] = useState<number | null>(null);
   const [gitCommits, setGitCommits] = useState<GitCommit[]>([]);
   const [authUrl, setAuthUrl] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -173,7 +175,17 @@ export default function App() {
         port: data.port,
         url: data.url,
         source: data.source,
+        detectedPorts: data.detectedPorts,
       });
+      setDetectedPorts(data.detectedPorts ?? []);
+      // Reset user selection if the selected port is no longer available
+      if (selectedPort !== null) {
+        const allAvailable = [...(data.detectedPorts ?? [])];
+        if (data.source === "vite") allAvailable.push(data.port);
+        if (!allAvailable.includes(selectedPort)) {
+          setSelectedPort(null);
+        }
+      }
     }
 
     if (data.type === "claude_event") {
@@ -335,7 +347,7 @@ export default function App() {
       }));
       setMessages(loaded);
     }
-  }, [lastMessage, send, rightTab, notify]);
+  }, [lastMessage, send, rightTab, notify, selectedPort]);
 
   const handleSend = useCallback(
     (text: string) => {
@@ -417,6 +429,10 @@ export default function App() {
     send({ type: "list_docs" });
   }, [send]);
 
+  const handleSelectPort = useCallback((port: number) => {
+    setSelectedPort(port);
+  }, []);
+
   const handleFileTreeRefresh = useCallback(() => {
     send({ type: "get_file_tree" });
   }, [send]);
@@ -484,7 +500,12 @@ export default function App() {
       {/* Tab content */}
       <div className="flex-1 min-h-0">
         {rightTab === "preview" ? (
-          <PreviewFrame preview={preview} />
+          <PreviewFrame
+            preview={preview}
+            detectedPorts={detectedPorts}
+            selectedPort={selectedPort}
+            onSelectPort={handleSelectPort}
+          />
         ) : rightTab === "docs" ? (
           <DocsViewer
             files={docFiles}
@@ -562,7 +583,7 @@ export default function App() {
                 ? "bg-yellow-900 text-yellow-300"
                 : "bg-emerald-900 text-emerald-300"
             }`}>
-              preview :{preview.port}
+              preview :{selectedPort ?? preview.port}
             </span>
           )}
           <span

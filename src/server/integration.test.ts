@@ -597,8 +597,8 @@ describe("Integration: Port auto-detection", () => {
   let gitManager: GitManager;
   let sessionManager: SessionManager;
   let lastClaude: FakeClaudeProcess;
-  /** Value returned by the injected detectPort stub. */
-  let stubDetectedPort: number | null;
+  /** Value returned by the injected detectPorts stub. */
+  let stubDetectedPorts: number[];
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-portdetect-"));
@@ -609,7 +609,7 @@ describe("Integration: Port auto-detection", () => {
     const sessionsFile = path.join(tmpDir, "sessions.json");
     sessionManager = new SessionManager(sessionsFile);
 
-    stubDetectedPort = null;
+    stubDetectedPorts = [];
 
     app = await buildApp({
       gitManager,
@@ -620,7 +620,7 @@ describe("Integration: Port auto-detection", () => {
         lastClaude = new FakeClaudeProcess();
         return lastClaude as unknown as ClaudeProcess;
       },
-      detectPort: async () => stubDetectedPort,
+      detectPorts: async () => stubDetectedPorts,
       workspaceDir: tmpDir,
       serveStatic: false,
       startVite: false,
@@ -638,7 +638,7 @@ describe("Integration: Port auto-detection", () => {
 
   it("broadcasts detected port after Claude turn completes", async () => {
     // Simulate a dev server on port 3001
-    stubDetectedPort = 3001;
+    stubDetectedPorts = [3001];
 
     const client = await TestClient.connect(port);
     // Consume initial preview_status (not running, no detected port yet)
@@ -669,6 +669,7 @@ describe("Integration: Port auto-detection", () => {
       running: true,
       port: 3001,
       source: "detected",
+      detectedPorts: [3001],
     });
     expect(previewMsg.url).toBe("http://localhost:3001");
 
@@ -676,7 +677,7 @@ describe("Integration: Port auto-detection", () => {
   });
 
   it("does not broadcast when no port is detected", async () => {
-    stubDetectedPort = null;
+    stubDetectedPorts = [];
 
     const client = await TestClient.connect(port);
     await client.receive(); // initial preview_status
@@ -709,7 +710,7 @@ describe("Integration: Port auto-detection", () => {
   });
 
   it("updates preview when detected port changes between turns", async () => {
-    stubDetectedPort = 8080;
+    stubDetectedPorts = [8080];
 
     const client = await TestClient.connect(port);
     await client.receive(); // initial preview_status
@@ -730,7 +731,7 @@ describe("Integration: Port auto-detection", () => {
     expect(previewMsg.port).toBe(8080);
 
     // Second turn — port changes to 4000
-    stubDetectedPort = 4000;
+    stubDetectedPorts = [4000];
     client.send({ type: "send_message", text: "Change server" });
     await new Promise((r) => setTimeout(r, 50));
     lastClaude.emit("done", 0);
@@ -750,7 +751,7 @@ describe("Integration: Port auto-detection", () => {
   });
 
   it("new client receives current detected port on connect", async () => {
-    stubDetectedPort = 3001;
+    stubDetectedPorts = [3001];
 
     const client1 = await TestClient.connect(port);
     await client1.receive(); // initial preview_status (not running yet)
@@ -779,5 +780,36 @@ describe("Integration: Port auto-detection", () => {
 
     client1.close();
     client2.close();
+  });
+
+  it("broadcasts all detected ports when multiple servers are running", async () => {
+    stubDetectedPorts = [3001, 8080];
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // initial preview_status
+
+    client.send({ type: "send_message", text: "Start servers" });
+    await new Promise((r) => setTimeout(r, 50));
+    lastClaude.emit("done", 0);
+
+    let previewMsg: any = null;
+    for (let i = 0; i < 5; i++) {
+      const msg = await client.receive();
+      if (msg.type === "preview_status") {
+        previewMsg = msg;
+        break;
+      }
+    }
+
+    expect(previewMsg).not.toBeNull();
+    expect(previewMsg).toMatchObject({
+      type: "preview_status",
+      running: true,
+      port: 3001,
+      source: "detected",
+      detectedPorts: [3001, 8080],
+    });
+
+    client.close();
   });
 });
