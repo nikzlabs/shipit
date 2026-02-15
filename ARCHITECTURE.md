@@ -64,7 +64,7 @@ Vibe is a browser-based IDE for "vibe coding" — you talk to Claude in a chat i
 
 | File | Role |
 |------|------|
-| `index.ts` | Fastify server — WebSocket route, static file serving, SPA fallback |
+| `index.ts` | Fastify server — `buildApp(deps?)` factory, WebSocket route, static file serving, SPA fallback. Accepts dependency injection for testing. |
 | `claude.ts` | `ClaudeProcess` class — spawns CLI, parses NDJSON stream, emits events |
 | `git.ts` | `GitManager` class — auto-commit after turns, git log, rollback |
 | `auth.ts` | `AuthManager` class — OAuth flow detection, credential checking, auth URL capture |
