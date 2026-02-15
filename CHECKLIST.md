@@ -46,7 +46,7 @@
 - [x] File content viewer — clicking a file in the Files tab could show its contents in a read-only viewer
 - [x] Terminal/logs panel — show Claude CLI stdout/stderr in a terminal-like pane for debugging
 - [x] Session rename — currently titles are auto-generated from the first message
-- [ ] Workspace project templates — quick-start templates (Vite + React, Next.js, Express) to avoid the cold-start friction
+- [x] Workspace project templates — quick-start templates (Vite + React, Next.js, Express) to avoid the cold-start friction
 
 ## Nice to Have
 - [ ] Multi-file diff view — when Claude edits multiple files in one turn, show a grouped diff summary

@@ -69,6 +69,17 @@ export interface SessionInfo {
   lastUsedAt: string;
 }
 
+// ---- Template types ----
+
+export interface ProjectTemplate {
+  id: string;
+  name: string;
+  description: string;
+  category: "frontend" | "fullstack" | "backend" | "utility";
+  icon: string;
+  files: Record<string, string>;
+}
+
 // ---- WebSocket message types (client ↔ server) ----
 
 export interface WsSendMessage {
@@ -128,6 +139,15 @@ export interface WsGetFileContent {
   path: string;
 }
 
+export interface WsListTemplates {
+  type: "list_templates";
+}
+
+export interface WsApplyTemplate {
+  type: "apply_template";
+  templateId: string;
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsGetGitLog
@@ -141,7 +161,9 @@ export type WsClientMessage =
   | WsGetChatHistory
   | WsGetFileTree
   | WsGetFileContent
-  | WsClearLogs;
+  | WsClearLogs
+  | WsListTemplates
+  | WsApplyTemplate;
 
 export interface WsClaudeEvent {
   type: "claude_event";
@@ -271,6 +293,17 @@ export interface WsClearLogs {
   type: "clear_logs";
 }
 
+export interface WsTemplateList {
+  type: "template_list";
+  templates: Array<Omit<ProjectTemplate, "files">>;
+}
+
+export interface WsTemplateApplied {
+  type: "template_applied";
+  templateId: string;
+  name: string;
+}
+
 export type WsServerMessage =
   | WsClaudeEvent
   | WsError
@@ -288,4 +321,6 @@ export type WsServerMessage =
   | WsChatHistory
   | WsFileTree
   | WsFileContent
-  | WsLogEntry;
+  | WsLogEntry
+  | WsTemplateList
+  | WsTemplateApplied;
