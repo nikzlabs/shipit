@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { DiffBlock } from "./DiffBlock.js";
 
 export interface ToolUseBlock {
   type: "tool_use";
@@ -12,6 +13,41 @@ export interface ChatMessage {
   text: string;
   toolUse?: ToolUseBlock[];
   streaming?: boolean;
+}
+
+function ToolUseItem({ tool }: { tool: ToolUseBlock }) {
+  // Render file-modifying tools as diff blocks
+  if (tool.name === "Edit") {
+    const filePath = String(tool.input.file_path ?? "unknown");
+    const oldString = tool.input.old_string != null ? String(tool.input.old_string) : undefined;
+    const newString = tool.input.new_string != null ? String(tool.input.new_string) : undefined;
+    return <DiffBlock filePath={filePath} oldString={oldString} newString={newString} />;
+  }
+
+  if (tool.name === "Write") {
+    const filePath = String(tool.input.file_path ?? "unknown");
+    const content = tool.input.content != null ? String(tool.input.content) : "";
+    // For Write, show a truncated preview — full files can be very long
+    const preview = content.length > 2000 ? content.slice(0, 2000) + "\n... (truncated)" : content;
+    return <DiffBlock filePath={filePath} newString={preview} isWrite />;
+  }
+
+  // Fallback: compact one-liner for non-file tools
+  return (
+    <div className="text-xs text-gray-400 bg-gray-900 rounded px-2 py-1 font-mono">
+      Tool: {tool.name}
+      {"command" in tool.input && tool.input.command ? (
+        <span className="ml-2 text-gray-500">
+          {String(tool.input.command).slice(0, 80)}
+        </span>
+      ) : null}
+      {"file_path" in tool.input && tool.input.file_path ? (
+        <span className="ml-2 text-gray-500">
+          {String(tool.input.file_path)}
+        </span>
+      ) : null}
+    </div>
+  );
 }
 
 export function MessageList({
@@ -49,22 +85,7 @@ export function MessageList({
             {msg.toolUse && msg.toolUse.length > 0 && (
               <div className="mt-2 space-y-1">
                 {msg.toolUse.map((tool) => (
-                  <div
-                    key={tool.id}
-                    className="text-xs text-gray-400 bg-gray-900 rounded px-2 py-1 font-mono"
-                  >
-                    Tool: {tool.name}
-                    {"command" in tool.input && tool.input.command ? (
-                      <span className="ml-2 text-gray-500">
-                        {String(tool.input.command).slice(0, 80)}
-                      </span>
-                    ) : null}
-                    {"file_path" in tool.input && tool.input.file_path ? (
-                      <span className="ml-2 text-gray-500">
-                        {String(tool.input.file_path)}
-                      </span>
-                    ) : null}
-                  </div>
+                  <ToolUseItem key={tool.id} tool={tool} />
                 ))}
               </div>
             )}
