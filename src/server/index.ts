@@ -459,6 +459,20 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         send({ type: "session_list", sessions: sessionManager.list() });
       }
 
+      if (msg.type === "rename_session") {
+        const trimmed = msg.title.trim();
+        if (!trimmed) {
+          send({ type: "error", message: "Session title cannot be empty" });
+        } else {
+          const renamed = sessionManager.rename(msg.sessionId, trimmed);
+          if (renamed) {
+            send({ type: "session_renamed", session: renamed });
+          } else {
+            send({ type: "error", message: "Session not found" });
+          }
+        }
+      }
+
       if (msg.type === "get_chat_history") {
         const messages = chatHistoryManager.load(msg.sessionId);
         send({ type: "chat_history", sessionId: msg.sessionId, messages });

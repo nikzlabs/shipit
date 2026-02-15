@@ -20,7 +20,7 @@ import { activityFromTool, type StreamingActivity } from "./components/Streaming
 import { ConnectionBanner } from "./components/ConnectionBanner.js";
 import { MobileTabBar, type MobilePanel } from "./components/MobileTabBar.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
-import type { WsServerMessage, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage } from "../server/types.js";
+import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal";
 
@@ -333,6 +333,13 @@ export default function App() {
       });
     }
 
+    if (data.type === "session_renamed") {
+      const renamed = (data as WsSessionRenamed).session;
+      setSessions((prev) =>
+        prev.map((s) => (s.id === renamed.id ? renamed : s))
+      );
+    }
+
     if (data.type === "doc_list") {
       setDocFiles(data.files);
     }
@@ -447,6 +454,13 @@ export default function App() {
   const handleSessionDelete = useCallback(
     (sessionId: string) => {
       send({ type: "delete_session", sessionId });
+    },
+    [send]
+  );
+
+  const handleSessionRename = useCallback(
+    (sessionId: string, title: string) => {
+      send({ type: "rename_session", sessionId, title });
     },
     [send]
   );
@@ -652,6 +666,7 @@ export default function App() {
             onResume={handleSessionResume}
             onNew={handleSessionNew}
             onDelete={handleSessionDelete}
+            onRename={handleSessionRename}
             onRefresh={handleSessionRefresh}
           />
         </div>
