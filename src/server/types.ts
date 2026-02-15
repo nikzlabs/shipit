@@ -146,6 +146,8 @@ export interface WsPreviewStatus {
   url: string;
   /** How the preview server was identified: "vite" (managed), "detected" (port scan), or omitted. */
   source?: "vite" | "detected";
+  /** All ports detected by the port scanner (non-Vite dev servers). */
+  detectedPorts?: number[];
 }
 
 export interface WsGitLog {
