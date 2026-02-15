@@ -24,7 +24,7 @@
 ## Phase 5: Next Up
 - [x] Resizable panels
 - [x] Search in chat history
-- [x] Test coverage — Vitest, 199 tests across server/client modules + integration
+- [x] Test coverage — Vitest, 236 tests across server/client modules + integration
 
 ## Phase 6: Test Depth
 - [x] Component-level tests — React component tests (MessageList, DiffBlock, GitHistory) with @testing-library/react
@@ -36,7 +36,7 @@
 ## Phase 7: UX & Beyond
 - [x] Persistent chat history — persist messages to the server so they survive page reloads
 - [x] File tree sidebar — show the /workspace file tree alongside the preview
-- [ ] Preview port auto-detection — detect when a non-Vite dev server starts on a different port
+- [x] Preview port auto-detection — detect when a non-Vite dev server starts on a different port
 - [ ] Notification when Claude finishes — browser notification or tab title change for background tabs
 - [ ] Code block syntax highlighting — add highlight.js or shiki for code blocks in Claude responses
 - [ ] Keyboard shortcuts help — a `?` overlay showing all available shortcuts
