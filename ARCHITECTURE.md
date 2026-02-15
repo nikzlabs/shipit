@@ -167,6 +167,7 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `list_sessions` | — | List all saved sessions |
 | `new_session` | — | Clear current session, start fresh |
 | `delete_session` | `sessionId` | Delete a saved session |
+| `rename_session` | `sessionId`, `title` | Rename a saved session |
 | `list_docs` | — | List `.md` files in /workspace |
 | `get_doc` | `path` | Request content of a markdown file |
 | `get_chat_history` | `sessionId` | Request persisted chat messages for a session |
@@ -188,6 +189,7 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `auth_complete` | — | OAuth flow finished |
 | `session_list` | `sessions[]` | List of saved sessions |
 | `session_started` | `session` | Session created or resumed |
+| `session_renamed` | `session` | Session renamed successfully |
 | `doc_list` | `files[]` | List of markdown file paths |
 | `doc_content` | `path`, `content` | Raw markdown file content |
 | `chat_history` | `sessionId`, `messages[]` | Persisted chat messages for a session |
@@ -457,6 +459,7 @@ Messages with `isError: true` get a red background and border in `MessageList.ts
 - Subsequent messages include it so the server passes `--resume <id>` to the CLI
 - This preserves full conversation context across turns
 - Sessions live as long as the container's Claude auth is valid
+- Session titles are auto-generated from the first message (first 80 chars), but users can rename them via the session dropdown (pencil icon → inline text editor → Enter or blur to save, Escape to cancel)
 
 ## Persistent Chat History
 
