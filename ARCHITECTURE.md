@@ -129,9 +129,9 @@ docker compose up --build   # Builds + runs on port 3000
 ## What's Not Here Yet
 
 Planned for future phases (see `DESIGN.md`):
-- Live preview iframe (Vite dev server manager)
-- Git integration (auto-commit, history panel, rollback)
-- OAuth flow detection
-- Session list/resume UI
-- File change diffs
-- Cost/duration display
+- [x] Live preview iframe (Vite dev server manager)
+- [ ] Git integration (auto-commit, history panel, rollback)
+- [ ] OAuth flow detection
+- [ ] Session list/resume UI
+- [ ] File change diffs
+- [ ] Cost/duration display

@@ -71,4 +71,11 @@ export interface WsError {
   message: string;
 }
 
-export type WsServerMessage = WsClaudeEvent | WsError;
+export interface WsPreviewStatus {
+  type: "preview_status";
+  running: boolean;
+  port: number;
+  url: string;
+}
+
+export type WsServerMessage = WsClaudeEvent | WsError | WsPreviewStatus;
