@@ -17,7 +17,7 @@
 ## Phase 4: Polish
 - [x] OAuth flow detection and browser redirect
 - [x] Session management (list, resume, new)
-- [ ] Docs tab (markdown viewer)
+- [x] Docs tab (markdown viewer)
 - [ ] Inline file change display in chat (diff blocks)
 - [ ] Streaming UX polish (typing indicators, partial renders)
 
