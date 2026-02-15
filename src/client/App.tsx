@@ -4,6 +4,7 @@ import { MessageInput } from "./components/MessageInput.js";
 import { MessageList, type ChatMessage } from "./components/MessageList.js";
 import { PreviewFrame, type PreviewStatus } from "./components/PreviewFrame.js";
 import { GitHistory, type GitCommit } from "./components/GitHistory.js";
+import { AuthOverlay } from "./components/AuthOverlay.js";
 
 function getWsUrl(): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -16,6 +17,7 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [preview, setPreview] = useState<PreviewStatus | null>(null);
   const [gitCommits, setGitCommits] = useState<GitCommit[]>([]);
+  const [authUrl, setAuthUrl] = useState<string | null>(null);
   const sessionIdRef = useRef<string | undefined>(undefined);
 
   // Process incoming WebSocket messages
@@ -119,6 +121,14 @@ export default function App() {
       // Refresh the git log after rollback
       send({ type: "get_git_log" });
     }
+
+    if (data.type === "auth_required") {
+      setAuthUrl(data.url);
+    }
+
+    if (data.type === "auth_complete") {
+      setAuthUrl(null);
+    }
   }, [lastMessage, send]);
 
   const handleSend = useCallback(
@@ -147,6 +157,8 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen bg-gray-950 text-gray-100">
+      {authUrl && <AuthOverlay url={authUrl} />}
+
       {/* Header */}
       <header className="flex items-center justify-between px-6 py-3 border-b border-gray-800">
         <h1 className="text-lg font-semibold tracking-tight">Vibe</h1>

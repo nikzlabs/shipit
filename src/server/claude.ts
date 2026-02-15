@@ -36,9 +36,23 @@ export class ClaudeProcess extends EventEmitter {
     });
 
     this.proc.stderr!.on("data", (chunk: Buffer) => {
-      // Log stderr for debugging but don't relay to client
       const text = chunk.toString().trim();
-      if (text) console.error("[claude stderr]", text);
+      if (!text) return;
+      console.error("[claude stderr]", text);
+
+      // Detect auth-related errors — CLI exits with auth messages when not logged in
+      const lc = text.toLowerCase();
+      if (
+        lc.includes("not authenticated") ||
+        lc.includes("not logged in") ||
+        lc.includes("authentication required") ||
+        lc.includes("please login") ||
+        lc.includes("unauthorized") ||
+        lc.includes("oauth") ||
+        lc.includes("sign in")
+      ) {
+        this.emit("auth_required");
+      }
     });
 
     this.proc.on("close", (code) => {
