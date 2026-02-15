@@ -200,6 +200,44 @@ describe("MessageList", () => {
     });
   });
 
+  describe("error messages", () => {
+    it("renders error messages with red styling", () => {
+      const errorMsg: ChatMessage = {
+        role: "assistant",
+        text: "Error: Connection lost",
+        streaming: false,
+        isError: true,
+      };
+      render(<MessageList messages={[errorMsg]} isLoading={false} />);
+      const el = screen.getByText("Error: Connection lost").closest("div[class*='bg-']");
+      expect(el?.className).toContain("bg-red-900");
+    });
+
+    it("does not use red styling for normal assistant messages", () => {
+      render(
+        <MessageList
+          messages={[msg("assistant", "Normal message")]}
+          isLoading={false}
+        />
+      );
+      const el = screen.getByText("Normal message").closest("div[class*='bg-']");
+      expect(el?.className).not.toContain("bg-red-900");
+    });
+
+    it("renders error messages with border", () => {
+      const errorMsg: ChatMessage = {
+        role: "assistant",
+        text: "Error: CLI crashed",
+        streaming: false,
+        isError: true,
+      };
+      render(<MessageList messages={[errorMsg]} isLoading={false} />);
+      const el = screen.getByText("Error: CLI crashed").closest("div[class*='border']");
+      expect(el?.className).toContain("border");
+      expect(el?.className).toContain("red");
+    });
+  });
+
   describe("search highlights", () => {
     it("highlights matching text in messages", () => {
       const messages = [msg("user", "hello world")];
