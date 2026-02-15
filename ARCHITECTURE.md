@@ -313,10 +313,11 @@ The search feature lets users find text within the chat conversation using Ctrl+
 
 | Key | Action |
 |-----|--------|
+| ? | Toggle keyboard shortcuts help overlay |
 | Ctrl+F / Cmd+F | Open / close search bar |
-| Enter | Go to next match |
-| Shift+Enter | Go to previous match |
-| Escape | Close search bar |
+| Enter | Go to next match (in search); send message (in input) |
+| Shift+Enter | Go to previous match (in search); new line (in input) |
+| Escape | Close search bar / shortcuts overlay |
 
 ### CSS Classes (`index.css`)
 
@@ -579,6 +580,22 @@ Two persistent volumes:
 - **`claude-auth`** → `/root/.claude` — CLI OAuth credentials
 
 The Dockerfile installs Claude Code CLI globally, pre-builds the React frontend, and initializes a git repo in `/workspace`.
+
+## Keyboard Shortcuts Help Overlay
+
+Pressing `?` (when not focused on an input field) toggles a modal overlay listing all available keyboard shortcuts, grouped by category (General, Chat, Search).
+
+### How It Works
+
+1. **`App.tsx`** registers a global `keydown` listener for `?`. It skips the event if the active element is an `INPUT`, `TEXTAREA`, or `SELECT` to avoid triggering while the user is typing.
+2. **`KeyboardShortcutsOverlay`** (`src/client/components/KeyboardShortcutsOverlay.tsx`) renders a fixed-position modal with `role="dialog"` and `aria-label="Keyboard shortcuts"`. The shortcut data is defined as a static array of `ShortcutGroup` objects, each containing a title and an array of `ShortcutEntry` (keys + description).
+3. The overlay closes on `Escape`, `?`, clicking the backdrop, or clicking the close button.
+
+### Key Design Decisions
+
+- **Static shortcut data** — the shortcut list is a constant array inside the component, not fetched from a registry. This is simple and sufficient since there are few shortcuts and they don't change dynamically.
+- **Input guard** — the `?` listener checks `e.target.tagName` to avoid capturing keystrokes while the user is typing in the chat input or search bar.
+- **Accessible** — uses `role="dialog"`, `aria-label`, and a visible close button labeled "Esc".
 
 ## Build & Run
 
