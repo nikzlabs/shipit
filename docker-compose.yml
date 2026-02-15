@@ -1,0 +1,15 @@
+services:
+  vibe:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - workspace:/workspace
+      - claude-auth:/root/.claude
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+
+volumes:
+  workspace:
+  claude-auth:
