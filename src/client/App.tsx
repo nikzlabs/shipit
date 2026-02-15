@@ -18,9 +18,31 @@ import { MobileTabBar, type MobilePanel } from "./components/MobileTabBar.js";
 
 type RightTab = "preview" | "docs";
 
+const SESSION_STORAGE_KEY = "vibe-current-session";
+
 function getWsUrl(): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${window.location.host}/ws`;
+}
+
+function getSavedSessionId(): string | undefined {
+  try {
+    return localStorage.getItem(SESSION_STORAGE_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function saveSessionId(id: string | undefined): void {
+  try {
+    if (id) {
+      localStorage.setItem(SESSION_STORAGE_KEY, id);
+    } else {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
+    }
+  } catch {
+    // localStorage may be unavailable
+  }
 }
 
 export default function App() {
@@ -36,7 +58,9 @@ export default function App() {
   const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
   const [docContent, setDocContent] = useState<string | null>(null);
   const [activity, setActivity] = useState<StreamingActivity | undefined>(undefined);
-  const sessionIdRef = useRef<string | undefined>(undefined);
+  const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
+  // Track whether we've already requested history for the current connection
+  const historyLoadedRef = useRef(false);
 
   const { fraction, isDragging, onMouseDown, onTouchStart, containerRef } = useResizablePanel({
     initialFraction: 0.5,
@@ -67,6 +91,17 @@ export default function App() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [search]);
+
+  // On WebSocket connect, restore chat history for the saved session
+  useEffect(() => {
+    if (status === "open" && !historyLoadedRef.current && sessionIdRef.current) {
+      historyLoadedRef.current = true;
+      send({ type: "get_chat_history", sessionId: sessionIdRef.current });
+    }
+    if (status === "closed") {
+      historyLoadedRef.current = false;
+    }
+  }, [status, send]);
 
   // Handle WebSocket disconnection during streaming —
   // if the connection drops while Claude is responding, clean up the
@@ -123,6 +158,7 @@ export default function App() {
 
       if (event.type === "system" && event.subtype === "init") {
         sessionIdRef.current = event.session_id;
+        saveSessionId(event.session_id);
       }
 
       if (event.type === "assistant") {
@@ -238,6 +274,7 @@ export default function App() {
 
     if (data.type === "session_started") {
       sessionIdRef.current = data.session.id;
+      saveSessionId(data.session.id);
       setSessions((prev) => {
         const exists = prev.some((s) => s.id === data.session.id);
         if (exists) {
@@ -253,6 +290,18 @@ export default function App() {
 
     if (data.type === "doc_content") {
       setDocContent(data.content);
+    }
+
+    if (data.type === "chat_history") {
+      // Replace messages with the persisted history (loaded messages are never streaming)
+      const loaded: ChatMessage[] = data.messages.map((m: any) => ({
+        role: m.role,
+        text: m.text,
+        toolUse: m.toolUse,
+        isError: m.isError,
+        streaming: false,
+      }));
+      setMessages(loaded);
     }
   }, [lastMessage, send]);
 
@@ -288,14 +337,18 @@ export default function App() {
   const handleSessionResume = useCallback(
     (sessionId: string) => {
       sessionIdRef.current = sessionId;
+      saveSessionId(sessionId);
       setMessages([]);
       setIsLoading(false);
+      // Load persisted chat history for this session
+      send({ type: "get_chat_history", sessionId });
     },
-    []
+    [send]
   );
 
   const handleSessionNew = useCallback(() => {
     sessionIdRef.current = undefined;
+    saveSessionId(undefined);
     setMessages([]);
     setIsLoading(false);
     send({ type: "new_session" });
