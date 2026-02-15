@@ -6,6 +6,9 @@ import { PreviewFrame, type PreviewStatus } from "./components/PreviewFrame.js";
 import { GitHistory, type GitCommit } from "./components/GitHistory.js";
 import { AuthOverlay } from "./components/AuthOverlay.js";
 import { SessionSelector, type SessionInfo } from "./components/SessionSelector.js";
+import { DocsViewer } from "./components/DocsViewer.js";
+
+type RightTab = "preview" | "docs";
 
 function getWsUrl(): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -20,6 +23,10 @@ export default function App() {
   const [gitCommits, setGitCommits] = useState<GitCommit[]>([]);
   const [authUrl, setAuthUrl] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [rightTab, setRightTab] = useState<RightTab>("preview");
+  const [docFiles, setDocFiles] = useState<string[]>([]);
+  const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
+  const [docContent, setDocContent] = useState<string | null>(null);
   const sessionIdRef = useRef<string | undefined>(undefined);
 
   // Process incoming WebSocket messages
@@ -146,6 +153,14 @@ export default function App() {
         return [data.session, ...prev];
       });
     }
+
+    if (data.type === "doc_list") {
+      setDocFiles(data.files);
+    }
+
+    if (data.type === "doc_content") {
+      setDocContent(data.content);
+    }
   }, [lastMessage, send]);
 
   const handleSend = useCallback(
@@ -199,6 +214,30 @@ export default function App() {
     [send]
   );
 
+  const handleDocRefresh = useCallback(() => {
+    send({ type: "list_docs" });
+  }, [send]);
+
+  const handleDocSelect = useCallback(
+    (filePath: string) => {
+      setSelectedDoc(filePath);
+      setDocContent(null);
+      send({ type: "get_doc", path: filePath });
+    },
+    [send]
+  );
+
+  // Request doc list when switching to docs tab
+  const handleTabChange = useCallback(
+    (tab: RightTab) => {
+      setRightTab(tab);
+      if (tab === "docs" && docFiles.length === 0) {
+        send({ type: "list_docs" });
+      }
+    },
+    [send, docFiles.length]
+  );
+
   return (
     <div className="flex flex-col h-screen bg-gray-950 text-gray-100">
       {authUrl && <AuthOverlay url={authUrl} />}
@@ -249,9 +288,46 @@ export default function App() {
           <MessageInput onSend={handleSend} disabled={isLoading || status !== "open"} />
         </div>
 
-        {/* Right column — Live Preview */}
+        {/* Right column — Tabbed (Preview / Docs) */}
         <div className="w-1/2 min-w-0 hidden md:flex flex-col bg-gray-900">
-          <PreviewFrame preview={preview} />
+          {/* Tab bar */}
+          <div className="flex border-b border-gray-700 bg-gray-900">
+            <button
+              onClick={() => handleTabChange("preview")}
+              className={`px-4 py-2 text-sm font-medium transition-colors ${
+                rightTab === "preview"
+                  ? "text-gray-100 border-b-2 border-blue-500"
+                  : "text-gray-500 hover:text-gray-300"
+              }`}
+            >
+              Preview
+            </button>
+            <button
+              onClick={() => handleTabChange("docs")}
+              className={`px-4 py-2 text-sm font-medium transition-colors ${
+                rightTab === "docs"
+                  ? "text-gray-100 border-b-2 border-blue-500"
+                  : "text-gray-500 hover:text-gray-300"
+              }`}
+            >
+              Docs
+            </button>
+          </div>
+
+          {/* Tab content */}
+          <div className="flex-1 min-h-0">
+            {rightTab === "preview" ? (
+              <PreviewFrame preview={preview} />
+            ) : (
+              <DocsViewer
+                files={docFiles}
+                selectedFile={selectedDoc}
+                content={docContent}
+                onSelectFile={handleDocSelect}
+                onRefresh={handleDocRefresh}
+              />
+            )}
+          </div>
         </div>
       </div>
     </div>

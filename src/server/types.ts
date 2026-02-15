@@ -99,13 +99,24 @@ export interface WsDeleteSession {
   sessionId: string;
 }
 
+export interface WsListDocs {
+  type: "list_docs";
+}
+
+export interface WsGetDoc {
+  type: "get_doc";
+  path: string;
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsGetGitLog
   | WsRollback
   | WsListSessions
   | WsNewSession
-  | WsDeleteSession;
+  | WsDeleteSession
+  | WsListDocs
+  | WsGetDoc;
 
 export interface WsClaudeEvent {
   type: "claude_event";
@@ -161,6 +172,17 @@ export interface WsSessionStarted {
   session: SessionInfo;
 }
 
+export interface WsDocList {
+  type: "doc_list";
+  files: string[];
+}
+
+export interface WsDocContent {
+  type: "doc_content";
+  path: string;
+  content: string;
+}
+
 export type WsServerMessage =
   | WsClaudeEvent
   | WsError
@@ -171,4 +193,6 @@ export type WsServerMessage =
   | WsAuthRequired
   | WsAuthComplete
   | WsSessionList
-  | WsSessionStarted;
+  | WsSessionStarted
+  | WsDocList
+  | WsDocContent;

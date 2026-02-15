@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
 import path from "node:path";
+import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { ClaudeProcess } from "./claude.js";
 import { ViteManager } from "./vite-manager.js";
@@ -11,6 +12,27 @@ import { SessionManager } from "./sessions.js";
 import type { WsClientMessage, WsServerMessage, ClaudeEvent } from "./types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const WORKSPACE = "/workspace";
+
+/** Recursively find .md files in a directory, skipping node_modules and .git */
+async function findMarkdownFiles(dir: string, prefix = ""): Promise<string[]> {
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  const results: string[] = [];
+
+  for (const entry of entries) {
+    if (entry.name === "node_modules" || entry.name === ".git") continue;
+    const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+
+    if (entry.isDirectory()) {
+      results.push(...await findMarkdownFiles(path.join(dir, entry.name), relativePath));
+    } else if (entry.name.endsWith(".md")) {
+      results.push(relativePath);
+    }
+  }
+
+  return results.sort();
+}
 
 async function main() {
   const app = Fastify({ logger: true });
@@ -228,6 +250,29 @@ async function main() {
       if (msg.type === "delete_session") {
         sessionManager.delete(msg.sessionId);
         send({ type: "session_list", sessions: sessionManager.list() });
+      }
+
+      if (msg.type === "list_docs") {
+        try {
+          const files = await findMarkdownFiles("/workspace");
+          send({ type: "doc_list", files });
+        } catch (err: any) {
+          send({ type: "error", message: `Failed to list docs: ${err.message}` });
+        }
+      }
+
+      if (msg.type === "get_doc") {
+        try {
+          const safePath = path.resolve("/workspace", msg.path);
+          if (!safePath.startsWith("/workspace/")) {
+            send({ type: "error", message: "Invalid path" });
+            return;
+          }
+          const content = await fs.readFile(safePath, "utf-8");
+          send({ type: "doc_content", path: msg.path, content });
+        } catch (err: any) {
+          send({ type: "error", message: `Failed to read doc: ${err.message}` });
+        }
       }
     });
 
