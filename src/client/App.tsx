@@ -253,7 +253,7 @@ export default function App() {
     if (data.type === "git_committed") {
       // Prepend the new commit to the list
       setGitCommits((prev) => [
-        { hash: data.hash, message: data.message, date: new Date().toISOString(), author: "Vibe" },
+        { hash: data.hash, message: data.message, date: new Date().toISOString(), author: "ShipIt" },
         ...prev,
       ]);
       // Refresh file tree if the Files tab is active (files likely changed)
@@ -502,7 +502,7 @@ export default function App() {
       {/* Header */}
       <header className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-gray-800">
         <div className="flex items-center gap-3 sm:gap-4 min-w-0">
-          <h1 className="text-lg font-semibold tracking-tight shrink-0">Vibe</h1>
+          <h1 className="text-lg font-semibold tracking-tight shrink-0">ShipIt</h1>
           <SessionSelector
             sessions={sessions}
             currentSessionId={sessionIdRef.current}

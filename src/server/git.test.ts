@@ -149,7 +149,7 @@ describe("GitManager", () => {
       expect(commit.hash).toMatch(/^[a-f0-9]+$/);
       expect(commit.message).toBe("Test commit");
       expect(commit.date).toBeTruthy();
-      expect(commit.author).toBe("Vibe");
+      expect(commit.author).toBe("ShipIt");
     });
   });
 

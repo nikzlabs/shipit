@@ -146,7 +146,7 @@ describe("port-scanner", () => {
       expect(DEFAULT_SCAN_PORTS).toContain(8000);
     });
 
-    it("does not include port 3000 (Vibe server default)", () => {
+    it("does not include port 3000 (ShipIt server default)", () => {
       expect(DEFAULT_SCAN_PORTS).not.toContain(3000);
     });
   });
