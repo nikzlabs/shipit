@@ -69,6 +69,7 @@ Vibe is a browser-based IDE for "vibe coding" — you talk to Claude in a chat i
 | `git.ts` | `GitManager` class — auto-commit after turns, git log, rollback |
 | `auth.ts` | `AuthManager` class — OAuth flow detection, credential checking, auth URL capture |
 | `sessions.ts` | `SessionManager` class — session CRUD, JSON file persistence |
+| `chat-history.ts` | `ChatHistoryManager` class — per-session chat message persistence to disk |
 | `markdown.ts` | `findMarkdownFiles` — recursive `.md` file scanner (skips node_modules, .git) |
 | `vite-manager.ts` | `ViteManager` class — Vite dev server lifecycle (start, stop, restart) |
 | `types.ts` | Shared TypeScript types for all WebSocket and Claude event payloads |
@@ -162,6 +163,7 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `delete_session` | `sessionId` | Delete a saved session |
 | `list_docs` | — | List `.md` files in /workspace |
 | `get_doc` | `path` | Request content of a markdown file |
+| `get_chat_history` | `sessionId` | Request persisted chat messages for a session |
 
 ### Server → Client Messages
 
@@ -179,6 +181,7 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `session_started` | `session` | Session created or resumed |
 | `doc_list` | `files[]` | List of markdown file paths |
 | `doc_content` | `path`, `content` | Raw markdown file content |
+| `chat_history` | `sessionId`, `messages[]` | Persisted chat messages for a session |
 
 ### Adding a New Message Type
 
@@ -387,6 +390,42 @@ Messages with `isError: true` get a red background and border in `MessageList.ts
 - Subsequent messages include it so the server passes `--resume <id>` to the CLI
 - This preserves full conversation context across turns
 - Sessions live as long as the container's Claude auth is valid
+
+## Persistent Chat History
+
+Chat messages are persisted to disk per session so conversations survive page reloads, browser restarts, and session switching.
+
+### Storage
+
+- **Location**: `/workspace/.vibe-chat-history/{sessionId}.json`
+- **Format**: JSON array of `PersistedMessage` objects (same shape as client-side `ChatMessage` minus the `streaming` field)
+- **Session ID sanitization**: Non-alphanumeric characters (except `-` and `_`) are replaced with `_` to prevent path traversal
+
+### How It Works
+
+1. **Saving messages** — The server persists messages as they flow through the WebSocket handler in `index.ts`:
+   - **User messages**: Saved when `send_message` is received. For new sessions (no `sessionId` yet), the user message is saved once the `system.init` event provides the session ID. For resumed sessions, it's saved immediately.
+   - **Assistant messages**: The final assistant text and tool use blocks are accumulated during streaming and saved when the `result` event fires.
+   - **Error messages**: CLI crashes and process errors are saved with `isError: true`.
+
+2. **Loading messages** — The client requests history via `{ type: "get_chat_history", sessionId }` and the server responds with `{ type: "chat_history", sessionId, messages }`. This happens:
+   - **On page reload**: The client stores the current session ID in `localStorage` (key: `vibe-current-session`). On WebSocket connect, if a saved session ID exists, it requests that session's history.
+   - **On session resume**: When the user explicitly resumes a session via `SessionSelector`, the client requests that session's history.
+
+3. **Cleanup** — When a session is deleted via `delete_session`, both the session metadata and its chat history file are removed.
+
+### Key Files
+
+- **`src/server/chat-history.ts`** — `ChatHistoryManager` class: append, load, delete, listSessions. Uses synchronous `fs` for simplicity (same pattern as `SessionManager`).
+- **`src/server/index.ts`** — Wires up `ChatHistoryManager` in the WebSocket handler: saves messages during Claude turns, handles `get_chat_history` requests.
+- **`src/client/App.tsx`** — Client-side integration: `localStorage` persistence of session ID, history request on connect/resume, `chat_history` message handler.
+
+### Key Design Decisions
+
+- **Server-side persistence, not client-side**: Messages are stored on the server so they survive across different browsers/devices connecting to the same container.
+- **Per-session files**: Each session gets its own JSON file rather than a single monolithic store. This keeps individual files small and makes cleanup trivial.
+- **No streaming state in persisted messages**: The `streaming` flag is transient UI state and is always set to `false` when loading history.
+- **localStorage for session continuity**: The current session ID is saved to `localStorage` so page reloads automatically restore the last active session's chat.
 
 ## Tech Stack
 
