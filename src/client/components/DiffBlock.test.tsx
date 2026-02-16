@@ -61,7 +61,7 @@ describe("DiffBlock", () => {
       const { container } = render(
         <DiffBlock filePath="f.ts" oldString="before" newString="after" />
       );
-      const separator = container.querySelector(".border-t.border-gray-800");
+      const separator = container.querySelector(".border-t.border-gray-200");
       expect(separator).toBeInTheDocument();
     });
 
@@ -69,7 +69,7 @@ describe("DiffBlock", () => {
       const { container } = render(
         <DiffBlock filePath="f.ts" newString="only-added" />
       );
-      const separator = container.querySelector(".border-t.border-gray-800");
+      const separator = container.querySelector(".border-t.border-gray-200");
       expect(separator).not.toBeInTheDocument();
     });
   });

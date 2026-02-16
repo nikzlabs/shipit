@@ -145,22 +145,22 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled }: As
   const isAnswered = !!submittedAnswers;
 
   return (
-    <div className="mt-2 rounded-lg border border-gray-600 bg-gray-900/80 overflow-hidden" data-testid="ask-user-question">
+    <div className="mt-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-gray-50/80 dark:bg-gray-900/80 overflow-hidden" data-testid="ask-user-question">
       {questions.map((q, qIndex) => {
         const selectedSet = selections.get(qIndex) ?? new Set<string>();
         const isOther = usingOther.has(qIndex);
         const answeredValue = submittedAnswers?.[String(qIndex)];
 
         return (
-          <div key={qIndex} className={`p-3 ${qIndex > 0 ? "border-t border-gray-700" : ""}`}>
+          <div key={qIndex} className={`p-3 ${qIndex > 0 ? "border-t border-gray-300 dark:border-gray-700" : ""}`}>
             {/* Header tag */}
             {q.header && (
-              <span className="inline-block text-[10px] font-semibold uppercase tracking-wider text-blue-400 bg-blue-900/40 rounded px-1.5 py-0.5 mb-1.5">
+              <span className="inline-block text-[10px] font-semibold uppercase tracking-wider text-blue-600 dark:text-blue-400 bg-blue-100/40 dark:bg-blue-900/40 rounded px-1.5 py-0.5 mb-1.5">
                 {q.header}
               </span>
             )}
             {/* Question text */}
-            <p className="text-sm text-gray-200 mb-2">{q.question}</p>
+            <p className="text-sm text-gray-800 dark:text-gray-200 mb-2">{q.question}</p>
 
             {/* Options */}
             <div className="space-y-1.5">
@@ -176,11 +176,11 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled }: As
                     className={`w-full text-left rounded-md px-3 py-2 text-sm transition-colors border ${
                       isAnswered
                         ? wasAnswered
-                          ? "border-blue-500 bg-blue-900/40 text-blue-200"
-                          : "border-gray-700 bg-gray-800/50 text-gray-500"
+                          ? "border-blue-500 bg-blue-100/40 dark:bg-blue-900/40 text-blue-700 dark:text-blue-200"
+                          : "border-gray-300 dark:border-gray-700 bg-gray-100/50 dark:bg-gray-800/50 text-gray-500"
                         : isSelected && !isOther
-                        ? "border-blue-500 bg-blue-900/30 text-blue-200"
-                        : "border-gray-700 hover:border-gray-500 hover:bg-gray-800 text-gray-300"
+                        ? "border-blue-500 bg-blue-100/30 dark:bg-blue-900/30 text-blue-700 dark:text-blue-200"
+                        : "border-gray-300 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300"
                     } disabled:cursor-default`}
                     data-testid={`option-${opt.label}`}
                   >
@@ -189,7 +189,7 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled }: As
                       <span className={`mt-0.5 shrink-0 w-4 h-4 rounded${q.multiSelect ? "" : "-full"} border flex items-center justify-center ${
                         (isSelected && !isOther) || wasAnswered
                           ? "border-blue-400 bg-blue-500"
-                          : "border-gray-600"
+                          : "border-gray-400 dark:border-gray-600"
                       }`}>
                         {((isSelected && !isOther) || wasAnswered) && (
                           <svg className="w-2.5 h-2.5 text-white" fill="currentColor" viewBox="0 0 20 20">
@@ -200,7 +200,7 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled }: As
                       <div className="min-w-0">
                         <span className="font-medium">{opt.label}</span>
                         {opt.description && (
-                          <span className="ml-1 text-gray-400">&mdash; {opt.description}</span>
+                          <span className="ml-1 text-gray-500 dark:text-gray-400">&mdash; {opt.description}</span>
                         )}
                       </div>
                     </div>
@@ -216,14 +216,14 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled }: As
                     disabled={disabled || isAnswered}
                     className={`w-full text-left rounded-md px-3 py-2 text-sm transition-colors border ${
                       isOther
-                        ? "border-blue-500 bg-blue-900/30 text-blue-200"
-                        : "border-gray-700 hover:border-gray-500 hover:bg-gray-800 text-gray-300"
+                        ? "border-blue-500 bg-blue-100/30 dark:bg-blue-900/30 text-blue-700 dark:text-blue-200"
+                        : "border-gray-300 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300"
                     } disabled:cursor-default`}
                     data-testid="option-other"
                   >
                     <div className="flex items-center gap-2">
                       <span className={`shrink-0 w-4 h-4 rounded${q.multiSelect ? "" : "-full"} border flex items-center justify-center ${
-                        isOther ? "border-blue-400 bg-blue-500" : "border-gray-600"
+                        isOther ? "border-blue-400 bg-blue-500" : "border-gray-400 dark:border-gray-600"
                       }`}>
                         {isOther && (
                           <svg className="w-2.5 h-2.5 text-white" fill="currentColor" viewBox="0 0 20 20">
@@ -250,7 +250,7 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled }: As
                         }
                       }}
                       placeholder="Type your answer..."
-                      className="mt-1.5 ml-6 w-[calc(100%-1.5rem)] rounded-md bg-gray-800 border border-gray-600 px-3 py-1.5 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                      className="mt-1.5 ml-6 w-[calc(100%-1.5rem)] rounded-md bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-3 py-1.5 text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500"
                       data-testid="other-input"
                       autoFocus
                     />
@@ -260,7 +260,7 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled }: As
 
               {/* Show answered "Other" value */}
               {isAnswered && answeredValue && !q.options.some((o) => o.label === answeredValue) && (
-                <div className="rounded-md px-3 py-2 text-sm border border-blue-500 bg-blue-900/40 text-blue-200">
+                <div className="rounded-md px-3 py-2 text-sm border border-blue-500 bg-blue-100/40 dark:bg-blue-900/40 text-blue-700 dark:text-blue-200">
                   <div className="flex items-start gap-2">
                     <span className="mt-0.5 shrink-0 w-4 h-4 rounded-full border border-blue-400 bg-blue-500 flex items-center justify-center">
                       <svg className="w-2.5 h-2.5 text-white" fill="currentColor" viewBox="0 0 20 20">

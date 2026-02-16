@@ -76,7 +76,7 @@ function TreeNode({
       <div>
         <button
           onClick={toggle}
-          className="flex items-center gap-1.5 w-full text-left py-1 px-2 hover:bg-gray-800 transition-colors text-sm text-gray-300"
+          className="flex items-center gap-1.5 w-full text-left py-1 px-2 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-sm text-gray-700 dark:text-gray-300"
           style={{ paddingLeft }}
         >
           <ChevronIcon expanded={expanded} />
@@ -101,8 +101,8 @@ function TreeNode({
       onClick={() => onFileClick?.(node.path)}
       className={`flex items-center gap-1.5 w-full text-left py-1 px-2 text-sm transition-colors ${
         isSelected
-          ? "bg-blue-900/50 text-blue-200"
-          : "text-gray-400 hover:bg-gray-800"
+          ? "bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-200"
+          : "text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
       }`}
       style={{ paddingLeft: paddingLeft + 16 }}
       title={node.path}
@@ -120,12 +120,12 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile }: FileTre
         <div className="text-center space-y-2">
           <div className="text-2xl">&#128193;</div>
           <p>No files in /workspace yet.</p>
-          <p className="text-xs text-gray-600">
+          <p className="text-xs text-gray-400 dark:text-gray-600">
             Ask Claude to create a project to get started.
           </p>
           <button
             onClick={onRefresh}
-            className="mt-2 px-3 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors"
+            className="mt-2 px-3 py-1 text-xs rounded bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 transition-colors"
           >
             Refresh
           </button>
@@ -137,11 +137,11 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile }: FileTre
   return (
     <div className="flex flex-col h-full">
       {/* Header bar */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-gray-900 border-b border-gray-700 text-xs text-gray-400">
-        <span className="font-medium text-gray-300">Files</span>
+      <div className="flex items-center justify-between px-3 py-1.5 bg-gray-50 dark:bg-gray-900 border-b border-gray-300 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400">
+        <span className="font-medium text-gray-700 dark:text-gray-300">Files</span>
         <button
           onClick={onRefresh}
-          className="px-2 py-0.5 rounded hover:bg-gray-800 transition-colors shrink-0"
+          className="px-2 py-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors shrink-0"
           title="Refresh file tree"
         >
           Reload

@@ -32,31 +32,31 @@ export function GitHubCreateRepoOverlay({ username, onSubmit, onClose }: GitHubC
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/90 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 dark:bg-gray-950/90 backdrop-blur-sm"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="max-w-md w-full mx-4 rounded-xl bg-gray-900 border border-gray-700 p-8 space-y-6">
+      <div className="max-w-md w-full mx-4 rounded-xl bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 p-8 space-y-6">
         <div className="space-y-2 text-center">
-          <h2 className="text-xl font-semibold text-gray-100">
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
             Create GitHub Repository
           </h2>
-          <p className="text-sm text-gray-400">
-            Create a new repository under <span className="text-gray-200 font-medium">{username}</span> and automatically configure it as the remote.
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            Create a new repository under <span className="text-gray-800 dark:text-gray-200 font-medium">{username}</span> and automatically configure it as the remote.
           </p>
         </div>
 
         <div className="space-y-4">
           <div>
-            <label className="block text-sm text-gray-300 mb-1">Repository name</label>
+            <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Repository name</label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="my-project"
-              className="w-full rounded-lg bg-gray-800 border border-gray-600 px-4 py-2.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono"
+              className="w-full rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-4 py-2.5 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono"
               autoFocus
             />
             {trimmedName && !isValidName && (
@@ -67,14 +67,14 @@ export function GitHubCreateRepoOverlay({ username, onSubmit, onClose }: GitHubC
           </div>
 
           <div>
-            <label className="block text-sm text-gray-300 mb-1">Description (optional)</label>
+            <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Description (optional)</label>
             <input
               type="text"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="A short description of the project"
-              className="w-full rounded-lg bg-gray-800 border border-gray-600 px-4 py-2.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+              className="w-full rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-4 py-2.5 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
             />
           </div>
 
@@ -84,8 +84,8 @@ export function GitHubCreateRepoOverlay({ username, onSubmit, onClose }: GitHubC
               onClick={() => setIsPrivate(false)}
               className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium border transition-colors ${
                 !isPrivate
-                  ? "bg-gray-700 border-blue-500 text-gray-100"
-                  : "bg-gray-800 border-gray-600 text-gray-400 hover:border-gray-500"
+                  ? "bg-gray-200 dark:bg-gray-700 border-blue-500 text-gray-900 dark:text-gray-100"
+                  : "bg-gray-100 dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:border-gray-400 dark:hover:border-gray-500"
               }`}
             >
               Public
@@ -95,8 +95,8 @@ export function GitHubCreateRepoOverlay({ username, onSubmit, onClose }: GitHubC
               onClick={() => setIsPrivate(true)}
               className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium border transition-colors ${
                 isPrivate
-                  ? "bg-gray-700 border-blue-500 text-gray-100"
-                  : "bg-gray-800 border-gray-600 text-gray-400 hover:border-gray-500"
+                  ? "bg-gray-200 dark:bg-gray-700 border-blue-500 text-gray-900 dark:text-gray-100"
+                  : "bg-gray-100 dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:border-gray-400 dark:hover:border-gray-500"
               }`}
             >
               Private
@@ -106,7 +106,7 @@ export function GitHubCreateRepoOverlay({ username, onSubmit, onClose }: GitHubC
           <div className="flex gap-3 pt-2">
             <button
               onClick={onClose}
-              className="flex-1 rounded-lg bg-gray-800 px-4 py-2.5 text-sm font-medium text-gray-300 hover:bg-gray-700 transition-colors"
+              className="flex-1 rounded-lg bg-gray-100 dark:bg-gray-800 px-4 py-2.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
             >
               Cancel
             </button>

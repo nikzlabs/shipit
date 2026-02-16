@@ -29,7 +29,7 @@ export function ResizeHandle({
         className={`absolute inset-y-0 left-1/2 -translate-x-1/2 w-0.5 transition-colors ${
           isDragging
             ? "bg-blue-500"
-            : "bg-gray-700 group-hover:bg-gray-500"
+            : "bg-gray-300 dark:bg-gray-700 group-hover:bg-gray-400 dark:group-hover:bg-gray-500"
         }`}
       />
     </div>

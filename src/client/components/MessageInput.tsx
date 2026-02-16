@@ -38,10 +38,10 @@ export function MessageInput({
   };
 
   return (
-    <div className="border-t border-gray-800 px-3 sm:px-6 py-3 sm:py-4">
+    <div className="border-t border-gray-200 dark:border-gray-800 px-3 sm:px-6 py-3 sm:py-4">
       {/* Activity status bar — shown while Claude is working */}
       {activity && (
-        <div className="flex items-center gap-2 mb-2 text-xs text-gray-400 max-w-3xl mx-auto">
+        <div className="flex items-center gap-2 mb-2 text-xs text-gray-500 dark:text-gray-400 max-w-3xl mx-auto">
           <TypingDots />
           <span>{activity.label}</span>
         </div>
@@ -56,7 +56,7 @@ export function MessageInput({
           placeholder="Tell Claude what to build..."
           disabled={disabled}
           rows={1}
-          className="flex-1 resize-none rounded-lg bg-gray-800 border border-gray-700 px-4 py-3 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+          className="flex-1 resize-none rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
         />
         <button
           onClick={handleSubmit}

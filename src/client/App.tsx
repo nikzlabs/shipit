@@ -4,6 +4,7 @@ import { useResizablePanel } from "./hooks/useResizablePanel.js";
 import { useSearch } from "./hooks/useSearch.js";
 import { useIsMobile } from "./hooks/useMediaQuery.js";
 import { useNotification } from "./hooks/useNotification.js";
+import { useTheme } from "./hooks/useTheme.js";
 import { MessageInput } from "./components/MessageInput.js";
 import { MessageList, type ChatMessage } from "./components/MessageList.js";
 import { PreviewFrame, type PreviewStatus } from "./components/PreviewFrame.js";
@@ -107,6 +108,7 @@ export default function App() {
   const search = useSearch(messages);
 
   const { notify, requestPermission } = useNotification();
+  const { theme, toggle: toggleTheme } = useTheme();
 
   // Ctrl+F / Cmd+F to toggle search bar
   useEffect(() => {
@@ -701,13 +703,13 @@ export default function App() {
   const rightPanel = (
     <>
       {/* Tab bar */}
-      <div className="flex border-b border-gray-700 bg-gray-900">
+      <div className="flex border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
         <button
           onClick={() => handleTabChange("preview")}
           className={`px-4 py-2 text-sm font-medium transition-colors ${
             rightTab === "preview"
-              ? "text-gray-100 border-b-2 border-blue-500"
-              : "text-gray-500 hover:text-gray-300"
+              ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500"
+              : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
           }`}
         >
           Preview
@@ -716,8 +718,8 @@ export default function App() {
           onClick={() => handleTabChange("docs")}
           className={`px-4 py-2 text-sm font-medium transition-colors ${
             rightTab === "docs"
-              ? "text-gray-100 border-b-2 border-blue-500"
-              : "text-gray-500 hover:text-gray-300"
+              ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500"
+              : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
           }`}
         >
           Docs
@@ -726,8 +728,8 @@ export default function App() {
           onClick={() => handleTabChange("files")}
           className={`px-4 py-2 text-sm font-medium transition-colors ${
             rightTab === "files"
-              ? "text-gray-100 border-b-2 border-blue-500"
-              : "text-gray-500 hover:text-gray-300"
+              ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500"
+              : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
           }`}
         >
           Files
@@ -736,8 +738,8 @@ export default function App() {
           onClick={() => handleTabChange("terminal")}
           className={`px-4 py-2 text-sm font-medium transition-colors relative ${
             rightTab === "terminal"
-              ? "text-gray-100 border-b-2 border-blue-500"
-              : "text-gray-500 hover:text-gray-300"
+              ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500"
+              : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
           }`}
         >
           Terminal
@@ -838,7 +840,7 @@ export default function App() {
   );
 
   return (
-    <div className="flex flex-col h-screen bg-gray-950 text-gray-100">
+    <div className="flex flex-col h-screen bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
       {authUrl && <AuthOverlay url={authUrl} />}
       {showGitHubAuth && (
         <GitHubAuthOverlay
@@ -871,7 +873,7 @@ export default function App() {
       )}
 
       {/* Header */}
-      <header className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-gray-800">
+      <header className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-gray-200 dark:border-gray-800">
         <div className="flex items-center gap-3 sm:gap-4 min-w-0">
           <h1 className="text-lg font-semibold tracking-tight shrink-0">ShipIt</h1>
           <SessionSelector
@@ -888,7 +890,7 @@ export default function App() {
           {githubStatus.authenticated ? (
             <div className="hidden sm:flex items-center gap-1.5">
               <span
-                className="inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-300"
+                className="inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300"
                 title={`Connected as ${githubStatus.username}`}
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
@@ -896,14 +898,14 @@ export default function App() {
               </span>
               <button
                 onClick={() => setShowCreateRepo(true)}
-                className="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200 transition-colors"
+                className="text-xs px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
                 title="Create new GitHub repository"
               >
                 + Repo
               </button>
               <button
                 onClick={handleGitHubLogout}
-                className="text-xs px-1.5 py-0.5 rounded-full bg-gray-800 text-gray-500 hover:bg-gray-700 hover:text-gray-300 transition-colors"
+                className="text-xs px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
                 title="Disconnect from GitHub"
               >
                 &times;
@@ -912,10 +914,10 @@ export default function App() {
           ) : (
             <button
               onClick={() => setShowGitHubAuth(true)}
-              className="hidden sm:inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-500 hover:bg-gray-700 hover:text-gray-300 transition-colors"
+              className="hidden sm:inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
               title="Connect to GitHub"
             >
-              <span className="w-1.5 h-1.5 rounded-full bg-gray-600" />
+              <span className="w-1.5 h-1.5 rounded-full bg-gray-400 dark:bg-gray-600" />
               GitHub
             </button>
           )}
@@ -956,19 +958,36 @@ export default function App() {
           {preview?.running && (
             <span className={`hidden sm:inline text-xs px-2 py-0.5 rounded-full ${
               preview.source === "detected"
-                ? "bg-yellow-900 text-yellow-300"
-                : "bg-emerald-900 text-emerald-300"
+                ? "bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300"
+                : "bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300"
             }`}>
               preview :{selectedPort ?? preview.port}
             </span>
           )}
+          {/* Theme toggle */}
+          <button
+            onClick={toggleTheme}
+            className="p-1.5 rounded-md text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          >
+            {theme === "dark" ? (
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+              </svg>
+            )}
+          </button>
           <span
             className={`text-xs px-2 py-0.5 rounded-full ${
               status === "open"
-                ? "bg-green-900 text-green-300"
+                ? "bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300"
                 : status === "connecting"
-                ? "bg-yellow-900 text-yellow-300"
-                : "bg-red-900 text-red-300"
+                ? "bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300"
+                : "bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300"
             }`}
           >
             {status}
@@ -985,7 +1004,7 @@ export default function App() {
             {mobilePanel === "chat" ? (
               <div className="flex flex-col flex-1 min-h-0">{chatPanel}</div>
             ) : (
-              <div className="flex flex-col flex-1 min-h-0 bg-gray-900">{rightPanel}</div>
+              <div className="flex flex-col flex-1 min-h-0 bg-gray-50 dark:bg-gray-900">{rightPanel}</div>
             )}
           </div>
           <MobileTabBar activePanel={mobilePanel} onChangePanel={setMobilePanel} />
@@ -995,7 +1014,7 @@ export default function App() {
         <div ref={containerRef} className="flex flex-1 min-h-0">
           {/* Left column — Chat */}
           <div
-            className="flex flex-col min-w-0 border-r border-gray-800"
+            className="flex flex-col min-w-0 border-r border-gray-200 dark:border-gray-800"
             style={{ width: `${fraction * 100}%` }}
           >
             {chatPanel}
@@ -1006,7 +1025,7 @@ export default function App() {
 
           {/* Right column — Tabbed (Preview / Docs) */}
           <div
-            className="min-w-0 flex flex-col bg-gray-900"
+            className="min-w-0 flex flex-col bg-gray-50 dark:bg-gray-900"
             style={{ width: `${(1 - fraction) * 100}%` }}
           >
             {rightPanel}

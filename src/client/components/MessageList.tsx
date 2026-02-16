@@ -71,7 +71,7 @@ function ToolUseItem({ tool, isLast, isStreaming, onAnswerQuestion, isQuestionDi
 
   // Fallback: compact one-liner for non-file tools
   return (
-    <div className="text-xs text-gray-400 bg-gray-900 rounded px-2 py-1 font-mono flex items-center gap-2">
+    <div className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 rounded px-2 py-1 font-mono flex items-center gap-2">
       {inProgress && <ToolSpinner />}
       <span className={inProgress ? "text-blue-400" : ""}>
         {tool.name}
@@ -192,9 +192,9 @@ function CodeBlock({ code, language }: { code: string; language: string }) {
   }, [code, language]);
 
   return (
-    <div className="my-2 rounded-md overflow-hidden bg-gray-950">
+    <div className="my-2 rounded-md overflow-hidden bg-gray-100 dark:bg-gray-950">
       {language && (
-        <div className="text-xs text-gray-500 px-3 py-1 border-b border-gray-700/50">
+        <div className="text-xs text-gray-500 px-3 py-1 border-b border-gray-300/50 dark:border-gray-700/50">
           {language}
         </div>
       )}
@@ -317,7 +317,7 @@ function MessageEditor({
       <div className="flex justify-end gap-2 mt-1">
         <button
           onClick={onCancel}
-          className="text-xs px-3 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors"
+          className="text-xs px-3 py-1 rounded bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
         >
           Cancel
         </button>
@@ -416,7 +416,7 @@ export function MessageList({
               <div className="hidden group-hover:flex items-center gap-1 mr-2 shrink-0">
                 <button
                   onClick={() => setEditingIndex(i)}
-                  className="p-1 rounded text-gray-500 hover:text-gray-300 hover:bg-gray-700 transition-colors"
+                  className="p-1 rounded text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
                   title="Edit message"
                   aria-label="Edit message"
                 >
@@ -426,7 +426,7 @@ export function MessageList({
                 </button>
                 <button
                   onClick={() => onEditMessage?.(i, msg.text)}
-                  className="p-1 rounded text-gray-500 hover:text-gray-300 hover:bg-gray-700 transition-colors"
+                  className="p-1 rounded text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
                   title="Retry message"
                   aria-label="Retry message"
                 >
@@ -449,10 +449,10 @@ export function MessageList({
                 !hasCodeBlocks ? "whitespace-pre-wrap" : ""
               } ${
                 msg.isError
-                  ? "bg-red-900/60 text-red-200 border border-red-700/50"
+                  ? "bg-red-100 dark:bg-red-900/60 text-red-700 dark:text-red-200 border border-red-300 dark:border-red-700/50"
                   : msg.role === "user"
                   ? "bg-blue-600 text-white"
-                  : "bg-gray-800 text-gray-100"
+                  : "bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100"
               }`}
             >
               {hasCodeBlocks ? (
