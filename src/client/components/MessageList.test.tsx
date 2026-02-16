@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, beforeAll, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
-import { MessageList, parseMessageSegments, type ChatMessage, type ToolUseBlock, type ToolResultBlock } from "./MessageList.js";
+import { MessageList, ImageLightbox, parseMessageSegments, type ChatMessage, type ChatMessageImage, type ToolUseBlock, type ToolResultBlock } from "./MessageList.js";
 
 // jsdom doesn't implement scrollIntoView
 beforeAll(() => {
@@ -837,6 +837,216 @@ describe("MessageList", () => {
 
       fireEvent.click(toggle);
       expect(screen.getByLabelText("Hide output").getAttribute("aria-expanded")).toBe("true");
+    });
+  });
+
+  describe("image rendering in messages", () => {
+    const testImage: ChatMessageImage = {
+      data: "iVBORw0KGgo=", // tiny fake base64
+      mediaType: "image/png",
+    };
+
+    it("renders image thumbnails in user messages", () => {
+      const messages: ChatMessage[] = [
+        { role: "user", text: "Check this design", images: [testImage] },
+      ];
+      const { container } = render(
+        <MessageList messages={messages} isLoading={false} />
+      );
+      const imageContainer = container.querySelector('[data-testid="message-images"]');
+      expect(imageContainer).toBeInTheDocument();
+      const imgs = imageContainer!.querySelectorAll("img");
+      expect(imgs).toHaveLength(1);
+    });
+
+    it("renders multiple image thumbnails", () => {
+      const messages: ChatMessage[] = [
+        { role: "user", text: "Compare these", images: [testImage, testImage, testImage] },
+      ];
+      const { container } = render(
+        <MessageList messages={messages} isLoading={false} />
+      );
+      const imageContainer = container.querySelector('[data-testid="message-images"]');
+      expect(imageContainer).toBeInTheDocument();
+      const imgs = imageContainer!.querySelectorAll("img");
+      expect(imgs).toHaveLength(3);
+    });
+
+    it("does not render image container when no images", () => {
+      const messages: ChatMessage[] = [
+        { role: "user", text: "No images here" },
+      ];
+      const { container } = render(
+        <MessageList messages={messages} isLoading={false} />
+      );
+      expect(container.querySelector('[data-testid="message-images"]')).toBeNull();
+    });
+
+    it("does not render image container when images is empty array", () => {
+      const messages: ChatMessage[] = [
+        { role: "user", text: "Empty array", images: [] },
+      ];
+      const { container } = render(
+        <MessageList messages={messages} isLoading={false} />
+      );
+      expect(container.querySelector('[data-testid="message-images"]')).toBeNull();
+    });
+
+    it("images have correct src as base64 data URI", () => {
+      const messages: ChatMessage[] = [
+        { role: "user", text: "Test", images: [testImage] },
+      ];
+      const { container } = render(
+        <MessageList messages={messages} isLoading={false} />
+      );
+      const img = container.querySelector('[data-testid="message-images"] img') as HTMLImageElement;
+      expect(img.src).toContain("data:image/png;base64,");
+    });
+
+    it("renders clickable image buttons with view label", () => {
+      const messages: ChatMessage[] = [
+        { role: "user", text: "Test", images: [testImage] },
+      ];
+      render(
+        <MessageList messages={messages} isLoading={false} />
+      );
+      expect(screen.getByLabelText("View image 1 full size")).toBeInTheDocument();
+    });
+
+    it("opens lightbox when image is clicked", () => {
+      const messages: ChatMessage[] = [
+        { role: "user", text: "Test", images: [testImage] },
+      ];
+      render(
+        <MessageList messages={messages} isLoading={false} />
+      );
+      fireEvent.click(screen.getByLabelText("View image 1 full size"));
+      // Lightbox should appear
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      expect(screen.getByLabelText("Close preview")).toBeInTheDocument();
+    });
+
+    it("closes lightbox when close button is clicked", () => {
+      const messages: ChatMessage[] = [
+        { role: "user", text: "Test", images: [testImage] },
+      ];
+      render(
+        <MessageList messages={messages} isLoading={false} />
+      );
+      fireEvent.click(screen.getByLabelText("View image 1 full size"));
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      fireEvent.click(screen.getByLabelText("Close preview"));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("closes lightbox when Escape key is pressed", () => {
+      const messages: ChatMessage[] = [
+        { role: "user", text: "Test", images: [testImage] },
+      ];
+      render(
+        <MessageList messages={messages} isLoading={false} />
+      );
+      fireEvent.click(screen.getByLabelText("View image 1 full size"));
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("closes lightbox when backdrop is clicked", () => {
+      const messages: ChatMessage[] = [
+        { role: "user", text: "Test", images: [testImage] },
+      ];
+      render(
+        <MessageList messages={messages} isLoading={false} />
+      );
+      fireEvent.click(screen.getByLabelText("View image 1 full size"));
+      const dialog = screen.getByRole("dialog");
+      expect(dialog).toBeInTheDocument();
+      fireEvent.click(dialog);
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("lightbox shows full-size image", () => {
+      const messages: ChatMessage[] = [
+        { role: "user", text: "Test", images: [testImage] },
+      ];
+      render(
+        <MessageList messages={messages} isLoading={false} />
+      );
+      fireEvent.click(screen.getByLabelText("View image 1 full size"));
+      const dialog = screen.getByRole("dialog");
+      const lightboxImg = dialog.querySelector("img") as HTMLImageElement;
+      expect(lightboxImg).toBeInTheDocument();
+      expect(lightboxImg.src).toContain("data:image/png;base64,");
+      // The lightbox image should have larger max dimensions
+      expect(lightboxImg.className).toContain("max-w-[90vw]");
+    });
+  });
+
+  describe("ImageLightbox component", () => {
+    it("renders with image and close button", () => {
+      render(
+        <ImageLightbox
+          src="data:image/png;base64,test"
+          alt="Test image"
+          onClose={vi.fn()}
+        />
+      );
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      expect(screen.getByAltText("Test image")).toBeInTheDocument();
+      expect(screen.getByLabelText("Close preview")).toBeInTheDocument();
+    });
+
+    it("calls onClose when close button is clicked", () => {
+      const onClose = vi.fn();
+      render(
+        <ImageLightbox
+          src="data:image/png;base64,test"
+          alt="Test image"
+          onClose={onClose}
+        />
+      );
+      fireEvent.click(screen.getByLabelText("Close preview"));
+      expect(onClose).toHaveBeenCalled();
+    });
+
+    it("calls onClose on Escape key", () => {
+      const onClose = vi.fn();
+      render(
+        <ImageLightbox
+          src="data:image/png;base64,test"
+          alt="Test image"
+          onClose={onClose}
+        />
+      );
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(onClose).toHaveBeenCalled();
+    });
+
+    it("calls onClose when backdrop is clicked", () => {
+      const onClose = vi.fn();
+      render(
+        <ImageLightbox
+          src="data:image/png;base64,test"
+          alt="Test image"
+          onClose={onClose}
+        />
+      );
+      fireEvent.click(screen.getByRole("dialog"));
+      expect(onClose).toHaveBeenCalled();
+    });
+
+    it("does not close when image itself is clicked", () => {
+      const onClose = vi.fn();
+      render(
+        <ImageLightbox
+          src="data:image/png;base64,test"
+          alt="Test image"
+          onClose={onClose}
+        />
+      );
+      fireEvent.click(screen.getByAltText("Test image"));
+      expect(onClose).not.toHaveBeenCalled();
     });
   });
 });
