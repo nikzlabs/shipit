@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState } from "react";
 import { TypingDots, type StreamingActivity } from "./StreamingIndicator.js";
 
 export function MessageInput({
@@ -12,16 +12,6 @@ export function MessageInput({
   activity?: StreamingActivity;
 }) {
   const [text, setText] = useState("");
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  // Auto-resize textarea
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (el) {
-      el.style.height = "auto";
-      el.style.height = Math.min(el.scrollHeight, 200) + "px";
-    }
-  }, [text]);
 
   const handleSubmit = () => {
     const trimmed = text.trim();
@@ -49,14 +39,13 @@ export function MessageInput({
 
       <div className="flex items-end gap-2 sm:gap-3 max-w-3xl mx-auto">
         <textarea
-          ref={textareaRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Tell Claude what to build..."
           disabled={disabled}
           rows={1}
-          className="flex-1 resize-none rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+          className="flex-1 resize-none rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 field-sizing-content"
         />
         <button
           onClick={handleSubmit}
