@@ -23,6 +23,7 @@ import { ConnectionBanner } from "./components/ConnectionBanner.js";
 import { MobileTabBar, type MobilePanel } from "./components/MobileTabBar.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
 import { TemplateSelector, type TemplateInfo } from "./components/TemplateSelector.js";
+import { UsageModal, type SessionUsage, type UsageStats } from "./components/UsageModal.js";
 import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal";
@@ -81,6 +82,9 @@ export default function App() {
   const [githubStatus, setGithubStatus] = useState<{ authenticated: boolean; username?: string; avatarUrl?: string }>({ authenticated: false });
   const [showGitHubAuth, setShowGitHubAuth] = useState(false);
   const [showCreateRepo, setShowCreateRepo] = useState(false);
+  const [currentSessionUsage, setCurrentSessionUsage] = useState<SessionUsage | null>(null);
+  const [allUsageStats, setAllUsageStats] = useState<UsageStats | null>(null);
+  const [showUsageModal, setShowUsageModal] = useState(false);
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
   const historyLoadedRef = useRef(false);
@@ -436,6 +440,19 @@ export default function App() {
       ]);
     }
 
+    if (data.type === "usage_update") {
+      setCurrentSessionUsage({
+        sessionId: data.sessionId,
+        totalCostUsd: data.totalCostUsd,
+        totalDurationMs: data.totalDurationMs,
+        turnCount: data.turnCount,
+      });
+    }
+
+    if (data.type === "usage_stats") {
+      setAllUsageStats(data.stats);
+    }
+
     if (data.type === "log_entry") {
       setLogEntries((prev) => {
         const next = [...prev, { source: data.source, text: data.text, timestamp: data.timestamp }];
@@ -517,6 +534,7 @@ export default function App() {
     saveSessionId(undefined);
     setMessages([]);
     setIsLoading(false);
+    setCurrentSessionUsage(null);
     setShowTemplates(true);
     send({ type: "new_session" });
     // Request templates for the picker
@@ -624,6 +642,11 @@ export default function App() {
     },
     [send],
   );
+
+  const handleUsageBadgeClick = useCallback(() => {
+    send({ type: "get_usage_stats" });
+    setShowUsageModal(true);
+  }, [send]);
 
   const handleClearLogs = useCallback(() => {
     setLogEntries([]);
@@ -804,6 +827,14 @@ export default function App() {
         />
       )}
       {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
+      {showUsageModal && (
+        <UsageModal
+          currentSessionUsage={currentSessionUsage}
+          allUsage={allUsageStats}
+          sessions={sessions}
+          onClose={() => setShowUsageModal(false)}
+        />
+      )}
 
       {/* Header */}
       <header className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-gray-800">
@@ -852,6 +883,17 @@ export default function App() {
             >
               <span className="w-1.5 h-1.5 rounded-full bg-gray-600" />
               GitHub
+            </button>
+          )}
+          {currentSessionUsage && currentSessionUsage.totalCostUsd > 0 && (
+            <button
+              onClick={handleUsageBadgeClick}
+              className="hidden sm:inline text-xs px-2 py-0.5 rounded-full bg-purple-900 text-purple-300 hover:bg-purple-800 transition-colors cursor-pointer"
+              title="View usage details"
+            >
+              {currentSessionUsage.totalCostUsd < 0.01
+                ? `$${currentSessionUsage.totalCostUsd.toFixed(3)}`
+                : `$${currentSessionUsage.totalCostUsd.toFixed(2)}`}
             </button>
           )}
           {preview?.running && (

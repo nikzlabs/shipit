@@ -65,7 +65,8 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | `GitManager` | 12 | Init, auto-commit, log, rollback, empty-commit handling |
 | `AuthManager` | 11 | URL pattern matching, `extractAuthUrl` extraction and cleanup |
 | `findMarkdownFiles` | 7 | Recursive scan, directory skipping, sorting |
-| Integration (E2E) | 39 | Full WebSocket flow: connect, sessions, git, docs, file content viewer (read, nested path, path traversal, non-existent file, binary detection, large file guard), Claude lifecycle, multi-client, path traversal, disconnect cleanup, port auto-detection with multi-port support, periodic port scanning, terminal/logs relay (stderr, stdout, server lifecycle logs, log buffering for new clients, clear_logs) |
+| `UsageManager` | 11 | Record turns, aggregate per-session and total, delete session usage, persistence to disk, corruption recovery, zero cost, timestamps |
+| Integration (E2E) | 45 | Full WebSocket flow: connect, sessions, git, docs, file content viewer (read, nested path, path traversal, non-existent file, binary detection, large file guard), Claude lifecycle, multi-client, path traversal, disconnect cleanup, port auto-detection with multi-port support, periodic port scanning, terminal/logs relay (stderr, stdout, server lifecycle logs, log buffering for new clients, clear_logs), usage tracking (get_usage_stats empty/populated, usage_update after result, accumulation across turns, no update when cost undefined, delete cleans usage) |
 
 ### Client Tests
 
@@ -87,6 +88,7 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | `FileContentViewer` | 11 | File path display, close button, loading state, code element with hljs class, pre wrapper, syntax highlighting for TypeScript, empty file, path title attribute, JSON highlighting, binary file message display, large file message display |
 | `FileTree` (additions) | +5 | onFileClick callback, root-level file click, selected file highlighting, non-selected file styling, file buttons for clickability |
 | `TerminalPanel` | 15 | Header rendering, clear button, empty state, log entry text display, source labels (`[err]`/`[out]`/`[srv]`), timestamps, monospace font, entry ordering, source filter buttons (render, aria-pressed, hide/show toggle, prevent hiding all sources, filter-specific empty state) |
+| `UsageModal` | 13 | Dialog rendering, accessibility (role, aria-label), current session usage display, no-data fallback, all sessions aggregate, per-session breakdown with titles, truncated session ID fallback, close on button/backdrop/inner click prevention, zero usage, sub-cent formatting, null allUsage |
 
 ## Writing New Tests
 
@@ -102,6 +104,7 @@ Several modules accept optional constructor parameters for test isolation:
 
 - `SessionManager(sessionsFile?)` — override the JSON file path
 - `GitManager(workspaceDir?)` — override the workspace directory
+- `UsageManager(usageFile?)` — override the JSON file path for usage data
 - `extractAuthUrl(text)` — exported pure function for URL pattern testing
 - `buildApp(deps?)` — exported factory that accepts injected dependencies (see [Integration Tests](#integration-tests))
 
@@ -173,6 +176,7 @@ interface AppDeps {
   gitManager?: GitManager;       // Git operations (default: real repo at /workspace)
   viteManager?: ViteManager;     // Vite dev server (default: real process)
   sessionManager?: SessionManager; // Session persistence (default: /workspace/.vibe-sessions.json)
+  usageManager?: UsageManager;   // Usage/cost tracking (default: /workspace/.shipit-usage.json)
   authManager?: AuthManager;     // OAuth flow (default: real CLI)
   claudeFactory?: () => ClaudeProcess; // How to create Claude processes
   detectPorts?: (excludePorts: number[]) => Promise<number[]>; // Port scanner (default: real TCP scan)
@@ -263,3 +267,4 @@ The `FakeClaudeProcess` is controlled by the test — you call `lastClaude.emit(
 | Session tracking | `result` event updates `lastUsedAt` |
 | Port auto-detection | Detected after turn, no broadcast when unchanged, port changes between turns, new client gets current state, multiple ports |
 | Periodic port scanning | Mid-turn detection, interval start/stop tied to client connections, no broadcast when unchanged, detects port appear/disappear |
+| Usage tracking | `get_usage_stats` empty/populated, `usage_update` after result with cost, accumulation across turns, no update when `total_cost_usd` undefined, delete session cleans usage |
