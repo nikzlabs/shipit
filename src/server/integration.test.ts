@@ -217,15 +217,17 @@ class FakeClaudeProcess extends EventEmitter {
   public lastSessionId: string | undefined;
   public lastSystemPrompt: string | undefined;
   public lastImages: Array<{ data: string; mediaType: string; filename?: string }> | undefined;
+  public lastCwd: string | undefined;
   public killed = false;
   public stdinData: string[] = [];
 
-  run(prompt: string, sessionId?: string, systemPrompt?: string, images?: Array<{ data: string; mediaType: string; filename?: string }>) {
+  run(prompt: string, sessionId?: string, systemPrompt?: string, images?: Array<{ data: string; mediaType: string; filename?: string }>, cwd?: string) {
     this.runCalled = true;
     this.lastPrompt = prompt;
     this.lastSessionId = sessionId;
     this.lastSystemPrompt = systemPrompt;
     this.lastImages = images;
+    this.lastCwd = cwd;
   }
 
   kill() {
@@ -654,8 +656,10 @@ describe("Integration: WebSocket flow", () => {
     const sessionStarted = await client.receiveSkipLogs();
     expect(sessionStarted).toBeDefined();
     expect(sessionStarted.type).toBe("session_started");
-    expect((sessionStarted as any).session.id).toBe("test-session-123");
+    // Session ID is now an app-generated UUID (not the agent's session_id)
+    expect((sessionStarted as any).session.id).toBeTruthy();
     expect((sessionStarted as any).session.title).toBe("Hello Claude");
+    expect((sessionStarted as any).session.agentSessionId).toBe("test-session-123");
 
     client.close();
   });
@@ -1379,7 +1383,13 @@ describe("Integration: Terminal/logs relay", () => {
 
   afterEach(async () => {
     await app.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    // Small delay to let lingering git processes release file handles
+    await new Promise((r) => setTimeout(r, 50));
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch {
+      // Ignore cleanup errors — temp dir will be cleaned by OS
+    }
   });
 
   it("relays Claude stderr as log_entry to client", async () => {
@@ -1678,16 +1688,21 @@ describe("Integration: Workspace project templates", () => {
     await client.receive(); // preview_status
 
     client.send({ type: "apply_template", templateId: "react-vite-ts" });
-    const msg = await client.receive();
+    // Session isolation: apply_template creates a session, sending session_started first
+    const sessionMsg = await client.receive();
+    expect(sessionMsg.type).toBe("session_started");
+    const sessionDir = (sessionMsg as any).session.workspaceDir;
+    expect(sessionDir).toBeTruthy();
 
+    const msg = await client.receive();
     expect(msg.type).toBe("template_applied");
     expect((msg as any).templateId).toBe("react-vite-ts");
     expect((msg as any).name).toBe("React + Vite");
 
-    // Verify files were written to the workspace
-    expect(fs.existsSync(path.join(tmpDir, "package.json"))).toBe(true);
-    expect(fs.existsSync(path.join(tmpDir, "src/App.tsx"))).toBe(true);
-    expect(fs.existsSync(path.join(tmpDir, "index.html"))).toBe(true);
+    // Verify files were written to the session's workspace directory
+    expect(fs.existsSync(path.join(sessionDir, "package.json"))).toBe(true);
+    expect(fs.existsSync(path.join(sessionDir, "src/App.tsx"))).toBe(true);
+    expect(fs.existsSync(path.join(sessionDir, "index.html"))).toBe(true);
 
     // Verify git committed the files
     const log = await gitManager.log();
@@ -1728,16 +1743,20 @@ describe("Integration: Workspace project templates", () => {
     await client.receive(); // preview_status
 
     client.send({ type: "apply_template", templateId: "static-html" });
-    const msg = await client.receive();
+    // Consume session_started (session isolation creates a session first)
+    const sessionMsg = await client.receive();
+    expect(sessionMsg.type).toBe("session_started");
+    const sessionDir = (sessionMsg as any).session.workspaceDir;
 
+    const msg = await client.receive();
     expect(msg.type).toBe("template_applied");
     expect((msg as any).templateId).toBe("static-html");
 
-    expect(fs.existsSync(path.join(tmpDir, "index.html"))).toBe(true);
-    expect(fs.existsSync(path.join(tmpDir, "style.css"))).toBe(true);
-    expect(fs.existsSync(path.join(tmpDir, "main.js"))).toBe(true);
+    expect(fs.existsSync(path.join(sessionDir, "index.html"))).toBe(true);
+    expect(fs.existsSync(path.join(sessionDir, "style.css"))).toBe(true);
+    expect(fs.existsSync(path.join(sessionDir, "main.js"))).toBe(true);
     // static-html has no package.json
-    expect(fs.existsSync(path.join(tmpDir, "package.json"))).toBe(false);
+    expect(fs.existsSync(path.join(sessionDir, "package.json"))).toBe(false);
 
     client.close();
   });
@@ -1747,11 +1766,15 @@ describe("Integration: Workspace project templates", () => {
     await client.receive(); // preview_status
 
     client.send({ type: "apply_template", templateId: "nextjs" });
-    const msg = await client.receive();
+    // Consume session_started (session isolation creates a session first)
+    const sessionMsg = await client.receive();
+    expect(sessionMsg.type).toBe("session_started");
+    const sessionDir = (sessionMsg as any).session.workspaceDir;
 
+    const msg = await client.receive();
     expect(msg.type).toBe("template_applied");
-    expect(fs.existsSync(path.join(tmpDir, "src/app/layout.tsx"))).toBe(true);
-    expect(fs.existsSync(path.join(tmpDir, "src/app/page.tsx"))).toBe(true);
+    expect(fs.existsSync(path.join(sessionDir, "src/app/layout.tsx"))).toBe(true);
+    expect(fs.existsSync(path.join(sessionDir, "src/app/page.tsx"))).toBe(true);
 
     client.close();
   });
@@ -2133,8 +2156,9 @@ describe("Integration: Usage & cost tracking", () => {
     });
 
     // Drain events (claude_event for system init, session_started)
-    await client.receiveSkipLogs();
-    await client.receiveSkipLogs();
+    await client.receiveSkipLogs(); // claude_event
+    const sessionStarted = await client.receiveSkipLogs(); // session_started
+    const appSessionId = (sessionStarted as any).session.id;
 
     // Simulate assistant text
     lastClaude.emit("event", {
@@ -2159,7 +2183,7 @@ describe("Integration: Usage & cost tracking", () => {
     const usageUpdate = await client.receiveSkipLogs();
     expect(usageUpdate).toMatchObject({
       type: "usage_update",
-      sessionId: "usage-session-1",
+      sessionId: appSessionId,
       totalCostUsd: 0.42,
       totalDurationMs: 3200,
       turnCount: 1,
@@ -2180,7 +2204,8 @@ describe("Integration: Usage & cost tracking", () => {
     await new Promise((r) => setTimeout(r, 50));
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "accum-session" });
     await client.receiveSkipLogs(); // claude_event
-    await client.receiveSkipLogs(); // session_started
+    const sessionStarted = await client.receiveSkipLogs(); // session_started
+    const appSessionId = (sessionStarted as any).session.id;
 
     lastClaude.emit("event", {
       type: "result",
@@ -2201,8 +2226,8 @@ describe("Integration: Usage & cost tracking", () => {
     // Wait for done handler
     await new Promise((r) => setTimeout(r, 100));
 
-    // --- Turn 2 ---
-    client.send({ type: "send_message", text: "turn 2", sessionId: "accum-session" });
+    // --- Turn 2: resume with the app session UUID ---
+    client.send({ type: "send_message", text: "turn 2", sessionId: appSessionId });
     await new Promise((r) => setTimeout(r, 50));
     lastClaude.emit("event", {
       type: "result",
@@ -2241,7 +2266,8 @@ describe("Integration: Usage & cost tracking", () => {
     await new Promise((r) => setTimeout(r, 50));
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "stats-session" });
     await client.receiveSkipLogs(); // claude_event
-    await client.receiveSkipLogs(); // session_started
+    const sessionStarted = await client.receiveSkipLogs(); // session_started
+    const appSessionId = (sessionStarted as any).session.id;
 
     lastClaude.emit("event", {
       type: "result",
@@ -2272,7 +2298,7 @@ describe("Integration: Usage & cost tracking", () => {
     expect(statsMsg.stats.totalTurns).toBe(1);
     expect(statsMsg.stats.sessions).toHaveLength(1);
     expect(statsMsg.stats.sessions[0]).toMatchObject({
-      sessionId: "stats-session",
+      sessionId: appSessionId,
       totalCostUsd: 0.55,
       totalDurationMs: 5000,
       turnCount: 1,
@@ -2322,7 +2348,8 @@ describe("Integration: Usage & cost tracking", () => {
     await new Promise((r) => setTimeout(r, 50));
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "del-usage-session" });
     await client.receiveSkipLogs(); // claude_event
-    await client.receiveSkipLogs(); // session_started
+    const sessionStarted = await client.receiveSkipLogs(); // session_started
+    const appSessionId = (sessionStarted as any).session.id;
 
     lastClaude.emit("event", {
       type: "result",
@@ -2336,8 +2363,8 @@ describe("Integration: Usage & cost tracking", () => {
     lastClaude.emit("done", 0);
     await new Promise((r) => setTimeout(r, 100));
 
-    // Delete the session
-    client.send({ type: "delete_session", sessionId: "del-usage-session" });
+    // Delete the session using the app-generated session UUID
+    client.send({ type: "delete_session", sessionId: appSessionId });
 
     // Drain messages until we get session_list
     let sessionList: any = null;
@@ -2837,6 +2864,18 @@ describe("Integration: File watcher", () => {
     }
 
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "img-persist-test" });
+
+    // Capture the app session UUID from session_started
+    let appSessionId: string | undefined;
+    for (let i = 0; i < 10; i++) {
+      const m = await client.receive();
+      if (m.type === "session_started") {
+        appSessionId = (m as any).session.id;
+        break;
+      }
+    }
+    expect(appSessionId).toBeTruthy();
+
     lastClaude.emit("event", {
       type: "assistant",
       message: { content: [{ type: "text", text: "I see the image" }] },
@@ -2844,9 +2883,9 @@ describe("Integration: File watcher", () => {
     lastClaude.emit("event", { type: "result", subtype: "success", session_id: "img-persist-test" });
     lastClaude.emit("done", 0);
 
-    // Now load the chat history — chat persistence is synchronous so it's
-    // already on disk by the time the emit() calls above return.
-    client.send({ type: "get_chat_history", sessionId: "img-persist-test" });
+    // Now load the chat history using the app session UUID
+    // (chat persistence is synchronous so it's already on disk)
+    client.send({ type: "get_chat_history", sessionId: appSessionId! });
 
     // Drain until we get chat_history
     let chatHistory: any = null;
@@ -2881,8 +2920,12 @@ describe("Integration: File watcher", () => {
     });
 
     // Should start Claude normally without error
-    await new Promise((r) => setTimeout(r, 50));
-    expect(lastClaude.runCalled).toBe(true);
+    // (wait longer because session creation includes async dir setup)
+    const deadline = Date.now() + 5000;
+    while (!lastClaude?.runCalled) {
+      if (Date.now() > deadline) throw new Error("Timed out waiting for claudeFactory");
+      await new Promise((r) => setTimeout(r, 10));
+    }
     expect(lastClaude.lastPrompt).toBe("No images");
     expect(lastClaude.lastImages).toBeUndefined();
 
@@ -3051,6 +3094,263 @@ describe("Integration: git identity flow", () => {
     client.send({ type: "set_git_identity", name: "   ", email: "test@example.com" });
     const resp = await client.receive();
     expect(resp).toMatchObject({ type: "error", message: "Git user name cannot be empty" });
+
+    client.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session isolation tests
+// ---------------------------------------------------------------------------
+
+describe("Integration: Session isolation", () => {
+  let app: FastifyInstance;
+  let port: number;
+  let tmpDir: string;
+  let gitManager: GitManager;
+  let sessionManager: SessionManager;
+  let lastClaude: FakeClaudeProcess;
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-isolation-"));
+
+    gitManager = new GitManager(tmpDir);
+    await gitManager.init();
+
+    const sessionsFile = path.join(tmpDir, "sessions.json");
+    sessionManager = new SessionManager(sessionsFile);
+
+    app = await buildApp({
+      gitManager,
+      sessionManager,
+      viteManager: new StubViteManager() as unknown as ViteManager,
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
+      claudeFactory: () => {
+        lastClaude = new FakeClaudeProcess();
+        return lastClaude as unknown as ClaudeProcess;
+      },
+      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
+      workspaceDir: tmpDir,
+      serveStatic: false,
+      startVite: false,
+      portScanIntervalMs: 0,
+    });
+
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+    const match = address.match(/:(\d+)$/);
+    port = match ? Number(match[1]) : 0;
+  });
+
+  afterEach(async () => {
+    await app.close();
+    await new Promise((r) => setTimeout(r, 50));
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch {
+      // Ignore cleanup errors — temp dir will be cleaned by OS
+    }
+  });
+
+  it("send_message without sessionId creates an isolated session directory", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Build me an app" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Simulate system init
+    lastClaude.emit("event", {
+      type: "system",
+      subtype: "init",
+      session_id: "agent-session-1",
+    });
+
+    // Receive claude_event + session_started
+    await client.receiveSkipLogs(); // claude_event
+    const sessionMsg = await client.receiveSkipLogs();
+    expect(sessionMsg.type).toBe("session_started");
+
+    const session = (sessionMsg as any).session;
+    expect(session.id).toBeTruthy();
+    expect(session.title).toBe("Build me an app");
+    expect(session.workspaceDir).toBeTruthy();
+    expect(session.agentSessionId).toBe("agent-session-1");
+
+    // Verify session directory was created on disk
+    expect(fs.existsSync(session.workspaceDir)).toBe(true);
+    // Session dir should be under tmpDir/sessions/
+    expect(session.workspaceDir).toContain(path.join(tmpDir, "sessions"));
+
+    client.close();
+  });
+
+  it("two sessions get independent workspace directories", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // --- Session A: create via template (simpler than send_message + system.init) ---
+    client.send({ type: "apply_template", templateId: "static-html" });
+    const sessionAMsg = await client.receive(); // session_started
+    expect(sessionAMsg.type).toBe("session_started");
+    const sessionA = (sessionAMsg as any).session;
+    await client.receive(); // template_applied
+
+    // --- Session B: start a new session ---
+    client.send({ type: "new_session" });
+    await client.receive(); // session_list
+
+    client.send({ type: "apply_template", templateId: "react-vite-ts" });
+    const sessionBMsg = await client.receive(); // session_started
+    expect(sessionBMsg.type).toBe("session_started");
+    const sessionB = (sessionBMsg as any).session;
+    await client.receive(); // template_applied
+
+    // Sessions should have different IDs and directories
+    expect(sessionA.id).not.toBe(sessionB.id);
+    expect(sessionA.workspaceDir).not.toBe(sessionB.workspaceDir);
+
+    // Both directories should exist
+    expect(fs.existsSync(sessionA.workspaceDir)).toBe(true);
+    expect(fs.existsSync(sessionB.workspaceDir)).toBe(true);
+
+    // Files are isolated — session A has HTML files, session B has React files
+    expect(fs.existsSync(path.join(sessionA.workspaceDir, "style.css"))).toBe(true);
+    expect(fs.existsSync(path.join(sessionB.workspaceDir, "src/App.tsx"))).toBe(true);
+    // Cross-check: session A should NOT have React files
+    expect(fs.existsSync(path.join(sessionA.workspaceDir, "src/App.tsx"))).toBe(false);
+
+    client.close();
+  });
+
+  it("file_tree shows files from the active session directory", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Create a session via apply_template
+    client.send({ type: "apply_template", templateId: "static-html" });
+    const sessionMsg = await client.receive();
+    expect(sessionMsg.type).toBe("session_started");
+    const sessionDir = (sessionMsg as any).session.workspaceDir;
+    await client.receive(); // template_applied
+
+    // Request the file tree
+    client.send({ type: "get_file_tree" });
+    const treeMsg = await client.receive();
+    expect(treeMsg.type).toBe("file_tree");
+
+    // Should include files from the template in the session directory
+    const flatNames = (treeMsg as any).tree.map((n: any) => n.name);
+    expect(flatNames).toContain("index.html");
+    expect(flatNames).toContain("style.css");
+
+    // Files should exist in the session directory, not the root
+    expect(fs.existsSync(path.join(sessionDir, "index.html"))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, "index.html"))).toBe(false);
+
+    client.close();
+  });
+
+  it("delete_session removes the session directory from disk", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Create a session via template
+    client.send({ type: "apply_template", templateId: "static-html" });
+    const sessionMsg = await client.receive();
+    expect(sessionMsg.type).toBe("session_started");
+    const session = (sessionMsg as any).session;
+    await client.receive(); // template_applied
+
+    // Verify directory exists
+    expect(fs.existsSync(session.workspaceDir)).toBe(true);
+
+    // Delete the session
+    client.send({ type: "delete_session", sessionId: session.id });
+    const deleteMsg = await client.receive();
+    expect(deleteMsg.type).toBe("session_list");
+
+    // Verify directory was removed
+    expect(fs.existsSync(session.workspaceDir)).toBe(false);
+
+    client.close();
+  });
+
+  it("session switch via get_chat_history changes active session", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Create session A via template
+    client.send({ type: "apply_template", templateId: "static-html" });
+    const sessionAMsg = await client.receive(); // session_started
+    const sessionA = (sessionAMsg as any).session;
+    await client.receive(); // template_applied
+
+    // Write a marker file in session A's directory
+    fs.writeFileSync(path.join(sessionA.workspaceDir, "marker-a.txt"), "session A");
+
+    // Start new session
+    client.send({ type: "new_session" });
+    await client.receive(); // session_list
+
+    // Create session B
+    client.send({ type: "apply_template", templateId: "react-vite-ts" });
+    const sessionBMsg = await client.receive(); // session_started
+    expect(sessionBMsg.type).toBe("session_started");
+    await client.receive(); // template_applied
+
+    // Switch back to session A
+    client.send({ type: "get_chat_history", sessionId: sessionA.id });
+    const historyMsg = await client.receive();
+    expect(historyMsg.type).toBe("chat_history");
+
+    // File tree should now show session A's files
+    client.send({ type: "get_file_tree" });
+    const treeMsg = await client.receive();
+    expect(treeMsg.type).toBe("file_tree");
+    const flatNames = (treeMsg as any).tree.map((n: any) => n.name);
+    expect(flatNames).toContain("marker-a.txt");
+    expect(flatNames).toContain("index.html");
+    // Session B's files should NOT be in the tree
+    expect(flatNames).not.toContain("App.tsx");
+
+    client.close();
+  });
+
+  it("ClaudeProcess.run() receives the session directory as cwd", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Hello" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // The claude process should have been called with the session directory as cwd
+    expect(lastClaude.lastCwd).toBeTruthy();
+    expect(lastClaude.lastCwd).toContain(path.join(tmpDir, "sessions"));
+
+    client.close();
+  });
+
+  it("resumed session passes agent session ID to ClaudeProcess.run()", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Create a session
+    client.send({ type: "send_message", text: "First turn" });
+    await new Promise((r) => setTimeout(r, 50));
+    lastClaude.emit("event", { type: "system", subtype: "init", session_id: "my-agent-session" });
+    await client.receiveSkipLogs(); // claude_event
+    const sessionMsg = await client.receiveSkipLogs();
+    const appSessionId = (sessionMsg as any).session.id;
+    lastClaude.emit("done", 0);
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Resume the session
+    client.send({ type: "send_message", text: "Second turn", sessionId: appSessionId });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // The resumed session should pass the agent session ID for --resume
+    expect(lastClaude.lastSessionId).toBe("my-agent-session");
 
     client.close();
   });

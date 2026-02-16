@@ -48,13 +48,19 @@ export class SessionManager {
     );
   }
 
+  /** Get a session by id. Returns undefined if not found. */
+  get(id: string): SessionInfo | undefined {
+    return this.sessions.find((s) => s.id === id);
+  }
+
   /** Track a session — creates it if new, updates lastUsedAt if existing. */
-  track(id: string, title?: string): SessionInfo {
+  track(id: string, title?: string, workspaceDir?: string): SessionInfo {
     const now = new Date().toISOString();
     const existing = this.sessions.find((s) => s.id === id);
     if (existing) {
       existing.lastUsedAt = now;
       if (title) existing.title = title;
+      if (workspaceDir && !existing.workspaceDir) existing.workspaceDir = workspaceDir;
       this.save();
       return existing;
     }
@@ -64,10 +70,20 @@ export class SessionManager {
       title: title || "New session",
       createdAt: now,
       lastUsedAt: now,
+      workspaceDir,
     };
     this.sessions.unshift(session);
     this.save();
     return session;
+  }
+
+  /** Store the agent's conversation ID (e.g. Claude CLI session_id) for a session. */
+  setAgentSessionId(id: string, agentSessionId: string): void {
+    const session = this.sessions.find((s) => s.id === id);
+    if (session) {
+      session.agentSessionId = agentSessionId;
+      this.save();
+    }
   }
 
   /** Rename a session. Returns the updated session, or null if not found. */

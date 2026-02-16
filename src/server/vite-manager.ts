@@ -61,11 +61,12 @@ export class ViteManager extends EventEmitter {
   }
 
   /**
-   * Write the ShipIt Vite wrapper config to /workspace/.shipit/ so the
-   * error-capture plugin is injected into the preview HTML.
+   * Write the ShipIt Vite wrapper config to the workspace's .shipit/ directory
+   * so the error-capture plugin is injected into the preview HTML.
    */
-  private writeWrapperConfig(): string {
-    const dir = path.join(WORKSPACE_DIR, ".shipit");
+  private writeWrapperConfig(workspaceDir?: string): string {
+    const cwd = workspaceDir ?? WORKSPACE_DIR;
+    const dir = path.join(cwd, ".shipit");
     const configPath = path.join(dir, "vite.config.mjs");
     try {
       fs.mkdirSync(dir, { recursive: true });
@@ -77,18 +78,20 @@ export class ViteManager extends EventEmitter {
   }
 
   /**
-   * Start the Vite dev server in /workspace.
+   * Start the Vite dev server.
    * If already running, this is a no-op.
+   * @param workspaceDir - Working directory for Vite. Defaults to /workspace.
    */
-  start(): void {
+  start(workspaceDir?: string): void {
     if (this.proc) return;
 
-    console.log("[vite-manager] starting Vite dev server on port", this._port);
+    const cwd = workspaceDir ?? WORKSPACE_DIR;
+    console.log("[vite-manager] starting Vite dev server on port", this._port, "in", cwd);
 
-    const configPath = this.writeWrapperConfig();
+    const configPath = this.writeWrapperConfig(workspaceDir);
 
     this.proc = spawn(VITE_BIN, ["--config", configPath, "--port", String(this._port), "--host", "0.0.0.0"], {
-      cwd: WORKSPACE_DIR,
+      cwd,
       env: { ...process.env },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -140,9 +143,10 @@ export class ViteManager extends EventEmitter {
 
   /**
    * Restart the Vite dev server.
+   * @param workspaceDir - Working directory for Vite. Defaults to /workspace.
    */
-  restart(): void {
+  restart(workspaceDir?: string): void {
     this.stop();
-    this.start();
+    this.start(workspaceDir);
   }
 }

@@ -124,14 +124,16 @@ export class GitHubAuthManager extends EventEmitter {
   }
 
   /**
-   * Configure git credential helper and user identity in the workspace repo
+   * Configure git credential helper and user identity in a workspace repo
    * so that push/pull work with the stored token.
+   * @param targetDir - Optional directory to configure. Defaults to the instance's workspaceDir.
    */
-  configureGitCredentials(): void {
+  configureGitCredentials(targetDir?: string): void {
     if (!this._token) return;
 
+    const cwd = targetDir ?? this.workspaceDir;
     try {
-      const opts = { cwd: this.workspaceDir, stdio: "pipe" as const };
+      const opts = { cwd, stdio: "pipe" as const };
       // Use a credential helper that returns the token as the password.
       // The helper is a shell one-liner that echoes the token.
       execSync(

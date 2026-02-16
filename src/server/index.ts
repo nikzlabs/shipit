@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
+import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { ClaudeProcess } from "./claude.js";
@@ -84,8 +85,17 @@ function validateImages(images: ImageAttachment[]): string | null {
  * production uses real implementations, tests can supply mocks/stubs.
  */
 export interface AppDeps {
-  /** Git manager instance. Defaults to `new GitManager()` with init(). */
+  /**
+   * Legacy single git manager instance. Used as fallback when no per-session
+   * directory is active. Defaults to `new GitManager()` with init().
+   */
   gitManager?: GitManager;
+  /**
+   * Factory for creating per-session GitManager instances. Each session gets
+   * its own git repo; this factory creates a GitManager for a given directory.
+   * Defaults to `(dir) => new GitManager(dir)`.
+   */
+  createGitManager?: (workspaceDir: string) => GitManager;
   /** Vite dev server manager. Defaults to `new ViteManager()` with auto-start. */
   viteManager?: ViteManager;
   /** Session manager instance. Defaults to `new SessionManager()`. */
@@ -100,7 +110,7 @@ export interface AppDeps {
   usageManager?: UsageManager;
   /** Factory for creating ClaudeProcess instances. Defaults to `() => new ClaudeProcess()`. */
   claudeFactory?: () => ClaudeProcess;
-  /** Workspace directory for doc file operations. Defaults to `/workspace`. */
+  /** Root workspace directory. Defaults to `/workspace`. */
   workspaceDir?: string;
   /** Whether to serve static files from dist/client. Defaults to true. */
   serveStatic?: boolean;
@@ -150,11 +160,17 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   await app.register(fastifyWebsocket);
 
-  // ---- Git manager ----
+  // ---- Per-session directory root ----
+  const sessionsRoot = path.join(workspaceDir, "sessions");
+
+  // ---- Git manager (legacy fallback) ----
   const gitManager = deps.gitManager ?? new GitManager();
   if (!deps.gitManager) {
     await gitManager.init();
   }
+
+  // ---- Per-session GitManager factory ----
+  const createGitManager = deps.createGitManager ?? ((dir: string) => new GitManager(dir));
 
   // ---- Vite dev server manager ----
   const viteManager = deps.viteManager ?? new ViteManager();
@@ -345,6 +361,30 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
   }
 
+  /**
+   * Create a new isolated session directory with its own git repo.
+   * Returns the app-generated session ID and workspace directory path.
+   */
+  const createSessionDir = async (title: string): Promise<{ appSessionId: string; sessionDir: string }> => {
+    const appSessionId = crypto.randomUUID();
+    const sessionDir = path.join(sessionsRoot, appSessionId);
+    await fs.mkdir(sessionDir, { recursive: true });
+
+    // Initialize a fresh git repo for this session
+    const git = createGitManager(sessionDir);
+    await git.init();
+
+    // Configure GitHub credentials in the new repo if available
+    if (githubAuthManager.authenticated) {
+      githubAuthManager.configureGitCredentials(sessionDir);
+    }
+
+    sessionManager.track(appSessionId, title, sessionDir);
+    console.log("[server] Created session directory:", sessionDir);
+
+    return { appSessionId, sessionDir };
+  };
+
   // ---- WebSocket route ----
   app.get("/ws", { websocket: true }, (socket) => {
     console.log("[ws] client connected");
@@ -356,7 +396,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
     let claude: ClaudeProcess | null = null;
     let turnSummary = "";
-    let currentSessionId: string | undefined;
+    // Per-connection active session state
+    let activeAppSessionId: string | undefined;
+    let activeSessionDir: string | null = null;
     // Accumulate the assistant response across streaming events for persistence
     let accumulatedText = "";
     let accumulatedToolUse: Array<{ type: "tool_use"; id: string; name: string; input: Record<string, unknown> }> = [];
@@ -364,6 +406,33 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     const send = (msg: WsServerMessage) => {
       if (socket.readyState === 1) {
         socket.send(JSON.stringify(msg));
+      }
+    };
+
+    /** Get the effective workspace directory for file operations. */
+    const getActiveDir = (): string => activeSessionDir ?? workspaceDir;
+
+    /** Get a GitManager for the active session, or fall back to the legacy instance. */
+    const getActiveGitManager = (): GitManager => {
+      if (activeSessionDir) {
+        return createGitManager(activeSessionDir);
+      }
+      return gitManager;
+    };
+
+    /**
+     * Activate a session by ID — sets activeSessionDir and restarts the
+     * file watcher to watch the session's directory.
+     */
+    const activateSession = (sessionId: string) => {
+      const session = sessionManager.get(sessionId);
+      activeAppSessionId = sessionId;
+      const dir = session?.workspaceDir ?? workspaceDir;
+      if (dir !== activeSessionDir) {
+        activeSessionDir = dir === workspaceDir ? null : dir;
+        // Restart file watcher to the new directory
+        fileWatcher.stop();
+        fileWatcher.start(getActiveDir());
       }
     };
 
@@ -384,6 +453,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
     /** Read the system prompt file if it exists. Returns undefined when absent or empty. */
     const readSystemPrompt = async (): Promise<string | undefined> => {
+      // System prompt is global (root workspace), not per-session
       try {
         const content = await fs.readFile(
           path.join(workspaceDir, ".shipit", "system-prompt.md"),
@@ -433,9 +503,38 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           broadcastLog(source, text);
         });
 
-        // If the client already knows the session, use it for persistence
+        // Determine session context: resume existing or create new
+        let agentSessionId: string | undefined;
         if (msg.sessionId) {
-          currentSessionId = msg.sessionId;
+          // Resuming an existing session
+          activateSession(msg.sessionId);
+          const session = sessionManager.get(msg.sessionId);
+          // Use the stored agent session ID, or fall back to msg.sessionId for
+          // legacy sessions where the app session ID === agent session ID.
+          agentSessionId = session?.agentSessionId ?? msg.sessionId;
+
+          // If session has a workspaceDir but it was deleted, recreate it
+          if (session?.workspaceDir) {
+            try {
+              await fs.access(session.workspaceDir);
+            } catch {
+              console.log("[server] Recreating missing session directory:", session.workspaceDir);
+              await fs.mkdir(session.workspaceDir, { recursive: true });
+              const git = createGitManager(session.workspaceDir);
+              await git.init();
+            }
+          }
+        } else {
+          // New session — create isolated directory
+          const { appSessionId, sessionDir } = await createSessionDir(
+            userText.slice(0, 80) || "New session",
+          );
+          activeAppSessionId = appSessionId;
+          activeSessionDir = sessionDir;
+
+          // Restart file watcher to the new session directory
+          fileWatcher.stop();
+          fileWatcher.start(sessionDir);
         }
 
         // Build images metadata for chat history persistence (inline base64)
@@ -456,14 +555,27 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         claude.on("event", (event: ClaudeEvent) => {
           send({ type: "claude_event", event });
 
-          // Track session when we get the session_id from init event
+          // Track agent session when we get the session_id from init event
           if (event.type === "system" && event.subtype === "init" && event.session_id) {
-            currentSessionId = event.session_id;
-            const title = userText.slice(0, 80) || "New session";
-            const session = sessionManager.track(event.session_id, title);
-            send({ type: "session_started", session });
-            // Now we know the session ID — persist the user message
-            persistUserMessage(event.session_id);
+            if (activeAppSessionId) {
+              // Store the agent's conversation ID on the app session
+              sessionManager.setAgentSessionId(activeAppSessionId, event.session_id);
+              const session = sessionManager.get(activeAppSessionId);
+              if (session) {
+                send({ type: "session_started", session });
+              }
+              // Persist the user message for new sessions
+              if (!msg.sessionId) {
+                persistUserMessage(activeAppSessionId);
+              }
+            } else {
+              // Legacy fallback: no app session created (shouldn't happen with isolation)
+              const title = userText.slice(0, 80) || "New session";
+              const session = sessionManager.track(event.session_id, title);
+              activeAppSessionId = event.session_id;
+              send({ type: "session_started", session });
+              persistUserMessage(event.session_id);
+            }
           }
 
           // Collect assistant text and tool use blocks for commit message + persistence
@@ -486,17 +598,20 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
           // On result: persist the final assistant message, update session, record usage
           if (event.type === "result" && event.session_id) {
-            currentSessionId = event.session_id;
-            sessionManager.track(event.session_id);
+            if (activeAppSessionId) {
+              sessionManager.setAgentSessionId(activeAppSessionId, event.session_id);
+              sessionManager.track(activeAppSessionId);
+            }
 
+            const usageSessionId = activeAppSessionId ?? event.session_id;
             // Record cost/duration if present
             if (event.total_cost_usd !== undefined) {
               usageManager.record(
-                event.session_id,
+                usageSessionId,
                 event.total_cost_usd,
                 event.duration_ms ?? 0,
               );
-              const sessionUsage = usageManager.getSessionUsage(event.session_id);
+              const sessionUsage = usageManager.getSessionUsage(usageSessionId);
               if (sessionUsage) {
                 send({
                   type: "usage_update",
@@ -508,11 +623,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
               }
             }
 
-            // For resumed sessions, the user message was persisted on send_message
-            // if currentSessionId was already set. For new sessions, it was persisted
-            // in the system.init handler above. Now persist the assistant response.
+            // Persist the assistant response
             if (accumulatedText || accumulatedToolUse.length > 0) {
-              chatHistoryManager.append(event.session_id, {
+              chatHistoryManager.append(usageSessionId, {
                 role: "assistant",
                 text: accumulatedText,
                 toolUse: accumulatedToolUse.length > 0 ? accumulatedToolUse : undefined,
@@ -522,8 +635,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         });
 
         // For resumed sessions (sessionId already known), persist user message immediately
-        if (msg.sessionId) {
-          persistUserMessage(msg.sessionId);
+        if (msg.sessionId && activeAppSessionId) {
+          persistUserMessage(activeAppSessionId);
         }
 
         claude.on("done", async (code: number | null) => {
@@ -531,10 +644,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           broadcastLog("server", `Claude process exited with code ${code}`);
           claude = null;
 
-          // Auto-commit after Claude turn
+          // Auto-commit after Claude turn using the session's git manager
           try {
+            const git = getActiveGitManager();
             const firstLine = turnSummary.split("\n")[0]?.slice(0, 120) || "Claude turn";
-            const hash = await gitManager.autoCommit(firstLine);
+            const hash = await git.autoCommit(firstLine);
             if (hash) {
               send({ type: "git_committed", hash, message: firstLine });
             }
@@ -544,7 +658,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
           // Restart Vite after Claude finishes in case new files were created
           if (!viteManager.running) {
-            viteManager.start();
+            viteManager.start(getActiveDir());
           }
 
           // Scan for non-Vite dev servers that Claude may have started.
@@ -563,8 +677,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           const errorMsg = `Claude process error: ${err.message}`;
           send({ type: "error", message: errorMsg });
           // Persist the error so it shows up in history
-          if (currentSessionId) {
-            chatHistoryManager.append(currentSessionId, {
+          if (activeAppSessionId) {
+            chatHistoryManager.append(activeAppSessionId, {
               role: "assistant",
               text: `Error: ${err.message}`,
               isError: true,
@@ -574,12 +688,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         });
 
         const systemPrompt = await readSystemPrompt();
-        claude.run(msg.text, msg.sessionId, systemPrompt, images);
+        claude.run(msg.text, agentSessionId, systemPrompt, images, getActiveDir());
       }
 
       if (msg.type === "get_git_log") {
         try {
-          const commits = await gitManager.log();
+          const git = getActiveGitManager();
+          const commits = await git.log();
           send({ type: "git_log", commits });
         } catch (err) {
           send({ type: "error", message: `Git log failed: ${getErrorMessage(err)}` });
@@ -588,11 +703,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
       if (msg.type === "rollback") {
         try {
-          await gitManager.rollback(msg.commitHash);
+          const git = getActiveGitManager();
+          await git.rollback(msg.commitHash);
           send({ type: "rollback_complete", commitHash: msg.commitHash });
 
           // Restart Vite after rollback since files changed
-          viteManager.restart();
+          viteManager.restart(getActiveDir());
         } catch (err) {
           send({ type: "error", message: `Rollback failed: ${getErrorMessage(err)}` });
         }
@@ -611,7 +727,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           send({ type: "error", message: "Git email is too long (max 200 characters)" });
         } else {
           try {
-            await gitManager.setIdentity(name, email);
+            const git = getActiveGitManager();
+            await git.setIdentity(name, email);
             send({ type: "git_identity_set", name, email });
           } catch (err) {
             send({ type: "error", message: `Failed to set git identity: ${getErrorMessage(err)}` });
@@ -624,11 +741,28 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       }
 
       if (msg.type === "new_session") {
-        // Client clears its sessionId — next send_message will start a fresh session
+        // Clear active session — next send_message or apply_template will create a new one
+        activeAppSessionId = undefined;
+        activeSessionDir = null;
         send({ type: "session_list", sessions: sessionManager.list() });
       }
 
       if (msg.type === "delete_session") {
+        // If deleting the active session, clear it
+        if (msg.sessionId === activeAppSessionId) {
+          activeAppSessionId = undefined;
+          activeSessionDir = null;
+        }
+        // Remove session directory if it has one
+        const session = sessionManager.get(msg.sessionId);
+        if (session?.workspaceDir) {
+          try {
+            await fs.rm(session.workspaceDir, { recursive: true, force: true });
+            console.log("[server] Deleted session directory:", session.workspaceDir);
+          } catch (err) {
+            console.error("[server] Failed to delete session directory:", getErrorMessage(err));
+          }
+        }
         sessionManager.delete(msg.sessionId);
         chatHistoryManager.delete(msg.sessionId);
         usageManager.delete(msg.sessionId);
@@ -650,13 +784,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       }
 
       if (msg.type === "get_chat_history") {
+        // Activate the requested session (session switch)
+        activateSession(msg.sessionId);
         const messages = chatHistoryManager.load(msg.sessionId);
         send({ type: "chat_history", sessionId: msg.sessionId, messages });
       }
 
       if (msg.type === "list_docs") {
         try {
-          const files = await findMarkdownFiles(workspaceDir);
+          const dir = getActiveDir();
+          const files = await findMarkdownFiles(dir);
           send({ type: "doc_list", files });
         } catch (err) {
           send({ type: "error", message: `Failed to list docs: ${getErrorMessage(err)}` });
@@ -665,8 +802,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
       if (msg.type === "get_doc") {
         try {
-          const safePath = path.resolve(workspaceDir, msg.path);
-          if (!safePath.startsWith(workspaceDir + "/")) {
+          const dir = getActiveDir();
+          const safePath = path.resolve(dir, msg.path);
+          if (!safePath.startsWith(dir + "/")) {
             send({ type: "error", message: "Invalid path" });
             return;
           }
@@ -679,7 +817,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
       if (msg.type === "get_file_tree") {
         try {
-          const tree = await scanFileTree(workspaceDir);
+          const dir = getActiveDir();
+          const tree = await scanFileTree(dir);
           send({ type: "file_tree", tree });
         } catch (err) {
           send({ type: "error", message: `Failed to scan file tree: ${getErrorMessage(err)}` });
@@ -688,8 +827,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
       if (msg.type === "get_file_content") {
         try {
-          const safePath = path.resolve(workspaceDir, msg.path);
-          if (!safePath.startsWith(workspaceDir + "/")) {
+          const dir = getActiveDir();
+          const safePath = path.resolve(dir, msg.path);
+          if (!safePath.startsWith(dir + "/")) {
             send({ type: "error", message: "Invalid path" });
             return;
           }
@@ -747,18 +887,30 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           });
 
           // Persist the user answer
-          if (currentSessionId) {
-            chatHistoryManager.append(currentSessionId, { role: "user", text: answerText });
+          if (activeAppSessionId) {
+            chatHistoryManager.append(activeAppSessionId, { role: "user", text: answerText });
           }
+
+          // Look up agent session ID for --resume
+          const session = activeAppSessionId ? sessionManager.get(activeAppSessionId) : undefined;
+          const agentSessionId = session?.agentSessionId ?? activeAppSessionId;
 
           claude.on("event", (event: ClaudeEvent) => {
             send({ type: "claude_event", event });
 
             if (event.type === "system" && event.subtype === "init" && event.session_id) {
-              currentSessionId = event.session_id;
-              const title = answerText.slice(0, 80) || "Answer";
-              const session = sessionManager.track(event.session_id, title);
-              send({ type: "session_started", session });
+              if (activeAppSessionId) {
+                sessionManager.setAgentSessionId(activeAppSessionId, event.session_id);
+                const sess = sessionManager.get(activeAppSessionId);
+                if (sess) {
+                  send({ type: "session_started", session: sess });
+                }
+              } else {
+                const title = answerText.slice(0, 80) || "Answer";
+                const sess = sessionManager.track(event.session_id, title);
+                activeAppSessionId = event.session_id;
+                send({ type: "session_started", session: sess });
+              }
             }
 
             if (event.type === "assistant") {
@@ -779,17 +931,20 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             }
 
             if (event.type === "result" && event.session_id) {
-              currentSessionId = event.session_id;
-              sessionManager.track(event.session_id);
+              if (activeAppSessionId) {
+                sessionManager.setAgentSessionId(activeAppSessionId, event.session_id);
+                sessionManager.track(activeAppSessionId);
+              }
 
+              const usageSessionId = activeAppSessionId ?? event.session_id;
               // Record cost/duration if present
               if (event.total_cost_usd !== undefined) {
                 usageManager.record(
-                  event.session_id,
+                  usageSessionId,
                   event.total_cost_usd,
                   event.duration_ms ?? 0,
                 );
-                const sessionUsage = usageManager.getSessionUsage(event.session_id);
+                const sessionUsage = usageManager.getSessionUsage(usageSessionId);
                 if (sessionUsage) {
                   send({
                     type: "usage_update",
@@ -802,7 +957,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
               }
 
               if (accumulatedText || accumulatedToolUse.length > 0) {
-                chatHistoryManager.append(event.session_id, {
+                chatHistoryManager.append(usageSessionId, {
                   role: "assistant",
                   text: accumulatedText,
                   toolUse: accumulatedToolUse.length > 0 ? accumulatedToolUse : undefined,
@@ -817,8 +972,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             claude = null;
 
             try {
+              const git = getActiveGitManager();
               const firstLine = turnSummary.split("\n")[0]?.slice(0, 120) || "Claude turn";
-              const hash = await gitManager.autoCommit(firstLine);
+              const hash = await git.autoCommit(firstLine);
               if (hash) {
                 send({ type: "git_committed", hash, message: firstLine });
               }
@@ -827,7 +983,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             }
 
             if (!viteManager.running) {
-              viteManager.start();
+              viteManager.start(getActiveDir());
             }
             await runPortScan();
           });
@@ -841,8 +997,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             console.error("[claude] process error:", err.message);
             broadcastLog("server", `Claude process error: ${err.message}`);
             send({ type: "error", message: `Claude process error: ${err.message}` });
-            if (currentSessionId) {
-              chatHistoryManager.append(currentSessionId, {
+            if (activeAppSessionId) {
+              chatHistoryManager.append(activeAppSessionId, {
                 role: "assistant",
                 text: `Error: ${err.message}`,
                 isError: true,
@@ -852,7 +1008,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           });
 
           const systemPrompt = await readSystemPrompt();
-          claude.run(answerText, currentSessionId, systemPrompt);
+          claude.run(answerText, agentSessionId, systemPrompt, undefined, getActiveDir());
         }
       }
 
@@ -872,10 +1028,28 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           return;
         }
         try {
-          await applyTemplate(template, workspaceDir);
-          await gitManager.autoCommit(`Apply template: ${template.name}`);
+          // If no active session, create one for the template
+          if (!activeAppSessionId) {
+            const { appSessionId, sessionDir } = await createSessionDir(template.name);
+            activeAppSessionId = appSessionId;
+            activeSessionDir = sessionDir;
+
+            // Restart file watcher to the new session directory
+            fileWatcher.stop();
+            fileWatcher.start(sessionDir);
+
+            const session = sessionManager.get(appSessionId);
+            if (session) {
+              send({ type: "session_started", session });
+            }
+          }
+
+          const dir = getActiveDir();
+          await applyTemplate(template, dir);
+          const git = getActiveGitManager();
+          await git.autoCommit(`Apply template: ${template.name}`);
           // Restart Vite so it picks up the new project files
-          viteManager.restart();
+          viteManager.restart(dir);
           send({ type: "template_applied", templateId: template.id, name: template.name });
         } catch (err) {
           send({ type: "error", message: `Failed to apply template: ${getErrorMessage(err)}` });
@@ -891,6 +1065,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         } else {
           const success = await githubAuthManager.setToken(token);
           if (success) {
+            // Configure credentials in the active session's git repo too
+            if (activeSessionDir) {
+              githubAuthManager.configureGitCredentials(activeSessionDir);
+            }
             send({ type: "github_status", ...githubAuthManager.getStatus() });
           } else {
             send({ type: "error", message: "Invalid GitHub token" });
@@ -907,10 +1085,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           send({ type: "error", message: "Not authenticated with GitHub" });
         } else {
           try {
+            const git = getActiveGitManager();
             const remote = msg.remote || "origin";
             const branch = msg.branch || undefined;
-            const message = await gitManager.push(remote, branch);
-            const currentBranch = await gitManager.getCurrentBranch();
+            const message = await git.push(remote, branch);
+            const currentBranch = await git.getCurrentBranch();
             send({ type: "github_push_result", success: true, message, branch: currentBranch });
           } catch (err) {
             send({ type: "github_push_result", success: false, message: `Push failed: ${getErrorMessage(err)}` });
@@ -923,9 +1102,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           send({ type: "error", message: "Not authenticated with GitHub" });
         } else {
           try {
+            const git = getActiveGitManager();
             const remote = msg.remote || "origin";
             const branch = msg.branch || undefined;
-            const message = await gitManager.pull(remote, branch);
+            const message = await git.pull(remote, branch);
             send({ type: "github_pull_result", success: true, message });
           } catch (err) {
             send({ type: "github_pull_result", success: false, message: `Pull failed: ${getErrorMessage(err)}` });
@@ -940,8 +1120,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           send({ type: "error", message: "Remote name and URL are required" });
         } else {
           try {
-            await gitManager.addRemote(name, url);
-            const remotes = await gitManager.getRemotes();
+            const git = getActiveGitManager();
+            await git.addRemote(name, url);
+            const remotes = await git.getRemotes();
             send({ type: "github_remotes", remotes });
           } catch (err) {
             send({ type: "error", message: `Failed to set remote: ${getErrorMessage(err)}` });
@@ -951,7 +1132,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
       if (msg.type === "github_get_remotes") {
         try {
-          const remotes = await gitManager.getRemotes();
+          const git = getActiveGitManager();
+          const remotes = await git.getRemotes();
           send({ type: "github_remotes", remotes });
         } catch (err) {
           send({ type: "error", message: `Failed to list remotes: ${getErrorMessage(err)}` });
@@ -980,7 +1162,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             if (result.success && result.cloneUrl) {
               // Auto-configure the remote so the user can push immediately
               try {
-                await gitManager.addRemote("origin", result.cloneUrl);
+                const git = getActiveGitManager();
+                await git.addRemote("origin", result.cloneUrl);
               } catch {
                 // Remote may already exist — that's fine
               }
@@ -999,6 +1182,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       }
 
       if (msg.type === "get_system_prompt") {
+        // System prompt is global (root workspace)
         try {
           const filePath = path.join(workspaceDir, ".shipit", "system-prompt.md");
           const content = await fs.readFile(filePath, "utf-8");
@@ -1010,6 +1194,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       }
 
       if (msg.type === "set_system_prompt") {
+        // System prompt is global (root workspace)
         const content = msg.content;
         if (typeof content !== "string") {
           send({ type: "error", message: "System prompt must be a string" });
