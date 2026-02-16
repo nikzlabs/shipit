@@ -13,7 +13,7 @@ import { SessionManager } from "./sessions.js";
 import { ChatHistoryManager } from "./chat-history.js";
 import { findMarkdownFiles } from "./markdown.js";
 import { scanFileTree } from "./file-tree.js";
-import { scanPorts, DEFAULT_SCAN_PORTS } from "./port-scanner.js";
+import { scanPorts, snapshotBaselinePorts, DEFAULT_SCAN_PORTS } from "./port-scanner.js";
 import { UsageManager } from "./usage.js";
 import { FileWatcher } from "./file-watcher.js";
 import { listTemplates, getTemplate, applyTemplate } from "./templates.js";
@@ -131,6 +131,13 @@ export interface AppDeps {
    */
   portScanIntervalMs?: number;
   /**
+   * Ports that were already open when the server started. These are excluded
+   * from port scans so that system-level services (e.g. ShipIt's own Vite dev
+   * server during development, or other host tooling) never appear in the
+   * user-facing preview tab. Defaults to a live snapshot via snapshotBaselinePorts().
+   */
+  baselinePorts?: number[];
+  /**
    * File watcher instance. Defaults to `new FileWatcher()`.
    * Inject a stub in tests to avoid real filesystem watching.
    */
@@ -154,6 +161,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     detectPorts = (excludePorts: number[]) => scanPorts(DEFAULT_SCAN_PORTS, excludePorts),
     serverPort = 3000,
     portScanIntervalMs = 5000,
+    baselinePorts = [],
   } = deps;
 
   const app = Fastify({ logger: false });
@@ -245,10 +253,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   /**
    * Run a port scan and broadcast if the set of detected ports changed.
    * Shared between the post-turn scan and the periodic interval scanner.
+   *
+   * The exclude list combines three sources:
+   *  1. serverPort       — ShipIt's own Fastify server
+   *  2. viteManager.port — the managed Vite preview for the user's project
+   *  3. baselinePorts    — ports that were already open before the session
+   *                        started (system services, ShipIt's own dev Vite, etc.)
    */
   const runPortScan = async () => {
     try {
-      const excludeList = [serverPort, viteManager.port];
+      const excludeList = [serverPort, viteManager.port, ...baselinePorts];
       const ports = await detectPorts(excludeList);
       const changed =
         ports.length !== detectedPorts.length ||
@@ -476,6 +490,17 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       }
 
       if (msg.type === "send_message") {
+        // Check auth before spawning — the CLI hangs if not authenticated
+        if (!authManager.authenticated) {
+          // Re-check in case credentials were added since startup
+          authManager.checkCredentials();
+        }
+        if (!authManager.authenticated) {
+          send({ type: "error", message: "Not authenticated with Claude. Please complete the OAuth flow." });
+          authManager.startOAuthFlow();
+          return;
+        }
+
         // Kill any existing process before starting a new one
         if (claude) {
           claude.kill();
@@ -494,12 +519,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         turnSummary = "";
         accumulatedText = "";
         accumulatedToolUse = [];
+        let receivedResult = false;
         const userText = msg.text;
         claude = claudeFactory();
+        const currentClaude = claude;
         broadcastLog("server", "Claude process started");
 
         // Relay CLI stderr and non-JSON stdout lines to the terminal panel
-        claude.on("log", (source: "stderr" | "stdout", text: string) => {
+        currentClaude.on("log", (source: "stderr" | "stdout", text: string) => {
           broadcastLog(source, text);
         });
 
@@ -537,6 +564,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           fileWatcher.start(sessionDir);
         }
 
+        // If the claude process was replaced or killed during async session setup, bail out
+        if (claude !== currentClaude) {
+          return;
+        }
+
         // Build images metadata for chat history persistence (inline base64)
         const historyImages = images?.map((img) => ({
           data: img.data,
@@ -552,7 +584,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           });
         };
 
-        claude.on("event", (event: ClaudeEvent) => {
+        currentClaude.on("event", (event: ClaudeEvent) => {
           send({ type: "claude_event", event });
 
           // Track agent session when we get the session_id from init event
@@ -597,6 +629,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           }
 
           // On result: persist the final assistant message, update session, record usage
+          if (event.type === "result") {
+            receivedResult = true;
+          }
           if (event.type === "result" && event.session_id) {
             if (activeAppSessionId) {
               sessionManager.setAgentSessionId(activeAppSessionId, event.session_id);
@@ -639,10 +674,19 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           persistUserMessage(activeAppSessionId);
         }
 
-        claude.on("done", async (code: number | null) => {
+        currentClaude.on("done", async (code: number | null) => {
           console.log("[claude] process exited with code", code);
           broadcastLog("server", `Claude process exited with code ${code}`);
           claude = null;
+
+          // If the process exited without producing a result event, notify the
+          // client so it can clear the loading state instead of hanging forever.
+          if (!receivedResult) {
+            const reason = code !== 0
+              ? `Claude process exited with code ${code}`
+              : "Claude process ended without a response";
+            send({ type: "error", message: reason });
+          }
 
           // Auto-commit after Claude turn using the session's git manager
           try {
@@ -665,13 +709,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           await runPortScan();
         });
 
-        claude.on("auth_required", () => {
+        currentClaude.on("auth_required", () => {
           console.log("[server] Claude CLI requires authentication, starting OAuth flow");
           send({ type: "error", message: "Authentication required. Starting OAuth flow..." });
           authManager.startOAuthFlow();
         });
 
-        claude.on("error", (err: Error) => {
+        currentClaude.on("error", (err: Error) => {
           console.error("[claude] process error:", err.message);
           broadcastLog("server", `Claude process error: ${err.message}`);
           const errorMsg = `Claude process error: ${err.message}`;
@@ -688,7 +732,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         });
 
         const systemPrompt = await readSystemPrompt();
-        claude.run(msg.text, agentSessionId, systemPrompt, images, getActiveDir());
+        currentClaude.run(msg.text, agentSessionId, systemPrompt, images, getActiveDir());
       }
 
       if (msg.type === "get_git_log") {
@@ -875,6 +919,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           // Claude is still running — write answer to stdin (it may be blocking on input)
           claude.writeStdin(answerText + "\n");
         } else {
+          // Check auth before spawning — the CLI hangs if not authenticated
+          if (!authManager.authenticated) {
+            authManager.checkCredentials();
+          }
+          if (!authManager.authenticated) {
+            send({ type: "error", message: "Not authenticated with Claude. Please complete the OAuth flow." });
+            authManager.startOAuthFlow();
+            return;
+          }
+
           // Claude has finished — send the answer as a new prompt with --resume
           turnSummary = "";
           accumulatedText = "";
@@ -1276,7 +1330,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 // Only start the server when this file is the entry point (not when imported by tests).
 // Vitest sets process.env.VITEST; alternatively check import.meta.url vs process.argv[1].
 if (!process.env.VITEST) {
-  const app = await buildApp({ serveStatic: true, startVite: true });
+  // Snapshot which ports are already listening before the session starts.
+  // These belong to the host system (e.g. ShipIt's own Vite dev server, or
+  // other tooling) and should never appear in the user-facing preview tab.
+  const baselinePorts = await snapshotBaselinePorts();
+  if (baselinePorts.length > 0) {
+    console.log("[server] baseline ports (will be excluded from preview):", baselinePorts);
+  }
+
+  const app = await buildApp({ serveStatic: true, startVite: true, baselinePorts });
 
   const shutdown = () => {
     app.close();

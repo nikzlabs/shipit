@@ -156,7 +156,8 @@ class StubViteManager extends EventEmitter {
  * checkCredentials() always returns false.
  */
 class StubAuthManager extends EventEmitter {
-  checkCredentials() { return false; }
+  authenticated = true; // Tests assume auth is already done
+  checkCredentials() { return true; }
   startOAuthFlow() { /* no-op */ }
   kill() { /* no-op */ }
 }
@@ -237,6 +238,16 @@ class FakeClaudeProcess extends EventEmitter {
   writeStdin(data: string) {
     this.stdinData.push(data);
   }
+
+  /**
+   * Simulate a normal Claude turn completion: emit a result event then done.
+   * This matches the real Claude CLI behavior where a `result` event always
+   * precedes process exit on success.
+   */
+  finish(sessionId = "test-session", code = 0) {
+    this.emit("event", { type: "result", subtype: "success", session_id: sessionId });
+    this.emit("done", code);
+  }
 }
 
 /**
@@ -251,6 +262,28 @@ class StubFileWatcher extends EventEmitter {
   }
 }
 
+/**
+ * Poll until the most recent FakeClaudeProcess has been started.
+ * Replaces fixed `setTimeout(50)` waits which are flaky because
+ * `createSessionDir()` adds async I/O overhead (mkdir + git init).
+ *
+ * @param notInstance — if provided, waits for a DIFFERENT instance
+ *   (useful when a previous Claude from another test still has runCalled=true)
+ */
+async function waitForClaude(
+  getClaude: () => FakeClaudeProcess | null,
+  notInstance?: FakeClaudeProcess | null,
+  timeoutMs = 5000,
+): Promise<FakeClaudeProcess> {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    const c = getClaude();
+    if (c?.runCalled && c !== notInstance) return c;
+    if (Date.now() > deadline) throw new Error("Timed out waiting for ClaudeProcess.run()");
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Test suite
 // ---------------------------------------------------------------------------
@@ -262,9 +295,10 @@ describe("Integration: WebSocket flow", () => {
   let gitManager: GitManager;
   let sessionManager: SessionManager;
   /** Most recently created FakeClaudeProcess — set by claudeFactory. */
-  let lastClaude: FakeClaudeProcess;
+  let lastClaude: FakeClaudeProcess = null as any;
 
   beforeEach(async () => {
+    lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-integration-"));
 
     // Create a markdown file for doc tests
@@ -301,7 +335,13 @@ describe("Integration: WebSocket flow", () => {
 
   afterEach(async () => {
     await app.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    // Small delay to let lingering git processes release file handles
+    await new Promise((r) => setTimeout(r, 50));
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch {
+      // Ignore cleanup errors — temp dir will be cleaned by OS
+    }
   });
 
   // ---- Connection ----
@@ -633,10 +673,7 @@ describe("Integration: WebSocket flow", () => {
 
     client.send({ type: "send_message", text: "Hello Claude" });
 
-    // Wait a tick for the claudeFactory to be called
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(lastClaude.runCalled).toBe(true);
+    await waitForClaude(() => lastClaude);
     expect(lastClaude.lastPrompt).toBe("Hello Claude");
 
     // Simulate Claude emitting a system init event
@@ -669,8 +706,7 @@ describe("Integration: WebSocket flow", () => {
     await client.receive();
 
     client.send({ type: "send_message", text: "Resume", sessionId: "existing-session" });
-
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
 
     expect(lastClaude.lastSessionId).toBe("existing-session");
 
@@ -685,7 +721,7 @@ describe("Integration: WebSocket flow", () => {
     await client.receive();
 
     client.send({ type: "send_message", text: "Make a file" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
 
     // Simulate assistant text (used as commit message)
     lastClaude.emit("event", {
@@ -698,8 +734,9 @@ describe("Integration: WebSocket flow", () => {
     // Consume the claude_event for the assistant message (skip log_entry messages)
     await client.receiveSkipLogs();
 
-    // Now simulate done — this triggers auto-commit
-    lastClaude.emit("done", 0);
+    // Simulate Claude finishing — this triggers auto-commit
+    lastClaude.finish("test-session");
+    await client.receiveSkipLogs(); // consume the result claude_event
 
     // Wait for the async auto-commit (skip log_entry messages)
     const msg = await client.receiveSkipLogs();
@@ -716,7 +753,7 @@ describe("Integration: WebSocket flow", () => {
     await client.receive();
 
     client.send({ type: "send_message", text: "fail" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
 
     lastClaude.emit("error", new Error("spawn ENOENT"));
 
@@ -730,18 +767,54 @@ describe("Integration: WebSocket flow", () => {
     client.close();
   });
 
+  it("claude process exit without result sends error to client", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "Hello" });
+    await waitForClaude(() => lastClaude);
+
+    // Process exits with non-zero code and no result event
+    lastClaude.emit("done", 1);
+
+    const msg = await client.receiveSkipLogs();
+
+    expect(msg.type).toBe("error");
+    expect((msg as any).message).toContain("exited with code 1");
+
+    client.close();
+  });
+
+  it("claude process exit code 0 without result sends error to client", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "Hello" });
+    await waitForClaude(() => lastClaude);
+
+    // Process exits with code 0 but no result event (e.g. auth issue)
+    lastClaude.emit("done", 0);
+
+    const msg = await client.receiveSkipLogs();
+
+    expect(msg.type).toBe("error");
+    expect((msg as any).message).toContain("ended without a response");
+
+    client.close();
+  });
+
   it("sending a new message kills the previous ClaudeProcess", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
 
     // First message
     client.send({ type: "send_message", text: "First" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
     const firstClaude = lastClaude;
 
     // Second message before first completes
     client.send({ type: "send_message", text: "Second" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude, firstClaude);
 
     expect(firstClaude.killed).toBe(true);
     expect(lastClaude.lastPrompt).toBe("Second");
@@ -772,7 +845,7 @@ describe("Integration: WebSocket flow", () => {
     await client.receive();
 
     client.send({ type: "send_message", text: "test" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
     const claude = lastClaude;
 
     // Close the websocket — should kill the process
@@ -789,7 +862,7 @@ describe("Integration: WebSocket flow", () => {
     await client.receive();
 
     client.send({ type: "send_message", text: "test" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
 
     // Init event creates the session
     lastClaude.emit("event", {
@@ -830,7 +903,7 @@ describe("Integration: WebSocket flow", () => {
 
     // Start a Claude message flow
     client.send({ type: "send_message", text: "Ask me something" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
 
     // Claude is now running — send an answer
     client.send({ type: "answer_question", toolUseId: "tool-1", answers: { "0": "Redis" } });
@@ -850,11 +923,11 @@ describe("Integration: WebSocket flow", () => {
 
     // Start and immediately finish a Claude turn to set currentSessionId
     client.send({ type: "send_message", text: "First message", sessionId: "existing-sess" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
     const firstClaude = lastClaude;
 
     // Simulate Claude finishing
-    firstClaude.emit("done", 0);
+    firstClaude.finish("existing-sess");
     await new Promise((r) => setTimeout(r, 100));
 
     // Now Claude is null — send an answer
@@ -889,7 +962,7 @@ describe("Integration: WebSocket flow", () => {
 
     // Start a Claude message flow
     client.send({ type: "send_message", text: "test" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
 
     // Send an answer with multiple values
     client.send({
@@ -916,11 +989,12 @@ describe("Integration: Port auto-detection", () => {
   let tmpDir: string;
   let gitManager: GitManager;
   let sessionManager: SessionManager;
-  let lastClaude: FakeClaudeProcess;
+  let lastClaude: FakeClaudeProcess = null as any;
   /** Value returned by the injected detectPorts stub. */
   let stubDetectedPorts: number[];
 
   beforeEach(async () => {
+    lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-portdetect-"));
 
     gitManager = new GitManager(tmpDir);
@@ -955,7 +1029,7 @@ describe("Integration: Port auto-detection", () => {
 
   afterEach(async () => {
     await app.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
   it("broadcasts detected port after Claude turn completes", async () => {
@@ -969,10 +1043,10 @@ describe("Integration: Port auto-detection", () => {
 
     // Start a Claude message flow
     client.send({ type: "send_message", text: "Start a server" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
 
     // Simulate Claude finishing
-    lastClaude.emit("done", 0);
+    lastClaude.finish();
 
     // Should receive preview_status with the detected port
     // (may also receive git_committed if there were changes — drain until preview_status)
@@ -1005,9 +1079,9 @@ describe("Integration: Port auto-detection", () => {
     await client.receive(); // initial preview_status
 
     client.send({ type: "send_message", text: "No server" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
 
-    lastClaude.emit("done", 0);
+    lastClaude.finish();
 
     // Wait a bit — we should NOT receive a preview_status update
     // The only message we might get is git_committed (if there were changes)
@@ -1039,8 +1113,8 @@ describe("Integration: Port auto-detection", () => {
 
     // First turn — detect port 8080
     client.send({ type: "send_message", text: "Start server" });
-    await new Promise((r) => setTimeout(r, 50));
-    lastClaude.emit("done", 0);
+    await waitForClaude(() => lastClaude);
+    lastClaude.finish();
 
     let previewMsg: any = null;
     for (let i = 0; i < 5; i++) {
@@ -1054,9 +1128,10 @@ describe("Integration: Port auto-detection", () => {
 
     // Second turn — port changes to 4000
     stubDetectedPorts = [4000];
+    const prevClaude = lastClaude;
     client.send({ type: "send_message", text: "Change server" });
-    await new Promise((r) => setTimeout(r, 50));
-    lastClaude.emit("done", 0);
+    await waitForClaude(() => lastClaude, prevClaude);
+    lastClaude.finish();
 
     let updatedMsg: any = null;
     for (let i = 0; i < 5; i++) {
@@ -1080,8 +1155,8 @@ describe("Integration: Port auto-detection", () => {
 
     // Trigger a Claude turn to detect the port
     client1.send({ type: "send_message", text: "Go" });
-    await new Promise((r) => setTimeout(r, 50));
-    lastClaude.emit("done", 0);
+    await waitForClaude(() => lastClaude);
+    lastClaude.finish();
 
     // Drain messages until we see the updated preview_status
     for (let i = 0; i < 5; i++) {
@@ -1111,8 +1186,8 @@ describe("Integration: Port auto-detection", () => {
     await client.receive(); // initial preview_status
 
     client.send({ type: "send_message", text: "Start servers" });
-    await new Promise((r) => setTimeout(r, 50));
-    lastClaude.emit("done", 0);
+    await waitForClaude(() => lastClaude);
+    lastClaude.finish();
 
     let previewMsg: any = null;
     for (let i = 0; i < 5; i++) {
@@ -1137,6 +1212,88 @@ describe("Integration: Port auto-detection", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Baseline port exclusion tests
+// ---------------------------------------------------------------------------
+
+describe("Integration: Baseline port exclusion", () => {
+  let app: FastifyInstance;
+  let port: number;
+  let tmpDir: string;
+  let gitManager: GitManager;
+  let sessionManager: SessionManager;
+  let lastClaude: FakeClaudeProcess = null as any;
+  /** Exclude lists received by the detectPorts stub across all calls. */
+  let capturedExcludeLists: number[][];
+
+  beforeEach(async () => {
+    lastClaude = null as any;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-baseline-"));
+
+    gitManager = new GitManager(tmpDir);
+    await gitManager.init();
+
+    const sessionsFile = path.join(tmpDir, "sessions.json");
+    sessionManager = new SessionManager(sessionsFile);
+
+    capturedExcludeLists = [];
+
+    app = await buildApp({
+      gitManager,
+      sessionManager,
+      viteManager: new StubViteManager() as unknown as ViteManager,
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      claudeFactory: () => {
+        lastClaude = new FakeClaudeProcess();
+        return lastClaude as unknown as ClaudeProcess;
+      },
+      // Capture the exclude list that runPortScan passes to detectPorts
+      detectPorts: async (excludePorts: number[]) => {
+        capturedExcludeLists.push([...excludePorts]);
+        return [];
+      },
+      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
+      workspaceDir: tmpDir,
+      serveStatic: false,
+      startVite: false,
+      portScanIntervalMs: 0,
+      // Simulate ports 8080 and 5174 already open before the session started
+      // (e.g. ShipIt's own dev Vite server, or other host tooling).
+      baselinePorts: [8080, 5174],
+    });
+
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+    const match = address.match(/:(\d+)$/);
+    port = match ? Number(match[1]) : 0;
+  });
+
+  afterEach(async () => {
+    await app.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("passes baseline ports in the exclude list to detectPorts", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // initial preview_status
+
+    // Trigger a port scan via a Claude turn
+    client.send({ type: "send_message", text: "hello" });
+    await waitForClaude(() => lastClaude);
+    lastClaude.emit("done", 0);
+
+    // Wait for the scan to run
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(capturedExcludeLists.length).toBeGreaterThanOrEqual(1);
+    const lastExclude = capturedExcludeLists[capturedExcludeLists.length - 1]!;
+    // Should contain both baseline ports alongside the server/vite ports
+    expect(lastExclude).toContain(8080);
+    expect(lastExclude).toContain(5174);
+
+    client.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Periodic port scanning tests
 // ---------------------------------------------------------------------------
 
@@ -1146,13 +1303,14 @@ describe("Integration: Periodic port scanning", () => {
   let tmpDir: string;
   let gitManager: GitManager;
   let sessionManager: SessionManager;
-  let lastClaude: FakeClaudeProcess;
+  let lastClaude: FakeClaudeProcess = null as any;
   /** Value returned by the injected detectPorts stub. */
   let stubDetectedPorts: number[];
   /** Count how many times detectPorts was called. */
   let detectPortsCallCount: number;
 
   beforeEach(async () => {
+    lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-periodic-"));
 
     gitManager = new GitManager(tmpDir);
@@ -1191,7 +1349,7 @@ describe("Integration: Periodic port scanning", () => {
 
   afterEach(async () => {
     await app.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
   it("detects a port started mid-turn without waiting for Claude to finish", async () => {
@@ -1200,7 +1358,7 @@ describe("Integration: Periodic port scanning", () => {
 
     // Start a Claude message flow (Claude is still running)
     client.send({ type: "send_message", text: "Start a server" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
 
     // Simulate a server starting mid-turn (before Claude finishes)
     stubDetectedPorts = [8080];
@@ -1349,9 +1507,10 @@ describe("Integration: Terminal/logs relay", () => {
   let tmpDir: string;
   let gitManager: GitManager;
   let sessionManager: SessionManager;
-  let lastClaude: FakeClaudeProcess;
+  let lastClaude: FakeClaudeProcess = null as any;
 
   beforeEach(async () => {
+    lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-logs-"));
 
     gitManager = new GitManager(tmpDir);
@@ -1397,7 +1556,7 @@ describe("Integration: Terminal/logs relay", () => {
     await client.receive(); // preview_status
 
     client.send({ type: "send_message", text: "test" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
 
     // Consume the server "Claude process started" log entry
     const startLog = await client.receive();
@@ -1421,7 +1580,7 @@ describe("Integration: Terminal/logs relay", () => {
     await client.receive(); // preview_status
 
     client.send({ type: "send_message", text: "test" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
 
     // Consume "Claude process started" log entry
     await client.receive();
@@ -1442,7 +1601,7 @@ describe("Integration: Terminal/logs relay", () => {
     await client.receive(); // preview_status
 
     client.send({ type: "send_message", text: "test" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
 
     // Should receive "Claude process started" log
     const startLog = await client.receive();
@@ -1451,7 +1610,7 @@ describe("Integration: Terminal/logs relay", () => {
     expect((startLog as any).text).toBe("Claude process started");
 
     // Simulate Claude finishing
-    lastClaude.emit("done", 0);
+    lastClaude.finish();
 
     // Should receive "Claude process exited" log
     // (may also receive git_committed — drain until we find the exit log)
@@ -1468,6 +1627,16 @@ describe("Integration: Terminal/logs relay", () => {
     expect(exitLog.source).toBe("server");
     expect(exitLog.text).toBe("Claude process exited with code 0");
 
+    // Drain remaining messages (e.g. git_committed) so the async done handler
+    // (autoCommit, portScan) finishes before afterEach tears down the temp dir.
+    try {
+      for (let i = 0; i < 5; i++) {
+        await client.receive(300);
+      }
+    } catch {
+      // timeout expected when no more messages
+    }
+
     client.close();
   });
 
@@ -1477,7 +1646,7 @@ describe("Integration: Terminal/logs relay", () => {
     await client1.receive(); // preview_status
 
     client1.send({ type: "send_message", text: "generate logs" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
 
     // Consume the "Claude process started" log
     await client1.receive();
@@ -1510,7 +1679,7 @@ describe("Integration: Terminal/logs relay", () => {
     await client1.receive(); // preview_status
 
     client1.send({ type: "send_message", text: "test" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
     await client1.receive(); // "Claude process started" log
 
     // Clear logs
@@ -1627,9 +1796,10 @@ describe("Integration: Workspace project templates", () => {
   let tmpDir: string;
   let gitManager: GitManager;
   let sessionManager: SessionManager;
-  let lastClaude: FakeClaudeProcess;
+  let lastClaude: FakeClaudeProcess = null as any;
 
   beforeEach(async () => {
+    lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-templates-"));
 
     gitManager = new GitManager(tmpDir);
@@ -1661,7 +1831,7 @@ describe("Integration: Workspace project templates", () => {
 
   afterEach(async () => {
     await app.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
   it("list_templates returns all available templates", async () => {
@@ -1790,10 +1960,11 @@ describe("Integration: GitHub authentication", () => {
   let tmpDir: string;
   let gitManager: GitManager;
   let sessionManager: SessionManager;
-  let lastClaude: FakeClaudeProcess;
+  let lastClaude: FakeClaudeProcess = null as any;
   let githubAuthManager: StubGitHubAuthManager;
 
   beforeEach(async () => {
+    lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-github-"));
 
     gitManager = new GitManager(tmpDir);
@@ -1828,7 +1999,7 @@ describe("Integration: GitHub authentication", () => {
 
   afterEach(async () => {
     await app.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
   it("github_get_status returns unauthenticated by default", async () => {
@@ -2081,9 +2252,10 @@ describe("Integration: Usage & cost tracking", () => {
   let port: number;
   let tmpDir: string;
   let gitManager: GitManager;
-  let lastClaude: FakeClaudeProcess;
+  let lastClaude: FakeClaudeProcess = null as any;
 
   beforeEach(async () => {
+    lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-usage-integration-"));
     gitManager = new GitManager(tmpDir);
     await gitManager.init();
@@ -2115,7 +2287,7 @@ describe("Integration: Usage & cost tracking", () => {
     // Wait for any pending async operations (git auto-commit) to complete
     await new Promise((r) => setTimeout(r, 200));
     try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     } catch {
       // Ignore cleanup errors — CI tmpdir will be cleared anyway
     }
@@ -2146,7 +2318,7 @@ describe("Integration: Usage & cost tracking", () => {
 
     // Start a Claude turn
     client.send({ type: "send_message", text: "hello" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
 
     // Simulate system init
     lastClaude.emit("event", {
@@ -2201,7 +2373,7 @@ describe("Integration: Usage & cost tracking", () => {
 
     // --- Turn 1 ---
     client.send({ type: "send_message", text: "turn 1" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "accum-session" });
     await client.receiveSkipLogs(); // claude_event
     const sessionStarted = await client.receiveSkipLogs(); // session_started
@@ -2227,8 +2399,9 @@ describe("Integration: Usage & cost tracking", () => {
     await new Promise((r) => setTimeout(r, 100));
 
     // --- Turn 2: resume with the app session UUID ---
+    const prevClaude = lastClaude;
     client.send({ type: "send_message", text: "turn 2", sessionId: appSessionId });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude, prevClaude);
     lastClaude.emit("event", {
       type: "result",
       subtype: "success",
@@ -2263,7 +2436,7 @@ describe("Integration: Usage & cost tracking", () => {
 
     // Record some usage by running a turn
     client.send({ type: "send_message", text: "test" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "stats-session" });
     await client.receiveSkipLogs(); // claude_event
     const sessionStarted = await client.receiveSkipLogs(); // session_started
@@ -2312,7 +2485,7 @@ describe("Integration: Usage & cost tracking", () => {
     await client.receive(); // preview_status
 
     client.send({ type: "send_message", text: "hello" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "no-cost-session" });
 
     // Result without total_cost_usd
@@ -2345,7 +2518,7 @@ describe("Integration: Usage & cost tracking", () => {
 
     // Record some usage
     client.send({ type: "send_message", text: "test" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "del-usage-session" });
     await client.receiveSkipLogs(); // claude_event
     const sessionStarted = await client.receiveSkipLogs(); // session_started
@@ -2403,9 +2576,10 @@ describe("Integration: System prompt", () => {
   let port: number;
   let tmpDir: string;
   let gitManager: GitManager;
-  let lastClaude: FakeClaudeProcess;
+  let lastClaude: FakeClaudeProcess = null as any;
 
   beforeEach(async () => {
+    lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-sysprompt-"));
     gitManager = new GitManager(tmpDir);
     await gitManager.init();
@@ -2436,7 +2610,7 @@ describe("Integration: System prompt", () => {
     await app.close();
     await new Promise((r) => setTimeout(r, 200));
     try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     } catch {
       // Ignore cleanup errors
     }
@@ -2597,9 +2771,8 @@ describe("Integration: System prompt", () => {
 
     // Send a message to Claude
     client.send({ type: "send_message", text: "Hello" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
 
-    expect(lastClaude.runCalled).toBe(true);
     expect(lastClaude.lastSystemPrompt).toBe("Be concise.");
 
     client.close();
@@ -2610,9 +2783,8 @@ describe("Integration: System prompt", () => {
     await client.receive(); // preview_status
 
     client.send({ type: "send_message", text: "Hello" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
 
-    expect(lastClaude.runCalled).toBe(true);
     expect(lastClaude.lastSystemPrompt).toBeUndefined();
 
     client.close();
@@ -2628,10 +2800,11 @@ describe("Integration: File watcher", () => {
   let port: number;
   let tmpDir: string;
   let gitManager: GitManager;
-  let lastClaude: FakeClaudeProcess;
+  let lastClaude: FakeClaudeProcess = null as any;
   let stubFileWatcher: StubFileWatcher;
 
   beforeEach(async () => {
+    lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-filewatcher-"));
     gitManager = new GitManager(tmpDir);
     await gitManager.init();
@@ -2666,7 +2839,7 @@ describe("Integration: File watcher", () => {
     await app.close();
     await new Promise((r) => setTimeout(r, 100));
     try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     } catch {
       // Ignore cleanup errors
     }
@@ -2773,7 +2946,7 @@ describe("Integration: File watcher", () => {
 
     // Simulate Claude finishing
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "img-session-1" });
-    lastClaude.emit("done", 0);
+    lastClaude.finish("img-session-1");
 
     client.close();
   });
@@ -2856,12 +3029,7 @@ describe("Integration: File watcher", () => {
       ],
     });
 
-    // Poll until claudeFactory has been called (deterministic, no fixed timeout)
-    const deadline = Date.now() + 5000;
-    while (!lastClaude?.runCalled) {
-      if (Date.now() > deadline) throw new Error("Timed out waiting for claudeFactory");
-      await new Promise((r) => setTimeout(r, 10));
-    }
+    await waitForClaude(() => lastClaude);
 
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "img-persist-test" });
 
@@ -2920,16 +3088,11 @@ describe("Integration: File watcher", () => {
     });
 
     // Should start Claude normally without error
-    // (wait longer because session creation includes async dir setup)
-    const deadline = Date.now() + 5000;
-    while (!lastClaude?.runCalled) {
-      if (Date.now() > deadline) throw new Error("Timed out waiting for claudeFactory");
-      await new Promise((r) => setTimeout(r, 10));
-    }
+    await waitForClaude(() => lastClaude);
     expect(lastClaude.lastPrompt).toBe("No images");
     expect(lastClaude.lastImages).toBeUndefined();
 
-    lastClaude.emit("done", 0);
+    lastClaude.finish();
     client.close();
   });
 });
@@ -2957,7 +3120,7 @@ describe("Integration: git identity flow", () => {
     else delete process.env.GIT_CONFIG_NOSYSTEM;
 
     if (app) await app.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
   /**
@@ -3109,9 +3272,10 @@ describe("Integration: Session isolation", () => {
   let tmpDir: string;
   let gitManager: GitManager;
   let sessionManager: SessionManager;
-  let lastClaude: FakeClaudeProcess;
+  let lastClaude: FakeClaudeProcess = null as any;
 
   beforeEach(async () => {
+    lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-isolation-"));
 
     gitManager = new GitManager(tmpDir);
@@ -3157,7 +3321,7 @@ describe("Integration: Session isolation", () => {
     await client.receive(); // preview_status
 
     client.send({ type: "send_message", text: "Build me an app" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
 
     // Simulate system init
     lastClaude.emit("event", {
@@ -3322,7 +3486,7 @@ describe("Integration: Session isolation", () => {
     await client.receive(); // preview_status
 
     client.send({ type: "send_message", text: "Hello" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
 
     // The claude process should have been called with the session directory as cwd
     expect(lastClaude.lastCwd).toBeTruthy();
@@ -3337,7 +3501,7 @@ describe("Integration: Session isolation", () => {
 
     // Create a session
     client.send({ type: "send_message", text: "First turn" });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude);
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "my-agent-session" });
     await client.receiveSkipLogs(); // claude_event
     const sessionMsg = await client.receiveSkipLogs();
@@ -3345,9 +3509,10 @@ describe("Integration: Session isolation", () => {
     lastClaude.emit("done", 0);
     await new Promise((r) => setTimeout(r, 100));
 
-    // Resume the session
+    // Resume the session — wait for NEW Claude instance
+    const prevClaude2 = lastClaude;
     client.send({ type: "send_message", text: "Second turn", sessionId: appSessionId });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude, prevClaude2);
 
     // The resumed session should pass the agent session ID for --resume
     expect(lastClaude.lastSessionId).toBe("my-agent-session");
