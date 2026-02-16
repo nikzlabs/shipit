@@ -28,13 +28,15 @@ src/
 │   ├── auth.ts              →  auth.test.ts
 │   ├── markdown.ts          →  markdown.test.ts
 │   ├── file-watcher.ts      →  file-watcher.test.ts
+│   ├── vite-error-plugin.ts →  vite-error-plugin.test.ts
 │   └── index.ts             →  integration.test.ts   (WebSocket E2E)
 └── client/
     ├── hooks/
     │   ├── useWebSocket.ts  →  useWebSocket.test.ts
     │   ├── useSearch.ts     →  useSearch.test.ts
     │   ├── useMediaQuery.ts  →  useMediaQuery.test.ts
-    │   └── useNotification.ts →  useNotification.test.ts
+    │   ├── useNotification.ts →  useNotification.test.ts
+    │   └── usePreviewErrors.ts →  usePreviewErrors.test.ts
     └── components/
         ├── MessageList.tsx      →  MessageList.test.tsx
         ├── DiffBlock.tsx        →  DiffBlock.test.tsx
@@ -68,7 +70,8 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | `findMarkdownFiles` | 7 | Recursive scan, directory skipping, sorting |
 | `UsageManager` | 11 | Record turns, aggregate per-session and total, delete session usage, persistence to disk, corruption recovery, zero cost, timestamps |
 | `FileWatcher` | 11 | File creation/modification events, debounce batching, deduplication, ignore patterns (node_modules, .git, .vibe-chat-history, .shipit-usage.json), start/stop lifecycle, idempotent start, subdirectory paths, no emit when idle, default debounce |
-| Integration (E2E) | 49 | Full WebSocket flow: connect, sessions, git, docs, file content viewer (read, nested path, path traversal, non-existent file, binary detection, large file guard), Claude lifecycle, multi-client, path traversal, disconnect cleanup, port auto-detection with multi-port support, periodic port scanning, terminal/logs relay (stderr, stdout, server lifecycle logs, log buffering for new clients, clear_logs), usage tracking (get_usage_stats empty/populated, usage_update after result, accumulation across turns, no update when cost undefined, delete cleans usage), file watcher (broadcast to single/multiple clients, sequential events, disconnect cleanup) |
+| `shipitErrorCapturePlugin` | 5 | Script injection after `<head>`, fallback prepend, HTML preservation, postMessage script content |
+| Integration (E2E) | 53 | Full WebSocket flow: connect, sessions, git, docs, file content viewer (read, nested path, path traversal, non-existent file, binary detection, large file guard), Claude lifecycle, multi-client, path traversal, disconnect cleanup, port auto-detection with multi-port support, periodic port scanning, terminal/logs relay (stderr, stdout, server lifecycle logs, log buffering for new clients, clear_logs, preview error relay, empty/long error rejection, preview log buffering), usage tracking (get_usage_stats empty/populated, usage_update after result, accumulation across turns, no update when cost undefined, delete cleans usage), file watcher (broadcast to single/multiple clients, sequential events, disconnect cleanup) |
 
 ### Client Tests
 
@@ -79,7 +82,7 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | `DiffBlock` | 12 | File header, edit/write labels, removed/added lines, multi-line diffs, separator, write mode, empty fallback |
 | `GitHistory` | 14 | Collapsed/expanded toggle, onRefresh, commit display (abbreviated hash, relative dates), rollback confirmation, blur reset |
 | `ErrorBoundary` | 7 | Render children, catch errors, fallback UI, reload button, recover button, error message display |
-| `PreviewFrame` | 13 | Placeholder states (null/not running), iframe rendering, auto-detected label, single-port display, multi-port dropdown selector, port selection callback, selectedPort override, Vite+detected port combination, Reload button |
+| `PreviewFrame` | 28 | Placeholder states (null/not running), iframe rendering, auto-detected label, single-port display, multi-port dropdown selector, port selection callback, selectedPort override, Vite+detected port combination, Reload button, error badge (show/hide), error panel toggle, Send to Claude button, per-error Fix button, Clear errors button, auto-fix toggle, retry count display, 99+ badge cap, stack trace display, console warn prefix, `formatErrorForMessage` (prompt formatting, stack trace, multi-error numbering) |
 | `ConnectionBanner` | 16 | Hidden when open, reconnecting message, connection lost message, role=alert, color variants, attempt count display, "Reconnect now" button, reconnected success flash with auto-hide |
 | `useWebSocket` | 14 | Connect lifecycle, status transitions, send/receive, exponential backoff timing (2s→4s→8s→30s cap), reconnect attempt counter, manual `reconnect()`, backoff timer cancellation |
 | `useMediaQuery` | 5 | Match/no-match, live updates on change, cleanup on unmount, re-subscribe on query change |
@@ -89,7 +92,8 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | `KeyboardShortcutsOverlay` | 18 | Dialog rendering, accessibility (role=dialog, aria-label), shortcut group display (General, Chat, Search), individual shortcut entries, close on Escape/`?`/backdrop click/close button, no close on inner content click, kbd elements rendering, listener cleanup on unmount |
 | `FileContentViewer` | 11 | File path display, close button, loading state, code element with hljs class, pre wrapper, syntax highlighting for TypeScript, empty file, path title attribute, JSON highlighting, binary file message display, large file message display |
 | `FileTree` (additions) | +5 | onFileClick callback, root-level file click, selected file highlighting, non-selected file styling, file buttons for clickability |
-| `TerminalPanel` | 15 | Header rendering, clear button, empty state, log entry text display, source labels (`[err]`/`[out]`/`[srv]`), timestamps, monospace font, entry ordering, source filter buttons (render, aria-pressed, hide/show toggle, prevent hiding all sources, filter-specific empty state) |
+| `usePreviewErrors` | 14 | Empty initial state, error capture (window.onerror, console.error/warn), source filtering (ignores non-shipit), dedup within 1s window, dedup expiry, max buffer size (50), clearErrors, source/line/col/stack capture, unique IDs, empty console message ignore, listener cleanup |
+| `TerminalPanel` | 15 | Header rendering, clear button, empty state, log entry text display, source labels (`[err]`/`[out]`/`[srv]`/`[pre]`), timestamps, monospace font, entry ordering, source filter buttons (render, aria-pressed, hide/show toggle, prevent hiding all sources, filter-specific empty state) |
 | `UsageModal` | 13 | Dialog rendering, accessibility (role, aria-label), current session usage display, no-data fallback, all sessions aggregate, per-session breakdown with titles, truncated session ID fallback, close on button/backdrop/inner click prevention, zero usage, sub-cent formatting, null allUsage |
 | `ToolResult` | 25 | `truncateLines` utility (under limit, over limit, exact limit), empty/no-output display, BashResult (monospace, error highlighting, error border, truncation at 30 lines, expand/collapse, aria-label), ReadResult (code block, hljs syntax highlighting, truncation at 20 lines), GrepResult (colored file paths, yellow line numbers, file-only matches, truncation at 20 lines, Glob tool), GenericResult (monospace fallback, error red, truncation at 15 lines) |
 | `MessageList` (tool results) | +9 | Show/hide output toggle, no toggle without result, expand/collapse result content, tool_use_id matching, no toggle for Edit/Write (rendered as diffs), missing tool_use_id match handling, aria-expanded attribute |

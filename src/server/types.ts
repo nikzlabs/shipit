@@ -248,6 +248,7 @@ export type WsClientMessage =
   | WsGetFileTree
   | WsGetFileContent
   | WsClearLogs
+  | WsPreviewError
   | WsGetUsageStats
   | WsAnswerQuestion
   | WsListTemplates
@@ -409,13 +410,21 @@ export interface UsageStats {
 export interface WsLogEntry {
   type: "log_entry";
   /** Where the log line originated. */
-  source: "stderr" | "stdout" | "server";
+  source: "stderr" | "stdout" | "server" | "preview";
   text: string;
   timestamp: string;
 }
 
 export interface WsClearLogs {
   type: "clear_logs";
+}
+
+export interface WsPreviewError {
+  type: "preview_error";
+  message: string;
+  stack?: string;
+  source?: string;
+  line?: number;
 }
 
 // ---- Usage tracking messages ----

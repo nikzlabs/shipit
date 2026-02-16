@@ -1525,6 +1525,86 @@ describe("Integration: Terminal/logs relay", () => {
     client1.close();
     client2.close();
   });
+
+  // ---- Preview error relay ----
+
+  it("relays preview_error to terminal log buffer", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({
+      type: "preview_error",
+      message: "TypeError: Cannot read properties of undefined",
+      stack: "TypeError: Cannot read properties of undefined\n  at App.tsx:42",
+    });
+
+    const logEntry = await client.receive();
+    expect(logEntry).toMatchObject({
+      type: "log_entry",
+      source: "preview",
+      text: expect.stringContaining("TypeError: Cannot read properties of undefined"),
+    });
+    // Stack should also be included in the text
+    expect((logEntry as any).text).toContain("App.tsx:42");
+
+    client.close();
+  });
+
+  it("rejects empty preview_error messages", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "preview_error", message: "   " });
+
+    const resp = await client.receive();
+    expect(resp).toMatchObject({ type: "error", message: "Preview error message cannot be empty" });
+
+    client.close();
+  });
+
+  it("rejects overly long preview_error messages", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "preview_error", message: "x".repeat(11_000) });
+
+    const resp = await client.receive();
+    expect(resp).toMatchObject({ type: "error", message: "Preview error message too long (max 10,000 characters)" });
+
+    client.close();
+  });
+
+  it("preview log entries are included in buffer for new clients", async () => {
+    const client1 = await TestClient.connect(port);
+    await client1.receive(); // preview_status
+
+    // Send a preview error to populate the log buffer
+    client1.send({
+      type: "preview_error",
+      message: "Runtime error in preview",
+    });
+    await client1.receive(); // log_entry
+
+    // Second client should get buffered preview log entries
+    const client2 = await TestClient.connect(port);
+    await client2.receive(); // preview_status
+
+    // Collect messages and check for the preview log
+    const messages: WsServerMessage[] = [];
+    try {
+      for (let i = 0; i < 5; i++) {
+        messages.push(await client2.receive(500));
+      }
+    } catch {
+      // Timeout — we've collected what's available
+    }
+    const previewLog = messages.find((m) => m.type === "log_entry" && (m as any).source === "preview");
+    expect(previewLog).toBeDefined();
+    expect((previewLog as any).text).toContain("Runtime error in preview");
+
+    client1.close();
+    client2.close();
+  });
 });
 
 // ---------------------------------------------------------------------------
