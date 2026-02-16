@@ -212,6 +212,7 @@ export type WsClientMessage =
   | WsGetFileTree
   | WsGetFileContent
   | WsClearLogs
+  | WsGetUsageStats
   | WsAnswerQuestion
   | WsListTemplates
   | WsApplyTemplate
@@ -338,6 +339,28 @@ export interface WsFileContent {
   isBinary?: boolean;
 }
 
+// ---- Usage tracking types ----
+
+export interface UsageTurn {
+  sessionId: string;
+  costUsd: number;
+  durationMs: number;
+  timestamp: string;
+}
+
+export interface SessionUsage {
+  sessionId: string;
+  totalCostUsd: number;
+  totalDurationMs: number;
+  turnCount: number;
+}
+
+export interface UsageStats {
+  sessions: SessionUsage[];
+  totalCostUsd: number;
+  totalTurns: number;
+}
+
 // ---- Terminal/logs types ----
 
 export interface WsLogEntry {
@@ -350,6 +373,25 @@ export interface WsLogEntry {
 
 export interface WsClearLogs {
   type: "clear_logs";
+}
+
+// ---- Usage tracking messages ----
+
+export interface WsGetUsageStats {
+  type: "get_usage_stats";
+}
+
+export interface WsUsageStats {
+  type: "usage_stats";
+  stats: UsageStats;
+}
+
+export interface WsUsageUpdate {
+  type: "usage_update";
+  sessionId: string;
+  totalCostUsd: number;
+  totalDurationMs: number;
+  turnCount: number;
 }
 
 export interface WsTemplateList {
@@ -418,6 +460,8 @@ export type WsServerMessage =
   | WsFileTree
   | WsFileContent
   | WsLogEntry
+  | WsUsageStats
+  | WsUsageUpdate
   | WsTemplateList
   | WsTemplateApplied
   | WsGitHubStatus

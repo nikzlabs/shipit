@@ -13,6 +13,7 @@ import { ChatHistoryManager } from "./chat-history.js";
 import { findMarkdownFiles } from "./markdown.js";
 import { scanFileTree } from "./file-tree.js";
 import { scanPorts, DEFAULT_SCAN_PORTS } from "./port-scanner.js";
+import { UsageManager } from "./usage.js";
 import { listTemplates, getTemplate, applyTemplate } from "./templates.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse } from "./types.js";
 
@@ -39,6 +40,8 @@ export interface AppDeps {
   githubAuthManager?: GitHubAuthManager;
   /** Chat history manager instance. Defaults to `new ChatHistoryManager()`. */
   chatHistoryManager?: ChatHistoryManager;
+  /** Usage/cost tracking manager instance. Defaults to `new UsageManager()`. */
+  usageManager?: UsageManager;
   /** Factory for creating ClaudeProcess instances. Defaults to `() => new ClaudeProcess()`. */
   claudeFactory?: () => ClaudeProcess;
   /** Workspace directory for doc file operations. Defaults to `/workspace`. */
@@ -100,6 +103,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Chat history manager ----
   const chatHistoryManager = deps.chatHistoryManager ?? new ChatHistoryManager();
+
+  // ---- Usage/cost tracking manager ----
+  const usageManager = deps.usageManager ?? new UsageManager(
+    path.join(workspaceDir, ".shipit-usage.json")
+  );
 
   // ---- Auth manager ----
   const authManager = deps.authManager ?? new AuthManager();
@@ -365,10 +373,29 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             }
           }
 
-          // On result: persist the final assistant message and update session
+          // On result: persist the final assistant message, update session, record usage
           if (event.type === "result" && event.session_id) {
             currentSessionId = event.session_id;
             sessionManager.track(event.session_id);
+
+            // Record cost/duration if present
+            if (event.total_cost_usd !== undefined) {
+              usageManager.record(
+                event.session_id,
+                event.total_cost_usd,
+                event.duration_ms ?? 0,
+              );
+              const sessionUsage = usageManager.getSessionUsage(event.session_id);
+              if (sessionUsage) {
+                send({
+                  type: "usage_update",
+                  sessionId: sessionUsage.sessionId,
+                  totalCostUsd: sessionUsage.totalCostUsd,
+                  totalDurationMs: sessionUsage.totalDurationMs,
+                  turnCount: sessionUsage.turnCount,
+                });
+              }
+            }
 
             // For resumed sessions, the user message was persisted on send_message
             // if currentSessionId was already set. For new sessions, it was persisted
@@ -471,6 +498,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       if (msg.type === "delete_session") {
         sessionManager.delete(msg.sessionId);
         chatHistoryManager.delete(msg.sessionId);
+        usageManager.delete(msg.sessionId);
         send({ type: "session_list", sessions: sessionManager.list() });
       }
 
@@ -620,6 +648,26 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             if (event.type === "result" && event.session_id) {
               currentSessionId = event.session_id;
               sessionManager.track(event.session_id);
+
+              // Record cost/duration if present
+              if (event.total_cost_usd !== undefined) {
+                usageManager.record(
+                  event.session_id,
+                  event.total_cost_usd,
+                  event.duration_ms ?? 0,
+                );
+                const sessionUsage = usageManager.getSessionUsage(event.session_id);
+                if (sessionUsage) {
+                  send({
+                    type: "usage_update",
+                    sessionId: sessionUsage.sessionId,
+                    totalCostUsd: sessionUsage.totalCostUsd,
+                    totalDurationMs: sessionUsage.totalDurationMs,
+                    turnCount: sessionUsage.turnCount,
+                  });
+                }
+              }
+
               if (accumulatedText || accumulatedToolUse.length > 0) {
                 chatHistoryManager.append(event.session_id, {
                   role: "assistant",
@@ -818,6 +866,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
       if (msg.type === "clear_logs") {
         logBuffer = [];
+      }
+
+      if (msg.type === "get_usage_stats") {
+        send({ type: "usage_stats", stats: usageManager.getStats() });
       }
     });
 

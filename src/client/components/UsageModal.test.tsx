@@ -1,0 +1,221 @@
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { UsageModal, type SessionUsage, type UsageStats } from "./UsageModal.js";
+import type { SessionInfo } from "../../server/types.js";
+
+afterEach(cleanup);
+
+const mockSessions: SessionInfo[] = [
+  { id: "sess-1", title: "Build landing page", createdAt: "2026-01-01", lastUsedAt: "2026-01-02" },
+  { id: "sess-2", title: "Fix API routes", createdAt: "2026-01-03", lastUsedAt: "2026-01-04" },
+];
+
+const mockCurrentUsage: SessionUsage = {
+  sessionId: "sess-1",
+  totalCostUsd: 0.42,
+  totalDurationMs: 192000, // 3m 12s
+  turnCount: 7,
+};
+
+const mockAllUsage: UsageStats = {
+  sessions: [
+    { sessionId: "sess-1", totalCostUsd: 0.42, totalDurationMs: 192000, turnCount: 7 },
+    { sessionId: "sess-2", totalCostUsd: 0.93, totalDurationMs: 300000, turnCount: 12 },
+  ],
+  totalCostUsd: 1.35,
+  totalTurns: 19,
+};
+
+describe("UsageModal", () => {
+  it("renders the dialog with correct role and aria-label", () => {
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={mockSessions}
+        onClose={() => {}}
+      />
+    );
+    expect(screen.getByRole("dialog")).toHaveAttribute("aria-label", "Usage Summary");
+  });
+
+  it("renders the header title", () => {
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={mockSessions}
+        onClose={() => {}}
+      />
+    );
+    expect(screen.getByText("Usage Summary")).toBeInTheDocument();
+  });
+
+  it("displays current session usage", () => {
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={mockSessions}
+        onClose={() => {}}
+      />
+    );
+    expect(screen.getByText("This session")).toBeInTheDocument();
+    // $0.42 appears in both "This session" and "Recent sessions" breakdown
+    expect(screen.getAllByText("$0.42")).toHaveLength(2);
+    expect(screen.getByText("7")).toBeInTheDocument();
+    expect(screen.getByText("3m 12s")).toBeInTheDocument();
+  });
+
+  it("displays 'No usage data yet' when current session has no usage", () => {
+    render(
+      <UsageModal
+        currentSessionUsage={null}
+        allUsage={mockAllUsage}
+        sessions={mockSessions}
+        onClose={() => {}}
+      />
+    );
+    expect(screen.getAllByText("No usage data yet")[0]).toBeInTheDocument();
+  });
+
+  it("displays all sessions aggregate", () => {
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={mockSessions}
+        onClose={() => {}}
+      />
+    );
+    expect(screen.getByText("All sessions")).toBeInTheDocument();
+    expect(screen.getByText("$1.35")).toBeInTheDocument();
+    expect(screen.getByText("19")).toBeInTheDocument();
+  });
+
+  it("displays per-session breakdown with titles", () => {
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={mockSessions}
+        onClose={() => {}}
+      />
+    );
+    expect(screen.getByText("Recent sessions")).toBeInTheDocument();
+    expect(screen.getByText("Build landing page")).toBeInTheDocument();
+    expect(screen.getByText("Fix API routes")).toBeInTheDocument();
+    expect(screen.getByText("$0.93")).toBeInTheDocument();
+  });
+
+  it("falls back to truncated session ID when session title is not found", () => {
+    const usageWithUnknownSession: UsageStats = {
+      sessions: [
+        { sessionId: "unknown-session-id-long", totalCostUsd: 0.10, totalDurationMs: 1000, turnCount: 1 },
+      ],
+      totalCostUsd: 0.10,
+      totalTurns: 1,
+    };
+    render(
+      <UsageModal
+        currentSessionUsage={null}
+        allUsage={usageWithUnknownSession}
+        sessions={[]}
+        onClose={() => {}}
+      />
+    );
+    expect(screen.getByText("unknown-sess...")).toBeInTheDocument();
+  });
+
+  it("calls onClose when close button is clicked", () => {
+    const onClose = vi.fn();
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={mockSessions}
+        onClose={onClose}
+      />
+    );
+    fireEvent.click(screen.getByLabelText("Close"));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("calls onClose when backdrop is clicked", () => {
+    const onClose = vi.fn();
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={mockSessions}
+        onClose={onClose}
+      />
+    );
+    fireEvent.click(screen.getByTestId("usage-modal-backdrop"));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("does not close when clicking inside the modal content", () => {
+    const onClose = vi.fn();
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={mockSessions}
+        onClose={onClose}
+      />
+    );
+    fireEvent.click(screen.getByText("Usage Summary"));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("renders zero usage gracefully", () => {
+    const zeroUsage: SessionUsage = {
+      sessionId: "sess-1",
+      totalCostUsd: 0,
+      totalDurationMs: 0,
+      turnCount: 0,
+    };
+    render(
+      <UsageModal
+        currentSessionUsage={zeroUsage}
+        allUsage={{ sessions: [], totalCostUsd: 0, totalTurns: 0 }}
+        sessions={mockSessions}
+        onClose={() => {}}
+      />
+    );
+    expect(screen.getByText("$0.00")).toBeInTheDocument();
+    expect(screen.getByText("0s")).toBeInTheDocument();
+  });
+
+  it("formats sub-cent amounts with three decimal places", () => {
+    const subCentUsage: SessionUsage = {
+      sessionId: "sess-1",
+      totalCostUsd: 0.005,
+      totalDurationMs: 1000,
+      turnCount: 1,
+    };
+    render(
+      <UsageModal
+        currentSessionUsage={subCentUsage}
+        allUsage={null}
+        sessions={mockSessions}
+        onClose={() => {}}
+      />
+    );
+    expect(screen.getByText("$0.005")).toBeInTheDocument();
+  });
+
+  it("shows 'No usage data yet' for all sessions when allUsage is null", () => {
+    render(
+      <UsageModal
+        currentSessionUsage={null}
+        allUsage={null}
+        sessions={[]}
+        onClose={() => {}}
+      />
+    );
+    const noDataTexts = screen.getAllByText("No usage data yet");
+    expect(noDataTexts).toHaveLength(2);
+  });
+});

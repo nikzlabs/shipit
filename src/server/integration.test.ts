@@ -1944,3 +1944,320 @@ describe("Integration: GitHub authentication", () => {
     client.close();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Usage & cost tracking tests
+// ---------------------------------------------------------------------------
+
+describe("Integration: Usage & cost tracking", () => {
+  let app: FastifyInstance;
+  let port: number;
+  let tmpDir: string;
+  let gitManager: GitManager;
+  let lastClaude: FakeClaudeProcess;
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-usage-integration-"));
+    gitManager = new GitManager(tmpDir);
+    await gitManager.init();
+
+    app = await buildApp({
+      gitManager,
+      sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
+      viteManager: new StubViteManager() as unknown as ViteManager,
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
+      claudeFactory: () => {
+        lastClaude = new FakeClaudeProcess();
+        return lastClaude as unknown as ClaudeProcess;
+      },
+      workspaceDir: tmpDir,
+      serveStatic: false,
+      startVite: false,
+      portScanIntervalMs: 0,
+    });
+
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+    const match = address.match(/:(\d+)$/);
+    port = match ? Number(match[1]) : 0;
+  });
+
+  afterEach(async () => {
+    await app.close();
+    // Wait for any pending async operations (git auto-commit) to complete
+    await new Promise((r) => setTimeout(r, 200));
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors — CI tmpdir will be cleared anyway
+    }
+  });
+
+  it("get_usage_stats returns empty stats initially", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "get_usage_stats" } as any);
+    const msg = await client.receive();
+
+    expect(msg).toMatchObject({
+      type: "usage_stats",
+      stats: {
+        sessions: [],
+        totalCostUsd: 0,
+        totalTurns: 0,
+      },
+    });
+
+    client.close();
+  });
+
+  it("usage_update is sent after result event with total_cost_usd", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Start a Claude turn
+    client.send({ type: "send_message", text: "hello" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Simulate system init
+    lastClaude.emit("event", {
+      type: "system",
+      subtype: "init",
+      session_id: "usage-session-1",
+    });
+
+    // Drain events (claude_event for system init, session_started)
+    await client.receiveSkipLogs();
+    await client.receiveSkipLogs();
+
+    // Simulate assistant text
+    lastClaude.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "Hi there" }] },
+    });
+    await client.receiveSkipLogs(); // claude_event for assistant
+
+    // Simulate result with cost
+    lastClaude.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "usage-session-1",
+      total_cost_usd: 0.42,
+      duration_ms: 3200,
+    });
+
+    // We should get the claude_event for result AND the usage_update
+    const resultEvent = await client.receiveSkipLogs();
+    expect(resultEvent.type).toBe("claude_event");
+
+    const usageUpdate = await client.receiveSkipLogs();
+    expect(usageUpdate).toMatchObject({
+      type: "usage_update",
+      sessionId: "usage-session-1",
+      totalCostUsd: 0.42,
+      totalDurationMs: 3200,
+      turnCount: 1,
+    });
+
+    // Emit done to finish the turn
+    lastClaude.emit("done", 0);
+
+    client.close();
+  });
+
+  it("usage_update accumulates across multiple turns", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // --- Turn 1 ---
+    client.send({ type: "send_message", text: "turn 1" });
+    await new Promise((r) => setTimeout(r, 50));
+    lastClaude.emit("event", { type: "system", subtype: "init", session_id: "accum-session" });
+    await client.receiveSkipLogs(); // claude_event
+    await client.receiveSkipLogs(); // session_started
+
+    lastClaude.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "accum-session",
+      total_cost_usd: 0.10,
+      duration_ms: 1000,
+    });
+    await client.receiveSkipLogs(); // claude_event
+    const update1 = await client.receiveSkipLogs();
+    expect(update1).toMatchObject({
+      type: "usage_update",
+      turnCount: 1,
+      totalCostUsd: 0.10,
+    });
+    lastClaude.emit("done", 0);
+
+    // Wait for done handler
+    await new Promise((r) => setTimeout(r, 100));
+
+    // --- Turn 2 ---
+    client.send({ type: "send_message", text: "turn 2", sessionId: "accum-session" });
+    await new Promise((r) => setTimeout(r, 50));
+    lastClaude.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "accum-session",
+      total_cost_usd: 0.20,
+      duration_ms: 2000,
+    });
+
+    // Find the usage_update among possible messages
+    let update2: any = null;
+    for (let i = 0; i < 10; i++) {
+      const msg = await client.receive();
+      if (msg.type === "usage_update") {
+        update2 = msg;
+        break;
+      }
+    }
+
+    expect(update2).toBeDefined();
+    expect(update2.type).toBe("usage_update");
+    expect(update2.turnCount).toBe(2);
+    expect(update2.totalCostUsd).toBeCloseTo(0.30);
+    expect(update2.totalDurationMs).toBe(3000);
+
+    lastClaude.emit("done", 0);
+    client.close();
+  });
+
+  it("get_usage_stats returns recorded data", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Record some usage by running a turn
+    client.send({ type: "send_message", text: "test" });
+    await new Promise((r) => setTimeout(r, 50));
+    lastClaude.emit("event", { type: "system", subtype: "init", session_id: "stats-session" });
+    await client.receiveSkipLogs(); // claude_event
+    await client.receiveSkipLogs(); // session_started
+
+    lastClaude.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "stats-session",
+      total_cost_usd: 0.55,
+      duration_ms: 5000,
+    });
+    await client.receiveSkipLogs(); // claude_event
+    await client.receiveSkipLogs(); // usage_update
+    lastClaude.emit("done", 0);
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Now request full stats
+    client.send({ type: "get_usage_stats" } as any);
+
+    let statsMsg: any = null;
+    for (let i = 0; i < 10; i++) {
+      const msg = await client.receive();
+      if (msg.type === "usage_stats") {
+        statsMsg = msg;
+        break;
+      }
+    }
+
+    expect(statsMsg).toBeDefined();
+    expect(statsMsg.stats.totalCostUsd).toBeCloseTo(0.55);
+    expect(statsMsg.stats.totalTurns).toBe(1);
+    expect(statsMsg.stats.sessions).toHaveLength(1);
+    expect(statsMsg.stats.sessions[0]).toMatchObject({
+      sessionId: "stats-session",
+      totalCostUsd: 0.55,
+      totalDurationMs: 5000,
+      turnCount: 1,
+    });
+
+    client.close();
+  });
+
+  it("no usage_update when total_cost_usd is undefined", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "hello" });
+    await new Promise((r) => setTimeout(r, 50));
+    lastClaude.emit("event", { type: "system", subtype: "init", session_id: "no-cost-session" });
+
+    // Result without total_cost_usd
+    lastClaude.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "no-cost-session",
+    });
+
+    lastClaude.emit("done", 0);
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Drain all messages and check none are usage_update
+    const allMessages: any[] = [];
+    try {
+      for (let i = 0; i < 20; i++) {
+        allMessages.push(await client.receive(200));
+      }
+    } catch {
+      // timeout is expected when no more messages
+    }
+    expect(allMessages.every((m: any) => m.type !== "usage_update")).toBe(true);
+
+    client.close();
+  });
+
+  it("delete_session also deletes usage data", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Record some usage
+    client.send({ type: "send_message", text: "test" });
+    await new Promise((r) => setTimeout(r, 50));
+    lastClaude.emit("event", { type: "system", subtype: "init", session_id: "del-usage-session" });
+    await client.receiveSkipLogs(); // claude_event
+    await client.receiveSkipLogs(); // session_started
+
+    lastClaude.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "del-usage-session",
+      total_cost_usd: 0.99,
+      duration_ms: 7000,
+    });
+    await client.receiveSkipLogs(); // claude_event
+    await client.receiveSkipLogs(); // usage_update
+    lastClaude.emit("done", 0);
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Delete the session
+    client.send({ type: "delete_session", sessionId: "del-usage-session" });
+
+    // Drain messages until we get session_list
+    let sessionList: any = null;
+    for (let i = 0; i < 10; i++) {
+      const msg = await client.receive();
+      if (msg.type === "session_list") {
+        sessionList = msg;
+        break;
+      }
+    }
+    expect(sessionList).toBeDefined();
+
+    // Verify usage is gone
+    client.send({ type: "get_usage_stats" } as any);
+    let statsMsg: any = null;
+    for (let i = 0; i < 10; i++) {
+      const msg = await client.receive();
+      if (msg.type === "usage_stats") {
+        statsMsg = msg;
+        break;
+      }
+    }
+    expect(statsMsg.stats.totalTurns).toBe(0);
+    expect(statsMsg.stats.sessions).toHaveLength(0);
+
+    client.close();
+  });
+});

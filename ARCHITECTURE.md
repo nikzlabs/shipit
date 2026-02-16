@@ -74,6 +74,7 @@ ShipIt is a browser-based IDE for "vibe coding" — you talk to Claude in a chat
 | `file-tree.ts` | `scanFileTree` — recursive workspace directory scanner, returns tree of `FileTreeNode` objects |
 | `vite-manager.ts` | `ViteManager` class — Vite dev server lifecycle (start, stop, restart) |
 | `port-scanner.ts` | Port auto-detection — `checkPort`, `scanPorts` for finding non-Vite dev servers |
+| `usage.ts` | `UsageManager` class — per-turn cost/duration tracking, session-level aggregation, JSON persistence |
 | `types.ts` | Shared TypeScript types for all WebSocket and Claude event payloads |
 
 The server is intentionally thin — it's a bridge between the browser and the Claude CLI. No database, no REST API.
@@ -105,6 +106,7 @@ The server is intentionally thin — it's a bridge between the browser and the C
 | `components/ConnectionBanner.tsx` | Full-width banner for WebSocket state — disconnected (with attempt count + "Reconnect now"), reconnecting, and brief "Reconnected" success flash |
 | `components/MobileTabBar.tsx` | Bottom navigation bar for mobile: switch between Chat and Preview panels |
 | `components/AuthOverlay.tsx` | Full-screen overlay for OAuth authentication flow |
+| `components/UsageModal.tsx` | Usage/cost summary modal — current session and all-sessions breakdown, triggered by cost badge |
 
 ### Claude CLI Events (NDJSON)
 
@@ -174,6 +176,7 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `get_file_tree` | — | Request workspace directory tree |
 | `get_file_content` | `path` | Request contents of a file in /workspace |
 | `clear_logs` | — | Clear the server-side terminal log buffer |
+| `get_usage_stats` | — | Request aggregated usage/cost data across all sessions |
 
 ### Server → Client Messages
 
@@ -196,6 +199,8 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `file_tree` | `tree[]` | Workspace directory tree (array of `FileTreeNode`) |
 | `file_content` | `path`, `content` | Raw file content for the file viewer |
 | `log_entry` | `source`, `text`, `timestamp` | Terminal log line — `source` is `"stderr"`, `"stdout"`, or `"server"` |
+| `usage_stats` | `stats` | Aggregated usage data with per-session and total costs/turns |
+| `usage_update` | `sessionId`, `totalCostUsd`, `totalDurationMs`, `turnCount` | Pushed after each turn that carries `total_cost_usd` |
 
 ### Adding a New Message Type
 
