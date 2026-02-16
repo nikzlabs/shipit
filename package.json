@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx src/server/index.ts",
-    "build:client": "vite build",
+    "build": "vite build",
     "start": "node dist/server/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
