@@ -64,14 +64,14 @@ Design docs in `docs/design/`.
 - [x] Handle `total_cost_usd` being `undefined` (older CLI) and `0` gracefully
 
 ### Feature 2: Project-Level System Prompt (`docs/design/002-system-prompt.md`)
-- [ ] Extend `ClaudeProcess.run()` to accept optional `systemPrompt` parameter
-- [ ] Read system prompt file in `index.ts` before each Claude spawn
-- [ ] WS messages: `get_system_prompt` → `system_prompt`, `set_system_prompt` → `system_prompt_saved`
-- [ ] Validate `set_system_prompt`: string type, max 50KB, trim whitespace, empty deletes file
-- [ ] `SystemPromptEditor` modal component with character count and save/cancel
-- [ ] Gear icon in header with active-state indicator when prompt is set
-- [ ] Integration tests for get/set round-trip and empty-prompt edge case
-- [ ] Component tests for editor (empty state, existing prompt, save, cancel, character count)
+- [x] Extend `ClaudeProcess.run()` to accept optional `systemPrompt` parameter
+- [x] Read system prompt file in `index.ts` before each Claude spawn
+- [x] WS messages: `get_system_prompt` → `system_prompt`, `set_system_prompt` → `system_prompt_saved`
+- [x] Validate `set_system_prompt`: string type, max 50KB, trim whitespace, empty deletes file
+- [x] `SystemPromptEditor` modal component with character count and save/cancel
+- [x] Gear icon in header with active-state indicator when prompt is set
+- [x] Integration tests for get/set round-trip and empty-prompt edge case
+- [x] Component tests for editor (empty state, existing prompt, save, cancel, character count)
 
 ### Feature 3: File Watcher with Live Updates (`docs/design/003-file-watcher.md`)
 - [ ] `FileWatcher` class (`src/server/file-watcher.ts`) — recursive watch, 300ms debounce, ignore `node_modules`/`.git`/etc.
