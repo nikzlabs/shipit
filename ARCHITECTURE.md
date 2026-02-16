@@ -90,16 +90,17 @@ The server is intentionally thin — it's a bridge between the browser and the C
 | `hooks/useSearch.ts` | Chat search logic — substring matching, match navigation, state management |
 | `hooks/useMediaQuery.ts` | Responsive breakpoint detection via `matchMedia`, plus `useIsMobile()` convenience wrapper |
 | `hooks/useNotification.ts` | Background tab notifications — tab title change and browser Notification on Claude completion |
+| `hooks/usePreviewErrors.ts` | Listens for `postMessage` from preview iframe error-capture script, deduplicates errors, maintains rolling buffer |
 | `components/ResizeHandle.tsx` | Vertical drag handle rendered between the chat and preview/docs panels |
 | `components/MessageList.tsx` | Renders chat messages (with syntax-highlighted code blocks), tool invocations, streaming indicators |
 | `components/StreamingIndicator.tsx` | Typing dots, thinking indicator, tool spinner, activity label derivation |
 | `components/DiffBlock.tsx` | Inline file change diff display (red/green lines for Edit and Write tools) |
 | `components/MessageInput.tsx` | Auto-resizing textarea, Enter-to-send, activity status bar |
-| `components/PreviewFrame.tsx` | iframe pointing to dev server (Vite or auto-detected) with reload button and source indicator |
+| `components/PreviewFrame.tsx` | iframe pointing to dev server (Vite or auto-detected) with reload button, source indicator, error badge/panel, "Send to Claude" button, and auto-fix toggle |
 | `components/DocsViewer.tsx` | Markdown file browser and renderer (using `marked`) |
 | `components/FileTree.tsx` | Workspace file tree browser — expandable/collapsible directory tree with folder/file icons, click-to-view files |
 | `components/FileContentViewer.tsx` | Read-only file content viewer with syntax highlighting (highlight.js) |
-| `components/TerminalPanel.tsx` | Terminal/logs panel — shows Claude CLI stderr/stdout and server lifecycle events in a monospace terminal-like pane |
+| `components/TerminalPanel.tsx` | Terminal/logs panel — shows Claude CLI stderr/stdout, server lifecycle events, and preview errors in a monospace terminal-like pane |
 | `components/GitHistory.tsx` | Collapsible git commit list with rollback buttons |
 | `components/SessionSelector.tsx` | Session management — list, resume, new, delete |
 | `components/SearchBar.tsx` | Search input with match count, prev/next navigation, keyboard shortcuts |
@@ -227,6 +228,7 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `get_file_tree` | — | Request workspace directory tree |
 | `get_file_content` | `path` | Request contents of a file in /workspace |
 | `clear_logs` | — | Clear the server-side terminal log buffer |
+| `preview_error` | `message`, `stack?`, `source?`, `line?` | Report a preview iframe error to the terminal log buffer |
 | `get_usage_stats` | — | Request aggregated usage/cost data across all sessions |
 | `get_system_prompt` | — | Request current project-level system prompt |
 | `set_system_prompt` | `content` | Save or delete the project-level system prompt |
@@ -251,7 +253,7 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `chat_history` | `sessionId`, `messages[]` | Persisted chat messages for a session |
 | `file_tree` | `tree[]` | Workspace directory tree (array of `FileTreeNode`) |
 | `file_content` | `path`, `content` | Raw file content for the file viewer |
-| `log_entry` | `source`, `text`, `timestamp` | Terminal log line — `source` is `"stderr"`, `"stdout"`, or `"server"` |
+| `log_entry` | `source`, `text`, `timestamp` | Terminal log line — `source` is `"stderr"`, `"stdout"`, `"server"`, or `"preview"` |
 | `usage_stats` | `stats` | Aggregated usage data with per-session and total costs/turns |
 | `usage_update` | `sessionId`, `totalCostUsd`, `totalDurationMs`, `turnCount` | Pushed after each turn that carries `total_cost_usd` |
 | `system_prompt` | `content` | Current system prompt text (empty string if not set) |
@@ -738,6 +740,7 @@ Each log entry has a `source` field indicating where it originated:
 | `stderr` | Claude CLI stderr output (debug info, warnings, error messages) |
 | `stdout` | Non-JSON lines from Claude CLI stdout (anything that isn't valid NDJSON — typically CLI status messages) |
 | `server` | Server lifecycle events: process start, exit (with exit code), and process errors |
+| `preview` | Errors captured from the preview iframe (runtime errors, console.error, unhandled rejections) |
 
 ### Data Flow
 
@@ -752,7 +755,7 @@ Each log entry has a `source` field indicating where it originated:
 
 `TerminalPanel` (`src/client/components/TerminalPanel.tsx`) renders log entries in a monospace font with:
 - **Timestamp** (HH:MM:SS) in muted gray
-- **Source label** (`[err]`, `[out]`, `[srv]`) color-coded: red for stderr, gray for stdout, blue for server
+- **Source label** (`[err]`, `[out]`, `[srv]`, `[pre]`) color-coded: red for stderr, gray for stdout, blue for server, orange for preview
 - **Log text** with `whitespace-pre-wrap` to preserve formatting
 - **Source filter**: Toggleable filter buttons for each source type in the header bar. Color-coded active/inactive states. At least one source must remain active (prevents hiding all). Shows a filter-specific empty state ("No logs match the current filter") when all visible entries are filtered out.
 - **Auto-scroll**: Scrolls to bottom as new entries arrive, unless the user has scrolled up
@@ -767,6 +770,45 @@ Each log entry has a `source` field indicating where it originated:
 - **`src/server/index.ts`** — `broadcastLog()` helper, 500-entry circular log buffer, sends buffer on client connect, `clear_logs` handler.
 - **`src/client/components/TerminalPanel.tsx`** — Terminal UI component with auto-scroll and source-colored labels.
 - **`src/client/App.tsx`** — Terminal tab in right panel, `logEntries` state, `log_entry` message handler.
+
+## Preview Error Capture & Auto-Debug
+
+The preview pane captures runtime errors from the iframe (JavaScript errors, console.error, unhandled promise rejections) and surfaces them in the UI. Users can manually send errors to Claude for fixing, or enable auto-fix mode for a hands-free debug loop.
+
+### How It Works
+
+1. **Error Capture Script**: A Vite plugin (`src/server/vite-error-plugin.ts`) injects a `<script>` into the preview HTML that intercepts `window.onerror`, `unhandledrejection`, and `console.error`/`console.warn`. Captured errors are sent to the parent frame via `postMessage` with a `source: "shipit-preview"` identifier.
+
+2. **Client-Side Hook**: The `usePreviewErrors` hook (`src/client/hooks/usePreviewErrors.ts`) listens for these `postMessage` events, deduplicates rapid-fire identical errors within a 1-second window, and maintains a rolling buffer of up to 50 errors.
+
+3. **Terminal Relay**: Errors are also forwarded to the server via `preview_error` WebSocket messages. The server adds them to the terminal log buffer with `source: "preview"`, so they appear in the Terminal tab with an orange `[pre]` label.
+
+4. **Error Panel**: `PreviewFrame` shows a red error badge with the count when errors exist. Clicking the badge opens a collapsible error panel with error details, stack traces, and per-error "Fix" buttons.
+
+5. **Send to Claude**: The "Send to Claude" button formats all errors into a human-readable prompt and sends it as a user message, asking Claude to fix the issues.
+
+6. **Auto-Fix Toggle**: An opt-in toggle in the preview header bar. When enabled:
+   - New errors automatically trigger a "fix these errors" message to Claude (when Claude is idle)
+   - 5-second cooldown between auto-fix attempts prevents rapid loops
+   - Same-error signature detection tracks retries (max 3 before auto-disabling)
+   - Any manual user message acts as a kill switch and disables auto-fix
+
+### Safety Guardrails
+
+- **Max 3 retries**: If the same set of errors persists after 3 fix attempts, auto-fix disables itself
+- **5s cooldown**: Prevents sending back-to-back fix requests
+- **Kill switch**: Any manual user message cancels auto-fix mode
+- **Idle-only**: Auto-fix only triggers when Claude is not already processing a message
+
+### Key Files
+
+- **`src/server/vite-error-plugin.ts`** — Error capture script and Vite plugin for HTML injection.
+- **`src/server/vite-manager.ts`** — Writes wrapper Vite config that includes the error-capture plugin.
+- **`src/client/hooks/usePreviewErrors.ts`** — `usePreviewErrors` hook: `postMessage` listener, dedup, rolling buffer.
+- **`src/client/components/PreviewFrame.tsx`** — Error badge, error panel, "Send to Claude" button, auto-fix toggle, `formatErrorForMessage()`.
+- **`src/client/App.tsx`** — Wires hook to PreviewFrame, auto-fix effect with safety guardrails, error relay to server.
+- **`src/server/index.ts`** — `preview_error` handler: validation, terminal log relay.
+- **`src/server/types.ts`** — `WsPreviewError` message type, `"preview"` log source.
 
 ## Tech Stack
 

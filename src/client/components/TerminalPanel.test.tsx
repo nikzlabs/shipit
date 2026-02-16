@@ -51,12 +51,14 @@ describe("TerminalPanel", () => {
       entry("stderr", "err line"),
       entry("stdout", "out line"),
       entry("server", "srv line"),
+      entry("preview", "pre line"),
     ];
     render(<TerminalPanel entries={entries} onClear={() => {}} />);
 
     expect(screen.getByText("[err]")).toBeInTheDocument();
     expect(screen.getByText("[out]")).toBeInTheDocument();
     expect(screen.getByText("[srv]")).toBeInTheDocument();
+    expect(screen.getByText("[pre]")).toBeInTheDocument();
   });
 
   it("renders timestamps for entries", () => {
@@ -102,9 +104,9 @@ describe("TerminalPanel", () => {
       render(<TerminalPanel entries={[]} onClear={() => {}} />);
       const filterGroup = screen.getByRole("group", { name: /filter log sources/i });
       expect(filterGroup).toBeInTheDocument();
-      // All three filter buttons should be present
+      // All four filter buttons should be present (err, out, srv, pre)
       const buttons = filterGroup.querySelectorAll("button");
-      expect(buttons).toHaveLength(3);
+      expect(buttons).toHaveLength(4);
     });
 
     it("filter buttons have aria-pressed=true by default", () => {
@@ -165,21 +167,23 @@ describe("TerminalPanel", () => {
         entry("stderr", "error line"),
         entry("stdout", "output line"),
         entry("server", "server line"),
+        entry("preview", "preview line"),
       ];
       render(<TerminalPanel entries={entries} onClear={() => {}} />);
 
       const filterGroup = screen.getByRole("group", { name: /filter log sources/i });
       const buttons = Array.from(filterGroup.querySelectorAll("button")) as HTMLButtonElement[];
 
-      // Hide first two sources
+      // Hide first three sources
       fireEvent.click(buttons[0]); // hide stderr
       fireEvent.click(buttons[1]); // hide stdout
+      fireEvent.click(buttons[2]); // hide server
 
       // Try to hide the last one — should not work
-      fireEvent.click(buttons[2]);
+      fireEvent.click(buttons[3]);
 
-      // server entries should still be visible (can't hide all)
-      expect(screen.getByText("server line")).toBeInTheDocument();
+      // preview entries should still be visible (can't hide all)
+      expect(screen.getByText("preview line")).toBeInTheDocument();
     });
 
     it("shows filter-specific empty state when all entries are filtered out", () => {

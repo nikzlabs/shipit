@@ -1032,6 +1032,25 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         send({ type: "system_prompt_saved", content: trimmed });
       }
 
+      if (msg.type === "preview_error") {
+        // Validate the preview error message
+        const errorMsg = typeof msg.message === "string" ? msg.message : "";
+        if (!errorMsg.trim()) {
+          send({ type: "error", message: "Preview error message cannot be empty" });
+          return;
+        }
+        if (errorMsg.length > 10_000) {
+          send({ type: "error", message: "Preview error message too long (max 10,000 characters)" });
+          return;
+        }
+        // Format the error for the terminal log buffer
+        const parts = [errorMsg];
+        if (msg.stack && typeof msg.stack === "string") {
+          parts.push(msg.stack.slice(0, 5000));
+        }
+        broadcastLog("preview", parts.join("\n"));
+      }
+
       if (msg.type === "clear_logs") {
         logBuffer = [];
       }
