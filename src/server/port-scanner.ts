@@ -70,3 +70,22 @@ export async function scanPorts(
 
   return results.filter((r) => r.open).map((r) => r.port);
 }
+
+/**
+ * Snapshot which of the scannable ports are already open at startup.
+ *
+ * Any port that is listening *before* the user's session begins belongs to
+ * the host system — not to the user's project. Common examples:
+ *
+ *  - ShipIt's own Vite dev server (serves the client during development)
+ *  - Other tooling running on the host (language servers, databases, etc.)
+ *
+ * By recording these ports once at startup we can exclude them from every
+ * subsequent scan, so the preview tab only shows ports that were started
+ * *during* the session (i.e. by Claude or the user's project).
+ */
+export async function snapshotBaselinePorts(
+  ports: number[] = DEFAULT_SCAN_PORTS,
+): Promise<number[]> {
+  return scanPorts(ports);
+}

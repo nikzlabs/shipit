@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import net from "node:net";
-import { checkPort, scanPorts, DEFAULT_SCAN_PORTS } from "./port-scanner.js";
+import { checkPort, scanPorts, snapshotBaselinePorts, DEFAULT_SCAN_PORTS } from "./port-scanner.js";
 
 /**
  * Spin up a TCP server on an ephemeral port. Returns the server and its port.
@@ -104,6 +104,32 @@ describe("port-scanner", () => {
 
     it("returns empty array for empty port list", async () => {
       const result = await scanPorts([]);
+      expect(result).toEqual([]);
+    });
+  });
+
+  describe("snapshotBaselinePorts", () => {
+    let server: net.Server;
+    let openPort: number;
+
+    beforeEach(async () => {
+      const result = await createTestServer();
+      server = result.server;
+      openPort = result.port;
+    });
+
+    afterEach(() => {
+      server.close();
+    });
+
+    it("returns ports that are already open", async () => {
+      const result = await snapshotBaselinePorts([openPort, openPort + 5000]);
+      expect(result).toContain(openPort);
+      expect(result).not.toContain(openPort + 5000);
+    });
+
+    it("returns empty array when no ports are open", async () => {
+      const result = await snapshotBaselinePorts([openPort + 5000]);
       expect(result).toEqual([]);
     });
   });
