@@ -192,4 +192,112 @@ describe("GitManager", () => {
       expect(fs.existsSync(path.join(tmpDir, "new-file.txt"))).toBe(false);
     });
   });
+
+  describe("remotes", () => {
+    it("addRemote adds a new remote", async () => {
+      const git = new GitManager(tmpDir);
+      await git.init();
+
+      await git.addRemote("origin", "https://github.com/test/repo.git");
+      const remotes = await git.getRemotes();
+      expect(remotes).toHaveLength(1);
+      expect(remotes[0].name).toBe("origin");
+      expect(remotes[0].url).toBe("https://github.com/test/repo.git");
+    });
+
+    it("addRemote updates an existing remote", async () => {
+      const git = new GitManager(tmpDir);
+      await git.init();
+
+      await git.addRemote("origin", "https://github.com/test/repo1.git");
+      await git.addRemote("origin", "https://github.com/test/repo2.git");
+
+      const remotes = await git.getRemotes();
+      expect(remotes).toHaveLength(1);
+      expect(remotes[0].url).toBe("https://github.com/test/repo2.git");
+    });
+
+    it("getRemotes returns empty array when no remotes", async () => {
+      const git = new GitManager(tmpDir);
+      await git.init();
+
+      const remotes = await git.getRemotes();
+      expect(remotes).toEqual([]);
+    });
+  });
+
+  describe("getCurrentBranch", () => {
+    it("returns the current branch name", async () => {
+      const git = new GitManager(tmpDir);
+      await git.init();
+
+      const branch = await git.getCurrentBranch();
+      // Default branch name could be "main" or "master" depending on git config
+      expect(typeof branch).toBe("string");
+      expect(branch.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe("push and pull", () => {
+    let bareDir: string;
+
+    beforeEach(() => {
+      bareDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-bare-"));
+    });
+
+    afterEach(() => {
+      fs.rmSync(bareDir, { recursive: true, force: true });
+    });
+
+    it("push sends commits to a bare remote", async () => {
+      // Create a bare repo to act as the remote
+      const { execSync } = await import("node:child_process");
+      execSync("git init --bare", { cwd: bareDir });
+
+      const git = new GitManager(tmpDir);
+      await git.init();
+
+      // Add the bare repo as remote
+      await git.addRemote("origin", bareDir);
+
+      // Create a commit to push
+      fs.writeFileSync(path.join(tmpDir, "pushed.txt"), "hello");
+      await git.autoCommit("Push test");
+
+      const branch = await git.getCurrentBranch();
+      const result = await git.push("origin", branch);
+      expect(result).toContain("Pushed to origin/");
+    });
+
+    it("pull fetches commits from a bare remote", async () => {
+      const { execSync } = await import("node:child_process");
+      execSync("git init --bare", { cwd: bareDir });
+
+      // Clone into two working copies
+      const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-clone-"));
+      try {
+        execSync(`git clone ${bareDir} .`, { cwd: tmpDir, stdio: "pipe" });
+        execSync(`git clone ${bareDir} .`, { cwd: cloneDir, stdio: "pipe" });
+
+        // Configure identity in clone and disable signing
+        execSync('git config user.email "test@test.com"', { cwd: cloneDir });
+        execSync('git config user.name "Tester"', { cwd: cloneDir });
+        execSync("git config commit.gpgsign false", { cwd: cloneDir });
+
+        // Create a commit in the clone and push
+        fs.writeFileSync(path.join(cloneDir, "from-clone.txt"), "from clone");
+        execSync("git add -A && git commit -m 'From clone'", { cwd: cloneDir, stdio: "pipe" });
+        execSync("git push", { cwd: cloneDir, stdio: "pipe" });
+
+        // Pull in the original
+        const git = new GitManager(tmpDir);
+        const branch = await git.getCurrentBranch();
+        const result = await git.pull("origin", branch);
+        expect(result).toContain("Pulled from origin/");
+        expect(fs.existsSync(path.join(tmpDir, "from-clone.txt"))).toBe(true);
+      } finally {
+        fs.rmSync(cloneDir, { recursive: true, force: true });
+      }
+    });
+  });
 });
