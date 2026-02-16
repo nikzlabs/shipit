@@ -88,6 +88,7 @@ export default function App() {
   const [currentSessionUsage, setCurrentSessionUsage] = useState<SessionUsage | null>(null);
   const [allUsageStats, setAllUsageStats] = useState<UsageStats | null>(null);
   const [showUsageModal, setShowUsageModal] = useState(false);
+  const [fileChangeCount, setFileChangeCount] = useState(0);
   const [systemPromptOpen, setSystemPromptOpen] = useState(false);
   const [hasSystemPrompt, setHasSystemPrompt] = useState(false);
   const [systemPromptContent, setSystemPromptContent] = useState("");
@@ -386,6 +387,25 @@ export default function App() {
     if (data.type === "file_content") {
       setViewingFileContent(data.content);
       setViewingFileBinary(data.isBinary ?? false);
+    }
+
+    if (data.type === "files_changed") {
+      const paths: string[] = data.paths;
+
+      // Auto-refresh file tree if the Files tab is active
+      if (rightTab === "files") {
+        send({ type: "get_file_tree" });
+      }
+
+      // Auto-refresh the viewed file if it was modified
+      if (viewingFile && paths.some((p) => viewingFile.endsWith(p))) {
+        send({ type: "get_file_content", path: viewingFile });
+      }
+
+      // Show a badge on the Files tab when changes occur while not viewing it
+      if (rightTab !== "files") {
+        setFileChangeCount((prev) => prev + paths.length);
+      }
     }
 
     if (data.type === "chat_history") {
@@ -692,6 +712,7 @@ export default function App() {
       }
       if (tab === "files") {
         send({ type: "get_file_tree" });
+        setFileChangeCount(0);
       }
       if (tab === "terminal") {
         setUnreadLogCount(0);
@@ -727,13 +748,18 @@ export default function App() {
         </button>
         <button
           onClick={() => handleTabChange("files")}
-          className={`px-4 py-2 text-sm font-medium transition-colors ${
+          className={`px-4 py-2 text-sm font-medium transition-colors relative ${
             rightTab === "files"
               ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500"
               : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
           }`}
         >
           Files
+          {fileChangeCount > 0 && rightTab !== "files" && (
+            <span className="ml-1.5 inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-blue-600 text-white">
+              {fileChangeCount > 99 ? "99+" : fileChangeCount}
+            </span>
+          )}
         </button>
         <button
           onClick={() => handleTabChange("terminal")}

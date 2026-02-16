@@ -75,6 +75,7 @@ ShipIt is a browser-based IDE for "vibe coding" — you talk to Claude in a chat
 | `vite-manager.ts` | `ViteManager` class — Vite dev server lifecycle (start, stop, restart) |
 | `port-scanner.ts` | Port auto-detection — `checkPort`, `scanPorts` for finding non-Vite dev servers |
 | `usage.ts` | `UsageManager` class — per-turn cost/duration tracking, session-level aggregation, JSON persistence |
+| `file-watcher.ts` | `FileWatcher` class — recursive `fs.watch`, debounced change events, ignore patterns |
 | `types.ts` | Shared TypeScript types for all WebSocket and Claude event payloads |
 
 The server is intentionally thin — it's a bridge between the browser and the Claude CLI. No database, no REST API.
@@ -206,6 +207,7 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `usage_update` | `sessionId`, `totalCostUsd`, `totalDurationMs`, `turnCount` | Pushed after each turn that carries `total_cost_usd` |
 | `system_prompt` | `content` | Current system prompt text (empty string if not set) |
 | `system_prompt_saved` | `content` | Confirmation after saving/deleting the system prompt |
+| `files_changed` | `paths[]` | Server-push: list of relative paths that changed in the workspace (debounced) |
 
 ### Adding a New Message Type
 
@@ -585,6 +587,47 @@ When a `git_committed` event arrives while the file viewer is open, `App.tsx` re
 - **Server-side file read**: Content is fetched from the server rather than using a hypothetical client-side FS API. This keeps the architecture consistent — the server is the only thing that touches the filesystem.
 - **Single source of truth for `FileTreeNode`**: The type is defined in `src/server/types.ts` and re-exported from `FileTree.tsx` — no duplication.
 - **No editing**: This is deliberately read-only. Editing is Claude's job in the vibe coding model.
+
+## File Watcher with Live Updates
+
+The file tree and file viewer update automatically when files change in the workspace — no manual refresh needed. A `FileWatcher` monitors `/workspace` and pushes change notifications to connected clients.
+
+### How It Works
+
+1. **`FileWatcher` class** (`src/server/file-watcher.ts`) uses Node.js `fs.watch` with `recursive: true` to monitor the workspace directory. When files are created, modified, or deleted, it collects the changed paths and emits a debounced "changes" event.
+2. **`index.ts`** creates a `FileWatcher` (injectable via `AppDeps.fileWatcher`), starts it on the workspace directory, and listens for "changes" events. Each event triggers a `files_changed` broadcast to all connected WebSocket clients.
+3. **`App.tsx`** handles the `files_changed` message:
+   - If the Files tab is active, auto-refreshes the file tree via `get_file_tree`.
+   - If a file is open in the viewer and was modified, auto-refreshes its content via `get_file_content`.
+   - If the Files tab is *not* active, increments a change-count badge (same pattern as the Terminal unread badge).
+4. The badge count resets when the user switches to the Files tab.
+
+### Debouncing & Deduplication
+
+- **300ms debounce window** (configurable via constructor) collapses rapid-fire filesystem events into a single notification. This prevents event storms during bulk operations like `npm install` or template application.
+- **Set-based deduplication** merges multiple events for the same file within the debounce window — each file path appears at most once.
+- Each new change resets the debounce timer, so a burst of changes produces one event after the last change plus 300ms.
+
+### Ignore Patterns
+
+The watcher filters out directories that generate noise without value:
+- `node_modules`, `.git`, `.vite`, `.next`, `.cache`, `dist`
+- ShipIt internal files: `.shipit-usage.json`, `.vibe-sessions.json`, `.vibe-chat-history`
+
+These patterns are checked by splitting the file path into segments and testing if any segment matches the ignore list.
+
+### Dependency Injection
+
+`AppDeps.fileWatcher` accepts a `FileWatcher` instance. Tests inject a `StubFileWatcher` (extends `EventEmitter`) with `start()`/`stop()` no-ops and a `simulateChanges(paths)` method that emits "changes" events manually, avoiding real filesystem watching.
+
+### Key Files
+
+- **`src/server/file-watcher.ts`** — `FileWatcher` class: recursive watch, debounce, ignore patterns, start/stop lifecycle.
+- **`src/server/file-watcher.test.ts`** — Unit tests: debounce batching, deduplication, ignore patterns (node_modules, .git, .vibe-chat-history, .shipit-usage.json), start/stop lifecycle, subdirectory paths, idempotent start.
+- **`src/server/types.ts`** — `WsFilesChanged` message type.
+- **`src/server/index.ts`** — Wires up `FileWatcher`, broadcasts `files_changed`, stops on app close.
+- **`src/server/integration.test.ts`** — Integration tests: broadcast to single/multiple clients, sequential events, disconnect cleanup.
+- **`src/client/App.tsx`** — `files_changed` handler: auto-refresh file tree and viewer, change-count badge on Files tab.
 
 ## Preview Port Auto-Detection
 

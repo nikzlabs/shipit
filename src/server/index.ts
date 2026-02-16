@@ -14,6 +14,7 @@ import { findMarkdownFiles } from "./markdown.js";
 import { scanFileTree } from "./file-tree.js";
 import { scanPorts, DEFAULT_SCAN_PORTS } from "./port-scanner.js";
 import { UsageManager } from "./usage.js";
+import { FileWatcher } from "./file-watcher.js";
 import { listTemplates, getTemplate, applyTemplate } from "./templates.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse } from "./types.js";
 
@@ -64,6 +65,11 @@ export interface AppDeps {
    * Defaults to 5000 (5 seconds).
    */
   portScanIntervalMs?: number;
+  /**
+   * File watcher instance. Defaults to `new FileWatcher()`.
+   * Inject a stub in tests to avoid real filesystem watching.
+   */
+  fileWatcher?: FileWatcher;
 }
 
 /**
@@ -125,6 +131,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     });
   }
 
+  // ---- File watcher ----
+  const fileWatcher = deps.fileWatcher ?? new FileWatcher();
+  fileWatcher.start(workspaceDir);
+
   // Track connected WebSocket clients so we can broadcast
   const clients = new Set<{ readyState: number; send: (data: string) => void }>();
 
@@ -152,6 +162,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
     broadcast(entry);
   };
+
+  // ---- File watcher event handler ----
+  fileWatcher.on("changes", (changedFiles: string[]) => {
+    broadcast({ type: "files_changed", paths: changedFiles });
+  });
 
   // Track all auto-detected dev server ports (non-Vite)
   let detectedPorts: number[] = [];
@@ -943,6 +958,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // repeatedly in tests.
   app.addHook("onClose", async () => {
     stopPortScanInterval();
+    fileWatcher.stop();
     viteManager.stop();
     authManager.kill();
   });
