@@ -10,8 +10,8 @@ RUN npm install -g @anthropic-ai/claude-code
 WORKDIR /app
 
 # Copy package files and install dependencies
-COPY package.json ./
-RUN npm install
+COPY package.json package-lock.json ./
+RUN npm ci
 
 # Copy source code
 COPY . .
