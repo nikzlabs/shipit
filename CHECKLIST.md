@@ -74,15 +74,15 @@ Design docs in `docs/design/`.
 - [x] Component tests for editor (empty state, existing prompt, save, cancel, character count)
 
 ### Feature 3: File Watcher with Live Updates (`docs/design/003-file-watcher.md`)
-- [ ] `FileWatcher` class (`src/server/file-watcher.ts`) — recursive watch, 300ms debounce, ignore `node_modules`/`.git`/etc.
-- [ ] Wire into `index.ts`: start on app build, broadcast `files_changed` on change events
-- [ ] Server-push WS message: `files_changed` with `{ paths: string[] }`
-- [ ] Client auto-refreshes file tree when Files tab is active and changes arrive
-- [ ] Client auto-refreshes viewed file content when that file changes
-- [ ] Change-count badge on Files tab (same pattern as Terminal unread badge)
-- [ ] `StubFileWatcher` for tests with `simulateChanges()` method
-- [ ] Unit tests for debounce behavior, ignore patterns, start/stop lifecycle
-- [ ] Integration test: simulate file changes via stub, verify `files_changed` received
+- [x] `FileWatcher` class (`src/server/file-watcher.ts`) — recursive watch, 300ms debounce, ignore `node_modules`/`.git`/etc.
+- [x] Wire into `index.ts`: start on app build, broadcast `files_changed` on change events
+- [x] Server-push WS message: `files_changed` with `{ paths: string[] }`
+- [x] Client auto-refreshes file tree when Files tab is active and changes arrive
+- [x] Client auto-refreshes viewed file content when that file changes
+- [x] Change-count badge on Files tab (same pattern as Terminal unread badge)
+- [x] `StubFileWatcher` for tests with `simulateChanges()` method
+- [x] Unit tests for debounce behavior, ignore patterns, start/stop lifecycle
+- [x] Integration test: simulate file changes via stub, verify `files_changed` received
 
 ### Feature 4: Inline Tool Result Rendering (`docs/design/004-tool-result-rendering.md`)
 - [ ] Parse `tool_result` blocks from `event.type === "user"` in `App.tsx` (currently only sets activity label)
