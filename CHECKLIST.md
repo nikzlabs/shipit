@@ -143,6 +143,23 @@ Design docs in `docs/design/`.
 - [ ] Integration tests for `save_file` (write, auto-commit, path traversal rejection)
 - [ ] Component tests for FileEditor (CodeMirror render, Ctrl+S, unsaved indicator, conflict dialog)
 
+### Feature 9: Session Isolation (`docs/design/009-session-isolation.md`)
+- [ ] Docker: declare `VOLUME /workspace`, remove `git init` from Dockerfiles (runtime init via `GitManager`)
+- [ ] Per-session workspace directories under `/workspace/sessions/{sessionId}/` with own git repo
+- [ ] Refactor `buildApp()`: single `gitManager` → per-session `GitManager` factory; update `AppDeps` interface
+- [ ] `SessionManager` stores `workspaceDir` per session; creates directory + `git init` on session create
+- [ ] `ClaudeProcess.run()` accepts `cwd` parameter (5th positional arg) instead of hardcoded `/workspace`
+- [ ] `ViteManager.start()`/`restart()` accept `workspaceDir` parameter; restart on session switch
+- [ ] `GitHubAuthManager` supports per-session credential configuration (token in each session's git repo)
+- [ ] Server: replace hardcoded `WORKSPACE` — all file ops use per-connection `activeSessionDir` (null until session active)
+- [ ] Server: `apply_template` targets session directory; `delete_session` removes session directory
+- [ ] Server: path traversal guard on all file operations relative to session directory
+- [ ] `FileWatcher` restarts on session switch to watch the new session directory (single watcher, not per-connection)
+- [ ] Client: session switch refreshes file tree, git log, and closes open file viewer
+- [ ] Migration: sessions without `workspaceDir` fall back to `/workspace` (legacy shared workspace)
+- [ ] Integration tests for session isolation (two sessions with independent files, scoped rollback)
+- [ ] Handle edge cases: delete active session, missing session directory, multi-client, disk space
+
 ## Nice to Have
 - [ ] Multi-file diff view — when Claude edits multiple files in one turn, show a grouped diff summary
 - [ ] Export conversation
