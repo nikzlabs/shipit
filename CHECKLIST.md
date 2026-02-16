@@ -53,15 +53,15 @@
 Design docs in `docs/design/`.
 
 ### Feature 1: Usage & Cost Tracking Dashboard (`docs/design/001-usage-cost-tracking.md`)
-- [ ] `UsageManager` class (`src/server/usage.ts`) — persists per-turn cost/duration to `/workspace/.shipit-usage.json`
-- [ ] Record cost in `index.ts` when `event.type === "result"` carries `total_cost_usd`
-- [ ] WS messages: `get_usage_stats` → `usage_stats`, server-push `usage_update` after each turn
-- [ ] Cost badge in header showing current session spend (e.g. `$0.42`)
-- [ ] `UsageModal` component with session breakdown, triggered by clicking the badge
-- [ ] Unit tests for `UsageManager` (record, aggregate, delete)
-- [ ] Integration tests for `get_usage_stats` happy-path and error-path
-- [ ] Component tests for `UsageModal` (zero usage, multiple sessions, close)
-- [ ] Handle `total_cost_usd` being `undefined` (older CLI) and `0` gracefully
+- [x] `UsageManager` class (`src/server/usage.ts`) — persists per-turn cost/duration to `/workspace/.shipit-usage.json`
+- [x] Record cost in `index.ts` when `event.type === "result"` carries `total_cost_usd`
+- [x] WS messages: `get_usage_stats` → `usage_stats`, server-push `usage_update` after each turn
+- [x] Cost badge in header showing current session spend (e.g. `$0.42`)
+- [x] `UsageModal` component with session breakdown, triggered by clicking the badge
+- [x] Unit tests for `UsageManager` (record, aggregate, delete)
+- [x] Integration tests for `get_usage_stats` happy-path and error-path
+- [x] Component tests for `UsageModal` (zero usage, multiple sessions, close)
+- [x] Handle `total_cost_usd` being `undefined` (older CLI) and `0` gracefully
 
 ### Feature 2: Project-Level System Prompt (`docs/design/002-system-prompt.md`)
 - [ ] Extend `ClaudeProcess.run()` to accept optional `systemPrompt` parameter
