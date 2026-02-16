@@ -205,6 +205,24 @@ export interface WsGitHubCreateRepo {
   isPrivate?: boolean;
 }
 
+// ---- Git identity messages ----
+
+export interface WsSetGitIdentity {
+  type: "set_git_identity";
+  name: string;
+  email: string;
+}
+
+export interface WsGitIdentityRequired {
+  type: "git_identity_required";
+}
+
+export interface WsGitIdentitySet {
+  type: "git_identity_set";
+  name: string;
+  email: string;
+}
+
 // ---- System prompt messages ----
 
 export interface WsGetSystemPrompt {
@@ -243,7 +261,8 @@ export type WsClientMessage =
   | WsGitHubSetRemote
   | WsGitHubGetRemotes
   | WsGitHubLogout
-  | WsGitHubCreateRepo;
+  | WsGitHubCreateRepo
+  | WsSetGitIdentity;
 
 export interface WsClaudeEvent {
   type: "claude_event";
@@ -515,4 +534,6 @@ export type WsServerMessage =
   | WsGitHubPushResult
   | WsGitHubPullResult
   | WsGitHubRemotes
-  | WsGitHubRepoCreated;
+  | WsGitHubRepoCreated
+  | WsGitIdentityRequired
+  | WsGitIdentitySet;

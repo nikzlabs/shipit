@@ -26,6 +26,7 @@ import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.
 import { TemplateSelector, type TemplateInfo } from "./components/TemplateSelector.js";
 import { UsageModal, type SessionUsage, type UsageStats } from "./components/UsageModal.js";
 import { SystemPromptEditor } from "./components/SystemPromptEditor.js";
+import { GitIdentityOverlay } from "./components/GitIdentityOverlay.js";
 import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal";
@@ -92,6 +93,7 @@ export default function App() {
   const [systemPromptOpen, setSystemPromptOpen] = useState(false);
   const [hasSystemPrompt, setHasSystemPrompt] = useState(false);
   const [systemPromptContent, setSystemPromptContent] = useState("");
+  const [gitIdentityNeeded, setGitIdentityNeeded] = useState(false);
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
   const historyLoadedRef = useRef(false);
@@ -387,6 +389,14 @@ export default function App() {
 
     if (data.type === "auth_complete") {
       setAuthUrl(null);
+    }
+
+    if (data.type === "git_identity_required") {
+      setGitIdentityNeeded(true);
+    }
+
+    if (data.type === "git_identity_set") {
+      setGitIdentityNeeded(false);
     }
 
     if (data.type === "session_list") {
@@ -708,6 +718,13 @@ export default function App() {
     [send]
   );
 
+  const handleGitIdentitySubmit = useCallback(
+    (name: string, email: string) => {
+      send({ type: "set_git_identity", name, email });
+    },
+    [send],
+  );
+
   const handleGitHubTokenSubmit = useCallback(
     (token: string) => {
       send({ type: "github_set_token", token });
@@ -919,6 +936,9 @@ export default function App() {
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
       {authUrl && <AuthOverlay url={authUrl} />}
+      {gitIdentityNeeded && (
+        <GitIdentityOverlay onSubmit={handleGitIdentitySubmit} />
+      )}
       {showGitHubAuth && (
         <GitHubAuthOverlay
           onSubmit={handleGitHubTokenSubmit}
