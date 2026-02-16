@@ -215,14 +215,16 @@ class FakeClaudeProcess extends EventEmitter {
   public lastPrompt = "";
   public lastSessionId: string | undefined;
   public lastSystemPrompt: string | undefined;
+  public lastImages: Array<{ data: string; mediaType: string; filename?: string }> | undefined;
   public killed = false;
   public stdinData: string[] = [];
 
-  run(prompt: string, sessionId?: string, systemPrompt?: string) {
+  run(prompt: string, sessionId?: string, systemPrompt?: string, images?: Array<{ data: string; mediaType: string; filename?: string }>) {
     this.runCalled = true;
     this.lastPrompt = prompt;
     this.lastSessionId = sessionId;
     this.lastSystemPrompt = systemPrompt;
+    this.lastImages = images;
   }
 
   kill() {
@@ -2630,5 +2632,175 @@ describe("Integration: File watcher", () => {
     expect(msg).toMatchObject({ type: "files_changed", paths: ["test.ts"] });
 
     client2.close();
+  });
+
+  // ---- Image upload (send_message with images) ----
+
+  // A minimal 1x1 red PNG (valid base64)
+  const TINY_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg==";
+
+  it("send_message with valid images passes them to ClaudeProcess", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({
+      type: "send_message",
+      text: "Make it look like this",
+      images: [
+        { data: TINY_PNG_BASE64, mediaType: "image/png", filename: "design.png" },
+      ],
+    });
+
+    // Give the server time to process the message and start Claude
+    await new Promise((r) => setTimeout(r, 100));
+
+    // The FakeClaudeProcess should have been called with images
+    expect(lastClaude.runCalled).toBe(true);
+    expect(lastClaude.lastPrompt).toBe("Make it look like this");
+    expect(lastClaude.lastImages).toHaveLength(1);
+    expect(lastClaude.lastImages![0].mediaType).toBe("image/png");
+    expect(lastClaude.lastImages![0].data).toBe(TINY_PNG_BASE64);
+
+    // Simulate Claude finishing
+    lastClaude.emit("event", { type: "system", subtype: "init", session_id: "img-session-1" });
+    lastClaude.emit("done", 0);
+
+    client.close();
+  });
+
+  it("send_message with invalid MIME type returns error", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({
+      type: "send_message",
+      text: "Upload PDF",
+      images: [
+        { data: TINY_PNG_BASE64, mediaType: "application/pdf", filename: "doc.pdf" },
+      ],
+    });
+
+    const msg = await client.receive();
+    expect(msg.type).toBe("error");
+    expect((msg as any).message).toContain("unsupported type");
+
+    client.close();
+  });
+
+  it("send_message with too many images returns error", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    const images = Array.from({ length: 6 }, (_, i) => ({
+      data: TINY_PNG_BASE64,
+      mediaType: "image/png",
+      filename: `img${i}.png`,
+    }));
+
+    client.send({
+      type: "send_message",
+      text: "Too many",
+      images,
+    });
+
+    const msg = await client.receive();
+    expect(msg.type).toBe("error");
+    expect((msg as any).message).toContain("Too many images");
+
+    client.close();
+  });
+
+  it("send_message with oversized image returns error", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Create a base64 string that decodes to > 5MB
+    // Each base64 char = 6 bits, so 4 chars = 3 bytes
+    // 5MB = 5242880 bytes -> need ~7000000 base64 chars
+    const bigData = Buffer.alloc(5 * 1024 * 1024 + 1, 0x41).toString("base64");
+
+    client.send({
+      type: "send_message",
+      text: "Big image",
+      images: [
+        { data: bigData, mediaType: "image/png", filename: "huge.png" },
+      ],
+    });
+
+    const msg = await client.receive();
+    expect(msg.type).toBe("error");
+    expect((msg as any).message).toContain("too large");
+
+    client.close();
+  });
+
+  it("send_message with images persists them in chat history", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({
+      type: "send_message",
+      text: "Check this",
+      images: [
+        { data: TINY_PNG_BASE64, mediaType: "image/png", filename: "test.png" },
+      ],
+    });
+
+    // Wait for Claude to be created, then simulate init + done
+    await new Promise((r) => setTimeout(r, 50));
+    lastClaude.emit("event", { type: "system", subtype: "init", session_id: "img-persist-test" });
+    lastClaude.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "I see the image" }] },
+    });
+    lastClaude.emit("event", { type: "result", subtype: "success", session_id: "img-persist-test" });
+    lastClaude.emit("done", 0);
+
+    // Skip all messages until session is set up
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Now load the chat history
+    client.send({ type: "get_chat_history", sessionId: "img-persist-test" });
+
+    // Drain until we get chat_history
+    let chatHistory: any = null;
+    for (let i = 0; i < 20; i++) {
+      const m = await client.receive();
+      if (m.type === "chat_history") {
+        chatHistory = m;
+        break;
+      }
+    }
+
+    expect(chatHistory).not.toBeNull();
+    expect(chatHistory.messages.length).toBeGreaterThanOrEqual(2);
+    // Find the first user message with images
+    const userMsg = chatHistory.messages.find((m: any) => m.role === "user" && m.images?.length > 0);
+    expect(userMsg).toBeDefined();
+    expect(userMsg.text).toBe("Check this");
+    expect(userMsg.images).toHaveLength(1);
+    expect(userMsg.images[0].mediaType).toBe("image/png");
+
+    client.close();
+  });
+
+  it("send_message with 0 images works normally (no validation error)", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({
+      type: "send_message",
+      text: "No images",
+      images: [],
+    });
+
+    // Should start Claude normally without error
+    await new Promise((r) => setTimeout(r, 50));
+    expect(lastClaude.runCalled).toBe(true);
+    expect(lastClaude.lastPrompt).toBe("No images");
+    expect(lastClaude.lastImages).toBeUndefined();
+
+    lastClaude.emit("done", 0);
+    client.close();
   });
 });
