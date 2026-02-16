@@ -9,6 +9,11 @@ export interface GitCommitInfo {
   author: string;
 }
 
+export interface GitRemote {
+  name: string;
+  url: string;
+}
+
 export class GitManager {
   private git: SimpleGit;
 
@@ -79,5 +84,51 @@ export class GitManager {
   async rollback(commitHash: string): Promise<void> {
     await this.git.reset(["--hard", commitHash]);
     console.log("[git] Rolled back to", commitHash);
+  }
+
+  /** Add or update a named remote. */
+  async addRemote(name: string, url: string): Promise<void> {
+    const remotes = await this.git.getRemotes(true);
+    const existing = remotes.find((r) => r.name === name);
+    if (existing) {
+      await this.git.remote(["set-url", name, url]);
+      console.log("[git] Updated remote", name, "→", url);
+    } else {
+      await this.git.addRemote(name, url);
+      console.log("[git] Added remote", name, "→", url);
+    }
+  }
+
+  /** List configured remotes. */
+  async getRemotes(): Promise<GitRemote[]> {
+    const remotes = await this.git.getRemotes(true);
+    return remotes.map((r) => ({
+      name: r.name,
+      url: r.refs.push || r.refs.fetch || "",
+    }));
+  }
+
+  /** Get the current branch name. */
+  async getCurrentBranch(): Promise<string> {
+    const status = await this.git.status();
+    return status.current ?? "main";
+  }
+
+  /** Push to a remote. Returns a summary string. */
+  async push(remote = "origin", branch?: string): Promise<string> {
+    const currentBranch = branch ?? (await this.getCurrentBranch());
+    await this.git.push(remote, currentBranch, ["--set-upstream"]);
+    const msg = `Pushed to ${remote}/${currentBranch}`;
+    console.log("[git]", msg);
+    return msg;
+  }
+
+  /** Pull from a remote. Returns a summary string. */
+  async pull(remote = "origin", branch?: string): Promise<string> {
+    const currentBranch = branch ?? (await this.getCurrentBranch());
+    await this.git.pull(remote, currentBranch);
+    const msg = `Pulled from ${remote}/${currentBranch}`;
+    console.log("[git]", msg);
+    return msg;
   }
 }
