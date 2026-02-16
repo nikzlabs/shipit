@@ -1,0 +1,268 @@
+/**
+ * Shared test helpers for integration tests.
+ *
+ * Provides TestClient (message-buffering WebSocket wrapper), stub/fake
+ * implementations of external dependencies, and the waitForClaude() poll
+ * helper used across all integration test files.
+ */
+
+import { EventEmitter } from "node:events";
+import WebSocket from "ws";
+import type { WsServerMessage, WsClientMessage } from "../types.js";
+
+// ---------------------------------------------------------------------------
+// TestClient
+// ---------------------------------------------------------------------------
+
+/**
+ * WebSocket test client that buffers all incoming messages from the moment
+ * the connection opens. This avoids the race condition where the server sends
+ * a message (e.g. preview_status) before the test sets up a listener.
+ *
+ * Usage:
+ *   const client = await TestClient.connect(port);
+ *   const msg = await client.receive();   // first buffered or next message
+ *   client.send({ type: "list_sessions" });
+ *   const resp = await client.receive();
+ *   client.close();
+ */
+export class TestClient {
+  private ws: WebSocket;
+  private queue: WsServerMessage[] = [];
+  private waiters: Array<(msg: WsServerMessage) => void> = [];
+
+  private constructor(ws: WebSocket) {
+    this.ws = ws;
+    ws.on("message", (data: WebSocket.Data) => {
+      const msg: WsServerMessage = JSON.parse(data.toString());
+      const waiter = this.waiters.shift();
+      if (waiter) {
+        waiter(msg);
+      } else {
+        this.queue.push(msg);
+      }
+    });
+  }
+
+  /** Connect to the server and start buffering messages immediately. */
+  static connect(port: number): Promise<TestClient> {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      // Create client before open so message listener is attached early
+      const client = new TestClient(ws);
+      ws.on("open", () => resolve(client));
+      ws.on("error", reject);
+    });
+  }
+
+  /** Get the next message — returns from buffer or waits for one. */
+  receive(timeoutMs = 3000): Promise<WsServerMessage> {
+    const buffered = this.queue.shift();
+    if (buffered) return Promise.resolve(buffered);
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`TestClient.receive() timed out after ${timeoutMs}ms`)),
+        timeoutMs,
+      );
+      this.waiters.push((msg) => {
+        clearTimeout(timer);
+        resolve(msg);
+      });
+    });
+  }
+
+  /** Collect exactly N messages. */
+  async receiveN(count: number): Promise<WsServerMessage[]> {
+    const msgs: WsServerMessage[] = [];
+    for (let i = 0; i < count; i++) {
+      msgs.push(await this.receive());
+    }
+    return msgs;
+  }
+
+  /** Get the next message that is NOT a log_entry — useful for tests that predate the terminal feature. */
+  async receiveSkipLogs(timeoutMs = 3000): Promise<WsServerMessage> {
+    const deadline = Date.now() + timeoutMs;
+    while (true) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error("receiveSkipLogs() timed out");
+      const msg = await this.receive(remaining);
+      if (msg.type !== "log_entry") return msg;
+    }
+  }
+
+  /** Send a typed client message. */
+  send(msg: WsClientMessage): void {
+    this.ws.send(JSON.stringify(msg));
+  }
+
+  /** Send raw string data (for invalid-JSON tests). */
+  sendRaw(data: string): void {
+    this.ws.send(data);
+  }
+
+  /** Close the connection. */
+  close(): void {
+    this.ws.close();
+  }
+
+  get readyState(): number {
+    return this.ws.readyState;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Stubs
+// ---------------------------------------------------------------------------
+
+/**
+ * Stub ViteManager that never spawns a process.
+ * Reports as not running with port 5173 (matching production defaults).
+ */
+export class StubViteManager extends EventEmitter {
+  private _running = false;
+  private _port = 5173;
+  get running() { return this._running; }
+  get port() { return this._port; }
+  start() { /* no-op */ }
+  stop() { /* no-op */ }
+  restart() { /* no-op */ }
+}
+
+/**
+ * Stub AuthManager that never spawns a process.
+ * checkCredentials() always returns false.
+ */
+export class StubAuthManager extends EventEmitter {
+  authenticated = true; // Tests assume auth is already done
+  checkCredentials() { return true; }
+  startOAuthFlow() { /* no-op */ }
+  kill() { /* no-op */ }
+}
+
+/**
+ * Stub GitHubAuthManager for testing GitHub auth flow.
+ * Does not make real API calls or touch the filesystem.
+ */
+export class StubGitHubAuthManager extends EventEmitter {
+  private _authenticated = false;
+  private _username: string | null = null;
+  checkCredentials() { return this._authenticated; }
+  get authenticated() { return this._authenticated; }
+  getStatus() {
+    return {
+      authenticated: this._authenticated,
+      username: this._username ?? undefined,
+      avatarUrl: undefined,
+    };
+  }
+  async setToken(token: string) {
+    if (!token.trim()) {
+      this.emit("auth_failed", "Token cannot be empty");
+      return false;
+    }
+    // Accept any non-empty token in tests
+    this._authenticated = true;
+    this._username = "test-user";
+    this.emit("auth_complete");
+    return true;
+  }
+  clearCredentials() {
+    this._authenticated = false;
+    this._username = null;
+  }
+  configureGitCredentials() { /* no-op */ }
+  async loadUserInfo() { /* no-op */ }
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async createRepo(name: string, options: { description?: string; isPrivate?: boolean } = {}) {
+    return {
+      success: true,
+      name,
+      fullName: `test-user/${name}`,
+      url: `https://github.com/test-user/${name}`,
+      cloneUrl: `https://github.com/test-user/${name}.git`,
+    };
+  }
+}
+
+/**
+ * Fake ClaudeProcess for testing the send_message flow.
+ * The test controls this object: call emit("event", ...) or emit("done", ...)
+ * to simulate the real CLI producing output.
+ */
+export class FakeClaudeProcess extends EventEmitter {
+  public runCalled = false;
+  public lastPrompt = "";
+  public lastSessionId: string | undefined;
+  public lastSystemPrompt: string | undefined;
+  public lastImages: Array<{ data: string; mediaType: string; filename?: string }> | undefined;
+  public lastCwd: string | undefined;
+  public killed = false;
+  public stdinData: string[] = [];
+
+  run(prompt: string, sessionId?: string, systemPrompt?: string, images?: Array<{ data: string; mediaType: string; filename?: string }>, cwd?: string) {
+    this.runCalled = true;
+    this.lastPrompt = prompt;
+    this.lastSessionId = sessionId;
+    this.lastSystemPrompt = systemPrompt;
+    this.lastImages = images;
+    this.lastCwd = cwd;
+  }
+
+  kill() {
+    this.killed = true;
+  }
+
+  writeStdin(data: string) {
+    this.stdinData.push(data);
+  }
+
+  /**
+   * Simulate a normal Claude turn completion: emit a result event then done.
+   * This matches the real Claude CLI behavior where a `result` event always
+   * precedes process exit on success.
+   */
+  finish(sessionId = "test-session", code = 0) {
+    this.emit("event", { type: "result", subtype: "success", session_id: sessionId });
+    this.emit("done", code);
+  }
+}
+
+/**
+ * Stub FileWatcher that doesn't actually watch the filesystem.
+ * Tests can call simulateChanges() to trigger "changes" events manually.
+ */
+export class StubFileWatcher extends EventEmitter {
+  start() { /* no-op */ }
+  stop() { /* no-op */ }
+  simulateChanges(paths: string[]) {
+    this.emit("changes", paths);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Poll until the most recent FakeClaudeProcess has been started.
+ * Replaces fixed `setTimeout(50)` waits which are flaky because
+ * `createSessionDir()` adds async I/O overhead (mkdir + git init).
+ *
+ * @param notInstance — if provided, waits for a DIFFERENT instance
+ *   (useful when a previous Claude from another test still has runCalled=true)
+ */
+export async function waitForClaude(
+  getClaude: () => FakeClaudeProcess | null,
+  notInstance?: FakeClaudeProcess | null,
+  timeoutMs = 5000,
+): Promise<FakeClaudeProcess> {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    const c = getClaude();
+    if (c?.runCalled && c !== notInstance) return c;
+    if (Date.now() > deadline) throw new Error("Timed out waiting for ClaudeProcess.run()");
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
