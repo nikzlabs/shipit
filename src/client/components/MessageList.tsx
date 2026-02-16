@@ -25,11 +25,17 @@ export interface ToolResultBlock {
   isError?: boolean;
 }
 
+export interface ChatMessageImage {
+  data: string;      // base64-encoded image data
+  mediaType: string; // "image/png", etc.
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   text: string;
   toolUse?: ToolUseBlock[];
   toolResults?: ToolResultBlock[];
+  images?: ChatMessageImage[];
   streaming?: boolean;
   /** When true, this message represents an error (CLI crash, WS drop, etc.) */
   isError?: boolean;
@@ -361,6 +367,86 @@ function MessageEditor({
   );
 }
 
+/** Full-screen lightbox overlay for viewing an image at full size. */
+export function ImageLightbox({
+  src,
+  alt,
+  onClose,
+}: {
+  src: string;
+  alt: string;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+      onClick={onClose}
+      role="dialog"
+      aria-label="Image preview"
+    >
+      <button
+        onClick={onClose}
+        className="absolute top-4 right-4 text-white/80 hover:text-white text-3xl z-10"
+        aria-label="Close preview"
+      >
+        &times;
+      </button>
+      <img
+        src={src}
+        alt={alt}
+        className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      />
+    </div>
+  );
+}
+
+/** Render inline image thumbnails for a user message. */
+function MessageImages({ images, isUserMessage }: { images: ChatMessageImage[]; isUserMessage: boolean }) {
+  const [lightboxImage, setLightboxImage] = useState<{ src: string; alt: string } | null>(null);
+
+  return (
+    <>
+      {lightboxImage && (
+        <ImageLightbox
+          src={lightboxImage.src}
+          alt={lightboxImage.alt}
+          onClose={() => setLightboxImage(null)}
+        />
+      )}
+      <div className={`flex gap-2 flex-wrap ${images.length > 0 && isUserMessage ? "mt-2" : "mb-2"}`} data-testid="message-images">
+        {images.map((img, i) => {
+          const src = `data:${img.mediaType};base64,${img.data}`;
+          const alt = `Attached image ${i + 1}`;
+          return (
+            <button
+              key={i}
+              onClick={() => setLightboxImage({ src, alt })}
+              className="block rounded-md overflow-hidden border border-white/20 hover:border-white/50 transition-colors cursor-pointer"
+              title="Click to view full size"
+              aria-label={`View image ${i + 1} full size`}
+            >
+              <img
+                src={src}
+                alt={alt}
+                className="w-24 h-24 object-cover"
+              />
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
 export function MessageList({
   messages,
   isLoading,
@@ -514,6 +600,10 @@ export function MessageList({
                   currentMatch={currentMatch}
                   currentMatchRef={currentMatchRef}
                 />
+              )}
+
+              {msg.images && msg.images.length > 0 && (
+                <MessageImages images={msg.images} isUserMessage={msg.role === "user"} />
               )}
 
               {msg.toolUse && msg.toolUse.length > 0 && (

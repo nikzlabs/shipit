@@ -16,13 +16,68 @@ import { scanPorts, DEFAULT_SCAN_PORTS } from "./port-scanner.js";
 import { UsageManager } from "./usage.js";
 import { FileWatcher } from "./file-watcher.js";
 import { listTemplates, getTemplate, applyTemplate } from "./templates.js";
-import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse } from "./types.js";
+import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment } from "./types.js";
 
 function getErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
 const WORKSPACE = "/workspace";
+
+// ---- Image validation constants ----
+const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB per image (decoded)
+const MAX_IMAGES_PER_MESSAGE = 5;
+const MAX_TOTAL_PAYLOAD_BYTES = 20 * 1024 * 1024; // 20 MB total
+
+/**
+ * Validate an array of image attachments. Returns an error message string
+ * if validation fails, or null if all images are valid.
+ */
+function validateImages(images: ImageAttachment[]): string | null {
+  if (images.length > MAX_IMAGES_PER_MESSAGE) {
+    return `Too many images (max ${MAX_IMAGES_PER_MESSAGE}, got ${images.length})`;
+  }
+
+  let totalBytes = 0;
+
+  for (let i = 0; i < images.length; i++) {
+    const img = images[i];
+
+    if (!img.data || typeof img.data !== "string") {
+      return `Image ${i + 1}: missing or invalid base64 data`;
+    }
+
+    if (!ALLOWED_IMAGE_TYPES.has(img.mediaType)) {
+      return `Image ${i + 1}: unsupported type "${img.mediaType}" (allowed: PNG, JPEG, GIF, WebP)`;
+    }
+
+    // Validate base64 and check decoded size
+    let decodedSize: number;
+    try {
+      const buf = Buffer.from(img.data, "base64");
+      decodedSize = buf.byteLength;
+      // Verify the base64 round-trips (catches invalid base64)
+      if (buf.toString("base64") !== img.data.replace(/\s/g, "")) {
+        return `Image ${i + 1}: invalid base64 encoding`;
+      }
+    } catch {
+      return `Image ${i + 1}: invalid base64 encoding`;
+    }
+
+    if (decodedSize > MAX_IMAGE_SIZE_BYTES) {
+      return `Image ${i + 1}: too large (${(decodedSize / 1024 / 1024).toFixed(1)} MB, max 5 MB)`;
+    }
+
+    totalBytes += decodedSize;
+  }
+
+  if (totalBytes > MAX_TOTAL_PAYLOAD_BYTES) {
+    return `Total image size too large (${(totalBytes / 1024 / 1024).toFixed(1)} MB, max 20 MB)`;
+  }
+
+  return null;
+}
 
 /**
  * Dependencies that can be injected for testing. Every field is optional —
@@ -349,6 +404,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           claude.kill();
         }
 
+        // Validate images if provided
+        const images: ImageAttachment[] | undefined = msg.images && msg.images.length > 0 ? msg.images : undefined;
+        if (images) {
+          const imageError = validateImages(images);
+          if (imageError) {
+            send({ type: "error", message: imageError });
+            return;
+          }
+        }
+
         turnSummary = "";
         accumulatedText = "";
         accumulatedToolUse = [];
@@ -366,9 +431,19 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           currentSessionId = msg.sessionId;
         }
 
+        // Build images metadata for chat history persistence (inline base64)
+        const historyImages = images?.map((img) => ({
+          data: img.data,
+          mediaType: img.mediaType,
+        }));
+
         // Persist the user message once we know the session
         const persistUserMessage = (sessionId: string) => {
-          chatHistoryManager.append(sessionId, { role: "user", text: userText });
+          chatHistoryManager.append(sessionId, {
+            role: "user",
+            text: userText,
+            images: historyImages,
+          });
         };
 
         claude.on("event", (event: ClaudeEvent) => {
@@ -492,7 +567,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         });
 
         const systemPrompt = await readSystemPrompt();
-        claude.run(msg.text, msg.sessionId, systemPrompt);
+        claude.run(msg.text, msg.sessionId, systemPrompt, images);
       }
 
       if (msg.type === "get_git_log") {
