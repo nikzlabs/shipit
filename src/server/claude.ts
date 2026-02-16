@@ -10,7 +10,7 @@ export class ClaudeProcess extends EventEmitter {
    * Send a prompt to Claude CLI in print mode with streaming JSON output.
    * Emits "event" for each parsed NDJSON line and "done" when the process exits.
    */
-  run(prompt: string, sessionId?: string): void {
+  run(prompt: string, sessionId?: string, systemPrompt?: string): void {
     const args = [
       "-p", prompt,
       "--output-format", "stream-json",
@@ -20,6 +20,10 @@ export class ClaudeProcess extends EventEmitter {
 
     if (sessionId) {
       args.push("--resume", sessionId);
+    }
+
+    if (systemPrompt) {
+      args.push("--system-prompt", systemPrompt);
     }
 
     this.proc = spawn("claude", args, {

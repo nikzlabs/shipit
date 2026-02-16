@@ -305,6 +305,20 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       send(entry);
     }
 
+    /** Read the system prompt file if it exists. Returns undefined when absent or empty. */
+    const readSystemPrompt = async (): Promise<string | undefined> => {
+      try {
+        const content = await fs.readFile(
+          path.join(workspaceDir, ".shipit", "system-prompt.md"),
+          "utf-8",
+        );
+        const trimmed = content.trim();
+        return trimmed || undefined;
+      } catch {
+        return undefined;
+      }
+    };
+
     socket.on("message", async (raw: Buffer) => {
       let msg: WsClientMessage;
       try {
@@ -462,7 +476,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           claude = null;
         });
 
-        claude.run(msg.text, msg.sessionId);
+        const systemPrompt = await readSystemPrompt();
+        claude.run(msg.text, msg.sessionId, systemPrompt);
       }
 
       if (msg.type === "get_git_log") {
@@ -718,7 +733,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             claude = null;
           });
 
-          claude.run(answerText, currentSessionId);
+          const systemPrompt = await readSystemPrompt();
+          claude.run(answerText, currentSessionId, systemPrompt);
         }
       }
 
@@ -862,6 +878,40 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             });
           }
         }
+      }
+
+      if (msg.type === "get_system_prompt") {
+        try {
+          const filePath = path.join(workspaceDir, ".shipit", "system-prompt.md");
+          const content = await fs.readFile(filePath, "utf-8");
+          send({ type: "system_prompt", content: content.trim() });
+        } catch {
+          // File doesn't exist — no system prompt
+          send({ type: "system_prompt", content: "" });
+        }
+      }
+
+      if (msg.type === "set_system_prompt") {
+        const content = msg.content;
+        if (typeof content !== "string") {
+          send({ type: "error", message: "System prompt must be a string" });
+          return;
+        }
+        if (content.length > 50_000) {
+          send({ type: "error", message: "System prompt too long (max 50,000 characters)" });
+          return;
+        }
+        const dir = path.join(workspaceDir, ".shipit");
+        const filePath = path.join(dir, "system-prompt.md");
+        const trimmed = content.trim();
+        if (trimmed) {
+          await fs.mkdir(dir, { recursive: true });
+          await fs.writeFile(filePath, trimmed + "\n", "utf-8");
+        } else {
+          // Empty prompt — delete the file
+          try { await fs.unlink(filePath); } catch { /* ok if missing */ }
+        }
+        send({ type: "system_prompt_saved", content: trimmed });
       }
 
       if (msg.type === "clear_logs") {
