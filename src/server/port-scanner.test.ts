@@ -20,6 +20,17 @@ function createTestServer(): Promise<{ server: net.Server; port: number }> {
   });
 }
 
+/**
+ * Get a port that is guaranteed to be closed by binding to an ephemeral port
+ * and immediately closing the server. This avoids fragile arithmetic like
+ * `port + 5000` which can overflow the valid port range (1–65535).
+ */
+async function getClosedPort(): Promise<number> {
+  const { server, port } = await createTestServer();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return port;
+}
+
 describe("port-scanner", () => {
   describe("checkPort", () => {
     let server: net.Server;
@@ -41,17 +52,13 @@ describe("port-scanner", () => {
     });
 
     it("returns false for a port that is not listening", async () => {
-      // Use a port that's almost certainly not listening but stays within valid range (1–65535).
-      // Wrap around if adding 1000 would exceed the max port number.
-      const closedPort = openPort + 1000 <= 65535 ? openPort + 1000 : openPort - 1000;
+      const closedPort = await getClosedPort();
       const result = await checkPort(closedPort);
       expect(result).toBe(false);
     });
 
     it("returns false after server is closed", async () => {
-      server.close();
-      // Wait for the server to actually close
-      await new Promise((r) => setTimeout(r, 50));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
       const result = await checkPort(openPort);
       expect(result).toBe(false);
     });
@@ -78,10 +85,11 @@ describe("port-scanner", () => {
     });
 
     it("returns ports that are listening", async () => {
-      const result = await scanPorts([port1, port2, port1 + 5000]);
+      const closedPort = await getClosedPort();
+      const result = await scanPorts([port1, port2, closedPort]);
       expect(result).toContain(port1);
       expect(result).toContain(port2);
-      expect(result).not.toContain(port1 + 5000);
+      expect(result).not.toContain(closedPort);
     });
 
     it("excludes ports in the excludePorts list", async () => {
@@ -91,7 +99,9 @@ describe("port-scanner", () => {
     });
 
     it("returns empty array when no ports are listening", async () => {
-      const result = await scanPorts([port1 + 5000, port1 + 5001]);
+      const closed1 = await getClosedPort();
+      const closed2 = await getClosedPort();
+      const result = await scanPorts([closed1, closed2]);
       expect(result).toEqual([]);
     });
 
