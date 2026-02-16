@@ -85,16 +85,16 @@ Design docs in `docs/design/`.
 - [x] Integration test: simulate file changes via stub, verify `files_changed` received
 
 ### Feature 4: Inline Tool Result Rendering (`docs/design/004-tool-result-rendering.md`)
-- [ ] Parse `tool_result` blocks from `event.type === "user"` in `App.tsx` (currently only sets activity label)
-- [ ] Attach `ToolResultBlock[]` to the preceding assistant message by matching `tool_use_id`
-- [ ] `ToolResult` component (`src/client/components/ToolResult.tsx`) with tool-specific renderers:
+- [x] Parse `tool_result` blocks from `event.type === "user"` in `App.tsx` (currently only sets activity label)
+- [x] Attach `ToolResultBlock[]` to the preceding assistant message by matching `tool_use_id`
+- [x] `ToolResult` component (`src/client/components/ToolResult.tsx`) with tool-specific renderers:
   - `BashResult` — monospace output, red highlight on error, truncated at 30 lines with expand
   - `ReadResult` — syntax-highlighted file content preview, truncated at 20 lines
   - `GrepResult` — structured file/line matches
   - `GenericResult` — plain monospace fallback
-- [ ] Collapsible by default; expand/collapse toggle on each tool use item
-- [ ] Component tests for each renderer (normal output, error output, empty, long output truncation)
-- [ ] Handle missing `tool_use_id` match, binary content, and outputs >1MB gracefully
+- [x] Collapsible by default; expand/collapse toggle on each tool use item
+- [x] Component tests for each renderer (normal output, error output, empty, long output truncation)
+- [x] Handle missing `tool_use_id` match, binary content, and outputs >1MB gracefully
 
 ### Feature 5: Image & Screenshot Input (`docs/design/005-image-input.md`)
 - [ ] Extend `send_message` with optional `images` array (base64 + mediaType + filename)
