@@ -64,9 +64,13 @@ export interface GitCommitInfo {
 
 export interface SessionInfo {
   id: string;
+  /** Agent's conversation ID (e.g. Claude CLI session_id for --resume). */
+  agentSessionId?: string;
   title: string;
   createdAt: string;
   lastUsedAt: string;
+  /** Per-session workspace directory, e.g. "/workspace/sessions/abc123". */
+  workspaceDir?: string;
 }
 
 // ---- Template types ----

@@ -10,8 +10,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
-# Workspace for user projects
-RUN mkdir -p /workspace && cd /workspace && git init
+# Workspace for user projects — each session creates its own git repo
+RUN mkdir -p /workspace
+VOLUME /workspace
 
 COPY docker/docker-entrypoint.dev.sh /usr/local/bin/
 
