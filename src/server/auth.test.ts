@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { AUTH_URL_PATTERNS, extractAuthUrl } from "./auth.js";
+import { AUTH_URL_PATTERNS, extractAuthUrl, extractUrlFromBuffer } from "./auth.js";
 
 describe("AUTH_URL_PATTERNS", () => {
   it("matches Anthropic console URLs", () => {
@@ -70,5 +70,121 @@ describe("extractAuthUrl", () => {
     const text = "Open https://console.anthropic.com/login?code=abc";
     const result = extractAuthUrl(text);
     expect(result).toBe("https://console.anthropic.com/login?code=abc");
+  });
+
+  it("strips ANSI escape codes before matching", () => {
+    // PTY output includes ANSI codes for colors, cursor movement, etc.
+    const text = "\x1b[1mOpen \x1b[36mhttps://console.anthropic.com/verify?code=abc\x1b[0m in your browser";
+    expect(extractAuthUrl(text)).toBe("https://console.anthropic.com/verify?code=abc");
+  });
+});
+
+describe("extractUrlFromBuffer", () => {
+  it("extracts a simple URL from a buffer", () => {
+    const buffer = "Some text\nhttps://example.com/auth?code=abc123\n\nMore text";
+    expect(extractUrlFromBuffer(buffer)).toBe("https://example.com/auth?code=abc123");
+  });
+
+  it("joins URL split across multiple lines by PTY wrapping", () => {
+    // Real-world scenario: PTY wraps at 80 chars, splitting the URL.
+    // An empty line separates the URL block from the "Paste code here" prompt.
+    const buffer = [
+      "Browser didn't open? Use the url below to sign in:",
+      "",
+      "https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-59",
+      "44d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Fo",
+      "auth%2Fcode%2Fcallback&scope=user%3Aread%2Corg%3Aread",
+      "",
+      "Paste code here if prompted >",
+    ].join("\n");
+
+    const url = extractUrlFromBuffer(buffer);
+    expect(url).toBe(
+      "https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Aread%2Corg%3Aread",
+    );
+  });
+
+  it("extracts the last URL when multiple are present", () => {
+    // CLI outputs redirect URL first, then the code-paste URL
+    const buffer = [
+      "Opening https://claude.ai/oauth/authorize?redirect_uri=http://localhost:40393",
+      "",
+      "Browser didn't open? Use the url below to sign in:",
+      "",
+      "https://claude.ai/oauth/authorize?code=true&client_id=abc123",
+      "",
+      "Paste code here >",
+    ].join("\n");
+
+    const url = extractUrlFromBuffer(buffer);
+    expect(url).toBe("https://claude.ai/oauth/authorize?code=true&client_id=abc123");
+  });
+
+  it("strips ANSI escape codes before extracting", () => {
+    const buffer = "\x1b[1m\x1b[36mhttps://claude.ai/oauth/authorize?code=true&client_id=abc123\x1b[0m\n\nPaste code here";
+    expect(extractUrlFromBuffer(buffer)).toBe("https://claude.ai/oauth/authorize?code=true&client_id=abc123");
+  });
+
+  it("handles \\r\\n line endings from PTY", () => {
+    const buffer =
+      "https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9\r\n-88ed-5944d1962f5e\r\n\r\nPaste code here";
+    expect(extractUrlFromBuffer(buffer)).toBe(
+      "https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+    );
+  });
+
+  it("returns null when no URL is present", () => {
+    expect(extractUrlFromBuffer("No URL here")).toBeNull();
+    expect(extractUrlFromBuffer("")).toBeNull();
+  });
+
+  it("returns null for very short URLs", () => {
+    // URLs shorter than 20 chars are rejected
+    expect(extractUrlFromBuffer("https://a.b")).toBeNull();
+  });
+
+  it("stops at non-URL characters like spaces", () => {
+    const buffer = "https://claude.ai/oauth?code=abc more text here";
+    expect(extractUrlFromBuffer(buffer)).toBe("https://claude.ai/oauth?code=abc");
+  });
+
+  it("handles real Docker PTY output with 6-line wrapped URL", () => {
+    // Exact format from Docker logs — URL wrapped at ~80 cols, two blank lines
+    // before "Paste code here" trigger (PTY strips spaces from trigger text)
+    const buffer = [
+      "Browser didn't open?Use the urlbelowtosignin(ctocopy)",
+      "",
+      "https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-59",
+      "44d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Fo",
+      "auth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainferenc",
+      "e+user%3Asessions%3Aclaude_code+user%3Amcp_servers&code_challenge=TWy6R8mJ-6Q4sx",
+      "EInihAvunUZYP-vYuS_ZgN850bILY&code_challenge_method=S256&state=5Y7MUtftSd4uP8jGs",
+      "Mxqyj1gQac34krcYnd3bFeg5q0",
+      "",
+      "",
+      "Pastecodehereifprompted>",
+    ].join("\n");
+
+    const url = extractUrlFromBuffer(buffer);
+    expect(url).toBe(
+      "https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers&code_challenge=TWy6R8mJ-6Q4sxEInihAvunUZYP-vYuS_ZgN850bILY&code_challenge_method=S256&state=5Y7MUtftSd4uP8jGsMxqyj1gQac34krcYnd3bFeg5q0",
+    );
+  });
+
+  it("strips DEC private mode escape sequences", () => {
+    // PTY may emit \x1b[?25l (hide cursor) which the basic ANSI regex misses
+    const buffer = "\x1b[?25lhttps://claude.ai/oauth/authorize?code=true&client_id=abc123\x1b[?25h\n\nDone";
+    expect(extractUrlFromBuffer(buffer)).toBe("https://claude.ai/oauth/authorize?code=true&client_id=abc123");
+  });
+
+  it("handles trigger text glued directly to URL end (no empty line)", () => {
+    // The PTY may glue the "Paste code here" prompt directly onto the URL
+    // with no newline between. The caller (AuthManager) truncates at the
+    // trigger position, so extractUrlFromBuffer receives a clean buffer.
+    const fullBuffer = "https://claude.ai/oauth/authorize?code=true&state=abc123Pastecodehereifprompted";
+    // Simulating what AuthManager does: truncate at trigger position
+    const triggerPos = fullBuffer.indexOf("Pastecodehereifprompted");
+    const truncated = fullBuffer.substring(0, triggerPos);
+    expect(extractUrlFromBuffer(truncated)).toBe("https://claude.ai/oauth/authorize?code=true&state=abc123");
   });
 });

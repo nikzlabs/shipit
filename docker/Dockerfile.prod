@@ -1,4 +1,7 @@
-FROM node:20-slim AS build
+# ---- Build stage (full image has python3/make/gcc for native addons) ----
+FROM node:24-slim AS build
+
+RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -8,8 +11,11 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
+# Prune devDependencies so we can copy a clean node_modules to prod
+RUN npm prune --omit=dev && npm install tsx
+
 # ---- Production image ----
-FROM node:20-slim
+FROM node:24-slim
 
 RUN apt-get update && apt-get install -y git curl && rm -rf /var/lib/apt/lists/*
 
@@ -17,8 +23,8 @@ RUN npm install -g @anthropic-ai/claude-code
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm install tsx
+# Copy pre-built node_modules from build stage (includes compiled node-pty)
+COPY --from=build /app/node_modules ./node_modules
 
 # Copy source and built client from build stage
 COPY . .
