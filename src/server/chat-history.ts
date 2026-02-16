@@ -16,6 +16,10 @@ export interface PersistedMessage {
     name: string;
     input: Record<string, unknown>;
   }>;
+  images?: Array<{
+    data: string;
+    mediaType: string;
+  }>;
   isError?: boolean;
 }
 

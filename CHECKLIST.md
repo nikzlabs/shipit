@@ -97,15 +97,16 @@ Design docs in `docs/design/`.
 - [x] Handle missing `tool_use_id` match, binary content, and outputs >1MB gracefully
 
 ### Feature 5: Image & Screenshot Input (`docs/design/005-image-input.md`)
-- [ ] Extend `send_message` with optional `images` array (base64 + mediaType + filename)
-- [ ] Server-side validation: MIME whitelist, 5 MB per image, max 5 per message, 20 MB total
-- [ ] Write images to `/workspace/.vibe-images/` and pass to Claude CLI as base64 content blocks
-- [ ] `MessageInput` enhancements: drag-and-drop, Ctrl+V paste, file picker, inline thumbnails with × remove
-- [ ] Drop zone overlay on chat panel with "Drop image here" indicator
-- [ ] `MessageList` renders image thumbnails in user messages (clickable lightbox)
-- [ ] Persist images in chat history for reload survival
-- [ ] Component tests for MessageInput (drag-and-drop, paste, thumbnails, remove)
-- [ ] Integration tests for `send_message` with images (happy path, invalid MIME, oversized)
+- [x] Extend `send_message` with optional `images` array (base64 + mediaType + filename)
+- [x] Server-side validation: MIME whitelist, 5 MB per image, max 5 per message, 20 MB total
+- [x] Pass images to Claude CLI as base64 content blocks via stdin
+- [x] `MessageInput` enhancements: drag-and-drop, Ctrl+V paste, file picker, inline thumbnails with × remove
+- [x] Drop zone overlay on chat panel with "Drop image here" indicator
+- [x] `MessageList` renders image thumbnails in user messages (clickable lightbox with full-size preview)
+- [x] Persist images in chat history for reload survival
+- [x] Component tests for MessageInput (drag-and-drop, paste, thumbnails, remove, send with images)
+- [x] Component tests for MessageList image rendering and ImageLightbox (open/close/backdrop/escape)
+- [x] Integration tests for `send_message` with images (happy path, invalid MIME, too many, oversized, persistence)
 
 ### Feature 6: Preview Error Capture & Auto-Debug Loop (`docs/design/006-preview-error-capture.md`)
 - [ ] Vite plugin to inject error-capture script (`window.onerror`, `console.error` → `postMessage`)

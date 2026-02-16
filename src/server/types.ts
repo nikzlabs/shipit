@@ -82,10 +82,17 @@ export interface ProjectTemplate {
 
 // ---- WebSocket message types (client ↔ server) ----
 
+export interface ImageAttachment {
+  data: string;       // base64-encoded image data
+  mediaType: string;  // "image/png", "image/jpeg", etc.
+  filename?: string;  // optional original filename
+}
+
 export interface WsSendMessage {
   type: "send_message";
   text: string;
   sessionId?: string;
+  images?: ImageAttachment[];
 }
 
 export interface WsGetGitLog {
@@ -320,6 +327,10 @@ export interface WsChatHistoryMessage {
     id: string;
     name: string;
     input: Record<string, unknown>;
+  }>;
+  images?: Array<{
+    data: string;      // base64 image data (inlined for small images)
+    mediaType: string;
   }>;
   isError?: boolean;
 }

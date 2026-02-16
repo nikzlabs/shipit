@@ -454,6 +454,7 @@ export default function App() {
         role: m.role,
         text: m.text,
         toolUse: m.toolUse,
+        images: m.images,
         isError: m.isError,
         streaming: false,
       }));
@@ -545,16 +546,21 @@ export default function App() {
   }, [lastMessage, send, rightTab, viewingFile, notify]);
 
   const handleSend = useCallback(
-    (text: string) => {
+    (text: string, images?: Array<{ data: string; mediaType: string; filename: string }>) => {
       requestPermission();
       setShowTemplates(false);
-      setMessages((prev) => [...prev, { role: "user", text }]);
+      const messageImages = images?.map((img) => ({
+        data: img.data,
+        mediaType: img.mediaType,
+      }));
+      setMessages((prev) => [...prev, { role: "user", text, images: messageImages }]);
       setIsLoading(true);
       setActivity({ label: "Thinking..." });
       send({
         type: "send_message",
         text,
         sessionId: sessionIdRef.current,
+        images,
       });
     },
     [send, requestPermission]

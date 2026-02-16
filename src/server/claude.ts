@@ -1,6 +1,6 @@
 import { spawn, ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import type { ClaudeEvent } from "./types.js";
+import type { ClaudeEvent, ImageAttachment } from "./types.js";
 
 export class ClaudeProcess extends EventEmitter {
   private proc: ChildProcess | null = null;
@@ -9,8 +9,12 @@ export class ClaudeProcess extends EventEmitter {
   /**
    * Send a prompt to Claude CLI in print mode with streaming JSON output.
    * Emits "event" for each parsed NDJSON line and "done" when the process exits.
+   *
+   * When `images` is provided, the prompt is sent via stdin as a JSON content
+   * array containing image blocks followed by a text block, using
+   * `--input-format stream-json`.
    */
-  run(prompt: string, sessionId?: string, systemPrompt?: string): void {
+  run(prompt: string, sessionId?: string, systemPrompt?: string, images?: ImageAttachment[]): void {
     const args = [
       "-p", prompt,
       "--output-format", "stream-json",
@@ -33,6 +37,22 @@ export class ClaudeProcess extends EventEmitter {
     });
 
     this.buffer = "";
+
+    // When images are provided, write them to stdin as base64 content blocks.
+    // The CLI will pick up multimodal content from the piped input.
+    if (images && images.length > 0) {
+      const content = [
+        ...images.map((img) => ({
+          type: "image" as const,
+          source: { type: "base64" as const, media_type: img.mediaType, data: img.data },
+        })),
+        { type: "text" as const, text: prompt },
+      ];
+      const payload = JSON.stringify(content);
+      if (this.proc.stdin && !this.proc.stdin.destroyed) {
+        this.proc.stdin.write(payload + "\n");
+      }
+    }
 
     this.proc.stdout!.on("data", (chunk: Buffer) => {
       this.buffer += chunk.toString();
