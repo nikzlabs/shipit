@@ -29,6 +29,10 @@ const CONNECT_TIMEOUT_MS = 300;
  * is immediately destroyed after the check.
  */
 export function checkPort(port: number, host = "127.0.0.1"): Promise<boolean> {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return Promise.resolve(false);
+  }
+
   return new Promise((resolve) => {
     const socket = net.createConnection({ port, host, timeout: CONNECT_TIMEOUT_MS });
 
