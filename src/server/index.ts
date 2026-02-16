@@ -7,6 +7,7 @@ import { ClaudeProcess } from "./claude.js";
 import { ViteManager } from "./vite-manager.js";
 import { GitManager } from "./git.js";
 import { AuthManager } from "./auth.js";
+import { GitHubAuthManager } from "./github-auth.js";
 import { SessionManager } from "./sessions.js";
 import { ChatHistoryManager } from "./chat-history.js";
 import { findMarkdownFiles } from "./markdown.js";
@@ -34,6 +35,8 @@ export interface AppDeps {
   sessionManager?: SessionManager;
   /** Auth manager instance. Defaults to `new AuthManager()`. */
   authManager?: AuthManager;
+  /** GitHub auth manager instance. Defaults to `new GitHubAuthManager()`. */
+  githubAuthManager?: GitHubAuthManager;
   /** Chat history manager instance. Defaults to `new ChatHistoryManager()`. */
   chatHistoryManager?: ChatHistoryManager;
   /** Factory for creating ClaudeProcess instances. Defaults to `() => new ClaudeProcess()`. */
@@ -102,6 +105,17 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const authManager = deps.authManager ?? new AuthManager();
   const hasCredentials = authManager.checkCredentials();
   console.log("[server] Claude credentials found:", hasCredentials);
+
+  // ---- GitHub auth manager ----
+  const githubAuthManager = deps.githubAuthManager ?? new GitHubAuthManager(workspaceDir);
+  const hasGitHubToken = githubAuthManager.checkCredentials();
+  console.log("[server] GitHub credentials found:", hasGitHubToken);
+  if (hasGitHubToken && !deps.githubAuthManager) {
+    // Load user info and configure git credentials in the background
+    githubAuthManager.loadUserInfo().catch((err) => {
+      console.error("[server] Failed to load GitHub user info:", err);
+    });
+  }
 
   // Track connected WebSocket clients so we can broadcast
   const clients = new Set<{ readyState: number; send: (data: string) => void }>();
@@ -683,6 +697,122 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           send({ type: "template_applied", templateId: template.id, name: template.name });
         } catch (err) {
           send({ type: "error", message: `Failed to apply template: ${getErrorMessage(err)}` });
+        }
+      }
+
+      // ---- GitHub auth operations ----
+
+      if (msg.type === "github_set_token") {
+        const token = typeof msg.token === "string" ? msg.token.trim() : "";
+        if (!token) {
+          send({ type: "error", message: "GitHub token cannot be empty" });
+        } else {
+          const success = await githubAuthManager.setToken(token);
+          if (success) {
+            send({ type: "github_status", ...githubAuthManager.getStatus() });
+          } else {
+            send({ type: "error", message: "Invalid GitHub token" });
+          }
+        }
+      }
+
+      if (msg.type === "github_get_status") {
+        send({ type: "github_status", ...githubAuthManager.getStatus() });
+      }
+
+      if (msg.type === "github_push") {
+        if (!githubAuthManager.authenticated) {
+          send({ type: "error", message: "Not authenticated with GitHub" });
+        } else {
+          try {
+            const remote = msg.remote || "origin";
+            const branch = msg.branch || undefined;
+            const message = await gitManager.push(remote, branch);
+            const currentBranch = await gitManager.getCurrentBranch();
+            send({ type: "github_push_result", success: true, message, branch: currentBranch });
+          } catch (err) {
+            send({ type: "github_push_result", success: false, message: `Push failed: ${getErrorMessage(err)}` });
+          }
+        }
+      }
+
+      if (msg.type === "github_pull") {
+        if (!githubAuthManager.authenticated) {
+          send({ type: "error", message: "Not authenticated with GitHub" });
+        } else {
+          try {
+            const remote = msg.remote || "origin";
+            const branch = msg.branch || undefined;
+            const message = await gitManager.pull(remote, branch);
+            send({ type: "github_pull_result", success: true, message });
+          } catch (err) {
+            send({ type: "github_pull_result", success: false, message: `Pull failed: ${getErrorMessage(err)}` });
+          }
+        }
+      }
+
+      if (msg.type === "github_set_remote") {
+        const name = typeof msg.name === "string" ? msg.name.trim() : "";
+        const url = typeof msg.url === "string" ? msg.url.trim() : "";
+        if (!name || !url) {
+          send({ type: "error", message: "Remote name and URL are required" });
+        } else {
+          try {
+            await gitManager.addRemote(name, url);
+            const remotes = await gitManager.getRemotes();
+            send({ type: "github_remotes", remotes });
+          } catch (err) {
+            send({ type: "error", message: `Failed to set remote: ${getErrorMessage(err)}` });
+          }
+        }
+      }
+
+      if (msg.type === "github_get_remotes") {
+        try {
+          const remotes = await gitManager.getRemotes();
+          send({ type: "github_remotes", remotes });
+        } catch (err) {
+          send({ type: "error", message: `Failed to list remotes: ${getErrorMessage(err)}` });
+        }
+      }
+
+      if (msg.type === "github_logout") {
+        githubAuthManager.clearCredentials();
+        send({ type: "github_status", ...githubAuthManager.getStatus() });
+      }
+
+      if (msg.type === "github_create_repo") {
+        if (!githubAuthManager.authenticated) {
+          send({ type: "error", message: "Not authenticated with GitHub" });
+        } else {
+          const repoName = typeof msg.name === "string" ? msg.name.trim() : "";
+          if (!repoName) {
+            send({ type: "error", message: "Repository name is required" });
+          } else if (!/^[a-zA-Z0-9._-]+$/.test(repoName)) {
+            send({ type: "error", message: "Repository name contains invalid characters" });
+          } else {
+            const result = await githubAuthManager.createRepo(repoName, {
+              description: msg.description,
+              isPrivate: msg.isPrivate,
+            });
+            if (result.success && result.cloneUrl) {
+              // Auto-configure the remote so the user can push immediately
+              try {
+                await gitManager.addRemote("origin", result.cloneUrl);
+              } catch {
+                // Remote may already exist — that's fine
+              }
+            }
+            send({
+              type: "github_repo_created",
+              success: result.success,
+              name: result.name,
+              fullName: result.fullName,
+              url: result.url,
+              cloneUrl: result.cloneUrl,
+              message: result.message,
+            });
+          }
         }
       }
 
