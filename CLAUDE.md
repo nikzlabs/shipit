@@ -12,7 +12,7 @@ npm install
 - `npm run lint` — ESLint on `src/`
 - `npm run typecheck` — TypeScript type checking (`tsc --noEmit`)
 - `npm run dev` — start dev server (tsx)
-- `npm run build:client` — build client with Vite
+- `npm run build` — build client with Vite
 
 Run a single test file:
 
