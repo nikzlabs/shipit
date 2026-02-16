@@ -24,7 +24,9 @@ RUN npm ci --omit=dev && npm install tsx
 COPY . .
 COPY --from=build /app/dist/client ./dist/client
 
-RUN mkdir -p /workspace && cd /workspace && git init
+# Workspace for user projects — each session creates its own git repo
+RUN mkdir -p /workspace
+VOLUME /workspace
 
 ENV NODE_ENV=production
 

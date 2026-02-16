@@ -14,7 +14,7 @@ export class ClaudeProcess extends EventEmitter {
    * array containing image blocks followed by a text block, using
    * `--input-format stream-json`.
    */
-  run(prompt: string, sessionId?: string, systemPrompt?: string, images?: ImageAttachment[]): void {
+  run(prompt: string, sessionId?: string, systemPrompt?: string, images?: ImageAttachment[], cwd?: string): void {
     const args = [
       "-p", prompt,
       "--output-format", "stream-json",
@@ -31,7 +31,7 @@ export class ClaudeProcess extends EventEmitter {
     }
 
     this.proc = spawn("claude", args, {
-      cwd: "/workspace",
+      cwd: cwd ?? "/workspace",
       env: { ...process.env, HOME: "/root" },
       stdio: ["pipe", "pipe", "pipe"],
     });

@@ -236,10 +236,8 @@ export default function App() {
     if (data.type === "claude_event") {
       const event = data.event;
 
-      if (event.type === "system" && event.subtype === "init") {
-        sessionIdRef.current = event.session_id;
-        saveSessionId(event.session_id);
-      }
+      // Note: session ID is tracked via "session_started" messages from the server
+      // (which use the app-generated UUID), not from the Claude CLI session_id.
 
       if (event.type === "assistant") {
         const textBlocks = (event.message?.content ?? [])
@@ -735,8 +733,18 @@ export default function App() {
       setMessages([]);
       setIsLoading(false);
       setShowTemplates(false);
-      // Load persisted chat history for this session
+      // Reset session-specific UI state (each session has its own workspace)
+      setViewingFile(null);
+      setViewingFileContent(null);
+      setViewingFileBinary(false);
+      setGitCommits([]);
+      setFileTree([]);
+      setCurrentSessionUsage(null);
+      // Load persisted chat history for this session (also activates session on server)
       send({ type: "get_chat_history", sessionId });
+      // Refresh file tree and git log for the new session's workspace
+      send({ type: "get_file_tree" });
+      send({ type: "get_git_log" });
     },
     [send]
   );
@@ -748,6 +756,12 @@ export default function App() {
     setIsLoading(false);
     setCurrentSessionUsage(null);
     setShowTemplates(true);
+    // Reset session-specific UI state
+    setViewingFile(null);
+    setViewingFileContent(null);
+    setViewingFileBinary(false);
+    setGitCommits([]);
+    setFileTree([]);
     send({ type: "new_session" });
     // Request templates for the picker
     if (templates.length === 0) {
