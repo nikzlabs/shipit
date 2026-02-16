@@ -1,0 +1,33 @@
+FROM node:20-slim AS build
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build:client
+
+# ---- Production image ----
+FROM node:20-slim
+
+RUN apt-get update && apt-get install -y git curl && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g @anthropic-ai/claude-code
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm install tsx
+
+# Copy source and built client from build stage
+COPY . .
+COPY --from=build /app/dist/client ./dist/client
+
+RUN mkdir -p /workspace && cd /workspace && git init
+
+ENV NODE_ENV=production
+
+EXPOSE 3000 5173
+
+CMD ["node", "--import", "tsx", "src/server/index.ts"]
