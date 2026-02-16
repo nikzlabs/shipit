@@ -91,6 +91,8 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | `FileTree` (additions) | +5 | onFileClick callback, root-level file click, selected file highlighting, non-selected file styling, file buttons for clickability |
 | `TerminalPanel` | 15 | Header rendering, clear button, empty state, log entry text display, source labels (`[err]`/`[out]`/`[srv]`), timestamps, monospace font, entry ordering, source filter buttons (render, aria-pressed, hide/show toggle, prevent hiding all sources, filter-specific empty state) |
 | `UsageModal` | 13 | Dialog rendering, accessibility (role, aria-label), current session usage display, no-data fallback, all sessions aggregate, per-session breakdown with titles, truncated session ID fallback, close on button/backdrop/inner click prevention, zero usage, sub-cent formatting, null allUsage |
+| `ToolResult` | 25 | `truncateLines` utility (under limit, over limit, exact limit), empty/no-output display, BashResult (monospace, error highlighting, error border, truncation at 30 lines, expand/collapse, aria-label), ReadResult (code block, hljs syntax highlighting, truncation at 20 lines), GrepResult (colored file paths, yellow line numbers, file-only matches, truncation at 20 lines, Glob tool), GenericResult (monospace fallback, error red, truncation at 15 lines) |
+| `MessageList` (tool results) | +9 | Show/hide output toggle, no toggle without result, expand/collapse result content, tool_use_id matching, no toggle for Edit/Write (rendered as diffs), missing tool_use_id match handling, aria-expanded attribute |
 
 ## Writing New Tests
 

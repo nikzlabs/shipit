@@ -1,6 +1,6 @@
 # Design Doc 004: Inline Tool Result Rendering
 
-## Status: Proposed
+## Status: Implemented
 
 ## Problem
 
@@ -231,7 +231,7 @@ If we later want persistence, we can add it as a separate feature.
 ### Quality Checklist
 
 - [x] Input validation: Tool results come from Claude CLI (trusted). Client-side truncation prevents memory issues.
-- [ ] Component tests: Render `BashResult` with normal output, error output, empty output. Render `ReadResult` with syntax highlighting. Test collapse/expand toggle.
-- [ ] Edge cases: Handle missing `tool_use_id` match (orphan results), handle binary/non-UTF8 content gracefully, handle extremely long output (>1MB).
-- [ ] Performance: Virtualize or truncate results to prevent DOM bloat with large outputs. Lazy-render syntax highlighting.
-- [ ] Accessibility: Expand/collapse buttons have proper aria labels. Error results have role="alert".
+- [x] Component tests: Render `BashResult` with normal output, error output, empty output. Render `ReadResult` with syntax highlighting. Test collapse/expand toggle.
+- [x] Edge cases: Handle missing `tool_use_id` match (orphan results), handle binary/non-UTF8 content gracefully, handle extremely long output (>1MB).
+- [x] Performance: Virtualize or truncate results to prevent DOM bloat with large outputs. Lazy-render syntax highlighting.
+- [x] Accessibility: Expand/collapse buttons have proper aria labels. Error results have role="alert".

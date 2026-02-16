@@ -9,6 +9,7 @@ import {
   type StreamingActivity,
 } from "./StreamingIndicator.js";
 import { AskUserQuestion, type AskQuestionItem } from "./AskUserQuestion.js";
+import { ToolResult } from "./ToolResult.js";
 import type { SearchMatch } from "../hooks/useSearch.js";
 
 export interface ToolUseBlock {
@@ -18,18 +19,27 @@ export interface ToolUseBlock {
   input: Record<string, unknown>;
 }
 
+export interface ToolResultBlock {
+  toolUseId: string;
+  content: string;
+  isError?: boolean;
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   text: string;
   toolUse?: ToolUseBlock[];
+  toolResults?: ToolResultBlock[];
   streaming?: boolean;
   /** When true, this message represents an error (CLI crash, WS drop, etc.) */
   isError?: boolean;
 }
 
-function ToolUseItem({ tool, isLast, isStreaming, onAnswerQuestion, isQuestionDisabled }: { tool: ToolUseBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void; isQuestionDisabled: boolean }) {
+function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQuestionDisabled }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void; isQuestionDisabled: boolean }) {
   // Show a spinner on the last tool when the message is still streaming
   const inProgress = isLast && isStreaming;
+  const [collapsed, setCollapsed] = useState(true);
+  const hasResult = !!result;
 
   // Render file-modifying tools as diff blocks
   if (tool.name === "Edit") {
@@ -69,28 +79,43 @@ function ToolUseItem({ tool, isLast, isStreaming, onAnswerQuestion, isQuestionDi
     );
   }
 
-  // Fallback: compact one-liner for non-file tools
+  // Fallback: compact one-liner for non-file tools, with optional tool result
   return (
-    <div className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 rounded px-2 py-1 font-mono flex items-center gap-2">
-      {inProgress && <ToolSpinner />}
-      <span className={inProgress ? "text-blue-400" : ""}>
-        {tool.name}
-      </span>
-      {"command" in tool.input && tool.input.command ? (
-        <span className="ml-1 text-gray-500 truncate max-w-xs">
-          {String(tool.input.command).slice(0, 80)}
+    <div>
+      <div className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 rounded px-2 py-1 font-mono flex items-center gap-2">
+        {inProgress && <ToolSpinner />}
+        <span className={inProgress ? "text-blue-400" : ""}>
+          {tool.name}
         </span>
-      ) : null}
-      {"file_path" in tool.input && tool.input.file_path ? (
-        <span className="ml-1 text-gray-500 truncate max-w-xs">
-          {String(tool.input.file_path)}
-        </span>
-      ) : null}
-      {"pattern" in tool.input && tool.input.pattern ? (
-        <span className="ml-1 text-gray-500 truncate max-w-xs">
-          {String(tool.input.pattern)}
-        </span>
-      ) : null}
+        {"command" in tool.input && tool.input.command ? (
+          <span className="ml-1 text-gray-500 truncate max-w-xs">
+            {String(tool.input.command).slice(0, 80)}
+          </span>
+        ) : null}
+        {"file_path" in tool.input && tool.input.file_path ? (
+          <span className="ml-1 text-gray-500 truncate max-w-xs">
+            {String(tool.input.file_path)}
+          </span>
+        ) : null}
+        {"pattern" in tool.input && tool.input.pattern ? (
+          <span className="ml-1 text-gray-500 truncate max-w-xs">
+            {String(tool.input.pattern)}
+          </span>
+        ) : null}
+        {hasResult && (
+          <button
+            onClick={() => setCollapsed(!collapsed)}
+            className="ml-auto text-gray-500 hover:text-gray-300 transition-colors shrink-0"
+            aria-label={collapsed ? "Show output" : "Hide output"}
+            aria-expanded={!collapsed}
+          >
+            {collapsed ? "▶ Show output" : "▼ Hide output"}
+          </button>
+        )}
+      </div>
+      {hasResult && !collapsed && (
+        <ToolResult tool={tool.name} result={result} />
+      )}
     </div>
   );
 }
@@ -497,10 +522,13 @@ export function MessageList({
                     // Questions are interactive only on the last assistant message, when not loading/streaming
                     const isLastMessage = i === messages.length - 1;
                     const questionDisabled = !isLastMessage || isLoading || !!msg.streaming;
+                    // Match tool result by tool_use_id
+                    const toolResult = msg.toolResults?.find((r) => r.toolUseId === tool.id);
                     return (
                       <ToolUseItem
                         key={tool.id}
                         tool={tool}
+                        result={toolResult}
                         isLast={toolIdx === msg.toolUse!.length - 1}
                         isStreaming={!!msg.streaming}
                         onAnswerQuestion={onAnswerQuestion}
