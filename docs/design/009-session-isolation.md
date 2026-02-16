@@ -9,7 +9,7 @@ All sessions share a single `/workspace` directory and a single git repo. When a
 This also means sessions cannot run in parallel. If two browser tabs are open — one working on Session A and one on Session B — they step on each other's files.
 
 Specific pain points:
-1. **File collisions** — Claude in Session B can delete or overwrite files created in Session A.
+1. **File collisions** — The agent in Session B can delete or overwrite files created in Session A.
 2. **Git history is tangled** — commits from all sessions are interleaved on one branch, making rollback per-session impossible.
 3. **Preview confusion** — the Vite dev server always shows whatever is currently on disk, regardless of which session the user thinks they're in.
 4. **Rollback is global** — rolling back to a commit from Session A also undoes Session B's work.
@@ -31,7 +31,7 @@ Git branches share a single working directory. Only one branch can be checked ou
 - Sharing files between sessions (users can copy manually or use templates).
 - Shared `node_modules` across sessions (each session installs its own dependencies).
 - Parallel previews across sessions (v1 uses a single Vite instance for the active session; per-session Vite is a future enhancement).
-- Running multiple Claude CLI processes concurrently (currently the server has a single `ClaudeProcess` variable — starting a new turn kills any running turn, regardless of session).
+- Running multiple agent processes concurrently (currently the server has a single `ClaudeProcess` variable — starting a new turn kills any running turn, regardless of session). Future agents may have different concurrency models.
 - Cross-session diffing or merging.
 
 ## Prerequisites
@@ -81,21 +81,39 @@ Each session gets its own workspace directory:
 
 Session metadata, chat history, and usage stats remain in the root `/workspace` directory (they're already per-session by ID). Only the project files live inside `sessions/{id}/`.
 
+### Decoupled Session IDs
+
+The app generates its own session IDs (`crypto.randomUUID()`), independent from any agent-provided session ID. This is a deliberate decoupling:
+
+| | App Session ID | Agent Session ID |
+|---|---|---|
+| **Purpose** | Identifies workspace dir, files, git repo, metadata | Identifies the agent's conversation context (e.g. Claude CLI's `--resume`) |
+| **Created** | Immediately — on template select or first message, whichever comes first | When the agent first processes a message (e.g. Claude CLI's `system.init` event) |
+| **Source** | Server-generated UUID | Agent-provided |
+| **Stored in** | `SessionInfo.id` | `SessionInfo.agentSessionId` |
+
+**Why not use the agent's session ID directly?**
+
+1. **Chicken-and-egg with templates.** Template application needs a session directory to write files into, but the agent's session ID only arrives after the agent processes a message. With decoupled IDs, the server creates the workspace directory immediately when the user selects a template — before any agent is involved.
+2. **Agent-agnostic.** The current backend uses Claude CLI, but future versions will support other agents (e.g. Codex, Gemini CLI, custom agents). Each agent has its own session/conversation ID scheme. The app's session ID is the stable identifier that all workspace operations key on, regardless of which agent powers the conversation.
+3. **1:1 mapping today, 1:N possible later.** A single app session could theoretically switch agents mid-conversation or use multiple agents. The app session ID remains stable while `agentSessionId` tracks whatever the current agent needs for continuity.
+
 ### Data Model Changes
 
 #### `SessionInfo` (in `types.ts`)
 
 ```typescript
 export interface SessionInfo {
-  id: string;
+  id: string;                  // App-generated UUID
+  agentSessionId?: string;     // NEW — agent's conversation ID (for --resume, etc.)
   title: string;
   createdAt: string;
   lastUsedAt: string;
-  workspaceDir?: string;  // NEW — e.g. "/workspace/sessions/abc123"
+  workspaceDir?: string;       // NEW — e.g. "/workspace/sessions/abc123"
 }
 ```
 
-The `workspaceDir` is optional for backward compatibility with pre-existing sessions. It is set once at session creation and never changes.
+`workspaceDir` is optional for backward compatibility with pre-existing sessions. It is set once at session creation and never changes. `agentSessionId` is set when the agent first responds (e.g. on Claude CLI's `system.init` event) and used for resuming conversations.
 
 #### New constant
 
@@ -141,18 +159,32 @@ Tests inject a factory that returns stubs. This is the biggest structural change
 
 #### Session workspace lifecycle
 
-**On new session creation** (when `system.init` fires):
+**On session creation** (triggered by template select or first message — whichever comes first):
 
 ```typescript
-const sessionDir = path.join(SESSIONS_ROOT, sessionId);
+// Server generates the app session ID — no agent involved yet
+const appSessionId = crypto.randomUUID();
+const sessionDir = path.join(SESSIONS_ROOT, appSessionId);
 await fs.mkdir(sessionDir, { recursive: true });
 
 // Initialize a fresh git repo for this session
 const git = getGitManager(sessionDir);
 await git.init();
 
-sessionManager.track(sessionId, title, sessionDir);
+const session = sessionManager.track(appSessionId, title, sessionDir);
+send({ type: "session_started", session });
 ```
+
+The session and its workspace directory now exist. The user sees it in the dropdown immediately.
+
+**On agent init** (e.g. when Claude CLI's `system.init` fires after first message):
+
+```typescript
+// Store the agent's conversation ID for future --resume calls
+sessionManager.setAgentSessionId(appSessionId, event.session_id);
+```
+
+This is a separate step — the agent's session ID is recorded but does not drive workspace creation.
 
 **On template application** — apply template into the session's directory instead of `/workspace`:
 
@@ -160,6 +192,8 @@ sessionManager.track(sessionId, title, sessionDir);
 // Current: applyTemplate(template, workspaceDir)    // workspaceDir = "/workspace"
 // New:     applyTemplate(template, activeSessionDir) // activeSessionDir = "/workspace/sessions/abc123"
 ```
+
+Because the session directory is created before template application, the files land in the right place immediately.
 
 **On session delete** — clean up the directory:
 
@@ -190,11 +224,11 @@ run(prompt: string, sessionId?: string, systemPrompt?: string, images?: ImageAtt
 }
 ```
 
-Callers in `index.ts` add `activeSessionDir` as the last argument:
+Note: the `sessionId` passed to `run()` is the **agent's** session ID (for `--resume`), not the app session ID. Callers look it up from the session metadata:
 
 ```typescript
-// Current: claude.run(msg.text, msg.sessionId, systemPrompt, images)
-// New:     claude.run(msg.text, msg.sessionId, systemPrompt, images, activeSessionDir)
+const session = sessionManager.get(appSessionId);
+claude.run(msg.text, session.agentSessionId, systemPrompt, images, session.workspaceDir);
 ```
 
 #### `ViteManager` — accept `workspaceDir` parameter
@@ -280,15 +314,15 @@ if (!activeSessionDir) {
 
 All file operations (`get_file_tree`, `get_file_content`, `list_docs`, `get_git_log`, `rollback`) use `activeSessionDir` instead of the hardcoded `WORKSPACE` constant.
 
-#### Concurrent Claude turns
+#### Concurrent agent turns
 
-Currently `index.ts` has a single `let claude: ClaudeProcess | null = null`. Starting a new turn kills any in-progress turn — this is an **interruption mechanism**, not a lock. This behavior is unchanged by session isolation.
+Currently `index.ts` has a single `let claude: ClaudeProcess | null = null`. Starting a new turn kills any in-progress turn — this is an **interruption mechanism**, not a lock. This behavior is unchanged by session isolation and applies regardless of which agent backend is used.
 
 However, with isolated session directories, the risk is reduced: even if Turn A for Session 1 is killed when Turn B for Session 2 starts, Session 1's files remain intact on disk (they're in a separate directory). The interrupted turn may leave uncommitted changes, but those are confined to Session 1's workspace.
 
 ### Path Security
 
-Session directories are derived from session IDs, which are generated by the Claude CLI (UUIDs). However, the `get_file_content` handler must still guard against path traversal relative to the session directory:
+Session directories are derived from app-generated UUIDs (via `crypto.randomUUID()`). However, the `get_file_content` handler must still guard against path traversal relative to the session directory:
 
 ```typescript
 const resolved = path.resolve(activeSessionDir, requestedPath);
@@ -358,8 +392,8 @@ Over time, users naturally create new sessions and stop using old ones. No autom
 | `src/server/index.ts` | Replace hardcoded `WORKSPACE` with per-session `activeSessionDir`; create session dirs; refactor from single `gitManager` to per-session factory; update all callers |
 | `src/server/claude.ts` | Add `cwd` parameter to `run()` |
 | `src/server/vite-manager.ts` | Add `workspaceDir` parameter to `start()`/`restart()` |
-| `src/server/sessions.ts` | Accept `workspaceDir` in `track()`, persist in session metadata; delete directory on session delete |
-| `src/server/types.ts` | Add optional `workspaceDir` to `SessionInfo` |
+| `src/server/sessions.ts` | Accept `workspaceDir` in `track()`, add `setAgentSessionId()`, persist in session metadata; delete directory on session delete |
+| `src/server/types.ts` | Add optional `workspaceDir` and `agentSessionId` to `SessionInfo` |
 | `src/server/github-auth.ts` | Support per-session credential configuration |
 | `src/server/templates.ts` | No changes (already accepts target directory) |
 | `src/server/git.ts` | No changes (already accepts `workspaceDir` in constructor) |
@@ -386,6 +420,7 @@ These features are complementary and orthogonal:
 
 ### Future Enhancements
 
+- **Multiple agent backends** — The decoupled session ID design anticipates support for agents beyond Claude CLI (e.g. Codex, Gemini CLI, custom agents). Each agent provides its own conversation ID stored in `agentSessionId`, while the app session ID and workspace directory remain stable. The `ClaudeProcess` abstraction could evolve into an `AgentProcess` interface with backend-specific implementations.
 - **Per-session Vite** — Run separate Vite instances on different ports for parallel previews across sessions.
 - **Per-connection FileWatcher** — Watch each connected client's active session directory independently.
 - **Shared `node_modules`** — Use symlinks or a shared cache to reduce disk usage.
