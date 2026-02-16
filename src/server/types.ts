@@ -467,6 +467,14 @@ export interface WsSystemPromptSaved {
   content: string;
 }
 
+// ---- File watcher types ----
+
+export interface WsFilesChanged {
+  type: "files_changed";
+  /** Relative paths of files that changed in the workspace. */
+  paths: string[];
+}
+
 export type WsServerMessage =
   | WsClaudeEvent
   | WsError
@@ -491,6 +499,7 @@ export type WsServerMessage =
   | WsTemplateApplied
   | WsSystemPrompt
   | WsSystemPromptSaved
+  | WsFilesChanged
   | WsGitHubStatus
   | WsGitHubPushResult
   | WsGitHubPullResult

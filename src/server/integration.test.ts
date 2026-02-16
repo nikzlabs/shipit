@@ -26,6 +26,7 @@ import { AuthManager } from "./auth.js";
 import { GitHubAuthManager } from "./github-auth.js";
 import { ViteManager } from "./vite-manager.js";
 import { ClaudeProcess } from "./claude.js";
+import { FileWatcher } from "./file-watcher.js";
 import type { WsServerMessage, WsClientMessage } from "./types.js";
 import type { FastifyInstance } from "fastify";
 
@@ -233,6 +234,18 @@ class FakeClaudeProcess extends EventEmitter {
   }
 }
 
+/**
+ * Stub FileWatcher that doesn't actually watch the filesystem.
+ * Tests can call simulateChanges() to trigger "changes" events manually.
+ */
+class StubFileWatcher extends EventEmitter {
+  start() { /* no-op */ }
+  stop() { /* no-op */ }
+  simulateChanges(paths: string[]) {
+    this.emit("changes", paths);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Test suite
 // ---------------------------------------------------------------------------
@@ -268,6 +281,7 @@ describe("Integration: WebSocket flow", () => {
         lastClaude = new FakeClaudeProcess();
         return lastClaude as unknown as ClaudeProcess;
       },
+      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
       startVite: false,
@@ -920,6 +934,7 @@ describe("Integration: Port auto-detection", () => {
         return lastClaude as unknown as ClaudeProcess;
       },
       detectPorts: async () => stubDetectedPorts,
+      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
       startVite: false,
@@ -1155,6 +1170,7 @@ describe("Integration: Periodic port scanning", () => {
         detectPortsCallCount++;
         return stubDetectedPorts;
       },
+      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
       startVite: false,
@@ -1346,6 +1362,7 @@ describe("Integration: Terminal/logs relay", () => {
         lastClaude = new FakeClaudeProcess();
         return lastClaude as unknown as ClaudeProcess;
       },
+      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
       startVite: false,
@@ -1537,6 +1554,7 @@ describe("Integration: Workspace project templates", () => {
         lastClaude = new FakeClaudeProcess();
         return lastClaude as unknown as ClaudeProcess;
       },
+      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
       startVite: false,
@@ -1690,6 +1708,7 @@ describe("Integration: GitHub authentication", () => {
         lastClaude = new FakeClaudeProcess();
         return lastClaude as unknown as ClaudeProcess;
       },
+      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
       startVite: false,
@@ -1973,6 +1992,7 @@ describe("Integration: Usage & cost tracking", () => {
         lastClaude = new FakeClaudeProcess();
         return lastClaude as unknown as ClaudeProcess;
       },
+      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
       startVite: false,
@@ -2290,6 +2310,7 @@ describe("Integration: System prompt", () => {
         lastClaude = new FakeClaudeProcess();
         return lastClaude as unknown as ClaudeProcess;
       },
+      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
       startVite: false,
@@ -2485,5 +2506,129 @@ describe("Integration: System prompt", () => {
     expect(lastClaude.lastSystemPrompt).toBeUndefined();
 
     client.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// File watcher tests
+// ---------------------------------------------------------------------------
+
+describe("Integration: File watcher", () => {
+  let app: FastifyInstance;
+  let port: number;
+  let tmpDir: string;
+  let gitManager: GitManager;
+  let lastClaude: FakeClaudeProcess;
+  let stubFileWatcher: StubFileWatcher;
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-filewatcher-"));
+    gitManager = new GitManager(tmpDir);
+    await gitManager.init();
+
+    stubFileWatcher = new StubFileWatcher();
+
+    app = await buildApp({
+      gitManager,
+      sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
+      viteManager: new StubViteManager() as unknown as ViteManager,
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
+      claudeFactory: () => {
+        lastClaude = new FakeClaudeProcess();
+        return lastClaude as unknown as ClaudeProcess;
+      },
+      fileWatcher: stubFileWatcher as unknown as FileWatcher,
+      workspaceDir: tmpDir,
+      serveStatic: false,
+      startVite: false,
+      portScanIntervalMs: 0,
+    });
+
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+    const match = address.match(/:(\d+)$/);
+    port = match ? Number(match[1]) : 0;
+  });
+
+  afterEach(async () => {
+    await app.close();
+    await new Promise((r) => setTimeout(r, 100));
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
+  });
+
+  it("broadcasts files_changed when file watcher emits changes", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Simulate file changes via the stub
+    stubFileWatcher.simulateChanges(["src/app.ts", "package.json"]);
+
+    const msg = await client.receive();
+
+    expect(msg).toMatchObject({
+      type: "files_changed",
+      paths: ["src/app.ts", "package.json"],
+    });
+
+    client.close();
+  });
+
+  it("broadcasts files_changed to multiple connected clients", async () => {
+    const client1 = await TestClient.connect(port);
+    await client1.receive(); // preview_status
+
+    const client2 = await TestClient.connect(port);
+    await client2.receive(); // preview_status
+
+    stubFileWatcher.simulateChanges(["index.html"]);
+
+    const msg1 = await client1.receive();
+    const msg2 = await client2.receive();
+
+    expect(msg1).toMatchObject({ type: "files_changed", paths: ["index.html"] });
+    expect(msg2).toMatchObject({ type: "files_changed", paths: ["index.html"] });
+
+    client1.close();
+    client2.close();
+  });
+
+  it("handles multiple sequential file change events", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // First batch of changes
+    stubFileWatcher.simulateChanges(["a.ts"]);
+    const msg1 = await client.receive();
+    expect(msg1).toMatchObject({ type: "files_changed", paths: ["a.ts"] });
+
+    // Second batch of changes
+    stubFileWatcher.simulateChanges(["b.ts", "c.ts"]);
+    const msg2 = await client.receive();
+    expect(msg2).toMatchObject({ type: "files_changed", paths: ["b.ts", "c.ts"] });
+
+    client.close();
+  });
+
+  it("files_changed is not received after client disconnects", async () => {
+    const client1 = await TestClient.connect(port);
+    await client1.receive(); // preview_status
+
+    const client2 = await TestClient.connect(port);
+    await client2.receive(); // preview_status
+
+    // Disconnect client1
+    client1.close();
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Simulate changes — only client2 should receive
+    stubFileWatcher.simulateChanges(["test.ts"]);
+    const msg = await client2.receive();
+    expect(msg).toMatchObject({ type: "files_changed", paths: ["test.ts"] });
+
+    client2.close();
   });
 });
