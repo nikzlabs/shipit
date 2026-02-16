@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { WsStatus } from "../hooks/useWebSocket.js";
 
+/** Grace period before showing the disconnect banner (ms). */
+const DISCONNECT_DELAY_MS = 1500;
+
 /**
  * ConnectionBanner — full-width banner shown when the WebSocket connection
  * is lost, reconnecting, or has just been restored. Provides clear visual
@@ -10,8 +13,8 @@ import type { WsStatus } from "../hooks/useWebSocket.js";
  * States:
  *   - "open" with no recent reconnection → hidden
  *   - "open" immediately after reconnection → green "Reconnected" banner (auto-hides)
- *   - "connecting" → yellow "Reconnecting..." banner
- *   - "closed" → red "Connection lost" banner with attempt count & Reconnect button
+ *   - "connecting" / "closed" after grace period → yellow/red banner
+ *   - First page load (never connected) → hidden
  */
 export function ConnectionBanner({
   status,
@@ -24,15 +27,30 @@ export function ConnectionBanner({
 }) {
   const prevStatusRef = useRef(status);
   const [showReconnected, setShowReconnected] = useState(false);
+  // Whether the disconnect banner should be visible (after grace period).
+  const [showDisconnect, setShowDisconnect] = useState(false);
+  const hasConnectedRef = useRef(false);
 
   useEffect(() => {
-    const wasDisconnected =
-      prevStatusRef.current === "closed" || prevStatusRef.current === "connecting";
+    const prevStatus = prevStatusRef.current;
     prevStatusRef.current = status;
 
-    if (wasDisconnected && status === "open") {
-      setShowReconnected(true);
-      const timer = setTimeout(() => setShowReconnected(false), 3000);
+    if (status === "open") {
+      hasConnectedRef.current = true;
+      setShowDisconnect(false);
+
+      // Show "Reconnected" flash only after a real disconnect
+      if (prevStatus === "closed") {
+        setShowReconnected(true);
+        const timer = setTimeout(() => setShowReconnected(false), 3000);
+        return () => clearTimeout(timer);
+      }
+      return;
+    }
+
+    // Connection dropped after having been open — start grace period
+    if (hasConnectedRef.current && status !== "open") {
+      const timer = setTimeout(() => setShowDisconnect(true), DISCONNECT_DELAY_MS);
       return () => clearTimeout(timer);
     }
   }, [status]);
@@ -49,7 +67,7 @@ export function ConnectionBanner({
     );
   }
 
-  if (status === "open") return null;
+  if (status === "open" || !showDisconnect) return null;
 
   const isConnecting = status === "connecting";
 
