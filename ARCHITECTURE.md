@@ -107,6 +107,7 @@ The server is intentionally thin — it's a bridge between the browser and the C
 | `components/MobileTabBar.tsx` | Bottom navigation bar for mobile: switch between Chat and Preview panels |
 | `components/AuthOverlay.tsx` | Full-screen overlay for OAuth authentication flow |
 | `components/UsageModal.tsx` | Usage/cost summary modal — current session and all-sessions breakdown, triggered by cost badge |
+| `components/SystemPromptEditor.tsx` | Project-level system prompt modal — edit/save/clear instructions sent to Claude with every message |
 
 ### Claude CLI Events (NDJSON)
 
@@ -177,6 +178,8 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `get_file_content` | `path` | Request contents of a file in /workspace |
 | `clear_logs` | — | Clear the server-side terminal log buffer |
 | `get_usage_stats` | — | Request aggregated usage/cost data across all sessions |
+| `get_system_prompt` | — | Request current project-level system prompt |
+| `set_system_prompt` | `content` | Save or delete the project-level system prompt |
 
 ### Server → Client Messages
 
@@ -201,6 +204,8 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `log_entry` | `source`, `text`, `timestamp` | Terminal log line — `source` is `"stderr"`, `"stdout"`, or `"server"` |
 | `usage_stats` | `stats` | Aggregated usage data with per-session and total costs/turns |
 | `usage_update` | `sessionId`, `totalCostUsd`, `totalDurationMs`, `turnCount` | Pushed after each turn that carries `total_cost_usd` |
+| `system_prompt` | `content` | Current system prompt text (empty string if not set) |
+| `system_prompt_saved` | `content` | Confirmation after saving/deleting the system prompt |
 
 ### Adding a New Message Type
 
@@ -728,6 +733,35 @@ Users can edit or retry any previous user message. Hovering over a user message 
 
 - **`src/client/components/MessageList.tsx`** — `MessageEditor` component (inline textarea editor), edit/retry button rendering, `editingIndex` state.
 - **`src/client/App.tsx`** — `handleEditMessage` callback: truncates messages and sends the new text.
+
+## Project-Level System Prompt
+
+Users can define a persistent system prompt that is sent to Claude with every message. This lets users encode project conventions, preferred libraries, and style guidelines without repeating them.
+
+### Storage
+
+The system prompt is stored at `/workspace/.shipit/system-prompt.md`. This keeps ShipIt config separate from user code while remaining git-trackable. If the file doesn't exist, no system prompt is sent (Claude CLI uses its default behavior, still picking up any top-level `CLAUDE.md`).
+
+### How It Works
+
+1. **Reading**: Before each Claude spawn (`send_message` or `answer_question`), the server reads `/workspace/.shipit/system-prompt.md`. If the file exists and contains non-empty content, it's passed as the `--system-prompt` argument to the Claude CLI.
+2. **Writing**: The `set_system_prompt` handler validates content (string type, max 50KB), trims whitespace, creates the `.shipit` directory if needed, and writes the file. An empty/whitespace-only prompt deletes the file.
+3. **UI**: A gear icon in the header opens the `SystemPromptEditor` modal. The icon is blue when a prompt is set, gray when empty. The modal includes a textarea with character count, save/cancel buttons, and keyboard shortcuts (Escape to close, Ctrl+Enter to save).
+
+### Validation
+
+- Content must be a string (rejects non-string types with an error)
+- Maximum 50,000 characters (rejects with an error)
+- Whitespace is trimmed before saving
+- Empty/whitespace-only content deletes the file
+
+### Key Files
+
+- **`src/server/claude.ts`** — `run()` accepts optional `systemPrompt` parameter, passes `--system-prompt` to CLI.
+- **`src/server/types.ts`** — `WsGetSystemPrompt`, `WsSetSystemPrompt`, `WsSystemPrompt`, `WsSystemPromptSaved` message types.
+- **`src/server/index.ts`** — `readSystemPrompt()` helper, `get_system_prompt`/`set_system_prompt` handlers, passes system prompt to `claude.run()`.
+- **`src/client/components/SystemPromptEditor.tsx`** — Modal editor with textarea, character count, save/cancel.
+- **`src/client/App.tsx`** — State management (`systemPromptOpen`, `hasSystemPrompt`, `systemPromptContent`), gear icon in header, WS message handlers.
 
 ## Build & Run
 
