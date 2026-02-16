@@ -28,7 +28,7 @@ import { TemplateSelector, type TemplateInfo } from "./components/TemplateSelect
 import { UsageModal, type SessionUsage, type UsageStats } from "./components/UsageModal.js";
 import { SystemPromptEditor } from "./components/SystemPromptEditor.js";
 import { GitIdentityOverlay } from "./components/GitIdentityOverlay.js";
-import { BranchIndicator, type BranchInfo, type CheckpointInfo } from "./components/BranchIndicator.js";
+import { ThreadIndicator, type ThreadInfo, type CheckpointInfo } from "./components/ThreadIndicator.js";
 import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal";
@@ -96,8 +96,8 @@ export default function App() {
   const [hasSystemPrompt, setHasSystemPrompt] = useState(false);
   const [systemPromptContent, setSystemPromptContent] = useState("");
   const [gitIdentityNeeded, setGitIdentityNeeded] = useState(false);
-  const [branches, setBranches] = useState<BranchInfo[]>([]);
-  const [activeBranchId, setActiveBranchId] = useState<string>("");
+  const [threads, setThreads] = useState<ThreadInfo[]>([]);
+  const [activeThreadId, setActiveThreadId] = useState<string>("");
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
   const historyLoadedRef = useRef(false);
@@ -421,8 +421,8 @@ export default function App() {
         }
         return [data.session, ...prev];
       });
-      // Load branches for this session
-      send({ type: "list_branches" } as any);
+      // Load threads for this session
+      send({ type: "list_threads" } as any);
     }
 
     if (data.type === "session_renamed") {
@@ -552,29 +552,29 @@ export default function App() {
       setSystemPromptOpen(false);
     }
 
-    if (data.type === "branch_list") {
-      setBranches(data.branches);
-      setActiveBranchId(data.activeBranchId);
+    if (data.type === "thread_list") {
+      setThreads(data.threads);
+      setActiveThreadId(data.activeThreadId);
     }
 
     if (data.type === "checkpoint_created") {
-      // Update the branch's checkpoints in local state
-      setBranches((prev) =>
-        prev.map((b) =>
-          b.id === data.branchId
-            ? { ...b, checkpoints: [...b.checkpoints, data.checkpoint] }
-            : b,
+      // Update the thread's checkpoints in local state
+      setThreads((prev) =>
+        prev.map((t) =>
+          t.id === data.threadId
+            ? { ...t, checkpoints: [...t.checkpoints, data.checkpoint] }
+            : t,
         ),
       );
     }
 
-    if (data.type === "branch_created") {
-      setBranches((prev) => {
-        const deactivated = prev.map((b) => ({ ...b, isActive: false }));
-        return [...deactivated, data.branch];
+    if (data.type === "thread_forked") {
+      setThreads((prev) => {
+        const deactivated = prev.map((t) => ({ ...t, isActive: false }));
+        return [...deactivated, data.thread];
       });
-      setActiveBranchId(data.branch.id);
-      // Replace messages with the branch's conversation
+      setActiveThreadId(data.thread.id);
+      // Replace messages with the thread's conversation
       const loaded: ChatMessage[] = data.messages.map((m: WsChatHistoryMessage) => ({
         role: m.role,
         text: m.text,
@@ -586,11 +586,11 @@ export default function App() {
       setMessages(loaded);
     }
 
-    if (data.type === "branch_switched") {
-      setBranches((prev) =>
-        prev.map((b) => ({ ...b, isActive: b.id === data.branch.id })),
+    if (data.type === "thread_switched") {
+      setThreads((prev) =>
+        prev.map((t) => ({ ...t, isActive: t.id === data.thread.id })),
       );
-      setActiveBranchId(data.branch.id);
+      setActiveThreadId(data.thread.id);
       const loaded: ChatMessage[] = data.messages.map((m: WsChatHistoryMessage) => ({
         role: m.role,
         text: m.text,
@@ -795,8 +795,8 @@ export default function App() {
       setGitCommits([]);
       setFileTree([]);
       setCurrentSessionUsage(null);
-      setBranches([]);
-      setActiveBranchId("");
+      setThreads([]);
+      setActiveThreadId("");
       // Load persisted chat history for this session (also activates session on server)
       send({ type: "get_chat_history", sessionId });
       // Refresh file tree and git log for the new session's workspace
@@ -819,8 +819,8 @@ export default function App() {
     setViewingFileBinary(false);
     setGitCommits([]);
     setFileTree([]);
-    setBranches([]);
-    setActiveBranchId("");
+    setThreads([]);
+    setActiveThreadId("");
     send({ type: "new_session" });
     // Request templates for the picker
     if (templates.length === 0) {
@@ -959,16 +959,16 @@ export default function App() {
     [send],
   );
 
-  const handleBranchFromCheckpoint = useCallback(
+  const handleForkThread = useCallback(
     (checkpointId: string) => {
-      send({ type: "branch_from_checkpoint", checkpointId } as any);
+      send({ type: "fork_thread", checkpointId } as any);
     },
     [send],
   );
 
-  const handleSwitchBranch = useCallback(
-    (branchId: string) => {
-      send({ type: "switch_branch", branchId } as any);
+  const handleSwitchThread = useCallback(
+    (threadId: string) => {
+      send({ type: "switch_thread", threadId } as any);
     },
     [send],
   );
@@ -1145,12 +1145,12 @@ export default function App() {
       )}
       {!showTemplatePicker && (
         <div className="border-t border-gray-200 dark:border-gray-800 px-4 py-1.5 flex items-center gap-2">
-          <BranchIndicator
-            branches={branches}
-            activeBranchId={activeBranchId}
+          <ThreadIndicator
+            threads={threads}
+            activeThreadId={activeThreadId}
             onCreateCheckpoint={handleCreateCheckpoint}
-            onBranchFromCheckpoint={handleBranchFromCheckpoint}
-            onSwitchBranch={handleSwitchBranch}
+            onForkThread={handleForkThread}
+            onSwitchThread={handleSwitchThread}
             disabled={isLoading || status !== "open"}
           />
         </div>

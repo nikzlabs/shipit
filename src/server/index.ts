@@ -17,7 +17,7 @@ import { scanPorts, snapshotBaselinePorts, DEFAULT_SCAN_PORTS } from "./port-sca
 import { UsageManager } from "./usage.js";
 import { FileWatcher } from "./file-watcher.js";
 import { listTemplates, getTemplate, applyTemplate } from "./templates.js";
-import { BranchManager } from "./branches.js";
+import { ThreadManager } from "./threads.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment } from "./types.js";
 
 function getErrorMessage(err: unknown): string {
@@ -144,10 +144,10 @@ export interface AppDeps {
    */
   fileWatcher?: FileWatcher;
   /**
-   * Branch manager instance. Defaults to `new BranchManager()`.
-   * Manages conversation branching and checkpoints.
+   * Thread manager instance. Defaults to `new ThreadManager()`.
+   * Manages conversation threads and checkpoints.
    */
-  branchManager?: BranchManager;
+  threadManager?: ThreadManager;
 }
 
 /**
@@ -216,9 +216,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     });
   }
 
-  // ---- Branch manager ----
-  const branchManager = deps.branchManager ?? new BranchManager(
-    path.join(workspaceDir, ".vibe-branches")
+  // ---- Thread manager ----
+  const threadManager = deps.threadManager ?? new ThreadManager(
+    path.join(workspaceDir, ".vibe-threads")
   );
 
   // ---- File watcher ----
@@ -405,7 +405,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
 
     sessionManager.track(appSessionId, title, sessionDir);
-    branchManager.init(appSessionId);
+    threadManager.init(appSessionId);
     console.log("[server] Created session directory:", sessionDir);
 
     return { appSessionId, sessionDir };
@@ -822,7 +822,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         sessionManager.delete(msg.sessionId);
         chatHistoryManager.delete(msg.sessionId);
         usageManager.delete(msg.sessionId);
-        branchManager.delete(msg.sessionId);
+        threadManager.delete(msg.sessionId);
         send({ type: "session_list", sessions: sessionManager.list() });
       }
 
@@ -1311,15 +1311,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         send({ type: "usage_stats", stats: usageManager.getStats() });
       }
 
-      // ---- Branching & checkpoint operations ----
+      // ---- Thread & checkpoint operations ----
 
-      if (msg.type === "list_branches") {
+      if (msg.type === "list_threads") {
         if (!activeAppSessionId) {
           send({ type: "error", message: "No active session" });
           return;
         }
-        const data = branchManager.listBranches(activeAppSessionId);
-        send({ type: "branch_list", branches: data.branches, activeBranchId: data.activeBranchId });
+        const data = threadManager.listThreads(activeAppSessionId);
+        send({ type: "thread_list", threads: data.threads, activeThreadId: data.activeThreadId });
       }
 
       if (msg.type === "create_checkpoint") {
@@ -1339,7 +1339,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           const commitHash = commits.length > 0 ? commits[0].hash : "";
           const messages = chatHistoryManager.load(activeAppSessionId);
 
-          const checkpoint = branchManager.createCheckpoint(
+          const checkpoint = threadManager.createCheckpoint(
             activeAppSessionId,
             messages.length,
             commitHash,
@@ -1347,22 +1347,22 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           );
 
           if (!checkpoint) {
-            send({ type: "error", message: "Failed to create checkpoint — no active branch" });
+            send({ type: "error", message: "Failed to create checkpoint — no active thread" });
             return;
           }
 
-          const activeBranch = branchManager.getActiveBranch(activeAppSessionId);
+          const activeThread = threadManager.getActiveThread(activeAppSessionId);
           send({
             type: "checkpoint_created",
             checkpoint,
-            branchId: activeBranch?.id ?? "",
+            threadId: activeThread?.id ?? "",
           });
         } catch (err) {
           send({ type: "error", message: `Failed to create checkpoint: ${getErrorMessage(err)}` });
         }
       }
 
-      if (msg.type === "branch_from_checkpoint") {
+      if (msg.type === "fork_thread") {
         if (!activeAppSessionId) {
           send({ type: "error", message: "No active session" });
           return;
@@ -1373,7 +1373,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           return;
         }
 
-        const checkpoint = branchManager.getCheckpoint(activeAppSessionId, checkpointId);
+        const checkpoint = threadManager.getCheckpoint(activeAppSessionId, checkpointId);
         if (!checkpoint) {
           send({ type: "error", message: "Checkpoint not found" });
           return;
@@ -1381,11 +1381,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
         try {
           // Snapshot data BEFORE git rollback. `git reset --hard` reverts all
-          // files in the working tree, including branch and chat-history JSON
+          // files in the working tree, including thread and chat-history JSON
           // files that live inside the workspace.
           const fullHistory = chatHistoryManager.load(activeAppSessionId);
-          const branchMessages = fullHistory.slice(0, checkpoint.messageIndex);
-          const branchSnapshot = branchManager.listBranches(activeAppSessionId);
+          const threadMessages = fullHistory.slice(0, checkpoint.messageIndex);
+          const threadSnapshot = threadManager.listThreads(activeAppSessionId);
 
           // Roll back git to the checkpoint's commit
           const git = getActiveGitManager();
@@ -1393,78 +1393,78 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             await git.rollback(checkpoint.commitHash);
           }
 
-          // Restore branch data (may have been reverted by git rollback) and
-          // create the new branch. We call init to re-persist the snapshot,
-          // then branchFrom to add the new branch.
-          branchManager.restore(activeAppSessionId, branchSnapshot);
-          const newBranch = branchManager.branchFrom(activeAppSessionId, checkpointId);
-          if (!newBranch) {
-            send({ type: "error", message: "Failed to create branch" });
+          // Restore thread data (may have been reverted by git rollback) and
+          // fork the new thread. We call restore to re-persist the snapshot,
+          // then forkThread to add the new thread.
+          threadManager.restore(activeAppSessionId, threadSnapshot);
+          const newThread = threadManager.forkThread(activeAppSessionId, checkpointId);
+          if (!newThread) {
+            send({ type: "error", message: "Failed to fork thread" });
             return;
           }
 
-          // Save branch-specific chat history
-          const branchHistoryKey = `${activeAppSessionId}__${newBranch.id}`;
-          for (const m of branchMessages) {
-            chatHistoryManager.append(branchHistoryKey, m);
+          // Save thread-specific chat history
+          const threadHistoryKey = `${activeAppSessionId}__${newThread.id}`;
+          for (const m of threadMessages) {
+            chatHistoryManager.append(threadHistoryKey, m);
           }
 
           // Restart Vite after git rollback
           viteManager.restart(getActiveDir());
 
           send({
-            type: "branch_created",
-            branch: newBranch,
-            messages: branchMessages,
+            type: "thread_forked",
+            thread: newThread,
+            messages: threadMessages,
           });
         } catch (err) {
-          send({ type: "error", message: `Failed to branch from checkpoint: ${getErrorMessage(err)}` });
+          send({ type: "error", message: `Failed to fork thread from checkpoint: ${getErrorMessage(err)}` });
         }
       }
 
-      if (msg.type === "switch_branch") {
+      if (msg.type === "switch_thread") {
         if (!activeAppSessionId) {
           send({ type: "error", message: "No active session" });
           return;
         }
-        const branchId = typeof msg.branchId === "string" ? msg.branchId.trim() : "";
-        if (!branchId) {
-          send({ type: "error", message: "Branch ID is required" });
+        const threadId = typeof msg.threadId === "string" ? msg.threadId.trim() : "";
+        if (!threadId) {
+          send({ type: "error", message: "Thread ID is required" });
           return;
         }
 
-        // Snapshot branch data before switch (git rollback may revert files)
-        const branchSnapshot = branchManager.listBranches(activeAppSessionId);
+        // Snapshot thread data before switch (git rollback may revert files)
+        const threadSnapshot = threadManager.listThreads(activeAppSessionId);
 
-        const branch = branchManager.switchBranch(activeAppSessionId, branchId);
-        if (!branch) {
-          send({ type: "error", message: "Branch not found" });
+        const thread = threadManager.switchThread(activeAppSessionId, threadId);
+        if (!thread) {
+          send({ type: "error", message: "Thread not found" });
           return;
         }
 
         try {
-          // Load conversation for this branch BEFORE any git rollback
+          // Load conversation for this thread BEFORE any git rollback
           let messages;
-          if (branch.parentCheckpointId === null) {
+          if (thread.parentCheckpointId === null) {
             messages = chatHistoryManager.load(activeAppSessionId);
           } else {
-            const branchHistoryKey = `${activeAppSessionId}__${branchId}`;
-            messages = chatHistoryManager.load(branchHistoryKey);
+            const threadHistoryKey = `${activeAppSessionId}__${threadId}`;
+            messages = chatHistoryManager.load(threadHistoryKey);
           }
 
-          // Roll back git to the branch's parent checkpoint
-          if (branch.parentCheckpointId) {
-            const checkpoint = branchManager.getCheckpoint(activeAppSessionId, branch.parentCheckpointId);
+          // Roll back git to the thread's parent checkpoint
+          if (thread.parentCheckpointId) {
+            const checkpoint = threadManager.getCheckpoint(activeAppSessionId, thread.parentCheckpointId);
             if (checkpoint?.commitHash) {
               const git = getActiveGitManager();
               await git.rollback(checkpoint.commitHash);
-              // Restore branch data after rollback (git reset may have reverted it)
-              branchManager.restore(activeAppSessionId, {
-                ...branchSnapshot,
-                activeBranchId: branchId,
-                branches: branchSnapshot.branches.map((b) => ({
-                  ...b,
-                  isActive: b.id === branchId,
+              // Restore thread data after rollback (git reset may have reverted it)
+              threadManager.restore(activeAppSessionId, {
+                ...threadSnapshot,
+                activeThreadId: threadId,
+                threads: threadSnapshot.threads.map((t) => ({
+                  ...t,
+                  isActive: t.id === threadId,
                 })),
               });
               viteManager.restart(getActiveDir());
@@ -1472,12 +1472,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           }
 
           send({
-            type: "branch_switched",
-            branch,
+            type: "thread_switched",
+            thread,
             messages,
           });
         } catch (err) {
-          send({ type: "error", message: `Failed to switch branch: ${getErrorMessage(err)}` });
+          send({ type: "error", message: `Failed to switch thread: ${getErrorMessage(err)}` });
         }
       }
     });

@@ -1,21 +1,21 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import type { BranchInfo, CheckpointInfo } from "../../server/types.js";
+import type { ThreadInfo, CheckpointInfo } from "../../server/types.js";
 
-export { type BranchInfo, type CheckpointInfo };
+export { type ThreadInfo, type CheckpointInfo };
 
-export function BranchIndicator({
-  branches,
-  activeBranchId,
+export function ThreadIndicator({
+  threads,
+  activeThreadId,
   onCreateCheckpoint,
-  onBranchFromCheckpoint,
-  onSwitchBranch,
+  onForkThread,
+  onSwitchThread,
   disabled,
 }: {
-  branches: BranchInfo[];
-  activeBranchId: string;
+  threads: ThreadInfo[];
+  activeThreadId: string;
   onCreateCheckpoint: (label?: string) => void;
-  onBranchFromCheckpoint: (checkpointId: string) => void;
-  onSwitchBranch: (branchId: string) => void;
+  onForkThread: (checkpointId: string) => void;
+  onSwitchThread: (threadId: string) => void;
   disabled?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -24,7 +24,7 @@ export function BranchIndicator({
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const activeBranch = branches.find((b) => b.id === activeBranchId);
+  const activeThread = threads.find((t) => t.id === activeThreadId);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -65,31 +65,31 @@ export function BranchIndicator({
     [handleCreateCheckpoint],
   );
 
-  // Don't render if there are no branches
-  if (branches.length === 0) return null;
+  // Don't render if there are no threads
+  if (threads.length === 0) return null;
 
-  const allCheckpoints = branches.flatMap((b) =>
-    b.checkpoints.map((cp) => ({ ...cp, branchName: b.name })),
+  const allCheckpoints = threads.flatMap((t) =>
+    t.checkpoints.map((cp) => ({ ...cp, threadName: t.name })),
   );
 
   return (
     <div className="relative" ref={dropdownRef}>
       <div className="flex items-center gap-1.5">
-        {/* Branch name button */}
+        {/* Thread name button */}
         <button
           onClick={() => setExpanded((v) => !v)}
           disabled={disabled}
           className="flex items-center gap-1.5 text-xs px-2 py-1 rounded-md bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200 transition-colors disabled:opacity-50"
-          title="Branches & Checkpoints"
+          title="Threads & Checkpoints"
         >
-          {/* Git branch icon */}
+          {/* Thread icon */}
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M6 3v12m0 0a3 3 0 103 3H15a3 3 0 100-3m-9 0h9m-9 0a3 3 0 01-3-3V6a3 3 0 013-3h0" />
           </svg>
-          <span className="max-w-[100px] truncate">{activeBranch?.name ?? "main"}</span>
-          {branches.length > 1 && (
+          <span className="max-w-[100px] truncate">{activeThread?.name ?? "main"}</span>
+          {threads.length > 1 && (
             <span className="text-[10px] text-gray-400 dark:text-gray-500">
-              ({branches.length})
+              ({threads.length})
             </span>
           )}
           <svg
@@ -142,34 +142,34 @@ export function BranchIndicator({
       {/* Dropdown */}
       {expanded && (
         <div className="absolute top-full left-0 mt-1 z-50 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg w-72 max-h-80 overflow-y-auto">
-          {/* Branches section */}
+          {/* Threads section */}
           <div className="px-3 py-2 border-b border-gray-200 dark:border-gray-700">
             <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500 mb-1">
-              Branches
+              Threads
             </p>
             <div className="space-y-0.5">
-              {branches.map((branch) => (
+              {threads.map((thread) => (
                 <button
-                  key={branch.id}
+                  key={thread.id}
                   onClick={() => {
-                    if (branch.id !== activeBranchId) {
-                      onSwitchBranch(branch.id);
+                    if (thread.id !== activeThreadId) {
+                      onSwitchThread(thread.id);
                       setExpanded(false);
                     }
                   }}
                   className={`flex items-center gap-2 w-full text-left text-xs px-2 py-1.5 rounded transition-colors ${
-                    branch.id === activeBranchId
+                    thread.id === activeThreadId
                       ? "bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
                       : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
                   }`}
                 >
                   <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                    branch.id === activeBranchId ? "bg-blue-500" : "bg-gray-400 dark:bg-gray-600"
+                    thread.id === activeThreadId ? "bg-blue-500" : "bg-gray-400 dark:bg-gray-600"
                   }`} />
-                  <span className="truncate">{branch.name}</span>
-                  {branch.checkpoints.length > 0 && (
+                  <span className="truncate">{thread.name}</span>
+                  {thread.checkpoints.length > 0 && (
                     <span className="ml-auto text-[10px] text-gray-400 dark:text-gray-500">
-                      {branch.checkpoints.length} cp
+                      {thread.checkpoints.length} cp
                     </span>
                   )}
                 </button>
@@ -197,17 +197,17 @@ export function BranchIndicator({
                         {cp.label || `Checkpoint at msg ${cp.messageIndex}`}
                       </p>
                       <p className="text-[10px] text-gray-400 dark:text-gray-500">
-                        {cp.branchName} &middot; {formatRelativeDate(cp.createdAt)}
+                        {cp.threadName} &middot; {formatRelativeDate(cp.createdAt)}
                       </p>
                     </div>
                     <button
                       onClick={() => {
-                        onBranchFromCheckpoint(cp.id);
+                        onForkThread(cp.id);
                         setExpanded(false);
                       }}
                       className="shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-gray-100 dark:bg-gray-800 text-gray-500 opacity-0 group-hover:opacity-100 hover:text-gray-700 dark:hover:text-gray-300 transition-all"
                     >
-                      branch
+                      fork
                     </button>
                   </div>
                 ))}

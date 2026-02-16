@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, cleanup, fireEvent } from "@testing-library/react";
-import { BranchIndicator, type BranchInfo } from "./BranchIndicator.js";
+import { ThreadIndicator, type ThreadInfo } from "./ThreadIndicator.js";
 
 afterEach(cleanup);
 
-const mainBranch: BranchInfo = {
-  id: "branch-main",
+const mainThread: ThreadInfo = {
+  id: "thread-main",
   sessionId: "session-1",
   parentCheckpointId: null,
   name: "main",
@@ -14,8 +14,8 @@ const mainBranch: BranchInfo = {
   createdAt: new Date().toISOString(),
 };
 
-const branchWithCheckpoint: BranchInfo = {
-  id: "branch-main",
+const threadWithCheckpoint: ThreadInfo = {
+  id: "thread-main",
   sessionId: "session-1",
   parentCheckpointId: null,
   name: "main",
@@ -33,38 +33,38 @@ const branchWithCheckpoint: BranchInfo = {
   createdAt: new Date().toISOString(),
 };
 
-const secondBranch: BranchInfo = {
-  id: "branch-2",
+const secondThread: ThreadInfo = {
+  id: "thread-2",
   sessionId: "session-1",
   parentCheckpointId: "cp-1",
-  name: "Branch 1",
+  name: "Thread 1",
   checkpoints: [],
   isActive: false,
   createdAt: new Date().toISOString(),
 };
 
-describe("BranchIndicator", () => {
-  it("renders nothing when no branches", () => {
+describe("ThreadIndicator", () => {
+  it("renders nothing when no threads", () => {
     const { container } = render(
-      <BranchIndicator
-        branches={[]}
-        activeBranchId=""
+      <ThreadIndicator
+        threads={[]}
+        activeThreadId=""
         onCreateCheckpoint={vi.fn()}
-        onBranchFromCheckpoint={vi.fn()}
-        onSwitchBranch={vi.fn()}
+        onForkThread={vi.fn()}
+        onSwitchThread={vi.fn()}
       />,
     );
     expect(container.innerHTML).toBe("");
   });
 
-  it("shows active branch name", () => {
+  it("shows active thread name", () => {
     const { getByText } = render(
-      <BranchIndicator
-        branches={[mainBranch]}
-        activeBranchId="branch-main"
+      <ThreadIndicator
+        threads={[mainThread]}
+        activeThreadId="thread-main"
         onCreateCheckpoint={vi.fn()}
-        onBranchFromCheckpoint={vi.fn()}
-        onSwitchBranch={vi.fn()}
+        onForkThread={vi.fn()}
+        onSwitchThread={vi.fn()}
       />,
     );
     expect(getByText("main")).toBeTruthy();
@@ -72,51 +72,51 @@ describe("BranchIndicator", () => {
 
   it("opens dropdown on click", () => {
     const { getByText, queryByText } = render(
-      <BranchIndicator
-        branches={[mainBranch]}
-        activeBranchId="branch-main"
+      <ThreadIndicator
+        threads={[mainThread]}
+        activeThreadId="thread-main"
         onCreateCheckpoint={vi.fn()}
-        onBranchFromCheckpoint={vi.fn()}
-        onSwitchBranch={vi.fn()}
+        onForkThread={vi.fn()}
+        onSwitchThread={vi.fn()}
       />,
     );
 
     // Dropdown content not visible initially
-    expect(queryByText("Branches")).toBeNull();
+    expect(queryByText("Threads")).toBeNull();
 
     // Click to open
     fireEvent.click(getByText("main"));
-    expect(getByText("Branches")).toBeTruthy();
+    expect(getByText("Threads")).toBeTruthy();
   });
 
-  it("calls onSwitchBranch when clicking another branch", () => {
-    const onSwitchBranch = vi.fn();
+  it("calls onSwitchThread when clicking another thread", () => {
+    const onSwitchThread = vi.fn();
     const { getByText } = render(
-      <BranchIndicator
-        branches={[{ ...mainBranch, isActive: false }, { ...secondBranch, isActive: true }]}
-        activeBranchId="branch-2"
+      <ThreadIndicator
+        threads={[{ ...mainThread, isActive: false }, { ...secondThread, isActive: true }]}
+        activeThreadId="thread-2"
         onCreateCheckpoint={vi.fn()}
-        onBranchFromCheckpoint={vi.fn()}
-        onSwitchBranch={onSwitchBranch}
+        onForkThread={vi.fn()}
+        onSwitchThread={onSwitchThread}
       />,
     );
 
     // Open dropdown
-    fireEvent.click(getByText("Branch 1"));
+    fireEvent.click(getByText("Thread 1"));
 
-    // Click on main branch
+    // Click on main thread
     fireEvent.click(getByText("main"));
-    expect(onSwitchBranch).toHaveBeenCalledWith("branch-main");
+    expect(onSwitchThread).toHaveBeenCalledWith("thread-main");
   });
 
   it("shows checkpoint input when flag button is clicked", () => {
     const { getByTitle, getByPlaceholderText } = render(
-      <BranchIndicator
-        branches={[mainBranch]}
-        activeBranchId="branch-main"
+      <ThreadIndicator
+        threads={[mainThread]}
+        activeThreadId="thread-main"
         onCreateCheckpoint={vi.fn()}
-        onBranchFromCheckpoint={vi.fn()}
-        onSwitchBranch={vi.fn()}
+        onForkThread={vi.fn()}
+        onSwitchThread={vi.fn()}
       />,
     );
 
@@ -127,12 +127,12 @@ describe("BranchIndicator", () => {
   it("calls onCreateCheckpoint when saving", () => {
     const onCreateCheckpoint = vi.fn();
     const { getByTitle, getByPlaceholderText, getByText } = render(
-      <BranchIndicator
-        branches={[mainBranch]}
-        activeBranchId="branch-main"
+      <ThreadIndicator
+        threads={[mainThread]}
+        activeThreadId="thread-main"
         onCreateCheckpoint={onCreateCheckpoint}
-        onBranchFromCheckpoint={vi.fn()}
-        onSwitchBranch={vi.fn()}
+        onForkThread={vi.fn()}
+        onSwitchThread={vi.fn()}
       />,
     );
 
@@ -147,12 +147,12 @@ describe("BranchIndicator", () => {
   it("calls onCreateCheckpoint with undefined when label is empty", () => {
     const onCreateCheckpoint = vi.fn();
     const { getByTitle, getByText } = render(
-      <BranchIndicator
-        branches={[mainBranch]}
-        activeBranchId="branch-main"
+      <ThreadIndicator
+        threads={[mainThread]}
+        activeThreadId="thread-main"
         onCreateCheckpoint={onCreateCheckpoint}
-        onBranchFromCheckpoint={vi.fn()}
-        onSwitchBranch={vi.fn()}
+        onForkThread={vi.fn()}
+        onSwitchThread={vi.fn()}
       />,
     );
 
@@ -165,12 +165,12 @@ describe("BranchIndicator", () => {
   it("calls onCreateCheckpoint on Enter key", () => {
     const onCreateCheckpoint = vi.fn();
     const { getByTitle, getByPlaceholderText } = render(
-      <BranchIndicator
-        branches={[mainBranch]}
-        activeBranchId="branch-main"
+      <ThreadIndicator
+        threads={[mainThread]}
+        activeThreadId="thread-main"
         onCreateCheckpoint={onCreateCheckpoint}
-        onBranchFromCheckpoint={vi.fn()}
-        onSwitchBranch={vi.fn()}
+        onForkThread={vi.fn()}
+        onSwitchThread={vi.fn()}
       />,
     );
 
@@ -184,12 +184,12 @@ describe("BranchIndicator", () => {
 
   it("closes checkpoint input on Escape", () => {
     const { getByTitle, getByPlaceholderText, queryByPlaceholderText } = render(
-      <BranchIndicator
-        branches={[mainBranch]}
-        activeBranchId="branch-main"
+      <ThreadIndicator
+        threads={[mainThread]}
+        activeThreadId="thread-main"
         onCreateCheckpoint={vi.fn()}
-        onBranchFromCheckpoint={vi.fn()}
-        onSwitchBranch={vi.fn()}
+        onForkThread={vi.fn()}
+        onSwitchThread={vi.fn()}
       />,
     );
 
@@ -202,12 +202,12 @@ describe("BranchIndicator", () => {
 
   it("shows checkpoints in dropdown", () => {
     const { getByText } = render(
-      <BranchIndicator
-        branches={[branchWithCheckpoint]}
-        activeBranchId="branch-main"
+      <ThreadIndicator
+        threads={[threadWithCheckpoint]}
+        activeThreadId="thread-main"
         onCreateCheckpoint={vi.fn()}
-        onBranchFromCheckpoint={vi.fn()}
-        onSwitchBranch={vi.fn()}
+        onForkThread={vi.fn()}
+        onSwitchThread={vi.fn()}
       />,
     );
 
@@ -218,35 +218,35 @@ describe("BranchIndicator", () => {
     expect(getByText("Before refactor")).toBeTruthy();
   });
 
-  it("calls onBranchFromCheckpoint when clicking branch button on checkpoint", () => {
-    const onBranchFromCheckpoint = vi.fn();
+  it("calls onForkThread when clicking fork button on checkpoint", () => {
+    const onForkThread = vi.fn();
     const { getByText } = render(
-      <BranchIndicator
-        branches={[branchWithCheckpoint]}
-        activeBranchId="branch-main"
+      <ThreadIndicator
+        threads={[threadWithCheckpoint]}
+        activeThreadId="thread-main"
         onCreateCheckpoint={vi.fn()}
-        onBranchFromCheckpoint={onBranchFromCheckpoint}
-        onSwitchBranch={vi.fn()}
+        onForkThread={onForkThread}
+        onSwitchThread={vi.fn()}
       />,
     );
 
     // Open dropdown
     fireEvent.click(getByText("main"));
 
-    // Click branch button on checkpoint
-    fireEvent.click(getByText("branch"));
+    // Click fork button on checkpoint
+    fireEvent.click(getByText("fork"));
 
-    expect(onBranchFromCheckpoint).toHaveBeenCalledWith("cp-1");
+    expect(onForkThread).toHaveBeenCalledWith("cp-1");
   });
 
-  it("shows branch count when multiple branches exist", () => {
+  it("shows thread count when multiple threads exist", () => {
     const { getByText } = render(
-      <BranchIndicator
-        branches={[mainBranch, secondBranch]}
-        activeBranchId="branch-main"
+      <ThreadIndicator
+        threads={[mainThread, secondThread]}
+        activeThreadId="thread-main"
         onCreateCheckpoint={vi.fn()}
-        onBranchFromCheckpoint={vi.fn()}
-        onSwitchBranch={vi.fn()}
+        onForkThread={vi.fn()}
+        onSwitchThread={vi.fn()}
       />,
     );
 
@@ -255,12 +255,12 @@ describe("BranchIndicator", () => {
 
   it("disables buttons when disabled prop is true", () => {
     const { getByTitle } = render(
-      <BranchIndicator
-        branches={[mainBranch]}
-        activeBranchId="branch-main"
+      <ThreadIndicator
+        threads={[mainThread]}
+        activeThreadId="thread-main"
         onCreateCheckpoint={vi.fn()}
-        onBranchFromCheckpoint={vi.fn()}
-        onSwitchBranch={vi.fn()}
+        onForkThread={vi.fn()}
+        onSwitchThread={vi.fn()}
         disabled
       />,
     );

@@ -119,18 +119,18 @@ Design docs in `docs/design/`.
 - [x] Component tests for `usePreviewErrors` (dedup, buffer limits) and PreviewFrame error UI
 - [x] Integration test for `preview_error` relay to terminal log buffer
 
-### Feature 7: Conversation Branching & Checkpoints (`docs/design/007-conversation-branching.md`)
-- [x] `BranchManager` class (`src/server/branches.ts`) — persist to `/workspace/.vibe-branches/`
-- [x] WS messages: `create_checkpoint`, `branch_from_checkpoint`, `switch_branch`, `list_branches`
+### Feature 7: Conversation Threads & Checkpoints (`docs/design/007-conversation-branching.md`)
+- [x] `ThreadManager` class (`src/server/threads.ts`) — persist to `/workspace/.vibe-threads/`
+- [x] WS messages: `create_checkpoint`, `fork_thread`, `switch_thread`, `list_threads`
 - [ ] Auto-checkpoint before message edit/retry
-- [ ] Conversation replay as system prompt when branching (clean context for new CLI session)
-- [x] Git rollback to checkpoint commit on branch switch
-- [x] `BranchIndicator` component — branch dropdown, checkpoint button in header
-- [ ] Timeline view in GitHistory area with checkpoint nodes and color-coded branches
+- [ ] Conversation replay as system prompt when forking (clean context for new CLI session)
+- [x] Git rollback to checkpoint commit on thread switch
+- [x] `ThreadIndicator` component — thread dropdown, checkpoint button in header
+- [ ] Timeline view in GitHistory area with checkpoint nodes and color-coded threads
 - [ ] Checkpoint dividers in chat ("Checkpoint: before refactor")
-- [x] Unit tests for `BranchManager` (create, list, switch, persistence)
-- [x] Integration tests for full branch workflow (messages → checkpoint → branch → verify)
-- [x] Component tests for BranchIndicator and timeline view
+- [x] Unit tests for `ThreadManager` (create, list, switch, persistence)
+- [x] Integration tests for full thread workflow (messages → checkpoint → fork → verify)
+- [x] Component tests for ThreadIndicator and timeline view
 
 ### Feature 8: Inline File Editing (`docs/design/008-inline-file-editing.md`)
 - [ ] Add CodeMirror 6 dependency (`codemirror`, `@codemirror/lang-*`, `@codemirror/theme-one-dark`)

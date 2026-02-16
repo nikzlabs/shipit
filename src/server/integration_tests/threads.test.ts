@@ -11,7 +11,7 @@ import { GitHubAuthManager } from "../github-auth.js";
 import { ViteManager } from "../vite-manager.js";
 import { ClaudeProcess } from "../claude.js";
 import { FileWatcher } from "../file-watcher.js";
-import { BranchManager } from "../branches.js";
+import { ThreadManager } from "../threads.js";
 import type { FastifyInstance } from "fastify";
 import {
   TestClient,
@@ -23,31 +23,31 @@ import {
   waitForClaude,
 } from "./test-helpers.js";
 
-describe("Integration: Conversation branching & checkpoints", () => {
+describe("Integration: Conversation threads & checkpoints", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
   let gitManager: GitManager;
   let sessionManager: SessionManager;
   let chatHistoryManager: ChatHistoryManager;
-  let branchManager: BranchManager;
+  let threadManager: ThreadManager;
   let lastClaude: FakeClaudeProcess = null as any;
 
   beforeEach(async () => {
     lastClaude = null as any;
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-branching-"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-threads-"));
     gitManager = new GitManager(tmpDir);
     await gitManager.init();
 
     sessionManager = new SessionManager(path.join(tmpDir, "sessions.json"));
     chatHistoryManager = new ChatHistoryManager(path.join(tmpDir, "chat-history"));
-    branchManager = new BranchManager(path.join(tmpDir, "branches"));
+    threadManager = new ThreadManager(path.join(tmpDir, "threads"));
 
     app = await buildApp({
       gitManager,
       sessionManager,
       chatHistoryManager,
-      branchManager,
+      threadManager,
       viteManager: new StubViteManager() as unknown as ViteManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
@@ -147,13 +147,13 @@ describe("Integration: Conversation branching & checkpoints", () => {
     return sid!;
   }
 
-  // ---- list_branches ----
+  // ---- list_threads ----
 
-  it("list_branches returns error when no active session", async () => {
+  it("list_threads returns error when no active session", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    client.send({ type: "list_branches" } as any);
+    client.send({ type: "list_threads" } as any);
     const msg = await client.receive();
 
     expect(msg).toMatchObject({
@@ -164,28 +164,28 @@ describe("Integration: Conversation branching & checkpoints", () => {
     client.close();
   });
 
-  it("list_branches returns branches after session established", async () => {
+  it("list_threads returns threads after session established", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     const sessionId = await doMessageTurn(client, "Hello");
 
-    client.send({ type: "list_branches" } as any);
+    client.send({ type: "list_threads" } as any);
 
-    // Find the branch_list response (may have log entries interspersed)
+    // Find the thread_list response (may have log entries interspersed)
     const deadline = Date.now() + 3000;
     while (Date.now() < deadline) {
       const msg = await client.receive();
-      if (msg.type === "branch_list") {
-        expect(msg.branches).toHaveLength(1);
-        expect(msg.branches[0].name).toBe("main");
-        expect(msg.branches[0].isActive).toBe(true);
-        expect(msg.activeBranchId).toBe(msg.branches[0].id);
+      if (msg.type === "thread_list") {
+        expect(msg.threads).toHaveLength(1);
+        expect(msg.threads[0].name).toBe("main");
+        expect(msg.threads[0].isActive).toBe(true);
+        expect(msg.activeThreadId).toBe(msg.threads[0].id);
         client.close();
         return;
       }
     }
-    throw new Error("Never received branch_list");
+    throw new Error("Never received thread_list");
   });
 
   // ---- create_checkpoint ----
@@ -205,7 +205,7 @@ describe("Integration: Conversation branching & checkpoints", () => {
     client.close();
   });
 
-  it("create_checkpoint creates checkpoint on active branch", async () => {
+  it("create_checkpoint creates checkpoint on active thread", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
@@ -220,7 +220,7 @@ describe("Integration: Conversation branching & checkpoints", () => {
         expect(msg.checkpoint.label).toBe("Before refactor");
         expect(msg.checkpoint.sessionId).toBe(sessionId);
         expect(msg.checkpoint.messageIndex).toBeGreaterThan(0);
-        expect(msg.branchId).toBeDefined();
+        expect(msg.threadId).toBeDefined();
         client.close();
         return;
       }
@@ -249,9 +249,9 @@ describe("Integration: Conversation branching & checkpoints", () => {
     throw new Error("Never received error");
   });
 
-  // ---- branch_from_checkpoint ----
+  // ---- fork_thread ----
 
-  it("branch_from_checkpoint creates new branch", async () => {
+  it("fork_thread creates new thread", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
@@ -270,29 +270,29 @@ describe("Integration: Conversation branching & checkpoints", () => {
     }
     expect(checkpointId).toBeDefined();
 
-    // Branch from it
-    client.send({ type: "branch_from_checkpoint", checkpointId: checkpointId! } as any);
+    // Fork from it
+    client.send({ type: "fork_thread", checkpointId: checkpointId! } as any);
     const response = await client.receiveSkipLogs(5000);
 
-    expect(response.type).toBe("branch_created");
-    if (response.type === "branch_created") {
-      expect(response.branch.name).toBe("Branch 1");
-      expect(response.branch.parentCheckpointId).toBe(checkpointId);
-      expect(response.branch.isActive).toBe(true);
+    expect(response.type).toBe("thread_forked");
+    if (response.type === "thread_forked") {
+      expect(response.thread.name).toBe("Thread 1");
+      expect(response.thread.parentCheckpointId).toBe(checkpointId);
+      expect(response.thread.isActive).toBe(true);
       expect(Array.isArray(response.messages)).toBe(true);
     }
 
     client.close();
   });
 
-  it("branch_from_checkpoint returns error for unknown checkpoint", async () => {
+  it("fork_thread returns error for unknown checkpoint", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     await doMessageTurn(client, "Hello");
 
     client.send({
-      type: "branch_from_checkpoint",
+      type: "fork_thread",
       checkpointId: "nonexistent",
     } as any);
 
@@ -308,12 +308,12 @@ describe("Integration: Conversation branching & checkpoints", () => {
     throw new Error("Never received error");
   });
 
-  it("branch_from_checkpoint returns error when no active session", async () => {
+  it("fork_thread returns error when no active session", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     client.send({
-      type: "branch_from_checkpoint",
+      type: "fork_thread",
       checkpointId: "some-id",
     } as any);
     const msg = await client.receive();
@@ -326,28 +326,28 @@ describe("Integration: Conversation branching & checkpoints", () => {
     client.close();
   });
 
-  // ---- switch_branch ----
+  // ---- switch_thread ----
 
-  it("switch_branch switches to an existing branch and returns messages", async () => {
+  it("switch_thread switches to an existing thread and returns messages", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     await doMessageTurn(client, "Hello");
 
-    // Get main branch ID
-    client.send({ type: "list_branches" } as any);
-    let mainBranchId: string | undefined;
+    // Get main thread ID
+    client.send({ type: "list_threads" } as any);
+    let mainThreadId: string | undefined;
     let deadline = Date.now() + 3000;
     while (Date.now() < deadline) {
       const msg = await client.receive();
-      if (msg.type === "branch_list") {
-        mainBranchId = msg.branches[0].id;
+      if (msg.type === "thread_list") {
+        mainThreadId = msg.threads[0].id;
         break;
       }
     }
-    expect(mainBranchId).toBeDefined();
+    expect(mainThreadId).toBeDefined();
 
-    // Create checkpoint and branch
+    // Create checkpoint and fork
     client.send({ type: "create_checkpoint" } as any);
     let checkpointId: string | undefined;
     deadline = Date.now() + 3000;
@@ -359,40 +359,40 @@ describe("Integration: Conversation branching & checkpoints", () => {
       }
     }
 
-    client.send({ type: "branch_from_checkpoint", checkpointId: checkpointId! } as any);
-    const branchResp = await client.receiveSkipLogs(5000);
-    expect(branchResp.type).toBe("branch_created");
+    client.send({ type: "fork_thread", checkpointId: checkpointId! } as any);
+    const forkResp = await client.receiveSkipLogs(5000);
+    expect(forkResp.type).toBe("thread_forked");
 
     // Switch back to main
-    client.send({ type: "switch_branch", branchId: mainBranchId! } as any);
+    client.send({ type: "switch_thread", threadId: mainThreadId! } as any);
     const switchResp = await client.receiveSkipLogs(5000);
 
-    expect(switchResp.type).toBe("branch_switched");
-    if (switchResp.type === "branch_switched") {
-      expect(switchResp.branch.name).toBe("main");
-      expect(switchResp.branch.isActive).toBe(true);
+    expect(switchResp.type).toBe("thread_switched");
+    if (switchResp.type === "thread_switched") {
+      expect(switchResp.thread.name).toBe("main");
+      expect(switchResp.thread.isActive).toBe(true);
       expect(Array.isArray(switchResp.messages)).toBe(true);
     }
 
     client.close();
   });
 
-  it("switch_branch returns error for unknown branch", async () => {
+  it("switch_thread returns error for unknown thread", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     await doMessageTurn(client, "Hello");
 
     client.send({
-      type: "switch_branch",
-      branchId: "nonexistent",
+      type: "switch_thread",
+      threadId: "nonexistent",
     } as any);
 
     const deadline = Date.now() + 3000;
     while (Date.now() < deadline) {
       const msg = await client.receive();
       if (msg.type === "error") {
-        expect(msg.message).toBe("Branch not found");
+        expect(msg.message).toBe("Thread not found");
         client.close();
         return;
       }
@@ -400,13 +400,13 @@ describe("Integration: Conversation branching & checkpoints", () => {
     throw new Error("Never received error");
   });
 
-  it("switch_branch returns error when no active session", async () => {
+  it("switch_thread returns error when no active session", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     client.send({
-      type: "switch_branch",
-      branchId: "some-id",
+      type: "switch_thread",
+      threadId: "some-id",
     } as any);
     const msg = await client.receive();
 
@@ -420,7 +420,7 @@ describe("Integration: Conversation branching & checkpoints", () => {
 
   // ---- Session lifecycle ----
 
-  it("delete_session cleans up branch data", async () => {
+  it("delete_session cleans up thread data", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
@@ -434,9 +434,9 @@ describe("Integration: Conversation branching & checkpoints", () => {
       if (msg.type === "checkpoint_created") break;
     }
 
-    // Verify branch data exists
-    const beforeDelete = branchManager.listBranches(sessionId);
-    expect(beforeDelete.branches[0].checkpoints).toHaveLength(1);
+    // Verify thread data exists
+    const beforeDelete = threadManager.listThreads(sessionId);
+    expect(beforeDelete.threads[0].checkpoints).toHaveLength(1);
 
     // Delete the session
     client.send({ type: "delete_session", sessionId });
@@ -446,9 +446,9 @@ describe("Integration: Conversation branching & checkpoints", () => {
       if (msg.type === "session_list") break;
     }
 
-    // Verify branch data is cleaned up (new load returns defaults)
-    const afterDelete = branchManager.listBranches(sessionId);
-    expect(afterDelete.branches[0].checkpoints).toHaveLength(0);
+    // Verify thread data is cleaned up (new load returns defaults)
+    const afterDelete = threadManager.listThreads(sessionId);
+    expect(afterDelete.threads[0].checkpoints).toHaveLength(0);
 
     client.close();
   });

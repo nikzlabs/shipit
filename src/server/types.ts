@@ -238,25 +238,25 @@ export interface WsSetSystemPrompt {
   content: string;
 }
 
-// ---- Branching & checkpoint messages ----
+// ---- Thread & checkpoint messages ----
 
 export interface WsCreateCheckpoint {
   type: "create_checkpoint";
   label?: string;
 }
 
-export interface WsBranchFromCheckpoint {
-  type: "branch_from_checkpoint";
+export interface WsForkThread {
+  type: "fork_thread";
   checkpointId: string;
 }
 
-export interface WsSwitchBranch {
-  type: "switch_branch";
-  branchId: string;
+export interface WsSwitchThread {
+  type: "switch_thread";
+  threadId: string;
 }
 
-export interface WsListBranches {
-  type: "list_branches";
+export interface WsListThreads {
+  type: "list_threads";
 }
 
 export type WsClientMessage =
@@ -290,9 +290,9 @@ export type WsClientMessage =
   | WsGitHubCreateRepo
   | WsSetGitIdentity
   | WsCreateCheckpoint
-  | WsBranchFromCheckpoint
-  | WsSwitchBranch
-  | WsListBranches;
+  | WsForkThread
+  | WsSwitchThread
+  | WsListThreads;
 
 export interface WsClaudeEvent {
   type: "claude_event";
@@ -535,7 +535,7 @@ export interface WsSystemPromptSaved {
   content: string;
 }
 
-// ---- Branching & checkpoint server messages ----
+// ---- Thread & checkpoint server messages ----
 
 export interface CheckpointInfo {
   id: string;
@@ -546,7 +546,7 @@ export interface CheckpointInfo {
   label?: string;
 }
 
-export interface BranchInfo {
+export interface ThreadInfo {
   id: string;
   sessionId: string;
   parentCheckpointId: string | null;
@@ -560,24 +560,24 @@ export interface BranchInfo {
 export interface WsCheckpointCreated {
   type: "checkpoint_created";
   checkpoint: CheckpointInfo;
-  branchId: string;
+  threadId: string;
 }
 
-export interface WsBranchList {
-  type: "branch_list";
-  branches: BranchInfo[];
-  activeBranchId: string;
+export interface WsThreadList {
+  type: "thread_list";
+  threads: ThreadInfo[];
+  activeThreadId: string;
 }
 
-export interface WsBranchSwitched {
-  type: "branch_switched";
-  branch: BranchInfo;
+export interface WsThreadSwitched {
+  type: "thread_switched";
+  thread: ThreadInfo;
   messages: WsChatHistoryMessage[];
 }
 
-export interface WsBranchCreated {
-  type: "branch_created";
-  branch: BranchInfo;
+export interface WsThreadForked {
+  type: "thread_forked";
+  thread: ThreadInfo;
   messages: WsChatHistoryMessage[];
 }
 
@@ -622,6 +622,6 @@ export type WsServerMessage =
   | WsGitIdentityRequired
   | WsGitIdentitySet
   | WsCheckpointCreated
-  | WsBranchList
-  | WsBranchSwitched
-  | WsBranchCreated;
+  | WsThreadList
+  | WsThreadSwitched
+  | WsThreadForked;
