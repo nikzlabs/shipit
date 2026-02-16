@@ -100,3 +100,5 @@ Design docs in `docs/design/`.
 - [ ] Multi-file diff view — when Claude edits multiple files in one turn, show a grouped diff summary
 - [ ] Dark/light theme
 - [ ] Export conversation
+- [ ] Multi-client collaboration — shared session URLs with spectator/participant modes
+- [ ] Deployment integration — one-click deploy to Vercel/Netlify from the UI
