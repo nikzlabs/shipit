@@ -29,7 +29,7 @@ export function PreviewFrame({ preview, detectedPorts, selectedPort, onSelectPor
         <div className="text-center space-y-2">
           <div className="text-2xl">&#9654;</div>
           <p>Preview will appear here when a dev server is running in /workspace.</p>
-          <p className="text-xs text-gray-600">
+          <p className="text-xs text-gray-400 dark:text-gray-600">
             Ask Claude to create a project to get started. Vite, Express, Next.js, and other servers are auto-detected.
           </p>
         </div>
@@ -56,14 +56,14 @@ export function PreviewFrame({ preview, detectedPorts, selectedPort, onSelectPor
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-3 py-1.5 bg-gray-900 border-b border-gray-700 text-xs text-gray-400">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-gray-50 dark:bg-gray-900 border-b border-gray-300 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400">
         <span className="flex items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-green-500" />
           {showSelector ? (
             <select
               value={activePort}
               onChange={(e) => onSelectPort(Number(e.target.value))}
-              className="bg-gray-800 text-gray-300 text-xs rounded px-1.5 py-0.5 border border-gray-600 focus:outline-none focus:border-blue-500"
+              className="bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 text-xs rounded px-1.5 py-0.5 border border-gray-300 dark:border-gray-600 focus:outline-none focus:border-blue-500"
               aria-label="Select preview port"
             >
               {allPorts.map((item) => (
@@ -83,7 +83,7 @@ export function PreviewFrame({ preview, detectedPorts, selectedPort, onSelectPor
         </span>
         <button
           onClick={() => setRefreshKey((k) => k + 1)}
-          className="px-2 py-0.5 rounded hover:bg-gray-800 transition-colors"
+          className="px-2 py-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
           title="Refresh preview"
         >
           Reload

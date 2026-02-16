@@ -62,13 +62,13 @@ export function FileContentViewer({ filePath, content, isBinary, onClose }: File
   return (
     <div className="flex flex-col h-full">
       {/* Header with file path and close button */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-gray-900 border-b border-gray-700 text-xs text-gray-400">
-        <span className="font-medium text-gray-300 truncate" title={filePath}>
+      <div className="flex items-center justify-between px-3 py-1.5 bg-gray-50 dark:bg-gray-900 border-b border-gray-300 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400">
+        <span className="font-medium text-gray-700 dark:text-gray-300 truncate" title={filePath}>
           {filePath}
         </span>
         <button
           onClick={onClose}
-          className="px-2 py-0.5 rounded hover:bg-gray-800 transition-colors shrink-0 ml-2"
+          className="px-2 py-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors shrink-0 ml-2"
           title="Close file viewer"
         >
           Close
@@ -76,7 +76,7 @@ export function FileContentViewer({ filePath, content, isBinary, onClose }: File
       </div>
 
       {/* File content */}
-      <div className="flex-1 overflow-auto bg-gray-950">
+      <div className="flex-1 overflow-auto bg-white dark:bg-gray-950">
         {content === null ? (
           <div className="flex items-center justify-center h-full text-gray-500 text-sm">
             Loading...

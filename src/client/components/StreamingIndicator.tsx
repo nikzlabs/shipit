@@ -37,7 +37,7 @@ export function TypingDots() {
 export function ThinkingIndicator({ activity }: { activity?: StreamingActivity }) {
   return (
     <div className="flex justify-start">
-      <div className="bg-gray-800 rounded-lg px-4 py-3 text-sm text-gray-400 flex items-center gap-2">
+      <div className="bg-gray-100 dark:bg-gray-800 rounded-lg px-4 py-3 text-sm text-gray-500 dark:text-gray-400 flex items-center gap-2">
         <TypingDots />
         <span>{activity?.label ?? "Thinking..."}</span>
       </div>
