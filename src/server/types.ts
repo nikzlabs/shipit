@@ -238,6 +238,27 @@ export interface WsSetSystemPrompt {
   content: string;
 }
 
+// ---- Branching & checkpoint messages ----
+
+export interface WsCreateCheckpoint {
+  type: "create_checkpoint";
+  label?: string;
+}
+
+export interface WsBranchFromCheckpoint {
+  type: "branch_from_checkpoint";
+  checkpointId: string;
+}
+
+export interface WsSwitchBranch {
+  type: "switch_branch";
+  branchId: string;
+}
+
+export interface WsListBranches {
+  type: "list_branches";
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsGetGitLog
@@ -267,7 +288,11 @@ export type WsClientMessage =
   | WsGitHubGetRemotes
   | WsGitHubLogout
   | WsGitHubCreateRepo
-  | WsSetGitIdentity;
+  | WsSetGitIdentity
+  | WsCreateCheckpoint
+  | WsBranchFromCheckpoint
+  | WsSwitchBranch
+  | WsListBranches;
 
 export interface WsClaudeEvent {
   type: "claude_event";
@@ -510,6 +535,52 @@ export interface WsSystemPromptSaved {
   content: string;
 }
 
+// ---- Branching & checkpoint server messages ----
+
+export interface CheckpointInfo {
+  id: string;
+  sessionId: string;
+  messageIndex: number;
+  commitHash: string;
+  createdAt: string;
+  label?: string;
+}
+
+export interface BranchInfo {
+  id: string;
+  sessionId: string;
+  parentCheckpointId: string | null;
+  agentSessionId?: string;
+  name: string;
+  checkpoints: CheckpointInfo[];
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface WsCheckpointCreated {
+  type: "checkpoint_created";
+  checkpoint: CheckpointInfo;
+  branchId: string;
+}
+
+export interface WsBranchList {
+  type: "branch_list";
+  branches: BranchInfo[];
+  activeBranchId: string;
+}
+
+export interface WsBranchSwitched {
+  type: "branch_switched";
+  branch: BranchInfo;
+  messages: WsChatHistoryMessage[];
+}
+
+export interface WsBranchCreated {
+  type: "branch_created";
+  branch: BranchInfo;
+  messages: WsChatHistoryMessage[];
+}
+
 // ---- File watcher types ----
 
 export interface WsFilesChanged {
@@ -549,4 +620,8 @@ export type WsServerMessage =
   | WsGitHubRemotes
   | WsGitHubRepoCreated
   | WsGitIdentityRequired
-  | WsGitIdentitySet;
+  | WsGitIdentitySet
+  | WsCheckpointCreated
+  | WsBranchList
+  | WsBranchSwitched
+  | WsBranchCreated;

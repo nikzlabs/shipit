@@ -28,6 +28,7 @@ import { TemplateSelector, type TemplateInfo } from "./components/TemplateSelect
 import { UsageModal, type SessionUsage, type UsageStats } from "./components/UsageModal.js";
 import { SystemPromptEditor } from "./components/SystemPromptEditor.js";
 import { GitIdentityOverlay } from "./components/GitIdentityOverlay.js";
+import { BranchIndicator, type BranchInfo, type CheckpointInfo } from "./components/BranchIndicator.js";
 import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal";
@@ -95,6 +96,8 @@ export default function App() {
   const [hasSystemPrompt, setHasSystemPrompt] = useState(false);
   const [systemPromptContent, setSystemPromptContent] = useState("");
   const [gitIdentityNeeded, setGitIdentityNeeded] = useState(false);
+  const [branches, setBranches] = useState<BranchInfo[]>([]);
+  const [activeBranchId, setActiveBranchId] = useState<string>("");
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
   const historyLoadedRef = useRef(false);
@@ -418,6 +421,8 @@ export default function App() {
         }
         return [data.session, ...prev];
       });
+      // Load branches for this session
+      send({ type: "list_branches" } as any);
     }
 
     if (data.type === "session_renamed") {
@@ -545,6 +550,56 @@ export default function App() {
       setSystemPromptContent(data.content);
       setHasSystemPrompt(data.content.length > 0);
       setSystemPromptOpen(false);
+    }
+
+    if (data.type === "branch_list") {
+      setBranches(data.branches);
+      setActiveBranchId(data.activeBranchId);
+    }
+
+    if (data.type === "checkpoint_created") {
+      // Update the branch's checkpoints in local state
+      setBranches((prev) =>
+        prev.map((b) =>
+          b.id === data.branchId
+            ? { ...b, checkpoints: [...b.checkpoints, data.checkpoint] }
+            : b,
+        ),
+      );
+    }
+
+    if (data.type === "branch_created") {
+      setBranches((prev) => {
+        const deactivated = prev.map((b) => ({ ...b, isActive: false }));
+        return [...deactivated, data.branch];
+      });
+      setActiveBranchId(data.branch.id);
+      // Replace messages with the branch's conversation
+      const loaded: ChatMessage[] = data.messages.map((m: WsChatHistoryMessage) => ({
+        role: m.role,
+        text: m.text,
+        toolUse: m.toolUse,
+        images: m.images,
+        isError: m.isError,
+        streaming: false,
+      }));
+      setMessages(loaded);
+    }
+
+    if (data.type === "branch_switched") {
+      setBranches((prev) =>
+        prev.map((b) => ({ ...b, isActive: b.id === data.branch.id })),
+      );
+      setActiveBranchId(data.branch.id);
+      const loaded: ChatMessage[] = data.messages.map((m: WsChatHistoryMessage) => ({
+        role: m.role,
+        text: m.text,
+        toolUse: m.toolUse,
+        images: m.images,
+        isError: m.isError,
+        streaming: false,
+      }));
+      setMessages(loaded);
     }
 
     if (data.type === "log_entry") {
@@ -740,6 +795,8 @@ export default function App() {
       setGitCommits([]);
       setFileTree([]);
       setCurrentSessionUsage(null);
+      setBranches([]);
+      setActiveBranchId("");
       // Load persisted chat history for this session (also activates session on server)
       send({ type: "get_chat_history", sessionId });
       // Refresh file tree and git log for the new session's workspace
@@ -762,6 +819,8 @@ export default function App() {
     setViewingFileBinary(false);
     setGitCommits([]);
     setFileTree([]);
+    setBranches([]);
+    setActiveBranchId("");
     send({ type: "new_session" });
     // Request templates for the picker
     if (templates.length === 0) {
@@ -889,6 +948,27 @@ export default function App() {
   const handleSystemPromptSave = useCallback(
     (content: string) => {
       send({ type: "set_system_prompt", content });
+    },
+    [send],
+  );
+
+  const handleCreateCheckpoint = useCallback(
+    (label?: string) => {
+      send({ type: "create_checkpoint", label } as any);
+    },
+    [send],
+  );
+
+  const handleBranchFromCheckpoint = useCallback(
+    (checkpointId: string) => {
+      send({ type: "branch_from_checkpoint", checkpointId } as any);
+    },
+    [send],
+  );
+
+  const handleSwitchBranch = useCallback(
+    (branchId: string) => {
+      send({ type: "switch_branch", branchId } as any);
     },
     [send],
   );
@@ -1062,6 +1142,18 @@ export default function App() {
           onEditMessage={handleEditMessage}
           onAnswerQuestion={handleAnswerQuestion}
         />
+      )}
+      {!showTemplatePicker && (
+        <div className="border-t border-gray-200 dark:border-gray-800 px-4 py-1.5 flex items-center gap-2">
+          <BranchIndicator
+            branches={branches}
+            activeBranchId={activeBranchId}
+            onCreateCheckpoint={handleCreateCheckpoint}
+            onBranchFromCheckpoint={handleBranchFromCheckpoint}
+            onSwitchBranch={handleSwitchBranch}
+            disabled={isLoading || status !== "open"}
+          />
+        </div>
       )}
       {!showTemplatePicker && (
         <GitHistory

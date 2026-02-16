@@ -17,6 +17,7 @@ import { scanPorts, snapshotBaselinePorts, DEFAULT_SCAN_PORTS } from "./port-sca
 import { UsageManager } from "./usage.js";
 import { FileWatcher } from "./file-watcher.js";
 import { listTemplates, getTemplate, applyTemplate } from "./templates.js";
+import { BranchManager } from "./branches.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment } from "./types.js";
 
 function getErrorMessage(err: unknown): string {
@@ -142,6 +143,11 @@ export interface AppDeps {
    * Inject a stub in tests to avoid real filesystem watching.
    */
   fileWatcher?: FileWatcher;
+  /**
+   * Branch manager instance. Defaults to `new BranchManager()`.
+   * Manages conversation branching and checkpoints.
+   */
+  branchManager?: BranchManager;
 }
 
 /**
@@ -209,6 +215,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       console.error("[server] Failed to load GitHub user info:", err);
     });
   }
+
+  // ---- Branch manager ----
+  const branchManager = deps.branchManager ?? new BranchManager(
+    path.join(workspaceDir, ".vibe-branches")
+  );
 
   // ---- File watcher ----
   const fileWatcher = deps.fileWatcher ?? new FileWatcher();
@@ -394,6 +405,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
 
     sessionManager.track(appSessionId, title, sessionDir);
+    branchManager.init(appSessionId);
     console.log("[server] Created session directory:", sessionDir);
 
     return { appSessionId, sessionDir };
@@ -810,6 +822,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         sessionManager.delete(msg.sessionId);
         chatHistoryManager.delete(msg.sessionId);
         usageManager.delete(msg.sessionId);
+        branchManager.delete(msg.sessionId);
         send({ type: "session_list", sessions: sessionManager.list() });
       }
 
@@ -1296,6 +1309,176 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
       if (msg.type === "get_usage_stats") {
         send({ type: "usage_stats", stats: usageManager.getStats() });
+      }
+
+      // ---- Branching & checkpoint operations ----
+
+      if (msg.type === "list_branches") {
+        if (!activeAppSessionId) {
+          send({ type: "error", message: "No active session" });
+          return;
+        }
+        const data = branchManager.listBranches(activeAppSessionId);
+        send({ type: "branch_list", branches: data.branches, activeBranchId: data.activeBranchId });
+      }
+
+      if (msg.type === "create_checkpoint") {
+        if (!activeAppSessionId) {
+          send({ type: "error", message: "No active session" });
+          return;
+        }
+        const label = typeof msg.label === "string" ? msg.label.trim() : undefined;
+        if (label !== undefined && label.length > 200) {
+          send({ type: "error", message: "Checkpoint label too long (max 200 characters)" });
+          return;
+        }
+
+        try {
+          const git = getActiveGitManager();
+          const commits = await git.log(1);
+          const commitHash = commits.length > 0 ? commits[0].hash : "";
+          const messages = chatHistoryManager.load(activeAppSessionId);
+
+          const checkpoint = branchManager.createCheckpoint(
+            activeAppSessionId,
+            messages.length,
+            commitHash,
+            label || undefined,
+          );
+
+          if (!checkpoint) {
+            send({ type: "error", message: "Failed to create checkpoint — no active branch" });
+            return;
+          }
+
+          const activeBranch = branchManager.getActiveBranch(activeAppSessionId);
+          send({
+            type: "checkpoint_created",
+            checkpoint,
+            branchId: activeBranch?.id ?? "",
+          });
+        } catch (err) {
+          send({ type: "error", message: `Failed to create checkpoint: ${getErrorMessage(err)}` });
+        }
+      }
+
+      if (msg.type === "branch_from_checkpoint") {
+        if (!activeAppSessionId) {
+          send({ type: "error", message: "No active session" });
+          return;
+        }
+        const checkpointId = typeof msg.checkpointId === "string" ? msg.checkpointId.trim() : "";
+        if (!checkpointId) {
+          send({ type: "error", message: "Checkpoint ID is required" });
+          return;
+        }
+
+        const checkpoint = branchManager.getCheckpoint(activeAppSessionId, checkpointId);
+        if (!checkpoint) {
+          send({ type: "error", message: "Checkpoint not found" });
+          return;
+        }
+
+        try {
+          // Snapshot data BEFORE git rollback. `git reset --hard` reverts all
+          // files in the working tree, including branch and chat-history JSON
+          // files that live inside the workspace.
+          const fullHistory = chatHistoryManager.load(activeAppSessionId);
+          const branchMessages = fullHistory.slice(0, checkpoint.messageIndex);
+          const branchSnapshot = branchManager.listBranches(activeAppSessionId);
+
+          // Roll back git to the checkpoint's commit
+          const git = getActiveGitManager();
+          if (checkpoint.commitHash) {
+            await git.rollback(checkpoint.commitHash);
+          }
+
+          // Restore branch data (may have been reverted by git rollback) and
+          // create the new branch. We call init to re-persist the snapshot,
+          // then branchFrom to add the new branch.
+          branchManager.restore(activeAppSessionId, branchSnapshot);
+          const newBranch = branchManager.branchFrom(activeAppSessionId, checkpointId);
+          if (!newBranch) {
+            send({ type: "error", message: "Failed to create branch" });
+            return;
+          }
+
+          // Save branch-specific chat history
+          const branchHistoryKey = `${activeAppSessionId}__${newBranch.id}`;
+          for (const m of branchMessages) {
+            chatHistoryManager.append(branchHistoryKey, m);
+          }
+
+          // Restart Vite after git rollback
+          viteManager.restart(getActiveDir());
+
+          send({
+            type: "branch_created",
+            branch: newBranch,
+            messages: branchMessages,
+          });
+        } catch (err) {
+          send({ type: "error", message: `Failed to branch from checkpoint: ${getErrorMessage(err)}` });
+        }
+      }
+
+      if (msg.type === "switch_branch") {
+        if (!activeAppSessionId) {
+          send({ type: "error", message: "No active session" });
+          return;
+        }
+        const branchId = typeof msg.branchId === "string" ? msg.branchId.trim() : "";
+        if (!branchId) {
+          send({ type: "error", message: "Branch ID is required" });
+          return;
+        }
+
+        // Snapshot branch data before switch (git rollback may revert files)
+        const branchSnapshot = branchManager.listBranches(activeAppSessionId);
+
+        const branch = branchManager.switchBranch(activeAppSessionId, branchId);
+        if (!branch) {
+          send({ type: "error", message: "Branch not found" });
+          return;
+        }
+
+        try {
+          // Load conversation for this branch BEFORE any git rollback
+          let messages;
+          if (branch.parentCheckpointId === null) {
+            messages = chatHistoryManager.load(activeAppSessionId);
+          } else {
+            const branchHistoryKey = `${activeAppSessionId}__${branchId}`;
+            messages = chatHistoryManager.load(branchHistoryKey);
+          }
+
+          // Roll back git to the branch's parent checkpoint
+          if (branch.parentCheckpointId) {
+            const checkpoint = branchManager.getCheckpoint(activeAppSessionId, branch.parentCheckpointId);
+            if (checkpoint?.commitHash) {
+              const git = getActiveGitManager();
+              await git.rollback(checkpoint.commitHash);
+              // Restore branch data after rollback (git reset may have reverted it)
+              branchManager.restore(activeAppSessionId, {
+                ...branchSnapshot,
+                activeBranchId: branchId,
+                branches: branchSnapshot.branches.map((b) => ({
+                  ...b,
+                  isActive: b.id === branchId,
+                })),
+              });
+              viteManager.restart(getActiveDir());
+            }
+          }
+
+          send({
+            type: "branch_switched",
+            branch,
+            messages,
+          });
+        } catch (err) {
+          send({ type: "error", message: `Failed to switch branch: ${getErrorMessage(err)}` });
+        }
       }
     });
 

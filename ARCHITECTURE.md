@@ -76,6 +76,7 @@ ShipIt is a browser-based IDE for "vibe coding" — you talk to Claude in a chat
 | `port-scanner.ts` | Port auto-detection — `checkPort`, `scanPorts` for finding non-Vite dev servers |
 | `usage.ts` | `UsageManager` class — per-turn cost/duration tracking, session-level aggregation, JSON persistence |
 | `file-watcher.ts` | `FileWatcher` class — recursive `fs.watch`, debounced change events, ignore patterns |
+| `branches.ts` | `BranchManager` class — conversation branching and checkpoints, JSON persistence per session |
 | `types.ts` | Shared TypeScript types for all WebSocket and Claude event payloads |
 
 The server is intentionally thin — it's a bridge between the browser and the Claude CLI. No database, no REST API.
@@ -110,6 +111,7 @@ The server is intentionally thin — it's a bridge between the browser and the C
 | `components/AuthOverlay.tsx` | Full-screen overlay for OAuth authentication flow |
 | `components/UsageModal.tsx` | Usage/cost summary modal — current session and all-sessions breakdown, triggered by cost badge |
 | `components/SystemPromptEditor.tsx` | Project-level system prompt modal — edit/save/clear instructions sent to Claude with every message |
+| `components/BranchIndicator.tsx` | Branch dropdown and checkpoint button — branch switching, checkpoint creation, branch-from-checkpoint |
 
 ### Claude CLI Events (NDJSON)
 
@@ -232,6 +234,10 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `get_usage_stats` | — | Request aggregated usage/cost data across all sessions |
 | `get_system_prompt` | — | Request current project-level system prompt |
 | `set_system_prompt` | `content` | Save or delete the project-level system prompt |
+| `list_branches` | — | Request all branches and checkpoints for the current session |
+| `create_checkpoint` | `label?` | Create a checkpoint on the active branch |
+| `branch_from_checkpoint` | `checkpointId` | Create a new branch from a checkpoint (rolls back git, truncates history) |
+| `switch_branch` | `branchId` | Switch to an existing branch (rolls back git to branch's checkpoint) |
 
 ### Server → Client Messages
 
@@ -258,6 +264,10 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `usage_update` | `sessionId`, `totalCostUsd`, `totalDurationMs`, `turnCount` | Pushed after each turn that carries `total_cost_usd` |
 | `system_prompt` | `content` | Current system prompt text (empty string if not set) |
 | `system_prompt_saved` | `content` | Confirmation after saving/deleting the system prompt |
+| `branch_list` | `branches[]`, `activeBranchId` | All branches with their checkpoints for the session |
+| `checkpoint_created` | `checkpoint`, `branches[]`, `activeBranchId` | Checkpoint created, with updated branch data |
+| `branch_created` | `branch`, `branches[]`, `activeBranchId` | New branch created from checkpoint |
+| `branch_switched` | `branch`, `branches[]`, `activeBranchId` | Switched to a different branch |
 | `files_changed` | `paths[]` | Server-push: list of relative paths that changed in the workspace (debounced) |
 
 ### Adding a New Message Type
@@ -940,6 +950,51 @@ The system prompt is stored at `/workspace/.shipit/system-prompt.md`. This keeps
 - **`src/server/index.ts`** — `readSystemPrompt()` helper, `get_system_prompt`/`set_system_prompt` handlers, passes system prompt to `claude.run()`.
 - **`src/client/components/SystemPromptEditor.tsx`** — Modal editor with textarea, character count, save/cancel.
 - **`src/client/App.tsx`** — State management (`systemPromptOpen`, `hasSystemPrompt`, `systemPromptContent`), gear icon in header, WS message handlers.
+
+## Conversation Branching & Checkpoints
+
+Users can create checkpoints (snapshots of conversation + git state) and branch from them to explore alternative approaches. Each branch has its own conversation history and git state.
+
+### How It Works
+
+1. **Checkpoints**: A checkpoint captures the current conversation message index and git commit hash. Users create checkpoints via the flag button in the `BranchIndicator` UI. Checkpoints are stored within their parent branch's data.
+
+2. **Branching**: Creating a branch from a checkpoint:
+   - Snapshots the current branch data (to protect against git rollback — see below)
+   - Rolls back the git working tree to the checkpoint's commit via `git reset --hard`
+   - Restores the branch data snapshot (since the JSON file lives in the git-tracked workspace)
+   - Creates a new branch record with the checkpoint as its parent
+   - Truncates the chat history to the checkpoint's message index
+   - The new branch becomes active
+
+3. **Switching**: Switching to an existing branch rolls back git to that branch's parent checkpoint's commit (if it has one) and restores the corresponding chat history.
+
+### Critical Design: Snapshot-Before-Rollback
+
+Branch data files (`/workspace/.vibe-branches/{sessionId}.json`) live inside the git working tree. When `branch_from_checkpoint` or `switch_branch` does `git reset --hard`, it reverts these files to their committed state. The solution:
+
+```
+1. Snapshot branch data in memory
+2. Perform git reset --hard
+3. Restore branch data from snapshot (BranchManager.restore())
+4. Continue with branch creation/switch
+```
+
+This pattern is used in both the `branch_from_checkpoint` and `switch_branch` handlers in `index.ts`.
+
+### Storage
+
+- **Location**: `/workspace/.vibe-branches/{sessionId}.json`
+- **Format**: JSON with `branches[]` and `activeBranchId`
+- **Session ID sanitization**: Same pattern as `ChatHistoryManager` — non-alphanumeric characters (except `-` and `_`) replaced with `_`
+
+### Key Files
+
+- **`src/server/branches.ts`** — `BranchManager` class: init, listBranches, createCheckpoint, branchFrom, switchBranch, restore, delete. JSON file persistence per session.
+- **`src/server/types.ts`** — `BranchInfo`, `CheckpointInfo` shared types; `WsCreateCheckpoint`, `WsBranchFromCheckpoint`, `WsSwitchBranch`, `WsListBranches` client messages; `WsCheckpointCreated`, `WsBranchList`, `WsBranchSwitched`, `WsBranchCreated` server messages.
+- **`src/server/index.ts`** — WS handlers for all four branch message types, branch data initialization on session create, cleanup on session delete.
+- **`src/client/components/BranchIndicator.tsx`** — Branch dropdown with branch switching, checkpoint creation input, branch-from-checkpoint buttons.
+- **`src/client/App.tsx`** — Branch state management (`branches`, `activeBranchId`), WS message handlers, callback wiring to `BranchIndicator`.
 
 ## Build & Run
 

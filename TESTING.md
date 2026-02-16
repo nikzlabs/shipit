@@ -28,6 +28,7 @@ src/
 │   ├── auth.ts              →  auth.test.ts
 │   ├── markdown.ts          →  markdown.test.ts
 │   ├── file-watcher.ts      →  file-watcher.test.ts
+│   ├── branches.ts          →  branches.test.ts
 │   ├── vite-error-plugin.ts →  vite-error-plugin.test.ts
 │   └── index.ts             →  integration.test.ts   (WebSocket E2E)
 └── client/
@@ -47,7 +48,8 @@ src/
         ├── MobileTabBar.tsx     →  MobileTabBar.test.tsx
         ├── KeyboardShortcutsOverlay.tsx → KeyboardShortcutsOverlay.test.tsx
         ├── FileContentViewer.tsx → FileContentViewer.test.tsx
-        └── TerminalPanel.tsx    →  TerminalPanel.test.tsx
+        ├── TerminalPanel.tsx    →  TerminalPanel.test.tsx
+        └── BranchIndicator.tsx →  BranchIndicator.test.tsx
 ```
 
 ## Test Projects
@@ -70,8 +72,10 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | `findMarkdownFiles` | 7 | Recursive scan, directory skipping, sorting |
 | `UsageManager` | 11 | Record turns, aggregate per-session and total, delete session usage, persistence to disk, corruption recovery, zero cost, timestamps |
 | `FileWatcher` | 11 | File creation/modification events, debounce batching, deduplication, ignore patterns (node_modules, .git, .vibe-chat-history, .shipit-usage.json), start/stop lifecycle, idempotent start, subdirectory paths, no emit when idle, default debounce |
+| `BranchManager` | 25 | Init (creates default main branch, persistence), listBranches, getActiveBranch, createCheckpoint (on active branch, label, no active branch), getCheckpoint (found, not found), branchFrom (deactivates others, sets parent, naming, unknown checkpoint), switchBranch (activates target, unknown branch), setAgentSessionId, delete, persistence across instances, corrupted JSON recovery, session ID sanitization |
 | `shipitErrorCapturePlugin` | 5 | Script injection after `<head>`, fallback prepend, HTML preservation, postMessage script content |
 | Integration (E2E) | 53 | Full WebSocket flow: connect, sessions, git, docs, file content viewer (read, nested path, path traversal, non-existent file, binary detection, large file guard), Claude lifecycle, multi-client, path traversal, disconnect cleanup, port auto-detection with multi-port support, periodic port scanning, terminal/logs relay (stderr, stdout, server lifecycle logs, log buffering for new clients, clear_logs, preview error relay, empty/long error rejection, preview log buffering), usage tracking (get_usage_stats empty/populated, usage_update after result, accumulation across turns, no update when cost undefined, delete cleans usage), file watcher (broadcast to single/multiple clients, sequential events, disconnect cleanup) |
+| Integration: Branching | 12 | list_branches (returns default on new session), create_checkpoint (happy path, no active session, label too long), branch_from_checkpoint (happy path with git rollback and history truncation, unknown checkpoint), switch_branch (happy path, unknown branch), full workflow (messages → checkpoint → branch → verify), delete_session cleans up branch data |
 
 ### Client Tests
 
@@ -95,6 +99,7 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | `usePreviewErrors` | 14 | Empty initial state, error capture (window.onerror, console.error/warn), source filtering (ignores non-shipit), dedup within 1s window, dedup expiry, max buffer size (50), clearErrors, source/line/col/stack capture, unique IDs, empty console message ignore, listener cleanup |
 | `TerminalPanel` | 15 | Header rendering, clear button, empty state, log entry text display, source labels (`[err]`/`[out]`/`[srv]`/`[pre]`), timestamps, monospace font, entry ordering, source filter buttons (render, aria-pressed, hide/show toggle, prevent hiding all sources, filter-specific empty state) |
 | `UsageModal` | 13 | Dialog rendering, accessibility (role, aria-label), current session usage display, no-data fallback, all sessions aggregate, per-session breakdown with titles, truncated session ID fallback, close on button/backdrop/inner click prevention, zero usage, sub-cent formatting, null allUsage |
+| `BranchIndicator` | 13 | Renders nothing with no branches, shows active branch name, opens dropdown on click, switch branch callback, checkpoint input (show on flag click, save with label, save empty label, Enter key, Escape to close), shows checkpoints in dropdown, branch-from-checkpoint callback, branch count display, disabled state |
 | `ToolResult` | 25 | `truncateLines` utility (under limit, over limit, exact limit), empty/no-output display, BashResult (monospace, error highlighting, error border, truncation at 30 lines, expand/collapse, aria-label), ReadResult (code block, hljs syntax highlighting, truncation at 20 lines), GrepResult (colored file paths, yellow line numbers, file-only matches, truncation at 20 lines, Glob tool), GenericResult (monospace fallback, error red, truncation at 15 lines) |
 | `MessageList` (tool results) | +9 | Show/hide output toggle, no toggle without result, expand/collapse result content, tool_use_id matching, no toggle for Edit/Write (rendered as diffs), missing tool_use_id match handling, aria-expanded attribute |
 
@@ -115,6 +120,7 @@ Several modules accept optional constructor parameters for test isolation:
 - `UsageManager(usageFile?)` — override the JSON file path for usage data
 - `extractAuthUrl(text)` — exported pure function for URL pattern testing
 - `FileWatcher(debounceMs?)` — override debounce delay; tests inject a `StubFileWatcher` via `AppDeps.fileWatcher`
+- `BranchManager(branchesDir?)` — override the directory for branch data files
 - `buildApp(deps?)` — exported factory that accepts injected dependencies (see [Integration Tests](#integration-tests))
 
 ### jsdom Limitations
@@ -276,4 +282,5 @@ The `FakeClaudeProcess` is controlled by the test — you call `lastClaude.emit(
 | Session tracking | `result` event updates `lastUsedAt` |
 | Port auto-detection | Detected after turn, no broadcast when unchanged, port changes between turns, new client gets current state, multiple ports |
 | Periodic port scanning | Mid-turn detection, interval start/stop tied to client connections, no broadcast when unchanged, detects port appear/disappear |
+| Branching | list_branches default, create_checkpoint happy path + errors, branch_from_checkpoint with git rollback, switch_branch, full workflow, session delete cleanup |
 | Usage tracking | `get_usage_stats` empty/populated, `usage_update` after result with cost, accumulation across turns, no update when `total_cost_usd` undefined, delete session cleans usage |

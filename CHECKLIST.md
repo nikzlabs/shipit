@@ -120,17 +120,17 @@ Design docs in `docs/design/`.
 - [x] Integration test for `preview_error` relay to terminal log buffer
 
 ### Feature 7: Conversation Branching & Checkpoints (`docs/design/007-conversation-branching.md`)
-- [ ] `BranchManager` class (`src/server/branches.ts`) — persist to `/workspace/.vibe-branches/`
-- [ ] WS messages: `create_checkpoint`, `branch_from_checkpoint`, `switch_branch`, `list_branches`
+- [x] `BranchManager` class (`src/server/branches.ts`) — persist to `/workspace/.vibe-branches/`
+- [x] WS messages: `create_checkpoint`, `branch_from_checkpoint`, `switch_branch`, `list_branches`
 - [ ] Auto-checkpoint before message edit/retry
 - [ ] Conversation replay as system prompt when branching (clean context for new CLI session)
-- [ ] Git rollback to checkpoint commit on branch switch
-- [ ] `BranchIndicator` component — branch dropdown, checkpoint button in header
+- [x] Git rollback to checkpoint commit on branch switch
+- [x] `BranchIndicator` component — branch dropdown, checkpoint button in header
 - [ ] Timeline view in GitHistory area with checkpoint nodes and color-coded branches
 - [ ] Checkpoint dividers in chat ("Checkpoint: before refactor")
-- [ ] Unit tests for `BranchManager` (create, list, switch, persistence)
-- [ ] Integration tests for full branch workflow (messages → checkpoint → branch → verify)
-- [ ] Component tests for BranchIndicator and timeline view
+- [x] Unit tests for `BranchManager` (create, list, switch, persistence)
+- [x] Integration tests for full branch workflow (messages → checkpoint → branch → verify)
+- [x] Component tests for BranchIndicator and timeline view
 
 ### Feature 8: Inline File Editing (`docs/design/008-inline-file-editing.md`)
 - [ ] Add CodeMirror 6 dependency (`codemirror`, `@codemirror/lang-*`, `@codemirror/theme-one-dark`)
