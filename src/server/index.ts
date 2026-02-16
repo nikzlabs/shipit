@@ -406,6 +406,17 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       }
 
       if (msg.type === "send_message") {
+        // Check auth before spawning — the CLI hangs if not authenticated
+        if (!authManager.authenticated) {
+          // Re-check in case credentials were added since startup
+          authManager.checkCredentials();
+        }
+        if (!authManager.authenticated) {
+          send({ type: "error", message: "Not authenticated with Claude. Please complete the OAuth flow." });
+          authManager.startOAuthFlow();
+          return;
+        }
+
         // Kill any existing process before starting a new one
         if (claude) {
           claude.kill();
@@ -748,6 +759,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           // Claude is still running — write answer to stdin (it may be blocking on input)
           claude.writeStdin(answerText + "\n");
         } else {
+          // Check auth before spawning — the CLI hangs if not authenticated
+          if (!authManager.authenticated) {
+            authManager.checkCredentials();
+          }
+          if (!authManager.authenticated) {
+            send({ type: "error", message: "Not authenticated with Claude. Please complete the OAuth flow." });
+            authManager.startOAuthFlow();
+            return;
+          }
+
           // Claude has finished — send the answer as a new prompt with --resume
           turnSummary = "";
           accumulatedText = "";

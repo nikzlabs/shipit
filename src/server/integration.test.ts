@@ -156,7 +156,8 @@ class StubViteManager extends EventEmitter {
  * checkCredentials() always returns false.
  */
 class StubAuthManager extends EventEmitter {
-  checkCredentials() { return false; }
+  authenticated = true; // Tests assume auth is already done
+  checkCredentials() { return true; }
   startOAuthFlow() { /* no-op */ }
   kill() { /* no-op */ }
 }
