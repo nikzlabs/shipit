@@ -375,6 +375,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       send(entry);
     }
 
+    // Check if git identity is configured — prompt the user if not
+    gitManager.hasIdentity().then((has) => {
+      if (!has) {
+        send({ type: "git_identity_required" });
+      }
+    });
+
     /** Read the system prompt file if it exists. Returns undefined when absent or empty. */
     const readSystemPrompt = async (): Promise<string | undefined> => {
       try {
@@ -588,6 +595,27 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           viteManager.restart();
         } catch (err) {
           send({ type: "error", message: `Rollback failed: ${getErrorMessage(err)}` });
+        }
+      }
+
+      if (msg.type === "set_git_identity") {
+        const name = typeof msg.name === "string" ? msg.name.trim() : "";
+        const email = typeof msg.email === "string" ? msg.email.trim() : "";
+        if (!name) {
+          send({ type: "error", message: "Git user name cannot be empty" });
+        } else if (!email) {
+          send({ type: "error", message: "Git email cannot be empty" });
+        } else if (name.length > 200) {
+          send({ type: "error", message: "Git user name is too long (max 200 characters)" });
+        } else if (email.length > 200) {
+          send({ type: "error", message: "Git email is too long (max 200 characters)" });
+        } else {
+          try {
+            await gitManager.setIdentity(name, email);
+            send({ type: "git_identity_set", name, email });
+          } catch (err) {
+            send({ type: "error", message: `Failed to set git identity: ${getErrorMessage(err)}` });
+          }
         }
       }
 

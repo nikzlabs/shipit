@@ -131,4 +131,23 @@ export class GitManager {
     console.log("[git]", msg);
     return msg;
   }
+
+  /** Check whether git has a user.name and user.email configured (any scope). */
+  async hasIdentity(): Promise<boolean> {
+    try {
+      const name = await this.git.getConfig("user.name");
+      const email = await this.git.getConfig("user.email");
+      return Boolean(name.value?.trim()) && Boolean(email.value?.trim());
+    } catch {
+      return false;
+    }
+  }
+
+  /** Set local git identity so commits work. */
+  async setIdentity(name: string, email: string): Promise<void> {
+    await this.git.addConfig("user.name", name);
+    await this.git.addConfig("user.email", email);
+    await this.git.addConfig("commit.gpgsign", "false");
+    console.log("[git] Set identity:", name, "<" + email + ">");
+  }
 }
