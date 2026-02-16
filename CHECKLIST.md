@@ -48,9 +48,23 @@
 - [x] Session rename — currently titles are auto-generated from the first message
 - [x] Workspace project templates — quick-start templates (Vite + React, Next.js, Express) to avoid the cold-start friction
 
+## Phase 8: High-Impact Features (see PHASE8-DESIGN.md for details)
+
+### P0 — Core
+- [ ] Cost & duration dashboard — show per-turn cost/duration below assistant messages, session totals in header (types already in `ClaudeResultEvent`)
+- [ ] Image & screenshot input — drag-and-drop, paste, and upload images into chat for multimodal vibe coding (Claude already supports vision)
+
+### P1 — Feedback Loop
+- [ ] Preview error capture — inject error reporter into preview iframe, surface console errors in terminal/chat, "Send to Claude" button, optional auto-fix loop
+- [ ] System prompt & project context — auto-detect CLAUDE.md, UI for editing `.shipit/system-prompt.txt`, prepend to every Claude turn
+
+### P2 — Advanced
+- [ ] Inline file editing — CodeMirror 6 in the file viewer, Ctrl+S to save, auto-commit, conflict detection when Claude edits the same file
+- [ ] Conversation branching & checkpoints — snapshot conversation + git state, branch from any checkpoint with a new CLI session and replayed context
+
 ## Nice to Have
 - [ ] Multi-file diff view — when Claude edits multiple files in one turn, show a grouped diff summary
-- [ ] Cost display per turn (from result.total_cost_usd)
-- [ ] Duration display
 - [ ] Dark/light theme
 - [ ] Export conversation
+- [ ] Multi-client collaboration — shared session URLs with spectator/participant modes
+- [ ] Deployment integration — one-click deploy to Vercel/Netlify from the UI
