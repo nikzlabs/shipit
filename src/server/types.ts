@@ -198,6 +198,17 @@ export interface WsGitHubCreateRepo {
   isPrivate?: boolean;
 }
 
+// ---- System prompt messages ----
+
+export interface WsGetSystemPrompt {
+  type: "get_system_prompt";
+}
+
+export interface WsSetSystemPrompt {
+  type: "set_system_prompt";
+  content: string;
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsGetGitLog
@@ -216,6 +227,8 @@ export type WsClientMessage =
   | WsAnswerQuestion
   | WsListTemplates
   | WsApplyTemplate
+  | WsGetSystemPrompt
+  | WsSetSystemPrompt
   | WsGitHubSetToken
   | WsGitHubGetStatus
   | WsGitHubPush
@@ -442,6 +455,18 @@ export interface WsGitHubRepoCreated {
   message?: string;
 }
 
+// ---- System prompt server messages ----
+
+export interface WsSystemPrompt {
+  type: "system_prompt";
+  content: string;
+}
+
+export interface WsSystemPromptSaved {
+  type: "system_prompt_saved";
+  content: string;
+}
+
 export type WsServerMessage =
   | WsClaudeEvent
   | WsError
@@ -464,6 +489,8 @@ export type WsServerMessage =
   | WsUsageUpdate
   | WsTemplateList
   | WsTemplateApplied
+  | WsSystemPrompt
+  | WsSystemPromptSaved
   | WsGitHubStatus
   | WsGitHubPushResult
   | WsGitHubPullResult

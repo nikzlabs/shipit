@@ -24,6 +24,7 @@ import { MobileTabBar, type MobilePanel } from "./components/MobileTabBar.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
 import { TemplateSelector, type TemplateInfo } from "./components/TemplateSelector.js";
 import { UsageModal, type SessionUsage, type UsageStats } from "./components/UsageModal.js";
+import { SystemPromptEditor } from "./components/SystemPromptEditor.js";
 import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal";
@@ -85,6 +86,9 @@ export default function App() {
   const [currentSessionUsage, setCurrentSessionUsage] = useState<SessionUsage | null>(null);
   const [allUsageStats, setAllUsageStats] = useState<UsageStats | null>(null);
   const [showUsageModal, setShowUsageModal] = useState(false);
+  const [systemPromptOpen, setSystemPromptOpen] = useState(false);
+  const [hasSystemPrompt, setHasSystemPrompt] = useState(false);
+  const [systemPromptContent, setSystemPromptContent] = useState("");
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
   const historyLoadedRef = useRef(false);
@@ -453,6 +457,17 @@ export default function App() {
       setAllUsageStats(data.stats);
     }
 
+    if (data.type === "system_prompt") {
+      setSystemPromptContent(data.content);
+      setHasSystemPrompt(data.content.length > 0);
+    }
+
+    if (data.type === "system_prompt_saved") {
+      setSystemPromptContent(data.content);
+      setHasSystemPrompt(data.content.length > 0);
+      setSystemPromptOpen(false);
+    }
+
     if (data.type === "log_entry") {
       setLogEntries((prev) => {
         const next = [...prev, { source: data.source, text: data.text, timestamp: data.timestamp }];
@@ -648,6 +663,18 @@ export default function App() {
     setShowUsageModal(true);
   }, [send]);
 
+  const handleSystemPromptOpen = useCallback(() => {
+    send({ type: "get_system_prompt" });
+    setSystemPromptOpen(true);
+  }, [send]);
+
+  const handleSystemPromptSave = useCallback(
+    (content: string) => {
+      send({ type: "set_system_prompt", content });
+    },
+    [send],
+  );
+
   const handleClearLogs = useCallback(() => {
     setLogEntries([]);
     send({ type: "clear_logs" });
@@ -827,6 +854,13 @@ export default function App() {
         />
       )}
       {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
+      {systemPromptOpen && (
+        <SystemPromptEditor
+          initialContent={systemPromptContent}
+          onSave={handleSystemPromptSave}
+          onClose={() => setSystemPromptOpen(false)}
+        />
+      )}
       {showUsageModal && (
         <UsageModal
           currentSessionUsage={currentSessionUsage}
@@ -885,6 +919,29 @@ export default function App() {
               GitHub
             </button>
           )}
+          <button
+            onClick={handleSystemPromptOpen}
+            className={`hidden sm:inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${
+              hasSystemPrompt
+                ? "text-blue-400 hover:text-blue-300 hover:bg-gray-800"
+                : "text-gray-500 hover:text-gray-300 hover:bg-gray-800"
+            }`}
+            title="Project instructions"
+            aria-label="Project instructions"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              className="w-4 h-4"
+            >
+              <path
+                fillRule="evenodd"
+                d="M7.84 1.804A1 1 0 0 1 8.82 1h2.36a1 1 0 0 1 .98.804l.331 1.652a6.993 6.993 0 0 1 1.929 1.115l1.598-.54a1 1 0 0 1 1.186.447l1.18 2.044a1 1 0 0 1-.205 1.251l-1.267 1.113a7.047 7.047 0 0 1 0 2.228l1.267 1.113a1 1 0 0 1 .206 1.25l-1.18 2.045a1 1 0 0 1-1.187.447l-1.598-.54a6.993 6.993 0 0 1-1.929 1.115l-.33 1.652a1 1 0 0 1-.98.804H8.82a1 1 0 0 1-.98-.804l-.331-1.652a6.993 6.993 0 0 1-1.929-1.115l-1.598.54a1 1 0 0 1-1.186-.447l-1.18-2.044a1 1 0 0 1 .205-1.251l1.267-1.114a7.05 7.05 0 0 1 0-2.227L1.821 7.773a1 1 0 0 1-.206-1.25l1.18-2.045a1 1 0 0 1 1.187-.447l1.598.54A6.992 6.992 0 0 1 7.51 3.456l.33-1.652ZM10 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"
+                clipRule="evenodd"
+              />
+            </svg>
+          </button>
           {currentSessionUsage && currentSessionUsage.totalCostUsd > 0 && (
             <button
               onClick={handleUsageBadgeClick}
