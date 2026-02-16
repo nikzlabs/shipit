@@ -49,7 +49,7 @@ export function ConnectionBanner({
     }
 
     // Connection dropped after having been open — start grace period
-    if (hasConnectedRef.current && status !== "open") {
+    if (hasConnectedRef.current) {
       const timer = setTimeout(() => setShowDisconnect(true), DISCONNECT_DELAY_MS);
       return () => clearTimeout(timer);
     }
