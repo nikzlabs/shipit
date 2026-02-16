@@ -27,6 +27,7 @@ src/
 │   ├── git.ts               →  git.test.ts
 │   ├── auth.ts              →  auth.test.ts
 │   ├── markdown.ts          →  markdown.test.ts
+│   ├── file-watcher.ts      →  file-watcher.test.ts
 │   └── index.ts             →  integration.test.ts   (WebSocket E2E)
 └── client/
     ├── hooks/
@@ -66,7 +67,8 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | `AuthManager` | 11 | URL pattern matching, `extractAuthUrl` extraction and cleanup |
 | `findMarkdownFiles` | 7 | Recursive scan, directory skipping, sorting |
 | `UsageManager` | 11 | Record turns, aggregate per-session and total, delete session usage, persistence to disk, corruption recovery, zero cost, timestamps |
-| Integration (E2E) | 45 | Full WebSocket flow: connect, sessions, git, docs, file content viewer (read, nested path, path traversal, non-existent file, binary detection, large file guard), Claude lifecycle, multi-client, path traversal, disconnect cleanup, port auto-detection with multi-port support, periodic port scanning, terminal/logs relay (stderr, stdout, server lifecycle logs, log buffering for new clients, clear_logs), usage tracking (get_usage_stats empty/populated, usage_update after result, accumulation across turns, no update when cost undefined, delete cleans usage) |
+| `FileWatcher` | 11 | File creation/modification events, debounce batching, deduplication, ignore patterns (node_modules, .git, .vibe-chat-history, .shipit-usage.json), start/stop lifecycle, idempotent start, subdirectory paths, no emit when idle, default debounce |
+| Integration (E2E) | 49 | Full WebSocket flow: connect, sessions, git, docs, file content viewer (read, nested path, path traversal, non-existent file, binary detection, large file guard), Claude lifecycle, multi-client, path traversal, disconnect cleanup, port auto-detection with multi-port support, periodic port scanning, terminal/logs relay (stderr, stdout, server lifecycle logs, log buffering for new clients, clear_logs), usage tracking (get_usage_stats empty/populated, usage_update after result, accumulation across turns, no update when cost undefined, delete cleans usage), file watcher (broadcast to single/multiple clients, sequential events, disconnect cleanup) |
 
 ### Client Tests
 
@@ -106,6 +108,7 @@ Several modules accept optional constructor parameters for test isolation:
 - `GitManager(workspaceDir?)` — override the workspace directory
 - `UsageManager(usageFile?)` — override the JSON file path for usage data
 - `extractAuthUrl(text)` — exported pure function for URL pattern testing
+- `FileWatcher(debounceMs?)` — override debounce delay; tests inject a `StubFileWatcher` via `AppDeps.fileWatcher`
 - `buildApp(deps?)` — exported factory that accepts injected dependencies (see [Integration Tests](#integration-tests))
 
 ### jsdom Limitations
