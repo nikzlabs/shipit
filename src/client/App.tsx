@@ -831,12 +831,16 @@ export default function App() {
           onAnswerQuestion={handleAnswerQuestion}
         />
       )}
-      <GitHistory
-        commits={gitCommits}
-        onRollback={handleRollback}
-        onRefresh={handleGitRefresh}
-      />
-      <MessageInput onSend={handleSend} disabled={isLoading || status !== "open"} activity={isLoading ? activity : undefined} />
+      {!showTemplatePicker && (
+        <GitHistory
+          commits={gitCommits}
+          onRollback={handleRollback}
+          onRefresh={handleGitRefresh}
+        />
+      )}
+      {!showTemplatePicker && (
+        <MessageInput onSend={handleSend} disabled={isLoading || status !== "open"} activity={isLoading ? activity : undefined} />
+      )}
     </>
   );
 
@@ -1002,35 +1006,41 @@ export default function App() {
         /* ── Mobile: single panel with bottom tab bar ── */
         <>
           <div className="flex flex-col flex-1 min-h-0">
-            {mobilePanel === "chat" ? (
+            {showTemplatePicker || mobilePanel === "chat" ? (
               <div className="flex flex-col flex-1 min-h-0">{chatPanel}</div>
             ) : (
               <div className="flex flex-col flex-1 min-h-0 bg-gray-50 dark:bg-gray-900">{rightPanel}</div>
             )}
           </div>
-          <MobileTabBar activePanel={mobilePanel} onChangePanel={setMobilePanel} />
+          {!showTemplatePicker && (
+            <MobileTabBar activePanel={mobilePanel} onChangePanel={setMobilePanel} />
+          )}
         </>
       ) : (
         /* ── Desktop: side-by-side resizable layout ── */
         <div ref={containerRef} className="flex flex-1 min-h-0">
           {/* Left column — Chat */}
           <div
-            className="flex flex-col min-w-0 border-r border-gray-200 dark:border-gray-800"
-            style={{ width: `${fraction * 100}%` }}
+            className={`flex flex-col min-w-0 ${showTemplatePicker ? "" : "border-r border-gray-200 dark:border-gray-800"}`}
+            style={{ width: showTemplatePicker ? "100%" : `${fraction * 100}%` }}
           >
             {chatPanel}
           </div>
 
-          {/* Drag handle */}
-          <ResizeHandle isDragging={isDragging} onMouseDown={onMouseDown} onTouchStart={onTouchStart} />
+          {!showTemplatePicker && (
+            <>
+              {/* Drag handle */}
+              <ResizeHandle isDragging={isDragging} onMouseDown={onMouseDown} onTouchStart={onTouchStart} />
 
-          {/* Right column — Tabbed (Preview / Docs) */}
-          <div
-            className="min-w-0 flex flex-col bg-gray-50 dark:bg-gray-900"
-            style={{ width: `${(1 - fraction) * 100}%` }}
-          >
-            {rightPanel}
-          </div>
+              {/* Right column — Tabbed (Preview / Docs) */}
+              <div
+                className="min-w-0 flex flex-col bg-gray-50 dark:bg-gray-900"
+                style={{ width: `${(1 - fraction) * 100}%` }}
+              >
+                {rightPanel}
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

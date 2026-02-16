@@ -152,12 +152,12 @@ export function TemplateSelector({
           </div>
         )}
 
-        {/* Dismiss link */}
+        {/* Skip button */}
         {!applying && (
-          <div className="text-center mt-6">
+          <div className="text-center mt-8">
             <button
               onClick={onDismiss}
-              className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
+              className="px-5 py-2 text-sm font-medium rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 hover:border-gray-400 dark:hover:border-gray-500 transition-colors"
             >
               Skip — start with an empty project
             </button>
