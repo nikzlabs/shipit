@@ -154,6 +154,50 @@ export interface WsApplyTemplate {
   templateId: string;
 }
 
+// ---- GitHub auth client messages ----
+
+export interface WsGitHubSetToken {
+  type: "github_set_token";
+  token: string;
+}
+
+export interface WsGitHubGetStatus {
+  type: "github_get_status";
+}
+
+export interface WsGitHubPush {
+  type: "github_push";
+  remote?: string;
+  branch?: string;
+}
+
+export interface WsGitHubPull {
+  type: "github_pull";
+  remote?: string;
+  branch?: string;
+}
+
+export interface WsGitHubSetRemote {
+  type: "github_set_remote";
+  name: string;
+  url: string;
+}
+
+export interface WsGitHubGetRemotes {
+  type: "github_get_remotes";
+}
+
+export interface WsGitHubLogout {
+  type: "github_logout";
+}
+
+export interface WsGitHubCreateRepo {
+  type: "github_create_repo";
+  name: string;
+  description?: string;
+  isPrivate?: boolean;
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsGetGitLog
@@ -170,7 +214,15 @@ export type WsClientMessage =
   | WsClearLogs
   | WsAnswerQuestion
   | WsListTemplates
-  | WsApplyTemplate;
+  | WsApplyTemplate
+  | WsGitHubSetToken
+  | WsGitHubGetStatus
+  | WsGitHubPush
+  | WsGitHubPull
+  | WsGitHubSetRemote
+  | WsGitHubGetRemotes
+  | WsGitHubLogout
+  | WsGitHubCreateRepo;
 
 export interface WsClaudeEvent {
   type: "claude_event";
@@ -311,6 +363,43 @@ export interface WsTemplateApplied {
   name: string;
 }
 
+// ---- GitHub auth server messages ----
+
+export interface WsGitHubStatus {
+  type: "github_status";
+  authenticated: boolean;
+  username?: string;
+  avatarUrl?: string;
+}
+
+export interface WsGitHubPushResult {
+  type: "github_push_result";
+  success: boolean;
+  message: string;
+  branch?: string;
+}
+
+export interface WsGitHubPullResult {
+  type: "github_pull_result";
+  success: boolean;
+  message: string;
+}
+
+export interface WsGitHubRemotes {
+  type: "github_remotes";
+  remotes: Array<{ name: string; url: string }>;
+}
+
+export interface WsGitHubRepoCreated {
+  type: "github_repo_created";
+  success: boolean;
+  name?: string;
+  fullName?: string;
+  url?: string;
+  cloneUrl?: string;
+  message?: string;
+}
+
 export type WsServerMessage =
   | WsClaudeEvent
   | WsError
@@ -330,4 +419,9 @@ export type WsServerMessage =
   | WsFileContent
   | WsLogEntry
   | WsTemplateList
-  | WsTemplateApplied;
+  | WsTemplateApplied
+  | WsGitHubStatus
+  | WsGitHubPushResult
+  | WsGitHubPullResult
+  | WsGitHubRemotes
+  | WsGitHubRepoCreated;

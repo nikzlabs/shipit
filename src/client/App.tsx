@@ -9,6 +9,8 @@ import { MessageList, type ChatMessage } from "./components/MessageList.js";
 import { PreviewFrame, type PreviewStatus } from "./components/PreviewFrame.js";
 import { GitHistory, type GitCommit } from "./components/GitHistory.js";
 import { AuthOverlay } from "./components/AuthOverlay.js";
+import { GitHubAuthOverlay } from "./components/GitHubAuthOverlay.js";
+import { GitHubCreateRepoOverlay } from "./components/GitHubCreateRepoOverlay.js";
 import { SessionSelector, type SessionInfo } from "./components/SessionSelector.js";
 import { DocsViewer } from "./components/DocsViewer.js";
 import { FileTree, type FileTreeNode } from "./components/FileTree.js";
@@ -76,6 +78,9 @@ export default function App() {
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
   const [applyingTemplate, setApplyingTemplate] = useState(false);
   const [showTemplates, setShowTemplates] = useState(!getSavedSessionId());
+  const [githubStatus, setGithubStatus] = useState<{ authenticated: boolean; username?: string; avatarUrl?: string }>({ authenticated: false });
+  const [showGitHubAuth, setShowGitHubAuth] = useState(false);
+  const [showCreateRepo, setShowCreateRepo] = useState(false);
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
   const historyLoadedRef = useRef(false);
@@ -127,11 +132,14 @@ export default function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  // On WebSocket connect, restore chat history for the saved session
+  // On WebSocket connect, restore chat history for the saved session + check GitHub status
   useEffect(() => {
     if (status === "open" && !historyLoadedRef.current && sessionIdRef.current) {
       historyLoadedRef.current = true;
       send({ type: "get_chat_history", sessionId: sessionIdRef.current });
+    }
+    if (status === "open") {
+      send({ type: "github_get_status" });
     }
     if (status === "closed") {
       historyLoadedRef.current = false;
@@ -392,6 +400,42 @@ export default function App() {
       send({ type: "get_file_tree" });
     }
 
+    if (data.type === "github_status") {
+      setGithubStatus({
+        authenticated: data.authenticated,
+        username: data.username,
+        avatarUrl: data.avatarUrl,
+      });
+      setShowGitHubAuth(false);
+    }
+
+    if (data.type === "github_push_result" || data.type === "github_pull_result") {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant" as const,
+          text: data.message,
+          streaming: false,
+          isError: !data.success,
+        },
+      ]);
+    }
+
+    if (data.type === "github_repo_created") {
+      const msg = data.success
+        ? `Repository created: ${data.fullName}\n${data.url}`
+        : `Failed to create repository: ${data.message}`;
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant" as const,
+          text: msg,
+          streaming: false,
+          isError: !data.success,
+        },
+      ]);
+    }
+
     if (data.type === "log_entry") {
       setLogEntries((prev) => {
         const next = [...prev, { source: data.source, text: data.text, timestamp: data.timestamp }];
@@ -562,6 +606,25 @@ export default function App() {
     [send]
   );
 
+  const handleGitHubTokenSubmit = useCallback(
+    (token: string) => {
+      send({ type: "github_set_token", token });
+    },
+    [send],
+  );
+
+  const handleGitHubLogout = useCallback(() => {
+    send({ type: "github_logout" });
+  }, [send]);
+
+  const handleCreateRepo = useCallback(
+    (name: string, description: string, isPrivate: boolean) => {
+      send({ type: "github_create_repo", name, description, isPrivate });
+      setShowCreateRepo(false);
+    },
+    [send],
+  );
+
   const handleClearLogs = useCallback(() => {
     setLogEntries([]);
     send({ type: "clear_logs" });
@@ -727,6 +790,19 @@ export default function App() {
   return (
     <div className="flex flex-col h-screen bg-gray-950 text-gray-100">
       {authUrl && <AuthOverlay url={authUrl} />}
+      {showGitHubAuth && (
+        <GitHubAuthOverlay
+          onSubmit={handleGitHubTokenSubmit}
+          onClose={() => setShowGitHubAuth(false)}
+        />
+      )}
+      {showCreateRepo && githubStatus.username && (
+        <GitHubCreateRepoOverlay
+          username={githubStatus.username}
+          onSubmit={handleCreateRepo}
+          onClose={() => setShowCreateRepo(false)}
+        />
+      )}
       {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
 
       {/* Header */}
@@ -744,6 +820,40 @@ export default function App() {
           />
         </div>
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          {githubStatus.authenticated ? (
+            <div className="hidden sm:flex items-center gap-1.5">
+              <span
+                className="inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-300"
+                title={`Connected as ${githubStatus.username}`}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
+                {githubStatus.username ?? "GitHub"}
+              </span>
+              <button
+                onClick={() => setShowCreateRepo(true)}
+                className="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200 transition-colors"
+                title="Create new GitHub repository"
+              >
+                + Repo
+              </button>
+              <button
+                onClick={handleGitHubLogout}
+                className="text-xs px-1.5 py-0.5 rounded-full bg-gray-800 text-gray-500 hover:bg-gray-700 hover:text-gray-300 transition-colors"
+                title="Disconnect from GitHub"
+              >
+                &times;
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowGitHubAuth(true)}
+              className="hidden sm:inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-500 hover:bg-gray-700 hover:text-gray-300 transition-colors"
+              title="Connect to GitHub"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-gray-600" />
+              GitHub
+            </button>
+          )}
           {preview?.running && (
             <span className={`hidden sm:inline text-xs px-2 py-0.5 rounded-full ${
               preview.source === "detected"
