@@ -1,6 +1,7 @@
 import { spawn, ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { ERROR_CAPTURE_SCRIPT } from "./vite-error-plugin.js";
 
@@ -11,6 +12,11 @@ const WORKSPACE_DIR = "/workspace";
 // trigger an npx download when spawning in /workspace.
 const VITE_BIN = path.resolve(process.cwd(), "node_modules/.bin/vite");
 
+// Resolve the absolute path to vite's ESM entry so the wrapper config written
+// to /workspace/.shipit/ can import it regardless of node_modules layout.
+const _require = createRequire(import.meta.url);
+const VITE_MODULE_PATH = _require.resolve("vite");
+
 /**
  * Generate the contents of a Vite wrapper config that loads the user's
  * existing config (if any), merges in the ShipIt error-capture plugin,
@@ -19,9 +25,15 @@ const VITE_BIN = path.resolve(process.cwd(), "node_modules/.bin/vite");
 function generateWrapperConfig(script: string): string {
   // The wrapper config is plain JavaScript (.mjs) that Vite can load directly.
   // It uses loadConfigFromFile to discover and merge the user's config.
+  //
+  // We use a dynamic import() with an absolute path to vite's entry module
+  // so that Node can resolve it regardless of which directory the wrapper
+  // config lives in (e.g. /workspace/.shipit/ has no node_modules).
   const escapedScript = JSON.stringify(script);
+  const escapedVitePath = JSON.stringify(VITE_MODULE_PATH);
   return `
-import { loadConfigFromFile, mergeConfig, defineConfig } from 'vite';
+const _vitePath = ${escapedVitePath};
+const { loadConfigFromFile, mergeConfig, defineConfig } = await import(_vitePath);
 
 const SCRIPT = ${escapedScript};
 
