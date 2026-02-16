@@ -299,7 +299,7 @@ describe("Integration: WebSocket flow", () => {
 
   afterEach(async () => {
     await app.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
   // ---- Connection ----
@@ -951,7 +951,7 @@ describe("Integration: Port auto-detection", () => {
 
   afterEach(async () => {
     await app.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
   it("broadcasts detected port after Claude turn completes", async () => {
@@ -1187,7 +1187,7 @@ describe("Integration: Periodic port scanning", () => {
 
   afterEach(async () => {
     await app.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
   it("detects a port started mid-turn without waiting for Claude to finish", async () => {
@@ -1379,7 +1379,7 @@ describe("Integration: Terminal/logs relay", () => {
 
   afterEach(async () => {
     await app.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
   it("relays Claude stderr as log_entry to client", async () => {
@@ -1457,6 +1457,16 @@ describe("Integration: Terminal/logs relay", () => {
     expect(exitLog).not.toBeNull();
     expect(exitLog.source).toBe("server");
     expect(exitLog.text).toBe("Claude process exited with code 0");
+
+    // Drain remaining messages (e.g. git_committed) so the async done handler
+    // (autoCommit, portScan) finishes before afterEach tears down the temp dir.
+    try {
+      for (let i = 0; i < 5; i++) {
+        await client.receive(300);
+      }
+    } catch {
+      // timeout expected when no more messages
+    }
 
     client.close();
   });
@@ -1651,7 +1661,7 @@ describe("Integration: Workspace project templates", () => {
 
   afterEach(async () => {
     await app.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
   it("list_templates returns all available templates", async () => {
@@ -1805,7 +1815,7 @@ describe("Integration: GitHub authentication", () => {
 
   afterEach(async () => {
     await app.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
   it("github_get_status returns unauthenticated by default", async () => {
@@ -2092,7 +2102,7 @@ describe("Integration: Usage & cost tracking", () => {
     // Wait for any pending async operations (git auto-commit) to complete
     await new Promise((r) => setTimeout(r, 200));
     try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     } catch {
       // Ignore cleanup errors — CI tmpdir will be cleared anyway
     }
@@ -2409,7 +2419,7 @@ describe("Integration: System prompt", () => {
     await app.close();
     await new Promise((r) => setTimeout(r, 200));
     try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     } catch {
       // Ignore cleanup errors
     }
@@ -2639,7 +2649,7 @@ describe("Integration: File watcher", () => {
     await app.close();
     await new Promise((r) => setTimeout(r, 100));
     try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     } catch {
       // Ignore cleanup errors
     }
@@ -2914,7 +2924,7 @@ describe("Integration: git identity flow", () => {
     else delete process.env.GIT_CONFIG_NOSYSTEM;
 
     if (app) await app.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
   /**
