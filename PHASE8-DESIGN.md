@@ -759,4 +759,3 @@ These were considered and explicitly deferred:
 - **Plugin/extension system** — premature abstraction at this stage. Defer until the feature set stabilizes.
 - **Deployment integration** (Vercel, Netlify) — valuable but orthogonal. Separate feature track.
 - **AI model selection** — Claude Code CLI uses the subscription's default model. Model choice belongs to the CLI, not ShipIt.
-- **Dark/light theme toggle** — low impact relative to the features above. Can be added anytime with CSS variable refactoring.

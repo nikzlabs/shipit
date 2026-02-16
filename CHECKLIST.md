@@ -96,9 +96,54 @@ Design docs in `docs/design/`.
 - [ ] Component tests for each renderer (normal output, error output, empty, long output truncation)
 - [ ] Handle missing `tool_use_id` match, binary content, and outputs >1MB gracefully
 
+### Feature 5: Image & Screenshot Input (`docs/design/005-image-input.md`)
+- [ ] Extend `send_message` with optional `images` array (base64 + mediaType + filename)
+- [ ] Server-side validation: MIME whitelist, 5 MB per image, max 5 per message, 20 MB total
+- [ ] Write images to `/workspace/.vibe-images/` and pass to Claude CLI as base64 content blocks
+- [ ] `MessageInput` enhancements: drag-and-drop, Ctrl+V paste, file picker, inline thumbnails with × remove
+- [ ] Drop zone overlay on chat panel with "Drop image here" indicator
+- [ ] `MessageList` renders image thumbnails in user messages (clickable lightbox)
+- [ ] Persist images in chat history for reload survival
+- [ ] Component tests for MessageInput (drag-and-drop, paste, thumbnails, remove)
+- [ ] Integration tests for `send_message` with images (happy path, invalid MIME, oversized)
+
+### Feature 6: Preview Error Capture & Auto-Debug Loop (`docs/design/006-preview-error-capture.md`)
+- [ ] Vite plugin to inject error-capture script (`window.onerror`, `console.error` → `postMessage`)
+- [ ] `usePreviewErrors` hook — listen for postMessage events, deduplicate, rolling buffer
+- [ ] Error badge on Preview tab (red, same pattern as terminal unread badge)
+- [ ] Expandable error panel at bottom of preview with stack traces
+- [ ] "Send to Claude" button composing error details into a chat message
+- [ ] "Auto-fix" toggle with safety guardrails (max 3 retries, 5s cooldown, kill switch)
+- [ ] Preview errors forwarded to Terminal tab with `"preview"` source (orange color)
+- [ ] Component tests for `usePreviewErrors` (dedup, buffer limits) and PreviewFrame error UI
+- [ ] Integration test for `preview_error` relay to terminal log buffer
+
+### Feature 7: Conversation Branching & Checkpoints (`docs/design/007-conversation-branching.md`)
+- [ ] `BranchManager` class (`src/server/branches.ts`) — persist to `/workspace/.vibe-branches/`
+- [ ] WS messages: `create_checkpoint`, `branch_from_checkpoint`, `switch_branch`, `list_branches`
+- [ ] Auto-checkpoint before message edit/retry
+- [ ] Conversation replay as system prompt when branching (clean context for new CLI session)
+- [ ] Git rollback to checkpoint commit on branch switch
+- [ ] `BranchIndicator` component — branch dropdown, checkpoint button in header
+- [ ] Timeline view in GitHistory area with checkpoint nodes and color-coded branches
+- [ ] Checkpoint dividers in chat ("Checkpoint: before refactor")
+- [ ] Unit tests for `BranchManager` (create, list, switch, persistence)
+- [ ] Integration tests for full branch workflow (messages → checkpoint → branch → verify)
+- [ ] Component tests for BranchIndicator and timeline view
+
+### Feature 8: Inline File Editing (`docs/design/008-inline-file-editing.md`)
+- [ ] Add CodeMirror 6 dependency (`codemirror`, `@codemirror/lang-*`, `@codemirror/theme-one-dark`)
+- [ ] Replace read-only `<pre><code>` in FileContentViewer with CodeMirror 6 editor
+- [ ] Toggle between read-only and edit mode (pencil icon)
+- [ ] Save via Ctrl+S / Cmd+S → `save_file` WS message → server writes + auto-commits
+- [ ] Unsaved indicator (dot on filename), auto-save on tab/file switch
+- [ ] Conflict dialog when Claude edits the same file user has open
+- [ ] Server `save_file` handler with path traversal guard, 1 MB limit, file-must-exist check
+- [ ] Integration tests for `save_file` (write, auto-commit, path traversal rejection)
+- [ ] Component tests for FileEditor (CodeMirror render, Ctrl+S, unsaved indicator, conflict dialog)
+
 ## Nice to Have
 - [ ] Multi-file diff view — when Claude edits multiple files in one turn, show a grouped diff summary
-- [ ] Dark/light theme
 - [ ] Export conversation
 - [ ] Multi-client collaboration — shared session URLs with spectator/participant modes
 - [ ] Deployment integration — one-click deploy to Vercel/Netlify from the UI
