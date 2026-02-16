@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, beforeAll, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
-import { MessageList, parseMessageSegments, type ChatMessage, type ToolUseBlock } from "./MessageList.js";
+import { MessageList, parseMessageSegments, type ChatMessage, type ToolUseBlock, type ToolResultBlock } from "./MessageList.js";
 
 // jsdom doesn't implement scrollIntoView
 beforeAll(() => {
@@ -673,6 +673,170 @@ describe("MessageList", () => {
       // Only the second user message ("Second") should still have a blue bubble
       expect(blueBubbles).toHaveLength(1);
       expect(blueBubbles[0].textContent).toContain("Second");
+    });
+  });
+
+  describe("inline tool results", () => {
+    it("shows 'Show output' toggle when tool has a result", () => {
+      const tools: ToolUseBlock[] = [
+        { type: "tool_use", id: "t1", name: "Bash", input: { command: "npm test" } },
+      ];
+      const results: ToolResultBlock[] = [
+        { toolUseId: "t1", content: "All tests passed" },
+      ];
+      render(
+        <MessageList
+          messages={[{ role: "assistant", text: "Running tests", toolUse: tools, toolResults: results }]}
+          isLoading={false}
+        />
+      );
+      expect(screen.getByText(/Show output/)).toBeInTheDocument();
+    });
+
+    it("does not show toggle when tool has no result", () => {
+      const tools: ToolUseBlock[] = [
+        { type: "tool_use", id: "t1", name: "Bash", input: { command: "npm test" } },
+      ];
+      render(
+        <MessageList
+          messages={[msg("assistant", "Running tests", { toolUse: tools })]}
+          isLoading={false}
+        />
+      );
+      expect(screen.queryByText(/Show output/)).toBeNull();
+    });
+
+    it("shows tool result when toggle is clicked", () => {
+      const tools: ToolUseBlock[] = [
+        { type: "tool_use", id: "t1", name: "Bash", input: { command: "echo hello" } },
+      ];
+      const results: ToolResultBlock[] = [
+        { toolUseId: "t1", content: "hello" },
+      ];
+      render(
+        <MessageList
+          messages={[{ role: "assistant", text: "Running", toolUse: tools, toolResults: results }]}
+          isLoading={false}
+        />
+      );
+      // Initially collapsed — result not visible
+      expect(screen.queryByText("hello")).toBeNull();
+
+      // Click to expand
+      fireEvent.click(screen.getByText(/Show output/));
+      expect(screen.getByText("hello")).toBeInTheDocument();
+    });
+
+    it("hides tool result when toggle is clicked again", () => {
+      const tools: ToolUseBlock[] = [
+        { type: "tool_use", id: "t1", name: "Bash", input: { command: "echo hello" } },
+      ];
+      const results: ToolResultBlock[] = [
+        { toolUseId: "t1", content: "hello world output" },
+      ];
+      render(
+        <MessageList
+          messages={[{ role: "assistant", text: "Running", toolUse: tools, toolResults: results }]}
+          isLoading={false}
+        />
+      );
+      // Expand
+      fireEvent.click(screen.getByText(/Show output/));
+      expect(screen.getByText("hello world output")).toBeInTheDocument();
+
+      // Collapse
+      fireEvent.click(screen.getByText(/Hide output/));
+      expect(screen.queryByText("hello world output")).toBeNull();
+    });
+
+    it("matches results to tools by tool_use_id", () => {
+      const tools: ToolUseBlock[] = [
+        { type: "tool_use", id: "t1", name: "Bash", input: { command: "cmd1" } },
+        { type: "tool_use", id: "t2", name: "Read", input: { file_path: "file.ts" } },
+      ];
+      const results: ToolResultBlock[] = [
+        { toolUseId: "t1", content: "output from cmd1" },
+        { toolUseId: "t2", content: "file contents" },
+      ];
+      render(
+        <MessageList
+          messages={[{ role: "assistant", text: "Working", toolUse: tools, toolResults: results }]}
+          isLoading={false}
+        />
+      );
+      // Both tools should have toggle buttons
+      const toggles = screen.getAllByText(/Show output/);
+      expect(toggles).toHaveLength(2);
+    });
+
+    it("does not show toggle for Edit tools (they render as diffs)", () => {
+      const tools: ToolUseBlock[] = [
+        { type: "tool_use", id: "t1", name: "Edit", input: { file_path: "f.ts", old_string: "a", new_string: "b" } },
+      ];
+      const results: ToolResultBlock[] = [
+        { toolUseId: "t1", content: "success" },
+      ];
+      render(
+        <MessageList
+          messages={[{ role: "assistant", text: "Editing", toolUse: tools, toolResults: results }]}
+          isLoading={false}
+        />
+      );
+      // Edit tools are rendered as DiffBlock, not with the toggle
+      expect(screen.queryByText(/Show output/)).toBeNull();
+    });
+
+    it("does not show toggle for Write tools (they render as diffs)", () => {
+      const tools: ToolUseBlock[] = [
+        { type: "tool_use", id: "t1", name: "Write", input: { file_path: "f.ts", content: "code" } },
+      ];
+      const results: ToolResultBlock[] = [
+        { toolUseId: "t1", content: "success" },
+      ];
+      render(
+        <MessageList
+          messages={[{ role: "assistant", text: "Writing", toolUse: tools, toolResults: results }]}
+          isLoading={false}
+        />
+      );
+      expect(screen.queryByText(/Show output/)).toBeNull();
+    });
+
+    it("handles missing tool_use_id match gracefully", () => {
+      const tools: ToolUseBlock[] = [
+        { type: "tool_use", id: "t1", name: "Bash", input: { command: "test" } },
+      ];
+      const results: ToolResultBlock[] = [
+        { toolUseId: "t_nonexistent", content: "orphan result" },
+      ];
+      render(
+        <MessageList
+          messages={[{ role: "assistant", text: "Running", toolUse: tools, toolResults: results }]}
+          isLoading={false}
+        />
+      );
+      // No match — no toggle should appear
+      expect(screen.queryByText(/Show output/)).toBeNull();
+    });
+
+    it("has accessible aria-expanded attribute on toggle", () => {
+      const tools: ToolUseBlock[] = [
+        { type: "tool_use", id: "t1", name: "Bash", input: { command: "test" } },
+      ];
+      const results: ToolResultBlock[] = [
+        { toolUseId: "t1", content: "output" },
+      ];
+      render(
+        <MessageList
+          messages={[{ role: "assistant", text: "Running", toolUse: tools, toolResults: results }]}
+          isLoading={false}
+        />
+      );
+      const toggle = screen.getByLabelText("Show output");
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+
+      fireEvent.click(toggle);
+      expect(screen.getByLabelText("Hide output").getAttribute("aria-expanded")).toBe("true");
     });
   });
 });

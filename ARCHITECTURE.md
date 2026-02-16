@@ -156,6 +156,55 @@ Key tools and their `input` fields relevant for rendering:
 
 The `DiffBlock` component (`src/client/components/DiffBlock.tsx`) handles rendering `Edit` and `Write` tool uses as inline diffs in the chat. Other tools fall back to a compact single-line display in `MessageList.tsx`.
 
+#### `user` Event — Tool Results
+
+The `user` event's `message.content` is an array of `tool_result` blocks. Each block has a `tool_use_id` that matches a `tool_use` block from the preceding `assistant` event:
+
+```json
+{
+  "type": "tool_result",
+  "tool_use_id": "toolu_abc123",
+  "content": "command output here...",
+  "is_error": false
+}
+```
+
+These results are parsed in `App.tsx` and attached to the preceding assistant message as `toolResults: ToolResultBlock[]`. The `ToolUseItem` component in `MessageList.tsx` matches results to tool use blocks by `tool_use_id` and renders a collapsible "Show output" / "Hide output" toggle.
+
+## Inline Tool Result Rendering
+
+When Claude uses tools, the results (Bash output, file contents, grep matches, etc.) are displayed inline in the chat beneath each tool invocation. Results are collapsible by default.
+
+### How It Works
+
+1. **Parsing**: `App.tsx` intercepts `user` events from the Claude CLI NDJSON stream and extracts `tool_result` blocks from `event.message.content`. Each result's `tool_use_id` links it to the corresponding tool invocation.
+2. **Attachment**: Results are attached to the last assistant message's `toolResults` array by matching `tool_use_id`. This happens incrementally — new results are merged with existing ones as they arrive.
+3. **Rendering**: `ToolUseItem` in `MessageList.tsx` receives the matched result as a prop and renders a "Show output" / "Hide output" toggle button. When expanded, the `ToolResult` component dispatches to a tool-specific renderer.
+4. **Truncation**: Large outputs are truncated client-side (Bash: 30 lines, Read: 20 lines, Grep/Glob: 20 lines, Generic: 15 lines) with an expandable "Show all N lines" button. Outputs exceeding 1MB are truncated at parse time.
+
+### Tool-Specific Renderers
+
+| Renderer | Tools | Features |
+|----------|-------|----------|
+| `BashResult` | Bash | Monospace output, red text + border for errors, 30-line truncation |
+| `ReadResult` | Read | Auto-detected syntax highlighting via highlight.js, 20-line truncation |
+| `GrepResult` | Grep, Glob | File paths in blue, line numbers in yellow (ripgrep-style formatting), 20-line truncation |
+| `GenericResult` | All others | Plain monospace text, red for errors, 15-line truncation |
+
+### Key Design Decisions
+
+- **Client-side only**: No server changes needed — the `claude_event` relay already sends `user` events. All processing happens in the browser.
+- **Not persisted**: Tool results are NOT saved to chat history. They can be very large and are ephemeral — what matters is Claude's response to them.
+- **Collapsed by default**: Keeps the chat readable. Users expand individual results when they need to inspect output.
+- **1MB truncation**: Prevents memory issues from extremely large outputs (full file dumps, verbose test output). Applied at parse time in `App.tsx`.
+
+### Key Files
+
+- **`src/client/App.tsx`** — Parses `tool_result` blocks from `user` events, attaches to assistant messages.
+- **`src/client/components/MessageList.tsx`** — `ToolUseItem` matches results by `tool_use_id`, renders collapse/expand toggle.
+- **`src/client/components/ToolResult.tsx`** — Tool-specific renderers: `BashResult`, `ReadResult`, `GrepResult`, `GenericResult`.
+- **`src/client/components/ToolResult.test.tsx`** — Component tests for all renderers.
+
 ## WebSocket Message Protocol
 
 All client-server communication uses JSON over a single WebSocket connection at `/ws`. Types are defined in `src/server/types.ts`.

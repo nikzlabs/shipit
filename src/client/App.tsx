@@ -6,7 +6,7 @@ import { useIsMobile } from "./hooks/useMediaQuery.js";
 import { useNotification } from "./hooks/useNotification.js";
 import { useTheme } from "./hooks/useTheme.js";
 import { MessageInput } from "./components/MessageInput.js";
-import { MessageList, type ChatMessage } from "./components/MessageList.js";
+import { MessageList, type ChatMessage, type ToolResultBlock } from "./components/MessageList.js";
 import { PreviewFrame, type PreviewStatus } from "./components/PreviewFrame.js";
 import { GitHistory, type GitCommit } from "./components/GitHistory.js";
 import { AuthOverlay } from "./components/AuthOverlay.js";
@@ -280,6 +280,46 @@ export default function App() {
       // Track tool result events — Claude is processing results
       if (event.type === "user") {
         setActivity({ label: "Processing results..." });
+
+        // Extract tool results from the user event and attach to the last assistant message
+        const results: ToolResultBlock[] = [];
+        for (const block of (event.message?.content ?? []) as Record<string, unknown>[]) {
+          if (block.type === "tool_result" && block.tool_use_id) {
+            const rawContent = block.content;
+            let content: string;
+            if (typeof rawContent === "string") {
+              content = rawContent;
+            } else if (rawContent == null) {
+              content = "";
+            } else {
+              content = JSON.stringify(rawContent);
+            }
+            // Truncate extremely large outputs (>1MB) to prevent memory issues
+            if (content.length > 1_000_000) {
+              content = content.slice(0, 1_000_000) + "\n... (output truncated — exceeded 1MB)";
+            }
+            results.push({
+              toolUseId: String(block.tool_use_id),
+              content,
+              isError: (block.is_error as boolean) ?? false,
+            });
+          }
+        }
+
+        if (results.length > 0) {
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.role === "assistant") {
+              // Merge new results with any existing results
+              const existingResults = last.toolResults ?? [];
+              return [
+                ...prev.slice(0, -1),
+                { ...last, toolResults: [...existingResults, ...results] },
+              ];
+            }
+            return prev;
+          });
+        }
       }
 
       if (event.type === "result") {
