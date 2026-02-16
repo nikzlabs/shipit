@@ -22,6 +22,7 @@ import WebSocket from "ws";
 import { buildApp } from "./index.js";
 import { GitManager } from "./git.js";
 import { SessionManager } from "./sessions.js";
+import { ChatHistoryManager } from "./chat-history.js";
 import { AuthManager } from "./auth.js";
 import { GitHubAuthManager } from "./github-auth.js";
 import { ViteManager } from "./vite-manager.js";
@@ -2529,10 +2530,12 @@ describe("Integration: File watcher", () => {
     await gitManager.init();
 
     stubFileWatcher = new StubFileWatcher();
+    lastClaude = undefined as unknown as FakeClaudeProcess;
 
     app = await buildApp({
       gitManager,
       sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
+      chatHistoryManager: new ChatHistoryManager(path.join(tmpDir, "chat-history")),
       viteManager: new StubViteManager() as unknown as ViteManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
@@ -2746,8 +2749,13 @@ describe("Integration: File watcher", () => {
       ],
     });
 
-    // Wait for Claude to be created, then simulate init + done
-    await new Promise((r) => setTimeout(r, 50));
+    // Poll until claudeFactory has been called (deterministic, no fixed timeout)
+    const deadline = Date.now() + 5000;
+    while (!lastClaude?.runCalled) {
+      if (Date.now() > deadline) throw new Error("Timed out waiting for claudeFactory");
+      await new Promise((r) => setTimeout(r, 10));
+    }
+
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "img-persist-test" });
     lastClaude.emit("event", {
       type: "assistant",
@@ -2756,10 +2764,8 @@ describe("Integration: File watcher", () => {
     lastClaude.emit("event", { type: "result", subtype: "success", session_id: "img-persist-test" });
     lastClaude.emit("done", 0);
 
-    // Skip all messages until session is set up
-    await new Promise((r) => setTimeout(r, 100));
-
-    // Now load the chat history
+    // Now load the chat history — chat persistence is synchronous so it's
+    // already on disk by the time the emit() calls above return.
     client.send({ type: "get_chat_history", sessionId: "img-persist-test" });
 
     // Drain until we get chat_history
