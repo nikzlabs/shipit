@@ -69,9 +69,10 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | `AuthManager` | 11 | URL pattern matching, `extractAuthUrl` extraction and cleanup |
 | `findMarkdownFiles` | 7 | Recursive scan, directory skipping, sorting |
 | `UsageManager` | 11 | Record turns, aggregate per-session and total, delete session usage, persistence to disk, corruption recovery, zero cost, timestamps |
+| `BranchManager` | 7 | Default `main` branch bootstrap, checkpoint creation, branch creation from checkpoint, branch switching, persistence, unknown IDs, corruption recovery |
 | `FileWatcher` | 11 | File creation/modification events, debounce batching, deduplication, ignore patterns (node_modules, .git, .vibe-chat-history, .shipit-usage.json), start/stop lifecycle, idempotent start, subdirectory paths, no emit when idle, default debounce |
 | `shipitErrorCapturePlugin` | 5 | Script injection after `<head>`, fallback prepend, HTML preservation, postMessage script content |
-| Integration (E2E) | 53 | Full WebSocket flow: connect, sessions, git, docs, file content viewer (read, nested path, path traversal, non-existent file, binary detection, large file guard), Claude lifecycle, multi-client, path traversal, disconnect cleanup, port auto-detection with multi-port support, periodic port scanning, terminal/logs relay (stderr, stdout, server lifecycle logs, log buffering for new clients, clear_logs, preview error relay, empty/long error rejection, preview log buffering), usage tracking (get_usage_stats empty/populated, usage_update after result, accumulation across turns, no update when cost undefined, delete cleans usage), file watcher (broadcast to single/multiple clients, sequential events, disconnect cleanup) |
+| Integration (E2E) | 55 | Full WebSocket flow: connect, sessions, git, docs, file content viewer (read, nested path, path traversal, non-existent file, binary detection, large file guard), Claude lifecycle, multi-client, path traversal, disconnect cleanup, port auto-detection with multi-port support, periodic port scanning, terminal/logs relay (stderr, stdout, server lifecycle logs, log buffering for new clients, clear_logs, preview error relay, empty/long error rejection, preview log buffering), usage tracking (get_usage_stats empty/populated, usage_update after result, accumulation across turns, no update when cost undefined, delete cleans usage), file watcher (broadcast to single/multiple clients, sequential events, disconnect cleanup), branching workflow (checkpoint create, branch from checkpoint, invalid checkpoint errors) |
 
 ### Client Tests
 
@@ -89,6 +90,8 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | `useIsMobile` | 1 | Returns true for mobile viewport query |
 | `useNotification` | 11 | Tab title change on hidden/visible, title restoration, browser Notification dispatch, permission gating (granted/denied/default), requestPermission, Notification API unavailability, visibilitychange listener cleanup |
 | `MobileTabBar` | 7 | Tab rendering, active tab highlighting, click callbacks, accessibility (nav landmark, aria-current), SVG icons |
+| `BranchIndicator` | 3 | Branch select rendering, switch callback, create checkpoint callback |
+| `GitHistory` (timeline) | +2 | Branch timeline render and checkpoint click-to-branch callback |
 | `KeyboardShortcutsOverlay` | 18 | Dialog rendering, accessibility (role=dialog, aria-label), shortcut group display (General, Chat, Search), individual shortcut entries, close on Escape/`?`/backdrop click/close button, no close on inner content click, kbd elements rendering, listener cleanup on unmount |
 | `FileContentViewer` | 11 | File path display, close button, loading state, code element with hljs class, pre wrapper, syntax highlighting for TypeScript, empty file, path title attribute, JSON highlighting, binary file message display, large file message display |
 | `FileTree` (additions) | +5 | onFileClick callback, root-level file click, selected file highlighting, non-selected file styling, file buttons for clickability |
@@ -113,6 +116,7 @@ Several modules accept optional constructor parameters for test isolation:
 - `SessionManager(sessionsFile?)` — override the JSON file path
 - `GitManager(workspaceDir?)` — override the workspace directory
 - `UsageManager(usageFile?)` — override the JSON file path for usage data
+- `BranchManager(branchesFile?)` — override the branches metadata file path
 - `extractAuthUrl(text)` — exported pure function for URL pattern testing
 - `FileWatcher(debounceMs?)` — override debounce delay; tests inject a `StubFileWatcher` via `AppDeps.fileWatcher`
 - `buildApp(deps?)` — exported factory that accepts injected dependencies (see [Integration Tests](#integration-tests))

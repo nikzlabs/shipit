@@ -86,6 +86,16 @@ export class SessionManager {
     }
   }
 
+
+  /** Clear the stored agent session ID for a session. */
+  clearAgentSessionId(id: string): void {
+    const session = this.sessions.find((s) => s.id === id);
+    if (session && session.agentSessionId) {
+      delete session.agentSessionId;
+      this.save();
+    }
+  }
+
   /** Rename a session. Returns the updated session, or null if not found. */
   rename(id: string, title: string): SessionInfo | null {
     const session = this.sessions.find((s) => s.id === id);

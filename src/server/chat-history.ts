@@ -79,6 +79,12 @@ export class ChatHistoryManager {
     return [];
   }
 
+
+  /** Replace a session's history with a new list of messages. */
+  replace(sessionId: string, messages: PersistedMessage[]): void {
+    this.save(sessionId, messages);
+  }
+
   /** Delete a session's chat history. */
   delete(sessionId: string): boolean {
     try {

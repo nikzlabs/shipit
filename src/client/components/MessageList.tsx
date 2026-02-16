@@ -41,6 +41,12 @@ export interface ChatMessage {
   isError?: boolean;
 }
 
+export interface CheckpointMarker {
+  id: string;
+  messageIndex: number;
+  label?: string;
+}
+
 function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQuestionDisabled }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void; isQuestionDisabled: boolean }) {
   // Show a spinner on the last tool when the message is still streaming
   const inProgress = isLast && isStreaming;
@@ -455,6 +461,7 @@ export function MessageList({
   currentMatch,
   onEditMessage,
   onAnswerQuestion,
+  checkpoints,
 }: {
   messages: ChatMessage[];
   isLoading: boolean;
@@ -463,6 +470,7 @@ export function MessageList({
   currentMatch?: SearchMatch;
   onEditMessage?: (messageIndex: number, newText: string) => void;
   onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void;
+  checkpoints?: CheckpointMarker[];
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const currentMatchRef = useRef<HTMLElement | null>(null);
@@ -515,13 +523,24 @@ export function MessageList({
 
       {messages.map((msg, i) => {
         const msgMatches = matchesByMessage.get(i) ?? [];
+        const checkpointHere = (checkpoints ?? []).filter((cp) => cp.messageIndex === i);
         const segments = parseMessageSegments(msg.text);
         const hasCodeBlocks = segments.some((s) => s.type === "code");
         const isEditing = editingIndex === i;
         const showEditActions = canEdit && msg.role === "user" && !msg.isError && !isEditing;
 
         return (
-          <div key={i} className={`group flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+          <div key={i}>
+            {checkpointHere.map((cp) => (
+              <div key={cp.id} className="my-2 flex items-center gap-2" data-testid="checkpoint-divider">
+                <div className="h-px flex-1 bg-gray-300 dark:bg-gray-700" />
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300">
+                  Checkpoint{cp.label ? `: ${cp.label}` : ""}
+                </span>
+                <div className="h-px flex-1 bg-gray-300 dark:bg-gray-700" />
+              </div>
+            ))}
+            <div className={`group flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
             {/* Edit/Retry buttons — shown on hover for user messages */}
             {showEditActions && (
               <div className="hidden group-hover:flex items-center gap-1 mr-2 shrink-0">
@@ -636,6 +655,7 @@ export function MessageList({
               )}
             </div>
             )}
+            </div>
           </div>
         );
       })}

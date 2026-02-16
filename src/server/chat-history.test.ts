@@ -89,6 +89,22 @@ describe("ChatHistoryManager", () => {
     expect(loaded[0].isError).toBe(true);
   });
 
+
+  it("replaces a session's history", () => {
+    const mgr = new ChatHistoryManager(historyDir);
+    mgr.append("sess-1", { role: "user", text: "old" });
+
+    mgr.replace("sess-1", [
+      { role: "user", text: "new user" },
+      { role: "assistant", text: "new assistant" },
+    ]);
+
+    const loaded = mgr.load("sess-1");
+    expect(loaded).toHaveLength(2);
+    expect(loaded[0].text).toBe("new user");
+    expect(loaded[1].text).toBe("new assistant");
+  });
+
   it("deletes a session's history", () => {
     const mgr = new ChatHistoryManager(historyDir);
     mgr.append("sess-1", { role: "user", text: "To delete" });

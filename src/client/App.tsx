@@ -6,7 +6,7 @@ import { useIsMobile } from "./hooks/useMediaQuery.js";
 import { useNotification } from "./hooks/useNotification.js";
 import { useTheme } from "./hooks/useTheme.js";
 import { MessageInput } from "./components/MessageInput.js";
-import { MessageList, type ChatMessage, type ToolResultBlock } from "./components/MessageList.js";
+import { MessageList, type ChatMessage, type ToolResultBlock, type CheckpointMarker } from "./components/MessageList.js";
 import { PreviewFrame, formatErrorForMessage, type PreviewStatus } from "./components/PreviewFrame.js";
 import { usePreviewErrors, type PreviewError } from "./hooks/usePreviewErrors.js";
 import { GitHistory, type GitCommit } from "./components/GitHistory.js";
@@ -28,7 +28,8 @@ import { TemplateSelector, type TemplateInfo } from "./components/TemplateSelect
 import { UsageModal, type SessionUsage, type UsageStats } from "./components/UsageModal.js";
 import { SystemPromptEditor } from "./components/SystemPromptEditor.js";
 import { GitIdentityOverlay } from "./components/GitIdentityOverlay.js";
-import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage } from "../server/types.js";
+import { BranchIndicator } from "./components/BranchIndicator.js";
+import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, ConversationBranch } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal";
 
@@ -95,6 +96,8 @@ export default function App() {
   const [hasSystemPrompt, setHasSystemPrompt] = useState(false);
   const [systemPromptContent, setSystemPromptContent] = useState("");
   const [gitIdentityNeeded, setGitIdentityNeeded] = useState(false);
+  const [branches, setBranches] = useState<ConversationBranch[]>([]);
+  const [activeBranchId, setActiveBranchId] = useState<string | undefined>(undefined);
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
   const historyLoadedRef = useRef(false);
@@ -161,6 +164,7 @@ export default function App() {
     }
     if (status === "open") {
       send({ type: "github_get_status" });
+      send({ type: "list_branches" });
     }
     if (status === "closed") {
       historyLoadedRef.current = false;
@@ -425,6 +429,25 @@ export default function App() {
       setSessions((prev) =>
         prev.map((s) => (s.id === renamed.id ? renamed : s))
       );
+    }
+
+
+    if (data.type === "branch_list") {
+      setBranches(data.branches);
+      setActiveBranchId(data.activeBranchId);
+    }
+
+    if (data.type === "branch_switched") {
+      const loaded: ChatMessage[] = data.messages.map((m: WsChatHistoryMessage) => ({
+        role: m.role,
+        text: m.text,
+        toolUse: m.toolUse,
+        images: m.images,
+        isError: m.isError,
+        streaming: false,
+      }));
+      setMessages(loaded);
+      setIsLoading(false);
     }
 
     if (data.type === "doc_list") {
@@ -695,6 +718,7 @@ export default function App() {
   const handleEditMessage = useCallback(
     (messageIndex: number, newText: string) => {
       requestPermission();
+      send({ type: "create_checkpoint", label: `before edit/retry #${messageIndex + 1}`, messageIndex });
       // Truncate messages from the edited index onward, then append the new user message
       setMessages((prev) => [
         ...prev.slice(0, messageIndex),
@@ -710,6 +734,19 @@ export default function App() {
     },
     [send, requestPermission]
   );
+
+
+  const handleCreateCheckpoint = useCallback((label?: string, messageIndex?: number) => {
+    send({ type: "create_checkpoint", label, messageIndex });
+  }, [send]);
+
+  const handleSwitchBranch = useCallback((branchId: string) => {
+    send({ type: "switch_branch", branchId });
+  }, [send]);
+
+  const handleBranchFromCheckpoint = useCallback((checkpointId: string) => {
+    send({ type: "branch_from_checkpoint", checkpointId });
+  }, [send]);
 
   const handleGitRefresh = useCallback(() => {
     send({ type: "get_git_log" });
@@ -745,6 +782,7 @@ export default function App() {
       // Refresh file tree and git log for the new session's workspace
       send({ type: "get_file_tree" });
       send({ type: "get_git_log" });
+      send({ type: "list_branches" });
     },
     [send]
   );
@@ -1025,6 +1063,10 @@ export default function App() {
     </>
   );
 
+  const checkpointMarkers: CheckpointMarker[] = branches
+    .find((branch) => branch.id === activeBranchId)?.checkpoints
+    .map((checkpoint) => ({ id: checkpoint.id, messageIndex: checkpoint.messageIndex, label: checkpoint.label })) ?? [];
+
   // Show template picker for new sessions with no messages
   const showTemplatePicker = showTemplates && messages.length === 0 && !isLoading;
 
@@ -1061,6 +1103,7 @@ export default function App() {
           currentMatch={search.currentMatch}
           onEditMessage={handleEditMessage}
           onAnswerQuestion={handleAnswerQuestion}
+          checkpoints={checkpointMarkers}
         />
       )}
       {!showTemplatePicker && (
@@ -1068,6 +1111,9 @@ export default function App() {
           commits={gitCommits}
           onRollback={handleRollback}
           onRefresh={handleGitRefresh}
+          branches={branches}
+          activeBranchId={activeBranchId}
+          onBranchFromCheckpoint={handleBranchFromCheckpoint}
         />
       )}
       {!showTemplatePicker && (
@@ -1127,6 +1173,12 @@ export default function App() {
             onDelete={handleSessionDelete}
             onRename={handleSessionRename}
             onRefresh={handleSessionRefresh}
+          />
+          <BranchIndicator
+            branches={branches}
+            activeBranchId={activeBranchId}
+            onSwitchBranch={handleSwitchBranch}
+            onCreateCheckpoint={() => handleCreateCheckpoint("manual checkpoint")}
           />
         </div>
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">

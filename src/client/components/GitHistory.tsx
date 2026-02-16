@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { ConversationBranch } from "../../server/types.js";
 
 export interface GitCommit {
   hash: string;
@@ -7,14 +8,29 @@ export interface GitCommit {
   author: string;
 }
 
+const BRANCH_COLORS = [
+  "bg-blue-500",
+  "bg-emerald-500",
+  "bg-purple-500",
+  "bg-amber-500",
+  "bg-pink-500",
+  "bg-cyan-500",
+];
+
 export function GitHistory({
   commits,
   onRollback,
   onRefresh,
+  branches,
+  activeBranchId,
+  onBranchFromCheckpoint,
 }: {
   commits: GitCommit[];
   onRollback: (hash: string) => void;
   onRefresh: () => void;
+  branches?: ConversationBranch[];
+  activeBranchId?: string;
+  onBranchFromCheckpoint?: (checkpointId: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [confirming, setConfirming] = useState<string | null>(null);
@@ -27,6 +43,8 @@ export function GitHistory({
       setConfirming(hash);
     }
   };
+
+  const checkpointCount = branches?.reduce((sum, branch) => sum + branch.checkpoints.length, 0) ?? 0;
 
   return (
     <div className="border-t border-gray-200 dark:border-gray-800">
@@ -54,7 +72,39 @@ export function GitHistory({
       </button>
 
       {expanded && (
-        <div className="max-h-60 overflow-y-auto px-4 pb-3">
+        <div className="max-h-72 overflow-y-auto px-4 pb-3 space-y-3">
+          {branches && branches.length > 0 && (
+            <div className="rounded border border-gray-200 dark:border-gray-700 p-2">
+              <p className="text-[11px] text-gray-500 dark:text-gray-400 mb-1">Branch timeline ({checkpointCount} checkpoints)</p>
+              <div className="space-y-1">
+                {branches.map((branch, branchIdx) => {
+                  const branchColor = BRANCH_COLORS[branchIdx % BRANCH_COLORS.length];
+                  const isActive = branch.id === activeBranchId;
+                  return (
+                    <div key={branch.id} className="text-xs">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className={`inline-block w-2 h-2 rounded-full ${branchColor}`} />
+                        <span className={isActive ? "text-white" : "text-gray-300"}>{branch.name}</span>
+                        {isActive && <span className="text-[10px] px-1 rounded bg-gray-700 text-gray-200">active</span>}
+                      </div>
+                      <div className="pl-4 space-y-1">
+                        {branch.checkpoints.map((checkpoint) => (
+                          <button
+                            key={checkpoint.id}
+                            onClick={() => onBranchFromCheckpoint?.(checkpoint.id)}
+                            className="w-full text-left rounded px-2 py-1 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                          >
+                            {checkpoint.label ? checkpoint.label : `message ${checkpoint.messageIndex}`}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {commits.length === 0 ? (
             <p className="text-xs text-gray-500 py-2">No commits yet.</p>
           ) : (

@@ -67,6 +67,19 @@ describe("MessageList", () => {
       expect(screen.getByText("Third message")).toBeInTheDocument();
     });
 
+
+    it("renders checkpoint dividers before matching message index", () => {
+      render(
+        <MessageList
+          messages={[msg("user", "one"), msg("assistant", "two")]}
+          isLoading={false}
+          checkpoints={[{ id: "cp1", messageIndex: 1, label: "before refactor" }]}
+        />
+      );
+
+      expect(screen.getByText("Checkpoint: before refactor")).toBeInTheDocument();
+    });
+
     it("applies different styles for user vs assistant messages", () => {
       render(
         <MessageList

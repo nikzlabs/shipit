@@ -129,6 +129,18 @@ describe("SessionManager", () => {
     expect(mgr.rename("nonexistent", "New name")).toBeNull();
   });
 
+
+  it("clears stored agent session id", () => {
+    const mgr = new SessionManager(sessionsFile);
+    mgr.track("sess-1", "Session");
+    mgr.setAgentSessionId("sess-1", "agent-abc");
+
+    mgr.clearAgentSessionId("sess-1");
+
+    const session = mgr.get("sess-1");
+    expect(session?.agentSessionId).toBeUndefined();
+  });
+
   it("returns a copy from list() (not the internal array)", () => {
     const mgr = new SessionManager(sessionsFile);
     mgr.track("sess-1");

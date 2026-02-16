@@ -73,6 +73,28 @@ export interface SessionInfo {
   workspaceDir?: string;
 }
 
+// ---- Conversation branch/checkpoint types ----
+
+export interface BranchCheckpoint {
+  id: string;
+  sessionId: string;
+  messageIndex: number;
+  commitHash: string;
+  createdAt: string;
+  label?: string;
+  messages: WsChatHistoryMessage[];
+}
+
+export interface ConversationBranch {
+  id: string;
+  parentCheckpointId?: string;
+  sessionId: string;
+  name: string;
+  checkpoints: BranchCheckpoint[];
+  isActive: boolean;
+  createdAt: string;
+}
+
 // ---- Template types ----
 
 export interface ProjectTemplate {
@@ -238,6 +260,27 @@ export interface WsSetSystemPrompt {
   content: string;
 }
 
+export interface WsCreateCheckpoint {
+  type: "create_checkpoint";
+  label?: string;
+  messageIndex?: number;
+}
+
+export interface WsBranchFromCheckpoint {
+  type: "branch_from_checkpoint";
+  checkpointId: string;
+  name?: string;
+}
+
+export interface WsSwitchBranch {
+  type: "switch_branch";
+  branchId: string;
+}
+
+export interface WsListBranches {
+  type: "list_branches";
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsGetGitLog
@@ -259,6 +302,10 @@ export type WsClientMessage =
   | WsApplyTemplate
   | WsGetSystemPrompt
   | WsSetSystemPrompt
+  | WsCreateCheckpoint
+  | WsBranchFromCheckpoint
+  | WsSwitchBranch
+  | WsListBranches
   | WsGitHubSetToken
   | WsGitHubGetStatus
   | WsGitHubPush
@@ -510,6 +557,24 @@ export interface WsSystemPromptSaved {
   content: string;
 }
 
+
+export interface WsCheckpointCreated {
+  type: "checkpoint_created";
+  checkpoint: BranchCheckpoint;
+}
+
+export interface WsBranchList {
+  type: "branch_list";
+  branches: ConversationBranch[];
+  activeBranchId: string;
+}
+
+export interface WsBranchSwitched {
+  type: "branch_switched";
+  branchId: string;
+  messages: WsChatHistoryMessage[];
+}
+
 // ---- File watcher types ----
 
 export interface WsFilesChanged {
@@ -542,6 +607,9 @@ export type WsServerMessage =
   | WsTemplateApplied
   | WsSystemPrompt
   | WsSystemPromptSaved
+  | WsCheckpointCreated
+  | WsBranchList
+  | WsBranchSwitched
   | WsFilesChanged
   | WsGitHubStatus
   | WsGitHubPushResult

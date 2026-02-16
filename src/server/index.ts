@@ -16,6 +16,7 @@ import { scanFileTree } from "./file-tree.js";
 import { scanPorts, snapshotBaselinePorts, DEFAULT_SCAN_PORTS } from "./port-scanner.js";
 import { UsageManager } from "./usage.js";
 import { FileWatcher } from "./file-watcher.js";
+import { BranchManager } from "./branches.js";
 import { listTemplates, getTemplate, applyTemplate } from "./templates.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment } from "./types.js";
 
@@ -80,6 +81,19 @@ function validateImages(images: ImageAttachment[]): string | null {
   return null;
 }
 
+
+function buildConversationReplayPrompt(messages: Array<{ role: "user" | "assistant"; text: string }>): string {
+  const transcript = messages
+    .map((msg) => `${msg.role === "user" ? "User" : "Assistant"}: ${msg.text}`)
+    .join("\n\n");
+
+  return [
+    "You are continuing an existing conversation branch.",
+    "Use the transcript below as context, then continue with the new user prompt.",
+    transcript || "(No prior messages)",
+  ].join("\n\n");
+}
+
 /**
  * Dependencies that can be injected for testing. Every field is optional —
  * production uses real implementations, tests can supply mocks/stubs.
@@ -108,6 +122,8 @@ export interface AppDeps {
   chatHistoryManager?: ChatHistoryManager;
   /** Usage/cost tracking manager instance. Defaults to `new UsageManager()`. */
   usageManager?: UsageManager;
+  /** Optional factory for workspace-scoped branch managers. */
+  createBranchManager?: (workspaceDir: string) => BranchManager;
   /** Factory for creating ClaudeProcess instances. Defaults to `() => new ClaudeProcess()`. */
   claudeFactory?: () => ClaudeProcess;
   /** Root workspace directory. Defaults to `/workspace`. */
@@ -179,6 +195,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Per-session GitManager factory ----
   const createGitManager = deps.createGitManager ?? ((dir: string) => new GitManager(dir));
+  const createBranchManager = deps.createBranchManager ?? ((dir: string) => new BranchManager(path.join(dir, ".vibe-branches", "branches.json")));
 
   // ---- Vite dev server manager ----
   const viteManager = deps.viteManager ?? new ViteManager();
@@ -416,6 +433,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     // Accumulate the assistant response across streaming events for persistence
     let accumulatedText = "";
     let accumulatedToolUse: Array<{ type: "tool_use"; id: string; name: string; input: Record<string, unknown> }> = [];
+    let replaySystemPrompt: string | undefined;
 
     const send = (msg: WsServerMessage) => {
       if (socket.readyState === 1) {
@@ -432,6 +450,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         return createGitManager(activeSessionDir);
       }
       return gitManager;
+    };
+
+    /** Get the branch manager for the active workspace/session directory. */
+    const getActiveBranchManager = (): BranchManager => createBranchManager(getActiveDir());
+
+    const sendBranchList = () => {
+      const { branches, activeBranchId } = getActiveBranchManager().listBranches();
+      send({ type: "branch_list", branches, activeBranchId });
     };
 
     /**
@@ -536,9 +562,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           // Resuming an existing session
           activateSession(msg.sessionId);
           const session = sessionManager.get(msg.sessionId);
-          // Use the stored agent session ID, or fall back to msg.sessionId for
-          // legacy sessions where the app session ID === agent session ID.
-          agentSessionId = session?.agentSessionId ?? msg.sessionId;
+          // Prefer stored agent session ID. Only fall back to msg.sessionId when
+          // the session record does not exist (legacy behavior).
+          agentSessionId = session ? session.agentSessionId : msg.sessionId;
 
           // If session has a workspaceDir but it was deleted, recreate it
           if (session?.workspaceDir) {
@@ -592,6 +618,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             if (activeAppSessionId) {
               // Store the agent's conversation ID on the app session
               sessionManager.setAgentSessionId(activeAppSessionId, event.session_id);
+              getActiveBranchManager().setActiveBranchSessionId(event.session_id);
+              replaySystemPrompt = undefined;
               const session = sessionManager.get(activeAppSessionId);
               if (session) {
                 send({ type: "session_started", session });
@@ -605,6 +633,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
               const title = userText.slice(0, 80) || "New session";
               const session = sessionManager.track(event.session_id, title);
               activeAppSessionId = event.session_id;
+              getActiveBranchManager().setActiveBranchSessionId(event.session_id);
+              replaySystemPrompt = undefined;
               send({ type: "session_started", session });
               persistUserMessage(event.session_id);
             }
@@ -731,7 +761,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           claude = null;
         });
 
-        const systemPrompt = await readSystemPrompt();
+        const projectSystemPrompt = await readSystemPrompt();
+        const systemPrompt = [projectSystemPrompt, replaySystemPrompt].filter(Boolean).join("\n\n").trim() || undefined;
         currentClaude.run(msg.text, agentSessionId, systemPrompt, images, getActiveDir());
       }
 
@@ -832,6 +863,125 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         activateSession(msg.sessionId);
         const messages = chatHistoryManager.load(msg.sessionId);
         send({ type: "chat_history", sessionId: msg.sessionId, messages });
+      }
+
+      if (msg.type === "create_checkpoint") {
+        if (!activeAppSessionId) {
+          send({ type: "error", message: "No active session to checkpoint" });
+          return;
+        }
+
+        const label = typeof msg.label === "string" ? msg.label.trim() : undefined;
+        if (label && label.length > 200) {
+          send({ type: "error", message: "Checkpoint label too long (max 200 characters)" });
+          return;
+        }
+
+        const history = chatHistoryManager.load(activeAppSessionId);
+        const messageIndex = msg.messageIndex ?? history.length;
+        if (!Number.isInteger(messageIndex) || messageIndex < 0 || messageIndex > history.length) {
+          send({ type: "error", message: "Invalid checkpoint message index" });
+          return;
+        }
+
+        try {
+          const git = getActiveGitManager();
+          const commits = await git.log(1);
+          const commitHash = commits[0]?.hash;
+          if (!commitHash) {
+            send({ type: "error", message: "Cannot checkpoint before first commit" });
+            return;
+          }
+
+          const checkpoint = getActiveBranchManager().createCheckpoint(
+            activeAppSessionId,
+            messageIndex,
+            commitHash,
+            history.slice(0, messageIndex),
+            label,
+          );
+          send({ type: "checkpoint_created", checkpoint });
+          sendBranchList();
+        } catch (err) {
+          send({ type: "error", message: `Checkpoint failed: ${getErrorMessage(err)}` });
+        }
+      }
+
+      if (msg.type === "list_branches") {
+        sendBranchList();
+      }
+
+      if (msg.type === "branch_from_checkpoint") {
+        if (!activeAppSessionId) {
+          send({ type: "error", message: "No active session to branch" });
+          return;
+        }
+
+        const checkpointId = typeof msg.checkpointId === "string" ? msg.checkpointId.trim() : "";
+        if (!checkpointId) {
+          send({ type: "error", message: "checkpointId is required" });
+          return;
+        }
+
+        try {
+          const result = getActiveBranchManager().branchFromCheckpoint(checkpointId, msg.name);
+          if (!result) {
+            send({ type: "error", message: "Checkpoint not found" });
+            return;
+          }
+
+          if (result.commitHash) {
+            const git = getActiveGitManager();
+            await git.rollback(result.commitHash);
+          }
+
+          sessionManager.clearAgentSessionId(activeAppSessionId);
+          chatHistoryManager.replace(activeAppSessionId, result.messages);
+          replaySystemPrompt = buildConversationReplayPrompt(result.messages);
+
+          send({ type: "branch_switched", branchId: result.branch.id, messages: result.messages });
+          sendBranchList();
+          send({ type: "git_log", commits: await getActiveGitManager().log() });
+          viteManager.restart(getActiveDir());
+        } catch (err) {
+          send({ type: "error", message: `Branch creation failed: ${getErrorMessage(err)}` });
+        }
+      }
+
+      if (msg.type === "switch_branch") {
+        if (!activeAppSessionId) {
+          send({ type: "error", message: "No active session to switch branches" });
+          return;
+        }
+
+        const branchId = typeof msg.branchId === "string" ? msg.branchId.trim() : "";
+        if (!branchId) {
+          send({ type: "error", message: "branchId is required" });
+          return;
+        }
+
+        try {
+          const result = getActiveBranchManager().switchBranch(branchId);
+          if (!result) {
+            send({ type: "error", message: "Branch not found" });
+            return;
+          }
+
+          if (result.commitHash) {
+            await getActiveGitManager().rollback(result.commitHash);
+          }
+
+          sessionManager.clearAgentSessionId(activeAppSessionId);
+          chatHistoryManager.replace(activeAppSessionId, result.messages);
+          replaySystemPrompt = buildConversationReplayPrompt(result.messages);
+
+          send({ type: "branch_switched", branchId: result.branch.id, messages: result.messages });
+          sendBranchList();
+          send({ type: "git_log", commits: await getActiveGitManager().log() });
+          viteManager.restart(getActiveDir());
+        } catch (err) {
+          send({ type: "error", message: `Branch switch failed: ${getErrorMessage(err)}` });
+        }
       }
 
       if (msg.type === "list_docs") {

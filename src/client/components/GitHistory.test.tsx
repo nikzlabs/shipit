@@ -205,4 +205,63 @@ describe("GitHistory", () => {
       expect(screen.getByText("rollback")).toBeInTheDocument();
     });
   });
+
+  describe("branch timeline", () => {
+    const branches = [
+      {
+        id: "main",
+        name: "main",
+        sessionId: "",
+        isActive: true,
+        createdAt: new Date().toISOString(),
+        checkpoints: [
+          {
+            id: "cp-1",
+            sessionId: "sess",
+            messageIndex: 2,
+            commitHash: "abc",
+            createdAt: new Date().toISOString(),
+            label: "before refactor",
+            messages: [],
+          },
+        ],
+      },
+    ];
+
+    it("renders checkpoint timeline when branches provided", () => {
+      render(
+        <GitHistory
+          commits={[makeCommit()]}
+          onRollback={onRollback}
+          onRefresh={onRefresh}
+          branches={branches}
+          activeBranchId="main"
+          onBranchFromCheckpoint={() => {}}
+        />,
+      );
+
+      fireEvent.click(screen.getByText(/Git History/));
+      expect(screen.getByText(/Branch timeline/)).toBeInTheDocument();
+      expect(screen.getByText("before refactor")).toBeInTheDocument();
+    });
+
+    it("calls onBranchFromCheckpoint when checkpoint clicked", () => {
+      const onBranchFromCheckpoint = vi.fn();
+      render(
+        <GitHistory
+          commits={[makeCommit()]}
+          onRollback={onRollback}
+          onRefresh={onRefresh}
+          branches={branches}
+          activeBranchId="main"
+          onBranchFromCheckpoint={onBranchFromCheckpoint}
+        />,
+      );
+
+      fireEvent.click(screen.getByText(/Git History/));
+      fireEvent.click(screen.getByText("before refactor"));
+      expect(onBranchFromCheckpoint).toHaveBeenCalledWith("cp-1");
+    });
+  });
+
 });

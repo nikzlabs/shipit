@@ -75,6 +75,7 @@ ShipIt is a browser-based IDE for "vibe coding" — you talk to Claude in a chat
 | `vite-manager.ts` | `ViteManager` class — Vite dev server lifecycle (start, stop, restart) |
 | `port-scanner.ts` | Port auto-detection — `checkPort`, `scanPorts` for finding non-Vite dev servers |
 | `usage.ts` | `UsageManager` class — per-turn cost/duration tracking, session-level aggregation, JSON persistence |
+| `branches.ts` | `BranchManager` class — conversation branch/checkpoint metadata persisted to `/workspace/.vibe-branches/branches.json` |
 | `file-watcher.ts` | `FileWatcher` class — recursive `fs.watch`, debounced change events, ignore patterns |
 | `types.ts` | Shared TypeScript types for all WebSocket and Claude event payloads |
 
@@ -957,3 +958,13 @@ npx vite             # Port 5173, proxies /ws → localhost:3000
 # Production (Docker)
 docker compose up --build   # Builds + runs on port 3000
 ```
+
+
+## Conversation Branching & Checkpoints
+
+- Server persists branch metadata per active workspace in `.vibe-branches/branches.json` via `BranchManager`.
+- New WS commands: `list_branches`, `create_checkpoint`, `branch_from_checkpoint`, `switch_branch`.
+- `create_checkpoint` snapshots chat history prefix + current git HEAD commit into the active branch.
+- `branch_from_checkpoint` and `switch_branch` both rollback git to the checkpoint commit, replace active chat history with the checkpoint snapshot, and send `branch_switched` to the client.
+- When switching/branching, the server prepares a one-turn replay system prompt from the checkpoint transcript and clears stored Claude `agentSessionId`, so the next `send_message` starts a fresh Claude session with explicit replay context instead of hidden `--resume` history.
+- Client UI adds `BranchIndicator` (header), checkpoint dividers in `MessageList`, and a branch/checkpoint timeline in `GitHistory`.
