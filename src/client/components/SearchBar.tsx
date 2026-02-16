@@ -44,7 +44,7 @@ export function SearchBar({
   };
 
   return (
-    <div className="flex items-center gap-2 px-4 py-2 bg-gray-800 border-b border-gray-700">
+    <div className="flex items-center gap-2 px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
       <input
         ref={inputRef}
         type="text"
@@ -52,11 +52,11 @@ export function SearchBar({
         onChange={(e) => onQueryChange(e.target.value)}
         onKeyDown={handleKeyDown}
         placeholder="Search messages..."
-        className="flex-1 bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+        className="flex-1 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
       />
 
       {/* Match count */}
-      <span className="text-xs text-gray-400 min-w-[4rem] text-center tabular-nums">
+      <span className="text-xs text-gray-500 dark:text-gray-400 min-w-[4rem] text-center tabular-nums">
         {query.trim()
           ? matches.length > 0
             ? `${currentMatchIndex + 1} / ${matches.length}`
@@ -68,7 +68,7 @@ export function SearchBar({
       <button
         onClick={onPrev}
         disabled={matches.length === 0}
-        className="p-1 rounded text-gray-400 hover:text-gray-100 hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
+        className="p-1 rounded text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
         title="Previous match (Shift+Enter)"
       >
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -78,7 +78,7 @@ export function SearchBar({
       <button
         onClick={onNext}
         disabled={matches.length === 0}
-        className="p-1 rounded text-gray-400 hover:text-gray-100 hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
+        className="p-1 rounded text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
         title="Next match (Enter)"
       >
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -89,7 +89,7 @@ export function SearchBar({
       {/* Close button */}
       <button
         onClick={onClose}
-        className="p-1 rounded text-gray-400 hover:text-gray-100 hover:bg-gray-700"
+        className="p-1 rounded text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-200 dark:hover:bg-gray-700"
         title="Close search (Escape)"
       >
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

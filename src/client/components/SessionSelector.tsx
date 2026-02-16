@@ -68,7 +68,7 @@ export function SessionSelector({
           setOpen((v) => !v);
           if (!open) onRefresh();
         }}
-        className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md bg-gray-800 text-gray-300 hover:bg-gray-700 hover:text-gray-100 transition-colors"
+        className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-gray-100 transition-colors"
       >
         <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
@@ -92,14 +92,14 @@ export function SessionSelector({
           {/* Backdrop to close dropdown */}
           <div className="fixed inset-0 z-40" onClick={() => { setOpen(false); cancelEditing(); }} />
 
-          <div className="absolute top-full left-0 mt-1 w-72 bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden">
+          <div className="absolute top-full left-0 mt-1 w-72 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden">
             {/* New session button */}
             <button
               onClick={() => {
                 onNew();
                 setOpen(false);
               }}
-              className="flex items-center gap-2 w-full px-3 py-2.5 text-xs text-emerald-400 hover:bg-gray-800 transition-colors border-b border-gray-800"
+              className="flex items-center gap-2 w-full px-3 py-2.5 text-xs text-emerald-600 dark:text-emerald-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors border-b border-gray-200 dark:border-gray-800"
             >
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
@@ -118,8 +118,8 @@ export function SessionSelector({
                   return (
                     <div
                       key={session.id}
-                      className={`group flex items-start gap-2 px-3 py-2 text-xs hover:bg-gray-800 transition-colors ${
-                        isCurrent ? "bg-gray-800/60" : ""
+                      className={`group flex items-start gap-2 px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors ${
+                        isCurrent ? "bg-gray-100/60 dark:bg-gray-800/60" : ""
                       }`}
                     >
                       {isEditing ? (
@@ -134,7 +134,7 @@ export function SessionSelector({
                             onChange={(e) => setEditTitle(e.target.value)}
                             onKeyDown={(e) => { if (e.key === "Escape") cancelEditing(); }}
                             onBlur={submitRename}
-                            className="w-full bg-gray-800 text-gray-100 text-xs px-2 py-1 rounded border border-gray-600 focus:border-blue-500 focus:outline-none"
+                            className="w-full bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 focus:border-blue-500 focus:outline-none"
                             maxLength={120}
                           />
                         </form>
@@ -146,11 +146,11 @@ export function SessionSelector({
                           }}
                           className="flex-1 min-w-0 text-left"
                         >
-                          <p className={`truncate ${isCurrent ? "text-emerald-300" : "text-gray-300"}`}>
+                          <p className={`truncate ${isCurrent ? "text-emerald-600 dark:text-emerald-300" : "text-gray-700 dark:text-gray-300"}`}>
                             {isCurrent && <span className="mr-1">&bull;</span>}
                             {session.title}
                           </p>
-                          <p className="text-gray-600 mt-0.5">
+                          <p className="text-gray-400 dark:text-gray-600 mt-0.5">
                             {formatRelativeDate(session.lastUsedAt)}
                           </p>
                         </button>
@@ -162,7 +162,7 @@ export function SessionSelector({
                               e.stopPropagation();
                               startEditing(session);
                             }}
-                            className="p-1 rounded text-gray-600 opacity-0 group-hover:opacity-100 hover:text-blue-400 hover:bg-gray-700 transition-all"
+                            className="p-1 rounded text-gray-400 dark:text-gray-600 opacity-0 group-hover:opacity-100 hover:text-blue-400 hover:bg-gray-200 dark:hover:bg-gray-700 transition-all"
                             title="Rename session"
                           >
                             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -175,7 +175,7 @@ export function SessionSelector({
                                 e.stopPropagation();
                                 onDelete(session.id);
                               }}
-                              className="p-1 rounded text-gray-600 opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-gray-700 transition-all"
+                              className="p-1 rounded text-gray-400 dark:text-gray-600 opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-gray-200 dark:hover:bg-gray-700 transition-all"
                               title="Delete session"
                             >
                               <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
