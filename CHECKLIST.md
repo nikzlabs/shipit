@@ -109,15 +109,15 @@ Design docs in `docs/design/`.
 - [x] Integration tests for `send_message` with images (happy path, invalid MIME, too many, oversized, persistence)
 
 ### Feature 6: Preview Error Capture & Auto-Debug Loop (`docs/design/006-preview-error-capture.md`)
-- [ ] Vite plugin to inject error-capture script (`window.onerror`, `console.error` → `postMessage`)
-- [ ] `usePreviewErrors` hook — listen for postMessage events, deduplicate, rolling buffer
-- [ ] Error badge on Preview tab (red, same pattern as terminal unread badge)
-- [ ] Expandable error panel at bottom of preview with stack traces
-- [ ] "Send to Claude" button composing error details into a chat message
-- [ ] "Auto-fix" toggle with safety guardrails (max 3 retries, 5s cooldown, kill switch)
-- [ ] Preview errors forwarded to Terminal tab with `"preview"` source (orange color)
-- [ ] Component tests for `usePreviewErrors` (dedup, buffer limits) and PreviewFrame error UI
-- [ ] Integration test for `preview_error` relay to terminal log buffer
+- [x] Vite plugin to inject error-capture script (`window.onerror`, `console.error` → `postMessage`)
+- [x] `usePreviewErrors` hook — listen for postMessage events, deduplicate, rolling buffer
+- [x] Error badge on Preview tab (red, same pattern as terminal unread badge)
+- [x] Expandable error panel at bottom of preview with stack traces
+- [x] "Send to Claude" button composing error details into a chat message
+- [x] "Auto-fix" toggle with safety guardrails (max 3 retries, 5s cooldown, kill switch)
+- [x] Preview errors forwarded to Terminal tab with `"preview"` source (orange color)
+- [x] Component tests for `usePreviewErrors` (dedup, buffer limits) and PreviewFrame error UI
+- [x] Integration test for `preview_error` relay to terminal log buffer
 
 ### Feature 7: Conversation Branching & Checkpoints (`docs/design/007-conversation-branching.md`)
 - [ ] `BranchManager` class (`src/server/branches.ts`) — persist to `/workspace/.vibe-branches/`

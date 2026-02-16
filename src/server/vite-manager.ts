@@ -1,6 +1,8 @@
 import { spawn, ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
 import path from "node:path";
+import { ERROR_CAPTURE_SCRIPT } from "./vite-error-plugin.js";
 
 const VITE_PORT = 5173;
 const WORKSPACE_DIR = "/workspace";
@@ -8,6 +10,42 @@ const WORKSPACE_DIR = "/workspace";
 // Resolve the vite binary from the project's own node_modules so we never
 // trigger an npx download when spawning in /workspace.
 const VITE_BIN = path.resolve(process.cwd(), "node_modules/.bin/vite");
+
+/**
+ * Generate the contents of a Vite wrapper config that loads the user's
+ * existing config (if any), merges in the ShipIt error-capture plugin,
+ * and sets the dev server port/host.
+ */
+function generateWrapperConfig(script: string): string {
+  // The wrapper config is plain JavaScript (.mjs) that Vite can load directly.
+  // It uses loadConfigFromFile to discover and merge the user's config.
+  const escapedScript = JSON.stringify(script);
+  return `
+import { loadConfigFromFile, mergeConfig, defineConfig } from 'vite';
+
+const SCRIPT = ${escapedScript};
+
+const shipitPlugin = {
+  name: 'shipit-error-capture',
+  transformIndexHtml(html) {
+    const i = html.indexOf('<head>');
+    if (i !== -1) {
+      const p = i + 6;
+      return html.slice(0, p) + '\\n' + SCRIPT + '\\n' + html.slice(p);
+    }
+    return SCRIPT + '\\n' + html;
+  }
+};
+
+let base = {};
+try {
+  const r = await loadConfigFromFile({ command: 'serve', mode: 'development' });
+  if (r) base = r.config;
+} catch {}
+
+export default mergeConfig(base, defineConfig({ plugins: [shipitPlugin] }));
+`.trimStart();
+}
 
 export class ViteManager extends EventEmitter {
   private proc: ChildProcess | null = null;
@@ -23,6 +61,22 @@ export class ViteManager extends EventEmitter {
   }
 
   /**
+   * Write the ShipIt Vite wrapper config to /workspace/.shipit/ so the
+   * error-capture plugin is injected into the preview HTML.
+   */
+  private writeWrapperConfig(): string {
+    const dir = path.join(WORKSPACE_DIR, ".shipit");
+    const configPath = path.join(dir, "vite.config.mjs");
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(configPath, generateWrapperConfig(ERROR_CAPTURE_SCRIPT), "utf-8");
+    } catch (err) {
+      console.error("[vite-manager] failed to write wrapper config:", err);
+    }
+    return configPath;
+  }
+
+  /**
    * Start the Vite dev server in /workspace.
    * If already running, this is a no-op.
    */
@@ -31,7 +85,9 @@ export class ViteManager extends EventEmitter {
 
     console.log("[vite-manager] starting Vite dev server on port", this._port);
 
-    this.proc = spawn(VITE_BIN, ["--port", String(this._port), "--host", "0.0.0.0"], {
+    const configPath = this.writeWrapperConfig();
+
+    this.proc = spawn(VITE_BIN, ["--config", configPath, "--port", String(this._port), "--host", "0.0.0.0"], {
       cwd: WORKSPACE_DIR,
       env: { ...process.env },
       stdio: ["ignore", "pipe", "pipe"],

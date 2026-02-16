@@ -7,7 +7,8 @@ import { useNotification } from "./hooks/useNotification.js";
 import { useTheme } from "./hooks/useTheme.js";
 import { MessageInput } from "./components/MessageInput.js";
 import { MessageList, type ChatMessage, type ToolResultBlock } from "./components/MessageList.js";
-import { PreviewFrame, type PreviewStatus } from "./components/PreviewFrame.js";
+import { PreviewFrame, formatErrorForMessage, type PreviewStatus } from "./components/PreviewFrame.js";
+import { usePreviewErrors, type PreviewError } from "./hooks/usePreviewErrors.js";
 import { GitHistory, type GitCommit } from "./components/GitHistory.js";
 import { AuthOverlay } from "./components/AuthOverlay.js";
 import { GitHubAuthOverlay } from "./components/GitHubAuthOverlay.js";
@@ -113,6 +114,12 @@ export default function App() {
 
   const { notify, requestPermission } = useNotification();
   const { theme, toggle: toggleTheme } = useTheme();
+  const { errors: previewErrors, clearErrors: clearPreviewErrors, hasErrors: hasPreviewErrors, errorCount: previewErrorCount } = usePreviewErrors();
+  const [autoFixEnabled, setAutoFixEnabled] = useState(false);
+  const autoFixRetriesRef = useRef(0);
+  const [autoFixRetries, setAutoFixRetries] = useState(0);
+  const autoFixCooldownRef = useRef(false);
+  const autoFixErrorSignatureRef = useRef<string | null>(null);
 
   // Ctrl+F / Cmd+F to toggle search bar
   useEffect(() => {
@@ -555,10 +562,121 @@ export default function App() {
     }
   }, [lastMessage, send, rightTab, viewingFile, notify]);
 
+  // Forward preview errors to the server for terminal log relay
+  useEffect(() => {
+    if (previewErrors.length === 0 || status !== "open") return;
+    // Send the latest error to the server
+    const latest = previewErrors[previewErrors.length - 1];
+    send({
+      type: "preview_error",
+      message: latest.message,
+      stack: latest.stack,
+      source: latest.source,
+      line: latest.line,
+    });
+  }, [previewErrors.length, status, send, previewErrors]);
+
+  const handleSendAutoFix = useCallback(
+    (text: string) => {
+      setMessages((prev) => [...prev, { role: "user", text }]);
+      setIsLoading(true);
+      setActivity({ label: "Auto-fixing errors..." });
+      send({
+        type: "send_message",
+        text,
+        sessionId: sessionIdRef.current,
+      });
+    },
+    [send],
+  );
+
+  // Auto-fix: when new errors arrive while auto-fix is enabled and Claude is idle,
+  // automatically send errors to Claude for fixing (with safety guardrails).
+  const prevErrorCountRef = useRef(0);
+  useEffect(() => {
+    if (!autoFixEnabled || isLoading || previewErrors.length === 0) {
+      prevErrorCountRef.current = previewErrors.length;
+      return;
+    }
+    // Only trigger on new errors (count increased)
+    if (previewErrors.length <= prevErrorCountRef.current) {
+      return;
+    }
+    prevErrorCountRef.current = previewErrors.length;
+
+    // Check retry limit
+    if (autoFixRetriesRef.current >= 3) {
+      setAutoFixEnabled(false);
+      autoFixRetriesRef.current = 0;
+      setAutoFixRetries(0);
+      return;
+    }
+
+    // Check cooldown
+    if (autoFixCooldownRef.current) return;
+
+    // Build the error signature to detect same-error loops
+    const sig = previewErrors.map((e) => e.message).join("|");
+    if (sig === autoFixErrorSignatureRef.current) {
+      autoFixRetriesRef.current += 1;
+      setAutoFixRetries(autoFixRetriesRef.current);
+    } else {
+      autoFixRetriesRef.current = 1;
+      setAutoFixRetries(1);
+      autoFixErrorSignatureRef.current = sig;
+    }
+
+    // Apply 5s cooldown
+    autoFixCooldownRef.current = true;
+    const timer = setTimeout(() => {
+      autoFixCooldownRef.current = false;
+    }, 5000);
+
+    // Send errors to Claude
+    const text = formatErrorForMessage(previewErrors);
+    handleSendAutoFix(text);
+
+    return () => clearTimeout(timer);
+  }, [previewErrors.length, autoFixEnabled, isLoading, previewErrors, handleSendAutoFix]);
+
+  const handleSendErrors = useCallback(
+    (errors: PreviewError[]) => {
+      const text = formatErrorForMessage(errors);
+      requestPermission();
+      setShowTemplates(false);
+      setMessages((prev) => [...prev, { role: "user", text }]);
+      setIsLoading(true);
+      setActivity({ label: "Thinking..." });
+      send({
+        type: "send_message",
+        text,
+        sessionId: sessionIdRef.current,
+      });
+    },
+    [send, requestPermission],
+  );
+
+  const handleToggleAutoFix = useCallback(() => {
+    setAutoFixEnabled((prev) => {
+      if (!prev) {
+        // Enabling auto-fix: reset retry counter
+        autoFixRetriesRef.current = 0;
+        setAutoFixRetries(0);
+        autoFixErrorSignatureRef.current = null;
+        autoFixCooldownRef.current = false;
+      }
+      return !prev;
+    });
+  }, []);
+
   const handleSend = useCallback(
     (text: string, images?: Array<{ data: string; mediaType: string; filename: string }>) => {
       requestPermission();
       setShowTemplates(false);
+      // Kill switch: any user message cancels auto-fix mode
+      setAutoFixEnabled(false);
+      autoFixRetriesRef.current = 0;
+      setAutoFixRetries(0);
       const messageImages = images?.map((img) => ({
         data: img.data,
         mediaType: img.mediaType,
@@ -791,13 +909,18 @@ export default function App() {
       <div className="flex border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
         <button
           onClick={() => handleTabChange("preview")}
-          className={`px-4 py-2 text-sm font-medium transition-colors ${
+          className={`px-4 py-2 text-sm font-medium transition-colors relative ${
             rightTab === "preview"
               ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500"
               : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
           }`}
         >
           Preview
+          {hasPreviewErrors && rightTab !== "preview" && (
+            <span className="ml-1.5 inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-red-600 text-white">
+              {previewErrorCount > 99 ? "99+" : previewErrorCount}
+            </span>
+          )}
         </button>
         <button
           onClick={() => handleTabChange("docs")}
@@ -849,6 +972,12 @@ export default function App() {
             detectedPorts={detectedPorts}
             selectedPort={selectedPort}
             onSelectPort={handleSelectPort}
+            errors={previewErrors}
+            onSendErrors={handleSendErrors}
+            onClearErrors={clearPreviewErrors}
+            autoFixEnabled={autoFixEnabled}
+            onToggleAutoFix={handleToggleAutoFix}
+            autoFixRetries={autoFixRetries}
           />
         ) : rightTab === "docs" ? (
           <DocsViewer
