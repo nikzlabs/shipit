@@ -27,19 +27,19 @@ export function GitHubAuthOverlay({ onSubmit, onClose }: GitHubAuthOverlayProps)
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/90 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 dark:bg-gray-950/90 backdrop-blur-sm"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="max-w-md w-full mx-4 rounded-xl bg-gray-900 border border-gray-700 p-8 space-y-6">
+      <div className="max-w-md w-full mx-4 rounded-xl bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 p-8 space-y-6">
         <div className="space-y-2 text-center">
-          <h2 className="text-xl font-semibold text-gray-100">
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
             Connect to GitHub
           </h2>
-          <p className="text-sm text-gray-400">
+          <p className="text-sm text-gray-500 dark:text-gray-400">
             Enter a Personal Access Token to push and pull from GitHub repositories.
-            The token needs the <code className="text-xs bg-gray-800 px-1 py-0.5 rounded">repo</code> scope.
+            The token needs the <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded">repo</code> scope.
           </p>
         </div>
 
@@ -50,14 +50,14 @@ export function GitHubAuthOverlay({ onSubmit, onClose }: GitHubAuthOverlayProps)
             onChange={(e) => setToken(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
-            className="w-full rounded-lg bg-gray-800 border border-gray-600 px-4 py-3 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono"
+            className="w-full rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono"
             autoFocus
           />
 
           <div className="flex gap-3">
             <button
               onClick={onClose}
-              className="flex-1 rounded-lg bg-gray-800 px-4 py-2.5 text-sm font-medium text-gray-300 hover:bg-gray-700 transition-colors"
+              className="flex-1 rounded-lg bg-gray-100 dark:bg-gray-800 px-4 py-2.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
             >
               Cancel
             </button>
@@ -71,7 +71,7 @@ export function GitHubAuthOverlay({ onSubmit, onClose }: GitHubAuthOverlayProps)
           </div>
         </div>
 
-        <div className="pt-2 border-t border-gray-800">
+        <div className="pt-2 border-t border-gray-200 dark:border-gray-800">
           <p className="text-xs text-gray-500">
             Your token is stored locally and never shared. Create one at{" "}
             <a

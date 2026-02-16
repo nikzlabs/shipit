@@ -25,34 +25,34 @@ export function DiffBlock({ filePath, oldString, newString, isWrite }: DiffBlock
   const addedLines = splitLines(newString ?? "");
 
   return (
-    <div className="mt-2 rounded-md overflow-hidden border border-gray-700 text-xs font-mono">
+    <div className="mt-2 rounded-md overflow-hidden border border-gray-300 dark:border-gray-700 text-xs font-mono">
       {/* File header */}
-      <div className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 text-gray-300 border-b border-gray-700">
+      <div className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-b border-gray-300 dark:border-gray-700">
         <span className="text-gray-500">{isWrite ? "write" : "edit"}</span>
-        <span className="font-semibold text-gray-200 truncate">{filePath}</span>
+        <span className="font-semibold text-gray-800 dark:text-gray-200 truncate">{filePath}</span>
       </div>
 
       {/* Diff body */}
-      <div className="bg-gray-950 overflow-x-auto max-h-64 overflow-y-auto">
+      <div className="bg-white dark:bg-gray-950 overflow-x-auto max-h-64 overflow-y-auto">
         {/* Removed lines (only for edits) */}
         {!isWrite &&
           removedLines.map((line, i) => (
             <div key={`r-${i}`} className="flex">
-              <span className="select-none w-6 text-right pr-1 text-red-700 bg-red-950/40 shrink-0">-</span>
-              <pre className="px-2 text-red-400 bg-red-950/20 flex-1 whitespace-pre-wrap break-all">{line}</pre>
+              <span className="select-none w-6 text-right pr-1 text-red-500 dark:text-red-700 bg-red-100 dark:bg-red-950/40 shrink-0">-</span>
+              <pre className="px-2 text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/20 flex-1 whitespace-pre-wrap break-all">{line}</pre>
             </div>
           ))}
 
         {/* Separator between removed and added */}
         {!isWrite && removedLines.length > 0 && addedLines.length > 0 && (
-          <div className="border-t border-gray-800" />
+          <div className="border-t border-gray-200 dark:border-gray-800" />
         )}
 
         {/* Added lines */}
         {addedLines.map((line, i) => (
           <div key={`a-${i}`} className="flex">
-            <span className="select-none w-6 text-right pr-1 text-green-700 bg-green-950/40 shrink-0">+</span>
-            <pre className="px-2 text-green-400 bg-green-950/20 flex-1 whitespace-pre-wrap break-all">{line}</pre>
+            <span className="select-none w-6 text-right pr-1 text-green-500 dark:text-green-700 bg-green-100 dark:bg-green-950/40 shrink-0">+</span>
+            <pre className="px-2 text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-950/20 flex-1 whitespace-pre-wrap break-all">{line}</pre>
           </div>
         ))}
 

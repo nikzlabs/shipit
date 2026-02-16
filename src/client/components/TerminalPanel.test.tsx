@@ -65,7 +65,7 @@ describe("TerminalPanel", () => {
 
     // The formatted time should appear somewhere in the output
     // 12:00:00 is the expected formatted time for the test timestamp
-    const timeElements = container.querySelectorAll(".text-gray-600");
+    const timeElements = container.querySelectorAll(".text-gray-400");
     expect(timeElements.length).toBeGreaterThan(0);
   });
 
