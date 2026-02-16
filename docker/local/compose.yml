@@ -5,6 +5,7 @@ services:
       dockerfile: docker/Dockerfile.dev
     ports:
       - "3000:3000"
+      - "3001:3001"
       - "5173:5173"
     volumes:
       - ../..:/app
@@ -13,6 +14,7 @@ services:
       - claude-auth:/root/.claude
     environment:
       - PORT=3001
+      - VITE_API_HOST=localhost:3001
 
   shipit-prod:
     build:

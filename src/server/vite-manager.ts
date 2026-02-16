@@ -1,8 +1,13 @@
 import { spawn, ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import path from "node:path";
 
 const VITE_PORT = 5173;
 const WORKSPACE_DIR = "/workspace";
+
+// Resolve the vite binary from the project's own node_modules so we never
+// trigger an npx download when spawning in /workspace.
+const VITE_BIN = path.resolve(process.cwd(), "node_modules/.bin/vite");
 
 export class ViteManager extends EventEmitter {
   private proc: ChildProcess | null = null;
@@ -26,7 +31,7 @@ export class ViteManager extends EventEmitter {
 
     console.log("[vite-manager] starting Vite dev server on port", this._port);
 
-    this.proc = spawn("npx", ["vite", "--port", String(this._port), "--host", "0.0.0.0"], {
+    this.proc = spawn(VITE_BIN, ["--port", String(this._port), "--host", "0.0.0.0"], {
       cwd: WORKSPACE_DIR,
       env: { ...process.env },
       stdio: ["ignore", "pipe", "pipe"],

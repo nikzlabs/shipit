@@ -30,6 +30,11 @@ export function useWebSocket(url: string): UseWebSocketReturn {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    // Guard against React StrictMode double-mount: when cleanup closes the WS,
+    // onclose must NOT schedule a reconnect (the remounted effect will open a
+    // fresh connection).
+    let intentionalClose = false;
+
     const ws = new WebSocket(url);
     wsRef.current = ws;
     setStatus("connecting");
@@ -41,6 +46,7 @@ export function useWebSocket(url: string): UseWebSocketReturn {
     };
 
     ws.onclose = () => {
+      if (intentionalClose) return;
       setStatus("closed");
       const attempt = reconnectAttemptRef.current;
       reconnectAttemptRef.current = attempt + 1;
@@ -56,6 +62,7 @@ export function useWebSocket(url: string): UseWebSocketReturn {
     ws.onmessage = (event) => setLastMessage(event);
 
     return () => {
+      intentionalClose = true;
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;

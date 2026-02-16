@@ -34,7 +34,8 @@ const SESSION_STORAGE_KEY = "vibe-current-session";
 
 function getWsUrl(): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${window.location.host}/ws`;
+  const host = import.meta.env.VITE_API_HOST || window.location.host;
+  return `${proto}//${host}/ws`;
 }
 
 function getSavedSessionId(): string | undefined {
