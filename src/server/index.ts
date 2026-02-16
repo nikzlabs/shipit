@@ -424,6 +424,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         turnSummary = "";
         accumulatedText = "";
         accumulatedToolUse = [];
+        let receivedResult = false;
         const userText = msg.text;
         claude = claudeFactory();
         broadcastLog("server", "Claude process started");
@@ -485,6 +486,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           }
 
           // On result: persist the final assistant message, update session, record usage
+          if (event.type === "result") {
+            receivedResult = true;
+          }
           if (event.type === "result" && event.session_id) {
             currentSessionId = event.session_id;
             sessionManager.track(event.session_id);
@@ -530,6 +534,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           console.log("[claude] process exited with code", code);
           broadcastLog("server", `Claude process exited with code ${code}`);
           claude = null;
+
+          // If the process exited without producing a result event, notify the
+          // client so it can clear the loading state instead of hanging forever.
+          if (!receivedResult) {
+            const reason = code !== 0
+              ? `Claude process exited with code ${code}`
+              : "Claude process ended without a response";
+            send({ type: "error", message: reason });
+          }
 
           // Auto-commit after Claude turn
           try {

@@ -235,6 +235,16 @@ class FakeClaudeProcess extends EventEmitter {
   writeStdin(data: string) {
     this.stdinData.push(data);
   }
+
+  /**
+   * Simulate a normal Claude turn completion: emit a result event then done.
+   * This matches the real Claude CLI behavior where a `result` event always
+   * precedes process exit on success.
+   */
+  finish(sessionId = "test-session", code = 0) {
+    this.emit("event", { type: "result", subtype: "success", session_id: sessionId });
+    this.emit("done", code);
+  }
 }
 
 /**
@@ -694,8 +704,9 @@ describe("Integration: WebSocket flow", () => {
     // Consume the claude_event for the assistant message (skip log_entry messages)
     await client.receiveSkipLogs();
 
-    // Now simulate done — this triggers auto-commit
-    lastClaude.emit("done", 0);
+    // Simulate Claude finishing — this triggers auto-commit
+    lastClaude.finish("test-session");
+    await client.receiveSkipLogs(); // consume the result claude_event
 
     // Wait for the async auto-commit (skip log_entry messages)
     const msg = await client.receiveSkipLogs();
@@ -722,6 +733,42 @@ describe("Integration: WebSocket flow", () => {
     expect(msg.type).toBe("error");
     expect((msg as any).message).toContain("Claude process error");
     expect((msg as any).message).toContain("spawn ENOENT");
+
+    client.close();
+  });
+
+  it("claude process exit without result sends error to client", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "Hello" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Process exits with non-zero code and no result event
+    lastClaude.emit("done", 1);
+
+    const msg = await client.receiveSkipLogs();
+
+    expect(msg.type).toBe("error");
+    expect((msg as any).message).toContain("exited with code 1");
+
+    client.close();
+  });
+
+  it("claude process exit code 0 without result sends error to client", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "Hello" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Process exits with code 0 but no result event (e.g. auth issue)
+    lastClaude.emit("done", 0);
+
+    const msg = await client.receiveSkipLogs();
+
+    expect(msg.type).toBe("error");
+    expect((msg as any).message).toContain("ended without a response");
 
     client.close();
   });
@@ -850,7 +897,7 @@ describe("Integration: WebSocket flow", () => {
     const firstClaude = lastClaude;
 
     // Simulate Claude finishing
-    firstClaude.emit("done", 0);
+    firstClaude.finish("existing-sess");
     await new Promise((r) => setTimeout(r, 100));
 
     // Now Claude is null — send an answer
@@ -968,7 +1015,7 @@ describe("Integration: Port auto-detection", () => {
     await new Promise((r) => setTimeout(r, 50));
 
     // Simulate Claude finishing
-    lastClaude.emit("done", 0);
+    lastClaude.finish();
 
     // Should receive preview_status with the detected port
     // (may also receive git_committed if there were changes — drain until preview_status)
@@ -1003,7 +1050,7 @@ describe("Integration: Port auto-detection", () => {
     client.send({ type: "send_message", text: "No server" });
     await new Promise((r) => setTimeout(r, 50));
 
-    lastClaude.emit("done", 0);
+    lastClaude.finish();
 
     // Wait a bit — we should NOT receive a preview_status update
     // The only message we might get is git_committed (if there were changes)
@@ -1036,7 +1083,7 @@ describe("Integration: Port auto-detection", () => {
     // First turn — detect port 8080
     client.send({ type: "send_message", text: "Start server" });
     await new Promise((r) => setTimeout(r, 50));
-    lastClaude.emit("done", 0);
+    lastClaude.finish();
 
     let previewMsg: any = null;
     for (let i = 0; i < 5; i++) {
@@ -1052,7 +1099,7 @@ describe("Integration: Port auto-detection", () => {
     stubDetectedPorts = [4000];
     client.send({ type: "send_message", text: "Change server" });
     await new Promise((r) => setTimeout(r, 50));
-    lastClaude.emit("done", 0);
+    lastClaude.finish();
 
     let updatedMsg: any = null;
     for (let i = 0; i < 5; i++) {
@@ -1077,7 +1124,7 @@ describe("Integration: Port auto-detection", () => {
     // Trigger a Claude turn to detect the port
     client1.send({ type: "send_message", text: "Go" });
     await new Promise((r) => setTimeout(r, 50));
-    lastClaude.emit("done", 0);
+    lastClaude.finish();
 
     // Drain messages until we see the updated preview_status
     for (let i = 0; i < 5; i++) {
@@ -1108,7 +1155,7 @@ describe("Integration: Port auto-detection", () => {
 
     client.send({ type: "send_message", text: "Start servers" });
     await new Promise((r) => setTimeout(r, 50));
-    lastClaude.emit("done", 0);
+    lastClaude.finish();
 
     let previewMsg: any = null;
     for (let i = 0; i < 5; i++) {
@@ -1441,7 +1488,7 @@ describe("Integration: Terminal/logs relay", () => {
     expect((startLog as any).text).toBe("Claude process started");
 
     // Simulate Claude finishing
-    lastClaude.emit("done", 0);
+    lastClaude.finish();
 
     // Should receive "Claude process exited" log
     // (may also receive git_committed — drain until we find the exit log)
@@ -2746,7 +2793,7 @@ describe("Integration: File watcher", () => {
 
     // Simulate Claude finishing
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "img-session-1" });
-    lastClaude.emit("done", 0);
+    lastClaude.finish("img-session-1");
 
     client.close();
   });
@@ -2886,7 +2933,7 @@ describe("Integration: File watcher", () => {
     expect(lastClaude.lastPrompt).toBe("No images");
     expect(lastClaude.lastImages).toBeUndefined();
 
-    lastClaude.emit("done", 0);
+    lastClaude.finish();
     client.close();
   });
 });
