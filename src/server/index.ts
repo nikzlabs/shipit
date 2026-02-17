@@ -579,11 +579,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         const userText = msg.text;
         claude = claudeFactory();
         const currentClaude = claude;
-        broadcastLog("server", "Claude process started");
 
-        // Relay CLI stderr and non-JSON stdout lines to the terminal panel
-        currentClaude.on("log", (source: "stderr" | "stdout", text: string) => {
-          broadcastLog(source, text);
+        // Relay CLI log lines (PTY merges stdout+stderr) to the terminal panel
+        currentClaude.on("log", (source: "stderr" | "stdout" | "server", text: string) => {
+          broadcastLog(source as "stderr" | "stdout" | "server", text);
         });
 
         // Determine session context: resume existing or create new
@@ -592,9 +591,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           // Resuming an existing session
           activateSession(msg.sessionId);
           const session = sessionManager.get(msg.sessionId);
-          // Use the stored agent session ID, or fall back to msg.sessionId for
-          // legacy sessions where the app session ID === agent session ID.
-          agentSessionId = session?.agentSessionId ?? msg.sessionId;
+          // Only resume if we have a real Claude CLI session ID (set via system init event).
+          // If agentSessionId was never set (e.g. previous attempt hung), start fresh.
+          agentSessionId = session?.agentSessionId;
 
           // If session has a workspaceDir but it was deleted, recreate it
           if (session?.workspaceDir) {
@@ -642,6 +641,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
         currentClaude.on("event", (event: ClaudeEvent) => {
           send({ type: "claude_event", event });
+
+          // Log unrecognized event types for debugging
+          const knownTypes = ["system", "assistant", "user", "result"];
+          if (!knownTypes.includes(event.type)) {
+            console.warn("[claude] Unrecognized event type:", event.type);
+            broadcastLog("server", `Unknown Claude event type: ${event.type}`);
+          }
 
           // Track agent session when we get the session_id from init event
           if (event.type === "system" && event.subtype === "init" && event.session_id) {
@@ -807,6 +813,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           }
         }
         currentClaude.run(msg.text, agentSessionId, systemPrompt, images, getActiveDir());
+        broadcastLog("server", "Claude process started");
       }
 
       if (msg.type === "get_git_log") {
@@ -1033,10 +1040,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           accumulatedText = "";
           accumulatedToolUse = [];
           claude = claudeFactory();
-          broadcastLog("server", "Claude process started");
 
-          claude.on("log", (source: "stderr" | "stdout", text: string) => {
-            broadcastLog(source, text);
+          claude.on("log", (source: "stderr" | "stdout" | "server", text: string) => {
+            broadcastLog(source as "stderr" | "stdout" | "server", text);
           });
 
           // Persist the user answer
@@ -1162,6 +1168,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
           const systemPrompt = await readSystemPrompt();
           claude.run(answerText, agentSessionId, systemPrompt, undefined, getActiveDir());
+          broadcastLog("server", "Claude process started");
         }
       }
 
