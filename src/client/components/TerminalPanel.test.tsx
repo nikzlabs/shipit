@@ -104,9 +104,9 @@ describe("TerminalPanel", () => {
       render(<TerminalPanel entries={[]} onClear={() => {}} />);
       const filterGroup = screen.getByRole("group", { name: /filter log sources/i });
       expect(filterGroup).toBeInTheDocument();
-      // All four filter buttons should be present (err, out, srv, pre)
+      // All five filter buttons should be present (err, out, srv, pre, dpl)
       const buttons = filterGroup.querySelectorAll("button");
-      expect(buttons).toHaveLength(4);
+      expect(buttons).toHaveLength(5);
     });
 
     it("filter buttons have aria-pressed=true by default", () => {
@@ -168,22 +168,24 @@ describe("TerminalPanel", () => {
         entry("stdout", "output line"),
         entry("server", "server line"),
         entry("preview", "preview line"),
+        entry("deploy", "deploy line"),
       ];
       render(<TerminalPanel entries={entries} onClear={() => {}} />);
 
       const filterGroup = screen.getByRole("group", { name: /filter log sources/i });
       const buttons = Array.from(filterGroup.querySelectorAll("button")) as HTMLButtonElement[];
 
-      // Hide first three sources
+      // Hide first four sources (stderr, stdout, server, preview)
       fireEvent.click(buttons[0]); // hide stderr
       fireEvent.click(buttons[1]); // hide stdout
       fireEvent.click(buttons[2]); // hide server
+      fireEvent.click(buttons[3]); // hide preview
 
-      // Try to hide the last one — should not work
-      fireEvent.click(buttons[3]);
+      // Try to hide the last one (deploy) — should not work
+      fireEvent.click(buttons[4]);
 
-      // preview entries should still be visible (can't hide all)
-      expect(screen.getByText("preview line")).toBeInTheDocument();
+      // deploy entries should still be visible (can't hide all)
+      expect(screen.getByText("deploy line")).toBeInTheDocument();
     });
 
     it("shows filter-specific empty state when all entries are filtered out", () => {

@@ -161,25 +161,25 @@ Design docs in `docs/design/`.
 - [x] Handle edge cases: delete active session, missing session directory, multi-client, disk space
 
 ### Feature 10: Deployment Integration — Pluggable Targets (`docs/design/010-deployment-integration.md`)
-- [ ] `DeployTarget` interface + types (`src/server/deploy-targets/deploy-target.ts`) — `ConfigField`, `DeployTargetInfo`, `DeployContext`, `DeployResult`
-- [ ] `VercelTarget` (`src/server/deploy-targets/vercel.ts`) — `vercel deploy --yes --prod --token=xxx`, URL from stdout
-- [ ] `CloudflareTarget` (`src/server/deploy-targets/cloudflare.ts`) — `wrangler pages deploy`, `prepare()` for project creation, URL regex extraction
-- [ ] `DeploymentManager` registry + orchestrator (`src/server/deployment-manager.ts`) — target registration, framework detection, build, `deploy()` dispatch
-- [ ] `DeploymentStore` (`src/server/deployment-store.ts`) — generic credential persistence (`Record<string, string>`), deployment history per session
-- [ ] WS messages: `list_deploy_targets`, `deploy_configure`, `initiate_deploy`, `get_deploy_history`, `cancel_deploy`, `get_deploy_config`, `delete_deploy_config`
-- [ ] Server WS handlers in `index.ts` — target-agnostic dispatch (validate `targetId` in registry, validate credentials against `configFields`)
-- [ ] Framework auto-detection from `package.json` (Vite, Next.js, CRA, static site)
-- [ ] Build step: run `npm run build` before deploy, stream output to terminal with `source: "deploy"`
-- [ ] `DeployModal` component — dynamic config form from `configFields`, target picker, env selection, deploy trigger, progress, success/error states
-- [ ] Deploy button in header with status indicator (idle, deploying spinner, last deploy green dot)
-- [ ] Terminal panel: deploy logs with `source: "deploy"` in blue styling
-- [ ] Deployment history display in modal (last N deployments with URLs, timestamps, status)
-- [ ] "Send to Claude" on deploy errors (compose build/deploy error into chat message)
-- [ ] Unit tests for `VercelTarget` and `CloudflareTarget` (mock spawn, verify CLI args, URL extraction)
-- [ ] Unit tests for `DeploymentManager` (target registration, framework detection, build, dispatch)
-- [ ] Unit tests for `DeploymentStore` (credential CRUD, history, session cleanup)
-- [ ] Integration tests for deploy flow (configure → deploy → verify status/complete, unknown target, missing creds, deploy while deploying)
-- [ ] Component tests for `DeployModal` (dynamic config fields, target picker, deploy trigger, progress, complete, error, history)
+- [x] `DeployTarget` interface + types (`src/server/deploy-targets/deploy-target.ts`) — `ConfigField`, `DeployTargetInfo`, `DeployContext`, `DeployResult`
+- [x] `VercelTarget` (`src/server/deploy-targets/vercel.ts`) — `vercel deploy --yes --prod --token=xxx`, URL from stdout
+- [x] `CloudflareTarget` (`src/server/deploy-targets/cloudflare.ts`) — `wrangler pages deploy`, `prepare()` for project creation, URL regex extraction
+- [x] `DeploymentManager` registry + orchestrator (`src/server/deployment-manager.ts`) — target registration, framework detection, build, `deploy()` dispatch
+- [x] `DeploymentStore` (`src/server/deployment-store.ts`) — generic credential persistence (`Record<string, string>`), deployment history per session
+- [x] WS messages: `list_deploy_targets`, `deploy_configure`, `initiate_deploy`, `get_deploy_history`, `cancel_deploy`, `get_deploy_config`, `delete_deploy_config`
+- [x] Server WS handlers in `index.ts` — target-agnostic dispatch (validate `targetId` in registry, validate credentials against `configFields`)
+- [x] Framework auto-detection from `package.json` (Vite, Next.js, CRA, static site)
+- [x] Build step: run `npm run build` before deploy, stream output to terminal with `source: "deploy"`
+- [x] `DeployModal` component — dynamic config form from `configFields`, target picker, env selection, deploy trigger, progress, success/error states
+- [x] Deploy button in header with status indicator (idle, deploying spinner, last deploy green dot)
+- [x] Terminal panel: deploy logs with `source: "deploy"` in cyan styling
+- [x] Deployment history display in modal (last N deployments with URLs, timestamps, status)
+- [x] "Send to Claude" on deploy errors (compose build/deploy error into chat message)
+- [x] Unit tests for `VercelTarget` and `CloudflareTarget` (mock spawn, verify CLI args, URL extraction)
+- [x] Unit tests for `DeploymentManager` (target registration, framework detection, build, dispatch)
+- [x] Unit tests for `DeploymentStore` (credential CRUD, history, session cleanup)
+- [x] Integration tests for deploy flow (configure → deploy → verify status/complete, unknown target, missing creds, deploy while deploying)
+- [x] Component tests for `DeployModal` (dynamic config fields, target picker, deploy trigger, progress, complete, error, history)
 
 ## Nice to Have
 - [ ] Multi-file diff view — when Claude edits multiple files in one turn, show a grouped diff summary

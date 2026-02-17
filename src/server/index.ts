@@ -18,6 +18,10 @@ import { UsageManager } from "./usage.js";
 import { FileWatcher } from "./file-watcher.js";
 import { listTemplates, getTemplate, applyTemplate } from "./templates.js";
 import { ThreadManager } from "./threads.js";
+import { DeploymentManager } from "./deployment-manager.js";
+import { DeploymentStore } from "./deployment-store.js";
+import { VercelTarget } from "./deploy-targets/vercel.js";
+import { CloudflareTarget } from "./deploy-targets/cloudflare.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment } from "./types.js";
 
 function getErrorMessage(err: unknown): string {
@@ -148,6 +152,15 @@ export interface AppDeps {
    * Manages conversation threads and checkpoints.
    */
   threadManager?: ThreadManager;
+  /**
+   * Deployment manager instance. Defaults to a new manager with Vercel and
+   * Cloudflare targets registered.
+   */
+  deploymentManager?: DeploymentManager;
+  /**
+   * Deployment store instance. Defaults to `new DeploymentStore(workspaceDir)`.
+   */
+  deploymentStore?: DeploymentStore;
 }
 
 /**
@@ -221,6 +234,17 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     path.join(workspaceDir, ".vibe-threads")
   );
 
+  // ---- Deployment manager ----
+  const deploymentManager = deps.deploymentManager ?? (() => {
+    const mgr = new DeploymentManager();
+    mgr.register(new VercelTarget());
+    mgr.register(new CloudflareTarget());
+    return mgr;
+  })();
+
+  // ---- Deployment store ----
+  const deploymentStore = deps.deploymentStore ?? new DeploymentStore(workspaceDir);
+
   // ---- File watcher ----
   const fileWatcher = deps.fileWatcher ?? new FileWatcher();
   fileWatcher.start(workspaceDir);
@@ -252,6 +276,19 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
     broadcast(entry);
   };
+
+  // ---- Deployment event handlers ----
+  deploymentManager.on("log", ({ text }: { text: string }) => {
+    broadcastLog("deploy", text);
+  });
+
+  deploymentManager.on("status", (status: { phase: string }) => {
+    broadcast({ type: "deploy_status", phase: status.phase as "building" | "deploying" | "complete" | "error" });
+  });
+
+  deploymentManager.on("error", (err: { message: string; phase: string }) => {
+    broadcast({ type: "deploy_error", message: err.message, phase: err.phase as "building" | "deploying" });
+  });
 
   // ---- File watcher event handler ----
   fileWatcher.on("changes", (changedFiles: string[]) => {
@@ -871,6 +908,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         chatHistoryManager.delete(msg.sessionId);
         usageManager.delete(msg.sessionId);
         threadManager.delete(msg.sessionId);
+        deploymentStore.deleteSession(msg.sessionId);
         send({ type: "session_list", sessions: sessionManager.list() });
       }
 
@@ -1357,6 +1395,175 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
       if (msg.type === "get_usage_stats") {
         send({ type: "usage_stats", stats: usageManager.getStats() });
+      }
+
+      // ---- Deployment operations ----
+
+      if (msg.type === "list_deploy_targets") {
+        send({ type: "deploy_targets", targets: deploymentManager.getTargets() });
+      }
+
+      if (msg.type === "deploy_configure") {
+        const targetId = typeof msg.targetId === "string" ? msg.targetId.trim() : "";
+        const target = deploymentManager.getTarget(targetId);
+        if (!target) {
+          send({ type: "error", message: `Unknown deploy target: "${targetId}"` });
+          return;
+        }
+
+        // Validate credentials against the target's configFields
+        const credentials: Record<string, string> = {};
+        for (const field of target.info.configFields) {
+          const value = typeof msg.credentials?.[field.key] === "string"
+            ? msg.credentials[field.key].trim() : "";
+          if (field.required && !value) {
+            send({ type: "error", message: `${field.label} is required` });
+            return;
+          }
+          if (value.length > 2000) {
+            send({ type: "error", message: `${field.label} is too long` });
+            return;
+          }
+          if (value) credentials[field.key] = value;
+        }
+
+        if (!activeAppSessionId) {
+          send({ type: "error", message: "No active session" });
+          return;
+        }
+
+        const projectName = typeof msg.projectName === "string" ? msg.projectName.trim() : undefined;
+        deploymentStore.saveConfig(activeAppSessionId, { targetId, credentials, projectName });
+        send({ type: "deploy_config_saved", targetId });
+      }
+
+      if (msg.type === "initiate_deploy") {
+        if (!activeSessionDir) {
+          send({ type: "error", message: "No active session" });
+          return;
+        }
+        if (deploymentManager.deploying) {
+          send({ type: "error", message: "Deployment already in progress" });
+          return;
+        }
+
+        const targetId = typeof msg.targetId === "string" ? msg.targetId.trim() : "";
+        const target = deploymentManager.getTarget(targetId);
+        if (!target) {
+          send({ type: "error", message: `Unknown deploy target: "${targetId}"` });
+          return;
+        }
+
+        const environment = msg.environment === "production" ? "production" : "preview";
+        const config = deploymentStore.loadConfig(activeAppSessionId!, targetId);
+        if (!config) {
+          send({ type: "error", message: `No credentials configured for ${target.info.name}. Set up deployment first.` });
+          return;
+        }
+
+        // Detect framework and build
+        broadcast({ type: "deploy_status", phase: "building" });
+        const framework = await deploymentManager.detectFramework(activeSessionDir);
+
+        if (framework.buildCommand) {
+          const buildOk = await deploymentManager.build(activeSessionDir, framework.buildCommand);
+          if (!buildOk) {
+            broadcast({ type: "deploy_error", message: "Build failed", phase: "building" });
+            return;
+          }
+        }
+
+        // Deploy (target-agnostic — the manager dispatches to the right target)
+        const deployCompleteHandler = async (result: { url: string; targetId: string; environment: "production" | "preview"; durationMs: number }) => {
+          // Record in history
+          let commitHash: string | undefined;
+          let commitMessage: string | undefined;
+          try {
+            const git = getActiveGitManager();
+            const commits = await git.log(1);
+            if (commits.length > 0) {
+              commitHash = commits[0].hash;
+              commitMessage = commits[0].message;
+            }
+          } catch {
+            // ok
+          }
+
+          deploymentStore.recordDeployment(activeAppSessionId!, {
+            id: crypto.randomUUID(),
+            targetId: result.targetId,
+            environment: result.environment,
+            url: result.url,
+            commitHash,
+            commitMessage,
+            timestamp: new Date().toISOString(),
+            durationMs: result.durationMs,
+            status: "success",
+          });
+
+          broadcast({
+            type: "deploy_complete",
+            url: result.url,
+            targetId: result.targetId,
+            environment: result.environment,
+            durationMs: result.durationMs,
+          });
+        };
+
+        // Listen for complete event for this deployment (one-time)
+        deploymentManager.once("complete", deployCompleteHandler);
+
+        try {
+          await deploymentManager.deploy(targetId, {
+            workspaceDir: activeSessionDir,
+            outputDir: framework.outputDirectory,
+            credentials: config.credentials,
+            environment,
+            projectName: config.projectName || path.basename(activeSessionDir),
+          });
+        } catch {
+          // Error already emitted via event; remove the complete handler since it didn't fire
+          deploymentManager.removeListener("complete", deployCompleteHandler);
+        }
+      }
+
+      if (msg.type === "get_deploy_history") {
+        if (!activeAppSessionId) {
+          send({ type: "error", message: "No active session" });
+          return;
+        }
+        const history = deploymentStore.getHistory(activeAppSessionId);
+        send({ type: "deploy_history", deployments: history });
+      }
+
+      if (msg.type === "cancel_deploy") {
+        deploymentManager.cancel();
+      }
+
+      if (msg.type === "get_deploy_config") {
+        if (!activeAppSessionId) {
+          send({ type: "error", message: "No active session" });
+          return;
+        }
+        const targets = deploymentManager.getTargets();
+        const configured: Record<string, { configured: boolean; projectName?: string }> = {};
+        for (const t of targets) {
+          const config = deploymentStore.loadConfig(activeAppSessionId, t.id);
+          configured[t.id] = config
+            ? { configured: true, projectName: config.projectName }
+            : { configured: false };
+        }
+        send({ type: "deploy_config", targets: configured });
+      }
+
+      if (msg.type === "delete_deploy_config") {
+        if (!activeAppSessionId) {
+          send({ type: "error", message: "No active session" });
+          return;
+        }
+        const targetId = typeof msg.targetId === "string" ? msg.targetId.trim() : "";
+        deploymentStore.deleteConfig(activeAppSessionId, targetId);
+        send({ type: "deploy_config_saved", targetId });
       }
 
       // ---- Thread & checkpoint operations ----
