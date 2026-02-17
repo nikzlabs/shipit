@@ -1,4 +1,4 @@
-# Design Doc 010: Deployment Integration — Vercel & Cloudflare Pages
+# Design Doc 010: Deployment Integration (Pluggable Targets)
 
 ## Status: Proposed
 
@@ -8,24 +8,25 @@ After vibe coding a project in ShipIt, there's no way to share it with the world
 
 Specific pain points:
 1. **No deployment path** — ShipIt ends at "works on my machine (container)." Users must leave the IDE to deploy.
-2. **CLI complexity** — Both `vercel` and `wrangler` CLIs have dozens of flags. Getting the right combination for non-interactive, headless deployment is non-obvious.
-3. **Auth friction** — OAuth flows (Vercel `login`, Wrangler `login`) don't work in a Docker container or browser-proxied environment. Users must figure out token-based auth on their own.
+2. **CLI complexity** — Deployment CLIs (`vercel`, `wrangler`, `gcloud`, `aws`) each have dozens of flags. Getting the right combination for non-interactive, headless deployment is non-obvious.
+3. **Auth friction** — OAuth flows don't work in a Docker container or browser-proxied environment. Users must figure out token-based auth on their own.
 4. **No deployment history** — After deploying, there's no record of what was deployed, when, or to which URL.
 
 ## Goals
 
-1. One-click deploy to Vercel or Cloudflare Pages from the ShipIt UI.
-2. Token-based auth with secure storage (no OAuth — it won't work in a container).
-3. Real-time deployment progress streamed to the terminal panel.
-4. Deployment history per session with URLs, timestamps, and commit hashes.
-5. Framework auto-detection to set sensible defaults (build command, output directory).
+1. One-click deploy from the ShipIt UI to any registered deployment target.
+2. **Pluggable `DeployTarget` interface** — adding a new platform (GCP, AWS, Netlify, etc.) means implementing one interface and registering it. No changes to the WS protocol, UI framework, or deployment manager.
+3. Token-based auth with secure storage (no OAuth — it won't work in a container).
+4. Real-time deployment progress streamed to the terminal panel.
+5. Deployment history per session with URLs, timestamps, and commit hashes.
+6. Framework auto-detection to set sensible defaults (build command, output directory).
 
 ## Non-Goals
 
-- **Vercel/Cloudflare project management** — creating teams, managing domains, configuring CDN rules. Use their dashboards for that.
+- **Platform project management** — creating teams, managing domains, configuring CDN rules, IAM roles. Use each platform's dashboard/console for that.
 - **Custom build pipelines** — ShipIt runs the project's `npm run build` (or equivalent). Complex build setups (monorepos, Docker builds, custom buildpacks) are out of scope.
-- **Serverless function deployment** — Cloudflare Workers (as opposed to Pages) and Vercel Serverless Functions that require special configuration. V1 targets static site and SPA deployment.
-- **Other deployment targets** — Netlify, AWS, Fly.io, Railway, etc. The architecture is extensible, but V1 ships with Vercel and Cloudflare only.
+- **Serverless function deployment** — Cloudflare Workers, Vercel Serverless Functions, AWS Lambda, Cloud Functions with special configuration. V1 targets static site and SPA deployment.
+- **Google Cloud and AWS targets** — The `DeployTarget` interface is designed with these in mind, but V1 ships with Vercel and Cloudflare Pages only. GCP (Cloud Run / Firebase Hosting) and AWS (S3 + CloudFront / Amplify) are deferred to V2.
 - **Auto-deploy on commit** — Every Claude turn auto-commits, so auto-deploying on every commit would be noisy and expensive. Deployment is always user-initiated.
 
 ## Design
@@ -36,29 +37,37 @@ Specific pain points:
 ┌──────────────────────────────────────────────────────────────────┐
 │ Client                                                           │
 │                                                                  │
-│  [Deploy button] → DeployModal → configure target/env            │
-│       │                              │                           │
-│       ▼                              ▼                           │
-│  deploy_configure   OR          initiate_deploy                  │
-│  (save token)                   (trigger deploy)                 │
-│                                      │                           │
-│  ◄── deploy_status ─────────────────┘  (streaming updates)      │
-│  ◄── log_entry (source:"deploy") ───┘  (build/deploy output)    │
-│  ◄── deploy_complete ───────────────┘  (final URL + status)     │
+│  [Deploy button] → DeployModal                                   │
+│       │               │                                          │
+│       │    list_deploy_targets → render config fields dynamically │
+│       │               │                                          │
+│       ▼               ▼                                          │
+│  deploy_configure   initiate_deploy                              │
+│  (save credentials)  (trigger deploy by targetId)                │
+│                          │                                       │
+│  ◄── deploy_status ─────┘  (streaming phase updates)            │
+│  ◄── log_entry (source:"deploy") ─┘  (build/deploy output)     │
+│  ◄── deploy_complete ─────┘  (final URL + status)               │
 └──────────────────────────────────────────────────────────────────┘
                               │ WebSocket
 ┌──────────────────────────────────────────────────────────────────┐
 │ Server                                                           │
 │                                                                  │
-│  DeploymentManager                                               │
-│    ├── detectFramework(sessionDir) → { buildCmd, outputDir }     │
-│    ├── build(sessionDir) → spawn npm run build                   │
-│    ├── deployVercel(sessionDir, token, opts) → spawn vercel CLI  │
-│    └── deployCloudflare(sessionDir, token, opts) → spawn wrangler│
+│  DeploymentManager (registry + orchestrator)                     │
+│    ├── register(target: DeployTarget)                            │
+│    ├── getTargets() → DeployTargetInfo[]                         │
+│    ├── detectFramework(sessionDir) → FrameworkInfo               │
+│    ├── build(sessionDir, buildCmd) → boolean                     │
+│    └── deploy(targetId, ctx: DeployContext) → DeployResult       │
+│            │                                                     │
+│            ├── VercelTarget.deploy(ctx)                          │
+│            ├── CloudflareTarget.deploy(ctx)                      │
+│            ├── (future) GCPTarget.deploy(ctx)                    │
+│            └── (future) AWSTarget.deploy(ctx)                    │
 │                                                                  │
 │  DeploymentStore                                                 │
-│    ├── saveConfig(sessionId, config) → token + target prefs      │
-│    ├── recordDeployment(sessionId, record) → deployment history  │
+│    ├── saveConfig(sessionId, targetId, credentials)              │
+│    ├── recordDeployment(sessionId, record)                       │
 │    └── getHistory(sessionId) → DeploymentRecord[]                │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -68,28 +77,349 @@ Specific pain points:
 **Happy path — first deploy to Vercel:**
 
 1. User clicks "Deploy" in the header.
-2. `DeployModal` opens. No Vercel token yet → shows token input form with link to Vercel's token creation page.
-3. User pastes token. Client sends `deploy_configure` with `{ provider: "vercel", token: "tok_xxx" }`.
-4. Server validates token (quick API call), stores it encrypted on disk, responds with `deploy_config_saved`.
-5. Modal shows deploy options: environment (preview/production), auto-detected framework and output directory.
-6. User clicks "Deploy to Production". Client sends `initiate_deploy`.
-7. Server runs `npm run build` in the session directory. Build output streams to terminal as `log_entry` with `source: "deploy"`.
-8. Build succeeds. Server runs `vercel deploy --yes --prod --token=xxx` with `cwd` set to session directory.
-9. Vercel CLI output streams to terminal. Server parses stdout for the deployment URL.
-10. Deploy completes. Server sends `deploy_complete` with `{ url, provider, environment, commitHash, duration }`.
-11. UI shows success toast with clickable URL. Deployment recorded in history.
+2. Client sends `list_deploy_targets`. Server responds with `deploy_targets` listing all registered targets with their `configFields`.
+3. `DeployModal` opens. No Vercel credentials yet → shows config form with fields dynamically rendered from Vercel target's `configFields` (token input + link to Vercel's token creation page).
+4. User pastes token. Client sends `deploy_configure` with `{ targetId: "vercel", credentials: { token: "tok_xxx" } }`.
+5. Server stores credentials on disk, responds with `deploy_config_saved`.
+6. Modal shows deploy options: environment (preview/production), auto-detected framework and output directory.
+7. User clicks "Deploy to Production". Client sends `initiate_deploy` with `{ targetId: "vercel", environment: "production" }`.
+8. Server runs `npm run build` in the session directory. Build output streams to terminal as `log_entry` with `source: "deploy"`.
+9. Build succeeds. Server looks up the `"vercel"` target in the registry and calls `target.deploy(ctx)`.
+10. Vercel CLI output streams to terminal via the `ctx.log()` callback. Server parses stdout for the deployment URL.
+11. Deploy completes. Server sends `deploy_complete` with `{ url, targetId, environment, commitHash, durationMs }`.
+12. UI shows success toast with clickable URL. Deployment recorded in history.
 
-**Subsequent deploys** skip steps 2-4 (token already stored). The modal opens directly to the deploy options.
+**Subsequent deploys** skip steps 3-5 (credentials already stored). The modal opens directly to the deploy options.
 
 ### Server Changes
 
-#### New: `DeploymentManager` class (`src/server/deployment-manager.ts`)
+#### The `DeployTarget` Interface (`src/server/deploy-targets/deploy-target.ts`)
 
-Extends `EventEmitter`, following the `ViteManager` pattern. Manages the build + deploy lifecycle as child processes.
+This is the core abstraction. Each deployment platform implements this interface. The `DeploymentManager` is target-agnostic — it delegates all platform-specific behavior to targets.
+
+```typescript
+import type { ChildProcess } from "node:child_process";
+
+// ---- Types shared across all targets ----
+
+/** Describes a credential field the user must provide (rendered dynamically by the client). */
+export interface ConfigField {
+  key: string;           // "token", "accountId", "projectId", "region"
+  label: string;         // "API Token", "Account ID"
+  required: boolean;
+  sensitive: boolean;    // true → masked in UI (password field)
+  helpUrl?: string;      // link to token creation page
+  helpText?: string;     // short description shown under the input
+  placeholder?: string;  // e.g. "tok_xxxxx", "us-east-1"
+}
+
+/** Metadata sent to the client so the UI can render target options. */
+export interface DeployTargetInfo {
+  id: string;            // "vercel", "cloudflare", "gcp", "aws"
+  name: string;          // "Vercel", "Cloudflare Pages", "Google Cloud Run", "AWS Amplify"
+  description: string;   // one-liner shown in the target picker
+  iconUrl?: string;      // optional icon for the UI
+  configFields: ConfigField[];
+  supportsPreview: boolean;  // can this target do preview deployments?
+}
+
+/** Context passed to deploy(). Everything the target needs. */
+export interface DeployContext {
+  workspaceDir: string;
+  outputDir: string;                       // auto-detected or user-overridden
+  credentials: Record<string, string>;     // keyed by ConfigField.key
+  environment: "production" | "preview";
+  projectName: string;                     // auto-generated or user-overridden
+  /** Emit a log line (streamed to terminal panel). */
+  log: (text: string) => void;
+  /** Signal from the manager — abort was requested. */
+  signal: AbortSignal;
+}
+
+export interface DeployResult {
+  url: string;
+  environment: "production" | "preview";
+  durationMs: number;
+}
+
+/** The interface every deployment target implements. */
+export interface DeployTarget {
+  /** Static metadata (id, name, config fields). */
+  readonly info: DeployTargetInfo;
+
+  /**
+   * Optional pre-deploy hook. Called before deploy() — use for project
+   * creation, resource provisioning, etc. Idempotent (safe to call every time).
+   */
+  prepare?(ctx: DeployContext): Promise<void>;
+
+  /** Run the deployment. Return the live URL on success, throw on failure. */
+  deploy(ctx: DeployContext): Promise<DeployResult>;
+}
+```
+
+**Why this shape:**
+- `configFields` drives the UI dynamically. Adding a target with a `region` field (AWS) or `projectId` field (GCP) requires zero client code changes — the modal renders whatever fields the target declares.
+- `credentials: Record<string, string>` is a flat bag keyed by `ConfigField.key`. No provider-specific typed fields like `accountId?: string`.
+- `prepare()` is optional. Vercel doesn't need it (auto-creates projects). Cloudflare needs it (must pre-create Pages project). GCP/AWS will need it (ensure Cloud Run service exists, or Amplify app).
+- `signal: AbortSignal` — wired from `DeploymentManager.cancel()` via `AbortController`. Targets attach it to spawned child processes.
+- `log()` — replaces direct `EventEmitter` coupling. The manager wires this to broadcast `log_entry` to clients.
+
+#### V1 Targets: `VercelTarget` and `CloudflareTarget`
+
+##### `src/server/deploy-targets/vercel.ts`
+
+```typescript
+import { spawn } from "node:child_process";
+import type { DeployTarget, DeployContext, DeployResult, DeployTargetInfo } from "./deploy-target.js";
+
+export class VercelTarget implements DeployTarget {
+  readonly info: DeployTargetInfo = {
+    id: "vercel",
+    name: "Vercel",
+    description: "Deploy to Vercel's edge network",
+    configFields: [
+      {
+        key: "token",
+        label: "Vercel Token",
+        required: true,
+        sensitive: true,
+        helpUrl: "https://vercel.com/account/tokens",
+        helpText: "Create a token at Vercel → Account Settings → Tokens",
+        placeholder: "tok_xxxxx",
+      },
+    ],
+    supportsPreview: true,
+  };
+
+  async deploy(ctx: DeployContext): Promise<DeployResult> {
+    const startTime = Date.now();
+    const token = ctx.credentials.token;
+
+    const args = ["deploy", "--yes", `--token=${token}`];
+    if (ctx.environment === "production") args.push("--prod");
+
+    return new Promise((resolve, reject) => {
+      const proc = spawn("vercel", args, {
+        cwd: ctx.workspaceDir,
+        env: { ...process.env, FORCE_COLOR: "0" },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      // Wire abort signal
+      ctx.signal.addEventListener("abort", () => proc.kill("SIGTERM"), { once: true });
+
+      let stdoutBuf = "";
+
+      proc.stdout!.on("data", (chunk) => {
+        stdoutBuf += chunk.toString();
+        // Vercel stdout = deployment URL only, don't log it
+      });
+
+      proc.stderr!.on("data", (chunk) => {
+        for (const line of chunk.toString().split("\n").filter(Boolean)) {
+          ctx.log(line);
+        }
+      });
+
+      proc.on("close", (code) => {
+        if (code === 0) {
+          resolve({
+            url: stdoutBuf.trim(),
+            environment: ctx.environment,
+            durationMs: Date.now() - startTime,
+          });
+        } else {
+          reject(new Error(`Vercel deploy failed (exit ${code})`));
+        }
+      });
+    });
+  }
+}
+```
+
+**Key Vercel CLI behavior:**
+- `vercel deploy --yes` skips all interactive prompts and auto-creates the project on first deploy.
+- `--token` handles auth without OAuth. Tokens created at vercel.com/account/tokens.
+- **stdout** contains *only* the deployment URL (e.g. `https://my-project-abc123.vercel.app`) — easy to capture.
+- **stderr** contains human-readable progress messages (build status, `Inspect:` URL, etc.).
+- Vercel auto-detects frameworks (React, Next.js, Vite, etc.) and sets build command + output directory.
+- `--prod` targets production; omitting it creates a preview deployment.
+- First deploy with `--yes` creates a `.vercel/project.json` in the working directory with `orgId` and `projectId` — subsequent deploys reuse this.
+
+##### `src/server/deploy-targets/cloudflare.ts`
+
+```typescript
+import { spawn } from "node:child_process";
+import path from "node:path";
+import type { DeployTarget, DeployContext, DeployResult, DeployTargetInfo } from "./deploy-target.js";
+
+export class CloudflareTarget implements DeployTarget {
+  readonly info: DeployTargetInfo = {
+    id: "cloudflare",
+    name: "Cloudflare Pages",
+    description: "Deploy static assets to Cloudflare's global network",
+    configFields: [
+      {
+        key: "token",
+        label: "API Token",
+        required: true,
+        sensitive: true,
+        helpUrl: "https://dash.cloudflare.com/profile/api-tokens",
+        helpText: "Create a token with 'Cloudflare Pages: Edit' permission",
+        placeholder: "xxxxx",
+      },
+      {
+        key: "accountId",
+        label: "Account ID",
+        required: true,
+        sensitive: false,
+        helpUrl: "https://dash.cloudflare.com",
+        helpText: "Found on the right sidebar of your Cloudflare dashboard",
+        placeholder: "abcdef1234567890",
+      },
+    ],
+    supportsPreview: true,
+  };
+
+  /** Ensure the Cloudflare Pages project exists. Idempotent. */
+  async prepare(ctx: DeployContext): Promise<void> {
+    return new Promise((resolve) => {
+      const proc = spawn("wrangler", [
+        "pages", "project", "create", ctx.projectName,
+        "--production-branch=main",
+      ], {
+        env: {
+          ...process.env,
+          CLOUDFLARE_API_TOKEN: ctx.credentials.token,
+          CLOUDFLARE_ACCOUNT_ID: ctx.credentials.accountId,
+          WRANGLER_SEND_METRICS: "false",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      // Ignore exit code — project may already exist
+      proc.on("close", () => resolve());
+    });
+  }
+
+  async deploy(ctx: DeployContext): Promise<DeployResult> {
+    const startTime = Date.now();
+    const deployDir = path.join(ctx.workspaceDir, ctx.outputDir);
+
+    return new Promise((resolve, reject) => {
+      const proc = spawn("wrangler", [
+        "pages", "deploy", deployDir,
+        `--project-name=${ctx.projectName}`,
+        "--branch=main",
+      ], {
+        cwd: ctx.workspaceDir,
+        env: {
+          ...process.env,
+          CLOUDFLARE_API_TOKEN: ctx.credentials.token,
+          CLOUDFLARE_ACCOUNT_ID: ctx.credentials.accountId,
+          FORCE_COLOR: "0",
+          WRANGLER_SEND_METRICS: "false",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      ctx.signal.addEventListener("abort", () => proc.kill("SIGTERM"), { once: true });
+
+      let allOutput = "";
+      const handleChunk = (chunk: Buffer) => {
+        const text = chunk.toString();
+        allOutput += text;
+        for (const line of text.split("\n").filter(Boolean)) {
+          ctx.log(line);
+        }
+      };
+
+      proc.stdout!.on("data", handleChunk);
+      proc.stderr!.on("data", handleChunk);
+
+      proc.on("close", (code) => {
+        if (code === 0) {
+          // Extract URL from mixed output
+          const urlMatch = allOutput.match(/https:\/\/[a-zA-Z0-9_-]+\.[\w.-]+\.pages\.dev/);
+          resolve({
+            url: urlMatch?.[0] || `https://${ctx.projectName}.pages.dev`,
+            environment: ctx.environment,
+            durationMs: Date.now() - startTime,
+          });
+        } else {
+          reject(new Error(`Cloudflare deploy failed (exit ${code})`));
+        }
+      });
+    });
+  }
+}
+```
+
+**Key Wrangler CLI behavior:**
+- `wrangler pages deploy <dir>` uploads a directory of static assets directly — no build step needed (ShipIt runs the build separately).
+- Auth via `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` environment variables. OAuth (`wrangler login`) fails in proxied/container environments.
+- `--project-name` is required for non-interactive mode. Without it, Wrangler prompts interactively.
+- The project **must exist** before deploying non-interactively. `prepare()` handles this via `wrangler pages project create`, which is idempotent.
+- **No `--json` flag on deploy.** Output is human-readable text with the URL embedded. We extract it via regex.
+- `--branch=main` targets production. Any other branch creates a preview deployment.
+- Deploy speed for pre-built assets is fast — typically under 30 seconds.
+
+##### Deferred: `GCPTarget` and `AWSTarget`
+
+These targets are designed for V2. The interface already accommodates their needs:
+
+**Google Cloud (Cloud Run or Firebase Hosting):**
+```typescript
+// Sketch — NOT implemented in V1
+const gcpTarget: DeployTargetInfo = {
+  id: "gcp",
+  name: "Google Cloud Run",
+  description: "Deploy as a containerized service on Google Cloud",
+  configFields: [
+    { key: "projectId", label: "GCP Project ID", required: true, sensitive: false,
+      helpUrl: "https://console.cloud.google.com", placeholder: "my-project-12345" },
+    { key: "serviceAccountKey", label: "Service Account Key (JSON)", required: true, sensitive: true,
+      helpText: "Create a service account with Cloud Run Admin role" },
+    { key: "region", label: "Region", required: true, sensitive: false,
+      placeholder: "us-central1" },
+  ],
+  supportsPreview: false,  // Cloud Run doesn't have native preview deployments
+};
+// deploy() would: gcloud run deploy --image=... --region=... --allow-unauthenticated
+// prepare() would: ensure Cloud Run service exists, build+push Docker image to Artifact Registry
+```
+
+**AWS (Amplify or S3 + CloudFront):**
+```typescript
+// Sketch — NOT implemented in V1
+const awsTarget: DeployTargetInfo = {
+  id: "aws",
+  name: "AWS Amplify",
+  description: "Deploy to AWS Amplify Hosting",
+  configFields: [
+    { key: "accessKeyId", label: "Access Key ID", required: true, sensitive: true,
+      helpUrl: "https://console.aws.amazon.com/iam/", helpText: "IAM user with Amplify permissions" },
+    { key: "secretAccessKey", label: "Secret Access Key", required: true, sensitive: true },
+    { key: "region", label: "AWS Region", required: true, sensitive: false,
+      placeholder: "us-east-1" },
+    { key: "appId", label: "Amplify App ID", required: false, sensitive: false,
+      helpText: "Leave blank to auto-create" },
+  ],
+  supportsPreview: true,  // Amplify supports branch-based previews
+};
+// deploy() would: aws amplify start-deployment --app-id=... --branch-name=main
+// prepare() would: ensure Amplify app exists (create if appId not provided)
+```
+
+The key point: these targets declare their `configFields`, and the client renders them automatically. No UI changes needed.
+
+#### `DeploymentManager` class (`src/server/deployment-manager.ts`)
+
+The manager is now a **registry + orchestrator**. It does not contain any provider-specific logic — that lives in the targets.
 
 ```typescript
 import { EventEmitter } from "node:events";
-import type { ChildProcess } from "node:child_process";
+import type { DeployTarget, DeployTargetInfo, DeployContext, DeployResult } from "./deploy-targets/deploy-target.js";
 
 export interface FrameworkInfo {
   name: string;              // "vite", "next", "cra", "static", "unknown"
@@ -97,63 +427,116 @@ export interface FrameworkInfo {
   outputDirectory: string;   // "dist", "build", ".next", "out", "."
 }
 
-export interface DeployOptions {
-  provider: "vercel" | "cloudflare";
-  environment: "production" | "preview";
-  projectName?: string;      // override auto-generated project name
-}
-
-export interface DeployResult {
-  url: string;
-  provider: "vercel" | "cloudflare";
-  environment: "production" | "preview";
-  duration: number;          // ms
-}
-
 export class DeploymentManager extends EventEmitter {
-  private activeProcess: ChildProcess | null = null;
+  private targets = new Map<string, DeployTarget>();
+  private abortController: AbortController | null = null;
   private _deploying = false;
 
   get deploying(): boolean { return this._deploying; }
 
+  /** Register a deployment target. Called at startup. */
+  register(target: DeployTarget): void {
+    if (this.targets.has(target.info.id)) {
+      throw new Error(`Deploy target "${target.info.id}" is already registered`);
+    }
+    this.targets.set(target.info.id, target);
+  }
+
+  /** Return metadata for all registered targets (sent to client for UI rendering). */
+  getTargets(): DeployTargetInfo[] {
+    return Array.from(this.targets.values()).map((t) => t.info);
+  }
+
+  /** Look up a target by ID. Returns undefined if not registered. */
+  getTarget(targetId: string): DeployTarget | undefined {
+    return this.targets.get(targetId);
+  }
+
   /** Detect framework from package.json and project structure. */
-  async detectFramework(workspaceDir: string): Promise<FrameworkInfo> { /* ... */ }
+  async detectFramework(workspaceDir: string): Promise<FrameworkInfo> {
+    // (unchanged — see Framework Detection Logic section)
+  }
 
   /** Run the project's build command. Returns true on success. */
-  async build(workspaceDir: string, buildCommand: string): Promise<boolean> { /* ... */ }
+  async build(workspaceDir: string, buildCommand: string): Promise<boolean> {
+    // (unchanged — spawns child process, emits "log" events)
+  }
 
-  /** Deploy to Vercel via CLI. */
-  async deployVercel(
-    workspaceDir: string,
-    token: string,
-    environment: "production" | "preview",
-    projectName?: string,
-  ): Promise<DeployResult> { /* ... */ }
+  /**
+   * Deploy to a registered target. This is the single entry point for all
+   * deployments regardless of platform.
+   */
+  async deploy(targetId: string, ctx: Omit<DeployContext, "log" | "signal">): Promise<DeployResult> {
+    const target = this.targets.get(targetId);
+    if (!target) throw new Error(`Unknown deploy target: "${targetId}"`);
+    if (this._deploying) throw new Error("Deployment already in progress");
 
-  /** Deploy to Cloudflare Pages via wrangler CLI. */
-  async deployCloudflare(
-    workspaceDir: string,
-    token: string,
-    accountId: string,
-    outputDir: string,
-    projectName?: string,
-  ): Promise<DeployResult> { /* ... */ }
+    this._deploying = true;
+    this.abortController = new AbortController();
+
+    // Wire the context with log + signal
+    const fullCtx: DeployContext = {
+      ...ctx,
+      log: (text: string) => this.emit("log", { text }),
+      signal: this.abortController.signal,
+    };
+
+    try {
+      this.emit("status", { phase: "deploying" });
+
+      // Optional pre-deploy hook (project creation, etc.)
+      if (target.prepare) {
+        await target.prepare(fullCtx);
+      }
+
+      const result = await target.deploy(fullCtx);
+      this.emit("complete", { ...result, targetId });
+      return result;
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.emit("error", { message, phase: "deploying" });
+      throw err;
+    } finally {
+      this._deploying = false;
+      this.abortController = null;
+    }
+  }
 
   /** Cancel an in-progress deployment. */
-  cancel(): void { /* ... */ }
+  cancel(): void {
+    this.abortController?.abort();
+  }
 }
 ```
 
-**Events emitted:**
+**Events emitted (unchanged):**
 
 | Event | Payload | When |
 |-------|---------|------|
 | `log` | `{ text: string }` | Each line of build/deploy CLI output |
 | `status` | `{ phase: "building" \| "deploying" \| "complete" \| "error" }` | Phase transitions |
-| `complete` | `DeployResult` | Deployment succeeded |
+| `complete` | `DeployResult & { targetId: string }` | Deployment succeeded |
 | `error` | `{ message: string, phase: string }` | Build or deploy failed |
 
+**Startup registration** (in `buildApp()`):
+
+```typescript
+import { VercelTarget } from "./deploy-targets/vercel.js";
+import { CloudflareTarget } from "./deploy-targets/cloudflare.js";
+
+const deploymentManager = deps.deploymentManager ?? (() => {
+  const mgr = new DeploymentManager();
+  mgr.register(new VercelTarget());
+  mgr.register(new CloudflareTarget());
+  // Future: mgr.register(new GCPTarget());
+  // Future: mgr.register(new AWSTarget());
+  return mgr;
+})();
+```
+
 #### Framework Detection Logic
+
+(Unchanged — lives on `DeploymentManager`, not on individual targets, because it's platform-agnostic.)
 
 ```typescript
 async detectFramework(workspaceDir: string): Promise<FrameworkInfo> {
@@ -192,202 +575,21 @@ async detectFramework(workspaceDir: string): Promise<FrameworkInfo> {
 }
 ```
 
-#### Vercel Deploy Implementation
+#### `DeploymentStore` class (`src/server/deployment-store.ts`)
+
+Persists deployment credentials and history per session. Credentials are stored as a generic `Record<string, string>` keyed by `ConfigField.key` — the store is target-agnostic.
 
 ```typescript
-async deployVercel(
-  workspaceDir: string,
-  token: string,
-  environment: "production" | "preview",
-  projectName?: string,
-): Promise<DeployResult> {
-  this._deploying = true;
-  const startTime = Date.now();
-
-  const args = ["deploy", "--yes", `--token=${token}`];
-  if (environment === "production") args.push("--prod");
-  if (projectName) args.push(`--scope=${projectName}`); // TODO: may need vercel link
-
-  return new Promise((resolve, reject) => {
-    const proc = spawn("vercel", args, {
-      cwd: workspaceDir,
-      env: { ...process.env, FORCE_COLOR: "0" },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    this.activeProcess = proc;
-
-    let stdoutBuf = "";
-
-    proc.stdout!.on("data", (chunk) => {
-      const text = chunk.toString();
-      stdoutBuf += text;
-      // stdout is the deployment URL — don't emit as log (it's just a URL)
-    });
-
-    proc.stderr!.on("data", (chunk) => {
-      const text = chunk.toString();
-      // stderr contains human-readable progress
-      for (const line of text.split("\n").filter(Boolean)) {
-        this.emit("log", { text: line });
-      }
-    });
-
-    proc.on("close", (code) => {
-      this._deploying = false;
-      this.activeProcess = null;
-      if (code === 0) {
-        const url = stdoutBuf.trim();
-        const result: DeployResult = {
-          url,
-          provider: "vercel",
-          environment,
-          duration: Date.now() - startTime,
-        };
-        this.emit("complete", result);
-        resolve(result);
-      } else {
-        const err = { message: `Vercel deploy failed (exit ${code})`, phase: "deploying" };
-        this.emit("error", err);
-        reject(new Error(err.message));
-      }
-    });
-  });
-}
-```
-
-**Key Vercel CLI behavior:**
-- `vercel deploy --yes` skips all interactive prompts and auto-creates the project on first deploy.
-- `--token` handles auth without OAuth. Tokens created at vercel.com/account/tokens.
-- **stdout** contains *only* the deployment URL (e.g. `https://my-project-abc123.vercel.app`) — easy to capture.
-- **stderr** contains human-readable progress messages (build status, `Inspect:` URL, etc.).
-- Vercel auto-detects frameworks (React, Next.js, Vite, etc.) and sets build command + output directory.
-- `--prod` targets production; omitting it creates a preview deployment.
-- First deploy with `--yes` creates a `.vercel/project.json` in the working directory with `orgId` and `projectId` — subsequent deploys reuse this.
-
-#### Cloudflare Pages Deploy Implementation
-
-```typescript
-async deployCloudflare(
-  workspaceDir: string,
-  token: string,
-  accountId: string,
-  outputDir: string,
-  projectName?: string,
-): Promise<DeployResult> {
-  this._deploying = true;
-  const startTime = Date.now();
-
-  const resolvedProjectName = projectName || path.basename(workspaceDir);
-  const deployDir = path.join(workspaceDir, outputDir);
-
-  // Ensure project exists (wrangler won't auto-create non-interactively)
-  await this.ensureCloudflareProject(token, accountId, resolvedProjectName);
-
-  return new Promise((resolve, reject) => {
-    const proc = spawn("wrangler", [
-      "pages", "deploy", deployDir,
-      `--project-name=${resolvedProjectName}`,
-      "--branch=main",
-    ], {
-      cwd: workspaceDir,
-      env: {
-        ...process.env,
-        CLOUDFLARE_API_TOKEN: token,
-        CLOUDFLARE_ACCOUNT_ID: accountId,
-        FORCE_COLOR: "0",
-        WRANGLER_SEND_METRICS: "false",
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    this.activeProcess = proc;
-
-    let allOutput = "";
-
-    const handleOutput = (stream: "stdout" | "stderr") => (chunk: Buffer) => {
-      const text = chunk.toString();
-      allOutput += text;
-      for (const line of text.split("\n").filter(Boolean)) {
-        this.emit("log", { text: line });
-      }
-    };
-
-    proc.stdout!.on("data", handleOutput("stdout"));
-    proc.stderr!.on("data", handleOutput("stderr"));
-
-    proc.on("close", (code) => {
-      this._deploying = false;
-      this.activeProcess = null;
-      if (code === 0) {
-        // Extract URL from output (wrangler mixes it into stdout text)
-        const urlMatch = allOutput.match(/https:\/\/[a-zA-Z0-9_-]+\.[\w.-]+\.pages\.dev/);
-        const url = urlMatch?.[0] || `https://${resolvedProjectName}.pages.dev`;
-        const result: DeployResult = {
-          url,
-          provider: "cloudflare",
-          environment: "production",
-          duration: Date.now() - startTime,
-        };
-        this.emit("complete", result);
-        resolve(result);
-      } else {
-        const err = { message: `Cloudflare deploy failed (exit ${code})`, phase: "deploying" };
-        this.emit("error", err);
-        reject(new Error(err.message));
-      }
-    });
-  });
-}
-
-/** Ensure the Cloudflare Pages project exists. Create if missing. */
-private async ensureCloudflareProject(
-  token: string,
-  accountId: string,
-  projectName: string,
-): Promise<void> {
-  // Use wrangler pages project create. If it already exists, the command
-  // exits with a non-zero code and a "project already exists" error — we ignore that.
-  return new Promise((resolve) => {
-    const proc = spawn("wrangler", [
-      "pages", "project", "create", projectName,
-      "--production-branch=main",
-    ], {
-      env: {
-        ...process.env,
-        CLOUDFLARE_API_TOKEN: token,
-        CLOUDFLARE_ACCOUNT_ID: accountId,
-        WRANGLER_SEND_METRICS: "false",
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    proc.on("close", () => resolve()); // Ignore exit code — project may already exist
-  });
-}
-```
-
-**Key Wrangler CLI behavior:**
-- `wrangler pages deploy <dir>` uploads a directory of static assets directly — no build step needed (ShipIt runs the build separately).
-- Auth via `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` environment variables. OAuth (`wrangler login`) fails in proxied/container environments.
-- `--project-name` is required for non-interactive mode. Without it, Wrangler prompts interactively.
-- The project **must exist** before deploying non-interactively. `wrangler pages project create` handles this, and is idempotent (errors harmlessly if the project already exists).
-- **No `--json` flag on deploy.** Output is human-readable text with the URL embedded. We extract it via regex.
-- `--branch=main` targets production. Any other branch creates a preview deployment.
-- Deploy speed for pre-built assets is fast — typically under 30 seconds.
-
-#### New: `DeploymentStore` class (`src/server/deployment-store.ts`)
-
-Persists deployment configuration (tokens) and history per session. Follows the `ChatHistoryManager` pattern.
-
-```typescript
-export interface DeploymentConfig {
-  provider: "vercel" | "cloudflare";
-  token: string;                    // stored on disk (container-scoped security)
-  accountId?: string;               // Cloudflare only
-  projectName?: string;             // user override
+/** Stored credentials for a deploy target. Generic bag of key-value pairs. */
+export interface DeployCredentials {
+  targetId: string;                        // "vercel", "cloudflare", "gcp", "aws"
+  credentials: Record<string, string>;     // { token: "tok_xxx" } or { token: "xxx", accountId: "yyy" }
+  projectName?: string;                    // user override
 }
 
 export interface DeploymentRecord {
   id: string;                       // UUID
-  provider: "vercel" | "cloudflare";
+  targetId: string;                 // "vercel", "cloudflare", etc.
   environment: "production" | "preview";
   url: string;
   commitHash?: string;
@@ -399,16 +601,23 @@ export interface DeploymentRecord {
 }
 
 export class DeploymentStore {
-  private configDir: string;   // /workspace/.shipit-deploy/
+  private baseDir: string;   // /workspace/.shipit-deploy/
 
-  /** Save provider config (token + prefs) for a session. */
-  saveConfig(sessionId: string, config: DeploymentConfig): void { /* ... */ }
+  constructor(workspaceDir: string) {
+    this.baseDir = path.join(workspaceDir, ".shipit-deploy");
+  }
 
-  /** Load provider config for a session. Returns null if not configured. */
-  loadConfig(sessionId: string, provider: "vercel" | "cloudflare"): DeploymentConfig | null { /* ... */ }
+  /** Save credentials for a target. */
+  saveConfig(sessionId: string, config: DeployCredentials): void { /* ... */ }
 
-  /** Delete provider config for a session (logout). */
-  deleteConfig(sessionId: string, provider: "vercel" | "cloudflare"): void { /* ... */ }
+  /** Load credentials for a target. Returns null if not configured. */
+  loadConfig(sessionId: string, targetId: string): DeployCredentials | null { /* ... */ }
+
+  /** Delete credentials for a target (disconnect). */
+  deleteConfig(sessionId: string, targetId: string): void { /* ... */ }
+
+  /** List which targets have credentials configured for a session. */
+  listConfiguredTargets(sessionId: string): string[] { /* ... */ }
 
   /** Record a completed deployment. */
   recordDeployment(sessionId: string, record: DeploymentRecord): void { /* ... */ }
@@ -426,21 +635,31 @@ export class DeploymentStore {
 /workspace/.shipit-deploy/
   configs/
     {sessionId}/
-      vercel.json           # { token, projectName }
-      cloudflare.json       # { token, accountId, projectName }
+      vercel.json           # { targetId, credentials: { token }, projectName? }
+      cloudflare.json       # { targetId, credentials: { token, accountId }, projectName? }
+      gcp.json              # (future) { targetId, credentials: { projectId, serviceAccountKey, region } }
+      aws.json              # (future) { targetId, credentials: { accessKeyId, secretAccessKey, region } }
   history/
     {sessionId}.json        # DeploymentRecord[]
 ```
 
-**Security note:** Tokens are stored in plaintext JSON files on the container's volume. This is acceptable because (a) the container is single-tenant — only the user who owns it can access it, (b) the volume is ephemeral or user-controlled, and (c) this mirrors how `vercel` and `wrangler` CLIs store their own credentials on disk. The tokens are not exposed via the WebSocket protocol (the server never sends tokens back to the client).
+**Security note:** Tokens are stored in plaintext JSON files on the container's volume. This is acceptable because (a) the container is single-tenant — only the user who owns it can access it, (b) the volume is ephemeral or user-controlled, and (c) this mirrors how deployment CLIs store their own credentials on disk. Credentials are never sent back to the client via the WebSocket protocol.
 
 #### `index.ts` — new WS message handlers
 
-Wire the deployment manager into the WebSocket handler, following the existing GitHub integration pattern:
+Wire the deployment manager into the WebSocket handler. Note: handlers are **target-agnostic** — they dispatch by `targetId` string, never switch on specific providers.
 
 ```typescript
 // In buildApp(), add to AppDeps:
-const deploymentManager = deps.deploymentManager ?? new DeploymentManager();
+import { VercelTarget } from "./deploy-targets/vercel.js";
+import { CloudflareTarget } from "./deploy-targets/cloudflare.js";
+
+const deploymentManager = deps.deploymentManager ?? (() => {
+  const mgr = new DeploymentManager();
+  mgr.register(new VercelTarget());
+  mgr.register(new CloudflareTarget());
+  return mgr;
+})();
 const deploymentStore = deps.deploymentStore ?? new DeploymentStore(WORKSPACE);
 
 // Wire events (inside socket.on("connection")):
@@ -457,52 +676,60 @@ deploymentManager.on("complete", (result) => {
   const commitInfo = await getActiveGitManager()?.log(1);
   deploymentStore.recordDeployment(activeAppSessionId!, {
     id: crypto.randomUUID(),
-    ...result,
+    targetId: result.targetId,
+    environment: result.environment,
+    url: result.url,
     commitHash: commitInfo?.[0]?.hash,
     commitMessage: commitInfo?.[0]?.message,
     timestamp: new Date().toISOString(),
-    durationMs: result.duration,
+    durationMs: result.durationMs,
     status: "success",
   });
-  broadcast({ type: "deploy_complete", ...result });
+  broadcast({ type: "deploy_complete", url: result.url, targetId: result.targetId,
+              environment: result.environment, durationMs: result.durationMs });
 });
 
 deploymentManager.on("error", (err) => {
   broadcast({ type: "deploy_error", message: err.message, phase: err.phase });
 });
 
-// Handler: configure deployment
-if (msg.type === "deploy_configure") {
-  const provider = msg.provider;
-  const token = typeof msg.token === "string" ? msg.token.trim() : "";
-  if (!token) {
-    send({ type: "error", message: "Deployment token cannot be empty" });
-    return;
-  }
-  if (token.length > 500) {
-    send({ type: "error", message: "Token too long" });
-    return;
-  }
-  if (provider !== "vercel" && provider !== "cloudflare") {
-    send({ type: "error", message: "Invalid provider" });
-    return;
-  }
-
-  const config: DeploymentConfig = { provider, token };
-  if (provider === "cloudflare") {
-    const accountId = typeof msg.accountId === "string" ? msg.accountId.trim() : "";
-    if (!accountId) {
-      send({ type: "error", message: "Cloudflare Account ID is required" });
-      return;
-    }
-    config.accountId = accountId;
-  }
-
-  deploymentStore.saveConfig(activeAppSessionId!, config);
-  send({ type: "deploy_config_saved", provider });
+// Handler: list available deploy targets (for UI rendering)
+if (msg.type === "list_deploy_targets") {
+  send({ type: "deploy_targets", targets: deploymentManager.getTargets() });
 }
 
-// Handler: initiate deployment
+// Handler: configure credentials for a target
+if (msg.type === "deploy_configure") {
+  const targetId = typeof msg.targetId === "string" ? msg.targetId.trim() : "";
+  const target = deploymentManager.getTarget(targetId);
+  if (!target) {
+    send({ type: "error", message: `Unknown deploy target: "${targetId}"` });
+    return;
+  }
+
+  // Validate credentials against the target's configFields
+  const credentials: Record<string, string> = {};
+  for (const field of target.info.configFields) {
+    const value = typeof msg.credentials?.[field.key] === "string"
+      ? msg.credentials[field.key].trim() : "";
+    if (field.required && !value) {
+      send({ type: "error", message: `${field.label} is required` });
+      return;
+    }
+    if (value.length > 2000) {
+      send({ type: "error", message: `${field.label} is too long` });
+      return;
+    }
+    if (value) credentials[field.key] = value;
+  }
+
+  const projectName = typeof msg.projectName === "string" ? msg.projectName.trim() : undefined;
+
+  deploymentStore.saveConfig(activeAppSessionId!, { targetId, credentials, projectName });
+  send({ type: "deploy_config_saved", targetId });
+}
+
+// Handler: initiate deployment (target-agnostic dispatch)
 if (msg.type === "initiate_deploy") {
   if (!activeSessionDir) {
     send({ type: "error", message: "No active session" });
@@ -513,11 +740,17 @@ if (msg.type === "initiate_deploy") {
     return;
   }
 
-  const provider = msg.provider;
-  const environment = msg.environment || "preview";
-  const config = deploymentStore.loadConfig(activeAppSessionId!, provider);
+  const targetId = typeof msg.targetId === "string" ? msg.targetId.trim() : "";
+  const target = deploymentManager.getTarget(targetId);
+  if (!target) {
+    send({ type: "error", message: `Unknown deploy target: "${targetId}"` });
+    return;
+  }
+
+  const environment = msg.environment === "production" ? "production" : "preview";
+  const config = deploymentStore.loadConfig(activeAppSessionId!, targetId);
   if (!config) {
-    send({ type: "error", message: `No ${provider} token configured. Set up deployment first.` });
+    send({ type: "error", message: `No credentials configured for ${target.info.name}. Set up deployment first.` });
     return;
   }
 
@@ -533,19 +766,15 @@ if (msg.type === "initiate_deploy") {
     }
   }
 
-  // Deploy
-  broadcast({ type: "deploy_status", phase: "deploying" });
+  // Deploy (target-agnostic — the manager dispatches to the right target)
   try {
-    if (provider === "vercel") {
-      await deploymentManager.deployVercel(
-        activeSessionDir, config.token, environment, config.projectName,
-      );
-    } else {
-      await deploymentManager.deployCloudflare(
-        activeSessionDir, config.token, config.accountId!,
-        framework.outputDirectory, config.projectName,
-      );
-    }
+    await deploymentManager.deploy(targetId, {
+      workspaceDir: activeSessionDir,
+      outputDir: framework.outputDirectory,
+      credentials: config.credentials,
+      environment,
+      projectName: config.projectName || path.basename(activeSessionDir),
+    });
   } catch {
     // Error already emitted via event
   }
@@ -566,39 +795,51 @@ if (msg.type === "cancel_deploy") {
   deploymentManager.cancel();
 }
 
-// Handler: get deployment config status (are tokens configured?)
+// Handler: get deployment config status
 if (msg.type === "get_deploy_config") {
-  const vercel = deploymentStore.loadConfig(activeAppSessionId!, "vercel");
-  const cloudflare = deploymentStore.loadConfig(activeAppSessionId!, "cloudflare");
-  send({
-    type: "deploy_config",
-    vercel: vercel ? { configured: true, projectName: vercel.projectName } : { configured: false },
-    cloudflare: cloudflare ? { configured: true, projectName: cloudflare.projectName } : { configured: false },
-  });
+  const targets = deploymentManager.getTargets();
+  const configured: Record<string, { configured: boolean; projectName?: string }> = {};
+  for (const t of targets) {
+    const config = deploymentStore.loadConfig(activeAppSessionId!, t.id);
+    configured[t.id] = config
+      ? { configured: true, projectName: config.projectName }
+      : { configured: false };
+  }
+  send({ type: "deploy_config", targets: configured });
+}
+
+// Handler: delete credentials
+if (msg.type === "delete_deploy_config") {
+  const targetId = typeof msg.targetId === "string" ? msg.targetId.trim() : "";
+  deploymentStore.deleteConfig(activeAppSessionId!, targetId);
+  send({ type: "deploy_config_saved", targetId });
 }
 ```
 
 ### Protocol Changes
 
-New WS message types added to `src/server/types.ts`:
+New WS message types added to `src/server/types.ts`. Note: **`targetId` is a `string`, not a union.** This means adding a new target requires zero changes to the type definitions — the protocol is already extensible.
 
 #### Client → Server
 
 ```typescript
 // ---- Deployment messages ----
 
+export interface WsListDeployTargets {
+  type: "list_deploy_targets";
+}
+
 export interface WsDeployConfigure {
   type: "deploy_configure";
-  provider: "vercel" | "cloudflare";
-  token: string;
-  accountId?: string;          // Cloudflare only
-  projectName?: string;        // optional override
+  targetId: string;                          // "vercel", "cloudflare", "gcp", "aws", ...
+  credentials: Record<string, string>;       // { token: "xxx" } or { token: "xxx", accountId: "yyy" }
+  projectName?: string;                      // optional override
 }
 
 export interface WsInitiateDeploy {
   type: "initiate_deploy";
-  provider: "vercel" | "cloudflare";
-  environment?: "production" | "preview";  // defaults to "preview"
+  targetId: string;                          // "vercel", "cloudflare", ...
+  environment?: "production" | "preview";    // defaults to "preview"
 }
 
 export interface WsGetDeployHistory {
@@ -615,22 +856,27 @@ export interface WsCancelDeploy {
 
 export interface WsDeleteDeployConfig {
   type: "delete_deploy_config";
-  provider: "vercel" | "cloudflare";
+  targetId: string;
 }
 ```
 
 #### Server → Client
 
 ```typescript
+export interface WsDeployTargets {
+  type: "deploy_targets";
+  targets: DeployTargetInfo[];   // full metadata with configFields for UI rendering
+}
+
 export interface WsDeployConfigSaved {
   type: "deploy_config_saved";
-  provider: "vercel" | "cloudflare";
+  targetId: string;
 }
 
 export interface WsDeployConfig {
   type: "deploy_config";
-  vercel: { configured: boolean; projectName?: string };
-  cloudflare: { configured: boolean; projectName?: string };
+  /** Keyed by targetId. Dynamic — reflects whatever targets are registered. */
+  targets: Record<string, { configured: boolean; projectName?: string }>;
 }
 
 export interface WsDeployStatus {
@@ -641,7 +887,7 @@ export interface WsDeployStatus {
 export interface WsDeployComplete {
   type: "deploy_complete";
   url: string;
-  provider: "vercel" | "cloudflare";
+  targetId: string;
   environment: "production" | "preview";
   durationMs: number;
 }
@@ -673,36 +919,74 @@ export interface WsLogEntry {
 
 #### New: `DeployModal` component (`src/client/components/DeployModal.tsx`)
 
-Full-screen modal overlay following the `SystemPromptEditor` / `GitHubAuthOverlay` pattern.
+Full-screen modal overlay following the `SystemPromptEditor` / `GitHubAuthOverlay` pattern. The modal renders **dynamically** based on target metadata received via `deploy_targets` — it never hardcodes provider-specific fields.
 
 **States:**
 
-1. **Config state** — No token configured for either provider. Shows two cards: Vercel and Cloudflare. Each card has a token input, a link to the provider's token creation page, and a "Save" button. Cloudflare card also has an Account ID field.
+1. **Target picker** — Shows a card for each registered target (from `deploy_targets` response). Each card shows the target name, description, and a "Configure" or "Deploy" button depending on whether credentials are saved.
 
-2. **Ready state** — At least one provider configured. Shows:
-   - Provider selector (Vercel / Cloudflare tabs or radio)
+2. **Config state** — User selected a target that isn't configured yet. Form fields are rendered dynamically from the target's `configFields`:
+   - Each `ConfigField` → an input (type `"password"` if `sensitive`, else `"text"`)
+   - `helpUrl` → clickable "Get token" link
+   - `helpText` → gray subtext under the input
+   - `placeholder` → input placeholder
+   - "Save" button. Client sends `deploy_configure` with `{ targetId, credentials: { ... } }`.
+
+3. **Ready state** — Target is configured. Shows:
+   - Selected target name and icon
    - Auto-detected framework info (`Detected: Vite (React)`)
-   - Environment selector (Production / Preview toggle)
+   - Environment selector (Production / Preview toggle — hidden if `!target.supportsPreview`)
    - Optional project name override
-   - "Deploy" button with provider icon
+   - "Deploy" button
    - "Deploy History" section at the bottom (last 5 deployments with URLs, timestamps, status badges)
+   - Link to switch to a different target
 
-3. **Deploying state** — Deploy in progress. Shows:
+4. **Deploying state** — Deploy in progress. Shows:
    - Progress indicator with current phase (Building... / Deploying...)
    - Live log output (scrolling terminal-like view, fed from `log_entry` with `source: "deploy"`)
    - "Cancel" button
 
-4. **Complete state** — Deploy succeeded. Shows:
+5. **Complete state** — Deploy succeeded. Shows:
    - Green success indicator with deployment URL (clickable, opens in new tab)
    - "Open Preview" button
    - Duration and commit info
    - "Deploy Again" and "Close" buttons
 
-5. **Error state** — Deploy failed. Shows:
+6. **Error state** — Deploy failed. Shows:
    - Red error indicator with error message
    - Build/deploy output for debugging
    - "Send to Claude" button (composes error into chat message, same pattern as preview error capture)
    - "Retry" and "Close" buttons
+
+**Dynamic field rendering (key pattern):**
+
+```tsx
+// Renders config fields for ANY target without knowing what they are
+function TargetConfigForm({ target, onSave }: { target: DeployTargetInfo; onSave: (creds: Record<string, string>) => void }) {
+  const [values, setValues] = useState<Record<string, string>>({});
+
+  return (
+    <form onSubmit={() => onSave(values)}>
+      {target.configFields.map((field) => (
+        <div key={field.key}>
+          <label>{field.label}{field.required && " *"}</label>
+          <input
+            type={field.sensitive ? "password" : "text"}
+            placeholder={field.placeholder}
+            value={values[field.key] || ""}
+            onChange={(e) => setValues({ ...values, [field.key]: e.target.value })}
+          />
+          {field.helpText && <p className="text-xs text-gray-500">{field.helpText}</p>}
+          {field.helpUrl && <a href={field.helpUrl} target="_blank">Get credentials</a>}
+        </div>
+      ))}
+      <button type="submit">Save</button>
+    </form>
+  );
+}
+```
+
+This means adding GCP or AWS as a target requires **zero changes to the client** — the modal will automatically render their `configFields` (project ID, region, access keys, etc.).
 
 #### Header Integration
 
@@ -712,7 +996,7 @@ Add a "Deploy" button to the header, between the GitHub section and the System P
 <button
   onClick={() => setShowDeployModal(true)}
   className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg ..."
-  title="Deploy to Vercel or Cloudflare"
+  title="Deploy your project"
 >
   <RocketIcon className="w-4 h-4" />
   <span className="hidden sm:inline text-sm">Deploy</span>
@@ -725,26 +1009,30 @@ When a deployment is in progress, the button shows an animated spinner and the c
 
 ```typescript
 const [showDeployModal, setShowDeployModal] = useState(false);
+const [deployTargets, setDeployTargets] = useState<DeployTargetInfo[]>([]);
 const [deployStatus, setDeployStatus] = useState<DeployPhase | null>(null);
 const [lastDeployUrl, setLastDeployUrl] = useState<string | null>(null);
-const [deployConfig, setDeployConfig] = useState<{
-  vercel: { configured: boolean; projectName?: string };
-  cloudflare: { configured: boolean; projectName?: string };
-}>({ vercel: { configured: false }, cloudflare: { configured: false } });
+const [deployConfig, setDeployConfig] = useState<
+  Record<string, { configured: boolean; projectName?: string }>
+>({});
 ```
 
 WS message handler additions:
 
 ```typescript
+if (data.type === "deploy_targets") {
+  setDeployTargets(data.targets);
+}
+
 if (data.type === "deploy_config_saved") {
   setDeployConfig(prev => ({
     ...prev,
-    [data.provider]: { configured: true },
+    [data.targetId]: { configured: true },
   }));
 }
 
 if (data.type === "deploy_config") {
-  setDeployConfig({ vercel: data.vercel, cloudflare: data.cloudflare });
+  setDeployConfig(data.targets);
 }
 
 if (data.type === "deploy_status") {
@@ -754,12 +1042,10 @@ if (data.type === "deploy_status") {
 if (data.type === "deploy_complete") {
   setDeployStatus(null);
   setLastDeployUrl(data.url);
-  // Show success toast or update header badge
 }
 
 if (data.type === "deploy_error") {
   setDeployStatus(null);
-  // Show error in deploy modal
 }
 
 if (data.type === "deploy_history") {
@@ -794,43 +1080,49 @@ export interface AppDeps {
 }
 ```
 
-#### `StubDeploymentManager` (in `test-helpers.ts`)
+#### `FakeDeployTarget` and `StubDeploymentManager` (in `test-helpers.ts`)
 
 ```typescript
-export class StubDeploymentManager extends EventEmitter {
-  deploying = false;
-  lastDeployArgs: { provider: string; workspaceDir: string } | null = null;
+/** A fake target that resolves immediately with a predictable URL. */
+export class FakeDeployTarget implements DeployTarget {
+  readonly info: DeployTargetInfo;
+  lastCtx: DeployContext | null = null;
+  shouldFail = false;
+  failMessage = "deploy failed";
 
-  async detectFramework(): Promise<FrameworkInfo> {
-    return { name: "vite", buildCommand: "npm run build", outputDirectory: "dist" };
+  constructor(id = "fake", name = "Fake Target", configFields: ConfigField[] = [
+    { key: "token", label: "Token", required: true, sensitive: true },
+  ]) {
+    this.info = { id, name, description: "For testing", configFields, supportsPreview: true };
   }
 
-  async build(): Promise<boolean> { return true; }
-
-  async deployVercel(workspaceDir: string): Promise<DeployResult> {
-    this.lastDeployArgs = { provider: "vercel", workspaceDir };
-    const result = { url: "https://test.vercel.app", provider: "vercel" as const,
-                     environment: "production" as const, duration: 5000 };
-    this.emit("complete", result);
-    return result;
-  }
-
-  async deployCloudflare(workspaceDir: string): Promise<DeployResult> {
-    this.lastDeployArgs = { provider: "cloudflare", workspaceDir };
-    const result = { url: "https://test.pages.dev", provider: "cloudflare" as const,
-                     environment: "production" as const, duration: 3000 };
-    this.emit("complete", result);
-    return result;
-  }
-
-  cancel(): void { this.deploying = false; }
-
-  /** Test helper: simulate a deploy failure. */
-  simulateError(message: string, phase: string): void {
-    this.emit("error", { message, phase });
+  async deploy(ctx: DeployContext): Promise<DeployResult> {
+    this.lastCtx = ctx;
+    if (this.shouldFail) throw new Error(this.failMessage);
+    return {
+      url: `https://${this.info.id}-test.example.com`,
+      environment: ctx.environment,
+      durationMs: 100,
+    };
   }
 }
+
+/**
+ * A DeploymentManager pre-loaded with a FakeDeployTarget.
+ * Tests can access the fake target to inspect calls and control behavior.
+ */
+export function createStubDeploymentManager(): {
+  manager: DeploymentManager;
+  fakeTarget: FakeDeployTarget;
+} {
+  const manager = new DeploymentManager();
+  const fakeTarget = new FakeDeployTarget();
+  manager.register(fakeTarget);
+  return { manager, fakeTarget };
+}
 ```
+
+This lets integration tests verify the full flow (WS → handler → manager → target → events → WS response) without spawning real CLI processes. Tests can also register multiple `FakeDeployTarget` instances with different IDs to test the target-picker UI and multi-target config.
 
 ### Edge Cases
 
@@ -854,53 +1146,65 @@ export class StubDeploymentManager extends EventEmitter {
 
 10. **No internet in container** — Both CLIs will fail with network errors. Surface the error clearly. The user needs to ensure the container has outbound internet access.
 
-### Vercel vs Cloudflare: Platform Differences
+### Target Comparison
 
-| Concern | Vercel | Cloudflare Pages |
-|---------|--------|-----------------|
-| **Auth** | `--token` flag or `VERCEL_TOKEN` env | `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` env |
-| **Project auto-create** | Yes (with `--yes`) | No — must pre-create via `wrangler pages project create` |
-| **Build step** | Vercel runs build remotely by default | Wrangler only uploads — we build locally first |
-| **URL extraction** | stdout = URL only (clean) | URL mixed into stdout text (regex extraction) |
-| **Framework detection** | Auto-detects build cmd + output dir | No auto-detection (we handle it ourselves) |
-| **Deploy speed** | 30-90s (includes remote build) | < 30s (direct upload of pre-built assets) |
-| **First deploy setup** | Creates `.vercel/project.json` | Needs `--project-name` + pre-created project |
-| **JSON output** | No `--json` flag; stdout = URL | No `--json` on deploy; `WRANGLER_OUTPUT_FILE_PATH` for NDJSON |
+| Concern | Vercel (V1) | Cloudflare Pages (V1) | GCP Cloud Run (V2) | AWS Amplify (V2) |
+|---------|------------|----------------------|--------------------|--------------------|
+| **Config fields** | `token` | `token`, `accountId` | `projectId`, `serviceAccountKey`, `region` | `accessKeyId`, `secretAccessKey`, `region`, `appId?` |
+| **CLI** | `vercel` | `wrangler` | `gcloud` | `aws amplify` |
+| **Project auto-create** | Yes (`--yes`) | No — needs `prepare()` | No — needs `prepare()` | Optional (`appId` blank → create) |
+| **Build step** | Remote (Vercel builds) | Local (we build, wrangler uploads) | Local (build + Docker) | Remote (Amplify builds) |
+| **URL extraction** | stdout = URL only | Regex from mixed stdout | JSON output (`gcloud run deploy --format=json`) | JSON output (`aws amplify`) |
+| **Deploy speed** | 30-90s | < 30s | 60-180s (container build) | 60-120s |
+| **Preview support** | Yes (`--prod` vs default) | Yes (`--branch` != main) | No (not native) | Yes (branch-based) |
 
-**Implication:** Vercel is simpler for the user (fewer config fields, auto-creates project) but slower. Cloudflare requires an Account ID upfront but deploys faster since we upload pre-built assets directly.
+**Design implication:** The `DeployTarget` interface handles all these differences naturally:
+- **Config variation** → each target declares its own `configFields`
+- **Project creation** → `prepare()` is optional, only Cloudflare/GCP/AWS implement it
+- **URL extraction** → each `deploy()` method handles its own CLI output parsing
+- **Preview support** → `supportsPreview` flag controls whether the environment toggle appears in the UI
 
 ### File Layout
 
 | File | Change |
 |------|--------|
-| `src/server/deployment-manager.ts` | New — `DeploymentManager` class |
-| `src/server/deployment-manager.test.ts` | New — unit tests for framework detection, build, deploy |
-| `src/server/deployment-store.ts` | New — `DeploymentStore` class for config + history persistence |
+| `src/server/deploy-targets/deploy-target.ts` | New — `DeployTarget` interface, `DeployContext`, `DeployResult`, `ConfigField`, `DeployTargetInfo` |
+| `src/server/deploy-targets/vercel.ts` | New — `VercelTarget` implementation |
+| `src/server/deploy-targets/vercel.test.ts` | New — unit tests (mocked `spawn`) |
+| `src/server/deploy-targets/cloudflare.ts` | New — `CloudflareTarget` implementation |
+| `src/server/deploy-targets/cloudflare.test.ts` | New — unit tests (mocked `spawn`) |
+| `src/server/deployment-manager.ts` | New — `DeploymentManager` registry + orchestrator |
+| `src/server/deployment-manager.test.ts` | New — unit tests for framework detection, build, target dispatch |
+| `src/server/deployment-store.ts` | New — `DeploymentStore` class for credentials + history |
 | `src/server/deployment-store.test.ts` | New — unit tests for config CRUD, history, session cleanup |
-| `src/server/types.ts` | Add deployment WS message types, extend `WsLogEntry` source, extend `WsClientMessage`/`WsServerMessage` unions |
-| `src/server/index.ts` | Add deployment WS handlers, wire `DeploymentManager` events, add to `AppDeps` |
-| `src/client/components/DeployModal.tsx` | New — deployment configuration + trigger UI |
+| `src/server/types.ts` | Add deployment WS message types, extend `WsLogEntry` source, extend unions |
+| `src/server/index.ts` | Add deployment WS handlers, register targets, wire events, add to `AppDeps` |
+| `src/client/components/DeployModal.tsx` | New — dynamic target picker + config form + deploy UI |
 | `src/client/components/DeployModal.test.tsx` | New — component tests |
 | `src/client/App.tsx` | Add deploy state, WS handlers, header button, modal rendering |
 | `src/server/integration_tests/deployment.test.ts` | New — integration tests for deploy flow |
-| `src/server/integration_tests/test-helpers.ts` | Add `StubDeploymentManager`, `StubDeploymentStore` |
+| `src/server/integration_tests/test-helpers.ts` | Add `FakeDeployTarget`, `createStubDeploymentManager` |
 
 ### Quality Checklist
 
-- [ ] Input validation: `deploy_configure` validates token (non-empty, max 500 chars, string type), provider (enum), accountId for Cloudflare. `initiate_deploy` validates provider, environment. Reject if no active session.
-- [ ] Component tests: `DeployModal` — config form (save token, validation), deploy trigger (provider/env selection, deploy button), deploying state (progress, cancel), complete state (URL display, open link), error state (error message, Send to Claude). Framework detection display.
-- [ ] Integration tests: Configure token → initiate deploy → verify status + complete messages. Error paths: missing token, no active session, deploy while deploying. History retrieval.
+- [ ] Input validation: `deploy_configure` validates credentials against `configFields` (required fields non-empty, max 2000 chars). `initiate_deploy` validates `targetId` exists in registry. Reject if no active session.
+- [ ] Component tests: `DeployModal` — dynamic config form (renders fields from `configFields`, validates required), target picker, deploy trigger (env selection, deploy button), deploying state (progress, cancel), complete state (URL display, open link), error state (error message, Send to Claude). Framework detection display.
+- [ ] Integration tests: Configure credentials → initiate deploy → verify status + complete messages. Error paths: unknown target, missing credentials, no active session, deploy while deploying. History retrieval. Multi-target config.
+- [ ] Unit tests for each `DeployTarget`: mock `spawn`, verify CLI args, test URL extraction, test `prepare()` idempotency.
 - [ ] Edge cases: No package.json (static site), no build script, build failure, token expiration, cancel during deploy, session delete clears deploy data.
 - [ ] Terminal integration: Deploy logs appear with `source: "deploy"` and blue styling.
-- [ ] Security: Tokens stored on disk only, never sent back to client via WS. Path traversal guard on deploy directory.
+- [ ] Security: Credentials stored on disk only, never sent back to client via WS. Path traversal guard on deploy directory.
 
 ### Future Enhancements
 
+- **GCP Cloud Run target** — Implement `GCPTarget` with `gcloud run deploy`. Requires Docker build step in `prepare()`.
+- **AWS Amplify target** — Implement `AWSTarget` with `aws amplify` CLI. Handle app auto-creation.
 - **Deploy from specific commit** — Build and deploy a pinned git commit rather than the current working directory, avoiding race conditions with in-progress Claude turns.
 - **Custom build commands** — Let users override the auto-detected build command and output directory in the deploy modal.
 - **Deploy previews in chat** — When Claude makes changes, show a "Deploy preview" button inline that creates a preview deployment.
-- **Netlify, Fly.io, Railway** — Add more deployment targets using the same `DeploymentManager` pattern. Each target is a new method + provider enum value.
+- **Netlify, Fly.io, Railway** — Implement as additional `DeployTarget` classes and register them.
 - **Deploy status polling** — After deploy, periodically check the deployment status (especially for Vercel, which builds remotely) and update the UI.
 - **Deployment rollback** — Re-deploy a previous deployment by commit hash.
-- **Environment variables UI** — Let users set runtime environment variables (Vercel `-e`, Cloudflare `--var`) in the deploy modal.
+- **Environment variables UI** — Extend `DeployContext` with env vars. Each target maps them to its CLI flags (`-e`, `--var`, `--set-env-vars`).
 - **Custom domains** — Display and manage custom domains assigned to deployments.
+- **Target-specific validation** — Optional `validateCredentials()` method on `DeployTarget` to verify tokens before saving (e.g. hit the Vercel API to check if the token is valid).
