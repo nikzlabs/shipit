@@ -238,15 +238,4 @@ describe("MessageInput", () => {
     });
   });
 
-  describe("activity indicator", () => {
-    it("shows activity label when provided", () => {
-      render(<MessageInput onSend={vi.fn()} disabled={true} activity={{ label: "Thinking..." }} />);
-      expect(screen.getByText("Thinking...")).toBeInTheDocument();
-    });
-
-    it("hides activity label when not provided", () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} />);
-      expect(screen.queryByText("Thinking...")).not.toBeInTheDocument();
-    });
-  });
 });

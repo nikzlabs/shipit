@@ -1282,7 +1282,7 @@ export default function App() {
         />
       )}
       {!showTemplatePicker && (
-        <MessageInput onSend={handleSend} disabled={isLoading || status !== "open"} activity={isLoading ? activity : undefined} />
+        <MessageInput onSend={handleSend} disabled={isLoading || status !== "open"} />
       )}
     </>
   );
