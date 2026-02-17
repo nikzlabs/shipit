@@ -175,7 +175,7 @@ describe("MessageList", () => {
       expect(screen.getByText("Thinking...")).toBeInTheDocument();
     });
 
-    it("hides thinking indicator when last message is from assistant", () => {
+    it("hides thinking indicator when last message is from assistant and no tool activity", () => {
       render(
         <MessageList
           messages={[
@@ -188,10 +188,24 @@ describe("MessageList", () => {
       expect(screen.queryByText("Thinking...")).not.toBeInTheDocument();
     });
 
-    it("shows custom activity label when provided", () => {
+    it("shows custom activity label when last message is from user", () => {
       render(
         <MessageList
           messages={[msg("user", "Do something")]}
+          isLoading={true}
+          activity={{ label: "Editing src/app.ts", tool: "Edit" }}
+        />
+      );
+      expect(screen.getByText("Editing src/app.ts")).toBeInTheDocument();
+    });
+
+    it("shows tool activity indicator when last message is from assistant", () => {
+      render(
+        <MessageList
+          messages={[
+            msg("user", "Edit my file"),
+            msg("assistant", "Sure, editing now"),
+          ]}
           isLoading={true}
           activity={{ label: "Editing src/app.ts", tool: "Edit" }}
         />

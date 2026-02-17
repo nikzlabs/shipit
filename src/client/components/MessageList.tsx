@@ -678,8 +678,9 @@ export function MessageList({
         );
       })}
 
-      {/* Thinking indicator — shown when loading and no assistant message has arrived yet */}
-      {isLoading && messages[messages.length - 1]?.role === "user" && (
+      {/* Thinking indicator — shown when waiting for the first response,
+         or when a tool is actively executing (to surface the activity label). */}
+      {isLoading && (messages[messages.length - 1]?.role === "user" || activity?.tool) && (
         <ThinkingIndicator activity={activity} />
       )}
 
