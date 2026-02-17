@@ -23,7 +23,6 @@ describe("Integration: Claude message flow", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
-  let gitManager: GitManager;
   let sessionManager: SessionManager;
   /** Most recently created FakeClaudeProcess — set by claudeFactory. */
   let lastClaude: FakeClaudeProcess = null as any;
@@ -32,14 +31,11 @@ describe("Integration: Claude message flow", () => {
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-claude-flow-"));
 
-    gitManager = new GitManager(tmpDir);
-    await gitManager.init();
-
     const sessionsFile = path.join(tmpDir, "sessions.json");
     sessionManager = new SessionManager(sessionsFile);
 
     app = await buildApp({
-      gitManager,
+      createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       viteManager: new StubViteManager() as unknown as ViteManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
@@ -121,14 +117,27 @@ describe("Integration: Claude message flow", () => {
   });
 
   it("claude done event triggers git auto-commit", async () => {
-    // Create a file that will be committed on done
-    fs.writeFileSync(path.join(tmpDir, "new-file.txt"), "auto commit me");
-
     const client = await TestClient.connect(port);
     await client.receive();
 
     client.send({ type: "send_message", text: "Make a file" });
     await waitForClaude(() => lastClaude);
+
+    // Emit init event to establish the session — this fires session_started
+    lastClaude.emit("event", {
+      type: "system",
+      subtype: "init",
+      session_id: "test-session",
+    });
+
+    // Consume the claude_event for init and the session_started message
+    await client.receiveSkipLogs(); // claude_event (init)
+    const sessionMsg = await client.receiveSkipLogs(); // session_started
+    expect(sessionMsg.type).toBe("session_started");
+    const sessionDir = (sessionMsg as any).session.workspaceDir;
+
+    // Create a file in the session directory that will be committed on done
+    fs.writeFileSync(path.join(sessionDir, "new-file.txt"), "auto commit me");
 
     // Simulate assistant text (used as commit message)
     lastClaude.emit("event", {
@@ -142,7 +151,8 @@ describe("Integration: Claude message flow", () => {
     await client.receiveSkipLogs();
 
     // Simulate Claude finishing — this triggers auto-commit
-    lastClaude.finish("test-session");
+    lastClaude.emit("event", { type: "result", subtype: "success", session_id: "test-session" });
+    lastClaude.emit("done", 0);
     await client.receiveSkipLogs(); // consume the result claude_event
 
     // Wait for the async auto-commit (skip log_entry messages)

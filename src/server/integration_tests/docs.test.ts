@@ -29,14 +29,11 @@ describe("Integration: Docs", () => {
     // Create a markdown file for doc tests
     fs.writeFileSync(path.join(tmpDir, "README.md"), "# Hello\nWorld");
 
-    const gitManager = new GitManager(tmpDir);
-    await gitManager.init();
-
     const sessionsFile = path.join(tmpDir, "sessions.json");
     const sessionManager = new SessionManager(sessionsFile);
 
     app = await buildApp({
-      gitManager,
+      createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       viteManager: new StubViteManager() as unknown as ViteManager,
       authManager: new StubAuthManager() as unknown as AuthManager,

@@ -61,14 +61,22 @@ export class TestClient {
     if (buffered) return Promise.resolve(buffered);
 
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error(`TestClient.receive() timed out after ${timeoutMs}ms`)),
-        timeoutMs,
-      );
-      this.waiters.push((msg) => {
+      let settled = false;
+      const waiter = (msg: WsServerMessage) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         resolve(msg);
-      });
+      };
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        // Remove the stale waiter so it doesn't consume future messages
+        const idx = this.waiters.indexOf(waiter);
+        if (idx !== -1) this.waiters.splice(idx, 1);
+        reject(new Error(`TestClient.receive() timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.waiters.push(waiter);
     });
   }
 
