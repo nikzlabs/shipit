@@ -38,8 +38,9 @@ export function GitHubAuthOverlay({ onSubmit, onClose }: GitHubAuthOverlayProps)
             Connect to GitHub
           </h2>
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            Enter a Personal Access Token to push and pull from GitHub repositories.
-            The token needs the <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded">repo</code> scope.
+            Enter a <strong className="text-gray-700 dark:text-gray-300">classic</strong> Personal Access Token with
+            the <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded">repo</code> scope.
+            Fine-grained tokens are not supported.
           </p>
         </div>
 
@@ -75,7 +76,7 @@ export function GitHubAuthOverlay({ onSubmit, onClose }: GitHubAuthOverlayProps)
           <p className="text-xs text-gray-500">
             Your token is stored locally and never shared. Create one at{" "}
             <a
-              href="https://github.com/settings/tokens"
+              href="https://github.com/settings/tokens/new"
               target="_blank"
               rel="noopener noreferrer"
               className="text-blue-400 hover:text-blue-300"
