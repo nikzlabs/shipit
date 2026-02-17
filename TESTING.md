@@ -30,6 +30,8 @@ src/
 │   ├── file-watcher.ts      →  file-watcher.test.ts
 │   ├── threads.ts           →  threads.test.ts
 │   ├── vite-error-plugin.ts →  vite-error-plugin.test.ts
+│   ├── deployment-manager.ts →  deployment-manager.test.ts
+│   ├── deployment-store.ts  →  deployment-store.test.ts
 │   └── index.ts             →  integration.test.ts   (WebSocket E2E)
 └── client/
     ├── hooks/
@@ -49,7 +51,8 @@ src/
         ├── KeyboardShortcutsOverlay.tsx → KeyboardShortcutsOverlay.test.tsx
         ├── FileContentViewer.tsx → FileContentViewer.test.tsx
         ├── TerminalPanel.tsx    →  TerminalPanel.test.tsx
-        └── ThreadIndicator.tsx →  ThreadIndicator.test.tsx
+        ├── ThreadIndicator.tsx →  ThreadIndicator.test.tsx
+        └── DeployModal.tsx     →  DeployModal.test.tsx
 ```
 
 ## Test Projects
@@ -74,8 +77,11 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | `FileWatcher` | 11 | File creation/modification events, debounce batching, deduplication, ignore patterns (node_modules, .git, .vibe-chat-history, .shipit-usage.json), start/stop lifecycle, idempotent start, subdirectory paths, no emit when idle, default debounce |
 | `ThreadManager` | 25 | Init (creates default main thread, persistence), listThreads, getActiveThread, createCheckpoint (on active thread, label, no active thread), getCheckpoint (found, not found), forkThread (deactivates others, sets parent, naming, unknown checkpoint), switchThread (activates target, unknown thread), setAgentSessionId, delete, persistence across instances, corrupted JSON recovery, session ID sanitization |
 | `shipitErrorCapturePlugin` | 5 | Script injection after `<head>`, fallback prepend, HTML preservation, postMessage script content |
+| `DeploymentManager` | 15 | Target registry (register, duplicate rejection, lookup), framework detection (static, vite, next, cra, unknown), deploy orchestration (events, logs, unknown target, concurrent prevention, error emission, prepare() hook, cancel/abort) |
+| `DeploymentStore` | 13 | Config CRUD (save, load, overwrite, delete, idempotent delete, list), history (record, append, empty), session cleanup (delete configs+history, idempotent), session isolation |
 | Integration (E2E) | 53 | Full WebSocket flow: connect, sessions, git, docs, file content viewer (read, nested path, path traversal, non-existent file, binary detection, large file guard), Claude lifecycle, multi-client, path traversal, disconnect cleanup, port auto-detection with multi-port support, periodic port scanning, terminal/logs relay (stderr, stdout, server lifecycle logs, log buffering for new clients, clear_logs, preview error relay, empty/long error rejection, preview log buffering), usage tracking (get_usage_stats empty/populated, usage_update after result, accumulation across turns, no update when cost undefined, delete cleans usage), file watcher (broadcast to single/multiple clients, sequential events, disconnect cleanup) |
 | Integration: Threads | 12 | list_threads (returns default on new session), create_checkpoint (happy path, no active session, label too long), fork_thread (happy path with git rollback and history truncation, unknown checkpoint), switch_thread (happy path, unknown thread), full workflow (messages → checkpoint → fork → verify), delete_session cleans up thread data |
+| Integration: Deployment | 9 | list_deploy_targets, invalid target rejection, no-session rejection, config saving with active session, empty required field rejection, config status retrieval, empty deploy history, deploy without session rejection, cancel safety |
 
 ### Client Tests
 
@@ -97,7 +103,8 @@ Vitest is configured with two test projects in `vitest.config.ts`:
 | `FileContentViewer` | 11 | File path display, close button, loading state, code element with hljs class, pre wrapper, syntax highlighting for TypeScript, empty file, path title attribute, JSON highlighting, binary file message display, large file message display |
 | `FileTree` (additions) | +5 | onFileClick callback, root-level file click, selected file highlighting, non-selected file styling, file buttons for clickability |
 | `usePreviewErrors` | 14 | Empty initial state, error capture (window.onerror, console.error/warn), source filtering (ignores non-shipit), dedup within 1s window, dedup expiry, max buffer size (50), clearErrors, source/line/col/stack capture, unique IDs, empty console message ignore, listener cleanup |
-| `TerminalPanel` | 15 | Header rendering, clear button, empty state, log entry text display, source labels (`[err]`/`[out]`/`[srv]`/`[pre]`), timestamps, monospace font, entry ordering, source filter buttons (render, aria-pressed, hide/show toggle, prevent hiding all sources, filter-specific empty state) |
+| `TerminalPanel` | 15 | Header rendering, clear button, empty state, log entry text display, source labels (`[err]`/`[out]`/`[srv]`/`[pre]`/`[dpl]`), timestamps, monospace font, entry ordering, source filter buttons (render, aria-pressed, hide/show toggle, prevent hiding all sources, filter-specific empty state) |
+| `DeployModal` | 19 | Target picker (rendering, configured badge, auto-select single target), config form (dynamic fields, onConfigure callback), deploy flow (environment switching, onDeploy callback), deploying state (spinner, cancel), success state (URL, open button), error state (message, Send to Claude), backdrop/close, empty targets, deploy history, back navigation, delete config |
 | `UsageModal` | 13 | Dialog rendering, accessibility (role, aria-label), current session usage display, no-data fallback, all sessions aggregate, per-session breakdown with titles, truncated session ID fallback, close on button/backdrop/inner click prevention, zero usage, sub-cent formatting, null allUsage |
 | `ThreadIndicator` | 13 | Renders nothing with no threads, shows active thread name, opens dropdown on click, switch thread callback, checkpoint input (show on flag click, save with label, save empty label, Enter key, Escape to close), shows checkpoints in dropdown, fork-from-checkpoint callback, thread count display, disabled state |
 | `ToolResult` | 25 | `truncateLines` utility (under limit, over limit, exact limit), empty/no-output display, BashResult (monospace, error highlighting, error border, truncation at 30 lines, expand/collapse, aria-label), ReadResult (code block, hljs syntax highlighting, truncation at 20 lines), GrepResult (colored file paths, yellow line numbers, file-only matches, truncation at 20 lines, Glob tool), GenericResult (monospace fallback, error red, truncation at 15 lines) |
@@ -121,6 +128,8 @@ Several modules accept optional constructor parameters for test isolation:
 - `extractAuthUrl(text)` — exported pure function for URL pattern testing
 - `FileWatcher(debounceMs?)` — override debounce delay; tests inject a `StubFileWatcher` via `AppDeps.fileWatcher`
 - `ThreadManager(threadsDir?)` — override the directory for thread data files
+- `DeploymentStore(baseDir?)` — override the base directory for credential/history persistence
+- `DeploymentManager` — accepts targets via `register()`, tests inject `FakeDeployTarget` stubs
 - `buildApp(deps?)` — exported factory that accepts injected dependencies (see [Integration Tests](#integration-tests))
 
 ### jsdom Limitations
@@ -262,6 +271,9 @@ Three stubs replace external dependencies:
 | `StubViteManager` | `ViteManager` | No-op start/stop, reports `running: false` |
 | `StubAuthManager` | `AuthManager` | No-op methods, `checkCredentials()` returns false |
 | `FakeClaudeProcess` | `ClaudeProcess` | Records `run()` args, exposes `emit()` for test control |
+| `FakeDeployTarget` | `DeployTarget` | Records `deploy()`/`prepare()` calls, returns test URL |
+| `StubDeploymentManager` | `DeploymentManager` | In-memory target registry, emits events on `deploy()` |
+| `StubDeploymentStore` | `DeploymentStore` | In-memory Map-based storage, no filesystem access |
 
 The `FakeClaudeProcess` is controlled by the test — you call `lastClaude.emit("event", ...)` or `lastClaude.emit("done", 0)` to simulate the CLI producing events.
 
@@ -284,3 +296,4 @@ The `FakeClaudeProcess` is controlled by the test — you call `lastClaude.emit(
 | Periodic port scanning | Mid-turn detection, interval start/stop tied to client connections, no broadcast when unchanged, detects port appear/disappear |
 | Threads | list_threads default, create_checkpoint happy path + errors, fork_thread with git rollback, switch_thread, full workflow, session delete cleanup |
 | Usage tracking | `get_usage_stats` empty/populated, `usage_update` after result with cost, accumulation across turns, no update when `total_cost_usd` undefined, delete session cleans usage |
+| Deployment | list_deploy_targets, deploy_configure validation + saving, get_deploy_config, deploy_history, no-session guards, cancel_deploy safety |

@@ -30,7 +30,8 @@ import { SystemPromptEditor } from "./components/SystemPromptEditor.js";
 import { GitIdentityOverlay } from "./components/GitIdentityOverlay.js";
 import { ThreadIndicator, type ThreadInfo } from "./components/ThreadIndicator.js";
 import { ThreadTimeline } from "./components/ThreadTimeline.js";
-import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage } from "../server/types.js";
+import { DeployModal, type DeployPhase } from "./components/DeployModal.js";
+import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal";
 
@@ -99,6 +100,13 @@ export default function App() {
   const [gitIdentityNeeded, setGitIdentityNeeded] = useState(false);
   const [threads, setThreads] = useState<ThreadInfo[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string>("");
+  const [showDeployModal, setShowDeployModal] = useState(false);
+  const [deployTargets, setDeployTargets] = useState<DeployTargetInfo[]>([]);
+  const [deployConfigStatus, setDeployConfigStatus] = useState<Record<string, { configured: boolean; projectName?: string }>>({});
+  const [deployStatus, setDeployStatus] = useState<DeployPhase | null>(null);
+  const [lastDeployUrl, setLastDeployUrl] = useState<string | null>(null);
+  const [lastDeployError, setLastDeployError] = useState<string | null>(null);
+  const [deployHistory, setDeployHistory] = useState<DeploymentRecord[]>([]);
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
   const historyLoadedRef = useRef(false);
@@ -605,6 +613,40 @@ export default function App() {
       setMessages(loaded);
     }
 
+    if (data.type === "deploy_targets") {
+      setDeployTargets(data.targets);
+    }
+
+    if (data.type === "deploy_config_saved") {
+      // Refresh config status after save
+      send({ type: "get_deploy_config" });
+    }
+
+    if (data.type === "deploy_config") {
+      setDeployConfigStatus(data.targets);
+    }
+
+    if (data.type === "deploy_status") {
+      setDeployStatus(data.phase);
+      setLastDeployUrl(null);
+      setLastDeployError(null);
+    }
+
+    if (data.type === "deploy_complete") {
+      setDeployStatus("complete");
+      setLastDeployUrl(data.url);
+      setLastDeployError(null);
+    }
+
+    if (data.type === "deploy_error") {
+      setDeployStatus("error");
+      setLastDeployError(data.message);
+    }
+
+    if (data.type === "deploy_history") {
+      setDeployHistory(data.deployments);
+    }
+
     if (data.type === "log_entry") {
       setLogEntries((prev) => {
         const next = [...prev, { source: data.source, text: data.text, timestamp: data.timestamp }];
@@ -980,6 +1022,52 @@ export default function App() {
     [send],
   );
 
+  const handleDeployOpen = useCallback(() => {
+    send({ type: "list_deploy_targets" });
+    send({ type: "get_deploy_config" });
+    setDeployStatus(null);
+    setLastDeployUrl(null);
+    setLastDeployError(null);
+    setShowDeployModal(true);
+  }, [send]);
+
+  const handleDeployConfigure = useCallback(
+    (targetId: string, credentials: Record<string, string>, projectName?: string) => {
+      send({ type: "deploy_configure", targetId, credentials, projectName });
+    },
+    [send],
+  );
+
+  const handleDeployInitiate = useCallback(
+    (targetId: string, environment: "production" | "preview") => {
+      send({ type: "initiate_deploy", targetId, environment });
+    },
+    [send],
+  );
+
+  const handleDeployCancel = useCallback(() => {
+    send({ type: "cancel_deploy" });
+  }, [send]);
+
+  const handleDeployGetHistory = useCallback(() => {
+    send({ type: "get_deploy_history" });
+  }, [send]);
+
+  const handleDeployDeleteConfig = useCallback(
+    (targetId: string) => {
+      send({ type: "delete_deploy_config", targetId });
+    },
+    [send],
+  );
+
+  const handleDeploySendError = useCallback(
+    (errorMessage: string) => {
+      setShowDeployModal(false);
+      handleSend(`The deployment failed with this error:\n\n${errorMessage}\n\nPlease fix the issue and explain what went wrong.`);
+    },
+    [handleSend],
+  );
+
   const handleClearLogs = useCallback(() => {
     setLogEntries([]);
     send({ type: "clear_logs" });
@@ -1226,6 +1314,23 @@ export default function App() {
           onClose={() => setSystemPromptOpen(false)}
         />
       )}
+      {showDeployModal && (
+        <DeployModal
+          targets={deployTargets}
+          configStatus={deployConfigStatus}
+          deployStatus={deployStatus}
+          lastDeployUrl={lastDeployUrl}
+          lastDeployError={lastDeployError}
+          deployHistory={deployHistory}
+          onConfigure={handleDeployConfigure}
+          onDeploy={handleDeployInitiate}
+          onCancel={handleDeployCancel}
+          onGetHistory={handleDeployGetHistory}
+          onDeleteConfig={handleDeployDeleteConfig}
+          onSendErrorToChat={handleDeploySendError}
+          onClose={() => setShowDeployModal(false)}
+        />
+      )}
       {showUsageModal && (
         <UsageModal
           currentSessionUsage={currentSessionUsage}
@@ -1287,6 +1392,17 @@ export default function App() {
               GitHub
             </button>
           )}
+          <button
+            onClick={handleDeployOpen}
+            className="hidden sm:inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-cyan-100 dark:bg-cyan-900 text-cyan-700 dark:text-cyan-300 hover:bg-cyan-200 dark:hover:bg-cyan-800 transition-colors font-medium"
+            title="Deploy to production"
+            aria-label="Deploy"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 10.5L12 3m0 0l7.5 7.5M12 3v18" />
+            </svg>
+            Deploy
+          </button>
           <button
             onClick={handleSystemPromptOpen}
             className={`hidden sm:inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${
