@@ -132,17 +132,6 @@ Design docs in `docs/design/`.
 - [x] Integration tests for full thread workflow (messages → checkpoint → fork → verify)
 - [x] Component tests for ThreadIndicator and timeline view
 
-### Feature 8: Inline File Editing (`docs/design/008-inline-file-editing.md`)
-- [ ] Add CodeMirror 6 dependency (`codemirror`, `@codemirror/lang-*`, `@codemirror/theme-one-dark`)
-- [ ] Replace read-only `<pre><code>` in FileContentViewer with CodeMirror 6 editor
-- [ ] Toggle between read-only and edit mode (pencil icon)
-- [ ] Save via Ctrl+S / Cmd+S → `save_file` WS message → server writes + auto-commits
-- [ ] Unsaved indicator (dot on filename), auto-save on tab/file switch
-- [ ] Conflict dialog when Claude edits the same file user has open
-- [ ] Server `save_file` handler with path traversal guard, 1 MB limit, file-must-exist check
-- [ ] Integration tests for `save_file` (write, auto-commit, path traversal rejection)
-- [ ] Component tests for FileEditor (CodeMirror render, Ctrl+S, unsaved indicator, conflict dialog)
-
 ### Feature 9: Session Isolation (`docs/design/009-session-isolation.md`)
 - [x] Docker: declare `VOLUME /workspace`, remove `git init` from Dockerfiles (runtime init via `GitManager`)
 - [x] Per-session workspace directories under `/workspace/sessions/{sessionId}/` with own git repo
@@ -182,6 +171,18 @@ Design docs in `docs/design/`.
 - [ ] Component tests for `DeployModal` (dynamic config fields, target picker, deploy trigger, progress, complete, error, history)
 
 ## Nice to Have
+
+### Inline File Editing (`docs/design/008-inline-file-editing.md`)
+- [ ] Add CodeMirror 6 dependency (`codemirror`, `@codemirror/lang-*`, `@codemirror/theme-one-dark`)
+- [ ] Replace read-only `<pre><code>` in FileContentViewer with CodeMirror 6 editor
+- [ ] Toggle between read-only and edit mode (pencil icon)
+- [ ] Save via Ctrl+S / Cmd+S → `save_file` WS message → server writes + auto-commits
+- [ ] Unsaved indicator (dot on filename), auto-save on tab/file switch
+- [ ] Conflict dialog when Claude edits the same file user has open
+- [ ] Server `save_file` handler with path traversal guard, 1 MB limit, file-must-exist check
+- [ ] Integration tests for `save_file` (write, auto-commit, path traversal rejection)
+- [ ] Component tests for FileEditor (CodeMirror render, Ctrl+S, unsaved indicator, conflict dialog)
+
 - [ ] Multi-file diff view — when Claude edits multiple files in one turn, show a grouped diff summary
 - [ ] Export conversation
 - [ ] Multi-client collaboration — shared session URLs with spectator/participant modes
