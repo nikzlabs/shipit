@@ -527,7 +527,7 @@ export function MessageList({
     <div className="flex-1 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-4">
       {messages.length === 0 && !isLoading && (
         <div className="flex items-center justify-center h-full text-gray-500">
-          <p>Send a message to start coding with Claude.</p>
+          <p>Send a message to start coding.</p>
         </div>
       )}
 

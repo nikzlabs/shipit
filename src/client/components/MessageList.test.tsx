@@ -18,14 +18,14 @@ describe("MessageList", () => {
     it("shows placeholder when there are no messages and not loading", () => {
       render(<MessageList messages={[]} isLoading={false} />);
       expect(
-        screen.getByText("Send a message to start coding with Claude.")
+        screen.getByText("Send a message to start coding.")
       ).toBeInTheDocument();
     });
 
     it("hides placeholder when loading with no messages", () => {
       render(<MessageList messages={[]} isLoading={true} />);
       expect(
-        screen.queryByText("Send a message to start coding with Claude.")
+        screen.queryByText("Send a message to start coding.")
       ).not.toBeInTheDocument();
     });
   });

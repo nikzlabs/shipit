@@ -31,7 +31,7 @@ export function DocsViewer({ files, selectedFile, content, onSelectFile, onRefre
           <div className="text-2xl">&#128196;</div>
           <p>No markdown files found in /workspace.</p>
           <p className="text-xs text-gray-400 dark:text-gray-600">
-            Ask Claude to create a README.md or other docs to get started.
+            Ask the agent to create a README.md or other docs to get started.
           </p>
           <button
             onClick={onRefresh}

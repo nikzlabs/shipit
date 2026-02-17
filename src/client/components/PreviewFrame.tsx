@@ -21,7 +21,7 @@ interface PreviewFrameProps {
   onSelectPort: (port: number) => void;
   /** Captured preview errors from the iframe. */
   errors: PreviewError[];
-  /** Called when user clicks "Send to Claude" to fix errors. */
+  /** Called when user clicks "Send to Agent" to fix errors. */
   onSendErrors: (errors: PreviewError[]) => void;
   /** Called to clear all errors. */
   onClearErrors: () => void;
@@ -76,7 +76,7 @@ export function PreviewFrame({
           <div className="text-2xl">&#9654;</div>
           <p>Preview will appear here when a dev server is running in /workspace.</p>
           <p className="text-xs text-gray-400 dark:text-gray-600">
-            Ask Claude to create a project to get started. Vite, Express, Next.js, and other servers are auto-detected.
+            Ask the agent to create a project to get started. Vite, Express, Next.js, and other servers are auto-detected.
           </p>
         </div>
       </div>
@@ -142,7 +142,7 @@ export function PreviewFrame({
               <span>{errorPanelOpen ? "Hide" : "Errors"}</span>
             </button>
           )}
-          <label className="flex items-center gap-1 cursor-pointer select-none" title="Auto-fix: automatically send errors to Claude for fixing">
+          <label className="flex items-center gap-1 cursor-pointer select-none" title="Auto-fix: automatically send errors to the agent for fixing">
             <input
               type="checkbox"
               checked={autoFixEnabled}
@@ -186,9 +186,9 @@ export function PreviewFrame({
               <button
                 onClick={() => onSendErrors(errors)}
                 className="px-2 py-0.5 rounded bg-blue-600 text-white hover:bg-blue-500 transition-colors"
-                title="Send all errors to Claude for fixing"
+                title="Send all errors to the agent for fixing"
               >
-                Send to Claude
+                Send to Agent
               </button>
               <button
                 onClick={onClearErrors}
@@ -231,7 +231,7 @@ export function PreviewFrame({
                   <button
                     onClick={() => onSendErrors([err])}
                     className="shrink-0 px-1.5 py-0.5 rounded text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
-                    title="Send this error to Claude"
+                    title="Send this error to the agent"
                   >
                     Fix
                   </button>

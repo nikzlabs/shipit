@@ -8,7 +8,7 @@ describe("MessageInput", () => {
   describe("basic functionality", () => {
     it("renders the input textarea and send button", () => {
       render(<MessageInput onSend={vi.fn()} disabled={false} />);
-      expect(screen.getByPlaceholderText("Tell Claude what to build...")).toBeInTheDocument();
+      expect(screen.getByPlaceholderText("Describe what to build...")).toBeInTheDocument();
       expect(screen.getByText("Send")).toBeInTheDocument();
     });
 
@@ -20,7 +20,7 @@ describe("MessageInput", () => {
     it("sends text message on submit", () => {
       const onSend = vi.fn();
       render(<MessageInput onSend={onSend} disabled={false} />);
-      const textarea = screen.getByPlaceholderText("Tell Claude what to build...");
+      const textarea = screen.getByPlaceholderText("Describe what to build...");
       fireEvent.change(textarea, { target: { value: "Hello Claude" } });
       fireEvent.click(screen.getByText("Send"));
       expect(onSend).toHaveBeenCalledWith("Hello Claude", undefined);
@@ -29,7 +29,7 @@ describe("MessageInput", () => {
     it("sends text on Enter (without Shift)", () => {
       const onSend = vi.fn();
       render(<MessageInput onSend={onSend} disabled={false} />);
-      const textarea = screen.getByPlaceholderText("Tell Claude what to build...");
+      const textarea = screen.getByPlaceholderText("Describe what to build...");
       fireEvent.change(textarea, { target: { value: "test" } });
       fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
       expect(onSend).toHaveBeenCalledWith("test", undefined);
@@ -44,7 +44,7 @@ describe("MessageInput", () => {
 
     it("disables input when disabled prop is true", () => {
       render(<MessageInput onSend={vi.fn()} disabled={true} />);
-      const textarea = screen.getByPlaceholderText("Tell Claude what to build...");
+      const textarea = screen.getByPlaceholderText("Describe what to build...");
       expect(textarea).toBeDisabled();
     });
   });
@@ -52,14 +52,14 @@ describe("MessageInput", () => {
   describe("drag and drop", () => {
     it("shows drop zone overlay when dragging over", () => {
       render(<MessageInput onSend={vi.fn()} disabled={false} />);
-      const container = screen.getByPlaceholderText("Tell Claude what to build...").closest("div.border-t")!;
+      const container = screen.getByPlaceholderText("Describe what to build...").closest("div.border-t")!;
       fireEvent.dragEnter(container, { dataTransfer: { files: [] } });
       expect(screen.getByText("Drop image here")).toBeInTheDocument();
     });
 
     it("hides drop zone overlay when dragging out", () => {
       render(<MessageInput onSend={vi.fn()} disabled={false} />);
-      const container = screen.getByPlaceholderText("Tell Claude what to build...").closest("div.border-t")!;
+      const container = screen.getByPlaceholderText("Describe what to build...").closest("div.border-t")!;
       fireEvent.dragEnter(container, { dataTransfer: { files: [] } });
       expect(screen.getByText("Drop image here")).toBeInTheDocument();
       fireEvent.dragLeave(container, { dataTransfer: { files: [] } });
@@ -202,7 +202,7 @@ describe("MessageInput", () => {
         expect(screen.getByTestId("image-thumbnails")).toBeInTheDocument();
       });
 
-      const textarea = screen.getByPlaceholderText("Tell Claude what to build...");
+      const textarea = screen.getByPlaceholderText("Describe what to build...");
       fireEvent.change(textarea, { target: { value: "Check this" } });
       fireEvent.click(screen.getByText("Send"));
 
@@ -227,7 +227,7 @@ describe("MessageInput", () => {
         expect(screen.getByTestId("image-thumbnails")).toBeInTheDocument();
       });
 
-      const textarea = screen.getByPlaceholderText("Tell Claude what to build...");
+      const textarea = screen.getByPlaceholderText("Describe what to build...");
       fireEvent.change(textarea, { target: { value: "Send it" } });
       fireEvent.click(screen.getByText("Send"));
 

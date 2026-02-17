@@ -121,7 +121,7 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile }: FileTre
           <div className="text-2xl">&#128193;</div>
           <p>No files in /workspace yet.</p>
           <p className="text-xs text-gray-400 dark:text-gray-600">
-            Ask Claude to create a project to get started.
+            Ask the agent to create a project to get started.
           </p>
           <button
             onClick={onRefresh}

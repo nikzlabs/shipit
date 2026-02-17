@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback } from "react";
 
 const DEFAULT_TITLE = "ShipIt";
-const DONE_TITLE = "\u2713 Claude finished \u2014 ShipIt";
+const DONE_TITLE = "\u2713 Agent finished \u2014 ShipIt";
 
 /**
  * Tracks tab visibility and provides a `notify` function that:

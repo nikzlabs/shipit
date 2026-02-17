@@ -200,7 +200,7 @@ export default function App() {
           ...updated,
           {
             role: "assistant" as const,
-            text: "Error: Connection lost while Claude was responding. Your message may be incomplete.",
+            text: "Error: Connection lost while the agent was responding. Your message may be incomplete.",
             streaming: false,
             isError: true,
           },
@@ -337,7 +337,7 @@ export default function App() {
       if (event.type === "result") {
         setIsLoading(false);
         setActivity(undefined);
-        notify("Claude has finished responding.");
+        notify("The agent has finished responding.");
         // Mark the last assistant message as no longer streaming
         setMessages((prev) => {
           const last = prev[prev.length - 1];

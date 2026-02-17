@@ -76,7 +76,7 @@ export function SystemPromptEditor({ initialContent, onSave, onClose }: SystemPr
         {/* Body */}
         <div className="px-5 py-4 flex-1 min-h-0 flex flex-col gap-3">
           <p className="text-sm text-gray-400">
-            These instructions are sent to Claude with every message. Use them to define project
+            These instructions are sent to the agent with every message. Use them to define project
             conventions, preferred libraries, or style guidelines.
           </p>
 
@@ -91,7 +91,7 @@ export function SystemPromptEditor({ initialContent, onSave, onClose }: SystemPr
 
           <div className="flex items-center justify-between text-xs text-gray-500">
             <span>
-              Note: Claude also reads CLAUDE.md from your workspace root automatically.
+              Note: The agent also reads CLAUDE.md from your workspace root automatically.
             </span>
             <span className={isOverLimit ? "text-red-400" : ""}>
               {charCount.toLocaleString()} / {MAX_LENGTH.toLocaleString()}
