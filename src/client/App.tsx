@@ -392,7 +392,9 @@ export default function App() {
     }
 
     if (data.type === "auth_required") {
-      setAuthUrl(data.url);
+      setAuthUrl(data.url ?? "");
+      setIsLoading(false);
+      setActivity(undefined);
     }
 
     if (data.type === "auth_complete") {
@@ -1170,7 +1172,7 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
-      {authUrl && <AuthOverlay url={authUrl} />}
+      {authUrl !== null && <AuthOverlay url={authUrl} onPasteCode={(code) => send({ type: "paste_auth_code", code })} onApiKey={(key) => send({ type: "set_api_key", key })} />}
       {gitIdentityNeeded && (
         <GitIdentityOverlay onSubmit={handleGitIdentitySubmit} />
       )}

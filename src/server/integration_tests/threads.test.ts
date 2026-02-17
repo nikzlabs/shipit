@@ -77,6 +77,31 @@ describe("Integration: Conversation threads & checkpoints", () => {
     }
   });
 
+  /** Drain initial connect messages (preview_status, buffered logs, etc.). */
+  async function drainConnect(client: TestClient): Promise<void> {
+    // The first non-log message on connect is preview_status
+    await client.receiveSkipLogs(5000);
+  }
+
+  /**
+   * Wait for a specific message type, skipping log_entry messages.
+   * Returns the matching message or throws on timeout.
+   */
+  async function waitForMessage(client: TestClient, type: string, timeoutMs = 5000): Promise<any> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      try {
+        const msg = await client.receive(remaining);
+        if (msg.type === type) return msg;
+      } catch {
+        break;
+      }
+    }
+    throw new Error(`Never received ${type}`);
+  }
+
   /**
    * Helper: send a message and complete the Claude turn.
    * Returns the session ID from the session_started event.
@@ -98,25 +123,11 @@ describe("Integration: Conversation threads & checkpoints", () => {
 
     // Collect session ID from session_started
     let sid = sessionId;
+    const sessionMsg = await waitForMessage(client, "session_started");
     if (!sid) {
-      // New session: drain until we find session_started
-      const deadline = Date.now() + 5000;
-      while (Date.now() < deadline) {
-        const msg = await client.receive();
-        if (msg.type === "session_started") {
-          sid = (msg as any).session.id;
-          break;
-        }
-      }
-      if (!sid) throw new Error("Never received session_started");
-    } else {
-      // Existing session: drain system.init event + session_started
-      const deadline = Date.now() + 5000;
-      while (Date.now() < deadline) {
-        const msg = await client.receive();
-        if (msg.type === "session_started") break;
-      }
+      sid = sessionMsg.session.id;
     }
+    if (!sid) throw new Error("Never received session_started");
 
     // Simulate assistant response
     claude.emit("event", {
@@ -129,13 +140,9 @@ describe("Integration: Conversation threads & checkpoints", () => {
 
     // Drain all remaining messages for this turn (claude_event, result, done, git_committed, logs...)
     const deadline = Date.now() + 5000;
-    let resultSeen = false;
     while (Date.now() < deadline) {
       try {
         const msg = await client.receive(500);
-        if (msg.type === "claude_event" && (msg as any).event?.type === "result") {
-          resultSeen = true;
-        }
         // Stop after we've seen the git_committed (or timeout)
         if (msg.type === "git_committed") break;
       } catch {
@@ -151,10 +158,10 @@ describe("Integration: Conversation threads & checkpoints", () => {
 
   it("list_threads returns error when no active session", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await drainConnect(client);
 
     client.send({ type: "list_threads" } as any);
-    const msg = await client.receive();
+    const msg = await client.receiveSkipLogs();
 
     expect(msg).toMatchObject({
       type: "error",
@@ -166,36 +173,29 @@ describe("Integration: Conversation threads & checkpoints", () => {
 
   it("list_threads returns threads after session established", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await drainConnect(client);
 
-    const sessionId = await doMessageTurn(client, "Hello");
+    await doMessageTurn(client, "Hello");
 
     client.send({ type: "list_threads" } as any);
+    const msg = await waitForMessage(client, "thread_list");
 
-    // Find the thread_list response (may have log entries interspersed)
-    const deadline = Date.now() + 3000;
-    while (Date.now() < deadline) {
-      const msg = await client.receive();
-      if (msg.type === "thread_list") {
-        expect(msg.threads).toHaveLength(1);
-        expect(msg.threads[0].name).toBe("main");
-        expect(msg.threads[0].isActive).toBe(true);
-        expect(msg.activeThreadId).toBe(msg.threads[0].id);
-        client.close();
-        return;
-      }
-    }
-    throw new Error("Never received thread_list");
+    expect(msg.threads).toHaveLength(1);
+    expect(msg.threads[0].name).toBe("main");
+    expect(msg.threads[0].isActive).toBe(true);
+    expect(msg.activeThreadId).toBe(msg.threads[0].id);
+
+    client.close();
   });
 
   // ---- create_checkpoint ----
 
   it("create_checkpoint returns error when no active session", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await drainConnect(client);
 
     client.send({ type: "create_checkpoint" } as any);
-    const msg = await client.receive();
+    const msg = await client.receiveSkipLogs();
 
     expect(msg).toMatchObject({
       type: "error",
@@ -207,71 +207,51 @@ describe("Integration: Conversation threads & checkpoints", () => {
 
   it("create_checkpoint creates checkpoint on active thread", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await drainConnect(client);
 
     const sessionId = await doMessageTurn(client, "Build a todo app");
 
     client.send({ type: "create_checkpoint", label: "Before refactor" } as any);
+    const msg = await waitForMessage(client, "checkpoint_created");
 
-    const deadline = Date.now() + 3000;
-    while (Date.now() < deadline) {
-      const msg = await client.receive();
-      if (msg.type === "checkpoint_created") {
-        expect(msg.checkpoint.label).toBe("Before refactor");
-        expect(msg.checkpoint.sessionId).toBe(sessionId);
-        expect(msg.checkpoint.messageIndex).toBeGreaterThan(0);
-        expect(msg.threadId).toBeDefined();
-        client.close();
-        return;
-      }
-    }
-    throw new Error("Never received checkpoint_created");
+    expect(msg.checkpoint.label).toBe("Before refactor");
+    expect(msg.checkpoint.sessionId).toBe(sessionId);
+    expect(msg.checkpoint.messageIndex).toBeGreaterThan(0);
+    expect(msg.threadId).toBeDefined();
+
+    client.close();
   });
 
   it("create_checkpoint rejects label over 200 characters", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await drainConnect(client);
 
     await doMessageTurn(client, "Hello");
 
     const longLabel = "x".repeat(201);
     client.send({ type: "create_checkpoint", label: longLabel } as any);
+    const msg = await waitForMessage(client, "error");
 
-    const deadline = Date.now() + 3000;
-    while (Date.now() < deadline) {
-      const msg = await client.receive();
-      if (msg.type === "error") {
-        expect(msg.message).toBe("Checkpoint label too long (max 200 characters)");
-        client.close();
-        return;
-      }
-    }
-    throw new Error("Never received error");
+    expect(msg.message).toBe("Checkpoint label too long (max 200 characters)");
+
+    client.close();
   });
 
   // ---- fork_thread ----
 
   it("fork_thread creates new thread", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await drainConnect(client);
 
     await doMessageTurn(client, "Build an app");
 
     // Create checkpoint
     client.send({ type: "create_checkpoint", label: "v1" } as any);
-    let checkpointId: string | undefined;
-    let deadline = Date.now() + 3000;
-    while (Date.now() < deadline) {
-      const msg = await client.receive();
-      if (msg.type === "checkpoint_created") {
-        checkpointId = msg.checkpoint.id;
-        break;
-      }
-    }
-    expect(checkpointId).toBeDefined();
+    const cpMsg = await waitForMessage(client, "checkpoint_created");
+    const checkpointId = cpMsg.checkpoint.id;
 
     // Fork from it
-    client.send({ type: "fork_thread", checkpointId: checkpointId! } as any);
+    client.send({ type: "fork_thread", checkpointId } as any);
     const response = await client.receiveSkipLogs(5000);
 
     expect(response.type).toBe("thread_forked");
@@ -287,7 +267,7 @@ describe("Integration: Conversation threads & checkpoints", () => {
 
   it("fork_thread returns error for unknown checkpoint", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await drainConnect(client);
 
     await doMessageTurn(client, "Hello");
 
@@ -296,27 +276,21 @@ describe("Integration: Conversation threads & checkpoints", () => {
       checkpointId: "nonexistent",
     } as any);
 
-    const deadline = Date.now() + 3000;
-    while (Date.now() < deadline) {
-      const msg = await client.receive();
-      if (msg.type === "error") {
-        expect(msg.message).toBe("Checkpoint not found");
-        client.close();
-        return;
-      }
-    }
-    throw new Error("Never received error");
+    const msg = await waitForMessage(client, "error");
+    expect(msg.message).toBe("Checkpoint not found");
+
+    client.close();
   });
 
   it("fork_thread returns error when no active session", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await drainConnect(client);
 
     client.send({
       type: "fork_thread",
       checkpointId: "some-id",
     } as any);
-    const msg = await client.receive();
+    const msg = await client.receiveSkipLogs();
 
     expect(msg).toMatchObject({
       type: "error",
@@ -330,41 +304,25 @@ describe("Integration: Conversation threads & checkpoints", () => {
 
   it("switch_thread switches to an existing thread and returns messages", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await drainConnect(client);
 
     await doMessageTurn(client, "Hello");
 
     // Get main thread ID
     client.send({ type: "list_threads" } as any);
-    let mainThreadId: string | undefined;
-    let deadline = Date.now() + 3000;
-    while (Date.now() < deadline) {
-      const msg = await client.receive();
-      if (msg.type === "thread_list") {
-        mainThreadId = msg.threads[0].id;
-        break;
-      }
-    }
-    expect(mainThreadId).toBeDefined();
+    const listMsg = await waitForMessage(client, "thread_list");
+    const mainThreadId = listMsg.threads[0].id;
 
     // Create checkpoint and fork
     client.send({ type: "create_checkpoint" } as any);
-    let checkpointId: string | undefined;
-    deadline = Date.now() + 3000;
-    while (Date.now() < deadline) {
-      const msg = await client.receive();
-      if (msg.type === "checkpoint_created") {
-        checkpointId = msg.checkpoint.id;
-        break;
-      }
-    }
+    const cpMsg = await waitForMessage(client, "checkpoint_created");
 
-    client.send({ type: "fork_thread", checkpointId: checkpointId! } as any);
+    client.send({ type: "fork_thread", checkpointId: cpMsg.checkpoint.id } as any);
     const forkResp = await client.receiveSkipLogs(5000);
     expect(forkResp.type).toBe("thread_forked");
 
     // Switch back to main
-    client.send({ type: "switch_thread", threadId: mainThreadId! } as any);
+    client.send({ type: "switch_thread", threadId: mainThreadId } as any);
     const switchResp = await client.receiveSkipLogs(5000);
 
     expect(switchResp.type).toBe("thread_switched");
@@ -379,7 +337,7 @@ describe("Integration: Conversation threads & checkpoints", () => {
 
   it("switch_thread returns error for unknown thread", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await drainConnect(client);
 
     await doMessageTurn(client, "Hello");
 
@@ -388,27 +346,21 @@ describe("Integration: Conversation threads & checkpoints", () => {
       threadId: "nonexistent",
     } as any);
 
-    const deadline = Date.now() + 3000;
-    while (Date.now() < deadline) {
-      const msg = await client.receive();
-      if (msg.type === "error") {
-        expect(msg.message).toBe("Thread not found");
-        client.close();
-        return;
-      }
-    }
-    throw new Error("Never received error");
+    const msg = await waitForMessage(client, "error");
+    expect(msg.message).toBe("Thread not found");
+
+    client.close();
   });
 
   it("switch_thread returns error when no active session", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await drainConnect(client);
 
     client.send({
       type: "switch_thread",
       threadId: "some-id",
     } as any);
-    const msg = await client.receive();
+    const msg = await client.receiveSkipLogs();
 
     expect(msg).toMatchObject({
       type: "error",
@@ -422,17 +374,13 @@ describe("Integration: Conversation threads & checkpoints", () => {
 
   it("delete_session cleans up thread data", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await drainConnect(client);
 
     const sessionId = await doMessageTurn(client, "Hello");
 
     // Create a checkpoint
     client.send({ type: "create_checkpoint" } as any);
-    let deadline = Date.now() + 3000;
-    while (Date.now() < deadline) {
-      const msg = await client.receive();
-      if (msg.type === "checkpoint_created") break;
-    }
+    await waitForMessage(client, "checkpoint_created");
 
     // Verify thread data exists
     const beforeDelete = threadManager.listThreads(sessionId);
@@ -440,11 +388,7 @@ describe("Integration: Conversation threads & checkpoints", () => {
 
     // Delete the session
     client.send({ type: "delete_session", sessionId });
-    deadline = Date.now() + 3000;
-    while (Date.now() < deadline) {
-      const msg = await client.receive();
-      if (msg.type === "session_list") break;
-    }
+    await waitForMessage(client, "session_list");
 
     // Verify thread data is cleaned up (new load returns defaults)
     const afterDelete = threadManager.listThreads(sessionId);

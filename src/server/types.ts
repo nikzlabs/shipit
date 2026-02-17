@@ -259,6 +259,16 @@ export interface WsListThreads {
   type: "list_threads";
 }
 
+export interface WsSetApiKey {
+  type: "set_api_key";
+  key: string;
+}
+
+export interface WsPasteAuthCode {
+  type: "paste_auth_code";
+  code: string;
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsGetGitLog
@@ -292,7 +302,9 @@ export type WsClientMessage =
   | WsCreateCheckpoint
   | WsForkThread
   | WsSwitchThread
-  | WsListThreads;
+  | WsListThreads
+  | WsSetApiKey
+  | WsPasteAuthCode;
 
 export interface WsClaudeEvent {
   type: "claude_event";
@@ -335,7 +347,7 @@ export interface WsRollbackComplete {
 
 export interface WsAuthRequired {
   type: "auth_required";
-  url: string;
+  url?: string;
 }
 
 export interface WsAuthComplete {

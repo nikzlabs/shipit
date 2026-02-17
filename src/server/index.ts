@@ -362,6 +362,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     broadcast({ type: "auth_complete" });
   });
 
+  authManager.on("auth_failed", () => {
+    console.log("[auth] OAuth flow failed — client should provide API key");
+  });
+
   // Start the Vite dev server (skipped in tests)
   if (startVite) {
     viteManager.start();
@@ -508,7 +512,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           authManager.checkCredentials();
         }
         if (!authManager.authenticated) {
-          send({ type: "error", message: "Not authenticated with Claude. Please complete the OAuth flow." });
+          // Send auth_required immediately so the client shows the auth overlay.
+          // The OAuth flow runs in the background and will broadcast an updated
+          // auth_required with a URL if/when the CLI outputs one.
+          send({ type: "auth_required" });
           authManager.startOAuthFlow();
           return;
         }
@@ -723,7 +730,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
         currentClaude.on("auth_required", () => {
           console.log("[server] Claude CLI requires authentication, starting OAuth flow");
-          send({ type: "error", message: "Authentication required. Starting OAuth flow..." });
+          send({ type: "auth_required" });
           authManager.startOAuthFlow();
         });
 
@@ -789,6 +796,29 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           } catch (err) {
             send({ type: "error", message: `Failed to set git identity: ${getErrorMessage(err)}` });
           }
+        }
+      }
+
+      if (msg.type === "set_api_key") {
+        const key = typeof msg.key === "string" ? msg.key.trim() : "";
+        if (!key) {
+          send({ type: "error", message: "API key cannot be empty" });
+        } else if (!key.startsWith("sk-ant-")) {
+          send({ type: "error", message: "Invalid API key format" });
+        } else {
+          process.env.ANTHROPIC_API_KEY = key;
+          authManager.kill(); // Stop any pending OAuth flow
+          authManager.checkCredentials(); // Re-check — will now see the API key
+          broadcast({ type: "auth_complete" });
+        }
+      }
+
+      if (msg.type === "paste_auth_code") {
+        const code = typeof msg.code === "string" ? msg.code.trim() : "";
+        if (!code) {
+          send({ type: "error", message: "Authorization code cannot be empty" });
+        } else {
+          authManager.sendCode(code);
         }
       }
 
@@ -937,7 +967,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             authManager.checkCredentials();
           }
           if (!authManager.authenticated) {
-            send({ type: "error", message: "Not authenticated with Claude. Please complete the OAuth flow." });
+            send({ type: "auth_required" });
             authManager.startOAuthFlow();
             return;
           }
@@ -1056,7 +1086,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           });
 
           claude.on("auth_required", () => {
-            send({ type: "error", message: "Authentication required. Starting OAuth flow..." });
+            send({ type: "auth_required" });
             authManager.startOAuthFlow();
           });
 

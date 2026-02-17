@@ -95,7 +95,7 @@ The Vite dev server proxies WebSocket connections to the backend at `localhost:3
 | Command | Description |
 |---------|-------------|
 | `npm run dev` | Start the backend dev server (tsx) |
-| `npm run build:client` | Build the frontend with Vite |
+| `npm run build` | Build the frontend with Vite |
 | `npm test` | Run all tests (Vitest) |
 | `npm run test:watch` | Run tests in watch mode |
 | `npm run lint` | Lint `src/` with ESLint |
