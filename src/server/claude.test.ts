@@ -1,35 +1,69 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { EventEmitter } from "node:events";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ClaudeProcess } from "./claude.js";
 
-// Mock child_process.spawn
-vi.mock("node:child_process", () => {
+// Mock node-pty
+vi.mock("node-pty", () => {
   return {
     spawn: vi.fn(),
   };
 });
 
-import { spawn } from "node:child_process";
-const mockSpawn = vi.mocked(spawn);
+// Mock stripAnsi import from auth.js — pass through for tests
+vi.mock("./auth.js", () => {
+  return {
+    stripAnsi: (text: string) => text,
+  };
+});
 
-function createMockProcess() {
-  const proc = new EventEmitter() as any;
-  proc.stdout = new EventEmitter();
-  proc.stderr = new EventEmitter();
-  proc.kill = vi.fn();
-  proc.stdin = null;
-  return proc;
+import * as pty from "node-pty";
+const mockPtySpawn = vi.mocked(pty.spawn);
+
+/** Callback-based mock matching the IPty interface. */
+function createMockPty() {
+  let onDataCallback: ((data: string) => void) | null = null;
+  let onExitCallback: ((e: { exitCode: number; signal?: number }) => void) | null = null;
+
+  const mock = {
+    onData: vi.fn((cb: (data: string) => void) => {
+      onDataCallback = cb;
+      return { dispose: vi.fn() };
+    }),
+    onExit: vi.fn((cb: (e: { exitCode: number; signal?: number }) => void) => {
+      onExitCallback = cb;
+      return { dispose: vi.fn() };
+    }),
+    write: vi.fn(),
+    kill: vi.fn(),
+    pid: 12345,
+    cols: 200,
+    rows: 24,
+    process: "claude",
+    handleFlowControl: false,
+    // Helpers for tests to simulate data and exit
+    simulateData(data: string) {
+      onDataCallback?.(data);
+    },
+    simulateExit(exitCode: number) {
+      onExitCallback?.({ exitCode });
+    },
+  };
+  return mock;
 }
 
 describe("ClaudeProcess", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   describe("NDJSON parsing", () => {
-    it("parses complete JSON lines from stdout", async () => {
-      const mockProc = createMockProcess();
-      mockSpawn.mockReturnValue(mockProc as any);
+    it("parses complete JSON lines from PTY data", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const events: unknown[] = [];
@@ -37,17 +71,17 @@ describe("ClaudeProcess", () => {
 
       claude.run("test prompt");
 
-      // Simulate stdout data with a complete JSON line
+      // Simulate PTY data with a complete JSON line
       const event = { type: "system", subtype: "init", session_id: "abc123" };
-      mockProc.stdout.emit("data", Buffer.from(JSON.stringify(event) + "\n"));
+      mockProc.simulateData(JSON.stringify(event) + "\n");
 
       expect(events).toHaveLength(1);
       expect(events[0]).toEqual(event);
     });
 
     it("handles multiple events in a single chunk", () => {
-      const mockProc = createMockProcess();
-      mockSpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const events: unknown[] = [];
@@ -58,7 +92,7 @@ describe("ClaudeProcess", () => {
       const event1 = { type: "system", subtype: "init", session_id: "abc" };
       const event2 = { type: "assistant", message: { content: [{ type: "text", text: "hi" }] } };
       const chunk = JSON.stringify(event1) + "\n" + JSON.stringify(event2) + "\n";
-      mockProc.stdout.emit("data", Buffer.from(chunk));
+      mockProc.simulateData(chunk);
 
       expect(events).toHaveLength(2);
       expect(events[0]).toEqual(event1);
@@ -66,8 +100,8 @@ describe("ClaudeProcess", () => {
     });
 
     it("buffers partial lines across chunks", () => {
-      const mockProc = createMockProcess();
-      mockSpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const events: unknown[] = [];
@@ -80,18 +114,18 @@ describe("ClaudeProcess", () => {
       const half = Math.floor(json.length / 2);
 
       // Send first half
-      mockProc.stdout.emit("data", Buffer.from(json.slice(0, half)));
+      mockProc.simulateData(json.slice(0, half));
       expect(events).toHaveLength(0);
 
       // Send second half + newline
-      mockProc.stdout.emit("data", Buffer.from(json.slice(half) + "\n"));
+      mockProc.simulateData(json.slice(half) + "\n");
       expect(events).toHaveLength(1);
       expect(events[0]).toEqual(event);
     });
 
     it("skips non-JSON lines", () => {
-      const mockProc = createMockProcess();
-      mockSpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const events: unknown[] = [];
@@ -99,15 +133,15 @@ describe("ClaudeProcess", () => {
 
       claude.run("test");
 
-      mockProc.stdout.emit("data", Buffer.from("some random text\n"));
-      mockProc.stdout.emit("data", Buffer.from("not json either\n"));
+      mockProc.simulateData("some random text\n");
+      mockProc.simulateData("not json either\n");
 
       expect(events).toHaveLength(0);
     });
 
     it("skips empty lines", () => {
-      const mockProc = createMockProcess();
-      mockSpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const events: unknown[] = [];
@@ -116,14 +150,14 @@ describe("ClaudeProcess", () => {
       claude.run("test");
 
       const event = { type: "system", subtype: "init", session_id: "abc" };
-      mockProc.stdout.emit("data", Buffer.from("\n\n" + JSON.stringify(event) + "\n\n"));
+      mockProc.simulateData("\n\n" + JSON.stringify(event) + "\n\n");
 
       expect(events).toHaveLength(1);
     });
 
-    it("drains remaining buffer on process close", () => {
-      const mockProc = createMockProcess();
-      mockSpawn.mockReturnValue(mockProc as any);
+    it("drains remaining buffer on process exit", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const events: unknown[] = [];
@@ -135,11 +169,11 @@ describe("ClaudeProcess", () => {
 
       // Send data without trailing newline
       const event = { type: "result", subtype: "success", session_id: "abc" };
-      mockProc.stdout.emit("data", Buffer.from(JSON.stringify(event)));
+      mockProc.simulateData(JSON.stringify(event));
       expect(events).toHaveLength(0);
 
-      // Close the process — should drain buffer
-      mockProc.emit("close", 0);
+      // Exit the process — should drain buffer
+      mockProc.simulateExit(0);
       expect(events).toHaveLength(1);
       expect(events[0]).toEqual(event);
       expect(doneCode).toBe(0);
@@ -147,9 +181,9 @@ describe("ClaudeProcess", () => {
   });
 
   describe("auth detection", () => {
-    it("emits auth_required when stderr contains auth keywords", () => {
-      const mockProc = createMockProcess();
-      mockSpawn.mockReturnValue(mockProc as any);
+    it("emits auth_required when output contains auth keywords", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       let authRequired = false;
@@ -157,7 +191,8 @@ describe("ClaudeProcess", () => {
 
       claude.run("test");
 
-      mockProc.stderr.emit("data", Buffer.from("Error: not authenticated\n"));
+      // With PTY, auth errors come through the combined data stream
+      mockProc.simulateData("Error: not authenticated\n");
       expect(authRequired).toBe(true);
     });
 
@@ -173,43 +208,43 @@ describe("ClaudeProcess", () => {
       ];
 
       for (const keyword of keywords) {
-        const mockProc = createMockProcess();
-        mockSpawn.mockReturnValue(mockProc as any);
+        const mockProc = createMockPty();
+        mockPtySpawn.mockReturnValue(mockProc as any);
 
         const claude = new ClaudeProcess();
         let authRequired = false;
         claude.on("auth_required", () => { authRequired = true; });
 
         claude.run("test");
-        mockProc.stderr.emit("data", Buffer.from(keyword));
+        mockProc.simulateData(keyword + "\n");
         expect(authRequired).toBe(true);
       }
     });
   });
 
   describe("spawn arguments", () => {
-    it("spawns claude with correct args", () => {
-      const mockProc = createMockProcess();
-      mockSpawn.mockReturnValue(mockProc as any);
+    it("spawns claude with correct args via node-pty", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run("hello world");
 
-      expect(mockSpawn).toHaveBeenCalledWith(
+      expect(mockPtySpawn).toHaveBeenCalledWith(
         "claude",
         expect.arrayContaining(["-p", "hello world", "--output-format", "stream-json"]),
-        expect.objectContaining({ cwd: "/workspace" }),
+        expect.objectContaining({ cwd: "/workspace", name: "xterm-256color" }),
       );
     });
 
     it("includes --resume flag when sessionId is provided", () => {
-      const mockProc = createMockProcess();
-      mockSpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run("hello", "session-123");
 
-      expect(mockSpawn).toHaveBeenCalledWith(
+      expect(mockPtySpawn).toHaveBeenCalledWith(
         "claude",
         expect.arrayContaining(["--resume", "session-123"]),
         expect.any(Object),
@@ -217,27 +252,41 @@ describe("ClaudeProcess", () => {
     });
 
     it("does not include --resume when no sessionId", () => {
-      const mockProc = createMockProcess();
-      mockSpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run("hello");
 
-      const args = mockSpawn.mock.calls[0][1] as string[];
+      const args = mockPtySpawn.mock.calls[0][1] as string[];
       expect(args).not.toContain("--resume");
+    });
+
+    it("uses provided cwd", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run("test", undefined, undefined, undefined, "/my/project");
+
+      expect(mockPtySpawn).toHaveBeenCalledWith(
+        "claude",
+        expect.any(Array),
+        expect.objectContaining({ cwd: "/my/project" }),
+      );
     });
   });
 
   describe("kill", () => {
-    it("sends SIGTERM to the running process", () => {
-      const mockProc = createMockProcess();
-      mockSpawn.mockReturnValue(mockProc as any);
+    it("kills the running process", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run("test");
       claude.kill();
 
-      expect(mockProc.kill).toHaveBeenCalledWith("SIGTERM");
+      expect(mockProc.kill).toHaveBeenCalled();
     });
 
     it("is a no-op if no process is running", () => {
@@ -248,17 +297,16 @@ describe("ClaudeProcess", () => {
   });
 
   describe("error handling", () => {
-    it("emits error event on spawn error", () => {
-      const mockProc = createMockProcess();
-      mockSpawn.mockReturnValue(mockProc as any);
+    it("emits error event when pty.spawn throws", () => {
+      mockPtySpawn.mockImplementation(() => {
+        throw new Error("spawn ENOENT");
+      });
 
       const claude = new ClaudeProcess();
       const errors: Error[] = [];
       claude.on("error", (err) => errors.push(err));
 
       claude.run("test");
-      const err = new Error("spawn ENOENT");
-      mockProc.emit("error", err);
 
       expect(errors).toHaveLength(1);
       expect(errors[0].message).toBe("spawn ENOENT");
@@ -266,9 +314,9 @@ describe("ClaudeProcess", () => {
   });
 
   describe("log emission", () => {
-    it("emits log event for stderr output", () => {
-      const mockProc = createMockProcess();
-      mockSpawn.mockReturnValue(mockProc as any);
+    it("emits log event for non-JSON lines in PTY output", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const logs: Array<{ source: string; text: string }> = [];
@@ -276,31 +324,15 @@ describe("ClaudeProcess", () => {
 
       claude.run("test");
 
-      mockProc.stderr.emit("data", Buffer.from("Some debug output\n"));
+      mockProc.simulateData("Some debug output\n");
 
       expect(logs).toHaveLength(1);
-      expect(logs[0]).toEqual({ source: "stderr", text: "Some debug output" });
+      expect(logs[0]).toEqual({ source: "stdout", text: "Some debug output" });
     });
 
-    it("emits log event for non-JSON stdout lines", () => {
-      const mockProc = createMockProcess();
-      mockSpawn.mockReturnValue(mockProc as any);
-
-      const claude = new ClaudeProcess();
-      const logs: Array<{ source: string; text: string }> = [];
-      claude.on("log", (source: string, text: string) => logs.push({ source, text }));
-
-      claude.run("test");
-
-      mockProc.stdout.emit("data", Buffer.from("not valid json\n"));
-
-      expect(logs).toHaveLength(1);
-      expect(logs[0]).toEqual({ source: "stdout", text: "not valid json" });
-    });
-
-    it("does not emit log for valid JSON stdout lines", () => {
-      const mockProc = createMockProcess();
-      mockSpawn.mockReturnValue(mockProc as any);
+    it("does not emit log for valid JSON lines", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const logs: Array<{ source: string; text: string }> = [];
@@ -309,14 +341,50 @@ describe("ClaudeProcess", () => {
       claude.run("test");
 
       const event = { type: "system", subtype: "init", session_id: "abc" };
-      mockProc.stdout.emit("data", Buffer.from(JSON.stringify(event) + "\n"));
+      mockProc.simulateData(JSON.stringify(event) + "\n");
 
       expect(logs).toHaveLength(0);
     });
+  });
 
-    it("does not emit log for empty stderr", () => {
-      const mockProc = createMockProcess();
-      mockSpawn.mockReturnValue(mockProc as any);
+  describe("writeStdin", () => {
+    it("writes data to the PTY", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run("test");
+      claude.writeStdin("answer text\n");
+
+      expect(mockProc.write).toHaveBeenCalledWith("answer text\n");
+    });
+
+    it("is a no-op if no process is running", () => {
+      const claude = new ClaudeProcess();
+      // Should not throw
+      claude.writeStdin("test");
+    });
+  });
+
+  describe("image support", () => {
+    it("writes image payload to PTY stdin", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const images = [{ data: "base64data", mediaType: "image/png" }];
+      claude.run("describe this", undefined, undefined, images);
+
+      expect(mockProc.write).toHaveBeenCalledWith(
+        expect.stringContaining('"type":"image"'),
+      );
+    });
+  });
+
+  describe("inactivity watchdog", () => {
+    it("emits warning log after 30 seconds of no output", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const logs: Array<{ source: string; text: string }> = [];
@@ -324,9 +392,72 @@ describe("ClaudeProcess", () => {
 
       claude.run("test");
 
-      mockProc.stderr.emit("data", Buffer.from("   \n"));
+      // Advance timer by 30 seconds
+      vi.advanceTimersByTime(30_000);
 
-      expect(logs).toHaveLength(0);
+      const watchdogLog = logs.find((l) => l.text.includes("No output from Claude CLI"));
+      expect(watchdogLog).toBeDefined();
+      expect(watchdogLog!.source).toBe("server");
+    });
+
+    it("clears watchdog when data is received", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const logs: Array<{ source: string; text: string }> = [];
+      claude.on("log", (source: string, text: string) => logs.push({ source, text }));
+
+      claude.run("test");
+
+      // Receive data before timeout
+      mockProc.simulateData("some output\n");
+
+      // Advance past the watchdog timeout
+      vi.advanceTimersByTime(30_000);
+
+      const watchdogLog = logs.find((l) => l.text.includes("No output from Claude CLI"));
+      expect(watchdogLog).toBeUndefined();
+    });
+
+    it("clears watchdog on process exit", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const logs: Array<{ source: string; text: string }> = [];
+      claude.on("log", (source: string, text: string) => logs.push({ source, text }));
+
+      claude.run("test");
+
+      // Exit before timeout
+      mockProc.simulateExit(0);
+
+      // Advance past the watchdog timeout
+      vi.advanceTimersByTime(30_000);
+
+      const watchdogLog = logs.find((l) => l.text.includes("No output from Claude CLI"));
+      expect(watchdogLog).toBeUndefined();
+    });
+
+    it("clears watchdog on kill", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const logs: Array<{ source: string; text: string }> = [];
+      claude.on("log", (source: string, text: string) => logs.push({ source, text }));
+
+      claude.run("test");
+
+      // Kill before timeout
+      claude.kill();
+
+      // Advance past the watchdog timeout
+      vi.advanceTimersByTime(30_000);
+
+      const watchdogLog = logs.find((l) => l.text.includes("No output from Claude CLI"));
+      expect(watchdogLog).toBeUndefined();
     });
   });
 });
