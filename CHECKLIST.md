@@ -122,12 +122,12 @@ Design docs in `docs/design/`.
 ### Feature 7: Conversation Threads & Checkpoints (`docs/design/007-conversation-branching.md`)
 - [x] `ThreadManager` class (`src/server/threads.ts`) — persist to `/workspace/.vibe-threads/`
 - [x] WS messages: `create_checkpoint`, `fork_thread`, `switch_thread`, `list_threads`
-- [ ] Auto-checkpoint before message edit/retry
-- [ ] Conversation replay as system prompt when forking (clean context for new CLI session)
+- [x] Auto-checkpoint before message edit/retry
+- [x] Conversation replay as system prompt when forking (clean context for new CLI session)
 - [x] Git rollback to checkpoint commit on thread switch
 - [x] `ThreadIndicator` component — thread dropdown, checkpoint button in header
-- [ ] Timeline view in GitHistory area with checkpoint nodes and color-coded threads
-- [ ] Checkpoint dividers in chat ("Checkpoint: before refactor")
+- [x] Timeline view in GitHistory area with checkpoint nodes and color-coded threads
+- [x] Checkpoint dividers in chat ("Checkpoint: before refactor")
 - [x] Unit tests for `ThreadManager` (create, list, switch, persistence)
 - [x] Integration tests for full thread workflow (messages → checkpoint → fork → verify)
 - [x] Component tests for ThreadIndicator and timeline view

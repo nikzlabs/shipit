@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useWebSocket } from "./hooks/useWebSocket.js";
 import { useResizablePanel } from "./hooks/useResizablePanel.js";
 import { useSearch } from "./hooks/useSearch.js";
@@ -6,7 +6,7 @@ import { useIsMobile } from "./hooks/useMediaQuery.js";
 import { useNotification } from "./hooks/useNotification.js";
 import { useTheme } from "./hooks/useTheme.js";
 import { MessageInput } from "./components/MessageInput.js";
-import { MessageList, type ChatMessage, type ToolResultBlock } from "./components/MessageList.js";
+import { MessageList, type ChatMessage, type ToolResultBlock, type CheckpointDivider } from "./components/MessageList.js";
 import { PreviewFrame, formatErrorForMessage, type PreviewStatus } from "./components/PreviewFrame.js";
 import { usePreviewErrors, type PreviewError } from "./hooks/usePreviewErrors.js";
 import { GitHistory, type GitCommit } from "./components/GitHistory.js";
@@ -29,6 +29,7 @@ import { UsageModal, type SessionUsage, type UsageStats } from "./components/Usa
 import { SystemPromptEditor } from "./components/SystemPromptEditor.js";
 import { GitIdentityOverlay } from "./components/GitIdentityOverlay.js";
 import { ThreadIndicator, type ThreadInfo } from "./components/ThreadIndicator.js";
+import { ThreadTimeline } from "./components/ThreadTimeline.js";
 import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal";
@@ -752,6 +753,10 @@ export default function App() {
   const handleEditMessage = useCallback(
     (messageIndex: number, newText: string) => {
       requestPermission();
+      // Auto-checkpoint before edit so the user can return to the pre-edit state
+      if (sessionIdRef.current && activeThreadId) {
+        send({ type: "create_checkpoint", label: "Before edit" });
+      }
       // Truncate messages from the edited index onward, then append the new user message
       setMessages((prev) => [
         ...prev.slice(0, messageIndex),
@@ -765,7 +770,7 @@ export default function App() {
         sessionId: sessionIdRef.current,
       });
     },
-    [send, requestPermission]
+    [send, requestPermission, activeThreadId]
   );
 
   const handleGitRefresh = useCallback(() => {
@@ -1107,6 +1112,21 @@ export default function App() {
     </>
   );
 
+  // Compute checkpoint dividers from all threads for the MessageList
+  const checkpointDividers: CheckpointDivider[] = useMemo(() => {
+    const dividers: CheckpointDivider[] = [];
+    for (const thread of threads) {
+      for (const cp of thread.checkpoints) {
+        dividers.push({
+          id: cp.id,
+          messageIndex: cp.messageIndex,
+          label: cp.label,
+        });
+      }
+    }
+    return dividers;
+  }, [threads]);
+
   // Show template picker for new sessions with no messages
   const showTemplatePicker = showTemplates && messages.length === 0 && !isLoading;
 
@@ -1143,6 +1163,7 @@ export default function App() {
           currentMatch={search.currentMatch}
           onEditMessage={handleEditMessage}
           onAnswerQuestion={handleAnswerQuestion}
+          checkpoints={checkpointDividers}
         />
       )}
       {!showTemplatePicker && (
@@ -1156,6 +1177,14 @@ export default function App() {
             disabled={isLoading || status !== "open"}
           />
         </div>
+      )}
+      {!showTemplatePicker && threads.length > 0 && (
+        <ThreadTimeline
+          threads={threads}
+          activeThreadId={activeThreadId}
+          onForkThread={handleForkThread}
+          onSwitchThread={handleSwitchThread}
+        />
       )}
       {!showTemplatePicker && (
         <GitHistory

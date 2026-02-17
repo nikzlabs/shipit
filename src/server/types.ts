@@ -567,6 +567,8 @@ export interface ThreadInfo {
   checkpoints: CheckpointInfo[];
   isActive: boolean;
   createdAt: string;
+  /** When set, contains a conversation replay to use as system prompt on the first message. */
+  conversationReplay?: string;
 }
 
 export interface WsCheckpointCreated {

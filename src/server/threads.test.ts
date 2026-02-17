@@ -252,6 +252,74 @@ describe("ThreadManager", () => {
     });
   });
 
+  describe("setConversationReplay", () => {
+    it("stores conversation replay on a thread", () => {
+      const data = manager.init("session-1");
+      const threadId = data.threads[0].id;
+      const replay = "User: Hello\nAssistant: Hi there!";
+      manager.setConversationReplay("session-1", threadId, replay);
+
+      const updated = manager.listThreads("session-1");
+      expect(updated.threads[0].conversationReplay).toBe(replay);
+    });
+
+    it("persists replay to disk", () => {
+      const data = manager.init("session-1");
+      const threadId = data.threads[0].id;
+      manager.setConversationReplay("session-1", threadId, "replay text");
+
+      const m2 = new ThreadManager(tmpDir);
+      const loaded = m2.listThreads("session-1");
+      expect(loaded.threads[0].conversationReplay).toBe("replay text");
+    });
+
+    it("does nothing for unknown thread", () => {
+      manager.init("session-1");
+      // Should not throw
+      manager.setConversationReplay("session-1", "nonexistent", "text");
+    });
+  });
+
+  describe("consumeConversationReplay", () => {
+    it("returns replay and clears it", () => {
+      const data = manager.init("session-1");
+      const threadId = data.threads[0].id;
+      manager.setConversationReplay("session-1", threadId, "replay text");
+
+      const replay = manager.consumeConversationReplay("session-1", threadId);
+      expect(replay).toBe("replay text");
+
+      // Should be cleared
+      const second = manager.consumeConversationReplay("session-1", threadId);
+      expect(second).toBeUndefined();
+    });
+
+    it("returns undefined when no replay is set", () => {
+      const data = manager.init("session-1");
+      const threadId = data.threads[0].id;
+      const replay = manager.consumeConversationReplay("session-1", threadId);
+      expect(replay).toBeUndefined();
+    });
+
+    it("returns undefined for unknown thread", () => {
+      manager.init("session-1");
+      const replay = manager.consumeConversationReplay("session-1", "nonexistent");
+      expect(replay).toBeUndefined();
+    });
+
+    it("clears replay from persisted data", () => {
+      const data = manager.init("session-1");
+      const threadId = data.threads[0].id;
+      manager.setConversationReplay("session-1", threadId, "replay text");
+      manager.consumeConversationReplay("session-1", threadId);
+
+      // Verify cleared on disk
+      const m2 = new ThreadManager(tmpDir);
+      const loaded = m2.listThreads("session-1");
+      expect(loaded.threads[0].conversationReplay).toBeUndefined();
+    });
+  });
+
   describe("session ID sanitization", () => {
     it("sanitizes path traversal in session IDs", () => {
       manager.init("../../etc/passwd");
