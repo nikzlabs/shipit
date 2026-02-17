@@ -51,7 +51,7 @@ export function AuthOverlay({ url, onPasteCode, onApiKey }: AuthOverlayProps) {
             Authentication Required
           </h2>
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            Claude Code CLI needs to authenticate with your Anthropic account.
+            The agent needs to authenticate with your Anthropic account.
           </p>
         </div>
 

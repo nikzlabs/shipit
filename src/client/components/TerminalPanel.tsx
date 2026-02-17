@@ -133,7 +133,7 @@ export function TerminalPanel({ entries, onClear }: TerminalPanelProps) {
         {filteredEntries.length === 0 ? (
           <div className="flex items-center justify-center h-full text-gray-400 dark:text-gray-600 text-sm font-sans">
             {entries.length === 0
-              ? "No output yet. Logs from Claude CLI will appear here."
+              ? "No output yet. Agent logs will appear here."
               : "No logs match the current filter."}
           </div>
         ) : (
