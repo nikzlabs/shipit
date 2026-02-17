@@ -160,8 +160,27 @@ Design docs in `docs/design/`.
 - [x] Integration tests for session isolation (two sessions with independent files, scoped rollback)
 - [x] Handle edge cases: delete active session, missing session directory, multi-client, disk space
 
+### Feature 10: Deployment Integration — Vercel & Cloudflare Pages (`docs/design/010-deployment-integration.md`)
+- [ ] `DeploymentManager` class (`src/server/deployment-manager.ts`) — framework detection, build, deploy to Vercel/Cloudflare via CLI
+- [ ] `DeploymentStore` class (`src/server/deployment-store.ts`) — persist tokens and deployment history per session
+- [ ] WS messages: `deploy_configure`, `initiate_deploy`, `get_deploy_history`, `cancel_deploy`, `get_deploy_config`
+- [ ] Server WS handlers in `index.ts` — wire deploy manager events, broadcast status/logs/completion
+- [ ] Input validation: token (non-empty, max 500 chars), provider enum, accountId for Cloudflare, reject if no session
+- [ ] Framework auto-detection from `package.json` (Vite, Next.js, CRA, static site)
+- [ ] Build step: run `npm run build` before deploy, stream output to terminal with `source: "deploy"`
+- [ ] Vercel deploy: `vercel deploy --yes --prod --token=xxx`, capture URL from stdout
+- [ ] Cloudflare deploy: `wrangler pages deploy`, auto-create project, extract URL from output
+- [ ] `DeployModal` component — token config, provider/env selection, deploy trigger, progress, success/error states
+- [ ] Deploy button in header with status indicator (idle, deploying spinner, last deploy green dot)
+- [ ] Terminal panel: deploy logs with `source: "deploy"` in blue styling
+- [ ] Deployment history display in modal (last N deployments with URLs, timestamps, status)
+- [ ] "Send to Claude" on deploy errors (compose build/deploy error into chat message)
+- [ ] Unit tests for `DeploymentManager` (framework detection, build, deploy methods)
+- [ ] Unit tests for `DeploymentStore` (config CRUD, history, session cleanup)
+- [ ] Integration tests for deploy flow (configure → deploy → verify status/complete messages, error paths)
+- [ ] Component tests for `DeployModal` (config form, deploy trigger, progress, complete, error, history)
+
 ## Nice to Have
 - [ ] Multi-file diff view — when Claude edits multiple files in one turn, show a grouped diff summary
 - [ ] Export conversation
 - [ ] Multi-client collaboration — shared session URLs with spectator/participant modes
-- [ ] Deployment integration — one-click deploy to Vercel/Netlify from the UI
