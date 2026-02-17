@@ -28,7 +28,7 @@ import { TemplateSelector, type TemplateInfo } from "./components/TemplateSelect
 import { UsageModal, type SessionUsage, type UsageStats } from "./components/UsageModal.js";
 import { SystemPromptEditor } from "./components/SystemPromptEditor.js";
 import { GitIdentityOverlay } from "./components/GitIdentityOverlay.js";
-import { ThreadIndicator, type ThreadInfo, type CheckpointInfo } from "./components/ThreadIndicator.js";
+import { ThreadIndicator, type ThreadInfo } from "./components/ThreadIndicator.js";
 import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal";
@@ -424,7 +424,7 @@ export default function App() {
         return [data.session, ...prev];
       });
       // Load threads for this session
-      send({ type: "list_threads" } as any);
+      send({ type: "list_threads" });
     }
 
     if (data.type === "session_renamed") {
@@ -956,21 +956,21 @@ export default function App() {
 
   const handleCreateCheckpoint = useCallback(
     (label?: string) => {
-      send({ type: "create_checkpoint", label } as any);
+      send({ type: "create_checkpoint", label });
     },
     [send],
   );
 
   const handleForkThread = useCallback(
     (checkpointId: string) => {
-      send({ type: "fork_thread", checkpointId } as any);
+      send({ type: "fork_thread", checkpointId });
     },
     [send],
   );
 
   const handleSwitchThread = useCallback(
     (threadId: string) => {
-      send({ type: "switch_thread", threadId } as any);
+      send({ type: "switch_thread", threadId });
     },
     [send],
   );
