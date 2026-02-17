@@ -1451,15 +1451,6 @@ export default function App() {
                 : `$${currentSessionUsage.totalCostUsd.toFixed(2)}`}
             </button>
           )}
-          {preview?.running && (
-            <span className={`hidden sm:inline text-xs px-2 py-0.5 rounded-full ${
-              preview.source === "detected"
-                ? "bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300"
-                : "bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300"
-            }`}>
-              preview :{selectedPort ?? preview.port}
-            </span>
-          )}
           {/* Theme toggle */}
           <button
             onClick={toggleTheme}
@@ -1477,17 +1468,6 @@ export default function App() {
               </svg>
             )}
           </button>
-          <span
-            className={`text-xs px-2 py-0.5 rounded-full ${
-              status === "open"
-                ? "bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300"
-                : status === "connecting"
-                ? "bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300"
-                : "bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300"
-            }`}
-          >
-            {status}
-          </span>
         </div>
       </header>
 
