@@ -40,6 +40,11 @@ export interface Thread {
   isActive: boolean;
   /** Timestamp of creation. */
   createdAt: string;
+  /**
+   * Conversation replay text to inject as a system prompt when starting the
+   * first Claude session on a forked thread. Cleared after use.
+   */
+  conversationReplay?: string;
 }
 
 /**
@@ -271,6 +276,34 @@ export class ThreadManager {
       thread.agentSessionId = agentSessionId;
       this.save(sessionId, data);
     }
+  }
+
+  /**
+   * Set conversation replay text on a thread. This is the conversation context
+   * that will be injected as a system prompt when the first message is sent on
+   * a forked thread.
+   */
+  setConversationReplay(sessionId: string, threadId: string, replay: string): void {
+    const data = this.loadOrCreate(sessionId);
+    const thread = data.threads.find((t) => t.id === threadId);
+    if (thread) {
+      thread.conversationReplay = replay;
+      this.save(sessionId, data);
+    }
+  }
+
+  /**
+   * Consume the conversation replay for a thread. Returns the replay text
+   * and clears it so it's only used once (for the first message on a fork).
+   */
+  consumeConversationReplay(sessionId: string, threadId: string): string | undefined {
+    const data = this.loadOrCreate(sessionId);
+    const thread = data.threads.find((t) => t.id === threadId);
+    if (!thread?.conversationReplay) return undefined;
+    const replay = thread.conversationReplay;
+    thread.conversationReplay = undefined;
+    this.save(sessionId, data);
+    return replay;
   }
 
   /**
