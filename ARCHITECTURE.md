@@ -76,6 +76,7 @@ ShipIt is a browser-based IDE for "vibe coding" — you talk to Claude in a chat
 | `port-scanner.ts` | Port auto-detection — `checkPort`, `scanPorts` for finding non-Vite dev servers |
 | `usage.ts` | `UsageManager` class — per-turn cost/duration tracking, session-level aggregation, JSON persistence |
 | `file-watcher.ts` | `FileWatcher` class — recursive `fs.watch`, debounced change events, ignore patterns |
+| `threads.ts` | `ThreadManager` class — conversation threads and checkpoints, JSON persistence per session |
 | `types.ts` | Shared TypeScript types for all WebSocket and Claude event payloads |
 
 The server is intentionally thin — it's a bridge between the browser and the Claude CLI. No database, no REST API.
@@ -110,6 +111,7 @@ The server is intentionally thin — it's a bridge between the browser and the C
 | `components/AuthOverlay.tsx` | Full-screen overlay for OAuth authentication flow |
 | `components/UsageModal.tsx` | Usage/cost summary modal — current session and all-sessions breakdown, triggered by cost badge |
 | `components/SystemPromptEditor.tsx` | Project-level system prompt modal — edit/save/clear instructions sent to Claude with every message |
+| `components/ThreadIndicator.tsx` | Thread dropdown and checkpoint button — thread switching, checkpoint creation, fork-thread-from-checkpoint |
 
 ### Claude CLI Events (NDJSON)
 
@@ -232,6 +234,10 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `get_usage_stats` | — | Request aggregated usage/cost data across all sessions |
 | `get_system_prompt` | — | Request current project-level system prompt |
 | `set_system_prompt` | `content` | Save or delete the project-level system prompt |
+| `list_threads` | — | Request all threads and checkpoints for the current session |
+| `create_checkpoint` | `label?` | Create a checkpoint on the active thread |
+| `fork_thread` | `checkpointId` | Create a new thread from a checkpoint (rolls back git, truncates history) |
+| `switch_thread` | `threadId` | Switch to an existing thread (rolls back git to thread's checkpoint) |
 
 ### Server → Client Messages
 
@@ -258,6 +264,10 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `usage_update` | `sessionId`, `totalCostUsd`, `totalDurationMs`, `turnCount` | Pushed after each turn that carries `total_cost_usd` |
 | `system_prompt` | `content` | Current system prompt text (empty string if not set) |
 | `system_prompt_saved` | `content` | Confirmation after saving/deleting the system prompt |
+| `thread_list` | `threads[]`, `activeThreadId` | All threads with their checkpoints for the session |
+| `checkpoint_created` | `checkpoint`, `threads[]`, `activeThreadId` | Checkpoint created, with updated thread data |
+| `thread_forked` | `thread`, `threads[]`, `activeThreadId` | New thread created from checkpoint |
+| `thread_switched` | `thread`, `threads[]`, `activeThreadId` | Switched to a different thread |
 | `files_changed` | `paths[]` | Server-push: list of relative paths that changed in the workspace (debounced) |
 
 ### Adding a New Message Type
@@ -940,6 +950,51 @@ The system prompt is stored at `/workspace/.shipit/system-prompt.md`. This keeps
 - **`src/server/index.ts`** — `readSystemPrompt()` helper, `get_system_prompt`/`set_system_prompt` handlers, passes system prompt to `claude.run()`.
 - **`src/client/components/SystemPromptEditor.tsx`** — Modal editor with textarea, character count, save/cancel.
 - **`src/client/App.tsx`** — State management (`systemPromptOpen`, `hasSystemPrompt`, `systemPromptContent`), gear icon in header, WS message handlers.
+
+## Conversation Threads & Checkpoints
+
+Users can create checkpoints (snapshots of conversation + git state) and fork from them to explore alternative approaches. Each thread has its own conversation history and git state.
+
+### How It Works
+
+1. **Checkpoints**: A checkpoint captures the current conversation message index and git commit hash. Users create checkpoints via the flag button in the `ThreadIndicator` UI. Checkpoints are stored within their parent thread's data.
+
+2. **Forking**: Creating a thread from a checkpoint:
+   - Snapshots the current thread data (to protect against git rollback — see below)
+   - Rolls back the git working tree to the checkpoint's commit via `git reset --hard`
+   - Restores the thread data snapshot (since the JSON file lives in the git-tracked workspace)
+   - Creates a new thread record with the checkpoint as its parent
+   - Truncates the chat history to the checkpoint's message index
+   - The new thread becomes active
+
+3. **Switching**: Switching to an existing thread rolls back git to that thread's parent checkpoint's commit (if it has one) and restores the corresponding chat history.
+
+### Critical Design: Snapshot-Before-Rollback
+
+Thread data files (`/workspace/.vibe-threads/{sessionId}.json`) live inside the git working tree. When `fork_thread` or `switch_thread` does `git reset --hard`, it reverts these files to their committed state. The solution:
+
+```
+1. Snapshot thread data in memory
+2. Perform git reset --hard
+3. Restore thread data from snapshot (ThreadManager.restore())
+4. Continue with thread creation/switch
+```
+
+This pattern is used in both the `fork_thread` and `switch_thread` handlers in `index.ts`.
+
+### Storage
+
+- **Location**: `/workspace/.vibe-threads/{sessionId}.json`
+- **Format**: JSON with `threads[]` and `activeThreadId`
+- **Session ID sanitization**: Same pattern as `ChatHistoryManager` — non-alphanumeric characters (except `-` and `_`) replaced with `_`
+
+### Key Files
+
+- **`src/server/threads.ts`** — `ThreadManager` class: init, listThreads, createCheckpoint, forkThread, switchThread, restore, delete. JSON file persistence per session.
+- **`src/server/types.ts`** — `ThreadInfo`, `CheckpointInfo` shared types; `WsCreateCheckpoint`, `WsForkThread`, `WsSwitchThread`, `WsListThreads` client messages; `WsCheckpointCreated`, `WsThreadList`, `WsThreadSwitched`, `WsThreadForked` server messages.
+- **`src/server/index.ts`** — WS handlers for all four thread message types, thread data initialization on session create, cleanup on session delete.
+- **`src/client/components/ThreadIndicator.tsx`** — Thread dropdown with thread switching, checkpoint creation input, fork-thread-from-checkpoint buttons.
+- **`src/client/App.tsx`** — Thread state management (`threads`, `activeThreadId`), WS message handlers, callback wiring to `ThreadIndicator`.
 
 ## Build & Run
 
