@@ -370,6 +370,89 @@ describe("Integration: Conversation threads & checkpoints", () => {
     client.close();
   });
 
+  // ---- Conversation replay on fork ----
+
+  it("fork_thread stores conversation replay for new thread", async () => {
+    const client = await TestClient.connect(port);
+    await drainConnect(client);
+
+    const sessionId = await doMessageTurn(client, "Build a todo app");
+
+    // Create checkpoint
+    client.send({ type: "create_checkpoint", label: "v1" } as any);
+    const cpMsg = await waitForMessage(client, "checkpoint_created");
+
+    // Fork from it
+    client.send({ type: "fork_thread", checkpointId: cpMsg.checkpoint.id } as any);
+    const forkResp = await client.receiveSkipLogs(5000);
+    expect(forkResp.type).toBe("thread_forked");
+
+    if (forkResp.type === "thread_forked") {
+      // The new thread should have a conversation replay set on the server
+      const activeThread = threadManager.getActiveThread(sessionId);
+      expect(activeThread).toBeDefined();
+      // Verify replay was set (peek at thread data without consuming)
+      const data = threadManager.listThreads(sessionId);
+      const forkedThread = data.threads.find((t) => t.id === forkResp.thread.id);
+      expect(forkedThread?.conversationReplay).toBeDefined();
+      expect(forkedThread?.conversationReplay).toContain("Build a todo app");
+      expect(forkedThread?.conversationReplay).toContain("You are continuing a conversation");
+    }
+
+    client.close();
+  });
+
+  it("fork_thread with conversation replay: new message starts fresh session", async () => {
+    const client = await TestClient.connect(port);
+    await drainConnect(client);
+
+    const sessionId = await doMessageTurn(client, "Build a todo app");
+
+    // Create checkpoint and fork
+    client.send({ type: "create_checkpoint" } as any);
+    const cpMsg = await waitForMessage(client, "checkpoint_created");
+
+    client.send({ type: "fork_thread", checkpointId: cpMsg.checkpoint.id } as any);
+    const forkResp = await client.receiveSkipLogs(5000);
+    expect(forkResp.type).toBe("thread_forked");
+
+    // Now send a message on the forked thread — it should use the replay
+    // as system prompt (no --resume) since this is a fresh CLI session.
+    const prevClaude = lastClaude;
+    client.send({ type: "send_message", text: "Add tests", sessionId } as any);
+    const claude = await waitForClaude(() => lastClaude, prevClaude);
+
+    // The replay should have been consumed and passed as system prompt
+    expect(claude.lastSystemPrompt).toBeDefined();
+    expect(claude.lastSystemPrompt).toContain("You are continuing a conversation");
+    expect(claude.lastSystemPrompt).toContain("Build a todo app");
+    // Should NOT resume an existing session (starts fresh)
+    expect(claude.lastSessionId).toBeUndefined();
+
+    // Clean up the Claude process
+    claude.emit("event", {
+      type: "system",
+      subtype: "init",
+      session_id: "agent-session-fork",
+    });
+    claude.finish("agent-session-fork");
+
+    // Drain remaining messages
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      try { await client.receive(200); } catch { break; }
+    }
+
+    // After consuming, replay should be cleared
+    const data = threadManager.listThreads(sessionId);
+    if (forkResp.type === "thread_forked") {
+      const thread = data.threads.find((t) => t.id === forkResp.thread.id);
+      expect(thread?.conversationReplay).toBeUndefined();
+    }
+
+    client.close();
+  });
+
   // ---- Session lifecycle ----
 
   it("delete_session cleans up thread data", async () => {

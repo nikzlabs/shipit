@@ -447,6 +447,12 @@ function MessageImages({ images, isUserMessage }: { images: ChatMessageImage[]; 
   );
 }
 
+export interface CheckpointDivider {
+  id: string;
+  messageIndex: number;
+  label?: string;
+}
+
 export function MessageList({
   messages,
   isLoading,
@@ -455,6 +461,7 @@ export function MessageList({
   currentMatch,
   onEditMessage,
   onAnswerQuestion,
+  checkpoints,
 }: {
   messages: ChatMessage[];
   isLoading: boolean;
@@ -463,6 +470,7 @@ export function MessageList({
   currentMatch?: SearchMatch;
   onEditMessage?: (messageIndex: number, newText: string) => void;
   onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void;
+  checkpoints?: CheckpointDivider[];
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const currentMatchRef = useRef<HTMLElement | null>(null);
@@ -505,6 +513,16 @@ export function MessageList({
   // Whether edit/retry actions are available (not loading, handler provided)
   const canEdit = !isLoading && !!onEditMessage;
 
+  // Build a map of messageIndex → checkpoint dividers for rendering
+  const checkpointsByIndex = new Map<number, CheckpointDivider[]>();
+  if (checkpoints) {
+    for (const cp of checkpoints) {
+      const arr = checkpointsByIndex.get(cp.messageIndex) ?? [];
+      arr.push(cp);
+      checkpointsByIndex.set(cp.messageIndex, arr);
+    }
+  }
+
   return (
     <div className="flex-1 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-4">
       {messages.length === 0 && !isLoading && (
@@ -514,6 +532,7 @@ export function MessageList({
       )}
 
       {messages.map((msg, i) => {
+        const cpDividers = checkpointsByIndex.get(i);
         const msgMatches = matchesByMessage.get(i) ?? [];
         const segments = parseMessageSegments(msg.text);
         const hasCodeBlocks = segments.some((s) => s.type === "code");
@@ -521,7 +540,25 @@ export function MessageList({
         const showEditActions = canEdit && msg.role === "user" && !msg.isError && !isEditing;
 
         return (
-          <div key={i} className={`group flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+          <div key={i}>
+            {/* Checkpoint dividers that fall at this message index */}
+            {cpDividers && cpDividers.map((cp) => (
+              <div
+                key={cp.id}
+                className="flex items-center gap-3 py-1.5 my-1"
+                data-testid="checkpoint-divider"
+              >
+                <div className="flex-1 h-px bg-amber-500/30" />
+                <span className="flex items-center gap-1.5 text-[11px] text-amber-600 dark:text-amber-400 font-medium shrink-0">
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6h-8.5l-1-1H5a2 2 0 00-2 2z" />
+                  </svg>
+                  {cp.label || "Checkpoint"}
+                </span>
+                <div className="flex-1 h-px bg-amber-500/30" />
+              </div>
+            ))}
+            <div className={`group flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
             {/* Edit/Retry buttons — shown on hover for user messages */}
             {showEditActions && (
               <div className="hidden group-hover:flex items-center gap-1 mr-2 shrink-0">
@@ -636,6 +673,7 @@ export function MessageList({
               )}
             </div>
             )}
+            </div>
           </div>
         );
       })}

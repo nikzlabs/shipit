@@ -750,7 +750,25 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           claude = null;
         });
 
-        const systemPrompt = await readSystemPrompt();
+        // Build the system prompt, incorporating conversation replay for forked threads
+        let systemPrompt = await readSystemPrompt();
+        if (activeAppSessionId) {
+          const activeThread = threadManager.getActiveThread(activeAppSessionId);
+          if (activeThread) {
+            const replay = threadManager.consumeConversationReplay(
+              activeAppSessionId,
+              activeThread.id,
+            );
+            if (replay) {
+              // On a forked thread with replay context, start a fresh session
+              // (no --resume) and inject the conversation history as system prompt.
+              agentSessionId = undefined;
+              systemPrompt = systemPrompt
+                ? `${systemPrompt}\n\n${replay}`
+                : replay;
+            }
+          }
+        }
         currentClaude.run(msg.text, agentSessionId, systemPrompt, images, getActiveDir());
       }
 
@@ -1431,6 +1449,25 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           if (!newThread) {
             send({ type: "error", message: "Failed to fork thread" });
             return;
+          }
+
+          // Build conversation replay for the new thread. When the first
+          // message is sent on this fork, the replay is injected as a system
+          // prompt so Claude has full context without --resume's hidden history.
+          if (threadMessages.length > 0) {
+            const replayLines: string[] = [
+              "You are continuing a conversation. Here is the conversation so far:\n",
+            ];
+            for (const m of threadMessages) {
+              const label = m.role === "user" ? "User" : "Assistant";
+              replayLines.push(`${label}: ${m.text}`);
+            }
+            replayLines.push("\nContinue from here. The user's next message follows.");
+            threadManager.setConversationReplay(
+              activeAppSessionId,
+              newThread.id,
+              replayLines.join("\n"),
+            );
           }
 
           // Save thread-specific chat history
