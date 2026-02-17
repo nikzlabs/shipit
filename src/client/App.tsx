@@ -90,6 +90,7 @@ export default function App() {
   const [githubStatus, setGithubStatus] = useState<{ authenticated: boolean; username?: string; avatarUrl?: string }>({ authenticated: false });
   const [showGitHubAuth, setShowGitHubAuth] = useState(false);
   const [showCreateRepo, setShowCreateRepo] = useState(false);
+  const [confirmingGitHubLogout, setConfirmingGitHubLogout] = useState(false);
   const [currentSessionUsage, setCurrentSessionUsage] = useState<SessionUsage | null>(null);
   const [allUsageStats, setAllUsageStats] = useState<UsageStats | null>(null);
   const [showUsageModal, setShowUsageModal] = useState(false);
@@ -1375,11 +1376,23 @@ export default function App() {
                 + Repo
               </button>
               <button
-                onClick={handleGitHubLogout}
-                className="text-xs px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
+                onClick={() => {
+                  if (confirmingGitHubLogout) {
+                    handleGitHubLogout();
+                    setConfirmingGitHubLogout(false);
+                  } else {
+                    setConfirmingGitHubLogout(true);
+                  }
+                }}
+                onBlur={() => setConfirmingGitHubLogout(false)}
+                className={`text-xs px-1.5 py-0.5 rounded-full transition-colors ${
+                  confirmingGitHubLogout
+                    ? "bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300"
+                    : "bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-700 dark:hover:text-gray-300"
+                }`}
                 title="Disconnect from GitHub"
               >
-                &times;
+                {confirmingGitHubLogout ? "Disconnect?" : "\u00d7"}
               </button>
             </div>
           ) : (

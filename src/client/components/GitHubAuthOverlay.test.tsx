@@ -106,7 +106,13 @@ describe("GitHubAuthOverlay", () => {
   it("links to GitHub token settings", () => {
     render(<GitHubAuthOverlay onSubmit={vi.fn()} onClose={vi.fn()} />);
     const link = screen.getByText("GitHub Settings");
-    expect(link).toHaveAttribute("href", "https://github.com/settings/tokens");
+    expect(link).toHaveAttribute("href", "https://github.com/settings/tokens/new");
     expect(link).toHaveAttribute("target", "_blank");
+  });
+
+  it("mentions that a classic token is required", () => {
+    render(<GitHubAuthOverlay onSubmit={vi.fn()} onClose={vi.fn()} />);
+    expect(screen.getByText("classic")).toBeInTheDocument();
+    expect(screen.getByText(/fine-grained tokens are not supported/i)).toBeInTheDocument();
   });
 });
