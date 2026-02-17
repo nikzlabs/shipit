@@ -104,13 +104,18 @@ describe("Integration: Claude message flow", () => {
   });
 
   it("send_message with sessionId passes it to ClaudeProcess.run()", async () => {
+    // Pre-register the session with an agentSessionId so the server can look it up.
+    // The server resolves msg.sessionId (app session ID) → session.agentSessionId (CLI session ID).
+    sessionManager.track("existing-session", "Test session", tmpDir);
+    sessionManager.setAgentSessionId("existing-session", "agent-session-abc");
+
     const client = await TestClient.connect(port);
     await client.receive();
 
     client.send({ type: "send_message", text: "Resume", sessionId: "existing-session" });
     await waitForClaude(() => lastClaude);
 
-    expect(lastClaude.lastSessionId).toBe("existing-session");
+    expect(lastClaude.lastSessionId).toBe("agent-session-abc");
 
     client.close();
   });
