@@ -61,14 +61,14 @@ describe("useNotification", () => {
     const { result } = renderHook(() => useNotification());
     act(() => setHidden(true));
     act(() => result.current.notify("done"));
-    expect(document.title).toBe("\u2713 Claude finished \u2014 ShipIt");
+    expect(document.title).toBe("\u2713 Agent finished \u2014 ShipIt");
   });
 
   it("restores title when user returns to the tab", () => {
     const { result } = renderHook(() => useNotification());
     act(() => setHidden(true));
     act(() => result.current.notify("done"));
-    expect(document.title).toBe("\u2713 Claude finished \u2014 ShipIt");
+    expect(document.title).toBe("\u2713 Agent finished \u2014 ShipIt");
 
     act(() => setHidden(false));
     expect(document.title).toBe("ShipIt");
@@ -88,9 +88,9 @@ describe("useNotification", () => {
 
     const { result } = renderHook(() => useNotification());
     act(() => setHidden(true));
-    act(() => result.current.notify("Claude has finished responding."));
+    act(() => result.current.notify("The agent has finished responding."));
 
-    expect(mockNotification).toHaveBeenCalledWith("ShipIt", { body: "Claude has finished responding." });
+    expect(mockNotification).toHaveBeenCalledWith("ShipIt", { body: "The agent has finished responding." });
     vi.unstubAllGlobals();
   });
 

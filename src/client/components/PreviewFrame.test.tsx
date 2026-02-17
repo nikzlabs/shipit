@@ -159,14 +159,14 @@ describe("PreviewFrame", () => {
     expect(screen.queryByRole("region", { name: "Preview errors" })).not.toBeInTheDocument();
   });
 
-  it("calls onSendErrors when 'Send to Claude' is clicked", () => {
+  it("calls onSendErrors when 'Send to Agent' is clicked", () => {
     const onSendErrors = vi.fn();
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     const errors = [makeError()];
     render(<PreviewFrame preview={preview} {...defaultProps} errors={errors} onSendErrors={onSendErrors} />);
 
     fireEvent.click(screen.getByLabelText("Toggle error panel"));
-    fireEvent.click(screen.getByText("Send to Claude"));
+    fireEvent.click(screen.getByText("Send to Agent"));
     expect(onSendErrors).toHaveBeenCalledWith(errors);
   });
 
@@ -177,7 +177,7 @@ describe("PreviewFrame", () => {
     render(<PreviewFrame preview={preview} {...defaultProps} errors={errors} onSendErrors={onSendErrors} />);
 
     fireEvent.click(screen.getByLabelText("Toggle error panel"));
-    const fixButtons = screen.getAllByTitle("Send this error to Claude");
+    const fixButtons = screen.getAllByTitle("Send this error to the agent");
     fireEvent.click(fixButtons[0]);
     expect(onSendErrors).toHaveBeenCalledWith([errors[0]]);
   });
@@ -241,7 +241,7 @@ describe("PreviewFrame", () => {
 });
 
 describe("formatErrorForMessage", () => {
-  it("formats errors into a Claude-friendly prompt", () => {
+  it("formats errors into an agent-friendly prompt", () => {
     const errors: PreviewError[] = [
       makeError({ message: "TypeError: x is not a function", source: "http://localhost:5173/src/main.tsx", line: 10, col: 5 }),
     ];
