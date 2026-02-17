@@ -1,6 +1,7 @@
 import { useMemo, useEffect, useRef, useState, useCallback } from "react";
 import hljs from "highlight.js";
 import "highlight.js/styles/github-dark.css";
+import { Marked } from "marked";
 import { DiffBlock } from "./DiffBlock.js";
 import {
   ThinkingIndicator,
@@ -194,6 +195,41 @@ export function parseMessageSegments(text: string): MessageSegment[] {
   }
 
   return segments;
+}
+
+// Configured Marked instance for rendering assistant messages as markdown.
+// Uses highlight.js for fenced code blocks, matching the existing CodeBlock styling.
+const chatMarked = new Marked({
+  breaks: true,
+  gfm: true,
+  renderer: {
+    code({ text, lang }) {
+      const language = lang || "";
+      const highlighted =
+        language && hljs.getLanguage(language)
+          ? hljs.highlight(text, { language }).value
+          : hljs.highlightAuto(text).value;
+      const langLabel = language
+        ? `<div class="text-xs text-gray-500 px-3 py-1 border-b border-gray-300/50 dark:border-gray-700/50">${language}</div>`
+        : "";
+      return `<div class="my-2 rounded-md overflow-hidden bg-gray-100 dark:bg-gray-950">${langLabel}<pre class="p-3 overflow-x-auto text-xs leading-relaxed"><code class="hljs">${highlighted}</code></pre></div>`;
+    },
+  },
+});
+
+/** Render markdown text as HTML for assistant messages. */
+function MarkdownContent({ text }: { text: string }) {
+  const html = useMemo(() => {
+    return chatMarked.parse(text, { async: false }) as string;
+  }, [text]);
+
+  return (
+    <div
+      className="prose dark:prose-invert prose-sm max-w-none"
+      data-testid="markdown-content"
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
 }
 
 /**
@@ -536,6 +572,7 @@ export function MessageList({
         const msgMatches = matchesByMessage.get(i) ?? [];
         const segments = parseMessageSegments(msg.text);
         const hasCodeBlocks = segments.some((s) => s.type === "code");
+        const useMarkdown = msg.role === "assistant" && !msg.isError;
         const isEditing = editingIndex === i;
         const showEditActions = canEdit && msg.role === "user" && !msg.isError && !isEditing;
 
@@ -594,7 +631,7 @@ export function MessageList({
             ) : (
             <div
               className={`max-w-2xl rounded-lg px-4 py-3 text-sm ${
-                !hasCodeBlocks ? "whitespace-pre-wrap" : ""
+                !useMarkdown && !hasCodeBlocks ? "whitespace-pre-wrap" : ""
               } ${
                 msg.isError
                   ? "bg-red-100 dark:bg-red-900/60 text-red-700 dark:text-red-200 border border-red-300 dark:border-red-700/50"
@@ -603,7 +640,9 @@ export function MessageList({
                   : "bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100"
               }`}
             >
-              {hasCodeBlocks ? (
+              {useMarkdown ? (
+                <MarkdownContent text={msg.text} />
+              ) : hasCodeBlocks ? (
                 segments.map((seg, segIdx) => {
                   if (seg.type === "code") {
                     return (

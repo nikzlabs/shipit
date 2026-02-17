@@ -310,7 +310,7 @@ describe("MessageList", () => {
 
     it("highlights text in non-code segments when message has code blocks", () => {
       const text = "find hello here\n```js\ncode\n```\nmore text";
-      const messages = [msg("assistant", text)];
+      const messages = [msg("user", text)];
       // "hello" starts at index 5 in the original text, within the first text segment
       const searchMatches = [{ messageIndex: 0, start: 5, length: 5 }];
 
@@ -453,10 +453,10 @@ describe("MessageList", () => {
       expect(screen.getByText(/After code/)).toBeInTheDocument();
     });
 
-    it("preserves whitespace-pre-wrap for messages without code blocks", () => {
+    it("preserves whitespace-pre-wrap for user messages without code blocks", () => {
       render(
         <MessageList
-          messages={[msg("assistant", "plain text message")]}
+          messages={[msg("user", "plain text message")]}
           isLoading={false}
         />
       );
@@ -1072,6 +1072,151 @@ describe("MessageList", () => {
         />,
       );
       expect(queryByTestId("checkpoint-divider")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("markdown rendering for assistant messages", () => {
+    it("renders assistant messages with markdown-content container", () => {
+      const { container } = render(
+        <MessageList
+          messages={[msg("assistant", "Hello world")]}
+          isLoading={false}
+        />
+      );
+      expect(container.querySelector('[data-testid="markdown-content"]')).toBeInTheDocument();
+    });
+
+    it("renders bold text as <strong>", () => {
+      const { container } = render(
+        <MessageList
+          messages={[msg("assistant", "This is **bold** text")]}
+          isLoading={false}
+        />
+      );
+      const strong = container.querySelector("strong");
+      expect(strong).toBeInTheDocument();
+      expect(strong?.textContent).toBe("bold");
+    });
+
+    it("renders italic text as <em>", () => {
+      const { container } = render(
+        <MessageList
+          messages={[msg("assistant", "This is *italic* text")]}
+          isLoading={false}
+        />
+      );
+      const em = container.querySelector("em");
+      expect(em).toBeInTheDocument();
+      expect(em?.textContent).toBe("italic");
+    });
+
+    it("renders markdown headings", () => {
+      const { container } = render(
+        <MessageList
+          messages={[msg("assistant", "## Heading Two")]}
+          isLoading={false}
+        />
+      );
+      const h2 = container.querySelector("h2");
+      expect(h2).toBeInTheDocument();
+      expect(h2?.textContent).toBe("Heading Two");
+    });
+
+    it("renders markdown lists", () => {
+      const { container } = render(
+        <MessageList
+          messages={[msg("assistant", "- item one\n- item two\n- item three")]}
+          isLoading={false}
+        />
+      );
+      const items = container.querySelectorAll("li");
+      expect(items).toHaveLength(3);
+    });
+
+    it("renders markdown links", () => {
+      const { container } = render(
+        <MessageList
+          messages={[msg("assistant", "Check [this link](https://example.com)")]}
+          isLoading={false}
+        />
+      );
+      const link = container.querySelector("a");
+      expect(link).toBeInTheDocument();
+      expect(link?.getAttribute("href")).toBe("https://example.com");
+    });
+
+    it("renders inline code", () => {
+      const { container } = render(
+        <MessageList
+          messages={[msg("assistant", "Use `console.log()` for debugging")]}
+          isLoading={false}
+        />
+      );
+      const code = container.querySelector('[data-testid="markdown-content"] code');
+      expect(code).toBeInTheDocument();
+      expect(code?.textContent).toBe("console.log()");
+    });
+
+    it("preserves line breaks via breaks option", () => {
+      const { container } = render(
+        <MessageList
+          messages={[msg("assistant", "Line one\nLine two")]}
+          isLoading={false}
+        />
+      );
+      const br = container.querySelector('[data-testid="markdown-content"] br');
+      expect(br).toBeInTheDocument();
+    });
+
+    it("does not use markdown rendering for user messages", () => {
+      const { container } = render(
+        <MessageList
+          messages={[msg("user", "**not bold**")]}
+          isLoading={false}
+        />
+      );
+      expect(container.querySelector('[data-testid="markdown-content"]')).toBeNull();
+      expect(container.querySelector("strong")).toBeNull();
+      expect(screen.getByText("**not bold**")).toBeInTheDocument();
+    });
+
+    it("does not use markdown rendering for error messages", () => {
+      const errorMsg: ChatMessage = {
+        role: "assistant",
+        text: "**error** occurred",
+        isError: true,
+      };
+      const { container } = render(
+        <MessageList messages={[errorMsg]} isLoading={false} />
+      );
+      expect(container.querySelector('[data-testid="markdown-content"]')).toBeNull();
+      expect(container.querySelector("strong")).toBeNull();
+    });
+
+    it("does not apply whitespace-pre-wrap to assistant messages", () => {
+      const { container } = render(
+        <MessageList
+          messages={[msg("assistant", "plain text")]}
+          isLoading={false}
+        />
+      );
+      const mdContent = container.querySelector('[data-testid="markdown-content"]');
+      expect(mdContent).toBeInTheDocument();
+      const bubble = mdContent!.closest("div[class*='bg-']");
+      expect(bubble?.className).not.toContain("whitespace-pre-wrap");
+    });
+
+    it("renders fenced code blocks with syntax highlighting in markdown", () => {
+      const text = "Here is code:\n```javascript\nconst x = 42;\n```";
+      const { container } = render(
+        <MessageList
+          messages={[msg("assistant", text)]}
+          isLoading={false}
+        />
+      );
+      const codeEl = container.querySelector("pre code.hljs");
+      expect(codeEl).toBeInTheDocument();
+      expect(codeEl?.innerHTML).toContain("hljs-");
     });
   });
 
