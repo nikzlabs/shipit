@@ -680,13 +680,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
               .join("");
             if (text) {
               turnSummary = text;
-              accumulatedText = text;
+              accumulatedText += text;
             }
 
             const toolBlocks = (event.message?.content ?? [])
               .filter((b: ClaudeContentBlock): b is ClaudeContentBlockToolUse => b.type === "tool_use");
             if (toolBlocks.length > 0) {
-              accumulatedToolUse = toolBlocks;
+              accumulatedToolUse.push(...toolBlocks);
             }
           }
 
@@ -1079,13 +1079,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
                 .join("");
               if (text) {
                 turnSummary = text;
-                accumulatedText = text;
+                accumulatedText += text;
               }
 
               const toolBlocks = (event.message?.content ?? [])
                 .filter((b: ClaudeContentBlock): b is ClaudeContentBlockToolUse => b.type === "tool_use");
               if (toolBlocks.length > 0) {
-                accumulatedToolUse = toolBlocks;
+                accumulatedToolUse.push(...toolBlocks);
               }
             }
 

@@ -271,16 +271,17 @@ export default function App() {
 
         if (textBlocks || toolUseBlocks.length > 0) {
           setMessages((prev) => {
-            // If the last message is from the assistant and we're still loading,
-            // replace it (streaming update)
+            // If the last message is from the assistant and we're still streaming,
+            // merge new content into it (accumulate text and tool calls)
             const last = prev[prev.length - 1];
             if (last && last.role === "assistant" && last.streaming) {
               return [
                 ...prev.slice(0, -1),
                 {
                   role: "assistant" as const,
-                  text: textBlocks,
-                  toolUse: toolUseBlocks,
+                  text: last.text + textBlocks,
+                  toolUse: [...(last.toolUse ?? []), ...toolUseBlocks],
+                  toolResults: last.toolResults,
                   streaming: true,
                 },
               ];

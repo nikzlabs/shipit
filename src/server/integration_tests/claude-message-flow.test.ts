@@ -5,6 +5,7 @@ import path from "node:path";
 import { buildApp } from "../index.js";
 import { GitManager } from "../git.js";
 import { SessionManager } from "../sessions.js";
+import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../auth.js";
 import { ViteManager } from "../vite-manager.js";
 import { ClaudeProcess } from "../claude.js";
@@ -25,6 +26,7 @@ describe("Integration: Claude message flow", () => {
   let tmpDir: string;
   let gitManager: GitManager;
   let sessionManager: SessionManager;
+  let chatHistoryManager: ChatHistoryManager;
   /** Most recently created FakeClaudeProcess — set by claudeFactory. */
   let lastClaude: FakeClaudeProcess = null as any;
 
@@ -37,10 +39,12 @@ describe("Integration: Claude message flow", () => {
 
     const sessionsFile = path.join(tmpDir, "sessions.json");
     sessionManager = new SessionManager(sessionsFile);
+    chatHistoryManager = new ChatHistoryManager(path.join(tmpDir, "chat-history"));
 
     app = await buildApp({
       gitManager,
       sessionManager,
+      chatHistoryManager,
       viteManager: new StubViteManager() as unknown as ViteManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       claudeFactory: () => {
@@ -292,6 +296,157 @@ describe("Integration: Claude message flow", () => {
 
     const sessionsAfter = sessionManager.list();
     expect(sessionsAfter[0].lastUsedAt >= lastUsedBefore).toBe(true);
+
+    client.close();
+  });
+
+  it("accumulates tool use blocks across multiple assistant events in persisted chat history", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Edit some files" });
+    await waitForClaude(() => lastClaude);
+
+    // System init creates the session
+    lastClaude.emit("event", {
+      type: "system",
+      subtype: "init",
+      session_id: "tool-accum-session",
+    });
+    await client.receiveSkipLogs(); // claude_event
+    const sessionStarted = await client.receiveSkipLogs(); // session_started
+    const appSessionId = (sessionStarted as any).session.id;
+
+    // First assistant event with text + one tool call
+    lastClaude.emit("event", {
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: "I'll read and edit the file." },
+          {
+            type: "tool_use",
+            id: "tool-1",
+            name: "Read",
+            input: { file_path: "/app.ts" },
+          },
+        ],
+      },
+    });
+    await client.receiveSkipLogs(); // claude_event
+
+    // Second assistant event with another tool call (simulates a follow-up action)
+    lastClaude.emit("event", {
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: " Now editing." },
+          {
+            type: "tool_use",
+            id: "tool-2",
+            name: "Edit",
+            input: { file_path: "/app.ts", old_string: "x", new_string: "y" },
+          },
+        ],
+      },
+    });
+    await client.receiveSkipLogs(); // claude_event
+
+    // Third assistant event with yet another tool call
+    lastClaude.emit("event", {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-3",
+            name: "Write",
+            input: { file_path: "/new.ts", content: "export default {}" },
+          },
+        ],
+      },
+    });
+    await client.receiveSkipLogs(); // claude_event
+
+    // Complete the turn
+    lastClaude.finish("tool-accum-session");
+    await client.receiveSkipLogs(); // result claude_event
+
+    // Verify persisted chat history has ALL tool calls, not just the last one
+    const messages = chatHistoryManager.load(appSessionId);
+    // messages[0] = user message, messages[1] = assistant message
+    const assistantMsg = messages.find((m) => m.role === "assistant");
+    expect(assistantMsg).toBeDefined();
+    expect(assistantMsg!.text).toBe("I'll read and edit the file. Now editing.");
+    expect(assistantMsg!.toolUse).toHaveLength(3);
+    expect(assistantMsg!.toolUse![0].id).toBe("tool-1");
+    expect(assistantMsg!.toolUse![0].name).toBe("Read");
+    expect(assistantMsg!.toolUse![1].id).toBe("tool-2");
+    expect(assistantMsg!.toolUse![1].name).toBe("Edit");
+    expect(assistantMsg!.toolUse![2].id).toBe("tool-3");
+    expect(assistantMsg!.toolUse![2].name).toBe("Write");
+
+    client.close();
+  });
+
+  it("relays all tool use blocks to client across multiple assistant events", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Do parallel work" });
+    await waitForClaude(() => lastClaude);
+
+    // System init
+    lastClaude.emit("event", {
+      type: "system",
+      subtype: "init",
+      session_id: "relay-session",
+    });
+    await client.receiveSkipLogs(); // claude_event
+    await client.receiveSkipLogs(); // session_started
+
+    // First assistant event with a tool call
+    lastClaude.emit("event", {
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: "Reading file" },
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "Read",
+            input: { file_path: "/a.ts" },
+          },
+        ],
+      },
+    });
+    const event1 = await client.receiveSkipLogs();
+    expect(event1.type).toBe("claude_event");
+    expect((event1 as any).event.type).toBe("assistant");
+    const content1 = (event1 as any).event.message.content;
+    expect(content1).toHaveLength(2);
+    expect(content1[0]).toMatchObject({ type: "text", text: "Reading file" });
+    expect(content1[1]).toMatchObject({ type: "tool_use", id: "t1", name: "Read" });
+
+    // Second assistant event with another tool call
+    lastClaude.emit("event", {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "t2",
+            name: "Edit",
+            input: { file_path: "/a.ts", old_string: "x", new_string: "y" },
+          },
+        ],
+      },
+    });
+    const event2 = await client.receiveSkipLogs();
+    expect(event2.type).toBe("claude_event");
+    // The second event should also contain its tool_use block
+    const content2 = (event2 as any).event.message.content;
+    expect(content2).toHaveLength(1);
+    expect(content2[0]).toMatchObject({ type: "tool_use", id: "t2", name: "Edit" });
 
     client.close();
   });
