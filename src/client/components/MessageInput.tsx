@@ -195,8 +195,10 @@ export function MessageInput({
         </div>
       )}
 
-      {/* Activity status bar — shown while the agent is working */}
-      {activity && (
+      {/* Activity status bar — shown while the agent is working on a specific tool.
+         Generic "Thinking..." is already shown as a chat bubble in MessageList,
+         so we only display tool-specific activity here to avoid duplication. */}
+      {activity?.tool && (
         <div className="flex items-center gap-2 mb-2 text-xs text-gray-500 dark:text-gray-400 max-w-3xl mx-auto">
           <TypingDots />
           <span>{activity.label}</span>

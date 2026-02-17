@@ -239,14 +239,19 @@ describe("MessageInput", () => {
   });
 
   describe("activity indicator", () => {
-    it("shows activity label when provided", () => {
+    it("shows activity label for tool-specific activity", () => {
+      render(<MessageInput onSend={vi.fn()} disabled={true} activity={{ label: "Editing src/app.ts", tool: "Edit" }} />);
+      expect(screen.getByText("Editing src/app.ts")).toBeInTheDocument();
+    });
+
+    it("hides generic thinking activity (shown in chat bubble instead)", () => {
       render(<MessageInput onSend={vi.fn()} disabled={true} activity={{ label: "Thinking..." }} />);
-      expect(screen.getByText("Thinking...")).toBeInTheDocument();
+      expect(screen.queryByText("Thinking...")).not.toBeInTheDocument();
     });
 
     it("hides activity label when not provided", () => {
       render(<MessageInput onSend={vi.fn()} disabled={false} />);
-      expect(screen.queryByText("Thinking...")).not.toBeInTheDocument();
+      expect(screen.queryByText("Editing src/app.ts")).not.toBeInTheDocument();
     });
   });
 });
