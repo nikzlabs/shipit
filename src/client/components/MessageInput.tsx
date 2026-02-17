@@ -1,5 +1,4 @@
 import { useState, useRef, useCallback } from "react";
-import { TypingDots, type StreamingActivity } from "./StreamingIndicator.js";
 
 export interface ImagePreview {
   data: string;       // base64-encoded
@@ -15,12 +14,9 @@ const MAX_IMAGES = 5;
 export function MessageInput({
   onSend,
   disabled,
-  activity,
 }: {
   onSend: (text: string, images?: Array<{ data: string; mediaType: string; filename: string }>) => void;
   disabled: boolean;
-  /** When set, the agent is actively working — show status above input. */
-  activity?: StreamingActivity;
 }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<ImagePreview[]>([]);
@@ -192,16 +188,6 @@ export function MessageInput({
       {isDragging && (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-blue-500/10 border-2 border-dashed border-blue-500 rounded-lg pointer-events-none">
           <span className="text-blue-400 text-sm font-medium">Drop image here</span>
-        </div>
-      )}
-
-      {/* Activity status bar — shown while the agent is working on a specific tool.
-         Generic "Thinking..." is already shown as a chat bubble in MessageList,
-         so we only display tool-specific activity here to avoid duplication. */}
-      {activity?.tool && (
-        <div className="flex items-center gap-2 mb-2 text-xs text-gray-500 dark:text-gray-400 max-w-3xl mx-auto">
-          <TypingDots />
-          <span>{activity.label}</span>
         </div>
       )}
 
