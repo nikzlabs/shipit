@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 
-export type LogSource = "stderr" | "stdout" | "server" | "preview";
+export type LogSource = "stderr" | "stdout" | "server" | "preview" | "deploy";
 
 export interface LogEntry {
   source: LogSource;
@@ -18,6 +18,7 @@ const SOURCE_COLORS: Record<LogEntry["source"], string> = {
   stdout: "text-gray-700 dark:text-gray-300",
   server: "text-blue-400",
   preview: "text-orange-400",
+  deploy: "text-cyan-400",
 };
 
 const SOURCE_LABELS: Record<LogEntry["source"], string> = {
@@ -25,6 +26,7 @@ const SOURCE_LABELS: Record<LogEntry["source"], string> = {
   stdout: "out",
   server: "srv",
   preview: "pre",
+  deploy: "dpl",
 };
 
 function formatTime(iso: string): string {
@@ -36,13 +38,14 @@ function formatTime(iso: string): string {
   }
 }
 
-const ALL_SOURCES: LogSource[] = ["stderr", "stdout", "server", "preview"];
+const ALL_SOURCES: LogSource[] = ["stderr", "stdout", "server", "preview", "deploy"];
 
 const FILTER_COLORS: Record<LogSource, { active: string; inactive: string }> = {
   stderr: { active: "bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300", inactive: "text-gray-500 hover:text-red-500 dark:hover:text-red-400" },
   stdout: { active: "bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200", inactive: "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300" },
   server: { active: "bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300", inactive: "text-gray-500 hover:text-blue-500 dark:hover:text-blue-400" },
   preview: { active: "bg-orange-100 dark:bg-orange-900 text-orange-700 dark:text-orange-300", inactive: "text-gray-500 hover:text-orange-500 dark:hover:text-orange-400" },
+  deploy: { active: "bg-cyan-100 dark:bg-cyan-900 text-cyan-700 dark:text-cyan-300", inactive: "text-gray-500 hover:text-cyan-500 dark:hover:text-cyan-400" },
 };
 
 export function TerminalPanel({ entries, onClear }: TerminalPanelProps) {

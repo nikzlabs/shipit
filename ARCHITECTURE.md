@@ -996,6 +996,75 @@ This pattern is used in both the `fork_thread` and `switch_thread` handlers in `
 - **`src/client/components/ThreadIndicator.tsx`** — Thread dropdown with thread switching, checkpoint creation input, fork-thread-from-checkpoint buttons.
 - **`src/client/App.tsx`** — Thread state management (`threads`, `activeThreadId`), WS message handlers, callback wiring to `ThreadIndicator`.
 
+## Deployment Integration
+
+Users can deploy their projects to external hosting platforms (Vercel, Cloudflare Pages) directly from the ShipIt UI. The deployment system uses a pluggable target architecture — new platforms can be added by implementing the `DeployTarget` interface.
+
+### Architecture
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  DeploymentManager (registry + orchestrator)             │
+│  ├── register(target)     → adds to target map           │
+│  ├── deploy(targetId, ctx) → dispatches to target        │
+│  ├── detectFramework()    → inspects package.json        │
+│  ├── build()              → runs build command           │
+│  └── cancel()             → aborts via AbortController   │
+│         │                                                │
+│         ├── VercelTarget                                 │
+│         │   └── spawns `vercel deploy`                   │
+│         └── CloudflareTarget                             │
+│             └── spawns `wrangler pages deploy`           │
+│                                                          │
+│  DeploymentStore (credentials + history)                 │
+│  ├── saveConfig()         → per-session credentials      │
+│  ├── loadConfig()         → retrieve credentials         │
+│  ├── recordDeployment()   → append to history            │
+│  └── getHistory()         → retrieve deployment log      │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Deploy Flow
+
+1. User clicks the "Deploy" button in the header
+2. Client sends `list_deploy_targets` and `get_deploy_config` to populate the modal
+3. User configures credentials (`deploy_configure` → saved by `DeploymentStore`)
+4. User clicks "Deploy to Production" → `initiate_deploy`
+5. Server auto-detects framework, runs build command, then dispatches to the target
+6. Deploy progress streams to the Terminal panel via `deploy` log source
+7. On success: `deploy_complete` with live URL; on failure: `deploy_error`
+8. Deployments are recorded in history for the session
+
+### Adding a New Deploy Target
+
+1. Create a new file in `src/server/deploy-targets/` implementing the `DeployTarget` interface
+2. Implement `info` (metadata + config fields) and `deploy(ctx)` method
+3. Optionally implement `prepare(ctx)` for pre-deploy setup (e.g., project creation)
+4. Register the target in `index.ts` inside the `deploymentManager` initialization block
+5. The UI automatically renders config fields from `info.configFields` — no client changes needed
+
+### Key Files
+
+- **`src/server/deploy-targets/deploy-target.ts`** — `DeployTarget` interface, `DeployContext`, `DeployResult` types.
+- **`src/server/deploy-targets/vercel.ts`** — `VercelTarget` — spawns `vercel deploy` CLI.
+- **`src/server/deploy-targets/cloudflare.ts`** — `CloudflareTarget` — spawns `wrangler pages deploy`.
+- **`src/server/deployment-manager.ts`** — `DeploymentManager` class: target registry, framework detection, build orchestration, deploy dispatch.
+- **`src/server/deployment-store.ts`** — `DeploymentStore` class: per-session credential storage, deployment history, JSON file persistence.
+- **`src/server/types.ts`** — `DeployTargetInfo`, `ConfigField`, `DeploymentRecord` types; all deployment WS messages.
+- **`src/server/index.ts`** — WS handlers for `list_deploy_targets`, `deploy_configure`, `initiate_deploy`, `get_deploy_history`, `get_deploy_config`, `cancel_deploy`, `delete_deploy_config`.
+- **`src/client/components/DeployModal.tsx`** — Multi-view modal: target picker → config form → ready → deploying → complete/error.
+- **`src/client/App.tsx`** — Deploy state management, header button, WS message handlers, "Send to Claude" for deploy errors.
+
+### Terminal Integration
+
+Deploy log output uses the `"deploy"` log source, displayed in the Terminal panel with a cyan `[dpl]` label. This is distinct from Claude CLI output (`stderr`/`stdout`), server events (`server`), and preview errors (`preview`).
+
+### Error Recovery
+
+When a deployment fails, the error message is shown in the DeployModal with two options:
+- **Send to Claude**: Sends the error to Claude as a chat message for automated debugging
+- **Retry**: Re-initiates the deployment
+
 ## Build & Run
 
 ```bash
