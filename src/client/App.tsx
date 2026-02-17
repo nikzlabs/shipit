@@ -28,6 +28,7 @@ import { TemplateSelector, type TemplateInfo } from "./components/TemplateSelect
 import { UsageModal, type SessionUsage, type UsageStats } from "./components/UsageModal.js";
 import { SystemPromptEditor } from "./components/SystemPromptEditor.js";
 import { GitIdentityOverlay } from "./components/GitIdentityOverlay.js";
+import { ThreadIndicator, type ThreadInfo } from "./components/ThreadIndicator.js";
 import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal";
@@ -95,6 +96,8 @@ export default function App() {
   const [hasSystemPrompt, setHasSystemPrompt] = useState(false);
   const [systemPromptContent, setSystemPromptContent] = useState("");
   const [gitIdentityNeeded, setGitIdentityNeeded] = useState(false);
+  const [threads, setThreads] = useState<ThreadInfo[]>([]);
+  const [activeThreadId, setActiveThreadId] = useState<string>("");
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
   const historyLoadedRef = useRef(false);
@@ -420,6 +423,8 @@ export default function App() {
         }
         return [data.session, ...prev];
       });
+      // Load threads for this session
+      send({ type: "list_threads" });
     }
 
     if (data.type === "session_renamed") {
@@ -547,6 +552,56 @@ export default function App() {
       setSystemPromptContent(data.content);
       setHasSystemPrompt(data.content.length > 0);
       setSystemPromptOpen(false);
+    }
+
+    if (data.type === "thread_list") {
+      setThreads(data.threads);
+      setActiveThreadId(data.activeThreadId);
+    }
+
+    if (data.type === "checkpoint_created") {
+      // Update the thread's checkpoints in local state
+      setThreads((prev) =>
+        prev.map((t) =>
+          t.id === data.threadId
+            ? { ...t, checkpoints: [...t.checkpoints, data.checkpoint] }
+            : t,
+        ),
+      );
+    }
+
+    if (data.type === "thread_forked") {
+      setThreads((prev) => {
+        const deactivated = prev.map((t) => ({ ...t, isActive: false }));
+        return [...deactivated, data.thread];
+      });
+      setActiveThreadId(data.thread.id);
+      // Replace messages with the thread's conversation
+      const loaded: ChatMessage[] = data.messages.map((m: WsChatHistoryMessage) => ({
+        role: m.role,
+        text: m.text,
+        toolUse: m.toolUse,
+        images: m.images,
+        isError: m.isError,
+        streaming: false,
+      }));
+      setMessages(loaded);
+    }
+
+    if (data.type === "thread_switched") {
+      setThreads((prev) =>
+        prev.map((t) => ({ ...t, isActive: t.id === data.thread.id })),
+      );
+      setActiveThreadId(data.thread.id);
+      const loaded: ChatMessage[] = data.messages.map((m: WsChatHistoryMessage) => ({
+        role: m.role,
+        text: m.text,
+        toolUse: m.toolUse,
+        images: m.images,
+        isError: m.isError,
+        streaming: false,
+      }));
+      setMessages(loaded);
     }
 
     if (data.type === "log_entry") {
@@ -742,6 +797,8 @@ export default function App() {
       setGitCommits([]);
       setFileTree([]);
       setCurrentSessionUsage(null);
+      setThreads([]);
+      setActiveThreadId("");
       // Load persisted chat history for this session (also activates session on server)
       send({ type: "get_chat_history", sessionId });
       // Refresh file tree and git log for the new session's workspace
@@ -764,6 +821,8 @@ export default function App() {
     setViewingFileBinary(false);
     setGitCommits([]);
     setFileTree([]);
+    setThreads([]);
+    setActiveThreadId("");
     send({ type: "new_session" });
     // Request templates for the picker
     if (templates.length === 0) {
@@ -891,6 +950,27 @@ export default function App() {
   const handleSystemPromptSave = useCallback(
     (content: string) => {
       send({ type: "set_system_prompt", content });
+    },
+    [send],
+  );
+
+  const handleCreateCheckpoint = useCallback(
+    (label?: string) => {
+      send({ type: "create_checkpoint", label });
+    },
+    [send],
+  );
+
+  const handleForkThread = useCallback(
+    (checkpointId: string) => {
+      send({ type: "fork_thread", checkpointId });
+    },
+    [send],
+  );
+
+  const handleSwitchThread = useCallback(
+    (threadId: string) => {
+      send({ type: "switch_thread", threadId });
     },
     [send],
   );
@@ -1064,6 +1144,18 @@ export default function App() {
           onEditMessage={handleEditMessage}
           onAnswerQuestion={handleAnswerQuestion}
         />
+      )}
+      {!showTemplatePicker && (
+        <div className="border-t border-gray-200 dark:border-gray-800 px-4 py-1.5 flex items-center gap-2">
+          <ThreadIndicator
+            threads={threads}
+            activeThreadId={activeThreadId}
+            onCreateCheckpoint={handleCreateCheckpoint}
+            onForkThread={handleForkThread}
+            onSwitchThread={handleSwitchThread}
+            disabled={isLoading || status !== "open"}
+          />
+        </div>
       )}
       {!showTemplatePicker && (
         <GitHistory

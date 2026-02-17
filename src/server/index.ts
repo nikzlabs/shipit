@@ -17,6 +17,7 @@ import { scanPorts, snapshotBaselinePorts, DEFAULT_SCAN_PORTS } from "./port-sca
 import { UsageManager } from "./usage.js";
 import { FileWatcher } from "./file-watcher.js";
 import { listTemplates, getTemplate, applyTemplate } from "./templates.js";
+import { ThreadManager } from "./threads.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment } from "./types.js";
 
 function getErrorMessage(err: unknown): string {
@@ -142,6 +143,11 @@ export interface AppDeps {
    * Inject a stub in tests to avoid real filesystem watching.
    */
   fileWatcher?: FileWatcher;
+  /**
+   * Thread manager instance. Defaults to `new ThreadManager()`.
+   * Manages conversation threads and checkpoints.
+   */
+  threadManager?: ThreadManager;
 }
 
 /**
@@ -209,6 +215,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       console.error("[server] Failed to load GitHub user info:", err);
     });
   }
+
+  // ---- Thread manager ----
+  const threadManager = deps.threadManager ?? new ThreadManager(
+    path.join(workspaceDir, ".vibe-threads")
+  );
 
   // ---- File watcher ----
   const fileWatcher = deps.fileWatcher ?? new FileWatcher();
@@ -398,6 +409,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
 
     sessionManager.track(appSessionId, title, sessionDir);
+    threadManager.init(appSessionId);
     console.log("[server] Created session directory:", sessionDir);
 
     return { appSessionId, sessionDir };
@@ -840,6 +852,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         sessionManager.delete(msg.sessionId);
         chatHistoryManager.delete(msg.sessionId);
         usageManager.delete(msg.sessionId);
+        threadManager.delete(msg.sessionId);
         send({ type: "session_list", sessions: sessionManager.list() });
       }
 
@@ -1326,6 +1339,176 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
       if (msg.type === "get_usage_stats") {
         send({ type: "usage_stats", stats: usageManager.getStats() });
+      }
+
+      // ---- Thread & checkpoint operations ----
+
+      if (msg.type === "list_threads") {
+        if (!activeAppSessionId) {
+          send({ type: "error", message: "No active session" });
+          return;
+        }
+        const data = threadManager.listThreads(activeAppSessionId);
+        send({ type: "thread_list", threads: data.threads, activeThreadId: data.activeThreadId });
+      }
+
+      if (msg.type === "create_checkpoint") {
+        if (!activeAppSessionId) {
+          send({ type: "error", message: "No active session" });
+          return;
+        }
+        const label = typeof msg.label === "string" ? msg.label.trim() : undefined;
+        if (label !== undefined && label.length > 200) {
+          send({ type: "error", message: "Checkpoint label too long (max 200 characters)" });
+          return;
+        }
+
+        try {
+          const git = getActiveGitManager();
+          const commits = await git.log(1);
+          const commitHash = commits.length > 0 ? commits[0].hash : "";
+          const messages = chatHistoryManager.load(activeAppSessionId);
+
+          const checkpoint = threadManager.createCheckpoint(
+            activeAppSessionId,
+            messages.length,
+            commitHash,
+            label || undefined,
+          );
+
+          if (!checkpoint) {
+            send({ type: "error", message: "Failed to create checkpoint — no active thread" });
+            return;
+          }
+
+          const activeThread = threadManager.getActiveThread(activeAppSessionId);
+          send({
+            type: "checkpoint_created",
+            checkpoint,
+            threadId: activeThread?.id ?? "",
+          });
+        } catch (err) {
+          send({ type: "error", message: `Failed to create checkpoint: ${getErrorMessage(err)}` });
+        }
+      }
+
+      if (msg.type === "fork_thread") {
+        if (!activeAppSessionId) {
+          send({ type: "error", message: "No active session" });
+          return;
+        }
+        const checkpointId = typeof msg.checkpointId === "string" ? msg.checkpointId.trim() : "";
+        if (!checkpointId) {
+          send({ type: "error", message: "Checkpoint ID is required" });
+          return;
+        }
+
+        const checkpoint = threadManager.getCheckpoint(activeAppSessionId, checkpointId);
+        if (!checkpoint) {
+          send({ type: "error", message: "Checkpoint not found" });
+          return;
+        }
+
+        try {
+          // Snapshot data BEFORE git rollback. `git reset --hard` reverts all
+          // files in the working tree, including thread and chat-history JSON
+          // files that live inside the workspace.
+          const fullHistory = chatHistoryManager.load(activeAppSessionId);
+          const threadMessages = fullHistory.slice(0, checkpoint.messageIndex);
+          const threadSnapshot = threadManager.listThreads(activeAppSessionId);
+
+          // Roll back git to the checkpoint's commit
+          const git = getActiveGitManager();
+          if (checkpoint.commitHash) {
+            await git.rollback(checkpoint.commitHash);
+          }
+
+          // Restore thread data (may have been reverted by git rollback) and
+          // fork the new thread. We call restore to re-persist the snapshot,
+          // then forkThread to add the new thread.
+          threadManager.restore(activeAppSessionId, threadSnapshot);
+          const newThread = threadManager.forkThread(activeAppSessionId, checkpointId);
+          if (!newThread) {
+            send({ type: "error", message: "Failed to fork thread" });
+            return;
+          }
+
+          // Save thread-specific chat history
+          const threadHistoryKey = `${activeAppSessionId}__${newThread.id}`;
+          for (const m of threadMessages) {
+            chatHistoryManager.append(threadHistoryKey, m);
+          }
+
+          // Restart Vite after git rollback
+          viteManager.restart(getActiveDir());
+
+          send({
+            type: "thread_forked",
+            thread: newThread,
+            messages: threadMessages,
+          });
+        } catch (err) {
+          send({ type: "error", message: `Failed to fork thread from checkpoint: ${getErrorMessage(err)}` });
+        }
+      }
+
+      if (msg.type === "switch_thread") {
+        if (!activeAppSessionId) {
+          send({ type: "error", message: "No active session" });
+          return;
+        }
+        const threadId = typeof msg.threadId === "string" ? msg.threadId.trim() : "";
+        if (!threadId) {
+          send({ type: "error", message: "Thread ID is required" });
+          return;
+        }
+
+        // Snapshot thread data before switch (git rollback may revert files)
+        const threadSnapshot = threadManager.listThreads(activeAppSessionId);
+
+        const thread = threadManager.switchThread(activeAppSessionId, threadId);
+        if (!thread) {
+          send({ type: "error", message: "Thread not found" });
+          return;
+        }
+
+        try {
+          // Load conversation for this thread BEFORE any git rollback
+          let messages;
+          if (thread.parentCheckpointId === null) {
+            messages = chatHistoryManager.load(activeAppSessionId);
+          } else {
+            const threadHistoryKey = `${activeAppSessionId}__${threadId}`;
+            messages = chatHistoryManager.load(threadHistoryKey);
+          }
+
+          // Roll back git to the thread's parent checkpoint
+          if (thread.parentCheckpointId) {
+            const checkpoint = threadManager.getCheckpoint(activeAppSessionId, thread.parentCheckpointId);
+            if (checkpoint?.commitHash) {
+              const git = getActiveGitManager();
+              await git.rollback(checkpoint.commitHash);
+              // Restore thread data after rollback (git reset may have reverted it)
+              threadManager.restore(activeAppSessionId, {
+                ...threadSnapshot,
+                activeThreadId: threadId,
+                threads: threadSnapshot.threads.map((t) => ({
+                  ...t,
+                  isActive: t.id === threadId,
+                })),
+              });
+              viteManager.restart(getActiveDir());
+            }
+          }
+
+          send({
+            type: "thread_switched",
+            thread,
+            messages,
+          });
+        } catch (err) {
+          send({ type: "error", message: `Failed to switch thread: ${getErrorMessage(err)}` });
+        }
       }
     });
 
