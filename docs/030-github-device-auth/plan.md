@@ -1,7 +1,9 @@
 ---
-status: in-progress
+status: paused
 ---
 # 030 — GitHub Device Authorization Flow
+
+> **Paused**: This feature requires deploying a publicly accessible website and registering a new GitHub OAuth App before implementation can proceed.
 
 ## Summary
 
