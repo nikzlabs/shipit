@@ -1120,27 +1120,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         send({ type: "session_list", sessions: sessionManager.list() });
       }
 
-      if (msg.type === "delete_session") {
-        // If deleting the active session, clear it
+      if (msg.type === "archive_session") {
+        // If archiving the active session, clear it
         if (msg.sessionId === activeAppSessionId) {
           activeAppSessionId = undefined;
           activeSessionDir = null;
         }
-        // Remove session directory if it has one
-        const session = sessionManager.get(msg.sessionId);
-        if (session?.workspaceDir) {
-          try {
-            await fs.rm(session.workspaceDir, { recursive: true, force: true });
-            console.log("[server] Deleted session directory:", session.workspaceDir);
-          } catch (err) {
-            console.error("[server] Failed to delete session directory:", getErrorMessage(err));
-          }
-        }
-        sessionManager.delete(msg.sessionId);
-        chatHistoryManager.delete(msg.sessionId);
-        usageManager.delete(msg.sessionId);
-        threadManager.delete(msg.sessionId);
-        deploymentStore.deleteSession(msg.sessionId);
+        sessionManager.archive(msg.sessionId);
         send({ type: "session_list", sessions: sessionManager.list() });
       }
 

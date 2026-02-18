@@ -18,7 +18,7 @@ const defaultProps = {
   currentSessionId: undefined,
   onResume: vi.fn(),
   onNew: vi.fn(),
-  onDelete: vi.fn(),
+  onArchive: vi.fn(),
   onRename: vi.fn(),
   onRefresh: vi.fn(),
   collapsed: false,
@@ -132,20 +132,20 @@ describe("SessionSidebar", () => {
     expect(onRename).toHaveBeenCalledWith("s1", "New name");
   });
 
-  it("shows delete button on non-current sessions", () => {
-    const onDelete = vi.fn();
-    const sessions = [baseSession({ id: "s1", title: "Deletable" })];
-    render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" onDelete={onDelete} />);
-    const deleteBtn = screen.getByTitle("Delete session");
-    expect(deleteBtn).toBeTruthy();
-    fireEvent.click(deleteBtn);
-    expect(onDelete).toHaveBeenCalledWith("s1");
+  it("shows archive button on non-current sessions", () => {
+    const onArchive = vi.fn();
+    const sessions = [baseSession({ id: "s1", title: "Archivable" })];
+    render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" onArchive={onArchive} />);
+    const archiveBtn = screen.getByTitle("Archive session");
+    expect(archiveBtn).toBeTruthy();
+    fireEvent.click(archiveBtn);
+    expect(onArchive).toHaveBeenCalledWith("s1");
   });
 
-  it("does not show delete button on current session", () => {
+  it("does not show archive button on current session", () => {
     const sessions = [baseSession({ id: "s1", title: "Current" })];
     render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" />);
-    expect(screen.queryByTitle("Delete session")).toBeNull();
+    expect(screen.queryByTitle("Archive session")).toBeNull();
   });
 
   it("shows collapsed state with expand button", () => {

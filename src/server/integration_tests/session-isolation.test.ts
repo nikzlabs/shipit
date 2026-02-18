@@ -166,7 +166,7 @@ describe("Integration: Session isolation", () => {
     client.close();
   });
 
-  it("delete_session removes the session directory from disk", async () => {
+  it("archive_session preserves the session directory on disk", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
@@ -180,13 +180,13 @@ describe("Integration: Session isolation", () => {
     // Verify directory exists
     expect(fs.existsSync(session.workspaceDir)).toBe(true);
 
-    // Delete the session
-    client.send({ type: "delete_session", sessionId: session.id });
-    const deleteMsg = await client.receive();
-    expect(deleteMsg.type).toBe("session_list");
+    // Archive the session
+    client.send({ type: "archive_session", sessionId: session.id });
+    const archiveMsg = await client.receive();
+    expect(archiveMsg.type).toBe("session_list");
 
-    // Verify directory was removed
-    expect(fs.existsSync(session.workspaceDir)).toBe(false);
+    // Verify directory is still present (archive preserves data)
+    expect(fs.existsSync(session.workspaceDir)).toBe(true);
 
     client.close();
   });

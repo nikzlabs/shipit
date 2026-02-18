@@ -41,11 +41,11 @@ export class SessionManager {
     }
   }
 
-  /** List all known sessions, most recently used first. */
+  /** List all non-archived sessions, most recently used first. */
   list(): SessionInfo[] {
-    return [...this.sessions].sort(
-      (a, b) => new Date(b.lastUsedAt).getTime() - new Date(a.lastUsedAt).getTime()
-    );
+    return this.sessions
+      .filter((s) => s.archived !== true)
+      .sort((a, b) => new Date(b.lastUsedAt).getTime() - new Date(a.lastUsedAt).getTime());
   }
 
   /** Get a session by id. Returns undefined if not found. */
@@ -102,6 +102,15 @@ export class SessionManager {
     session.title = title;
     this.save();
     return session;
+  }
+
+  /** Archive a session (hide from list, preserve all data). */
+  archive(id: string): boolean {
+    const session = this.sessions.find((s) => s.id === id);
+    if (!session) return false;
+    session.archived = true;
+    this.save();
+    return true;
   }
 
   /** Delete a session by id. */

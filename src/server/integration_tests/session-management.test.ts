@@ -83,7 +83,7 @@ describe("Integration: Session management", () => {
     client.close();
   });
 
-  it("delete_session removes a session", async () => {
+  it("archive_session hides a session from the list", async () => {
     // Pre-populate a session
     sessionManager.track("sess-1", "Test session");
 
@@ -95,11 +95,16 @@ describe("Integration: Session management", () => {
     const listMsg = await client.receive();
     expect((listMsg as any).sessions).toHaveLength(1);
 
-    // Delete it
-    client.send({ type: "delete_session", sessionId: "sess-1" });
-    const deleteMsg = await client.receive();
-    expect(deleteMsg.type).toBe("session_list");
-    expect((deleteMsg as any).sessions).toHaveLength(0);
+    // Archive it
+    client.send({ type: "archive_session", sessionId: "sess-1" });
+    const archiveMsg = await client.receive();
+    expect(archiveMsg.type).toBe("session_list");
+    expect((archiveMsg as any).sessions).toHaveLength(0);
+
+    // Session data is still preserved in the manager
+    const session = sessionManager.get("sess-1");
+    expect(session).toBeDefined();
+    expect(session!.archived).toBe(true);
 
     client.close();
   });
