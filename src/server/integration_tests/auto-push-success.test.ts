@@ -54,6 +54,7 @@ beforeEach(async () => {
     deploymentManager: new StubDeploymentManager() as any,
     deploymentStore: new StubDeploymentStore() as any,
     featureManager: new FeatureManager(tmpDir),
+    autoPushDebounceMs: 100,
   });
 
   await app.listen({ port: 0, host: "127.0.0.1" });
@@ -127,7 +128,7 @@ function createBareRemote(sessionDir: string): string {
 }
 
 /** Drain all messages from the client until timeout. */
-async function drainMessages(timeoutMs = 8000): Promise<WsServerMessage[]> {
+async function drainMessages(timeoutMs = 3000): Promise<WsServerMessage[]> {
   const messages: WsServerMessage[] = [];
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -156,15 +157,15 @@ describe("auto-push: success and failure", () => {
     const claude2 = await waitForClaude(() => latestClaude, prevClaude);
     claude2.finish("test-session-1");
 
-    // Wait for the auto-push result (5s debounce + processing)
-    const messages = await drainMessages(10000);
+    // Wait for the auto-push result (100ms debounce + processing)
+    const messages = await drainMessages();
     const pushResult = messages.find((m) => m.type === "github_push_result");
     expect(pushResult).toBeDefined();
     expect(pushResult).toMatchObject({
       type: "github_push_result",
       success: true,
     });
-  }, 15000);
+  });
 
   it("push failure is non-fatal and emits a log entry", async () => {
     await githubAuth.setToken("test-token");
@@ -184,7 +185,7 @@ describe("auto-push: success and failure", () => {
     claude2.finish("test-session-1");
 
     // Wait for the debounce period — push will fail but should emit a log entry
-    const messages = await drainMessages(10000);
+    const messages = await drainMessages();
 
     // Should have a log_entry about auto-push failure
     const failLog = messages.find(
@@ -198,5 +199,5 @@ describe("auto-push: success and failure", () => {
     // Should NOT have a successful github_push_result
     const pushResult = messages.find((m) => m.type === "github_push_result");
     expect(pushResult).toBeUndefined();
-  }, 15000);
+  });
 });

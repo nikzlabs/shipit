@@ -54,6 +54,7 @@ beforeEach(async () => {
     deploymentManager: new StubDeploymentManager() as any,
     deploymentStore: new StubDeploymentStore() as any,
     featureManager: new FeatureManager(tmpDir),
+    autoPushDebounceMs: 100,
   });
 
   await app.listen({ port: 0, host: "127.0.0.1" });
@@ -99,7 +100,7 @@ async function createSession(): Promise<{ sessionId: string; sessionDir: string 
 }
 
 /** Drain all messages from the client until timeout. */
-async function drainMessages(timeoutMs = 8000): Promise<WsServerMessage[]> {
+async function drainMessages(timeoutMs = 2000): Promise<WsServerMessage[]> {
   const messages: WsServerMessage[] = [];
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -144,11 +145,11 @@ describe("auto-push: skip conditions", () => {
     const claude2 = await waitForClaude(() => latestClaude, prevClaude);
     claude2.finish("test-session-1");
 
-    // Wait past the debounce — no push_result should appear
-    const messages = await drainMessages(7000);
+    // Wait past the debounce (100ms) — no push_result should appear
+    const messages = await drainMessages();
     const pushResult = messages.find((m) => m.type === "github_push_result");
     expect(pushResult).toBeUndefined();
-  }, 12000);
+  });
 
   it("does not push when no origin remote is configured", async () => {
     await githubAuth.setToken("test-token");
@@ -162,9 +163,9 @@ describe("auto-push: skip conditions", () => {
     const claude2 = await waitForClaude(() => latestClaude, prevClaude);
     claude2.finish("test-session-1");
 
-    // Wait past the debounce — no push_result should appear
-    const messages = await drainMessages(7000);
+    // Wait past the debounce (100ms) — no push_result should appear
+    const messages = await drainMessages();
     const pushResult = messages.find((m) => m.type === "github_push_result");
     expect(pushResult).toBeUndefined();
-  }, 12000);
+  });
 });
