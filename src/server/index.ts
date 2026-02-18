@@ -238,6 +238,12 @@ export interface AppDeps {
    * Scans docs/ for feature directories and parses status from frontmatter.
    */
   featureManager?: FeatureManager;
+  /**
+   * Text generation function for AI-powered features (e.g., PR description).
+   * Spawns a short-lived Claude process, collects text output, and returns it.
+   * Inject a stub in tests.
+   */
+  generateText?: (prompt: string, cwd?: string) => Promise<string>;
 }
 
 /**
@@ -318,6 +324,30 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Feature manager ----
   const featureManager = deps.featureManager ?? new FeatureManager(workspaceDir);
+
+  // ---- Text generation (AI-powered features) ----
+  const generateText = deps.generateText ?? ((prompt: string, cwd?: string): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const cp = claudeFactory();
+      let text = "";
+      cp.on("event", (event: ClaudeEvent) => {
+        if (event.type === "assistant") {
+          for (const block of event.message.content) {
+            if (block.type === "text") text += block.text;
+          }
+        }
+      });
+      cp.on("done", (exitCode: number) => {
+        if (exitCode === 0 || text.length > 0) {
+          resolve(text);
+        } else {
+          reject(new Error("Claude process exited with code " + exitCode));
+        }
+      });
+      cp.on("error", (err: Error) => reject(err));
+      cp.run(prompt, undefined, undefined, undefined, cwd, "auto");
+    });
+  });
 
   // ---- File watcher ----
   const fileWatcher = deps.fileWatcher ?? new FileWatcher();
@@ -1765,6 +1795,39 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           send({ type: "github_branches", current, remote });
         } catch (err) {
           send({ type: "error", message: `Failed to list branches: ${getErrorMessage(err)}` });
+        }
+      }
+
+      if (msg.type === "generate_pr_description") {
+        try {
+          const git = getActiveGitManager();
+          const log = await git.log(20);
+          const diff = await git.diffSummary();
+
+          if (log.length === 0) {
+            send({ type: "generated_pr_description", description: "" });
+            return;
+          }
+
+          const prompt = [
+            "Write a pull request description summarizing these changes.",
+            "Format as markdown with ## Summary (1-2 sentences) and ## Changes (bullet points).",
+            "Keep it concise — 5-10 bullet points maximum.",
+            "Return ONLY the markdown description, no extra commentary.",
+            "",
+            "Recent commits:",
+            ...log.map((c) => `- ${c.message}`),
+            "",
+            "Files changed:",
+            ...(diff.length > 0
+              ? diff.map((f) => `- ${f.file} (+${f.insertions} -${f.deletions})`)
+              : ["(no file-level diff available)"]),
+          ].join("\n");
+
+          const description = await generateText(prompt, activeSessionDir ?? undefined);
+          send({ type: "generated_pr_description", description: description.trim() });
+        } catch (err) {
+          send({ type: "error", message: `Failed to generate description: ${getErrorMessage(err)}` });
         }
       }
 

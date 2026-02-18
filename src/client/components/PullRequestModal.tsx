@@ -6,9 +6,16 @@ export interface PullRequestModalProps {
   defaultTitle?: string;
   onSubmit: (data: { title: string; body: string; base: string; draft: boolean }) => void;
   onRequestBranches: () => void;
+  onGenerateDescription?: () => void;
   onClose: () => void;
   /** Result from the server after PR creation. */
   result?: { success: boolean; url?: string; number?: number; message?: string } | null;
+  /** Whether AI description generation is in progress. */
+  isGeneratingDescription?: boolean;
+  /** Error from description generation. */
+  generateDescriptionError?: string | null;
+  /** Generated description text from the server — sets the body when it arrives. */
+  generatedDescription?: string | null;
 }
 
 export function PullRequestModal({
@@ -17,14 +24,19 @@ export function PullRequestModal({
   defaultTitle = "",
   onSubmit,
   onRequestBranches,
+  onGenerateDescription,
   onClose,
   result,
+  isGeneratingDescription = false,
+  generateDescriptionError = null,
+  generatedDescription = null,
 }: PullRequestModalProps) {
   const [title, setTitle] = useState(defaultTitle);
   const [body, setBody] = useState("");
   const [base, setBase] = useState("");
   const [draft, setDraft] = useState(false);
   const [titleError, setTitleError] = useState("");
+  const [showReplaceConfirm, setShowReplaceConfirm] = useState(false);
   const dialogRef = useRef<HTMLDivElement>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
 
@@ -44,6 +56,14 @@ export function PullRequestModal({
       setBase(remoteBranches[0]);
     }
   }, [remoteBranches, base]);
+
+  // Apply generated description when it arrives
+  useEffect(() => {
+    if (generatedDescription) {
+      setBody(generatedDescription);
+      setShowReplaceConfirm(false);
+    }
+  }, [generatedDescription]);
 
   // Focus title input on mount
   useEffect(() => {
@@ -71,6 +91,20 @@ export function PullRequestModal({
     }
     setTitleError("");
     onSubmit({ title: trimmedTitle, body: body.trim(), base, draft });
+  };
+
+  const handleGenerateDescription = () => {
+    if (!onGenerateDescription) return;
+    if (body.trim()) {
+      setShowReplaceConfirm(true);
+      return;
+    }
+    onGenerateDescription();
+  };
+
+  const handleConfirmReplace = () => {
+    setShowReplaceConfirm(false);
+    onGenerateDescription?.();
   };
 
   const showSuccess = result?.success;
@@ -195,12 +229,24 @@ export function PullRequestModal({
 
               {/* Description */}
               <div>
-                <label
-                  htmlFor="pr-body"
-                  className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
-                >
-                  Description
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label
+                    htmlFor="pr-body"
+                    className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+                  >
+                    Description
+                  </label>
+                  {onGenerateDescription && (
+                    <button
+                      onClick={handleGenerateDescription}
+                      disabled={isGeneratingDescription}
+                      className="text-xs text-blue-500 hover:text-blue-400 disabled:text-gray-500 disabled:cursor-not-allowed transition-colors"
+                      type="button"
+                    >
+                      {isGeneratingDescription ? "Generating..." : "Ask Claude to write description"}
+                    </button>
+                  )}
+                </div>
                 <textarea
                   id="pr-body"
                   value={body}
@@ -209,6 +255,30 @@ export function PullRequestModal({
                   rows={6}
                   className="w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
                 />
+                {showReplaceConfirm && (
+                  <div className="mt-1 flex items-center gap-2 text-xs">
+                    <span className="text-yellow-500">Replace current description?</span>
+                    <button
+                      onClick={handleConfirmReplace}
+                      className="text-blue-500 hover:text-blue-400"
+                      type="button"
+                    >
+                      Yes, replace
+                    </button>
+                    <button
+                      onClick={() => setShowReplaceConfirm(false)}
+                      className="text-gray-400 hover:text-gray-300"
+                      type="button"
+                    >
+                      No, keep it
+                    </button>
+                  </div>
+                )}
+                {generateDescriptionError && (
+                  <p className="mt-1 text-xs text-red-600 dark:text-red-400">
+                    {generateDescriptionError}
+                  </p>
+                )}
               </div>
 
               {/* Draft checkbox */}
