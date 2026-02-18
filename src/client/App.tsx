@@ -25,7 +25,8 @@ import { ConnectionBanner } from "./components/ConnectionBanner.js";
 import { MobileTabBar, type MobilePanel } from "./components/MobileTabBar.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
 import { TemplateSelector, type TemplateInfo } from "./components/TemplateSelector.js";
-import { UsageModal, type SessionUsage, type UsageStats } from "./components/UsageModal.js";
+import { UsageModal, type SessionUsage, type UsageStats, type TurnTokenData } from "./components/UsageModal.js";
+import { StatusBar, type ModelInfo } from "./components/StatusBar.js";
 import { SystemPromptEditor } from "./components/SystemPromptEditor.js";
 import { GitIdentityOverlay } from "./components/GitIdentityOverlay.js";
 import { ThreadIndicator, type ThreadInfo } from "./components/ThreadIndicator.js";
@@ -35,7 +36,7 @@ import { FeaturesPanel } from "./components/FeaturesPanel.js";
 import { PullRequestModal } from "./components/PullRequestModal.js";
 import { ImportRepoOverlay } from "./components/ImportRepoOverlay.js";
 import { PrStatusBar } from "./components/PrStatusBar.js";
-import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, FeatureInfo, PermissionMode, FileContextRef } from "../server/types.js";
+import type { WsServerMessage, WsSessionRenamed, WsUsageUpdate, WsModelInfo, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, FeatureInfo, PermissionMode, FileContextRef } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal" | "features";
 
@@ -117,6 +118,9 @@ export default function App() {
   const [currentSessionUsage, setCurrentSessionUsage] = useState<SessionUsage | null>(null);
   const [allUsageStats, setAllUsageStats] = useState<UsageStats | null>(null);
   const [showUsageModal, setShowUsageModal] = useState(false);
+  const [modelInfo, setModelInfo] = useState<ModelInfo | null>(null);
+  const [contextTokens, setContextTokens] = useState(0);
+  const [turnTokens, setTurnTokens] = useState<TurnTokenData[]>([]);
   const [fileChangeCount, setFileChangeCount] = useState(0);
   const [systemPromptOpen, setSystemPromptOpen] = useState(false);
   const [hasSystemPrompt, setHasSystemPrompt] = useState(false);
@@ -299,6 +303,9 @@ export default function App() {
       setGitCommits([]);
       setFileTree([]);
       setCurrentSessionUsage(null);
+      setModelInfo(null);
+      setContextTokens(0);
+      setTurnTokens([]);
       setThreads([]);
       setActiveThreadId("");
       // Load persisted chat history for this session (also activates session on server)
@@ -700,13 +707,34 @@ export default function App() {
       setPrGeneratedDesc(data.description);
     }
 
+    if (data.type === "model_info") {
+      const info = data as WsModelInfo;
+      setModelInfo({ model: info.model, contextWindowTokens: info.contextWindowTokens });
+    }
+
     if (data.type === "usage_update") {
+      const update = data as WsUsageUpdate;
       setCurrentSessionUsage({
-        sessionId: data.sessionId,
-        totalCostUsd: data.totalCostUsd,
-        totalDurationMs: data.totalDurationMs,
-        turnCount: data.turnCount,
+        sessionId: update.sessionId,
+        totalCostUsd: update.totalCostUsd,
+        totalDurationMs: update.totalDurationMs,
+        turnCount: update.turnCount,
       });
+      if (update.cumulativeInputTokens !== undefined) {
+        setContextTokens(update.cumulativeInputTokens);
+      }
+      // Track per-turn token data
+      if (update.lastTurnInputTokens !== undefined || update.lastTurnOutputTokens !== undefined) {
+        setTurnTokens((prev) => [
+          ...prev,
+          {
+            inputTokens: update.lastTurnInputTokens,
+            outputTokens: update.lastTurnOutputTokens,
+            costUsd: update.totalCostUsd - prev.reduce((sum, t) => sum + t.costUsd, 0),
+            durationMs: update.totalDurationMs - prev.reduce((sum, t) => sum + t.durationMs, 0),
+          },
+        ]);
+      }
     }
 
     if (data.type === "usage_stats") {
@@ -1031,6 +1059,9 @@ export default function App() {
     setMessages([]);
     setIsLoading(false);
     setCurrentSessionUsage(null);
+    setModelInfo(null);
+    setContextTokens(0);
+    setTurnTokens([]);
     setShowTemplates(true);
     // Reset session-specific UI state
     setViewingFile(null);
@@ -1280,6 +1311,9 @@ export default function App() {
       setMessages([]);
       setIsLoading(false);
       setCurrentSessionUsage(null);
+      setModelInfo(null);
+      setContextTokens(0);
+      setTurnTokens([]);
       setShowTemplates(false);
       setViewingFile(null);
       setViewingFileContent(null);
@@ -1580,6 +1614,9 @@ export default function App() {
         />
       )}
       {!showTemplatePicker && (
+        <StatusBar modelInfo={modelInfo} contextTokens={contextTokens} />
+      )}
+      {!showTemplatePicker && (
         <MessageInput
           onSend={handleSend}
           disabled={isLoading || status !== "open"}
@@ -1668,6 +1705,9 @@ export default function App() {
           allUsage={allUsageStats}
           sessions={sessions}
           onClose={() => setShowUsageModal(false)}
+          modelInfo={modelInfo}
+          contextTokens={contextTokens}
+          turnTokens={turnTokens}
         />
       )}
 

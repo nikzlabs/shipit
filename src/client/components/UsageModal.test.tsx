@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
-import { UsageModal, type SessionUsage, type UsageStats } from "./UsageModal.js";
+import { UsageModal, type SessionUsage, type UsageStats, type TurnTokenData } from "./UsageModal.js";
+import type { ModelInfo } from "./StatusBar.js";
 import type { SessionInfo } from "../../server/types.js";
 
 afterEach(cleanup);
@@ -217,5 +218,132 @@ describe("UsageModal", () => {
     );
     const noDataTexts = screen.getAllByText("No usage data yet");
     expect(noDataTexts).toHaveLength(2);
+  });
+
+  it("shows model name when modelInfo is provided", () => {
+    const modelInfo: ModelInfo = {
+      model: "claude-sonnet-4-20250514",
+      contextWindowTokens: 200000,
+    };
+
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={[]}
+        onClose={vi.fn()}
+        modelInfo={modelInfo}
+      />
+    );
+
+    expect(screen.getByTestId("usage-model-name")).toHaveTextContent("Sonnet 4");
+  });
+
+  it("shows context usage section when contextTokens > 0", () => {
+    const modelInfo: ModelInfo = {
+      model: "claude-sonnet-4-20250514",
+      contextWindowTokens: 200000,
+    };
+
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={[]}
+        onClose={vi.fn()}
+        modelInfo={modelInfo}
+        contextTokens={80000}
+      />
+    );
+
+    expect(screen.getByTestId("context-usage-section")).toBeInTheDocument();
+    expect(screen.getByTestId("context-usage-bar")).toBeInTheDocument();
+  });
+
+  it("hides context usage when no contextTokens", () => {
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={[]}
+        onClose={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByTestId("context-usage-section")).toBeNull();
+  });
+
+  it("shows per-turn token breakdown", () => {
+    const turnTokens: TurnTokenData[] = [
+      { inputTokens: 5000, outputTokens: 1200, costUsd: 0.05, durationMs: 3000 },
+      { inputTokens: 8000, outputTokens: 2400, costUsd: 0.08, durationMs: 5000 },
+    ];
+
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={[]}
+        onClose={vi.fn()}
+        turnTokens={turnTokens}
+      />
+    );
+
+    expect(screen.getByTestId("turn-breakdown-section")).toBeInTheDocument();
+  });
+
+  it("shows token totals section", () => {
+    const turnTokens: TurnTokenData[] = [
+      { inputTokens: 5000, outputTokens: 1200, costUsd: 0.05, durationMs: 3000 },
+      { inputTokens: 8000, outputTokens: 2400, costUsd: 0.08, durationMs: 5000 },
+    ];
+
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={[]}
+        onClose={vi.fn()}
+        turnTokens={turnTokens}
+      />
+    );
+
+    expect(screen.getByTestId("token-totals-section")).toBeInTheDocument();
+  });
+
+  it("handles missing token data gracefully", () => {
+    const turnTokens: TurnTokenData[] = [
+      { costUsd: 0.05, durationMs: 3000 },
+    ];
+
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={[]}
+        onClose={vi.fn()}
+        turnTokens={turnTokens}
+      />
+    );
+
+    expect(screen.queryByTestId("turn-breakdown-section")).toBeNull();
+    expect(screen.queryByTestId("token-totals-section")).toBeNull();
+  });
+
+  it("shows basic session usage without model or token data", () => {
+    render(
+      <UsageModal
+        currentSessionUsage={mockCurrentUsage}
+        allUsage={mockAllUsage}
+        sessions={[]}
+        onClose={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("This session")).toBeInTheDocument();
+    // Cost may appear multiple times (session + per-session breakdown)
+    expect(screen.getAllByText("$0.42").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("7")).toBeInTheDocument();
+    expect(screen.getByText("3m 12s")).toBeInTheDocument();
   });
 });
