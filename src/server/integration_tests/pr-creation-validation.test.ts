@@ -21,7 +21,7 @@ import {
   waitForClaude,
 } from "./test-helpers.js";
 
-describe("Integration: PR creation — happy path", () => {
+describe("Integration: PR creation — validation errors", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
@@ -99,7 +99,83 @@ describe("Integration: PR creation — happy path", () => {
     await client.receive(); // github_remotes
   }
 
-  it("creates a PR successfully with auth + remote configured", async () => {
+  it("returns error when not authenticated with GitHub", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    await createSession(client);
+
+    client.send({
+      type: "github_create_pr",
+      title: "Some PR",
+      body: "",
+      base: "main",
+    });
+
+    const msg = await client.receiveSkipLogs();
+    expect(msg.type).toBe("error");
+    expect((msg as any).message).toBe("Not authenticated with GitHub");
+
+    client.close();
+  });
+
+  it("returns error when no origin remote is configured", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    await createSession(client);
+
+    // Authenticate but don't add a remote
+    client.send({ type: "github_set_token", token: "ghp_test" });
+    await client.receive(); // github_status
+
+    client.send({
+      type: "github_create_pr",
+      title: "Some PR",
+      body: "",
+      base: "main",
+    });
+
+    const msg = await client.receiveSkipLogs();
+    expect(msg.type).toBe("error");
+    expect((msg as any).message).toBe("No 'origin' remote configured");
+
+    client.close();
+  });
+
+  it("returns error when remote is not a GitHub URL", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    await createSession(client);
+
+    // Authenticate
+    client.send({ type: "github_set_token", token: "ghp_test" });
+    await client.receive(); // github_status
+
+    // Add a non-GitHub remote
+    client.send({
+      type: "github_set_remote",
+      name: "origin",
+      url: "https://gitlab.com/user/repo.git",
+    });
+    await client.receive(); // github_remotes
+
+    client.send({
+      type: "github_create_pr",
+      title: "Some PR",
+      body: "",
+      base: "main",
+    });
+
+    const msg = await client.receiveSkipLogs();
+    expect(msg.type).toBe("error");
+    expect((msg as any).message).toBe("Remote URL is not a GitHub repository");
+
+    client.close();
+  });
+
+  it("returns error when title is empty", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
@@ -107,33 +183,54 @@ describe("Integration: PR creation — happy path", () => {
 
     client.send({
       type: "github_create_pr",
-      title: "Add JWT authentication",
-      body: "## Summary\n\nAdded JWT auth",
+      title: "",
+      body: "some body",
       base: "main",
-      draft: false,
     });
 
     const msg = await client.receiveSkipLogs();
-    expect(msg.type).toBe("github_pr_created");
-    expect((msg as any).success).toBe(true);
-    expect((msg as any).url).toContain("github.com");
-    expect((msg as any).number).toBe(1);
+    expect(msg.type).toBe("error");
+    expect((msg as any).message).toBe("PR title is required");
 
     client.close();
   });
 
-  it("github_list_branches returns current branch and remote branches", async () => {
+  it("returns error when title is too long", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    await createSession(client);
+    await setupSessionWithRemote(client);
 
-    client.send({ type: "github_list_branches" });
+    client.send({
+      type: "github_create_pr",
+      title: "x".repeat(257),
+      body: "",
+      base: "main",
+    });
+
     const msg = await client.receiveSkipLogs();
+    expect(msg.type).toBe("error");
+    expect((msg as any).message).toBe("PR title too long (max 256 characters)");
 
-    expect(msg.type).toBe("github_branches");
-    expect((msg as any).current).toBeDefined();
-    expect(Array.isArray((msg as any).remote)).toBe(true);
+    client.close();
+  });
+
+  it("returns error when base branch is empty", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    await setupSessionWithRemote(client);
+
+    client.send({
+      type: "github_create_pr",
+      title: "Valid Title",
+      body: "",
+      base: "",
+    });
+
+    const msg = await client.receiveSkipLogs();
+    expect(msg.type).toBe("error");
+    expect((msg as any).message).toBe("Base branch is required");
 
     client.close();
   });

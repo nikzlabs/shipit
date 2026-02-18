@@ -54,6 +54,7 @@ beforeEach(async () => {
     deploymentManager: new StubDeploymentManager() as any,
     deploymentStore: new StubDeploymentStore() as any,
     featureManager: new FeatureManager(tmpDir),
+    autoPushDebounceMs: 100,
   });
 
   await app.listen({ port: 0, host: "127.0.0.1" });
@@ -98,36 +99,8 @@ async function createSession(): Promise<{ sessionId: string; sessionDir: string 
   return { sessionId, sessionDir };
 }
 
-/** Create a bare git repo and set it as origin on the session repo. */
-function createBareRemote(sessionDir: string): string {
-  const bareDir = path.join(tmpDir, "bare-remote.git");
-  fs.mkdirSync(bareDir, { recursive: true });
-  execSync("git init --bare", { cwd: bareDir, env: { ...process.env, HOME: tmpDir } });
-
-  // Add the bare repo as origin
-  execSync(`git remote add origin ${bareDir}`, {
-    cwd: sessionDir,
-    env: { ...process.env, HOME: tmpDir },
-  });
-
-  // Detect current branch and push initial commit
-  const branch = execSync("git rev-parse --abbrev-ref HEAD", {
-    cwd: sessionDir,
-    env: { ...process.env, HOME: tmpDir },
-  })
-    .toString()
-    .trim();
-
-  execSync(`git push -u origin ${branch}`, {
-    cwd: sessionDir,
-    env: { ...process.env, HOME: tmpDir },
-  });
-
-  return bareDir;
-}
-
 /** Drain all messages from the client until timeout. */
-async function drainMessages(timeoutMs = 8000): Promise<WsServerMessage[]> {
+async function drainMessages(timeoutMs = 2000): Promise<WsServerMessage[]> {
   const messages: WsServerMessage[] = [];
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -141,35 +114,29 @@ async function drainMessages(timeoutMs = 8000): Promise<WsServerMessage[]> {
   return messages;
 }
 
-describe("auto-push", () => {
-  it("pushes after auto-commit when authenticated with a remote", async () => {
-    await githubAuth.setToken("test-token");
-    const { sessionId, sessionDir } = await createSession();
-    createBareRemote(sessionDir);
-
-    // Write a file so the next commit has changes
-    fs.writeFileSync(path.join(sessionDir, "new-file.txt"), "auto-push test");
-
-    // Send a second message to the SAME session
-    client.send({ type: "send_message", text: "second turn", sessionId });
-    const prevClaude = latestClaude;
-    const claude2 = await waitForClaude(() => latestClaude, prevClaude);
-    claude2.finish("test-session-1");
-
-    // Wait for the auto-push result (5s debounce + processing)
-    const messages = await drainMessages(10000);
-    const pushResult = messages.find((m) => m.type === "github_push_result");
-    expect(pushResult).toBeDefined();
-    expect(pushResult).toMatchObject({
-      type: "github_push_result",
-      success: true,
-    });
-  }, 15000);
-
+describe("auto-push: skip conditions", () => {
   it("does not push when not authenticated", async () => {
     // Not authenticated — no setToken call
     const { sessionId, sessionDir } = await createSession();
-    createBareRemote(sessionDir);
+
+    // Create bare remote so the only missing condition is auth
+    const bareDir = path.join(tmpDir, "bare-remote.git");
+    fs.mkdirSync(bareDir, { recursive: true });
+    execSync("git init --bare", { cwd: bareDir, env: { ...process.env, HOME: tmpDir } });
+    execSync(`git remote add origin ${bareDir}`, {
+      cwd: sessionDir,
+      env: { ...process.env, HOME: tmpDir },
+    });
+    const branch = execSync("git rev-parse --abbrev-ref HEAD", {
+      cwd: sessionDir,
+      env: { ...process.env, HOME: tmpDir },
+    })
+      .toString()
+      .trim();
+    execSync(`git push -u origin ${branch}`, {
+      cwd: sessionDir,
+      env: { ...process.env, HOME: tmpDir },
+    });
 
     fs.writeFileSync(path.join(sessionDir, "file.txt"), "no auth test");
 
@@ -178,11 +145,11 @@ describe("auto-push", () => {
     const claude2 = await waitForClaude(() => latestClaude, prevClaude);
     claude2.finish("test-session-1");
 
-    // Wait past the debounce — no push_result should appear
-    const messages = await drainMessages(7000);
+    // Wait past the debounce (100ms) — no push_result should appear
+    const messages = await drainMessages();
     const pushResult = messages.find((m) => m.type === "github_push_result");
     expect(pushResult).toBeUndefined();
-  }, 12000);
+  });
 
   it("does not push when no origin remote is configured", async () => {
     await githubAuth.setToken("test-token");
@@ -196,43 +163,9 @@ describe("auto-push", () => {
     const claude2 = await waitForClaude(() => latestClaude, prevClaude);
     claude2.finish("test-session-1");
 
-    // Wait past the debounce — no push_result should appear
-    const messages = await drainMessages(7000);
+    // Wait past the debounce (100ms) — no push_result should appear
+    const messages = await drainMessages();
     const pushResult = messages.find((m) => m.type === "github_push_result");
     expect(pushResult).toBeUndefined();
-  }, 12000);
-
-  it("push failure is non-fatal and emits a log entry", async () => {
-    await githubAuth.setToken("test-token");
-    const { sessionId, sessionDir } = await createSession();
-
-    // Add a non-existent remote URL (will cause push to fail)
-    execSync("git remote add origin /nonexistent/path.git", {
-      cwd: sessionDir,
-      env: { ...process.env, HOME: tmpDir },
-    });
-
-    fs.writeFileSync(path.join(sessionDir, "file.txt"), "push-fail test");
-
-    client.send({ type: "send_message", text: "turn two", sessionId });
-    const prevClaude = latestClaude;
-    const claude2 = await waitForClaude(() => latestClaude, prevClaude);
-    claude2.finish("test-session-1");
-
-    // Wait for the debounce period — push will fail but should emit a log entry
-    const messages = await drainMessages(10000);
-
-    // Should have a log_entry about auto-push failure
-    const failLog = messages.find(
-      (m) =>
-        m.type === "log_entry" &&
-        "text" in m &&
-        String((m as { text?: string }).text).includes("Auto-push failed"),
-    );
-    expect(failLog).toBeDefined();
-
-    // Should NOT have a successful github_push_result
-    const pushResult = messages.find((m) => m.type === "github_push_result");
-    expect(pushResult).toBeUndefined();
-  }, 15000);
+  });
 });
