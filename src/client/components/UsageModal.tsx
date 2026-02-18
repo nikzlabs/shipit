@@ -1,4 +1,5 @@
 import type { SessionInfo } from "../../server/types.js";
+import { formatModelName, formatTokenCount, getContextLevel, type ModelInfo } from "./StatusBar.js";
 
 export interface SessionUsage {
   sessionId: string;
@@ -13,11 +14,21 @@ export interface UsageStats {
   totalTurns: number;
 }
 
+export interface TurnTokenData {
+  inputTokens?: number;
+  outputTokens?: number;
+  costUsd: number;
+  durationMs: number;
+}
+
 interface UsageModalProps {
   currentSessionUsage: SessionUsage | null;
   allUsage: UsageStats | null;
   sessions: SessionInfo[];
   onClose: () => void;
+  modelInfo?: ModelInfo | null;
+  contextTokens?: number;
+  turnTokens?: TurnTokenData[];
 }
 
 function formatCost(usd: number): string {
@@ -35,12 +46,29 @@ function formatDuration(ms: number): string {
   return `${minutes}m ${seconds}s`;
 }
 
-export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose }: UsageModalProps) {
+const levelBarColors: Record<string, string> = {
+  green: "bg-green-500",
+  yellow: "bg-yellow-500",
+  orange: "bg-orange-500",
+  red: "bg-red-500",
+};
+
+export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, modelInfo, contextTokens, turnTokens }: UsageModalProps) {
   // Look up session titles by ID
   const getSessionTitle = (sessionId: string): string => {
     const session = sessions.find((s) => s.id === sessionId);
     return session?.title ?? sessionId.slice(0, 12) + "...";
   };
+
+  const contextPercentage = modelInfo && modelInfo.contextWindowTokens > 0 && contextTokens
+    ? Math.min(100, (contextTokens / modelInfo.contextWindowTokens) * 100)
+    : 0;
+  const contextLevel = getContextLevel(contextPercentage);
+
+  // Compute cumulative token totals from turn data
+  const totalInputTokens = turnTokens?.reduce((sum, t) => sum + (t.inputTokens ?? 0), 0) ?? 0;
+  const totalOutputTokens = turnTokens?.reduce((sum, t) => sum + (t.outputTokens ?? 0), 0) ?? 0;
+  const hasTurnTokens = turnTokens && turnTokens.some((t) => t.inputTokens !== undefined || t.outputTokens !== undefined);
 
   return (
     <div
@@ -73,6 +101,12 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose }:
             <h3 className="text-sm font-medium text-gray-400 mb-2">This session</h3>
             {currentSessionUsage ? (
               <div className="space-y-1 text-sm">
+                {modelInfo && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Model</span>
+                    <span className="text-gray-100" data-testid="usage-model-name">{formatModelName(modelInfo.model)}</span>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <span className="text-gray-400">Cost</span>
                   <span className="text-gray-100">{formatCost(currentSessionUsage.totalCostUsd)}</span>
@@ -90,6 +124,74 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose }:
               <p className="text-sm text-gray-500">No usage data yet</p>
             )}
           </section>
+
+          {/* Context usage */}
+          {modelInfo && contextTokens !== undefined && contextTokens > 0 && (
+            <section data-testid="context-usage-section">
+              <h3 className="text-sm font-medium text-gray-400 mb-2">Context usage</h3>
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Tokens used</span>
+                  <span className="text-gray-100">
+                    {formatTokenCount(contextTokens)} / {formatTokenCount(modelInfo.contextWindowTokens)}
+                  </span>
+                </div>
+                <div className="w-full h-2 bg-gray-700 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${levelBarColors[contextLevel]}`}
+                    style={{ width: `${contextPercentage}%` }}
+                    data-testid="context-usage-bar"
+                  />
+                </div>
+                <div className="text-right text-gray-500">{Math.round(contextPercentage)}%</div>
+              </div>
+            </section>
+          )}
+
+          {/* Per-turn token breakdown */}
+          {hasTurnTokens && turnTokens && turnTokens.length > 0 && (
+            <section data-testid="turn-breakdown-section">
+              <h3 className="text-sm font-medium text-gray-400 mb-2">Per-turn breakdown</h3>
+              <div className="space-y-1 max-h-40 overflow-y-auto">
+                {[...turnTokens].reverse().map((turn, i) => {
+                  const turnNum = turnTokens.length - i;
+                  return (
+                    <div
+                      key={i}
+                      className="flex items-center justify-between text-xs py-1 border-b border-gray-800 last:border-0 font-mono"
+                    >
+                      <span className="text-gray-500 w-8">#{turnNum}</span>
+                      <span className="text-gray-300">
+                        In: {turn.inputTokens !== undefined ? formatTokenCount(turn.inputTokens) : "\u2014"}
+                      </span>
+                      <span className="text-gray-300">
+                        Out: {turn.outputTokens !== undefined ? formatTokenCount(turn.outputTokens) : "\u2014"}
+                      </span>
+                      <span className="text-gray-400">{formatCost(turn.costUsd)}</span>
+                      <span className="text-gray-500">{formatDuration(turn.durationMs)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
+          {/* Token totals */}
+          {hasTurnTokens && (
+            <section data-testid="token-totals-section">
+              <h3 className="text-sm font-medium text-gray-400 mb-2">Token totals</h3>
+              <div className="space-y-1 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Input</span>
+                  <span className="text-gray-100">{formatTokenCount(totalInputTokens)} tokens</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Output</span>
+                  <span className="text-gray-100">{formatTokenCount(totalOutputTokens)} tokens</span>
+                </div>
+              </div>
+            </section>
+          )}
 
           {/* All sessions */}
           <section>
