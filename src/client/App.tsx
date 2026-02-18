@@ -280,6 +280,31 @@ export default function App() {
     }
   }, [status, isLoading]);
 
+  const handleSessionResume = useCallback(
+    (sessionId: string) => {
+      sessionIdRef.current = sessionId;
+      saveSessionId(sessionId);
+      setMessages([]);
+      setIsLoading(false);
+      setShowTemplates(false);
+      // Reset session-specific UI state (each session has its own workspace)
+      setViewingFile(null);
+      setViewingFileContent(null);
+      setViewingFileBinary(false);
+      setGitCommits([]);
+      setFileTree([]);
+      setCurrentSessionUsage(null);
+      setThreads([]);
+      setActiveThreadId("");
+      // Load persisted chat history for this session (also activates session on server)
+      send({ type: "get_chat_history", sessionId });
+      // Refresh file tree and git log for the new session's workspace
+      send({ type: "get_file_tree" });
+      send({ type: "get_git_log" });
+    },
+    [send]
+  );
+
   // Process incoming WebSocket messages
   useEffect(() => {
     if (!lastMessage) return;
@@ -953,31 +978,6 @@ export default function App() {
   const handleSessionRefresh = useCallback(() => {
     send({ type: "list_sessions" });
   }, [send]);
-
-  const handleSessionResume = useCallback(
-    (sessionId: string) => {
-      sessionIdRef.current = sessionId;
-      saveSessionId(sessionId);
-      setMessages([]);
-      setIsLoading(false);
-      setShowTemplates(false);
-      // Reset session-specific UI state (each session has its own workspace)
-      setViewingFile(null);
-      setViewingFileContent(null);
-      setViewingFileBinary(false);
-      setGitCommits([]);
-      setFileTree([]);
-      setCurrentSessionUsage(null);
-      setThreads([]);
-      setActiveThreadId("");
-      // Load persisted chat history for this session (also activates session on server)
-      send({ type: "get_chat_history", sessionId });
-      // Refresh file tree and git log for the new session's workspace
-      send({ type: "get_file_tree" });
-      send({ type: "get_git_log" });
-    },
-    [send]
-  );
 
   const handleSessionNew = useCallback(() => {
     sessionIdRef.current = undefined;
