@@ -89,14 +89,14 @@ export class TestClient {
     return msgs;
   }
 
-  /** Get the next message that is NOT a log_entry — useful for tests that predate the terminal feature. */
+  /** Get the next message that is NOT a log_entry or agent_event — useful for tests that predate the terminal and multi-agent features. */
   async receiveSkipLogs(timeoutMs = 3000): Promise<WsServerMessage> {
     const deadline = Date.now() + timeoutMs;
     while (true) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new Error("receiveSkipLogs() timed out");
       const msg = await this.receive(remaining);
-      if (msg.type !== "log_entry") return msg;
+      if (msg.type !== "log_entry" && msg.type !== "agent_event") return msg;
     }
   }
 

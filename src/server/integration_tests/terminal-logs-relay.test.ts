@@ -73,7 +73,7 @@ describe("Integration: Terminal/logs relay", () => {
     client.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
 
-    // Consume the server "Claude process started" log entry
+    // Consume the server "Agent process started" log entry
     const startLog = await client.receive();
     expect(startLog.type).toBe("log_entry");
     expect((startLog as any).source).toBe("server");
@@ -97,7 +97,7 @@ describe("Integration: Terminal/logs relay", () => {
     client.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
 
-    // Consume "Claude process started" log entry
+    // Consume "Agent process started" log entry
     await client.receive();
 
     // Simulate non-JSON stdout from Claude CLI
@@ -118,16 +118,16 @@ describe("Integration: Terminal/logs relay", () => {
     client.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
 
-    // Should receive "Claude process started" log
+    // Should receive "Agent process started" log
     const startLog = await client.receive();
     expect(startLog.type).toBe("log_entry");
     expect((startLog as any).source).toBe("server");
-    expect((startLog as any).text).toBe("Claude process started");
+    expect((startLog as any).text).toBe("Agent process started");
 
     // Simulate Claude finishing
     lastClaude.finish();
 
-    // Should receive "Claude process exited" log
+    // Should receive "Agent process exited" log
     // (may also receive git_committed — drain until we find the exit log)
     let exitLog: any = null;
     for (let i = 0; i < 5; i++) {
@@ -140,7 +140,7 @@ describe("Integration: Terminal/logs relay", () => {
 
     expect(exitLog).not.toBeNull();
     expect(exitLog.source).toBe("server");
-    expect(exitLog.text).toBe("Claude process exited with code 0");
+    expect(exitLog.text).toBe("Agent process exited with code 0");
 
     // Drain remaining messages (e.g. git_committed) so the async done handler
     // (autoCommit, portScan) finishes before afterEach tears down the temp dir.
@@ -163,7 +163,7 @@ describe("Integration: Terminal/logs relay", () => {
     client1.send({ type: "send_message", text: "generate logs" });
     await waitForClaude(() => lastClaude);
 
-    // Consume the "Claude process started" log
+    // Consume the "Agent process started" log
     await client1.receive();
 
     // Add more logs via CLI output
@@ -178,7 +178,7 @@ describe("Integration: Terminal/logs relay", () => {
     // Should receive the buffered log entries
     const log1 = await client2.receive();
     expect(log1.type).toBe("log_entry");
-    expect((log1 as any).text).toBe("Claude process started");
+    expect((log1 as any).text).toBe("Agent process started");
 
     const log2 = await client2.receive();
     expect(log2.type).toBe("log_entry");
@@ -195,7 +195,7 @@ describe("Integration: Terminal/logs relay", () => {
 
     client1.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
-    await client1.receive(); // "Claude process started" log
+    await client1.receive(); // "Agent process started" log
 
     // Clear logs
     client1.send({ type: "clear_logs" });

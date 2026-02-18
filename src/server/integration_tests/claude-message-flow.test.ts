@@ -182,7 +182,7 @@ describe("Integration: Claude message flow", () => {
     const msg = await client.receiveSkipLogs();
 
     expect(msg.type).toBe("error");
-    expect((msg as any).message).toContain("Claude process error");
+    expect((msg as any).message).toContain("Agent process error");
     expect((msg as any).message).toContain("spawn ENOENT");
 
     client.close();

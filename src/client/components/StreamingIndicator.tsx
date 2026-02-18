@@ -55,52 +55,63 @@ export function ToolSpinner() {
 /**
  * Derive a human-readable activity label from a tool_use event.
  *
- * Maps Claude CLI tool names to short descriptions including relevant
- * parameters (file paths, commands) for at-a-glance status.
+ * Maps both Claude CLI tool names and canonical tool names (from multi-agent
+ * support) to short descriptions including relevant parameters (file paths,
+ * commands) for at-a-glance status.
  */
 export function activityFromTool(toolName: string, input: Record<string, unknown>): StreamingActivity {
   switch (toolName) {
+    // Claude CLI names + canonical names
     case "Edit":
+    case "file_edit":
       return {
         label: `Editing ${shortPath(input.file_path)}`,
         tool: toolName,
       };
     case "Write":
+    case "file_write":
       return {
         label: `Writing ${shortPath(input.file_path)}`,
         tool: toolName,
       };
     case "Read":
+    case "file_read":
       return {
         label: `Reading ${shortPath(input.file_path)}`,
         tool: toolName,
       };
     case "Bash":
+    case "shell":
       return {
         label: `Running command...`,
         tool: toolName,
       };
     case "Glob":
+    case "glob":
       return {
         label: `Searching files...`,
         tool: toolName,
       };
     case "Grep":
+    case "grep":
       return {
         label: `Searching code...`,
         tool: toolName,
       };
     case "WebFetch":
+    case "web_fetch":
       return {
         label: `Fetching URL...`,
         tool: toolName,
       };
     case "WebSearch":
+    case "web_search":
       return {
         label: `Searching web...`,
         tool: toolName,
       };
     case "AskUserQuestion":
+    case "ask_user":
       return {
         label: "Waiting for your answer...",
         tool: toolName,
