@@ -69,12 +69,14 @@ describe("FeaturesPanel", () => {
         makeFeature({ id: "001-a", name: "A", number: 1, status: "planned" }),
         makeFeature({ id: "002-b", name: "B", number: 2, status: "in-progress" }),
         makeFeature({ id: "003-c", name: "C", number: 3, status: "done" }),
+        makeFeature({ id: "004-d", name: "D", number: 4, status: "paused" }),
       ];
       render(<FeaturesPanel {...props} />);
       // Each status text appears as both a group label and a badge
       expect(screen.getAllByText("Planned").length).toBeGreaterThanOrEqual(1);
       expect(screen.getAllByText("In Progress").length).toBeGreaterThanOrEqual(1);
       expect(screen.getAllByText("Done").length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText("Paused").length).toBeGreaterThanOrEqual(1);
     });
 
     it("shows feature count in header", () => {
@@ -100,12 +102,14 @@ describe("FeaturesPanel", () => {
         makeFeature({ id: "001-a", name: "A", number: 1, status: "in-progress" }),
         makeFeature({ id: "002-b", name: "B", number: 2, status: "planned" }),
         makeFeature({ id: "003-c", name: "C", number: 3, status: "done" }),
+        makeFeature({ id: "004-d", name: "D", number: 4, status: "paused" }),
       ];
       render(<FeaturesPanel {...props} />);
       // Each status appears as both group label and badge (at least 2 each)
       expect(screen.getAllByText("In Progress").length).toBeGreaterThanOrEqual(2);
       expect(screen.getAllByText("Planned").length).toBeGreaterThanOrEqual(2);
       expect(screen.getAllByText("Done").length).toBeGreaterThanOrEqual(2);
+      expect(screen.getAllByText("Paused").length).toBeGreaterThanOrEqual(2);
     });
   });
 

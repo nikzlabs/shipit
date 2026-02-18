@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: paused
 ---
 # 025 — In-Browser Code Editor
 
