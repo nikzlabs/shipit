@@ -182,6 +182,7 @@ export class StubGitHubAuthManager extends EventEmitter {
     this._username = null;
   }
   configureGitCredentials() { /* no-op */ }
+  getAuthenticatedCloneUrl(url: string) { return url; }
   async loadUserInfo() { /* no-op */ }
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async createRepo(name: string, options: { description?: string; isPrivate?: boolean } = {}) {

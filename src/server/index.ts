@@ -1703,12 +1703,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           const importSessionDir = path.join(sessionsRoot, importSessionId);
           await fs.mkdir(importSessionDir, { recursive: true });
 
-          // 2. Clone the repo
+          // 2. Clone the repo (use authenticated URL so private repos work)
           send({ type: "github_import_progress", stage: "cloning", message: "Cloning repository..." });
           const git = createGitManager(importSessionDir);
-          await git.clone(url, msg.branch || undefined);
+          const cloneUrl = githubAuthManager.getAuthenticatedCloneUrl(url);
+          await git.clone(cloneUrl, msg.branch || undefined);
 
-          // 3. Configure credentials for push
+          // 3. Configure credentials for future push/pull
           if (githubAuthManager.authenticated) {
             githubAuthManager.configureGitCredentials(importSessionDir);
           }
@@ -1897,11 +1898,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             { skipGitInit: true },
           );
 
-          // 2. Clone repo
+          // 2. Clone repo (use authenticated URL so private repos work)
           const git = createGitManager(sessionDir);
-          await git.clone(repoUrl);
+          const cloneUrl = githubAuthManager.getAuthenticatedCloneUrl(repoUrl);
+          await git.clone(cloneUrl);
 
-          // 3. Configure credentials
+          // 3. Configure credentials for future push/pull
           if (githubAuthManager.authenticated) {
             githubAuthManager.configureGitCredentials(sessionDir);
           }
