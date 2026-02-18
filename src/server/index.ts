@@ -22,7 +22,7 @@ import { DeploymentManager } from "./deployment-manager.js";
 import { DeploymentStore } from "./deployment-store.js";
 import { VercelTarget } from "./deploy-targets/vercel.js";
 import { CloudflareTarget } from "./deploy-targets/cloudflare.js";
-import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment } from "./types.js";
+import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment, PermissionMode } from "./types.js";
 
 function getErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -814,7 +814,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             }
           }
         }
-        currentClaude.run(msg.text, agentSessionId, systemPrompt, images, getActiveDir());
+        // Determine permission mode from client message
+        const permissionMode: PermissionMode | undefined = msg.permissionMode;
+        currentClaude.run(msg.text, agentSessionId, systemPrompt, images, getActiveDir(), permissionMode);
         broadcastLog("server", "Claude process started");
       }
 

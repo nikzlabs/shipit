@@ -32,11 +32,12 @@ import { ThreadIndicator, type ThreadInfo } from "./components/ThreadIndicator.j
 import { ThreadTimeline } from "./components/ThreadTimeline.js";
 import { DeployModal, type DeployPhase } from "./components/DeployModal.js";
 import { PullRequestModal } from "./components/PullRequestModal.js";
-import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord } from "../server/types.js";
+import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, PermissionMode } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal";
 
 const SESSION_STORAGE_KEY = "vibe-current-session";
+const PERMISSION_MODE_KEY = "vibe-permission-mode";
 
 function getWsUrl(): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -59,6 +60,24 @@ function saveSessionId(id: string | undefined): void {
     } else {
       localStorage.removeItem(SESSION_STORAGE_KEY);
     }
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+function getSavedPermissionMode(): PermissionMode {
+  try {
+    const saved = localStorage.getItem(PERMISSION_MODE_KEY);
+    if (saved === "plan" || saved === "normal" || saved === "auto") return saved;
+  } catch {
+    // localStorage may be unavailable
+  }
+  return "auto";
+}
+
+function savePermissionMode(mode: PermissionMode): void {
+  try {
+    localStorage.setItem(PERMISSION_MODE_KEY, mode);
   } catch {
     // localStorage may be unavailable
   }
@@ -113,6 +132,7 @@ export default function App() {
   const [prCurrentBranch, setPrCurrentBranch] = useState("");
   const [prRemoteBranches, setPrRemoteBranches] = useState<string[]>([]);
   const [prResult, setPrResult] = useState<{ success: boolean; url?: string; number?: number; message?: string } | null>(null);
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(getSavedPermissionMode());
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
   const historyLoadedRef = useRef(false);
@@ -770,9 +790,10 @@ export default function App() {
         type: "send_message",
         text,
         sessionId: sessionIdRef.current,
+        permissionMode: permissionMode !== "auto" ? permissionMode : undefined,
       });
     },
-    [send, requestPermission],
+    [send, requestPermission, permissionMode],
   );
 
   const handleToggleAutoFix = useCallback(() => {
@@ -808,9 +829,10 @@ export default function App() {
         text,
         sessionId: sessionIdRef.current,
         images,
+        permissionMode: permissionMode !== "auto" ? permissionMode : undefined,
       });
     },
-    [send, requestPermission]
+    [send, requestPermission, permissionMode]
   );
 
   const handleEditMessage = useCallback(
@@ -831,9 +853,10 @@ export default function App() {
         type: "send_message",
         text: newText,
         sessionId: sessionIdRef.current,
+        permissionMode: permissionMode !== "auto" ? permissionMode : undefined,
       });
     },
-    [send, requestPermission, activeThreadId]
+    [send, requestPermission, activeThreadId, permissionMode]
   );
 
   const handleGitRefresh = useCallback(() => {
@@ -1107,6 +1130,11 @@ export default function App() {
     [handleSend],
   );
 
+  const handlePermissionModeChange = useCallback((mode: PermissionMode) => {
+    setPermissionMode(mode);
+    savePermissionMode(mode);
+  }, []);
+
   const handleClearLogs = useCallback(() => {
     setLogEntries([]);
     send({ type: "clear_logs" });
@@ -1321,7 +1349,12 @@ export default function App() {
         />
       )}
       {!showTemplatePicker && (
-        <MessageInput onSend={handleSend} disabled={isLoading || status !== "open"} />
+        <MessageInput
+          onSend={handleSend}
+          disabled={isLoading || status !== "open"}
+          permissionMode={permissionMode}
+          onPermissionModeChange={handlePermissionModeChange}
+        />
       )}
     </>
   );

@@ -1,4 +1,6 @@
 import { useState, useRef, useCallback } from "react";
+import { ModeSelector } from "./ModeSelector.js";
+import type { PermissionMode } from "../../server/types.js";
 
 export interface ImagePreview {
   data: string;       // base64-encoded
@@ -14,9 +16,13 @@ const MAX_IMAGES = 5;
 export function MessageInput({
   onSend,
   disabled,
+  permissionMode = "auto",
+  onPermissionModeChange,
 }: {
   onSend: (text: string, images?: Array<{ data: string; mediaType: string; filename: string }>) => void;
   disabled: boolean;
+  permissionMode?: PermissionMode;
+  onPermissionModeChange?: (mode: PermissionMode) => void;
 }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<ImagePreview[]>([]);
@@ -219,6 +225,16 @@ export function MessageInput({
               </button>
             </div>
           ))}
+        </div>
+      )}
+
+      {onPermissionModeChange && (
+        <div className="flex items-center mb-2 max-w-3xl mx-auto">
+          <ModeSelector
+            mode={permissionMode}
+            onChange={onPermissionModeChange}
+            disabled={disabled}
+          />
         </div>
       )}
 

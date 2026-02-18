@@ -1,7 +1,7 @@
 import * as pty from "node-pty";
 import type { IPty } from "node-pty";
 import { EventEmitter } from "node:events";
-import type { ClaudeEvent, ImageAttachment } from "./types.js";
+import type { ClaudeEvent, ImageAttachment, PermissionMode } from "./types.js";
 import { stripAnsi } from "./auth.js";
 
 export class ClaudeProcess extends EventEmitter {
@@ -19,20 +19,43 @@ export class ClaudeProcess extends EventEmitter {
    * When `images` is provided, the prompt is sent via stdin as a JSON content
    * array containing image blocks followed by a text block.
    */
-  run(prompt: string, sessionId?: string, systemPrompt?: string, images?: ImageAttachment[], cwd?: string): void {
+  run(prompt: string, sessionId?: string, systemPrompt?: string, images?: ImageAttachment[], cwd?: string, permissionMode?: PermissionMode): void {
+    const AUTO_TOOLS = "Write,Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch,AskUserQuestion";
+    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch";
+    const NORMAL_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion";
+
+    const tools = permissionMode === "plan"
+      ? PLAN_TOOLS
+      : permissionMode === "normal"
+        ? NORMAL_TOOLS
+        : AUTO_TOOLS;
+
     const args = [
       "-p", prompt,
       "--output-format", "stream-json",
       "--verbose",
-      "--allowedTools", "Write,Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch,AskUserQuestion",
+      "--allowedTools", tools,
     ];
+
+    if (permissionMode === "plan") {
+      args.push("--permission-mode", "plan");
+    }
 
     if (sessionId) {
       args.push("--resume", sessionId);
     }
 
-    if (systemPrompt) {
-      args.push("--system-prompt", systemPrompt);
+    // Build effective system prompt, injecting normal-mode instructions if needed
+    let effectiveSystemPrompt = systemPrompt;
+    if (permissionMode === "normal") {
+      const normalInstruction = `IMPORTANT: You are in supervised mode. Before making ANY file changes or running commands:\n1. Describe what you plan to do\n2. Use AskUserQuestion to get approval first\n3. Only proceed after the user approves\nNever skip the approval step.`;
+      effectiveSystemPrompt = effectiveSystemPrompt
+        ? `${normalInstruction}\n\n${effectiveSystemPrompt}`
+        : normalInstruction;
+    }
+
+    if (effectiveSystemPrompt) {
+      args.push("--system-prompt", effectiveSystemPrompt);
     }
 
     const spawnCwd = cwd ?? "/workspace";
