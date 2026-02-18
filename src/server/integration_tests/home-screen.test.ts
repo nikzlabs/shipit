@@ -290,6 +290,14 @@ describe("Integration: home_send_with_repo", () => {
           try { await origCheckout(name); } catch { /* ignore branch errors in tests */ }
         };
         gm.renameBranch = async () => { /* no-op in tests */ };
+        // Stub clone for non-local URLs so tests don't hit the network
+        const origClone = gm.clone.bind(gm);
+        gm.clone = async (url: string, branch?: string) => {
+          if (url.startsWith("file://")) {
+            return origClone(url, branch);
+          }
+          throw new Error(`clone failed: repository '${url}' not found`);
+        };
         return gm;
       },
       sessionManager,
