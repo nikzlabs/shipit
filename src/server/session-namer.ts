@@ -9,7 +9,7 @@ export interface SessionName {
  * Spawn a short-lived Claude CLI process to generate a session title and
  * branch-friendly slug from the user's first message. Returns null on failure.
  */
-export function generateSessionName(userMessage: string): Promise<SessionName | null> {
+export function generateSessionName(userMessage: string, cwd?: string): Promise<SessionName | null> {
   const truncated = userMessage.slice(0, 200);
   const prompt = `Given this user message for a coding session, generate:
 1. A short branch-friendly slug (lowercase, hyphens only, no special chars, max 40 chars)
@@ -26,6 +26,7 @@ Respond with ONLY valid JSON, no markdown fences: {"slug": "...", "title": "..."
         ["-p", prompt, "--output-format", "text"],
         {
           timeout: 15_000,
+          cwd: cwd ?? "/tmp",
           env: { ...process.env, HOME: "/root" },
         },
         (error, stdout) => {
