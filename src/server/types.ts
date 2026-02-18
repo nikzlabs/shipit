@@ -252,13 +252,6 @@ export interface WsGitHubLogout {
   type: "github_logout";
 }
 
-export interface WsGitHubCreateRepo {
-  type: "github_create_repo";
-  name: string;
-  description?: string;
-  isPrivate?: boolean;
-}
-
 export interface WsGitHubCreatePR {
   type: "github_create_pr";
   title: string;
@@ -269,16 +262,6 @@ export interface WsGitHubCreatePR {
 
 export interface WsGitHubListBranches {
   type: "github_list_branches";
-}
-
-// ---- GitHub import messages ----
-
-export interface WsGitHubImportRepo {
-  type: "github_import_repo";
-  /** Full clone URL or "owner/repo" shorthand. */
-  url: string;
-  /** Optional branch to check out. Defaults to repo's default branch. */
-  branch?: string;
 }
 
 export interface WsGitHubSearchRepos {
@@ -416,7 +399,6 @@ export type WsClientMessage =
   | WsGitHubSetRemote
   | WsGitHubGetRemotes
   | WsGitHubLogout
-  | WsGitHubCreateRepo
   | WsGitHubCreatePR
   | WsGitHubListBranches
   | WsSetGitIdentity
@@ -427,7 +409,6 @@ export type WsClientMessage =
   | WsSetApiKey
   | WsPasteAuthCode
   | WsListFeatures
-  | WsGitHubImportRepo
   | WsGitHubSearchRepos
   | WsGeneratePRDescription
   | WsGetPrStatus
@@ -722,16 +703,6 @@ export interface WsGitHubRemotes {
   remotes: Array<{ name: string; url: string }>;
 }
 
-export interface WsGitHubRepoCreated {
-  type: "github_repo_created";
-  success: boolean;
-  name?: string;
-  fullName?: string;
-  url?: string;
-  cloneUrl?: string;
-  message?: string;
-}
-
 export interface WsGitHubPRCreated {
   type: "github_pr_created";
   success: boolean;
@@ -744,21 +715,6 @@ export interface WsGitHubBranches {
   type: "github_branches";
   current: string;
   remote: string[];
-}
-
-// ---- GitHub import server messages ----
-
-export interface WsGitHubImportProgress {
-  type: "github_import_progress";
-  stage: "cloning" | "installing" | "ready";
-  message: string;
-}
-
-export interface WsGitHubImportComplete {
-  type: "github_import_complete";
-  success: boolean;
-  sessionId?: string;
-  message?: string;
 }
 
 export interface WsGitHubSearchResults {
@@ -1037,7 +993,6 @@ export type WsServerMessage =
   | WsGitHubPushResult
   | WsGitHubPullResult
   | WsGitHubRemotes
-  | WsGitHubRepoCreated
   | WsGitHubPRCreated
   | WsGitHubBranches
   | WsGitIdentityRequired
@@ -1053,8 +1008,6 @@ export type WsServerMessage =
   | WsDeployComplete
   | WsDeployError
   | WsDeployHistory
-  | WsGitHubImportProgress
-  | WsGitHubImportComplete
   | WsGitHubSearchResults
   | WsGeneratedPRDescription
   | WsPrStatus

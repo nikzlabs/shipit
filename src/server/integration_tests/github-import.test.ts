@@ -17,7 +17,6 @@ import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
 import { ThreadManager } from "../threads.js";
 import { FeatureManager } from "../features.js";
-import type { WsServerMessage } from "../types.js";
 
 let tmpDir: string;
 let app: Awaited<ReturnType<typeof buildApp>>;
@@ -60,58 +59,6 @@ afterEach(async () => {
   client.close();
   await app.close();
   fs.rmSync(tmpDir, { recursive: true, force: true });
-});
-
-describe("github_import_repo", () => {
-  it("returns error when not authenticated", async () => {
-    client.send({ type: "github_import_repo", url: "owner/repo" });
-    const msg = await client.receiveSkipLogs();
-    expect(msg).toMatchObject({ type: "error", message: "Not authenticated with GitHub" });
-  });
-
-  it("returns error for empty URL", async () => {
-    await githubAuth.setToken("test-token");
-    client.send({ type: "github_import_repo", url: "" });
-    const msg = await client.receiveSkipLogs();
-    expect(msg).toMatchObject({ type: "error", message: "Repository URL is required" });
-  });
-
-  it("returns error for invalid URL", async () => {
-    await githubAuth.setToken("test-token");
-    client.send({ type: "github_import_repo", url: "ftp://invalid" });
-    const msg = await client.receiveSkipLogs();
-    expect(msg).toMatchObject({ type: "error", message: "Invalid repository URL" });
-  });
-
-  it("expands owner/repo shorthand", async () => {
-    await githubAuth.setToken("test-token");
-    // Clone will fail since it's a fake URL, but we should get progress events first
-    client.send({ type: "github_import_repo", url: "owner/repo" });
-
-    // We should get progress events and then either complete or error
-    const messages: WsServerMessage[] = [];
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline) {
-      try {
-        const msg = await client.receive(1000);
-        if (msg.type !== "log_entry") {
-          messages.push(msg);
-        }
-        if (msg.type === "github_import_complete") break;
-      } catch {
-        break;
-      }
-    }
-
-    // First message should be a progress event about creating session
-    const progressEvents = messages.filter((m) => m.type === "github_import_progress");
-    expect(progressEvents.length).toBeGreaterThanOrEqual(1);
-    expect(progressEvents[0]).toMatchObject({
-      type: "github_import_progress",
-      stage: "cloning",
-      message: "Creating session...",
-    });
-  });
 });
 
 describe("github_search_repos", () => {
