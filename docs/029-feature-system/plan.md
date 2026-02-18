@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # 029 — Feature System
 
 ## Overview
@@ -48,9 +52,8 @@ A new "Features" tab in the right panel (alongside Preview, Docs, Files, Termina
 |-----------|------|---------|
 | Client → Server | `list_features` | (none) |
 | Server → Client | `feature_list` | `{ features: FeatureInfo[] }` |
-| Client → Server | `start_feature_session` | `{ featureId: string }` |
 
-`start_feature_session` creates a new session and sends the initial message with doc references. The server responds with the normal `session_started` event followed by Claude's response.
+Starting a session from a feature is handled client-side: the `handleFeatureStartSession` callback in `App.tsx` constructs a context message referencing the feature's `plan.md` (and `checklist.md` if present) and sends it via the existing `send_message` flow. This avoids adding a separate server message type and reuses the existing session creation infrastructure.
 
 ## Patterns
 
