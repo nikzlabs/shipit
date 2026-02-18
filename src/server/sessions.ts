@@ -122,28 +122,20 @@ export class SessionManager {
     return true;
   }
 
-  /** Find an existing non-archived session with the given remote URL and a workspace dir. */
-  findByRemoteUrl(remoteUrl: string): SessionInfo | undefined {
-    return this.sessions.find(
-      (s) => s.remoteUrl === remoteUrl && s.archived !== true && s.workspaceDir,
-    );
-  }
-
-  /** Find all sessions whose parentSessionId matches the given id. */
-  getChildren(parentId: string): SessionInfo[] {
+  /** Find all non-archived sessions with the given remote URL. */
+  findAllByRemoteUrl(remoteUrl: string): SessionInfo[] {
     return this.sessions.filter(
-      (s) => s.parentSessionId === parentId && s.archived !== true,
+      (s) => s.remoteUrl === remoteUrl && s.archived !== true,
     );
   }
 
   /** Set worktree-specific fields on a session. */
   setWorktreeInfo(
     id: string,
-    info: { parentSessionId: string; branch: string; sessionType: "worktree" },
+    info: { branch: string; sessionType: "worktree" },
   ): void {
     const session = this.sessions.find((s) => s.id === id);
     if (session) {
-      session.parentSessionId = info.parentSessionId;
       session.branch = info.branch;
       session.sessionType = info.sessionType;
       this.save();

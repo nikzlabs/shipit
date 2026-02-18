@@ -5,7 +5,7 @@ status: in-progress
 
 ## Summary
 
-Use git worktrees transparently under the hood so that multiple sessions working on the same repository share a single clone. The first session for a repo does a full `git clone`; subsequent sessions for the same repo create worktrees from the first clone instead of re-cloning. This is invisible to the user — they just open a repo and start working.
+Use git worktrees transparently under the hood so that multiple sessions working on the same repository share a single clone. The repo is cloned once into a shared location (`/workspace/repos/{hash}/`); every session — including the first — is a worktree from that shared clone. This is invisible to the user — they just open a repo and start working.
 
 ## Motivation
 
@@ -20,36 +20,41 @@ Git worktrees solve all of these. A worktree is a separate working directory lin
 
 ## How It Works
 
+### Directory Structure
+
+```
+/workspace/
+  repos/{hash}/          ← shared clone (one per unique repo URL, keyed by SHA-256 hash)
+    .git/
+    ...files (main working tree, not used directly by any session)
+  sessions/{uuid}/       ← every session is a worktree from the shared clone
+    .git                 ← worktree link file (not a directory)
+    ...files (independent working tree)
+```
+
 ### Transparent Worktree Reuse
 
 When the user sends `home_send_with_repo` for a given repository URL:
 
-1. **First time**: Full `git clone`, session is `standalone` — same as today
-2. **Same repo again**: Instead of re-cloning, find the existing session for that repo and create a worktree from it. The new session is type `worktree` with a `parentSessionId` pointing to the original clone.
+1. Compute `repoDir = /workspace/repos/{sha256(repoUrl).slice(0,16)}/`
+2. If `repoDir` doesn't exist → `git clone` into it (first time)
+3. If `repoDir` exists → `git pull` to update (fetch latest)
+4. Create worktree: `git worktree add /workspace/sessions/{uuid} -b {branchPrefix}` from the shared clone
+5. Mark session as `sessionType: "worktree"` with `branch` metadata
 
-The user never sees "worktree" or "fork" UI. They just start a new session with a repo and it works — faster, with less disk usage.
+No session depends on another session. All sessions reference the shared clone in `/workspace/repos/`.
 
-### Session Types
+### Session Model
 
-| Type | When Created | Isolation | Git Model |
-|---|---|---|---|
-| **Standalone** | First clone of a repo, or new from template/blank | Independent directory | Own `.git` repo |
-| **Worktree** | Subsequent session for an already-cloned repo | Separate worktree of parent repo | Shared `.git`, own branch |
-
-### Server Flow (home_send_with_repo)
-
+```typescript
+export interface SessionInfo {
+  // ... existing fields ...
+  branch?: string;                   // Worktree branch name
+  sessionType?: "standalone" | "worktree";
+}
 ```
-1. Normalize repoUrl
-2. Search SessionManager for existing non-archived session with same remoteUrl
-3a. If found (parent exists):
-    - Create worktree: git worktree add /workspace/sessions/{newId} -b {branchName}
-    - Set sessionType: "worktree", parentSessionId, branch
-    - Copy credentials/identity from parent
-4a. If not found:
-    - Full git clone (current behavior)
-    - Set sessionType: "standalone"
-5. Continue with branch creation, session naming, Claude launch
-```
+
+Note: `parentSessionId` was removed. Sessions are independent — they all point at the same shared repo via `remoteUrl`.
 
 ### GitManager Methods
 
@@ -62,17 +67,6 @@ async merge(branchName): Promise<{ success: boolean; conflicts?: string[] }>
 async deleteBranch(branchName): Promise<void>
 ```
 
-### Session Model
-
-```typescript
-export interface SessionInfo {
-  // ... existing fields ...
-  parentSessionId?: string;          // ID of parent (if worktree)
-  branch?: string;                   // Branch name (if worktree)
-  sessionType?: "standalone" | "worktree";
-}
-```
-
 ### WebSocket Messages
 
 Already implemented — used by `fork_session`, `list_worktrees`, `merge_session` handlers. These remain available for future explicit fork/merge UI but the primary flow is transparent via `home_send_with_repo`.
@@ -80,12 +74,22 @@ Already implemented — used by `fork_session`, `list_worktrees`, `merge_session
 ### Cleanup
 
 When archiving a **worktree** session:
+- Find the shared repo dir (via `getSharedRepoDir(remoteUrl)`, or from `.git` file for standalone worktrees)
 - Remove the worktree (`git worktree remove --force`)
 - Delete the branch (`git branch -D`)
 - Remove session metadata
 
-When archiving a **standalone** session with worktree children:
-- Block deletion ("Delete worktree sessions first")
+No blocking of parent archival — sessions are independent.
+
+### fork_session
+
+Forking works for both repo-backed and standalone sessions:
+- **Repo-backed** (has `remoteUrl`): creates worktree from the shared clone in `/repos/`
+- **Standalone** (no `remoteUrl`): creates worktree from the session's own `.git` dir
+
+### list_worktrees
+
+Lists all non-archived sessions sharing the same `remoteUrl` as the active session.
 
 ### Vite Management
 
@@ -121,20 +125,20 @@ Each worktree session can deploy independently (it has its own working tree).
 1. Fork session — create worktree, verify metadata
 2. Fork validation — empty/invalid branch names
 3. Fork without active session — error
-4. List worktrees — parent + children
-5. Archive parent blocked when children exist
-6. Archive child cleans up worktree + branch
-7. Merge session — merge worktree branch into parent
-8. Merge validation — empty/missing source
-9. `home_send_with_repo` reuses existing clone via worktree
+4. List worktrees — standalone session returns empty
+5. Archive child cleans up worktree + branch
+6. Merge session — merge worktree branch into active session
+7. Merge validation — empty/missing source
+8. `home_send_with_repo` — all sessions are worktrees from shared clone
+9. `home_send_with_repo` — worktree session changes are independent
 
 ## Key Files
 
 | File | Change |
 |---|---|
 | `src/server/git.ts` | Worktree methods: `createWorktree()`, `removeWorktree()`, `listWorktrees()`, `merge()`, `deleteBranch()` |
-| `src/server/types.ts` | `SessionInfo` extensions, WS message types |
-| `src/server/sessions.ts` | `getChildren()`, `setWorktreeInfo()`, `findByRemoteUrl()` |
-| `src/server/index.ts` | `home_send_with_repo` worktree reuse, `fork_session`/`list_worktrees`/`merge_session` handlers, archive guards |
+| `src/server/types.ts` | `SessionInfo` extensions (`branch`, `sessionType`), WS message types |
+| `src/server/sessions.ts` | `findAllByRemoteUrl()`, `setWorktreeInfo()` |
+| `src/server/index.ts` | Shared repo clone (`getSharedRepoDir`), `home_send_with_repo` worktree flow, `fork_session`/`list_worktrees`/`merge_session` handlers, archive cleanup |
 | `src/server/integration_tests/worktree-sessions.test.ts` | Integration tests |
 | `src/server/git-worktree.test.ts` | Unit tests |

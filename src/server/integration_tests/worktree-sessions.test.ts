@@ -135,7 +135,6 @@ describe("Integration: Worktree sessions", () => {
     }
 
     expect(forkedMsg).not.toBeNull();
-    expect(forkedMsg.session.parentSessionId).toBe(parentId);
     expect(forkedMsg.session.branch).toBe("feature-1");
     expect(forkedMsg.session.sessionType).toBe("worktree");
     expect(forkedMsg.parentSessionId).toBe(parentId);
@@ -204,58 +203,25 @@ describe("Integration: Worktree sessions", () => {
     client.close();
   });
 
-  it("list_worktrees returns worktrees for active session", async () => {
+  it("list_worktrees returns worktrees for active session (standalone)", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     await createAndActivateSession(client, "Parent");
 
-    // Fork twice
-    client.send({ type: "fork_session", branchName: "branch-a" } as any);
-    await client.receive(); // session_forked
-    await client.receive(); // session_list
-
-    client.send({ type: "fork_session", branchName: "branch-b" } as any);
-    await client.receive(); // session_forked
-    await client.receive(); // session_list
-
-    // List worktrees
+    // For standalone sessions (no remoteUrl), list_worktrees returns only the active session
     client.send({ type: "list_worktrees" } as any);
     const msg = await client.receive();
 
     expect(msg.type).toBe("worktree_list");
+    // Standalone session has no branch, so worktrees list is filtered to entries with branch
     const worktrees = (msg as any).worktrees;
-    // Should have 3: parent + 2 worktrees
-    expect(worktrees.length).toBeGreaterThanOrEqual(3);
-    const branches = worktrees.map((w: any) => w.branch);
-    expect(branches).toContain("branch-a");
-    expect(branches).toContain("branch-b");
+    expect(worktrees.length).toBe(0);
 
     client.close();
   });
 
   // ---- archive_session with worktree ----
-
-  it("archive_session blocks when session has worktree children", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    const parentId = await createAndActivateSession(client, "Parent");
-
-    // Fork it
-    client.send({ type: "fork_session", branchName: "child-branch" } as any);
-    await client.receive(); // session_forked
-    await client.receive(); // session_list
-
-    // Try to archive the parent
-    client.send({ type: "archive_session", sessionId: parentId });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toContain("Cannot archive a session that has worktree sessions");
-
-    client.close();
-  });
 
   it("archive_session cleans up worktree when archiving child session", async () => {
     const client = await TestClient.connect(port);
@@ -479,13 +445,14 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     try { while (true) { await client1.receive(300); } } catch { /* done */ }
     client1.close();
 
-    // Verify first session is standalone (no parentSessionId)
+    // All sessions are worktrees from the shared repo clone
     const firstSession = sessionManager.get(session1.id);
     expect(firstSession).toBeDefined();
     expect(firstSession!.remoteUrl).toBe(repoUrl);
-    expect(firstSession!.sessionType).toBeUndefined(); // standalone by default
+    expect(firstSession!.sessionType).toBe("worktree");
+    expect(firstSession!.branch).toBeTruthy();
 
-    // --- Second request: same repo URL should use worktree ---
+    // --- Second request: same repo URL should also be a worktree ---
     const client2 = await TestClient.connect(port);
     await client2.receive(); // preview_status
 
@@ -502,16 +469,22 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     try { while (true) { await client2.receive(300); } } catch { /* done */ }
     client2.close();
 
-    // Verify second session is a worktree of the first
+    // Verify second session is also a worktree
     const secondSession = sessionManager.get(session2.id);
     expect(secondSession).toBeDefined();
     expect(secondSession!.sessionType).toBe("worktree");
-    expect(secondSession!.parentSessionId).toBe(session1.id);
     expect(secondSession!.branch).toBeTruthy();
     expect(secondSession!.remoteUrl).toBe(repoUrl);
+    // Different branches
+    expect(secondSession!.branch).not.toBe(firstSession!.branch);
 
     // Verify the worktree directory exists and has the repo files
     expect(fs.existsSync(path.join(secondSession!.workspaceDir!, "README.md"))).toBe(true);
+
+    // Verify both share the same shared repo dir (not cloned twice)
+    const reposDir = path.join(tmpDir, "repos");
+    const repoDirs = fs.readdirSync(reposDir);
+    expect(repoDirs.length).toBe(1); // only one shared clone
   });
 
   it("worktree session changes are independent from parent", async () => {

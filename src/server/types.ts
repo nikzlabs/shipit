@@ -83,8 +83,6 @@ export interface SessionInfo {
   remoteUrl?: string;
   /** Whether this session has been archived (hidden from sidebar). */
   archived?: boolean;
-  /** If this session is a worktree, the ID of the parent session. */
-  parentSessionId?: string;
   /** If this session is a worktree, the branch name. */
   branch?: string;
   /** Session type: "standalone" (default) or "worktree". */
