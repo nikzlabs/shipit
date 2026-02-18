@@ -55,18 +55,18 @@ export function SystemPromptEditor({ initialContent, onSave, onClose }: SystemPr
       data-testid="system-prompt-backdrop"
     >
       <div
-        className="bg-gray-900 border border-gray-700 rounded-lg shadow-xl max-w-lg w-full mx-4 flex flex-col max-h-[80vh]"
+        className="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-lg shadow-xl max-w-lg w-full mx-4 flex flex-col max-h-[80vh]"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={handleKeyDown}
         role="dialog"
         aria-label="Project Instructions"
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-700">
-          <h2 className="text-lg font-semibold text-gray-100">Project Instructions</h2>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-300 dark:border-gray-700">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Project Instructions</h2>
           <button
             onClick={onClose}
-            className="text-gray-400 hover:text-gray-200 transition-colors text-xl leading-none"
+            className="text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 transition-colors text-xl leading-none"
             aria-label="Close"
           >
             &times;
@@ -75,7 +75,7 @@ export function SystemPromptEditor({ initialContent, onSave, onClose }: SystemPr
 
         {/* Body */}
         <div className="px-5 py-4 flex-1 min-h-0 flex flex-col gap-3">
-          <p className="text-sm text-gray-400">
+          <p className="text-sm text-gray-600 dark:text-gray-400">
             These instructions are sent to the agent with every message. Use them to define project
             conventions, preferred libraries, or style guidelines.
           </p>
@@ -85,7 +85,7 @@ export function SystemPromptEditor({ initialContent, onSave, onClose }: SystemPr
             value={content}
             onChange={(e) => setContent(e.target.value)}
             placeholder="e.g. Always use TypeScript with strict mode. Use Tailwind CSS for styling."
-            className="flex-1 min-h-[160px] max-h-[40vh] w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-sm text-gray-100 placeholder-gray-500 resize-y focus:outline-none focus:border-blue-500"
+            className="flex-1 min-h-[160px] max-h-[40vh] w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-md px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 resize-y focus:outline-none focus:border-blue-500"
             data-testid="system-prompt-textarea"
           />
 
@@ -100,10 +100,10 @@ export function SystemPromptEditor({ initialContent, onSave, onClose }: SystemPr
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-gray-700">
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-gray-300 dark:border-gray-700">
           <button
             onClick={onClose}
-            className="px-3 py-1.5 text-sm rounded-md text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+            className="px-3 py-1.5 text-sm rounded-md text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
           >
             Cancel
           </button>

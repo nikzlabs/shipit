@@ -152,7 +152,7 @@ describe("ToolResult", () => {
         <ToolResult tool="Grep" result={result(grepOutput)} />
       );
       // File paths should be colored blue
-      const blueParts = container.querySelectorAll("span.text-blue-400");
+      const blueParts = container.querySelectorAll("span.text-blue-600");
       expect(blueParts.length).toBeGreaterThan(0);
       expect(blueParts[0].textContent).toBe("src/app.ts");
     });
@@ -162,7 +162,7 @@ describe("ToolResult", () => {
       const { container } = render(
         <ToolResult tool="Grep" result={result(grepOutput)} />
       );
-      const yellowParts = container.querySelectorAll("span.text-yellow-400");
+      const yellowParts = container.querySelectorAll("span.text-yellow-600");
       expect(yellowParts.length).toBeGreaterThan(0);
       expect(yellowParts[0].textContent).toBe("42");
     });
@@ -172,7 +172,7 @@ describe("ToolResult", () => {
       const { container } = render(
         <ToolResult tool="Grep" result={result(grepOutput)} />
       );
-      const blueParts = container.querySelectorAll("span.text-blue-400");
+      const blueParts = container.querySelectorAll("span.text-blue-600");
       expect(blueParts.length).toBe(2);
     });
 
@@ -187,7 +187,7 @@ describe("ToolResult", () => {
       const { container } = render(
         <ToolResult tool="Glob" result={result(globOutput)} />
       );
-      const blueParts = container.querySelectorAll("span.text-blue-400");
+      const blueParts = container.querySelectorAll("span.text-blue-600");
       expect(blueParts.length).toBe(3);
     });
   });

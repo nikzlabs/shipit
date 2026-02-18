@@ -59,13 +59,13 @@ function BashResult({ content, isError }: { content: string; isError?: boolean }
     <div
       className={`mt-1 rounded overflow-hidden border ${
         isError
-          ? "border-red-700/50 bg-red-950/30"
-          : "border-gray-700/50 bg-gray-950"
+          ? "border-red-300/50 dark:border-red-700/50 bg-red-50/30 dark:bg-red-950/30"
+          : "border-gray-300/50 dark:border-gray-700/50 bg-gray-50 dark:bg-gray-950"
       }`}
     >
       <pre
         className={`p-2 text-xs font-mono overflow-x-auto leading-relaxed ${
-          isError ? "text-red-300" : "text-gray-300"
+          isError ? "text-red-700 dark:text-red-300" : "text-gray-700 dark:text-gray-300"
         } ${!expanded && truncated ? "max-h-[20rem]" : ""}`}
       >
         {displayText}
@@ -73,7 +73,7 @@ function BashResult({ content, isError }: { content: string; isError?: boolean }
       {truncated && (
         <button
           onClick={() => setExpanded(!expanded)}
-          className="w-full text-xs text-center py-1 text-gray-400 hover:text-gray-200 bg-gray-900/50 hover:bg-gray-800/50 border-t border-gray-700/50 transition-colors"
+          className="w-full text-xs text-center py-1 text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 bg-gray-100/50 dark:bg-gray-900/50 hover:bg-gray-200/50 dark:hover:bg-gray-800/50 border-t border-gray-300/50 dark:border-gray-700/50 transition-colors"
           aria-label={expanded ? "Show less output" : "Show more output"}
         >
           {expanded ? "Show less" : `Show all ${totalLines} lines`}
@@ -105,18 +105,18 @@ function ReadResult({ content }: { content: string }) {
   }, [displayText]);
 
   return (
-    <div className="mt-1 rounded overflow-hidden border border-gray-700/50 bg-gray-950">
+    <div className="mt-1 rounded overflow-hidden border border-gray-300/50 dark:border-gray-700/50 bg-gray-50 dark:bg-gray-950">
       <pre className={`p-2 text-xs font-mono overflow-x-auto leading-relaxed ${!expanded && truncated ? "max-h-[16rem]" : ""}`}>
         {highlighted ? (
           <code className="hljs" dangerouslySetInnerHTML={{ __html: highlighted }} />
         ) : (
-          <code className="text-gray-300">{displayText}</code>
+          <code className="text-gray-700 dark:text-gray-300">{displayText}</code>
         )}
       </pre>
       {truncated && (
         <button
           onClick={() => setExpanded(!expanded)}
-          className="w-full text-xs text-center py-1 text-gray-400 hover:text-gray-200 bg-gray-900/50 hover:bg-gray-800/50 border-t border-gray-700/50 transition-colors"
+          className="w-full text-xs text-center py-1 text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 bg-gray-100/50 dark:bg-gray-900/50 hover:bg-gray-200/50 dark:hover:bg-gray-800/50 border-t border-gray-300/50 dark:border-gray-700/50 transition-colors"
           aria-label={expanded ? "Show less output" : "Show more output"}
         >
           {expanded ? "Show less" : `Show all ${totalLines} lines`}
@@ -139,7 +139,7 @@ function GrepResult({ content }: { content: string }) {
   const lines = displayText.split("\n");
 
   return (
-    <div className="mt-1 rounded overflow-hidden border border-gray-700/50 bg-gray-950">
+    <div className="mt-1 rounded overflow-hidden border border-gray-300/50 dark:border-gray-700/50 bg-gray-50 dark:bg-gray-950">
       <pre className={`p-2 text-xs font-mono overflow-x-auto leading-relaxed ${!expanded && truncated ? "max-h-[16rem]" : ""}`}>
         {lines.map((line, i) => {
           // Match ripgrep-style output: file:line:content or file:line-content
@@ -147,11 +147,11 @@ function GrepResult({ content }: { content: string }) {
           if (match) {
             return (
               <div key={i}>
-                <span className="text-blue-400">{match[1]}</span>
+                <span className="text-blue-600 dark:text-blue-400">{match[1]}</span>
                 <span className="text-gray-500">:</span>
-                <span className="text-yellow-400">{match[2]}</span>
+                <span className="text-yellow-600 dark:text-yellow-400">{match[2]}</span>
                 <span className="text-gray-500">:</span>
-                <span className="text-gray-300">{match[3]}</span>
+                <span className="text-gray-700 dark:text-gray-300">{match[3]}</span>
               </div>
             );
           }
@@ -159,12 +159,12 @@ function GrepResult({ content }: { content: string }) {
           if (line.trim() && !line.includes(" ")) {
             return (
               <div key={i}>
-                <span className="text-blue-400">{line}</span>
+                <span className="text-blue-600 dark:text-blue-400">{line}</span>
               </div>
             );
           }
           return (
-            <div key={i} className="text-gray-300">
+            <div key={i} className="text-gray-700 dark:text-gray-300">
               {line}
             </div>
           );
@@ -173,7 +173,7 @@ function GrepResult({ content }: { content: string }) {
       {truncated && (
         <button
           onClick={() => setExpanded(!expanded)}
-          className="w-full text-xs text-center py-1 text-gray-400 hover:text-gray-200 bg-gray-900/50 hover:bg-gray-800/50 border-t border-gray-700/50 transition-colors"
+          className="w-full text-xs text-center py-1 text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 bg-gray-100/50 dark:bg-gray-900/50 hover:bg-gray-200/50 dark:hover:bg-gray-800/50 border-t border-gray-300/50 dark:border-gray-700/50 transition-colors"
           aria-label={expanded ? "Show less output" : "Show more output"}
         >
           {expanded ? "Show less" : `Show all ${totalLines} lines`}
@@ -196,13 +196,13 @@ function GenericResult({ content, isError }: { content: string; isError?: boolea
     <div
       className={`mt-1 rounded overflow-hidden border ${
         isError
-          ? "border-red-700/50 bg-red-950/30"
-          : "border-gray-700/50 bg-gray-950"
+          ? "border-red-300/50 dark:border-red-700/50 bg-red-50/30 dark:bg-red-950/30"
+          : "border-gray-300/50 dark:border-gray-700/50 bg-gray-50 dark:bg-gray-950"
       }`}
     >
       <pre
         className={`p-2 text-xs font-mono overflow-x-auto leading-relaxed ${
-          isError ? "text-red-300" : "text-gray-300"
+          isError ? "text-red-700 dark:text-red-300" : "text-gray-700 dark:text-gray-300"
         } ${!expanded && truncated ? "max-h-[12rem]" : ""}`}
       >
         {displayText}
@@ -210,7 +210,7 @@ function GenericResult({ content, isError }: { content: string; isError?: boolea
       {truncated && (
         <button
           onClick={() => setExpanded(!expanded)}
-          className="w-full text-xs text-center py-1 text-gray-400 hover:text-gray-200 bg-gray-900/50 hover:bg-gray-800/50 border-t border-gray-700/50 transition-colors"
+          className="w-full text-xs text-center py-1 text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 bg-gray-100/50 dark:bg-gray-900/50 hover:bg-gray-200/50 dark:hover:bg-gray-800/50 border-t border-gray-300/50 dark:border-gray-700/50 transition-colors"
           aria-label={expanded ? "Show less output" : "Show more output"}
         >
           {expanded ? "Show less" : `Show all ${totalLines} lines`}
