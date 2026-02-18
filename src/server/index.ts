@@ -1585,6 +1585,64 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
       // ---- GitHub auth operations ----
 
+      if (msg.type === "github_device_auth_start") {
+        try {
+          const { deviceCode, userCode, verificationUri, expiresIn, interval } =
+            await githubAuthManager.startDeviceAuth();
+
+          send({
+            type: "github_device_auth_code",
+            userCode,
+            verificationUri,
+            expiresIn,
+          });
+
+          // Poll in background
+          const pollInterval = setInterval(async () => {
+            try {
+              const result = await githubAuthManager.pollDeviceAuth(deviceCode);
+
+              if (result.status === "success") {
+                clearInterval(pollInterval);
+                await githubAuthManager.setToken(result.token);
+                // Configure git credentials for active session
+                if (activeSessionDir) {
+                  githubAuthManager.configureGitCredentials(activeSessionDir);
+                }
+                send({ type: "github_device_auth_result", success: true });
+                // Also send updated github_status
+                send({ type: "github_status", ...githubAuthManager.getStatus() });
+              } else if (result.status === "expired" || result.status === "error") {
+                clearInterval(pollInterval);
+                send({
+                  type: "github_device_auth_result",
+                  success: false,
+                  message: result.status === "expired"
+                    ? "Authorization code expired. Please try again."
+                    : (result as { status: "error"; message: string }).message,
+                });
+              }
+              // "pending" → keep polling
+            } catch (err) {
+              clearInterval(pollInterval);
+              send({
+                type: "github_device_auth_result",
+                success: false,
+                message: getErrorMessage(err),
+              });
+            }
+          }, interval * 1000);
+
+          // Clean up on disconnect
+          socket.on("close", () => clearInterval(pollInterval));
+
+          // Auto-expire after expiresIn
+          setTimeout(() => clearInterval(pollInterval), expiresIn * 1000);
+        } catch (err) {
+          send({ type: "github_device_auth_result", success: false, message: getErrorMessage(err) });
+        }
+      }
+
       if (msg.type === "github_set_token") {
         const token = typeof msg.token === "string" ? msg.token.trim() : "";
         if (!token) {

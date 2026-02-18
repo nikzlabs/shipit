@@ -242,11 +242,39 @@ export class StubGitHubAuthManager extends EventEmitter {
     return this._checkStatus ?? { state: "none" as const, total: 0, passed: 0, failed: 0, pending: 0 };
   }
 
+  async startDeviceAuth() {
+    if (this._deviceAuthError) throw new Error(this._deviceAuthError);
+    return {
+      deviceCode: "test-device-code",
+      userCode: "ABCD-1234",
+      verificationUri: "https://github.com/login/device",
+      expiresIn: 900,
+      interval: 1,
+    };
+  }
+
+  async pollDeviceAuth(_deviceCode: string): Promise<
+    | { status: "success"; token: string }
+    | { status: "pending" }
+    | { status: "expired" }
+    | { status: "error"; message: string }
+  > {
+    const result = this._devicePollResults.shift();
+    return result ?? { status: "pending" };
+  }
+
   // ---- Test control methods ----
 
   private _prData: { url: string; number: number; base: string; title: string } | null = null;
   private _mergeResult: { success: boolean; message: string } | null = null;
   private _checkStatus: { state: "pending" | "success" | "failure" | "none"; total: number; passed: number; failed: number; pending: number } | null = null;
+  private _devicePollResults: Array<
+    | { status: "success"; token: string }
+    | { status: "pending" }
+    | { status: "expired" }
+    | { status: "error"; message: string }
+  > = [];
+  private _deviceAuthError: string | null = null;
 
   /** Set what findPullRequest returns for tests. */
   setPrData(data: { url: string; number: number; base: string; title: string } | null) {
@@ -261,6 +289,21 @@ export class StubGitHubAuthManager extends EventEmitter {
   /** Set what getCheckStatus returns for tests. */
   setCheckStatus(status: { state: "pending" | "success" | "failure" | "none"; total: number; passed: number; failed: number; pending: number } | null) {
     this._checkStatus = status;
+  }
+
+  /** Queue poll results for device auth tests. Results are consumed in FIFO order. */
+  setDevicePollResults(results: Array<
+    | { status: "success"; token: string }
+    | { status: "pending" }
+    | { status: "expired" }
+    | { status: "error"; message: string }
+  >) {
+    this._devicePollResults = [...results];
+  }
+
+  /** Make startDeviceAuth throw an error. */
+  setDeviceAuthError(error: string | null) {
+    this._deviceAuthError = error;
   }
 }
 

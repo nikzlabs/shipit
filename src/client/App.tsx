@@ -12,7 +12,7 @@ import { PreviewFrame, formatErrorForMessage, type PreviewStatus } from "./compo
 import { usePreviewErrors, type PreviewError } from "./hooks/usePreviewErrors.js";
 import { GitHistory, type GitCommit } from "./components/GitHistory.js";
 import { AuthOverlay } from "./components/AuthOverlay.js";
-import { GitHubAuthOverlay } from "./components/GitHubAuthOverlay.js";
+import { GitHubAuthOverlay, type DeviceAuthCode } from "./components/GitHubAuthOverlay.js";
 import { GitHubCreateRepoOverlay } from "./components/GitHubCreateRepoOverlay.js";
 import { SessionSidebar } from "./components/SessionSidebar.js";
 import { DocsViewer } from "./components/DocsViewer.js";
@@ -120,6 +120,8 @@ export default function App() {
   const [creatingRepo, setCreatingRepo] = useState(false);
   const [githubStatus, setGithubStatus] = useState<{ authenticated: boolean; username?: string; avatarUrl?: string }>({ authenticated: false });
   const [showGitHubAuth, setShowGitHubAuth] = useState(false);
+  const [deviceAuthCode, setDeviceAuthCode] = useState<DeviceAuthCode | null>(null);
+  const [deviceAuthError, setDeviceAuthError] = useState<string | null>(null);
   const [showCreateRepo, setShowCreateRepo] = useState(false);
   const [confirmingGitHubLogout, setConfirmingGitHubLogout] = useState(false);
   const [currentSessionUsage, setCurrentSessionUsage] = useState<SessionUsage | null>(null);
@@ -760,6 +762,22 @@ export default function App() {
       }
     }
 
+    if (data.type === "github_device_auth_code") {
+      setDeviceAuthCode({ userCode: data.userCode, verificationUri: data.verificationUri });
+      setDeviceAuthError(null);
+    }
+
+    if (data.type === "github_device_auth_result") {
+      if (data.success) {
+        setShowGitHubAuth(false);
+        setDeviceAuthCode(null);
+        setDeviceAuthError(null);
+      } else {
+        setDeviceAuthCode(null);
+        setDeviceAuthError(data.message ?? "Authorization failed");
+      }
+    }
+
     if (data.type === "github_status") {
       setGithubStatus({
         authenticated: data.authenticated,
@@ -1335,6 +1353,12 @@ export default function App() {
     [send],
   );
 
+  const handleStartDeviceAuth = useCallback(() => {
+    setDeviceAuthCode(null);
+    setDeviceAuthError(null);
+    send({ type: "github_device_auth_start" });
+  }, [send]);
+
   const handleGitHubLogout = useCallback(() => {
     send({ type: "github_logout" });
   }, [send]);
@@ -1878,7 +1902,14 @@ export default function App() {
       {showGitHubAuth && (
         <GitHubAuthOverlay
           onSubmit={handleGitHubTokenSubmit}
-          onClose={() => setShowGitHubAuth(false)}
+          onClose={() => {
+            setShowGitHubAuth(false);
+            setDeviceAuthCode(null);
+            setDeviceAuthError(null);
+          }}
+          onStartDeviceAuth={handleStartDeviceAuth}
+          deviceAuthCode={deviceAuthCode}
+          deviceAuthError={deviceAuthError}
         />
       )}
       {showCreateRepo && githubStatus.username && (

@@ -4,6 +4,8 @@ import { execSync } from "node:child_process";
 
 const DEFAULT_TOKEN_PATH = "/workspace/.github-token";
 
+const GITHUB_CLIENT_ID = process.env.GITHUB_OAUTH_CLIENT_ID || "Ov23liUkBMbMLCaPBvbN";
+
 export interface GitHubAuthStatus {
   authenticated: boolean;
   username?: string;
@@ -167,6 +169,78 @@ export class GitHubAuthManager extends EventEmitter {
       // Not a valid URL — return as-is
     }
     return repoUrl;
+  }
+
+  /** Start the GitHub device authorization flow. Returns code for user to enter. */
+  async startDeviceAuth(): Promise<{
+    deviceCode: string;
+    userCode: string;
+    verificationUri: string;
+    expiresIn: number;
+    interval: number;
+  }> {
+    const res = await fetch("https://github.com/login/device/code", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        client_id: GITHUB_CLIENT_ID,
+        scope: "repo read:user",
+      }),
+    });
+
+    if (!res.ok) throw new Error(`GitHub device code request failed: ${res.status}`);
+    const data = (await res.json()) as {
+      device_code: string;
+      user_code: string;
+      verification_uri: string;
+      expires_in: number;
+      interval: number;
+    };
+
+    return {
+      deviceCode: data.device_code,
+      userCode: data.user_code,
+      verificationUri: data.verification_uri,
+      expiresIn: data.expires_in,
+      interval: data.interval,
+    };
+  }
+
+  /** Poll for the device auth token. Returns token on success, null if still pending. */
+  async pollDeviceAuth(deviceCode: string): Promise<
+    | { status: "success"; token: string }
+    | { status: "pending" }
+    | { status: "expired" }
+    | { status: "error"; message: string }
+  > {
+    const res = await fetch("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        client_id: GITHUB_CLIENT_ID,
+        device_code: deviceCode,
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+      }),
+    });
+
+    if (!res.ok) return { status: "error", message: `GitHub API returned ${res.status}` };
+    const data = (await res.json()) as {
+      access_token?: string;
+      error?: string;
+      error_description?: string;
+    };
+
+    if (data.access_token) return { status: "success", token: data.access_token };
+    if (data.error === "authorization_pending") return { status: "pending" };
+    if (data.error === "slow_down") return { status: "pending" };
+    if (data.error === "expired_token") return { status: "expired" };
+    return { status: "error", message: data.error_description || data.error || "Unknown error" };
   }
 
   /** Clear stored token, git config, and in-memory state. */

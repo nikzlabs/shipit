@@ -217,6 +217,10 @@ export interface WsApplyTemplate {
 
 // ---- GitHub auth client messages ----
 
+export interface WsGitHubDeviceAuthStart {
+  type: "github_device_auth_start";
+}
+
 export interface WsGitHubSetToken {
   type: "github_set_token";
   token: string;
@@ -409,6 +413,7 @@ export type WsClientMessage =
   | WsApplyTemplate
   | WsGetSystemPrompt
   | WsSetSystemPrompt
+  | WsGitHubDeviceAuthStart
   | WsGitHubSetToken
   | WsGitHubGetStatus
   | WsGitHubPush
@@ -696,6 +701,19 @@ export interface WsTemplateApplied {
 }
 
 // ---- GitHub auth server messages ----
+
+export interface WsGitHubDeviceAuthCode {
+  type: "github_device_auth_code";
+  userCode: string;
+  verificationUri: string;
+  expiresIn: number;
+}
+
+export interface WsGitHubDeviceAuthResult {
+  type: "github_device_auth_result";
+  success: boolean;
+  message?: string;
+}
 
 export interface WsGitHubStatus {
   type: "github_status";
@@ -1033,6 +1051,8 @@ export type WsServerMessage =
   | WsSystemPrompt
   | WsSystemPromptSaved
   | WsFilesChanged
+  | WsGitHubDeviceAuthCode
+  | WsGitHubDeviceAuthResult
   | WsGitHubStatus
   | WsGitHubPushResult
   | WsGitHubPullResult
