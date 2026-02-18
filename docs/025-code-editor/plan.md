@@ -1,5 +1,24 @@
 # 025 — In-Browser Code Editor
 
+## Design Concern: Scope Creep Risk
+
+**Status: on hold — needs design rethink**
+
+Adding a code editor creates an expectation treadmill. Once users see a CodeMirror editor, they immediately ask for formatter integration (Prettier), autocomplete/IntelliSense, go-to-definition, multi-cursor, vim keybindings, git diff gutters, etc. ShipIt would be competing with VS Code on its home turf — and would always lose.
+
+The current read-only file viewer is actually a defensible design choice: it communicates that **Claude writes the code, you review it here**. This is ShipIt's differentiator — it's an AI-first IDE where the agent is the primary author, not a traditional editor with AI bolted on.
+
+**If we do implement an editor, it must be deliberately minimal:**
+- Save (Cmd+S) and basic editing only — no formatter, no autocomplete, no LSP
+- Position it as "quick fix" capability, not a full editor
+- Keep the UI nearly identical to the current viewer (don't add toolbars, panels, etc.)
+- Explicitly document what we will NOT add to prevent scope creep
+- Consider whether the effort is better spent on features that play to ShipIt's strengths (context display, terminal, GitHub workflow)
+
+**Alternative approaches to consider:**
+- Keep the viewer read-only and improve the chat-based editing UX instead (better file context attachment, inline diffs, one-click "fix this line")
+- Add only a "quick edit" mode — contenteditable on a single line/block, not a full editor component
+
 ## Summary
 
 Replace the read-only `FileContentViewer` with an editable code editor powered by CodeMirror 6. Users can directly edit files, save changes (auto-committed to git), and work alongside Claude rather than delegating every keystroke to the agent.
@@ -13,7 +32,7 @@ The current `FileContentViewer` (`src/client/components/FileContentViewer.tsx`) 
 - Manually resolve a merge conflict or lint error
 - Edit configuration files (tsconfig, package.json) directly
 
-For a product branded as an IDE, a read-only file viewer is a fundamental gap. Every comparable product (Replit, StackBlitz, CodeSandbox, Cursor) has an integrated editor.
+Note: while these are real gaps, the risk of scope creep (see above) may outweigh the benefit. The primary question is whether adding editing encourages users to work *around* Claude rather than *with* Claude, which undermines ShipIt's core value proposition.
 
 ## How It Works
 
