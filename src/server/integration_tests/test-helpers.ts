@@ -164,6 +164,7 @@ export class StubGitHubAuthManager extends EventEmitter {
       authenticated: this._authenticated,
       username: this._username ?? undefined,
       avatarUrl: undefined,
+      deviceAuthAvailable: true,
     };
   }
   async setToken(token: string) {

@@ -4,12 +4,17 @@ import { execSync } from "node:child_process";
 
 const DEFAULT_TOKEN_PATH = "/workspace/.github-token";
 
+// TODO: Replace with a ShipIt-owned GitHub OAuth App client ID once registered.
+// Client IDs are public (not secrets), so hardcoding here is fine.
+// The env var allows self-hosted deployments to use their own OAuth App.
 const GITHUB_CLIENT_ID = process.env.GITHUB_OAUTH_CLIENT_ID;
 
 export interface GitHubAuthStatus {
   authenticated: boolean;
   username?: string;
   avatarUrl?: string;
+  /** Whether the GitHub device auth flow is available (client ID configured). */
+  deviceAuthAvailable: boolean;
 }
 
 export interface GitHubRepoResult {
@@ -122,6 +127,7 @@ export class GitHubAuthManager extends EventEmitter {
       authenticated: this._token !== null,
       username: this._username ?? undefined,
       avatarUrl: this._avatarUrl ?? undefined,
+      deviceAuthAvailable: !!GITHUB_CLIENT_ID,
     };
   }
 

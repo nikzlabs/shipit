@@ -8,6 +8,7 @@ const defaultProps = {
   onSubmit: vi.fn(),
   onClose: vi.fn(),
   onStartDeviceAuth: vi.fn(),
+  deviceAuthAvailable: true,
 };
 
 describe("GitHubAuthOverlay — default view", () => {
@@ -31,6 +32,14 @@ describe("GitHubAuthOverlay — default view", () => {
   it("renders the manual token divider", () => {
     render(<GitHubAuthOverlay {...defaultProps} />);
     expect(screen.getByText("or enter a token manually")).toBeInTheDocument();
+  });
+
+  it("hides Sign in with GitHub button when deviceAuthAvailable is false", () => {
+    render(<GitHubAuthOverlay {...defaultProps} deviceAuthAvailable={false} />);
+    expect(screen.queryByText("Sign in with GitHub")).not.toBeInTheDocument();
+    expect(screen.queryByText("or enter a token manually")).not.toBeInTheDocument();
+    // PAT input should still be present
+    expect(screen.getByPlaceholderText("ghp_xxxxxxxxxxxxxxxxxxxx")).toBeInTheDocument();
   });
 
   it("renders a password input field", () => {

@@ -720,6 +720,7 @@ export interface WsGitHubStatus {
   authenticated: boolean;
   username?: string;
   avatarUrl?: string;
+  deviceAuthAvailable?: boolean;
 }
 
 export interface WsGitHubPushResult {

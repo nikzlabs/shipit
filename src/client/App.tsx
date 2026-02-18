@@ -118,7 +118,7 @@ export default function App() {
   const [showTemplates, setShowTemplates] = useState(!urlSessionId);
   const [selectedRepoUrl, setSelectedRepoUrl] = useState<string | null>(null);
   const [creatingRepo, setCreatingRepo] = useState(false);
-  const [githubStatus, setGithubStatus] = useState<{ authenticated: boolean; username?: string; avatarUrl?: string }>({ authenticated: false });
+  const [githubStatus, setGithubStatus] = useState<{ authenticated: boolean; username?: string; avatarUrl?: string; deviceAuthAvailable?: boolean }>({ authenticated: false });
   const [showGitHubAuth, setShowGitHubAuth] = useState(false);
   const [deviceAuthCode, setDeviceAuthCode] = useState<DeviceAuthCode | null>(null);
   const [deviceAuthError, setDeviceAuthError] = useState<string | null>(null);
@@ -783,6 +783,7 @@ export default function App() {
         authenticated: data.authenticated,
         username: data.username,
         avatarUrl: data.avatarUrl,
+        deviceAuthAvailable: data.deviceAuthAvailable,
       });
       setShowGitHubAuth(false);
     }
@@ -1910,6 +1911,7 @@ export default function App() {
           onStartDeviceAuth={handleStartDeviceAuth}
           deviceAuthCode={deviceAuthCode}
           deviceAuthError={deviceAuthError}
+          deviceAuthAvailable={githubStatus.deviceAuthAvailable}
         />
       )}
       {showCreateRepo && githubStatus.username && (
