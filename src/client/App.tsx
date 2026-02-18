@@ -31,10 +31,11 @@ import { GitIdentityOverlay } from "./components/GitIdentityOverlay.js";
 import { ThreadIndicator, type ThreadInfo } from "./components/ThreadIndicator.js";
 import { ThreadTimeline } from "./components/ThreadTimeline.js";
 import { DeployModal, type DeployPhase } from "./components/DeployModal.js";
+import { FeaturesPanel } from "./components/FeaturesPanel.js";
 import { PullRequestModal } from "./components/PullRequestModal.js";
-import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, PermissionMode } from "../server/types.js";
+import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, FeatureInfo, PermissionMode } from "../server/types.js";
 
-type RightTab = "preview" | "docs" | "files" | "terminal";
+type RightTab = "preview" | "docs" | "files" | "terminal" | "features";
 
 const SESSION_STORAGE_KEY = "vibe-current-session";
 const PERMISSION_MODE_KEY = "vibe-permission-mode";
@@ -128,6 +129,7 @@ export default function App() {
   const [lastDeployUrl, setLastDeployUrl] = useState<string | null>(null);
   const [lastDeployError, setLastDeployError] = useState<string | null>(null);
   const [deployHistory, setDeployHistory] = useState<DeploymentRecord[]>([]);
+  const [features, setFeatures] = useState<FeatureInfo[]>([]);
   const [showPRModal, setShowPRModal] = useState(false);
   const [prCurrentBranch, setPrCurrentBranch] = useState("");
   const [prRemoteBranches, setPrRemoteBranches] = useState<string[]>([]);
@@ -688,6 +690,10 @@ export default function App() {
       setDeployHistory(data.deployments);
     }
 
+    if (data.type === "feature_list") {
+      setFeatures(data.features);
+    }
+
     if (data.type === "log_entry") {
       setLogEntries((prev) => {
         const next = [...prev, { source: data.source, text: data.text, timestamp: data.timestamp }];
@@ -1130,6 +1136,49 @@ export default function App() {
     [handleSend],
   );
 
+  const handleFeatureRefresh = useCallback(() => {
+    send({ type: "list_features" });
+  }, [send]);
+
+  const handleFeatureStartSession = useCallback(
+    (feature: FeatureInfo) => {
+      // Create a new session
+      sessionIdRef.current = undefined;
+      saveSessionId(undefined);
+      setMessages([]);
+      setIsLoading(false);
+      setCurrentSessionUsage(null);
+      setShowTemplates(false);
+      setViewingFile(null);
+      setViewingFileContent(null);
+      setViewingFileBinary(false);
+      setGitCommits([]);
+      setFileTree([]);
+      setThreads([]);
+      setActiveThreadId("");
+      send({ type: "new_session" });
+
+      // Build context message referencing the feature docs
+      let text = `Work on feature: ${feature.name}\n\nPlease read the feature plan at ${feature.planPath}`;
+      if (feature.checklistPath) {
+        text += ` and the remaining work checklist at ${feature.checklistPath}`;
+      }
+      text += `, then proceed with the implementation.`;
+
+      // Send the message (will create a new session on the server)
+      requestPermission();
+      setMessages([{ role: "user", text }]);
+      setIsLoading(true);
+      setActivity({ label: "Thinking..." });
+      // Don't pass sessionId — let the server create a new session
+      send({ type: "send_message", text });
+
+      // Switch to chat view on mobile
+      setMobilePanel("chat");
+    },
+    [send, requestPermission],
+  );
+
   const handlePermissionModeChange = useCallback((mode: PermissionMode) => {
     setPermissionMode(mode);
     savePermissionMode(mode);
@@ -1153,6 +1202,9 @@ export default function App() {
       }
       if (tab === "terminal") {
         setUnreadLogCount(0);
+      }
+      if (tab === "features") {
+        send({ type: "list_features" });
       }
     },
     [send, docFiles.length]
@@ -1218,6 +1270,16 @@ export default function App() {
             </span>
           )}
         </button>
+        <button
+          onClick={() => handleTabChange("features")}
+          className={`px-4 py-2 text-sm font-medium transition-colors ${
+            rightTab === "features"
+              ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500"
+              : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+          }`}
+        >
+          Features
+        </button>
       </div>
 
       {/* Tab content */}
@@ -1247,6 +1309,12 @@ export default function App() {
           <TerminalPanel
             entries={logEntries}
             onClear={handleClearLogs}
+          />
+        ) : rightTab === "features" ? (
+          <FeaturesPanel
+            features={features}
+            onStartSession={handleFeatureStartSession}
+            onRefresh={handleFeatureRefresh}
           />
         ) : viewingFile ? (
           <FileContentViewer
