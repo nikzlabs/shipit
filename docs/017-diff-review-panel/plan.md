@@ -1,5 +1,5 @@
 ---
-status: done
+status: planned
 ---
 # 017 — Visual Diff Review Panel
 

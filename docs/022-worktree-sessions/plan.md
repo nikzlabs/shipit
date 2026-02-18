@@ -1,5 +1,5 @@
 ---
-status: done
+status: planned
 ---
 # 022 — Git Worktree Parallel Sessions
 
