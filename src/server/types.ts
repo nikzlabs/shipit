@@ -411,7 +411,10 @@ export type WsClientMessage =
   | WsGetDeployHistory
   | WsGetDeployConfig
   | WsCancelDeploy
-  | WsDeleteDeployConfig;
+  | WsDeleteDeployConfig
+  | WsTerminalStart
+  | WsTerminalInput
+  | WsTerminalResize;
 
 export interface WsClaudeEvent {
   type: "claude_event";
@@ -559,6 +562,35 @@ export interface UsageStats {
   sessions: SessionUsage[];
   totalCostUsd: number;
   totalTurns: number;
+}
+
+// ---- Interactive terminal types (client → server) ----
+
+export interface WsTerminalStart {
+  type: "terminal_start";
+}
+
+export interface WsTerminalInput {
+  type: "terminal_input";
+  data: string;
+}
+
+export interface WsTerminalResize {
+  type: "terminal_resize";
+  cols: number;
+  rows: number;
+}
+
+// ---- Interactive terminal types (server → client) ----
+
+export interface WsTerminalOutput {
+  type: "terminal_output";
+  data: string;
+}
+
+export interface WsTerminalExit {
+  type: "terminal_exit";
+  exitCode: number | null;
 }
 
 // ---- Terminal/logs types ----
@@ -976,4 +1008,6 @@ export type WsServerMessage =
   | WsGeneratedPRDescription
   | WsPrStatus
   | WsMergePrResult
-  | WsModelInfo;
+  | WsModelInfo
+  | WsTerminalOutput
+  | WsTerminalExit;

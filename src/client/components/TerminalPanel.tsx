@@ -8,9 +8,17 @@ export interface LogEntry {
   timestamp: string;
 }
 
+export type TerminalMode = "logs" | "shell";
+
 export interface TerminalPanelProps {
   entries: LogEntry[];
   onClear: () => void;
+  /** Current sub-tab. */
+  terminalMode: TerminalMode;
+  /** Called when the user switches sub-tabs. */
+  onTerminalModeChange: (mode: TerminalMode) => void;
+  /** Render prop for the shell sub-tab content (InteractiveTerminal). */
+  shellContent: React.ReactNode;
 }
 
 const SOURCE_COLORS: Record<LogEntry["source"], string> = {
@@ -48,7 +56,7 @@ const FILTER_COLORS: Record<LogSource, { active: string; inactive: string }> = {
   deploy: { active: "bg-cyan-100 dark:bg-cyan-900 text-cyan-700 dark:text-cyan-300", inactive: "text-gray-500 hover:text-cyan-500 dark:hover:text-cyan-400" },
 };
 
-export function TerminalPanel({ entries, onClear }: TerminalPanelProps) {
+export function TerminalPanel({ entries, onClear, terminalMode, onTerminalModeChange, shellContent }: TerminalPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
@@ -97,65 +105,103 @@ export function TerminalPanel({ entries, onClear }: TerminalPanelProps) {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
+      {/* Header with sub-tab switcher */}
       <div className="flex items-center justify-between px-3 py-1.5 bg-gray-50 dark:bg-gray-900 border-b border-gray-300 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400">
         <div className="flex items-center gap-2">
-          <span className="font-medium text-gray-700 dark:text-gray-300">Terminal</span>
-          <div className="flex items-center gap-1" role="group" aria-label="Filter log sources">
-            {ALL_SOURCES.map((source) => {
-              const active = !hiddenSources.has(source);
-              const colors = FILTER_COLORS[source];
-              return (
-                <button
-                  key={source}
-                  onClick={() => toggleSource(source)}
-                  className={`px-1.5 py-0.5 rounded transition-colors ${active ? colors.active : colors.inactive}`}
-                  title={`${active ? "Hide" : "Show"} ${SOURCE_LABELS[source]} logs`}
-                  aria-pressed={active}
-                >
-                  {SOURCE_LABELS[source]}
-                </button>
-              );
-            })}
+          {/* Sub-tab switcher */}
+          <div className="flex items-center gap-0.5 rounded bg-gray-200 dark:bg-gray-800 p-0.5" role="tablist" aria-label="Terminal mode">
+            <button
+              role="tab"
+              aria-selected={terminalMode === "logs"}
+              onClick={() => onTerminalModeChange("logs")}
+              className={`px-2 py-0.5 rounded font-medium transition-colors ${
+                terminalMode === "logs"
+                  ? "bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 shadow-sm"
+                  : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
+              }`}
+            >
+              Logs
+            </button>
+            <button
+              role="tab"
+              aria-selected={terminalMode === "shell"}
+              onClick={() => onTerminalModeChange("shell")}
+              className={`px-2 py-0.5 rounded font-medium transition-colors ${
+                terminalMode === "shell"
+                  ? "bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 shadow-sm"
+                  : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
+              }`}
+            >
+              Shell
+            </button>
           </div>
+
+          {/* Log source filters — only shown in logs mode */}
+          {terminalMode === "logs" && (
+            <div className="flex items-center gap-1" role="group" aria-label="Filter log sources">
+              {ALL_SOURCES.map((source) => {
+                const active = !hiddenSources.has(source);
+                const colors = FILTER_COLORS[source];
+                return (
+                  <button
+                    key={source}
+                    onClick={() => toggleSource(source)}
+                    className={`px-1.5 py-0.5 rounded transition-colors ${active ? colors.active : colors.inactive}`}
+                    title={`${active ? "Hide" : "Show"} ${SOURCE_LABELS[source]} logs`}
+                    aria-pressed={active}
+                  >
+                    {SOURCE_LABELS[source]}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
-        <button
-          onClick={onClear}
-          className="px-2 py-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-          title="Clear terminal output"
-        >
-          Clear
-        </button>
+        {terminalMode === "logs" && (
+          <button
+            onClick={onClear}
+            className="px-2 py-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            title="Clear terminal output"
+          >
+            Clear
+          </button>
+        )}
       </div>
 
-      {/* Log output */}
-      <div
-        ref={containerRef}
-        className="flex-1 overflow-auto bg-white dark:bg-gray-950 font-mono text-xs leading-5 p-2"
-      >
-        {filteredEntries.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-gray-400 dark:text-gray-600 text-sm font-sans">
-            {entries.length === 0
-              ? "No output yet. Agent logs will appear here."
-              : "No logs match the current filter."}
-          </div>
-        ) : (
-          filteredEntries.map((entry, i) => (
-            <div key={i} className="flex gap-2 hover:bg-gray-100/50 dark:hover:bg-gray-900/50">
-              <span className="text-gray-400 dark:text-gray-600 shrink-0 select-none">
-                {formatTime(entry.timestamp)}
-              </span>
-              <span className={`shrink-0 select-none ${SOURCE_COLORS[entry.source]}`}>
-                [{SOURCE_LABELS[entry.source]}]
-              </span>
-              <span className="text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-all">
-                {entry.text}
-              </span>
+      {/* Tab content */}
+      {terminalMode === "logs" ? (
+        <div
+          ref={containerRef}
+          className="flex-1 overflow-auto bg-white dark:bg-gray-950 font-mono text-xs leading-5 p-2"
+        >
+          {filteredEntries.length === 0 ? (
+            <div className="flex items-center justify-center h-full text-gray-400 dark:text-gray-600 text-sm font-sans">
+              {entries.length === 0
+                ? "No output yet. Agent logs will appear here."
+                : "No logs match the current filter."}
             </div>
-          ))
-        )}
-        <div ref={bottomRef} />
-      </div>
+          ) : (
+            filteredEntries.map((entry, i) => (
+              <div key={i} className="flex gap-2 hover:bg-gray-100/50 dark:hover:bg-gray-900/50">
+                <span className="text-gray-400 dark:text-gray-600 shrink-0 select-none">
+                  {formatTime(entry.timestamp)}
+                </span>
+                <span className={`shrink-0 select-none ${SOURCE_COLORS[entry.source]}`}>
+                  [{SOURCE_LABELS[entry.source]}]
+                </span>
+                <span className="text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-all">
+                  {entry.text}
+                </span>
+              </div>
+            ))
+          )}
+          <div ref={bottomRef} />
+        </div>
+      ) : (
+        <div className="flex-1 min-h-0">
+          {shellContent}
+        </div>
+      )}
     </div>
   );
 }
