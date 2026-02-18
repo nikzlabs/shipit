@@ -274,6 +274,12 @@ export interface WsGitHubSearchRepos {
   query: string;
 }
 
+// ---- AI PR description messages ----
+
+export interface WsGeneratePRDescription {
+  type: "generate_pr_description";
+}
+
 // ---- PR status & merge messages ----
 
 export interface WsGetPrStatus {
@@ -392,6 +398,7 @@ export type WsClientMessage =
   | WsListFeatures
   | WsGitHubImportRepo
   | WsGitHubSearchRepos
+  | WsGeneratePRDescription
   | WsGetPrStatus
   | WsMergePr
   | WsListDeployTargets
@@ -677,6 +684,13 @@ export interface WsGitHubSearchResults {
   }>;
 }
 
+// ---- AI PR description server messages ----
+
+export interface WsGeneratedPRDescription {
+  type: "generated_pr_description";
+  description: string;
+}
+
 // ---- PR status & merge server messages ----
 
 export interface WsPrStatus {
@@ -943,5 +957,6 @@ export type WsServerMessage =
   | WsGitHubImportProgress
   | WsGitHubImportComplete
   | WsGitHubSearchResults
+  | WsGeneratedPRDescription
   | WsPrStatus
   | WsMergePrResult;

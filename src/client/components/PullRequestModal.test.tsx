@@ -150,4 +150,107 @@ describe("PullRequestModal", () => {
     const input = screen.getByLabelText("Title") as HTMLInputElement;
     expect(input.value).toBe("My PR Title");
   });
+
+  // ---- AI PR Description tests ----
+
+  it("shows 'Ask Claude to write description' button when onGenerateDescription is provided", () => {
+    const onGenerate = vi.fn();
+    render(
+      <PullRequestModal {...defaultProps} onGenerateDescription={onGenerate} />,
+    );
+    expect(screen.getByText("Ask Claude to write description")).toBeInTheDocument();
+  });
+
+  it("does not show generate button when onGenerateDescription is not provided", () => {
+    render(<PullRequestModal {...defaultProps} />);
+    expect(screen.queryByText("Ask Claude to write description")).not.toBeInTheDocument();
+  });
+
+  it("calls onGenerateDescription when button is clicked with empty description", () => {
+    const onGenerate = vi.fn();
+    render(
+      <PullRequestModal {...defaultProps} onGenerateDescription={onGenerate} />,
+    );
+
+    fireEvent.click(screen.getByText("Ask Claude to write description"));
+    expect(onGenerate).toHaveBeenCalled();
+  });
+
+  it("shows loading state while generating description", () => {
+    const onGenerate = vi.fn();
+    render(
+      <PullRequestModal
+        {...defaultProps}
+        onGenerateDescription={onGenerate}
+        isGeneratingDescription={true}
+      />,
+    );
+
+    const btn = screen.getByText("Generating...");
+    expect(btn).toBeInTheDocument();
+    expect(btn).toBeDisabled();
+  });
+
+  it("populates description textarea when generatedDescription arrives", () => {
+    const desc = "## Summary\n\nGenerated text";
+    render(
+      <PullRequestModal
+        {...defaultProps}
+        onGenerateDescription={vi.fn()}
+        generatedDescription={desc}
+      />,
+    );
+
+    const textarea = screen.getByLabelText("Description") as HTMLTextAreaElement;
+    expect(textarea.value).toBe(desc);
+  });
+
+  it("shows replace confirmation when description already has content", () => {
+    const onGenerate = vi.fn();
+    render(
+      <PullRequestModal {...defaultProps} onGenerateDescription={onGenerate} />,
+    );
+
+    // Type some existing description
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Existing description" },
+    });
+
+    // Click generate — should show confirmation
+    fireEvent.click(screen.getByText("Ask Claude to write description"));
+    expect(onGenerate).not.toHaveBeenCalled();
+    expect(screen.getByText("Replace current description?")).toBeInTheDocument();
+
+    // Confirm replacement
+    fireEvent.click(screen.getByText("Yes, replace"));
+    expect(onGenerate).toHaveBeenCalled();
+    expect(screen.queryByText("Replace current description?")).not.toBeInTheDocument();
+  });
+
+  it("hides replace confirmation when 'No, keep it' is clicked", () => {
+    render(
+      <PullRequestModal {...defaultProps} onGenerateDescription={vi.fn()} />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Existing description" },
+    });
+    fireEvent.click(screen.getByText("Ask Claude to write description"));
+    expect(screen.getByText("Replace current description?")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("No, keep it"));
+    expect(screen.queryByText("Replace current description?")).not.toBeInTheDocument();
+  });
+
+  it("shows error message when description generation fails", () => {
+    render(
+      <PullRequestModal
+        {...defaultProps}
+        onGenerateDescription={vi.fn()}
+        generateDescriptionError="Failed to generate description: timeout"
+      />,
+    );
+
+    expect(screen.getByText("Failed to generate description: timeout")).toBeInTheDocument();
+  });
 });
