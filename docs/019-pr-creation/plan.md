@@ -1,3 +1,6 @@
+---
+status: done
+---
 # 019 — In-App Pull Request Creation
 
 Status: **Implemented** — PR modal, server handlers, branch listing, and tests are all complete. Post-push toast split out to doc 031, Claude-generated PR description split out to doc 032.

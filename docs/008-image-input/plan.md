@@ -1,3 +1,6 @@
+---
+status: done
+---
 # Image & Screenshot Input
 
 Users can attach images to chat messages via drag-and-drop, clipboard paste, or file picker.

@@ -1,3 +1,6 @@
+---
+status: done
+---
 # Process Management
 
 ShipIt manages three child processes: Claude CLI, Vite dev server, and git. All are injectable via `buildApp(deps)` for testing.

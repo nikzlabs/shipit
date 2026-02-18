@@ -1,3 +1,6 @@
+---
+status: in-progress
+---
 # 028 — File & Code Context Attachment
 
 ## Summary

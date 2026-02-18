@@ -1,3 +1,6 @@
+---
+status: in-progress
+---
 # 024 — Model & Context Display
 
 ## Summary

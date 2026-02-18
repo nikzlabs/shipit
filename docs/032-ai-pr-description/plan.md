@@ -1,3 +1,6 @@
+---
+status: in-progress
+---
 # 032 — AI-Generated PR Description
 
 ## Summary

@@ -1,3 +1,6 @@
+---
+status: in-progress
+---
 # Message Editing & Retry
 
 Users can edit or retry any previous user message. Hover over a user message to reveal edit (pencil) and retry (refresh) buttons.

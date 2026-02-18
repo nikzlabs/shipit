@@ -1,3 +1,6 @@
+---
+status: done
+---
 # 027 — GitHub Repo Import & PR Status Bar
 
 ## Summary
