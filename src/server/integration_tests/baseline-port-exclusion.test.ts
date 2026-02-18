@@ -23,7 +23,6 @@ describe("Integration: Baseline port exclusion", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
-  let gitManager: GitManager;
   let sessionManager: SessionManager;
   let lastClaude: FakeClaudeProcess = null as any;
   /** Exclude lists received by the detectPorts stub across all calls. */
@@ -33,16 +32,13 @@ describe("Integration: Baseline port exclusion", () => {
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-baseline-"));
 
-    gitManager = new GitManager(tmpDir);
-    await gitManager.init();
-
     const sessionsFile = path.join(tmpDir, "sessions.json");
     sessionManager = new SessionManager(sessionsFile);
 
     capturedExcludeLists = [];
 
     app = await buildApp({
-      gitManager,
+      createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       viteManager: new StubViteManager() as unknown as ViteManager,
       authManager: new StubAuthManager() as unknown as AuthManager,

@@ -22,7 +22,6 @@ describe("Integration: Workspace project templates", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
-  let gitManager: GitManager;
   let sessionManager: SessionManager;
   let lastClaude: FakeClaudeProcess = null as any;
 
@@ -30,14 +29,11 @@ describe("Integration: Workspace project templates", () => {
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-templates-"));
 
-    gitManager = new GitManager(tmpDir);
-    await gitManager.init();
-
     const sessionsFile = path.join(tmpDir, "sessions.json");
     sessionManager = new SessionManager(sessionsFile);
 
     app = await buildApp({
-      gitManager,
+      createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       viteManager: new StubViteManager() as unknown as ViteManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
@@ -102,8 +98,9 @@ describe("Integration: Workspace project templates", () => {
     expect(fs.existsSync(path.join(sessionDir, "src/App.tsx"))).toBe(true);
     expect(fs.existsSync(path.join(sessionDir, "index.html"))).toBe(true);
 
-    // Verify git committed the files
-    const log = await gitManager.log();
+    // Verify git committed the files in the session's repo
+    const sessionGit = new GitManager(sessionDir);
+    const log = await sessionGit.log();
     const templateCommit = log.find((c) => c.message.includes("Apply template"));
     expect(templateCommit).toBeDefined();
 

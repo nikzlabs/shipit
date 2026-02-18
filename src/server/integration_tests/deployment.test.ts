@@ -35,9 +35,6 @@ describe("Integration: Deployment", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-deploy-"));
     latestClaude = null;
 
-    const gitManager = new GitManager(tmpDir);
-    await gitManager.init();
-
     const sessionsFile = path.join(tmpDir, "sessions.json");
     const sessionManager = new SessionManager(sessionsFile);
 
@@ -55,7 +52,6 @@ describe("Integration: Deployment", () => {
     stubDeployStore = new StubDeploymentStore();
 
     app = await buildApp({
-      gitManager,
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       viteManager: new StubViteManager() as unknown as ViteManager,

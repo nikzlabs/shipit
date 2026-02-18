@@ -26,21 +26,17 @@ describe("Integration: File watcher", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
-  let gitManager: GitManager;
   let lastClaude: FakeClaudeProcess = null as any;
   let stubFileWatcher: StubFileWatcher;
 
   beforeEach(async () => {
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-filewatcher-"));
-    gitManager = new GitManager(tmpDir);
-    await gitManager.init();
-
     stubFileWatcher = new StubFileWatcher();
     lastClaude = undefined as unknown as FakeClaudeProcess;
 
     app = await buildApp({
-      gitManager,
+      createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
       chatHistoryManager: new ChatHistoryManager(path.join(tmpDir, "chat-history")),
       viteManager: new StubViteManager() as unknown as ViteManager,

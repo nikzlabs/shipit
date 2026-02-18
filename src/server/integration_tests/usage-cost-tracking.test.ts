@@ -25,17 +25,14 @@ describe("Integration: Usage & cost tracking", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
-  let gitManager: GitManager;
   let lastClaude: FakeClaudeProcess = null as any;
 
   beforeEach(async () => {
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-usage-integration-"));
-    gitManager = new GitManager(tmpDir);
-    await gitManager.init();
 
     app = await buildApp({
-      gitManager,
+      createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
       viteManager: new StubViteManager() as unknown as ViteManager,
       authManager: new StubAuthManager() as unknown as AuthManager,

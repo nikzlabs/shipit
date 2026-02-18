@@ -27,14 +27,11 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-auth-"));
 
-    const gitManager = new GitManager(tmpDir);
-    await gitManager.init();
-
     const sessionsFile = path.join(tmpDir, "sessions.json");
     const sessionManager = new SessionManager(sessionsFile);
 
     app = await buildApp({
-      gitManager,
+      createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       viteManager: new StubViteManager() as unknown as ViteManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
@@ -68,12 +65,10 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     (unauthStub as any).checkCredentials = () => false;
 
     const unauthTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-unauth-"));
-    const unauthGit = new GitManager(unauthTmpDir);
-    await unauthGit.init();
     const unauthSessions = new SessionManager(path.join(unauthTmpDir, "sessions.json"));
 
     const unauthApp = await buildApp({
-      gitManager: unauthGit,
+      createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: unauthSessions,
       viteManager: new StubViteManager() as unknown as ViteManager,
       authManager: unauthStub,
@@ -117,8 +112,6 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     };
 
     const unauthTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-apikey-"));
-    const unauthGit = new GitManager(unauthTmpDir);
-    await unauthGit.init();
     const unauthSessions = new SessionManager(path.join(unauthTmpDir, "sessions.json"));
 
     // Clear any existing API key
@@ -126,7 +119,7 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     delete process.env.ANTHROPIC_API_KEY;
 
     const unauthApp = await buildApp({
-      gitManager: unauthGit,
+      createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: unauthSessions,
       viteManager: new StubViteManager() as unknown as ViteManager,
       authManager: unauthStub,
