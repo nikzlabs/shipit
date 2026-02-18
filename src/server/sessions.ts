@@ -122,6 +122,13 @@ export class SessionManager {
     return true;
   }
 
+  /** Find an existing non-archived session with the given remote URL and a workspace dir. */
+  findByRemoteUrl(remoteUrl: string): SessionInfo | undefined {
+    return this.sessions.find(
+      (s) => s.remoteUrl === remoteUrl && s.archived !== true && s.workspaceDir,
+    );
+  }
+
   /** Find all sessions whose parentSessionId matches the given id. */
   getChildren(parentId: string): SessionInfo[] {
     return this.sessions.filter(

@@ -2071,31 +2071,70 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         }
 
         try {
-          // 1. Create session dir WITHOUT git init (we'll clone instead)
-          const { appSessionId, sessionDir } = await createSessionDir(
-            text.slice(0, 80),
-            { skipGitInit: true },
-          );
+          // Check if we already have a clone for this repo — use worktree instead of re-cloning
+          const existingSession = sessionManager.findByRemoteUrl(repoUrl);
+          let appSessionId: string;
+          let sessionDir: string;
+          let branchPrefix: string;
 
-          // 2. Clone repo (use authenticated URL so private repos work)
-          const git = createGitManager(sessionDir);
-          const cloneUrl = githubAuthManager.getAuthenticatedCloneUrl(repoUrl);
-          await git.clone(cloneUrl);
+          if (existingSession?.workspaceDir) {
+            // --- Worktree path: reuse existing clone ---
+            const parentDir = existingSession.workspaceDir;
 
-          // 3. Configure credentials and identity for future push/pull
+            // Pull latest from remote so worktree starts up-to-date
+            try {
+              const parentGit = createGitManager(parentDir);
+              const defaultBranch = await parentGit.getDefaultBranch();
+              await parentGit.pull("origin", defaultBranch);
+            } catch (err) {
+              console.warn("[home] Pull before worktree failed (continuing):", getErrorMessage(err));
+            }
+
+            // Create session dir and worktree
+            branchPrefix = generateBranchPrefix();
+            const created = await createSessionDir(text.slice(0, 80), { skipGitInit: true });
+            appSessionId = created.appSessionId;
+            sessionDir = created.sessionDir;
+
+            // Remove the empty dir createSessionDir made (worktree add needs it absent)
+            await fs.rm(sessionDir, { recursive: true, force: true });
+
+            const parentGit = createGitManager(parentDir);
+            await parentGit.createWorktree(sessionDir, branchPrefix);
+
+            // Mark as worktree session
+            sessionManager.setWorktreeInfo(appSessionId, {
+              parentSessionId: existingSession.id,
+              branch: branchPrefix,
+              sessionType: "worktree",
+            });
+
+            console.log("[home] Created worktree from existing clone:", existingSession.id);
+          } else {
+            // --- Clone path: first time for this repo ---
+            const created = await createSessionDir(text.slice(0, 80), { skipGitInit: true });
+            appSessionId = created.appSessionId;
+            sessionDir = created.sessionDir;
+
+            const git = createGitManager(sessionDir);
+            const cloneUrl = githubAuthManager.getAuthenticatedCloneUrl(repoUrl);
+            await git.clone(cloneUrl);
+
+            branchPrefix = generateBranchPrefix();
+            await git.checkoutNewBranch(branchPrefix);
+          }
+
+          // Configure credentials and identity
           if (githubAuthManager.authenticated) {
             githubAuthManager.configureGitCredentials(sessionDir);
           }
           const storedId = gitIdentityStore.get();
           if (storedId) {
+            const git = createGitManager(sessionDir);
             await git.setIdentity(storedId.name, storedId.email);
           }
 
-          // 4. Create temporary branch with random prefix
-          const branchPrefix = generateBranchPrefix();
-          await git.checkoutNewBranch(branchPrefix);
-
-          // 5. Store remote URL and activate session
+          // Store remote URL and activate session
           sessionManager.setRemoteUrl(appSessionId, repoUrl);
           activeAppSessionId = appSessionId;
           activeSessionDir = sessionDir;
@@ -2107,7 +2146,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             send({ type: "session_started", session });
           }
 
-          // 6. Fire non-blocking Claude call to generate session name + branch slug
+          // Fire non-blocking Claude call to generate session name + branch slug
           generateSessionName(text, sessionDir).then(async (nameResult) => {
             if (!nameResult) return;
             try {
@@ -2115,9 +2154,18 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
               const sessionGit = createGitManager(sessionDir);
               await sessionGit.renameBranch(branchPrefix, newBranchName);
               sessionManager.rename(appSessionId, nameResult.title);
+              // Update worktree branch name in metadata
               const updatedSession = sessionManager.get(appSessionId);
-              if (updatedSession) {
-                send({ type: "session_renamed", session: updatedSession });
+              if (updatedSession?.sessionType === "worktree") {
+                sessionManager.setWorktreeInfo(appSessionId, {
+                  parentSessionId: updatedSession.parentSessionId!,
+                  branch: newBranchName,
+                  sessionType: "worktree",
+                });
+              }
+              const finalSession = sessionManager.get(appSessionId);
+              if (finalSession) {
+                send({ type: "session_renamed", session: finalSession });
               }
             } catch (err) {
               console.warn("[home] Branch rename failed:", getErrorMessage(err));
@@ -2126,7 +2174,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             console.warn("[home] Session naming failed:", err);
           });
 
-          // 7. Run Claude with the user's message
+          // Run Claude with the user's message
           await runClaudeWithMessage({
             userText: text,
             images,

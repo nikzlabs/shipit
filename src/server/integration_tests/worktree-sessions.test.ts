@@ -2,10 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execSync } from "node:child_process";
 import { buildApp } from "../index.js";
 import { GitManager } from "../git.js";
 import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../auth.js";
+import { GitHubAuthManager } from "../github-auth.js";
 import { ViteManager } from "../vite-manager.js";
 import { ClaudeProcess } from "../claude.js";
 import { FileWatcher } from "../file-watcher.js";
@@ -14,6 +16,7 @@ import {
   TestClient,
   StubViteManager,
   StubAuthManager,
+  StubGitHubAuthManager,
   FakeClaudeProcess,
   StubFileWatcher,
   waitForClaude,
@@ -363,5 +366,208 @@ describe("Integration: Worktree sessions", () => {
     expect(fs.existsSync(path.join(parentSession!.workspaceDir!, "feature.txt"))).toBe(true);
 
     client.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Transparent worktree reuse in home_send_with_repo
+// ---------------------------------------------------------------------------
+
+describe("Integration: home_send_with_repo worktree reuse", () => {
+  let app: FastifyInstance;
+  let port: number;
+  let tmpDir: string;
+  let sessionManager: SessionManager;
+  let lastClaude: FakeClaudeProcess | null;
+  let githubAuthManager: StubGitHubAuthManager;
+
+  /** Create a bare git repo that can be cloned locally via file:// URL. */
+  function createBareRepo(): string {
+    const bareDir = path.join(tmpDir, "bare-remote.git");
+    fs.mkdirSync(bareDir, { recursive: true });
+    execSync("git init --bare", { cwd: bareDir, stdio: "ignore" });
+
+    const workTree = path.join(tmpDir, "bare-work");
+    fs.mkdirSync(workTree, { recursive: true });
+    execSync("git init", { cwd: workTree, stdio: "ignore" });
+    execSync("git config user.email 'test@test.com'", { cwd: workTree, stdio: "ignore" });
+    execSync("git config user.name 'Test'", { cwd: workTree, stdio: "ignore" });
+    execSync("git config commit.gpgsign false", { cwd: workTree, stdio: "ignore" });
+    fs.writeFileSync(path.join(workTree, "README.md"), "# Test Repo\n");
+    execSync("git add .", { cwd: workTree, stdio: "ignore" });
+    execSync("git commit -m 'initial commit'", { cwd: workTree, stdio: "ignore" });
+    try { execSync("git branch -M main", { cwd: workTree, stdio: "ignore" }); } catch { /* ok */ }
+    execSync(`git remote add origin ${bareDir}`, { cwd: workTree, stdio: "ignore" });
+    execSync("git push origin main", { cwd: workTree, stdio: "ignore" });
+    // Set bare repo HEAD to main so clones check out files
+    execSync("git symbolic-ref HEAD refs/heads/main", { cwd: bareDir, stdio: "ignore" });
+
+    return bareDir;
+  }
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-worktree-reuse-"));
+    lastClaude = null;
+
+    const sessionsFile = path.join(tmpDir, "sessions.json");
+    sessionManager = new SessionManager(sessionsFile);
+    githubAuthManager = new StubGitHubAuthManager();
+
+    app = await buildApp({
+      createGitManager: (dir: string) => {
+        const gm = new GitManager(dir);
+        // Stub renameBranch to avoid race with async session naming
+        gm.renameBranch = async () => { /* no-op in tests */ };
+        // Stub clone for non-local URLs
+        const origClone = gm.clone.bind(gm);
+        gm.clone = async (url: string, branch?: string) => {
+          if (url.startsWith("file://") || url.startsWith("/")) {
+            return origClone(url, branch);
+          }
+          throw new Error(`clone failed: repository '${url}' not found`);
+        };
+        return gm;
+      },
+      sessionManager,
+      viteManager: new StubViteManager() as unknown as ViteManager,
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      githubAuthManager: githubAuthManager as unknown as GitHubAuthManager,
+      claudeFactory: () => {
+        lastClaude = new FakeClaudeProcess() as unknown as FakeClaudeProcess;
+        return lastClaude as unknown as ClaudeProcess;
+      },
+      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
+      workspaceDir: tmpDir,
+      serveStatic: false,
+      startVite: false,
+      portScanIntervalMs: 0,
+    });
+
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+    const match = address.match(/:(\d+)$/);
+    port = match ? Number(match[1]) : 0;
+  });
+
+  afterEach(async () => {
+    await app.close();
+    await new Promise((r) => setTimeout(r, 50));
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch {
+      // Ignore cleanup errors
+    }
+  });
+
+  it("second home_send_with_repo for same repo creates worktree instead of cloning", async () => {
+    const bareRepoPath = createBareRepo();
+    const repoUrl = `file://${bareRepoPath}`;
+
+    // --- First request: full clone ---
+    const client1 = await TestClient.connect(port);
+    await client1.receive(); // preview_status
+
+    client1.send({ type: "home_send_with_repo", repoUrl, text: "First session" } as any);
+
+    const session1Msg = await client1.receiveSkipLogs();
+    expect(session1Msg.type).toBe("session_started");
+    const session1 = (session1Msg as any).session;
+
+    const claude1 = await waitForClaude(() => lastClaude);
+    claude1.finish();
+
+    // Drain remaining messages
+    try { while (true) { await client1.receive(300); } } catch { /* done */ }
+    client1.close();
+
+    // Verify first session is standalone (no parentSessionId)
+    const firstSession = sessionManager.get(session1.id);
+    expect(firstSession).toBeDefined();
+    expect(firstSession!.remoteUrl).toBe(repoUrl);
+    expect(firstSession!.sessionType).toBeUndefined(); // standalone by default
+
+    // --- Second request: same repo URL should use worktree ---
+    const client2 = await TestClient.connect(port);
+    await client2.receive(); // preview_status
+
+    client2.send({ type: "home_send_with_repo", repoUrl, text: "Second session" } as any);
+
+    const session2Msg = await client2.receiveSkipLogs();
+    expect(session2Msg.type).toBe("session_started");
+    const session2 = (session2Msg as any).session;
+
+    const claude2 = await waitForClaude(() => lastClaude);
+    claude2.finish();
+
+    // Drain remaining messages
+    try { while (true) { await client2.receive(300); } } catch { /* done */ }
+    client2.close();
+
+    // Verify second session is a worktree of the first
+    const secondSession = sessionManager.get(session2.id);
+    expect(secondSession).toBeDefined();
+    expect(secondSession!.sessionType).toBe("worktree");
+    expect(secondSession!.parentSessionId).toBe(session1.id);
+    expect(secondSession!.branch).toBeTruthy();
+    expect(secondSession!.remoteUrl).toBe(repoUrl);
+
+    // Verify the worktree directory exists and has the repo files
+    expect(fs.existsSync(path.join(secondSession!.workspaceDir!, "README.md"))).toBe(true);
+  });
+
+  it("worktree session changes are independent from parent", async () => {
+    const bareRepoPath = createBareRepo();
+    const repoUrl = `file://${bareRepoPath}`;
+
+    // First request: full clone
+    const client1 = await TestClient.connect(port);
+    await client1.receive(); // preview_status
+    client1.send({ type: "home_send_with_repo", repoUrl, text: "First" } as any);
+
+    // Drain until session_started
+    let session1Id = "";
+    const claude1 = await waitForClaude(() => lastClaude);
+    claude1.finish();
+    try {
+      while (true) {
+        const msg = await client1.receive(500);
+        if (msg.type === "session_started") session1Id = (msg as any).session.id;
+      }
+    } catch { /* done */ }
+    client1.close();
+
+    // Fallback: get from session manager
+    if (!session1Id) {
+      const sessions = sessionManager.list();
+      if (sessions.length > 0) session1Id = sessions[0].id;
+    }
+
+    // Second request: worktree
+    const client2 = await TestClient.connect(port);
+    await client2.receive(); // preview_status
+    client2.send({ type: "home_send_with_repo", repoUrl, text: "Second" } as any);
+
+    let session2Id = "";
+    const claude2 = await waitForClaude(() => lastClaude);
+    claude2.finish();
+    try {
+      while (true) {
+        const msg = await client2.receive(500);
+        if (msg.type === "session_started") session2Id = (msg as any).session.id;
+      }
+    } catch { /* done */ }
+    client2.close();
+
+    if (!session2Id) {
+      const sessions = sessionManager.list();
+      session2Id = sessions.find((s) => s.id !== session1Id)?.id ?? "";
+    }
+
+    // Write a file in the worktree session
+    const session2 = sessionManager.get(session2Id)!;
+    fs.writeFileSync(path.join(session2.workspaceDir!, "new-file.txt"), "worktree only");
+
+    // Parent should NOT have the file
+    const session1 = sessionManager.get(session1Id)!;
+    expect(fs.existsSync(path.join(session1.workspaceDir!, "new-file.txt"))).toBe(false);
   });
 });
