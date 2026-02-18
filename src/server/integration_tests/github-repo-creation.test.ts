@@ -29,16 +29,13 @@ describe("Integration: GitHub repo creation", () => {
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-gh-repo-"));
 
-    const gitManager = new GitManager(tmpDir);
-    await gitManager.init();
-
     const sessionsFile = path.join(tmpDir, "sessions.json");
     const sessionManager = new SessionManager(sessionsFile);
 
     githubAuthManager = new StubGitHubAuthManager();
 
     app = await buildApp({
-      gitManager,
+      createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       viteManager: new StubViteManager() as unknown as ViteManager,
       authManager: new StubAuthManager() as unknown as AuthManager,

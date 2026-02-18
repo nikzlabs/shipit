@@ -91,11 +91,6 @@ function validateImages(images: ImageAttachment[]): string | null {
  */
 export interface AppDeps {
   /**
-   * Legacy single git manager instance. Used as fallback when no per-session
-   * directory is active. Defaults to `new GitManager()` with init().
-   */
-  gitManager?: GitManager;
-  /**
    * Factory for creating per-session GitManager instances. Each session gets
    * its own git repo; this factory creates a GitManager for a given directory.
    * Defaults to `(dir) => new GitManager(dir)`.
@@ -189,12 +184,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Per-session directory root ----
   const sessionsRoot = path.join(workspaceDir, "sessions");
-
-  // ---- Git manager (legacy fallback) ----
-  const gitManager = deps.gitManager ?? new GitManager();
-  if (!deps.gitManager) {
-    await gitManager.init();
-  }
 
   // ---- Per-session GitManager factory ----
   const createGitManager = deps.createGitManager ?? ((dir: string) => new GitManager(dir));
@@ -479,12 +468,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     /** Get the effective workspace directory for file operations. */
     const getActiveDir = (): string => activeSessionDir ?? workspaceDir;
 
-    /** Get a GitManager for the active session, or fall back to the legacy instance. */
+    /** Get a GitManager for the active session. Throws if no session is active. */
     const getActiveGitManager = (): GitManager => {
-      if (activeSessionDir) {
-        return createGitManager(activeSessionDir);
+      if (!activeSessionDir) {
+        throw new Error("No active session — git operations require a session");
       }
-      return gitManager;
+      return createGitManager(activeSessionDir);
     };
 
     /**
@@ -494,12 +483,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     const activateSession = (sessionId: string) => {
       const session = sessionManager.get(sessionId);
       activeAppSessionId = sessionId;
-      const dir = session?.workspaceDir ?? workspaceDir;
+      const dir = session?.workspaceDir ?? null;
       if (dir !== activeSessionDir) {
-        activeSessionDir = dir === workspaceDir ? null : dir;
+        activeSessionDir = dir;
         // Restart file watcher to the new directory
         fileWatcher.stop();
         fileWatcher.start(getActiveDir());
+      }
+      // Check git identity for the newly activated session
+      if (dir) {
+        checkGitIdentity(dir);
       }
     };
 
@@ -511,12 +504,18 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       send(entry);
     }
 
-    // Check if git identity is configured — prompt the user if not
-    gitManager.hasIdentity().then((has) => {
-      if (!has) {
-        send({ type: "git_identity_required" });
+    // Check git identity when a session becomes active (deferred — no root git repo).
+    const checkGitIdentity = async (sessionDir: string) => {
+      try {
+        const git = createGitManager(sessionDir);
+        const has = await git.hasIdentity();
+        if (!has) {
+          send({ type: "git_identity_required" });
+        }
+      } catch {
+        // Session dir may not exist yet; identity will be checked after creation
       }
-    });
+    };
 
     /** Read the system prompt file if it exists. Returns undefined when absent or empty. */
     const readSystemPrompt = async (): Promise<string | undefined> => {
@@ -617,6 +616,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           // Restart file watcher to the new session directory
           fileWatcher.stop();
           fileWatcher.start(sessionDir);
+
+          // Check git identity for the new session
+          checkGitIdentity(sessionDir);
         }
 
         // If the claude process was replaced or killed during async session setup, bail out

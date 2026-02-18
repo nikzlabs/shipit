@@ -24,7 +24,6 @@ describe("Integration: Terminal/logs relay", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
-  let gitManager: GitManager;
   let sessionManager: SessionManager;
   let lastClaude: FakeClaudeProcess = null as any;
 
@@ -32,14 +31,11 @@ describe("Integration: Terminal/logs relay", () => {
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-logs-"));
 
-    gitManager = new GitManager(tmpDir);
-    await gitManager.init();
-
     const sessionsFile = path.join(tmpDir, "sessions.json");
     sessionManager = new SessionManager(sessionsFile);
 
     app = await buildApp({
-      gitManager,
+      createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       viteManager: new StubViteManager() as unknown as ViteManager,
       authManager: new StubAuthManager() as unknown as AuthManager,

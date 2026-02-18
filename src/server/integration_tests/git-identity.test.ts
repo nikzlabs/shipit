@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { buildApp } from "../index.js";
 import { GitManager } from "../git.js";
 import { SessionManager } from "../sessions.js";
@@ -24,11 +25,17 @@ describe("Integration: git identity flow", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
+  let sessionDir: string;
+  let sessionId: string;
+  let sessionManager: SessionManager;
   let origHome: string | undefined;
   let origNoSystem: string | undefined;
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-gitid-"));
+    sessionId = crypto.randomUUID();
+    sessionDir = path.join(tmpDir, "sessions", sessionId);
+    fs.mkdirSync(sessionDir, { recursive: true });
   });
 
   afterEach(async () => {
@@ -43,32 +50,34 @@ describe("Integration: git identity flow", () => {
   });
 
   /**
-   * Create a git repo in tmpDir with NO identity configured.
-   * Also overrides process.env so simple-git child processes ignore global config.
+   * Create a git repo in the session directory with NO identity configured.
+   * Overrides process.env so simple-git child processes ignore global config.
    */
-  async function initRepoWithoutIdentity(): Promise<GitManager> {
+  async function initSessionRepoWithoutIdentity(): Promise<void> {
     origHome = process.env.HOME;
     origNoSystem = process.env.GIT_CONFIG_NOSYSTEM;
     process.env.HOME = tmpDir;
     process.env.GIT_CONFIG_NOSYSTEM = "1";
     const { execSync } = await import("node:child_process");
     const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", HOME: tmpDir };
-    execSync("git init", { cwd: tmpDir, env });
-    execSync("git config commit.gpgsign false", { cwd: tmpDir, env });
+    execSync("git init", { cwd: sessionDir, env });
+    execSync("git config commit.gpgsign false", { cwd: sessionDir, env });
     // Set temporary identity, commit, then unset so the repo has no persistent identity
-    execSync("git config user.name tmp", { cwd: tmpDir, env });
-    execSync("git config user.email tmp@tmp", { cwd: tmpDir, env });
-    execSync('git commit --allow-empty -m "init"', { cwd: tmpDir, env });
-    execSync("git config --unset user.name", { cwd: tmpDir, env });
-    execSync("git config --unset user.email", { cwd: tmpDir, env });
-    return new GitManager(tmpDir);
+    execSync("git config user.name tmp", { cwd: sessionDir, env });
+    execSync("git config user.email tmp@tmp", { cwd: sessionDir, env });
+    execSync('git commit --allow-empty -m "init"', { cwd: sessionDir, env });
+    execSync("git config --unset user.name", { cwd: sessionDir, env });
+    execSync("git config --unset user.email", { cwd: sessionDir, env });
   }
 
-  async function startApp(gitManager: GitManager): Promise<number> {
+  async function startApp(): Promise<number> {
     const sessionsFile = path.join(tmpDir, "sessions.json");
+    sessionManager = new SessionManager(sessionsFile);
+    sessionManager.track(sessionId, "Test session", sessionDir);
+
     app = await buildApp({
-      gitManager,
-      sessionManager: new SessionManager(sessionsFile),
+      createGitManager: (dir: string) => new GitManager(dir),
+      sessionManager,
       viteManager: new StubViteManager() as unknown as ViteManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
@@ -84,28 +93,36 @@ describe("Integration: git identity flow", () => {
     return match ? Number(match[1]) : 0;
   }
 
-  it("sends git_identity_required on connect when identity is missing", async () => {
-    const gitManager = await initRepoWithoutIdentity();
-    port = await startApp(gitManager);
+  it("sends git_identity_required when activating session with missing identity", async () => {
+    await initSessionRepoWithoutIdentity();
+    port = await startApp();
 
     const client = await TestClient.connect(port);
-    const msg1 = await client.receive(); // preview_status
-    expect(msg1.type).toBe("preview_status");
+    await client.receive(); // preview_status
 
-    const msg2 = await client.receive(); // git_identity_required
-    expect(msg2.type).toBe("git_identity_required");
+    // Activate the session — this triggers the per-session identity check
+    client.send({ type: "get_chat_history", sessionId });
+    const historyMsg = await client.receive(); // chat_history
+    expect(historyMsg.type).toBe("chat_history");
+
+    const identityMsg = await client.receive(); // git_identity_required
+    expect(identityMsg.type).toBe("git_identity_required");
 
     client.close();
   });
 
-  it("does not send git_identity_required when identity exists", async () => {
-    const gitManager = new GitManager(tmpDir);
-    await gitManager.init(); // init() sets identity
-    port = await startApp(gitManager);
+  it("does not send git_identity_required when session has identity", async () => {
+    const git = new GitManager(sessionDir);
+    await git.init(); // init() sets default identity
+    port = await startApp();
 
     const client = await TestClient.connect(port);
-    const msg1 = await client.receive(); // preview_status
-    expect(msg1.type).toBe("preview_status");
+    await client.receive(); // preview_status
+
+    // Activate the session
+    client.send({ type: "get_chat_history", sessionId });
+    const historyMsg = await client.receive(); // chat_history
+    expect(historyMsg.type).toBe("chat_history");
 
     // Should not receive git_identity_required — wait briefly to confirm
     await expect(client.receive(500)).rejects.toThrow("timed out");
@@ -114,11 +131,15 @@ describe("Integration: git identity flow", () => {
   });
 
   it("sets git identity and responds with git_identity_set", async () => {
-    const gitManager = await initRepoWithoutIdentity();
-    port = await startApp(gitManager);
+    await initSessionRepoWithoutIdentity();
+    port = await startApp();
 
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
+
+    // Activate the session
+    client.send({ type: "get_chat_history", sessionId });
+    await client.receive(); // chat_history
     await client.receive(); // git_identity_required
 
     client.send({ type: "set_git_identity", name: "Test User", email: "test@example.com" });
@@ -129,18 +150,23 @@ describe("Integration: git identity flow", () => {
       email: "test@example.com",
     });
 
-    // Verify identity is actually configured
-    expect(await gitManager.hasIdentity()).toBe(true);
+    // Verify identity is actually configured in the session's git repo
+    const git = new GitManager(sessionDir);
+    expect(await git.hasIdentity()).toBe(true);
 
     client.close();
   });
 
   it("returns error for empty name", async () => {
-    const gitManager = await initRepoWithoutIdentity();
-    port = await startApp(gitManager);
+    await initSessionRepoWithoutIdentity();
+    port = await startApp();
 
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
+
+    // Activate the session
+    client.send({ type: "get_chat_history", sessionId });
+    await client.receive(); // chat_history
     await client.receive(); // git_identity_required
 
     client.send({ type: "set_git_identity", name: "", email: "test@example.com" });
@@ -151,11 +177,15 @@ describe("Integration: git identity flow", () => {
   });
 
   it("returns error for empty email", async () => {
-    const gitManager = await initRepoWithoutIdentity();
-    port = await startApp(gitManager);
+    await initSessionRepoWithoutIdentity();
+    port = await startApp();
 
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
+
+    // Activate the session
+    client.send({ type: "get_chat_history", sessionId });
+    await client.receive(); // chat_history
     await client.receive(); // git_identity_required
 
     client.send({ type: "set_git_identity", name: "Test", email: "" });
@@ -166,11 +196,15 @@ describe("Integration: git identity flow", () => {
   });
 
   it("returns error for whitespace-only name", async () => {
-    const gitManager = await initRepoWithoutIdentity();
-    port = await startApp(gitManager);
+    await initSessionRepoWithoutIdentity();
+    port = await startApp();
 
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
+
+    // Activate the session
+    client.send({ type: "get_chat_history", sessionId });
+    await client.receive(); // chat_history
     await client.receive(); // git_identity_required
 
     client.send({ type: "set_git_identity", name: "   ", email: "test@example.com" });

@@ -23,7 +23,6 @@ describe("Integration: Periodic port scanning", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
-  let gitManager: GitManager;
   let sessionManager: SessionManager;
   let lastClaude: FakeClaudeProcess = null as any;
   /** Value returned by the injected detectPorts stub. */
@@ -35,9 +34,6 @@ describe("Integration: Periodic port scanning", () => {
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-periodic-"));
 
-    gitManager = new GitManager(tmpDir);
-    await gitManager.init();
-
     const sessionsFile = path.join(tmpDir, "sessions.json");
     sessionManager = new SessionManager(sessionsFile);
 
@@ -45,7 +41,7 @@ describe("Integration: Periodic port scanning", () => {
     detectPortsCallCount = 0;
 
     app = await buildApp({
-      gitManager,
+      createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       viteManager: new StubViteManager() as unknown as ViteManager,
       authManager: new StubAuthManager() as unknown as AuthManager,

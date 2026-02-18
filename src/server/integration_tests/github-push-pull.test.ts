@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { buildApp } from "../index.js";
 import { GitManager } from "../git.js";
 import { SessionManager } from "../sessions.js";
@@ -24,21 +25,27 @@ describe("Integration: GitHub push, pull & remotes", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
+  let sessionId: string;
   let githubAuthManager: StubGitHubAuthManager;
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-gh-pushpull-"));
 
-    const gitManager = new GitManager(tmpDir);
-    await gitManager.init();
+    // Pre-create a session directory with its own git repo
+    sessionId = crypto.randomUUID();
+    const sessionDir = path.join(tmpDir, "sessions", sessionId);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const git = new GitManager(sessionDir);
+    await git.init();
 
     const sessionsFile = path.join(tmpDir, "sessions.json");
     const sessionManager = new SessionManager(sessionsFile);
+    sessionManager.track(sessionId, "Test session", sessionDir);
 
     githubAuthManager = new StubGitHubAuthManager();
 
     app = await buildApp({
-      gitManager,
+      createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       viteManager: new StubViteManager() as unknown as ViteManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
@@ -91,6 +98,10 @@ describe("Integration: GitHub push, pull & remotes", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
+    // Activate session so git operations work
+    client.send({ type: "get_chat_history", sessionId });
+    await client.receive(); // chat_history
+
     client.send({ type: "github_set_remote", name: "origin", url: "https://github.com/test/repo.git" });
     const msg = await client.receive();
 
@@ -134,6 +145,10 @@ describe("Integration: GitHub push, pull & remotes", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
+    // Activate session so git operations work
+    client.send({ type: "get_chat_history", sessionId });
+    await client.receive(); // chat_history
+
     client.send({ type: "github_get_remotes" });
     const msg = await client.receive();
 
@@ -146,6 +161,10 @@ describe("Integration: GitHub push, pull & remotes", () => {
   it("github_push with auth but no remote returns error", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
+
+    // Activate session so git operations work
+    client.send({ type: "get_chat_history", sessionId });
+    await client.receive(); // chat_history
 
     // Authenticate first
     client.send({ type: "github_set_token", token: "ghp_test" });

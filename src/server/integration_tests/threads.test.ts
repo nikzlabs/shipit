@@ -27,7 +27,6 @@ describe("Integration: Conversation threads & checkpoints", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
-  let gitManager: GitManager;
   let sessionManager: SessionManager;
   let chatHistoryManager: ChatHistoryManager;
   let threadManager: ThreadManager;
@@ -36,15 +35,12 @@ describe("Integration: Conversation threads & checkpoints", () => {
   beforeEach(async () => {
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-threads-"));
-    gitManager = new GitManager(tmpDir);
-    await gitManager.init();
-
     sessionManager = new SessionManager(path.join(tmpDir, "sessions.json"));
     chatHistoryManager = new ChatHistoryManager(path.join(tmpDir, "chat-history"));
     threadManager = new ThreadManager(path.join(tmpDir, "threads"));
 
     app = await buildApp({
-      gitManager,
+      createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       chatHistoryManager,
       threadManager,
