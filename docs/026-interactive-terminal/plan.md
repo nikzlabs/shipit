@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: planned
 ---
 # 026 — Interactive Terminal
 
