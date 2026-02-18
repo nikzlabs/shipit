@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 ---
 # 026 — Interactive Terminal
 
