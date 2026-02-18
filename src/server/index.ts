@@ -1237,6 +1237,31 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       }
 
       if (msg.type === "archive_session") {
+        // Block archiving a parent session that has worktree children
+        const worktreeChildren = sessionManager.getChildren(msg.sessionId);
+        if (worktreeChildren.length > 0) {
+          send({ type: "error", message: "Cannot archive a session that has worktree sessions. Delete the worktree sessions first." });
+          return;
+        }
+
+        const sessionToArchive = sessionManager.get(msg.sessionId);
+
+        // If archiving a worktree session, clean up the worktree in the parent repo
+        if (sessionToArchive?.sessionType === "worktree" && sessionToArchive.parentSessionId && sessionToArchive.workspaceDir) {
+          try {
+            const parentSession = sessionManager.get(sessionToArchive.parentSessionId);
+            if (parentSession?.workspaceDir) {
+              const parentGit = createGitManager(parentSession.workspaceDir);
+              await parentGit.removeWorktree(sessionToArchive.workspaceDir);
+              if (sessionToArchive.branch) {
+                await parentGit.deleteBranch(sessionToArchive.branch);
+              }
+            }
+          } catch (err) {
+            console.warn("[server] Worktree cleanup failed:", getErrorMessage(err));
+          }
+        }
+
         // If archiving the active session, clear it
         if (msg.sessionId === activeAppSessionId) {
           activeAppSessionId = undefined;
@@ -1257,6 +1282,160 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           } else {
             send({ type: "error", message: "Session not found" });
           }
+        }
+      }
+
+      // ---- Worktree session handlers ----
+
+      if (msg.type === "fork_session") {
+        const branchName = typeof msg.branchName === "string" ? msg.branchName.trim() : "";
+        if (!branchName) {
+          send({ type: "error", message: "Branch name is required" });
+          return;
+        }
+        // Validate git branch name: no spaces, no '..' or '~', no control chars
+        if (/[\s~^:?*\[\\]/.test(branchName) || branchName.includes("..")) {
+          send({ type: "error", message: "Invalid branch name" });
+          return;
+        }
+        if (!activeSessionDir || !activeAppSessionId) {
+          send({ type: "error", message: "No active session to fork from" });
+          return;
+        }
+
+        try {
+          const parentSessionId = activeAppSessionId;
+          const parentDir = activeSessionDir;
+
+          // Create the new session directory (skip git init — worktree handles this)
+          const newSessionId = crypto.randomUUID();
+          const newSessionDir = path.join(sessionsRoot, newSessionId);
+
+          // Create worktree from parent repo
+          const parentGit = createGitManager(parentDir);
+          await parentGit.createWorktree(newSessionDir, branchName, msg.startPoint);
+
+          // Apply identity & credentials to the worktree
+          const worktreeGit = createGitManager(newSessionDir);
+          const stored = gitIdentityStore.get();
+          if (stored) await worktreeGit.setIdentity(stored.name, stored.email);
+          if (githubAuthManager.authenticated) {
+            githubAuthManager.configureGitCredentials(newSessionDir);
+          }
+
+          // Track in session manager
+          const parentSession = sessionManager.get(parentSessionId);
+          const title = `${parentSession?.title ?? "Session"} (${branchName})`;
+          sessionManager.track(newSessionId, title, newSessionDir);
+          sessionManager.setWorktreeInfo(newSessionId, {
+            parentSessionId,
+            branch: branchName,
+            sessionType: "worktree",
+          });
+          // Copy remote URL from parent
+          if (parentSession?.remoteUrl) {
+            sessionManager.setRemoteUrl(newSessionId, parentSession.remoteUrl);
+          }
+
+          threadManager.init(newSessionId);
+
+          const newSession = sessionManager.get(newSessionId)!;
+          send({ type: "session_forked", session: newSession, parentSessionId });
+          send({ type: "session_list", sessions: sessionManager.list() });
+          console.log("[server] Forked session:", newSessionId, "from:", parentSessionId, "branch:", branchName);
+        } catch (err) {
+          send({ type: "error", message: `Failed to fork session: ${getErrorMessage(err)}` });
+        }
+      }
+
+      if (msg.type === "list_worktrees") {
+        if (!activeSessionDir || !activeAppSessionId) {
+          send({ type: "worktree_list", worktrees: [] });
+          return;
+        }
+
+        try {
+          // Find the root session (follow parentSessionId chain)
+          let rootSessionId = activeAppSessionId;
+          let rootSession = sessionManager.get(rootSessionId);
+          while (rootSession?.parentSessionId) {
+            rootSessionId = rootSession.parentSessionId;
+            rootSession = sessionManager.get(rootSessionId);
+          }
+
+          // Get all children of the root session + root itself
+          const children = sessionManager.getChildren(rootSessionId);
+          const worktrees: Array<{ sessionId: string; branch: string; path: string }> = [];
+
+          // Add the root session
+          if (rootSession?.workspaceDir) {
+            const rootGit = createGitManager(rootSession.workspaceDir);
+            const rootBranch = await rootGit.getCurrentBranch();
+            worktrees.push({
+              sessionId: rootSessionId,
+              branch: rootBranch,
+              path: rootSession.workspaceDir,
+            });
+          }
+
+          // Add worktree children
+          for (const child of children) {
+            if (child.workspaceDir && child.branch) {
+              worktrees.push({
+                sessionId: child.id,
+                branch: child.branch,
+                path: child.workspaceDir,
+              });
+            }
+          }
+
+          send({ type: "worktree_list", worktrees });
+        } catch (err) {
+          send({ type: "error", message: `Failed to list worktrees: ${getErrorMessage(err)}` });
+        }
+      }
+
+      if (msg.type === "merge_session") {
+        const sourceSessionId = typeof msg.sourceSessionId === "string" ? msg.sourceSessionId.trim() : "";
+        if (!sourceSessionId) {
+          send({ type: "error", message: "Source session ID is required" });
+          return;
+        }
+        if (!activeSessionDir || !activeAppSessionId) {
+          send({ type: "error", message: "No active session to merge into" });
+          return;
+        }
+
+        const sourceSession = sessionManager.get(sourceSessionId);
+        if (!sourceSession) {
+          send({ type: "error", message: "Source session not found" });
+          return;
+        }
+        if (!sourceSession.branch) {
+          send({ type: "error", message: "Source session has no branch (not a worktree)" });
+          return;
+        }
+
+        try {
+          const git = getActiveGitManager();
+          const result = await git.merge(sourceSession.branch);
+
+          if (result.success) {
+            send({
+              type: "merge_result",
+              success: true,
+              message: `Merged branch '${sourceSession.branch}' successfully`,
+            });
+          } else {
+            send({
+              type: "merge_result",
+              success: false,
+              message: `Merge conflict on branch '${sourceSession.branch}'`,
+              conflicts: result.conflicts,
+            });
+          }
+        } catch (err) {
+          send({ type: "error", message: `Failed to merge: ${getErrorMessage(err)}` });
         }
       }
 

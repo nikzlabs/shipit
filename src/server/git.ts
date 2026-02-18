@@ -239,4 +239,68 @@ export class GitManager {
     await this.git.addConfig("commit.gpgsign", "false");
     console.log("[git] Set identity:", name, "<" + email + ">");
   }
+
+  // ---- Worktree operations ----
+
+  /** Create a new worktree with a new branch. */
+  async createWorktree(
+    worktreePath: string,
+    branchName: string,
+    startPoint?: string,
+  ): Promise<void> {
+    const args = ["worktree", "add", worktreePath, "-b", branchName];
+    if (startPoint) args.push(startPoint);
+    await this.git.raw(args);
+    console.log("[git] Created worktree:", worktreePath, "branch:", branchName);
+  }
+
+  /** Remove a worktree. */
+  async removeWorktree(worktreePath: string): Promise<void> {
+    await this.git.raw(["worktree", "remove", worktreePath, "--force"]);
+    console.log("[git] Removed worktree:", worktreePath);
+  }
+
+  /** List all worktrees for this repo. */
+  async listWorktrees(): Promise<Array<{ path: string; branch: string; head: string }>> {
+    const output = await this.git.raw(["worktree", "list", "--porcelain"]);
+    const worktrees: Array<{ path: string; branch: string; head: string }> = [];
+    let current: Partial<{ path: string; branch: string; head: string }> = {};
+
+    for (const line of output.split("\n")) {
+      if (line.startsWith("worktree ")) {
+        if (current.path) worktrees.push(current as { path: string; branch: string; head: string });
+        current = { path: line.replace("worktree ", "") };
+      } else if (line.startsWith("HEAD ")) {
+        current.head = line.replace("HEAD ", "");
+      } else if (line.startsWith("branch ")) {
+        current.branch = line.replace("branch refs/heads/", "");
+      }
+    }
+    if (current.path) worktrees.push(current as { path: string; branch: string; head: string });
+
+    return worktrees;
+  }
+
+  /** Merge a branch into the current branch. Returns the merge commit hash on success. */
+  async merge(branchName: string): Promise<{ success: boolean; conflicts?: string[] }> {
+    try {
+      await this.git.merge([branchName]);
+      return { success: true };
+    } catch (err: unknown) {
+      // Check for merge conflicts
+      const status = await this.git.status();
+      if (status.conflicted.length > 0) {
+        // Abort the merge so the working tree is clean
+        await this.git.merge(["--abort"]);
+        return { success: false, conflicts: status.conflicted };
+      }
+      throw err;
+    }
+  }
+
+  /** Delete a local branch. */
+  async deleteBranch(branchName: string): Promise<void> {
+    await this.git.branch(["-D", branchName]);
+    console.log("[git] Deleted branch:", branchName);
+  }
 }

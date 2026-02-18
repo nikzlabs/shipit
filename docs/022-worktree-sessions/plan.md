@@ -1,5 +1,5 @@
 ---
-status: done
+status: in-progress
 ---
 # 022 — Git Worktree Parallel Sessions
 

@@ -121,4 +121,25 @@ export class SessionManager {
     this.save();
     return true;
   }
+
+  /** Find all sessions whose parentSessionId matches the given id. */
+  getChildren(parentId: string): SessionInfo[] {
+    return this.sessions.filter(
+      (s) => s.parentSessionId === parentId && s.archived !== true,
+    );
+  }
+
+  /** Set worktree-specific fields on a session. */
+  setWorktreeInfo(
+    id: string,
+    info: { parentSessionId: string; branch: string; sessionType: "worktree" },
+  ): void {
+    const session = this.sessions.find((s) => s.id === id);
+    if (session) {
+      session.parentSessionId = info.parentSessionId;
+      session.branch = info.branch;
+      session.sessionType = info.sessionType;
+      this.save();
+    }
+  }
 }
