@@ -25,10 +25,55 @@ import { VercelTarget } from "./deploy-targets/vercel.js";
 import { CloudflareTarget } from "./deploy-targets/cloudflare.js";
 import { TerminalProcess } from "./terminal.js";
 import { generateSessionName } from "./session-namer.js";
-import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeResultEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment, FileAttachment, FileContextRef, PermissionMode } from "./types.js";
+import { ClaudeAdapter } from "./agents/claude-adapter.js";
+import type { AgentId, AgentEvent } from "./agents/agent-process.js";
+import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment, FileAttachment, FileContextRef, PermissionMode } from "./types.js";
 
 function getErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Convert a normalized AgentEvent back to the legacy ClaudeEvent format
+ * for backward compatibility. Returns null for events that don't have
+ * a ClaudeEvent equivalent.
+ */
+function agentEventToClaudeEvent(event: AgentEvent): ClaudeEvent | null {
+  switch (event.type) {
+    case "agent_init":
+      return {
+        type: "system",
+        subtype: "init",
+        session_id: event.sessionId,
+        model: event.model,
+        tools: event.tools,
+      };
+    case "agent_assistant":
+      return {
+        type: "assistant",
+        message: { content: event.content },
+      };
+    case "agent_tool_result":
+      return {
+        type: "user",
+        message: { content: event.content },
+      };
+    case "agent_result":
+      return {
+        type: "result",
+        subtype: event.status,
+        session_id: event.sessionId,
+        total_cost_usd: event.cost?.totalUsd,
+        duration_ms: event.durationMs,
+        result: event.error,
+        input_tokens: event.tokens?.input,
+        output_tokens: event.tokens?.output,
+        cache_read_tokens: event.tokens?.cacheRead,
+        cache_write_tokens: event.tokens?.cacheWrite,
+      };
+    default:
+      return null;
+  }
 }
 
 /** Map model identifiers to context window sizes. */
@@ -197,6 +242,14 @@ export interface AppDeps {
   usageManager?: UsageManager;
   /** Factory for creating ClaudeProcess instances. Defaults to `() => new ClaudeProcess()`. */
   claudeFactory?: () => ClaudeProcess;
+  /**
+   * Factory for creating AgentProcess instances by agent ID.
+   * When provided, takes precedence over claudeFactory.
+   * Defaults to `(id) => new ClaudeAdapter()` (only "claude" is supported).
+   */
+  agentFactory?: (agentId: AgentId) => ClaudeAdapter;
+  /** Default agent ID for new sessions. Defaults to "claude". */
+  defaultAgentId?: AgentId;
   /** Root workspace directory. Defaults to `/workspace`. */
   workspaceDir?: string;
   /** Whether to serve static files from dist/client. Defaults to true. */
@@ -267,6 +320,7 @@ export interface AppDeps {
 export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const {
     claudeFactory = () => new ClaudeProcess(),
+    defaultAgentId = "claude" as AgentId,
     workspaceDir = WORKSPACE,
     serveStatic: shouldServeStatic = true,
     startVite = true,
@@ -275,6 +329,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     portScanIntervalMs = 5000,
     baselinePorts = [],
   } = deps;
+
+  // Build effective agent factory — agentFactory takes precedence over claudeFactory
+  const agentFactory = deps.agentFactory ?? ((_agentId: AgentId) => new ClaudeAdapter(claudeFactory()));
 
   const app = Fastify({ logger: false });
 
@@ -338,24 +395,24 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // ---- Text generation (AI-powered features) ----
   const generateText = deps.generateText ?? ((prompt: string, cwd?: string): Promise<string> => {
     return new Promise((resolve, reject) => {
-      const cp = claudeFactory();
+      const agent = agentFactory(defaultAgentId);
       let text = "";
-      cp.on("event", (event: ClaudeEvent) => {
-        if (event.type === "assistant") {
-          for (const block of event.message.content) {
+      agent.on("event", (event: AgentEvent) => {
+        if (event.type === "agent_assistant") {
+          for (const block of event.content) {
             if (block.type === "text") text += block.text;
           }
         }
       });
-      cp.on("done", (exitCode: number) => {
+      agent.on("done", (exitCode: number) => {
         if (exitCode === 0 || text.length > 0) {
           resolve(text);
         } else {
-          reject(new Error("Claude process exited with code " + exitCode));
+          reject(new Error("Agent process exited with code " + exitCode));
         }
       });
-      cp.on("error", (err: Error) => reject(err));
-      cp.run(prompt, undefined, undefined, undefined, cwd, "auto");
+      agent.on("error", (err: Error) => reject(err));
+      agent.run({ prompt, cwd, permissionMode: "auto" });
     });
   });
 
@@ -580,7 +637,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     if (clients.size === 1) {
       startPortScanInterval();
     }
-    let claude: ClaudeProcess | null = null;
+    let claude: ClaudeProcess | ClaudeAdapter | null = null;
+    let activeAgentId: AgentId = defaultAgentId;
     let turnSummary = "";
 
     // ---- Auto-push debounce state ----
@@ -710,11 +768,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       accumulatedText = "";
       accumulatedToolUse = [];
       let receivedResult = false;
-      claude = claudeFactory();
-      const currentClaude = claude;
+      claude = agentFactory(activeAgentId);
+      const currentAgent = claude;
 
       // Relay CLI log lines (PTY merges stdout+stderr) to the terminal panel
-      currentClaude.on("log", (source: "stderr" | "stdout" | "server", text: string) => {
+      currentAgent.on("log", (source: string, text: string) => {
         broadcastLog(source as "stderr" | "stdout" | "server", text);
       });
 
@@ -744,21 +802,21 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         });
       };
 
-      currentClaude.on("event", (event: ClaudeEvent) => {
-        send({ type: "claude_event", event });
+      currentAgent.on("event", (event: AgentEvent) => {
+        // Send normalized agent_event to the client
+        send({ type: "agent_event", event });
 
-        // Log unrecognized event types for debugging
-        const knownTypes = ["system", "assistant", "user", "result"];
-        if (!knownTypes.includes(event.type)) {
-          console.warn("[claude] Unrecognized event type:", event.type);
-          broadcastLog("server", `Unknown Claude event type: ${event.type}`);
+        // Also send legacy claude_event for backward compatibility
+        const legacyEvent = agentEventToClaudeEvent(event);
+        if (legacyEvent) {
+          send({ type: "claude_event", event: legacyEvent });
         }
 
         // Track agent session when we get the session_id from init event
-        if (event.type === "system" && event.subtype === "init" && event.session_id) {
+        if (event.type === "agent_init") {
           if (activeAppSessionId) {
             // Store the agent's conversation ID on the app session
-            sessionManager.setAgentSessionId(activeAppSessionId, event.session_id);
+            sessionManager.setAgentSessionId(activeAppSessionId, event.sessionId);
             const session = sessionManager.get(activeAppSessionId);
             if (session) {
               send({ type: "session_started", session });
@@ -770,10 +828,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           } else {
             // Legacy fallback: no app session created (shouldn't happen with isolation)
             const title = userText.slice(0, 80) || "New session";
-            const session = sessionManager.track(event.session_id, title);
-            activeAppSessionId = event.session_id;
+            const session = sessionManager.track(event.sessionId, title);
+            activeAppSessionId = event.sessionId;
             send({ type: "session_started", session });
-            persistUserMessage(event.session_id);
+            persistUserMessage(event.sessionId);
           }
 
           // Forward model info to the client
@@ -787,9 +845,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         }
 
         // Collect assistant text and tool use blocks for commit message + persistence
-        if (event.type === "assistant") {
-          const text = (event.message?.content ?? [])
-            .filter((b: ClaudeContentBlock): b is ClaudeContentBlockText => b.type === "text")
+        if (event.type === "agent_assistant") {
+          const text = (event.content ?? [])
+            .filter((b): b is ClaudeContentBlockText => b.type === "text")
             .map((b) => b.text)
             .join("");
           if (text) {
@@ -797,33 +855,30 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             accumulatedText += text;
           }
 
-          const toolBlocks = (event.message?.content ?? [])
-            .filter((b: ClaudeContentBlock): b is ClaudeContentBlockToolUse => b.type === "tool_use");
+          const toolBlocks = (event.content ?? [])
+            .filter((b): b is ClaudeContentBlockToolUse => b.type === "tool_use");
           if (toolBlocks.length > 0) {
             accumulatedToolUse.push(...toolBlocks);
           }
         }
 
         // On result: persist the final assistant message, update session, record usage
-        if (event.type === "result") {
+        if (event.type === "agent_result") {
           receivedResult = true;
-        }
-        if (event.type === "result" && event.session_id) {
-          const resultEvent = event as ClaudeResultEvent;
           if (activeAppSessionId) {
-            sessionManager.setAgentSessionId(activeAppSessionId, event.session_id);
+            sessionManager.setAgentSessionId(activeAppSessionId, event.sessionId);
             sessionManager.track(activeAppSessionId);
           }
 
-          const usageSessionId = activeAppSessionId ?? event.session_id;
+          const usageSessionId = activeAppSessionId ?? event.sessionId;
           // Record cost/duration if present
-          if (resultEvent.total_cost_usd !== undefined) {
+          if (event.cost?.totalUsd !== undefined) {
             usageManager.record(
               usageSessionId,
-              resultEvent.total_cost_usd,
-              resultEvent.duration_ms ?? 0,
-              resultEvent.input_tokens,
-              resultEvent.output_tokens,
+              event.cost.totalUsd,
+              event.durationMs ?? 0,
+              event.tokens?.input,
+              event.tokens?.output,
             );
             const sessionUsage = usageManager.getSessionUsage(usageSessionId);
             if (sessionUsage) {
@@ -834,8 +889,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
                 totalCostUsd: sessionUsage.totalCostUsd,
                 totalDurationMs: sessionUsage.totalDurationMs,
                 turnCount: sessionUsage.turnCount,
-                lastTurnInputTokens: resultEvent.input_tokens,
-                lastTurnOutputTokens: resultEvent.output_tokens,
+                lastTurnInputTokens: event.tokens?.input,
+                lastTurnOutputTokens: event.tokens?.output,
                 cumulativeInputTokens: tokenTotals?.cumulativeInputTokens,
               });
             }
@@ -857,24 +912,24 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         persistUserMessage(activeAppSessionId);
       }
 
-      currentClaude.on("done", async (code: number | null) => {
-        console.log("[claude] process exited with code", code);
-        broadcastLog("server", `Claude process exited with code ${code}`);
+      currentAgent.on("done", async (code: number | null) => {
+        console.log("[agent] process exited with code", code);
+        broadcastLog("server", `Agent process exited with code ${code}`);
         claude = null;
 
         // If the process exited without producing a result event, notify the
         // client so it can clear the loading state instead of hanging forever.
         if (!receivedResult) {
           const reason = code !== 0
-            ? `Claude process exited with code ${code}`
-            : "Claude process ended without a response";
+            ? `Agent process exited with code ${code}`
+            : "Agent process ended without a response";
           send({ type: "error", message: reason });
         }
 
-        // Auto-commit after Claude turn using the session's git manager
+        // Auto-commit after agent turn using the session's git manager
         try {
           const git = getActiveGitManager();
-          const firstLine = turnSummary.split("\n")[0]?.slice(0, 120) || "Claude turn";
+          const firstLine = turnSummary.split("\n")[0]?.slice(0, 120) || "Agent turn";
           const hash = await git.autoCommit(firstLine);
           if (hash) {
             send({ type: "git_committed", hash, message: firstLine });
@@ -885,25 +940,25 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           console.error("[git] auto-commit failed:", getErrorMessage(err));
         }
 
-        // Restart Vite after Claude finishes in case new files were created
+        // Restart Vite after agent finishes in case new files were created
         if (!viteManager.running) {
           viteManager.start(getActiveDir());
         }
 
-        // Scan for non-Vite dev servers that Claude may have started.
+        // Scan for non-Vite dev servers that the agent may have started.
         await runPortScan();
       });
 
-      currentClaude.on("auth_required", () => {
-        console.log("[server] Claude CLI requires authentication, starting OAuth flow");
+      currentAgent.on("auth_required", () => {
+        console.log("[server] Agent CLI requires authentication, starting OAuth flow");
         send({ type: "auth_required" });
         authManager.startOAuthFlow();
       });
 
-      currentClaude.on("error", (err: Error) => {
-        console.error("[claude] process error:", err.message);
-        broadcastLog("server", `Claude process error: ${err.message}`);
-        const errorMsg = `Claude process error: ${err.message}`;
+      currentAgent.on("error", (err: Error) => {
+        console.error("[agent] process error:", err.message);
+        broadcastLog("server", `Agent process error: ${err.message}`);
+        const errorMsg = `Agent process error: ${err.message}`;
         send({ type: "error", message: errorMsg });
         // Persist the error so it shows up in history
         if (activeAppSessionId) {
@@ -942,8 +997,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         prompt = `${context}\n\n${prompt}`;
       }
 
-      currentClaude.run(prompt, agentSessionId, systemPrompt, images, getActiveDir(), permissionMode);
-      broadcastLog("server", "Claude process started");
+      currentAgent.run({
+        prompt,
+        sessionId: agentSessionId,
+        systemPrompt,
+        images,
+        cwd: getActiveDir(),
+        permissionMode,
+      });
+      broadcastLog("server", "Agent process started");
     };
 
     socket.on("message", async (raw: Buffer) => {
@@ -1202,6 +1264,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         }
       }
 
+      if (msg.type === "set_agent") {
+        const validAgentIds: AgentId[] = ["claude", "codex", "gemini"];
+        if (!validAgentIds.includes(msg.agentId)) {
+          send({ type: "error", message: `Unknown agent: ${msg.agentId}` });
+          return;
+        }
+        activeAgentId = msg.agentId;
+      }
+
       if (msg.type === "list_features") {
         try {
           const features = await featureManager.list();
@@ -1281,13 +1352,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             return;
           }
 
-          // Claude has finished — send the answer as a new prompt with --resume
+          // Agent has finished — send the answer as a new prompt with --resume
           turnSummary = "";
           accumulatedText = "";
           accumulatedToolUse = [];
-          claude = claudeFactory();
+          claude = agentFactory(activeAgentId);
 
-          claude.on("log", (source: "stderr" | "stdout" | "server", text: string) => {
+          claude.on("log", (source: string, text: string) => {
             broadcastLog(source as "stderr" | "stdout" | "server", text);
           });
 
@@ -1300,20 +1371,26 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           const session = activeAppSessionId ? sessionManager.get(activeAppSessionId) : undefined;
           const agentSessionId = session?.agentSessionId ?? activeAppSessionId;
 
-          claude.on("event", (event: ClaudeEvent) => {
-            send({ type: "claude_event", event });
+          claude.on("event", (event: AgentEvent) => {
+            send({ type: "agent_event", event });
 
-            if (event.type === "system" && event.subtype === "init" && event.session_id) {
+            // Also send legacy claude_event for backward compatibility
+            const legacyEvent = agentEventToClaudeEvent(event);
+            if (legacyEvent) {
+              send({ type: "claude_event", event: legacyEvent });
+            }
+
+            if (event.type === "agent_init") {
               if (activeAppSessionId) {
-                sessionManager.setAgentSessionId(activeAppSessionId, event.session_id);
+                sessionManager.setAgentSessionId(activeAppSessionId, event.sessionId);
                 const sess = sessionManager.get(activeAppSessionId);
                 if (sess) {
                   send({ type: "session_started", session: sess });
                 }
               } else {
                 const title = answerText.slice(0, 80) || "Answer";
-                const sess = sessionManager.track(event.session_id, title);
-                activeAppSessionId = event.session_id;
+                const sess = sessionManager.track(event.sessionId, title);
+                activeAppSessionId = event.sessionId;
                 send({ type: "session_started", session: sess });
               }
 
@@ -1327,9 +1404,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
               }
             }
 
-            if (event.type === "assistant") {
-              const text = (event.message?.content ?? [])
-                .filter((b: ClaudeContentBlock): b is ClaudeContentBlockText => b.type === "text")
+            if (event.type === "agent_assistant") {
+              const text = (event.content ?? [])
+                .filter((b): b is ClaudeContentBlockText => b.type === "text")
                 .map((b) => b.text)
                 .join("");
               if (text) {
@@ -1337,29 +1414,28 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
                 accumulatedText += text;
               }
 
-              const toolBlocks = (event.message?.content ?? [])
-                .filter((b: ClaudeContentBlock): b is ClaudeContentBlockToolUse => b.type === "tool_use");
+              const toolBlocks = (event.content ?? [])
+                .filter((b): b is ClaudeContentBlockToolUse => b.type === "tool_use");
               if (toolBlocks.length > 0) {
                 accumulatedToolUse.push(...toolBlocks);
               }
             }
 
-            if (event.type === "result" && event.session_id) {
-              const resultEvent = event as ClaudeResultEvent;
+            if (event.type === "agent_result") {
               if (activeAppSessionId) {
-                sessionManager.setAgentSessionId(activeAppSessionId, event.session_id);
+                sessionManager.setAgentSessionId(activeAppSessionId, event.sessionId);
                 sessionManager.track(activeAppSessionId);
               }
 
-              const usageSessionId = activeAppSessionId ?? event.session_id;
+              const usageSessionId = activeAppSessionId ?? event.sessionId;
               // Record cost/duration if present
-              if (resultEvent.total_cost_usd !== undefined) {
+              if (event.cost?.totalUsd !== undefined) {
                 usageManager.record(
                   usageSessionId,
-                  resultEvent.total_cost_usd,
-                  resultEvent.duration_ms ?? 0,
-                  resultEvent.input_tokens,
-                  resultEvent.output_tokens,
+                  event.cost.totalUsd,
+                  event.durationMs ?? 0,
+                  event.tokens?.input,
+                  event.tokens?.output,
                 );
                 const sessionUsage = usageManager.getSessionUsage(usageSessionId);
                 if (sessionUsage) {
@@ -1370,8 +1446,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
                     totalCostUsd: sessionUsage.totalCostUsd,
                     totalDurationMs: sessionUsage.totalDurationMs,
                     turnCount: sessionUsage.turnCount,
-                    lastTurnInputTokens: resultEvent.input_tokens,
-                    lastTurnOutputTokens: resultEvent.output_tokens,
+                    lastTurnInputTokens: event.tokens?.input,
+                    lastTurnOutputTokens: event.tokens?.output,
                     cumulativeInputTokens: tokenTotals?.cumulativeInputTokens,
                   });
                 }
@@ -1388,13 +1464,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           });
 
           claude.on("done", async (code: number | null) => {
-            console.log("[claude] process exited with code", code);
-            broadcastLog("server", `Claude process exited with code ${code}`);
+            console.log("[agent] process exited with code", code);
+            broadcastLog("server", `Agent process exited with code ${code}`);
             claude = null;
 
             try {
               const git = getActiveGitManager();
-              const firstLine = turnSummary.split("\n")[0]?.slice(0, 120) || "Claude turn";
+              const firstLine = turnSummary.split("\n")[0]?.slice(0, 120) || "Agent turn";
               const hash = await git.autoCommit(firstLine);
               if (hash) {
                 send({ type: "git_committed", hash, message: firstLine });
@@ -1417,9 +1493,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           });
 
           claude.on("error", (err: Error) => {
-            console.error("[claude] process error:", err.message);
-            broadcastLog("server", `Claude process error: ${err.message}`);
-            send({ type: "error", message: `Claude process error: ${err.message}` });
+            console.error("[agent] process error:", err.message);
+            broadcastLog("server", `Agent process error: ${err.message}`);
+            send({ type: "error", message: `Agent process error: ${err.message}` });
             if (activeAppSessionId) {
               chatHistoryManager.append(activeAppSessionId, {
                 role: "assistant",
@@ -1431,8 +1507,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           });
 
           const systemPrompt = await readSystemPrompt();
-          claude.run(answerText, agentSessionId, systemPrompt, undefined, getActiveDir());
-          broadcastLog("server", "Claude process started");
+          claude.run({
+            prompt: answerText,
+            sessionId: agentSessionId,
+            systemPrompt,
+            cwd: getActiveDir(),
+          });
+          broadcastLog("server", "Agent process started");
         }
       }
 

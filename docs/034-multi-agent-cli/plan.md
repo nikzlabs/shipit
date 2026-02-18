@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in-progress
 ---
 
 # 034 — Multi-Agent CLI Support (Codex, Gemini, etc.)

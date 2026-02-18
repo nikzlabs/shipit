@@ -1,3 +1,7 @@
+// ---- Agent types (multi-agent support) ----
+
+export type { AgentId, AgentCapabilities, AgentEvent, AgentInitEvent, AgentAssistantEvent, AgentToolResultEvent, AgentResultEvent, AgentContentBlock, AgentProcess, AgentRunParams } from "./agents/agent-process.js";
+
 // ---- Claude CLI NDJSON event types ----
 
 export interface ClaudeSystemEvent {
@@ -439,11 +443,22 @@ export type WsClientMessage =
   | WsTerminalInput
   | WsTerminalResize
   | WsHomeCreateRepoWithTemplate
-  | WsHomeSendWithRepo;
+  | WsHomeSendWithRepo
+  | WsSetAgentMessage;
 
 export interface WsClaudeEvent {
   type: "claude_event";
   event: ClaudeEvent;
+}
+
+export interface WsAgentEvent {
+  type: "agent_event";
+  event: import("./agents/agent-process.js").AgentEvent;
+}
+
+export interface WsSetAgentMessage {
+  type: "set_agent";
+  agentId: import("./agents/agent-process.js").AgentId;
 }
 
 export interface WsError {
@@ -993,6 +1008,7 @@ export interface WsDeployHistory {
 
 export type WsServerMessage =
   | WsClaudeEvent
+  | WsAgentEvent
   | WsError
   | WsPreviewStatus
   | WsGitLog
