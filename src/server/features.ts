@@ -6,7 +6,7 @@ import type { FeatureInfo, FeatureStatus } from "./types.js";
 const FEATURE_DIR_PATTERN = /^(\d+)-(.+)$/;
 
 /** Valid feature statuses. */
-const VALID_STATUSES = new Set<FeatureStatus>(["planned", "in-progress", "done"]);
+const VALID_STATUSES = new Set<FeatureStatus>(["planned", "in-progress", "done", "paused"]);
 
 /**
  * Extract YAML frontmatter `status` field from markdown content.
