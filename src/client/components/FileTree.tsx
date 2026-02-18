@@ -8,6 +8,7 @@ export interface FileTreeProps {
   onRefresh: () => void;
   onFileClick?: (filePath: string) => void;
   selectedFile?: string | null;
+  onAddToChat?: (filePath: string) => void;
 }
 
 /** Icon for collapsed directory */
@@ -57,11 +58,13 @@ function TreeNode({
   depth,
   onFileClick,
   selectedFile,
+  onAddToChat,
 }: {
   node: FileTreeNode;
   depth: number;
   onFileClick?: (filePath: string) => void;
   selectedFile?: string | null;
+  onAddToChat?: (filePath: string) => void;
 }) {
   const [expanded, setExpanded] = useState(depth < 1);
 
@@ -86,7 +89,7 @@ function TreeNode({
         {expanded && node.children && (
           <div>
             {node.children.map((child) => (
-              <TreeNode key={child.path} node={child} depth={depth + 1} onFileClick={onFileClick} selectedFile={selectedFile} />
+              <TreeNode key={child.path} node={child} depth={depth + 1} onFileClick={onFileClick} selectedFile={selectedFile} onAddToChat={onAddToChat} />
             ))}
           </div>
         )}
@@ -97,23 +100,49 @@ function TreeNode({
   const isSelected = selectedFile === node.path;
 
   return (
-    <button
-      onClick={() => onFileClick?.(node.path)}
-      className={`flex items-center gap-1.5 w-full text-left py-1 px-2 text-sm transition-colors ${
+    <div
+      className={`group flex items-center py-1 px-2 text-sm transition-colors ${
         isSelected
           ? "bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-200"
           : "text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
       }`}
       style={{ paddingLeft: paddingLeft + 16 }}
-      title={node.path}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData("application/x-shipit-file", JSON.stringify({
+          path: node.path,
+        }));
+        e.dataTransfer.effectAllowed = "copy";
+      }}
     >
-      <FileIcon />
-      <span className="truncate">{node.name}</span>
-    </button>
+      <button
+        onClick={() => onFileClick?.(node.path)}
+        className="flex items-center gap-1.5 flex-1 min-w-0 text-left"
+        title={node.path}
+      >
+        <FileIcon />
+        <span className="truncate">{node.name}</span>
+      </button>
+      {onAddToChat && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onAddToChat(node.path);
+          }}
+          className="hidden group-hover:inline-flex items-center justify-center w-5 h-5 rounded text-gray-400 hover:text-blue-400 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors shrink-0 ml-1"
+          title="Add to chat context"
+          aria-label={`Add ${node.name} to chat`}
+        >
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+          </svg>
+        </button>
+      )}
+    </div>
   );
 }
 
-export function FileTree({ tree, onRefresh, onFileClick, selectedFile }: FileTreeProps) {
+export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToChat }: FileTreeProps) {
   if (tree.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-gray-500 text-sm">
@@ -151,7 +180,7 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile }: FileTre
       {/* Tree content */}
       <div className="flex-1 overflow-y-auto py-1">
         {tree.map((node) => (
-          <TreeNode key={node.path} node={node} depth={0} onFileClick={onFileClick} selectedFile={selectedFile} />
+          <TreeNode key={node.path} node={node} depth={0} onFileClick={onFileClick} selectedFile={selectedFile} onAddToChat={onAddToChat} />
         ))}
       </div>
     </div>

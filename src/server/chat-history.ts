@@ -20,6 +20,12 @@ export interface PersistedMessage {
     data: string;
     mediaType: string;
   }>;
+  files?: Array<{
+    path: string;
+    contentPreview: string;
+    startLine?: number;
+    endLine?: number;
+  }>;
   isError?: boolean;
 }
 

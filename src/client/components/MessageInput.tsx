@@ -1,6 +1,8 @@
 import { useState, useRef, useCallback } from "react";
 import { ModeSelector } from "./ModeSelector.js";
-import type { PermissionMode } from "../../server/types.js";
+import { FileAttachmentChips } from "./FileAttachmentChips.js";
+import { FileAutoComplete } from "./FileAutoComplete.js";
+import type { PermissionMode, FileContextRef, FileTreeNode } from "../../server/types.js";
 
 export interface ImagePreview {
   data: string;       // base64-encoded
@@ -18,17 +20,28 @@ export function MessageInput({
   disabled,
   permissionMode = "auto",
   onPermissionModeChange,
+  pendingFiles = [],
+  onRemoveFile,
+  onAddFile,
+  fileTree = [],
 }: {
   onSend: (text: string, images?: Array<{ data: string; mediaType: string; filename: string }>) => void;
   disabled: boolean;
   permissionMode?: PermissionMode;
   onPermissionModeChange?: (mode: PermissionMode) => void;
+  pendingFiles?: FileContextRef[];
+  onRemoveFile?: (index: number) => void;
+  onAddFile?: (filePath: string) => void;
+  fileTree?: FileTreeNode[];
 }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<ImagePreview[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [imageError, setImageError] = useState<string | null>(null);
+  const [showAutoComplete, setShowAutoComplete] = useState(false);
+  const [autoCompleteQuery, setAutoCompleteQuery] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dragCountRef = useRef(0);
 
   const clearImageError = useCallback(() => {
@@ -107,14 +120,62 @@ export function MessageInput({
     setText("");
     setImages([]);
     setImageError(null);
+    setShowAutoComplete(false);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Don't handle Enter/Escape if autocomplete is open — let it handle them
+    if (showAutoComplete) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
     }
   };
+
+  const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const newText = e.target.value;
+    setText(newText);
+
+    // Detect @ trigger for file autocomplete
+    if (onAddFile && fileTree.length > 0) {
+      const cursorPos = e.target.selectionStart ?? newText.length;
+      const textBeforeCursor = newText.slice(0, cursorPos);
+
+      // Find the last @ that's not preceded by a word character (to avoid email addresses)
+      const atMatch = textBeforeCursor.match(/(?:^|[^a-zA-Z0-9])@([^\s]*)$/);
+      if (atMatch) {
+        const query = atMatch[1];
+        setAutoCompleteQuery(query);
+        setShowAutoComplete(true);
+      } else {
+        setShowAutoComplete(false);
+      }
+    }
+  };
+
+  const handleAutoCompleteSelect = useCallback(
+    (filePath: string) => {
+      if (onAddFile) {
+        onAddFile(filePath);
+      }
+      // Replace the @query in the text with just @filepath
+      const cursorPos = textareaRef.current?.selectionStart ?? text.length;
+      const textBeforeCursor = text.slice(0, cursorPos);
+      const atMatch = textBeforeCursor.match(/(?:^|[^a-zA-Z0-9])@([^\s]*)$/);
+      if (atMatch) {
+        const startIdx = textBeforeCursor.lastIndexOf("@" + atMatch[1]);
+        const newText = text.slice(0, startIdx) + "@" + filePath + " " + text.slice(cursorPos);
+        setText(newText);
+      }
+      setShowAutoComplete(false);
+      textareaRef.current?.focus();
+    },
+    [onAddFile, text],
+  );
+
+  const handleAutoCompleteDismiss = useCallback(() => {
+    setShowAutoComplete(false);
+  }, []);
 
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
@@ -163,11 +224,24 @@ export function MessageInput({
       e.stopPropagation();
       dragCountRef.current = 0;
       setIsDragging(false);
+
+      // Check for ShipIt file drag from file tree
+      const fileData = e.dataTransfer?.getData("application/x-shipit-file");
+      if (fileData && onAddFile) {
+        try {
+          const { path } = JSON.parse(fileData);
+          onAddFile(path);
+          return;
+        } catch {
+          // Not valid JSON — fall through to image handling
+        }
+      }
+
       if (e.dataTransfer.files.length > 0) {
         addFiles(e.dataTransfer.files);
       }
     },
-    [addFiles],
+    [addFiles, onAddFile],
   );
 
   const handleAttachClick = () => {
@@ -193,7 +267,7 @@ export function MessageInput({
       {/* Drop zone overlay */}
       {isDragging && (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-blue-500/10 border-2 border-dashed border-blue-500 rounded-lg pointer-events-none">
-          <span className="text-blue-400 text-sm font-medium">Drop image here</span>
+          <span className="text-blue-400 text-sm font-medium">Drop file or image here</span>
         </div>
       )}
 
@@ -202,6 +276,13 @@ export function MessageInput({
         <div className="flex items-center gap-2 mb-2 text-xs text-red-400 max-w-3xl mx-auto">
           <span>{imageError}</span>
           <button onClick={clearImageError} className="text-red-400 hover:text-red-300 ml-auto">&times;</button>
+        </div>
+      )}
+
+      {/* File attachment chips */}
+      {pendingFiles.length > 0 && onRemoveFile && (
+        <div className="mb-2 max-w-3xl mx-auto">
+          <FileAttachmentChips files={pendingFiles} onRemove={onRemoveFile} />
         </div>
       )}
 
@@ -238,7 +319,17 @@ export function MessageInput({
         </div>
       )}
 
-      <div className="flex items-end gap-2 sm:gap-3 max-w-3xl mx-auto">
+      <div className="flex items-end gap-2 sm:gap-3 max-w-3xl mx-auto relative">
+        {/* @ autocomplete popup */}
+        {showAutoComplete && (
+          <FileAutoComplete
+            query={autoCompleteQuery}
+            fileTree={fileTree}
+            onSelect={handleAutoCompleteSelect}
+            onDismiss={handleAutoCompleteDismiss}
+          />
+        )}
+
         {/* Hidden file input */}
         <input
           ref={fileInputRef}
@@ -264,11 +355,12 @@ export function MessageInput({
         </button>
 
         <textarea
+          ref={textareaRef}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={handleTextChange}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          placeholder="Describe what to build..."
+          placeholder="Describe what to build... (type @ to attach files)"
           disabled={disabled}
           rows={1}
           className="flex-1 resize-none rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 field-sizing-content"

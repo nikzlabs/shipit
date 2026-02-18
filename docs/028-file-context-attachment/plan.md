@@ -458,3 +458,14 @@ Medium. The server-side changes are simple (validation + string formatting). The
 - State management for pending attachments
 
 Estimate: ~800-1100 lines of new code.
+
+## Implementation Notes
+
+The actual implementation differs from the original plan in one key way: the **client sends only file paths** (`FileContextRef[]`), and the **server reads file content from disk** at send time. This is simpler and more secure than having the client fetch and send file content:
+
+- The client sends `files: [{ path: "src/index.ts" }]` in `WsSendMessage`
+- The server resolves paths within the session workspace, reads contents, validates sizes
+- File content never travels over the WebSocket — only paths do
+- The `FileContextRef` type (path-only) is used on the wire; `FileAttachment` (path + content) is internal to the server
+
+This also means the `@` autocomplete and "Add to Chat" button only need to know the file path, not the content. No async file fetching on the client side.
