@@ -37,6 +37,7 @@ import { FeaturesPanel } from "./components/FeaturesPanel.js";
 import { PullRequestModal } from "./components/PullRequestModal.js";
 import { ImportRepoOverlay } from "./components/ImportRepoOverlay.js";
 import { PrStatusBar } from "./components/PrStatusBar.js";
+import { Toast, type ToastData } from "./components/Toast.js";
 import type { WsServerMessage, WsSessionRenamed, WsUsageUpdate, WsModelInfo, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, FeatureInfo, PermissionMode, FileContextRef } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal" | "features";
@@ -166,6 +167,7 @@ export default function App() {
   } | null>(null);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(getSavedPermissionMode());
   const [pendingFiles, setPendingFiles] = useState<FileContextRef[]>([]);
+  const [toast, setToast] = useState<ToastData | null>(null);
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
   const historyLoadedRef = useRef(false);
@@ -640,6 +642,20 @@ export default function App() {
       // Refresh PR status after push
       if (data.type === "github_push_result" && data.success) {
         send({ type: "get_pr_status" });
+        // Show toast with PR creation shortcut
+        if (githubStatus.authenticated && !prStatus?.url) {
+          setToast({
+            message: `Pushed to origin/${data.branch ?? "branch"}`,
+            action: {
+              label: "Create PR",
+              onClick: () => {
+                setShowPRModal(true);
+                send({ type: "github_list_branches" });
+              },
+            },
+            duration: 8000,
+          });
+        }
       }
     }
 
@@ -1969,6 +1985,8 @@ export default function App() {
           )}
         </div>
       )}
+
+      {toast && <Toast toast={toast} onDismiss={() => setToast(null)} />}
     </div>
   );
 }
