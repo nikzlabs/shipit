@@ -92,11 +92,14 @@ export interface ImageAttachment {
   filename?: string;  // optional original filename
 }
 
+export type PermissionMode = "auto" | "plan" | "normal";
+
 export interface WsSendMessage {
   type: "send_message";
   text: string;
   sessionId?: string;
   images?: ImageAttachment[];
+  permissionMode?: PermissionMode;
 }
 
 export interface WsGetGitLog {
