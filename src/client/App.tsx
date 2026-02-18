@@ -40,7 +40,7 @@ import { PullRequestModal } from "./components/PullRequestModal.js";
 import { ImportRepoOverlay } from "./components/ImportRepoOverlay.js";
 import { PrStatusBar } from "./components/PrStatusBar.js";
 import { Toast, type ToastData } from "./components/Toast.js";
-import type { WsServerMessage, WsSessionRenamed, WsUsageUpdate, WsModelInfo, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, FeatureInfo, PermissionMode, FileContextRef, SessionInfo } from "../server/types.js";
+import type { WsServerMessage, WsSessionRenamed, WsUsageUpdate, WsModelInfo, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, FeatureInfo, PermissionMode, FileContextRef, SessionInfo, AgentEvent, AgentContentBlock } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal" | "features";
 
@@ -393,20 +393,18 @@ export default function App() {
       });
     }
 
-    if (data.type === "claude_event") {
-      const event = data.event;
+    // ---- Normalized agent event handler (multi-agent support) ----
+    if (data.type === "agent_event") {
+      const event = data.event as AgentEvent;
 
-      // Note: session ID is tracked via "session_started" messages from the server
-      // (which use the app-generated UUID), not from the Claude CLI session_id.
-
-      if (event.type === "assistant") {
-        const textBlocks = (event.message?.content ?? [])
-          .filter((b: ClaudeContentBlock): b is ClaudeContentBlockText => b.type === "text")
+      if (event.type === "agent_assistant") {
+        const textBlocks = (event.content ?? [])
+          .filter((b: AgentContentBlock): b is { type: "text"; text: string } => b.type === "text")
           .map((b) => b.text)
           .join("");
 
-        const toolUseBlocks = (event.message?.content ?? [])
-          .filter((b: ClaudeContentBlock): b is ClaudeContentBlockToolUse => b.type === "tool_use");
+        const toolUseBlocks = (event.content ?? [])
+          .filter((b: AgentContentBlock): b is { type: "tool_use"; id: string; name: string; input: Record<string, unknown> } => b.type === "tool_use");
 
         // Update activity based on what's in this event
         if (toolUseBlocks.length > 0) {
@@ -418,8 +416,6 @@ export default function App() {
 
         if (textBlocks || toolUseBlocks.length > 0) {
           setMessages((prev) => {
-            // If the last message is from the assistant and we're still streaming,
-            // merge new content into it (accumulate text and tool calls)
             const last = prev[prev.length - 1];
             if (last && last.role === "assistant" && last.streaming) {
               return [
@@ -446,13 +442,12 @@ export default function App() {
         }
       }
 
-      // Track tool result events — Claude is processing results
-      if (event.type === "user") {
+      // Track tool result events — agent is processing results
+      if (event.type === "agent_tool_result") {
         setActivity({ label: "Processing results..." });
 
-        // Extract tool results from the user event and attach to the last assistant message
         const results: ToolResultBlock[] = [];
-        for (const block of (event.message?.content ?? []) as Record<string, unknown>[]) {
+        for (const block of (event.content ?? []) as Record<string, unknown>[]) {
           if (block.type === "tool_result" && block.tool_use_id) {
             const rawContent = block.content;
             let content: string;
@@ -463,7 +458,6 @@ export default function App() {
             } else {
               content = JSON.stringify(rawContent);
             }
-            // Truncate extremely large outputs (>1MB) to prevent memory issues
             if (content.length > 1_000_000) {
               content = content.slice(0, 1_000_000) + "\n... (output truncated — exceeded 1MB)";
             }
@@ -479,7 +473,109 @@ export default function App() {
           setMessages((prev) => {
             const last = prev[prev.length - 1];
             if (last?.role === "assistant") {
-              // Merge new results with any existing results
+              const existingResults = last.toolResults ?? [];
+              return [
+                ...prev.slice(0, -1),
+                { ...last, toolResults: [...existingResults, ...results] },
+              ];
+            }
+            return prev;
+          });
+        }
+      }
+
+      if (event.type === "agent_result") {
+        setIsLoading(false);
+        setActivity(undefined);
+        notify("The agent has finished responding.");
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last && last.role === "assistant") {
+            return [...prev.slice(0, -1), { ...last, streaming: false }];
+          }
+          return prev;
+        });
+      }
+    }
+
+    // ---- Legacy claude_event handler (backward compatibility) ----
+    if (data.type === "claude_event") {
+      const event = data.event;
+
+      if (event.type === "assistant") {
+        const textBlocks = (event.message?.content ?? [])
+          .filter((b: ClaudeContentBlock): b is ClaudeContentBlockText => b.type === "text")
+          .map((b) => b.text)
+          .join("");
+
+        const toolUseBlocks = (event.message?.content ?? [])
+          .filter((b: ClaudeContentBlock): b is ClaudeContentBlockToolUse => b.type === "tool_use");
+
+        if (toolUseBlocks.length > 0) {
+          const lastTool = toolUseBlocks[toolUseBlocks.length - 1];
+          setActivity(activityFromTool(lastTool.name, lastTool.input));
+        } else if (textBlocks) {
+          setActivity({ label: "Thinking..." });
+        }
+
+        if (textBlocks || toolUseBlocks.length > 0) {
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last && last.role === "assistant" && last.streaming) {
+              return [
+                ...prev.slice(0, -1),
+                {
+                  role: "assistant" as const,
+                  text: last.text + textBlocks,
+                  toolUse: [...(last.toolUse ?? []), ...toolUseBlocks],
+                  toolResults: last.toolResults,
+                  streaming: true,
+                },
+              ];
+            }
+            return [
+              ...prev,
+              {
+                role: "assistant" as const,
+                text: textBlocks,
+                toolUse: toolUseBlocks,
+                streaming: true,
+              },
+            ];
+          });
+        }
+      }
+
+      if (event.type === "user") {
+        setActivity({ label: "Processing results..." });
+
+        const results: ToolResultBlock[] = [];
+        for (const block of (event.message?.content ?? []) as Record<string, unknown>[]) {
+          if (block.type === "tool_result" && block.tool_use_id) {
+            const rawContent = block.content;
+            let content: string;
+            if (typeof rawContent === "string") {
+              content = rawContent;
+            } else if (rawContent == null) {
+              content = "";
+            } else {
+              content = JSON.stringify(rawContent);
+            }
+            if (content.length > 1_000_000) {
+              content = content.slice(0, 1_000_000) + "\n... (output truncated — exceeded 1MB)";
+            }
+            results.push({
+              toolUseId: String(block.tool_use_id),
+              content,
+              isError: (block.is_error as boolean) ?? false,
+            });
+          }
+        }
+
+        if (results.length > 0) {
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.role === "assistant") {
               const existingResults = last.toolResults ?? [];
               return [
                 ...prev.slice(0, -1),
@@ -495,7 +591,6 @@ export default function App() {
         setIsLoading(false);
         setActivity(undefined);
         notify("The agent has finished responding.");
-        // Mark the last assistant message as no longer streaming
         setMessages((prev) => {
           const last = prev[prev.length - 1];
           if (last && last.role === "assistant") {
