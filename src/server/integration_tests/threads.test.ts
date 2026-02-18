@@ -451,7 +451,7 @@ describe("Integration: Conversation threads & checkpoints", () => {
 
   // ---- Session lifecycle ----
 
-  it("delete_session cleans up thread data", async () => {
+  it("archive_session preserves thread data", async () => {
     const client = await TestClient.connect(port);
     await drainConnect(client);
 
@@ -462,16 +462,16 @@ describe("Integration: Conversation threads & checkpoints", () => {
     await waitForMessage(client, "checkpoint_created");
 
     // Verify thread data exists
-    const beforeDelete = threadManager.listThreads(sessionId);
-    expect(beforeDelete.threads[0].checkpoints).toHaveLength(1);
+    const beforeArchive = threadManager.listThreads(sessionId);
+    expect(beforeArchive.threads[0].checkpoints).toHaveLength(1);
 
-    // Delete the session
-    client.send({ type: "delete_session", sessionId });
+    // Archive the session
+    client.send({ type: "archive_session", sessionId });
     await waitForMessage(client, "session_list");
 
-    // Verify thread data is cleaned up (new load returns defaults)
-    const afterDelete = threadManager.listThreads(sessionId);
-    expect(afterDelete.threads[0].checkpoints).toHaveLength(0);
+    // Verify thread data is still present (archive preserves data)
+    const afterArchive = threadManager.listThreads(sessionId);
+    expect(afterArchive.threads[0].checkpoints).toHaveLength(1);
 
     client.close();
   });

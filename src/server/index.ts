@@ -1090,7 +1090,27 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       }
 
       if (msg.type === "list_sessions") {
-        send({ type: "session_list", sessions: sessionManager.list() });
+        const sessions = sessionManager.list();
+        // Lazy-populate remoteUrl for sessions that have a workspace but no cached URL.
+        // One-time cost per session; subsequent calls are instant.
+        await Promise.all(
+          sessions.map(async (session) => {
+            if (session.workspaceDir && !session.remoteUrl) {
+              try {
+                const git = createGitManager(session.workspaceDir);
+                const remotes = await git.getRemotes();
+                const origin = remotes.find((r) => r.name === "origin");
+                if (origin?.url) {
+                  sessionManager.setRemoteUrl(session.id, origin.url);
+                  session.remoteUrl = origin.url;
+                }
+              } catch {
+                // Workspace may not exist or not be a git repo — skip
+              }
+            }
+          })
+        );
+        send({ type: "session_list", sessions });
       }
 
       if (msg.type === "new_session") {
@@ -1100,27 +1120,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         send({ type: "session_list", sessions: sessionManager.list() });
       }
 
-      if (msg.type === "delete_session") {
-        // If deleting the active session, clear it
+      if (msg.type === "archive_session") {
+        // If archiving the active session, clear it
         if (msg.sessionId === activeAppSessionId) {
           activeAppSessionId = undefined;
           activeSessionDir = null;
         }
-        // Remove session directory if it has one
-        const session = sessionManager.get(msg.sessionId);
-        if (session?.workspaceDir) {
-          try {
-            await fs.rm(session.workspaceDir, { recursive: true, force: true });
-            console.log("[server] Deleted session directory:", session.workspaceDir);
-          } catch (err) {
-            console.error("[server] Failed to delete session directory:", getErrorMessage(err));
-          }
-        }
-        sessionManager.delete(msg.sessionId);
-        chatHistoryManager.delete(msg.sessionId);
-        usageManager.delete(msg.sessionId);
-        threadManager.delete(msg.sessionId);
-        deploymentStore.deleteSession(msg.sessionId);
+        sessionManager.archive(msg.sessionId);
         send({ type: "session_list", sessions: sessionManager.list() });
       }
 
@@ -1514,6 +1520,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           try {
             const git = getActiveGitManager();
             await git.addRemote(name, url);
+            if (name === "origin" && activeAppSessionId) {
+              sessionManager.setRemoteUrl(activeAppSessionId, url);
+            }
             const remotes = await git.getRemotes();
             send({ type: "github_remotes", remotes });
           } catch (err) {
@@ -1556,6 +1565,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
               try {
                 const git = getActiveGitManager();
                 await git.addRemote("origin", result.cloneUrl);
+                if (activeAppSessionId) {
+                  sessionManager.setRemoteUrl(activeAppSessionId, result.cloneUrl);
+                }
               } catch {
                 // Remote may already exist — that's fine
               }
@@ -1678,6 +1690,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           // 4. Register session
           const repoName = url.split("/").pop()?.replace(".git", "") ?? "imported-repo";
           sessionManager.track(importSessionId, repoName, importSessionDir);
+          sessionManager.setRemoteUrl(importSessionId, url);
           threadManager.init(importSessionId);
 
           // 5. Detect and install dependencies

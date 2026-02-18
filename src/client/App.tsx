@@ -13,7 +13,7 @@ import { GitHistory, type GitCommit } from "./components/GitHistory.js";
 import { AuthOverlay } from "./components/AuthOverlay.js";
 import { GitHubAuthOverlay } from "./components/GitHubAuthOverlay.js";
 import { GitHubCreateRepoOverlay } from "./components/GitHubCreateRepoOverlay.js";
-import { SessionSelector, type SessionInfo } from "./components/SessionSelector.js";
+import { SessionSidebar } from "./components/SessionSidebar.js";
 import { DocsViewer } from "./components/DocsViewer.js";
 import { FileTree, type FileTreeNode } from "./components/FileTree.js";
 import { FileContentViewer } from "./components/FileContentViewer.js";
@@ -38,12 +38,13 @@ import { PullRequestModal } from "./components/PullRequestModal.js";
 import { ImportRepoOverlay } from "./components/ImportRepoOverlay.js";
 import { PrStatusBar } from "./components/PrStatusBar.js";
 import { Toast, type ToastData } from "./components/Toast.js";
-import type { WsServerMessage, WsSessionRenamed, WsUsageUpdate, WsModelInfo, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, FeatureInfo, PermissionMode, FileContextRef } from "../server/types.js";
+import type { WsServerMessage, WsSessionRenamed, WsUsageUpdate, WsModelInfo, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, FeatureInfo, PermissionMode, FileContextRef, SessionInfo } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal" | "features";
 
 const SESSION_STORAGE_KEY = "vibe-current-session";
 const PERMISSION_MODE_KEY = "vibe-permission-mode";
+const SIDEBAR_COLLAPSED_KEY = "vibe-sidebar-collapsed";
 
 function getWsUrl(): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -84,6 +85,22 @@ function getSavedPermissionMode(): PermissionMode {
 function savePermissionMode(mode: PermissionMode): void {
   try {
     localStorage.setItem(PERMISSION_MODE_KEY, mode);
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+function getSavedSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function saveSidebarCollapsed(collapsed: boolean): void {
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
   } catch {
     // localStorage may be unavailable
   }
@@ -168,6 +185,7 @@ export default function App() {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(getSavedPermissionMode());
   const [pendingFiles, setPendingFiles] = useState<FileContextRef[]>([]);
   const [toast, setToast] = useState<ToastData | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(getSavedSidebarCollapsed());
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
   const historyLoadedRef = useRef(false);
@@ -234,6 +252,7 @@ export default function App() {
     }
     if (status === "open") {
       send({ type: "github_get_status" });
+      send({ type: "list_sessions" });
     }
     if (status === "closed") {
       historyLoadedRef.current = false;
@@ -1122,9 +1141,9 @@ export default function App() {
     setShowTemplates(false);
   }, []);
 
-  const handleSessionDelete = useCallback(
+  const handleSessionArchive = useCallback(
     (sessionId: string) => {
-      send({ type: "delete_session", sessionId });
+      send({ type: "archive_session", sessionId });
     },
     [send]
   );
@@ -1785,15 +1804,6 @@ export default function App() {
             <img src={theme === "dark" ? "./favicon.svg" : "./favicon-light.svg"} alt="" className="w-5 h-5" />
             ShipIt
           </h1>
-          <SessionSelector
-            sessions={sessions}
-            currentSessionId={sessionIdRef.current}
-            onResume={handleSessionResume}
-            onNew={handleSessionNew}
-            onDelete={handleSessionDelete}
-            onRename={handleSessionRename}
-            onRefresh={handleSessionRefresh}
-          />
         </div>
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
           {githubStatus.authenticated ? (
@@ -1959,30 +1969,48 @@ export default function App() {
           )}
         </>
       ) : (
-        /* ── Desktop: side-by-side resizable layout ── */
-        <div ref={containerRef} className="flex flex-1 min-h-0">
-          {/* Left column — Chat */}
-          <div
-            className={`flex flex-col min-w-0 ${showTemplatePicker ? "" : "border-r border-gray-200 dark:border-gray-800"}`}
-            style={{ width: showTemplatePicker ? "100%" : `${fraction * 100}%` }}
-          >
-            {chatPanel}
+        /* ── Desktop: sidebar + resizable chat/right layout ── */
+        <div className="flex flex-1 min-h-0">
+          <SessionSidebar
+            sessions={sessions}
+            currentSessionId={sessionIdRef.current}
+            onResume={handleSessionResume}
+            onNew={handleSessionNew}
+            onArchive={handleSessionArchive}
+            onRename={handleSessionRename}
+            onRefresh={handleSessionRefresh}
+            collapsed={sidebarCollapsed}
+            onToggleCollapse={() => {
+              setSidebarCollapsed((v) => {
+                saveSidebarCollapsed(!v);
+                return !v;
+              });
+            }}
+          />
+          <div ref={containerRef} className="flex flex-1 min-h-0">
+            {/* Left column — Chat */}
+            <div
+              className={`flex flex-col min-w-0 ${showTemplatePicker ? "" : "border-r border-gray-200 dark:border-gray-800"}`}
+              style={{ width: showTemplatePicker ? "100%" : `${fraction * 100}%` }}
+            >
+              {chatPanel}
+            </div>
+
+            {!showTemplatePicker && (
+              <>
+                {/* Drag handle */}
+                <ResizeHandle isDragging={isDragging} onMouseDown={onMouseDown} onTouchStart={onTouchStart} />
+
+                {/* Right column — Tabbed (Preview / Docs) */}
+                <div
+                  className="min-w-0 flex flex-col bg-gray-50 dark:bg-gray-900"
+                  style={{ width: `${(1 - fraction) * 100}%` }}
+                >
+                  {rightPanel}
+                </div>
+              </>
+            )}
           </div>
-
-          {!showTemplatePicker && (
-            <>
-              {/* Drag handle */}
-              <ResizeHandle isDragging={isDragging} onMouseDown={onMouseDown} onTouchStart={onTouchStart} />
-
-              {/* Right column — Tabbed (Preview / Docs) */}
-              <div
-                className="min-w-0 flex flex-col bg-gray-50 dark:bg-gray-900"
-                style={{ width: `${(1 - fraction) * 100}%` }}
-              >
-                {rightPanel}
-              </div>
-            </>
-          )}
         </div>
       )}
 

@@ -15,7 +15,7 @@ All client-server communication uses JSON over a single WebSocket connection at 
 | `rollback` | `commitHash` | Roll back workspace to a specific commit |
 | `list_sessions` | — | List all saved sessions |
 | `new_session` | — | Clear current session, start fresh |
-| `delete_session` | `sessionId` | Delete a saved session |
+| `archive_session` | `sessionId` | Archive a session (hide from list, preserve data) |
 | `rename_session` | `sessionId`, `title` | Rename a saved session |
 | `list_docs` | — | List `.md` files in /workspace |
 | `get_doc` | `path` | Request content of a markdown file |

@@ -37,7 +37,7 @@ Each session gets its own workspace directory with its own git repo.
 2. **Per-connection state**: Each WebSocket connection tracks `activeAppSessionId` and `activeSessionDir`. All file/git operations use these.
 3. **Per-session GitManager**: `AppDeps.createGitManager(dir)` factory creates instances per session directory.
 4. **Switching**: `get_chat_history` activates a session, updating `activeSessionDir` and restarting FileWatcher for the new directory.
-5. **Deletion**: `delete_session` removes the session directory from disk, session metadata, chat history, usage data, and thread data.
+5. **Archiving**: `archive_session` marks a session as archived (hidden from sidebar). All data — workspace directory, chat history, usage, threads — is preserved.
 6. **Migration**: Sessions created before isolation (no `workspaceDir`) fall back to root `/workspace`.
 
 ### Per-connection helpers

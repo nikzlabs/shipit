@@ -283,14 +283,14 @@ describe("Integration: Usage & cost tracking", () => {
     client.close();
   });
 
-  it("delete_session also deletes usage data", async () => {
+  it("archive_session preserves usage data", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     // Record some usage
     client.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
-    lastClaude.emit("event", { type: "system", subtype: "init", session_id: "del-usage-session" });
+    lastClaude.emit("event", { type: "system", subtype: "init", session_id: "arc-usage-session" });
     await client.receiveSkipLogs(); // claude_event
     const sessionStarted = await client.receiveSkipLogs(); // session_started
     const appSessionId = (sessionStarted as any).session.id;
@@ -298,7 +298,7 @@ describe("Integration: Usage & cost tracking", () => {
     lastClaude.emit("event", {
       type: "result",
       subtype: "success",
-      session_id: "del-usage-session",
+      session_id: "arc-usage-session",
       total_cost_usd: 0.99,
       duration_ms: 7000,
     });
@@ -307,8 +307,8 @@ describe("Integration: Usage & cost tracking", () => {
     lastClaude.emit("done", 0);
     await new Promise((r) => setTimeout(r, 100));
 
-    // Delete the session using the app-generated session UUID
-    client.send({ type: "delete_session", sessionId: appSessionId });
+    // Archive the session
+    client.send({ type: "archive_session", sessionId: appSessionId });
 
     // Drain messages until we get session_list
     let sessionList: any = null;
@@ -321,7 +321,7 @@ describe("Integration: Usage & cost tracking", () => {
     }
     expect(sessionList).toBeDefined();
 
-    // Verify usage is gone
+    // Verify usage is still present (archive preserves data)
     client.send({ type: "get_usage_stats" } as any);
     let statsMsg: any = null;
     for (let i = 0; i < 10; i++) {
@@ -331,8 +331,7 @@ describe("Integration: Usage & cost tracking", () => {
         break;
       }
     }
-    expect(statsMsg.stats.totalTurns).toBe(0);
-    expect(statsMsg.stats.sessions).toHaveLength(0);
+    expect(statsMsg.stats.totalTurns).toBe(1);
 
     client.close();
   });
