@@ -193,6 +193,25 @@ export class StubGitHubAuthManager extends EventEmitter {
       cloneUrl: `https://github.com/test-user/${name}.git`,
     };
   }
+
+  async createPullRequest(options: {
+    owner: string;
+    repo: string;
+    title: string;
+    body: string;
+    head: string;
+    base: string;
+    draft?: boolean;
+  }) {
+    if (!this._authenticated) {
+      return { success: false, message: "Not authenticated with GitHub" };
+    }
+    return {
+      success: true,
+      url: `https://github.com/${options.owner}/${options.repo}/pull/1`,
+      number: 1,
+    };
+  }
 }
 
 /**
@@ -207,16 +226,18 @@ export class FakeClaudeProcess extends EventEmitter {
   public lastSystemPrompt: string | undefined;
   public lastImages: Array<{ data: string; mediaType: string; filename?: string }> | undefined;
   public lastCwd: string | undefined;
+  public lastPermissionMode: string | undefined;
   public killed = false;
   public stdinData: string[] = [];
 
-  run(prompt: string, sessionId?: string, systemPrompt?: string, images?: Array<{ data: string; mediaType: string; filename?: string }>, cwd?: string) {
+  run(prompt: string, sessionId?: string, systemPrompt?: string, images?: Array<{ data: string; mediaType: string; filename?: string }>, cwd?: string, permissionMode?: string) {
     this.runCalled = true;
     this.lastPrompt = prompt;
     this.lastSessionId = sessionId;
     this.lastSystemPrompt = systemPrompt;
     this.lastImages = images;
     this.lastCwd = cwd;
+    this.lastPermissionMode = permissionMode;
   }
 
   kill() {

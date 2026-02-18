@@ -132,6 +132,25 @@ export class GitManager {
     return msg;
   }
 
+  /** List remote branches. */
+  async listRemoteBranches(remote = "origin"): Promise<string[]> {
+    const result = await this.git.branch(["-r"]);
+    return result.all
+      .filter((b) => b.startsWith(`${remote}/`))
+      .map((b) => b.replace(`${remote}/`, ""));
+  }
+
+  /** Parse owner/repo from a GitHub remote URL. */
+  static parseGitHubRemote(url: string): { owner: string; repo: string } | null {
+    // Handle HTTPS: https://github.com/owner/repo.git
+    const httpsMatch = url.match(/github\.com\/([^/]+)\/([^/.]+)/);
+    if (httpsMatch) return { owner: httpsMatch[1], repo: httpsMatch[2] };
+    // Handle SSH: git@github.com:owner/repo.git
+    const sshMatch = url.match(/github\.com:([^/]+)\/([^/.]+)/);
+    if (sshMatch) return { owner: sshMatch[1], repo: sshMatch[2] };
+    return null;
+  }
+
   /** Check whether git has a user.name and user.email configured (any scope). */
   async hasIdentity(): Promise<boolean> {
     try {

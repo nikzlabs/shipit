@@ -111,11 +111,14 @@ export interface ImageAttachment {
   filename?: string;  // optional original filename
 }
 
+export type PermissionMode = "auto" | "plan" | "normal";
+
 export interface WsSendMessage {
   type: "send_message";
   text: string;
   sessionId?: string;
   images?: ImageAttachment[];
+  permissionMode?: PermissionMode;
 }
 
 export interface WsGetGitLog {
@@ -228,6 +231,18 @@ export interface WsGitHubCreateRepo {
   isPrivate?: boolean;
 }
 
+export interface WsGitHubCreatePR {
+  type: "github_create_pr";
+  title: string;
+  body: string;
+  base: string;
+  draft?: boolean;
+}
+
+export interface WsGitHubListBranches {
+  type: "github_list_branches";
+}
+
 // ---- Git identity messages ----
 
 export interface WsSetGitIdentity {
@@ -323,6 +338,8 @@ export type WsClientMessage =
   | WsGitHubGetRemotes
   | WsGitHubLogout
   | WsGitHubCreateRepo
+  | WsGitHubCreatePR
+  | WsGitHubListBranches
   | WsSetGitIdentity
   | WsCreateCheckpoint
   | WsForkThread
@@ -568,6 +585,20 @@ export interface WsGitHubRepoCreated {
   message?: string;
 }
 
+export interface WsGitHubPRCreated {
+  type: "github_pr_created";
+  success: boolean;
+  url?: string;
+  number?: number;
+  message?: string;
+}
+
+export interface WsGitHubBranches {
+  type: "github_branches";
+  current: string;
+  remote: string[];
+}
+
 // ---- Feature server messages ----
 
 export interface WsFeatureList {
@@ -785,6 +816,8 @@ export type WsServerMessage =
   | WsGitHubPullResult
   | WsGitHubRemotes
   | WsGitHubRepoCreated
+  | WsGitHubPRCreated
+  | WsGitHubBranches
   | WsGitIdentityRequired
   | WsGitIdentitySet
   | WsCheckpointCreated

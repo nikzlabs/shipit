@@ -32,11 +32,13 @@ import { ThreadIndicator, type ThreadInfo } from "./components/ThreadIndicator.j
 import { ThreadTimeline } from "./components/ThreadTimeline.js";
 import { DeployModal, type DeployPhase } from "./components/DeployModal.js";
 import { FeaturesPanel } from "./components/FeaturesPanel.js";
-import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, FeatureInfo } from "../server/types.js";
+import { PullRequestModal } from "./components/PullRequestModal.js";
+import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, FeatureInfo, PermissionMode } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal" | "features";
 
 const SESSION_STORAGE_KEY = "vibe-current-session";
+const PERMISSION_MODE_KEY = "vibe-permission-mode";
 
 function getWsUrl(): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -59,6 +61,24 @@ function saveSessionId(id: string | undefined): void {
     } else {
       localStorage.removeItem(SESSION_STORAGE_KEY);
     }
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+function getSavedPermissionMode(): PermissionMode {
+  try {
+    const saved = localStorage.getItem(PERMISSION_MODE_KEY);
+    if (saved === "plan" || saved === "normal" || saved === "auto") return saved;
+  } catch {
+    // localStorage may be unavailable
+  }
+  return "auto";
+}
+
+function savePermissionMode(mode: PermissionMode): void {
+  try {
+    localStorage.setItem(PERMISSION_MODE_KEY, mode);
   } catch {
     // localStorage may be unavailable
   }
@@ -110,6 +130,11 @@ export default function App() {
   const [lastDeployError, setLastDeployError] = useState<string | null>(null);
   const [deployHistory, setDeployHistory] = useState<DeploymentRecord[]>([]);
   const [features, setFeatures] = useState<FeatureInfo[]>([]);
+  const [showPRModal, setShowPRModal] = useState(false);
+  const [prCurrentBranch, setPrCurrentBranch] = useState("");
+  const [prRemoteBranches, setPrRemoteBranches] = useState<string[]>([]);
+  const [prResult, setPrResult] = useState<{ success: boolean; url?: string; number?: number; message?: string } | null>(null);
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(getSavedPermissionMode());
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
   const historyLoadedRef = useRef(false);
@@ -543,6 +568,20 @@ export default function App() {
       ]);
     }
 
+    if (data.type === "github_pr_created") {
+      setPrResult({
+        success: data.success,
+        url: data.url,
+        number: data.number,
+        message: data.message,
+      });
+    }
+
+    if (data.type === "github_branches") {
+      setPrCurrentBranch(data.current);
+      setPrRemoteBranches(data.remote);
+    }
+
     if (data.type === "usage_update") {
       setCurrentSessionUsage({
         sessionId: data.sessionId,
@@ -757,9 +796,10 @@ export default function App() {
         type: "send_message",
         text,
         sessionId: sessionIdRef.current,
+        permissionMode: permissionMode !== "auto" ? permissionMode : undefined,
       });
     },
-    [send, requestPermission],
+    [send, requestPermission, permissionMode],
   );
 
   const handleToggleAutoFix = useCallback(() => {
@@ -795,9 +835,10 @@ export default function App() {
         text,
         sessionId: sessionIdRef.current,
         images,
+        permissionMode: permissionMode !== "auto" ? permissionMode : undefined,
       });
     },
-    [send, requestPermission]
+    [send, requestPermission, permissionMode]
   );
 
   const handleEditMessage = useCallback(
@@ -818,9 +859,10 @@ export default function App() {
         type: "send_message",
         text: newText,
         sessionId: sessionIdRef.current,
+        permissionMode: permissionMode !== "auto" ? permissionMode : undefined,
       });
     },
-    [send, requestPermission, activeThreadId]
+    [send, requestPermission, activeThreadId, permissionMode]
   );
 
   const handleGitRefresh = useCallback(() => {
@@ -992,6 +1034,24 @@ export default function App() {
     [send],
   );
 
+  const handlePROpen = useCallback(() => {
+    setPrResult(null);
+    setPrCurrentBranch("");
+    setPrRemoteBranches([]);
+    setShowPRModal(true);
+  }, []);
+
+  const handlePRSubmit = useCallback(
+    (data: { title: string; body: string; base: string; draft: boolean }) => {
+      send({ type: "github_create_pr", title: data.title, body: data.body, base: data.base, draft: data.draft });
+    },
+    [send],
+  );
+
+  const handlePRRequestBranches = useCallback(() => {
+    send({ type: "github_list_branches" });
+  }, [send]);
+
   const handleUsageBadgeClick = useCallback(() => {
     send({ type: "get_usage_stats" });
     setShowUsageModal(true);
@@ -1118,6 +1178,11 @@ export default function App() {
     },
     [send, requestPermission],
   );
+
+  const handlePermissionModeChange = useCallback((mode: PermissionMode) => {
+    setPermissionMode(mode);
+    savePermissionMode(mode);
+  }, []);
 
   const handleClearLogs = useCallback(() => {
     setLogEntries([]);
@@ -1352,7 +1417,12 @@ export default function App() {
         />
       )}
       {!showTemplatePicker && (
-        <MessageInput onSend={handleSend} disabled={isLoading || status !== "open"} />
+        <MessageInput
+          onSend={handleSend}
+          disabled={isLoading || status !== "open"}
+          permissionMode={permissionMode}
+          onPermissionModeChange={handlePermissionModeChange}
+        />
       )}
     </>
   );
@@ -1399,6 +1469,16 @@ export default function App() {
           onDeleteConfig={handleDeployDeleteConfig}
           onSendErrorToChat={handleDeploySendError}
           onClose={() => setShowDeployModal(false)}
+        />
+      )}
+      {showPRModal && (
+        <PullRequestModal
+          currentBranch={prCurrentBranch}
+          remoteBranches={prRemoteBranches}
+          onSubmit={handlePRSubmit}
+          onRequestBranches={handlePRRequestBranches}
+          onClose={() => setShowPRModal(false)}
+          result={prResult}
         />
       )}
       {showUsageModal && (
@@ -1472,6 +1552,19 @@ export default function App() {
             >
               <span className="w-1.5 h-1.5 rounded-full bg-gray-400 dark:bg-gray-600" />
               GitHub
+            </button>
+          )}
+          {githubStatus.authenticated && (
+            <button
+              onClick={handlePROpen}
+              className="hidden sm:inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800 transition-colors font-medium"
+              title="Create pull request"
+              aria-label="Create PR"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+              </svg>
+              PR
             </button>
           )}
           <button
