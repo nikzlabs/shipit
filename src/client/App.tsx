@@ -17,7 +17,8 @@ import { SessionSelector, type SessionInfo } from "./components/SessionSelector.
 import { DocsViewer } from "./components/DocsViewer.js";
 import { FileTree, type FileTreeNode } from "./components/FileTree.js";
 import { FileContentViewer } from "./components/FileContentViewer.js";
-import { TerminalPanel, type LogEntry } from "./components/TerminalPanel.js";
+import { TerminalPanel, type LogEntry, type TerminalMode } from "./components/TerminalPanel.js";
+import { InteractiveTerminal, type InteractiveTerminalHandle } from "./components/InteractiveTerminal.js";
 import { ResizeHandle } from "./components/ResizeHandle.js";
 import { SearchBar } from "./components/SearchBar.js";
 import { activityFromTool, type StreamingActivity } from "./components/StreamingIndicator.js";
@@ -108,6 +109,9 @@ export default function App() {
   const [activity, setActivity] = useState<StreamingActivity | undefined>(undefined);
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const [unreadLogCount, setUnreadLogCount] = useState(0);
+  const [terminalMode, setTerminalMode] = useState<TerminalMode>("logs");
+  const [shellStarted, setShellStarted] = useState(false);
+  const terminalRef = useRef<InteractiveTerminalHandle>(null);
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
   const [applyingTemplate, setApplyingTemplate] = useState(false);
   const [showTemplates, setShowTemplates] = useState(!getSavedSessionId());
@@ -308,6 +312,8 @@ export default function App() {
       setTurnTokens([]);
       setThreads([]);
       setActiveThreadId("");
+      setShellStarted(false);
+      setTerminalMode("logs");
       // Load persisted chat history for this session (also activates session on server)
       send({ type: "get_chat_history", sessionId });
       // Refresh file tree and git log for the new session's workspace
@@ -851,6 +857,14 @@ export default function App() {
         setUnreadLogCount((prev) => prev + 1);
       }
     }
+
+    if (data.type === "terminal_output") {
+      terminalRef.current?.write(data.data);
+    }
+
+    if (data.type === "terminal_exit") {
+      setShellStarted(false);
+    }
   }, [lastMessage, send, rightTab, viewingFile, notify, handleSessionResume]);
 
   // Forward preview errors to the server for terminal log relay
@@ -1071,6 +1085,8 @@ export default function App() {
     setFileTree([]);
     setThreads([]);
     setActiveThreadId("");
+    setShellStarted(false);
+    setTerminalMode("logs");
     send({ type: "new_session" });
     // Request templates for the picker
     if (templates.length === 0) {
@@ -1385,6 +1401,29 @@ export default function App() {
     send({ type: "clear_logs" });
   }, [send]);
 
+  const handleTerminalInput = useCallback(
+    (data: string) => {
+      send({ type: "terminal_input", data });
+    },
+    [send],
+  );
+
+  const handleTerminalResize = useCallback(
+    (cols: number, rows: number) => {
+      send({ type: "terminal_resize", cols, rows });
+    },
+    [send],
+  );
+
+  const handleTerminalStart = useCallback(() => {
+    send({ type: "terminal_start" });
+    setShellStarted(true);
+  }, [send]);
+
+  const handleTerminalModeChange = useCallback((mode: TerminalMode) => {
+    setTerminalMode(mode);
+  }, []);
+
   // Request data when switching to docs or files tab
   const handleTabChange = useCallback(
     (tab: RightTab) => {
@@ -1505,6 +1544,18 @@ export default function App() {
           <TerminalPanel
             entries={logEntries}
             onClear={handleClearLogs}
+            terminalMode={terminalMode}
+            onTerminalModeChange={handleTerminalModeChange}
+            shellContent={
+              (shellStarted || terminalMode === "shell") ? (
+                <InteractiveTerminal
+                  ref={terminalRef}
+                  onInput={handleTerminalInput}
+                  onResize={handleTerminalResize}
+                  onStart={handleTerminalStart}
+                />
+              ) : null
+            }
           />
         ) : rightTab === "features" ? (
           <FeaturesPanel
