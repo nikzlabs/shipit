@@ -23,10 +23,18 @@ import { DeploymentManager } from "./deployment-manager.js";
 import { DeploymentStore } from "./deployment-store.js";
 import { VercelTarget } from "./deploy-targets/vercel.js";
 import { CloudflareTarget } from "./deploy-targets/cloudflare.js";
-import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment, FileAttachment, FileContextRef, PermissionMode } from "./types.js";
+import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeResultEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment, FileAttachment, FileContextRef, PermissionMode } from "./types.js";
 
 function getErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** Map model identifiers to context window sizes. */
+export function getContextWindowSize(model: string): number {
+  if (model.includes("opus")) return 200_000;
+  if (model.includes("sonnet")) return 200_000;
+  if (model.includes("haiku")) return 200_000;
+  return 200_000;
 }
 
 const WORKSPACE = "/workspace";
@@ -836,6 +844,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
               send({ type: "session_started", session });
               persistUserMessage(event.session_id);
             }
+
+            // Forward model info to the client
+            if (event.model) {
+              send({
+                type: "model_info",
+                model: event.model,
+                contextWindowTokens: getContextWindowSize(event.model),
+              });
+            }
           }
 
           // Collect assistant text and tool use blocks for commit message + persistence
@@ -861,6 +878,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             receivedResult = true;
           }
           if (event.type === "result" && event.session_id) {
+            const resultEvent = event as ClaudeResultEvent;
             if (activeAppSessionId) {
               sessionManager.setAgentSessionId(activeAppSessionId, event.session_id);
               sessionManager.track(activeAppSessionId);
@@ -868,20 +886,26 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
             const usageSessionId = activeAppSessionId ?? event.session_id;
             // Record cost/duration if present
-            if (event.total_cost_usd !== undefined) {
+            if (resultEvent.total_cost_usd !== undefined) {
               usageManager.record(
                 usageSessionId,
-                event.total_cost_usd,
-                event.duration_ms ?? 0,
+                resultEvent.total_cost_usd,
+                resultEvent.duration_ms ?? 0,
+                resultEvent.input_tokens,
+                resultEvent.output_tokens,
               );
               const sessionUsage = usageManager.getSessionUsage(usageSessionId);
               if (sessionUsage) {
+                const tokenTotals = usageManager.getSessionTokenTotals(usageSessionId);
                 send({
                   type: "usage_update",
                   sessionId: sessionUsage.sessionId,
                   totalCostUsd: sessionUsage.totalCostUsd,
                   totalDurationMs: sessionUsage.totalDurationMs,
                   turnCount: sessionUsage.turnCount,
+                  lastTurnInputTokens: resultEvent.input_tokens,
+                  lastTurnOutputTokens: resultEvent.output_tokens,
+                  cumulativeInputTokens: tokenTotals?.cumulativeInputTokens,
                 });
               }
             }
@@ -1256,6 +1280,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
                 activeAppSessionId = event.session_id;
                 send({ type: "session_started", session: sess });
               }
+
+              // Forward model info to the client
+              if (event.model) {
+                send({
+                  type: "model_info",
+                  model: event.model,
+                  contextWindowTokens: getContextWindowSize(event.model),
+                });
+              }
             }
 
             if (event.type === "assistant") {
@@ -1276,6 +1309,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             }
 
             if (event.type === "result" && event.session_id) {
+              const resultEvent = event as ClaudeResultEvent;
               if (activeAppSessionId) {
                 sessionManager.setAgentSessionId(activeAppSessionId, event.session_id);
                 sessionManager.track(activeAppSessionId);
@@ -1283,20 +1317,26 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
               const usageSessionId = activeAppSessionId ?? event.session_id;
               // Record cost/duration if present
-              if (event.total_cost_usd !== undefined) {
+              if (resultEvent.total_cost_usd !== undefined) {
                 usageManager.record(
                   usageSessionId,
-                  event.total_cost_usd,
-                  event.duration_ms ?? 0,
+                  resultEvent.total_cost_usd,
+                  resultEvent.duration_ms ?? 0,
+                  resultEvent.input_tokens,
+                  resultEvent.output_tokens,
                 );
                 const sessionUsage = usageManager.getSessionUsage(usageSessionId);
                 if (sessionUsage) {
+                  const tokenTotals = usageManager.getSessionTokenTotals(usageSessionId);
                   send({
                     type: "usage_update",
                     sessionId: sessionUsage.sessionId,
                     totalCostUsd: sessionUsage.totalCostUsd,
                     totalDurationMs: sessionUsage.totalDurationMs,
                     turnCount: sessionUsage.turnCount,
+                    lastTurnInputTokens: resultEvent.input_tokens,
+                    lastTurnOutputTokens: resultEvent.output_tokens,
+                    cumulativeInputTokens: tokenTotals?.cumulativeInputTokens,
                   });
                 }
               }

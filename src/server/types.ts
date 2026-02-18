@@ -43,6 +43,10 @@ export interface ClaudeResultEvent {
   total_cost_usd?: number;
   duration_ms?: number;
   result?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
 }
 
 export type ClaudeEvent =
@@ -540,6 +544,8 @@ export interface UsageTurn {
   costUsd: number;
   durationMs: number;
   timestamp: string;
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 export interface SessionUsage {
@@ -594,6 +600,16 @@ export interface WsUsageUpdate {
   totalCostUsd: number;
   totalDurationMs: number;
   turnCount: number;
+  lastTurnInputTokens?: number;
+  lastTurnOutputTokens?: number;
+  cumulativeInputTokens?: number;
+}
+
+/** Sent once after the Claude CLI init event, and on reconnect. */
+export interface WsModelInfo {
+  type: "model_info";
+  model: string;
+  contextWindowTokens: number;
 }
 
 export interface WsTemplateList {
@@ -959,4 +975,5 @@ export type WsServerMessage =
   | WsGitHubSearchResults
   | WsGeneratedPRDescription
   | WsPrStatus
-  | WsMergePrResult;
+  | WsMergePrResult
+  | WsModelInfo;

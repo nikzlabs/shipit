@@ -45,13 +45,15 @@ export class UsageManager {
     }
   }
 
-  /** Record a turn's cost and duration. */
-  record(sessionId: string, costUsd: number, durationMs: number): void {
+  /** Record a turn's cost, duration, and optional token counts. */
+  record(sessionId: string, costUsd: number, durationMs: number, inputTokens?: number, outputTokens?: number): void {
     this.turns.push({
       sessionId,
       costUsd,
       durationMs,
       timestamp: new Date().toISOString(),
+      inputTokens,
+      outputTokens,
     });
     this.save();
   }
@@ -67,6 +69,25 @@ export class UsageManager {
       totalDurationMs: sessionTurns.reduce((sum, t) => sum + t.durationMs, 0),
       turnCount: sessionTurns.length,
     };
+  }
+
+  /** Get cumulative token totals for a session. */
+  getSessionTokenTotals(sessionId: string): { cumulativeInputTokens: number; cumulativeOutputTokens: number } | undefined {
+    const sessionTurns = this.turns.filter((t) => t.sessionId === sessionId);
+    if (sessionTurns.length === 0) return undefined;
+
+    const hasAnyTokens = sessionTurns.some((t) => t.inputTokens !== undefined || t.outputTokens !== undefined);
+    if (!hasAnyTokens) return undefined;
+
+    return {
+      cumulativeInputTokens: sessionTurns.reduce((sum, t) => sum + (t.inputTokens ?? 0), 0),
+      cumulativeOutputTokens: sessionTurns.reduce((sum, t) => sum + (t.outputTokens ?? 0), 0),
+    };
+  }
+
+  /** Get per-turn usage data for a session (for the usage modal breakdown). */
+  getSessionTurns(sessionId: string): UsageTurn[] {
+    return this.turns.filter((t) => t.sessionId === sessionId);
   }
 
   /** Get aggregated usage across all sessions. */
