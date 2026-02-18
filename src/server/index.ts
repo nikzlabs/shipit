@@ -23,6 +23,7 @@ import { DeploymentManager } from "./deployment-manager.js";
 import { DeploymentStore } from "./deployment-store.js";
 import { VercelTarget } from "./deploy-targets/vercel.js";
 import { CloudflareTarget } from "./deploy-targets/cloudflare.js";
+import { TerminalProcess } from "./terminal.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeResultEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment, FileAttachment, FileContextRef, PermissionMode } from "./types.js";
 
 function getErrorMessage(err: unknown): string {
@@ -600,6 +601,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         }
       }, 5000);
     };
+    // Per-connection interactive terminal
+    let terminal: TerminalProcess | null = null;
+
     // Per-connection active session state
     let activeAppSessionId: string | undefined;
     let activeSessionDir: string | null = null;
@@ -2233,6 +2237,36 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         }
       }
 
+      // ---- Interactive terminal handlers ----
+
+      if (msg.type === "terminal_start") {
+        if (!terminal) {
+          terminal = new TerminalProcess();
+          terminal.on("data", (data: string) => {
+            send({ type: "terminal_output", data });
+          });
+          terminal.on("exit", (code: number | null) => {
+            send({ type: "terminal_exit", exitCode: code });
+            terminal = null;
+          });
+          terminal.start(getActiveDir());
+        }
+      }
+
+      if (msg.type === "terminal_input") {
+        if (terminal) {
+          terminal.write(msg.data);
+        }
+      }
+
+      if (msg.type === "terminal_resize") {
+        if (terminal) {
+          const cols = typeof msg.cols === "number" ? Math.max(1, Math.min(500, msg.cols)) : 80;
+          const rows = typeof msg.rows === "number" ? Math.max(1, Math.min(200, msg.rows)) : 24;
+          terminal.resize(cols, rows);
+        }
+      }
+
       if (msg.type === "switch_thread") {
         if (!activeAppSessionId) {
           send({ type: "error", message: "No active session" });
@@ -2299,6 +2333,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       if (claude) {
         claude.kill();
         claude = null;
+      }
+      if (terminal) {
+        terminal.kill();
+        terminal = null;
       }
       if (pushTimer) {
         clearTimeout(pushTimer);
