@@ -10,6 +10,7 @@ const STATUS_CONFIG: Record<FeatureStatus, { label: string; bg: string; text: st
   "planned": { label: "Planned", bg: "bg-gray-200 dark:bg-gray-700", text: "text-gray-700 dark:text-gray-300" },
   "in-progress": { label: "In Progress", bg: "bg-yellow-200 dark:bg-yellow-900", text: "text-yellow-800 dark:text-yellow-200" },
   "done": { label: "Done", bg: "bg-green-200 dark:bg-green-900", text: "text-green-800 dark:text-green-200" },
+  "paused": { label: "Paused", bg: "bg-gray-200 dark:bg-gray-600", text: "text-gray-600 dark:text-gray-200" },
 };
 
 function StatusBadge({ status }: { status: FeatureStatus }) {
@@ -44,6 +45,7 @@ export function FeaturesPanel({ features, onStartSession, onRefresh }: FeaturesP
 
   const planned = features.filter((f) => f.status === "planned");
   const inProgress = features.filter((f) => f.status === "in-progress");
+  const paused = features.filter((f) => f.status === "paused");
   const done = features.filter((f) => f.status === "done");
 
   return (
@@ -67,6 +69,9 @@ export function FeaturesPanel({ features, onStartSession, onRefresh }: FeaturesP
         )}
         {planned.length > 0 && (
           <FeatureGroup label="Planned" features={planned} onStartSession={onStartSession} />
+        )}
+        {paused.length > 0 && (
+          <FeatureGroup label="Paused" features={paused} onStartSession={onStartSession} />
         )}
         {done.length > 0 && (
           <FeatureGroup label="Done" features={done} onStartSession={onStartSession} />

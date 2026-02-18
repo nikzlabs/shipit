@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 ---
 # 028 — File & Code Context Attachment
 

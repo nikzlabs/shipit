@@ -79,7 +79,7 @@ export interface SessionInfo {
 
 // ---- Feature types ----
 
-export type FeatureStatus = "planned" | "in-progress" | "done";
+export type FeatureStatus = "planned" | "in-progress" | "done" | "paused";
 
 export interface FeatureInfo {
   /** Directory name, e.g. "001-websocket-protocol". */

@@ -25,6 +25,10 @@ describe("parseStatusFromFrontmatter", () => {
     expect(parseStatusFromFrontmatter("---\nstatus: done\n---\n# Feature")).toBe("done");
   });
 
+  it("parses 'paused' status", () => {
+    expect(parseStatusFromFrontmatter("---\nstatus: paused\n---\n# Feature")).toBe("paused");
+  });
+
   it("handles extra whitespace in status value", () => {
     expect(parseStatusFromFrontmatter("---\nstatus:   in-progress  \n---")).toBe("in-progress");
   });
