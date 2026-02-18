@@ -255,6 +255,7 @@ describe("Integration: home_send_with_repo", () => {
     execSync("git init", { cwd: workTree, stdio: "ignore" });
     execSync("git config user.email 'test@test.com'", { cwd: workTree, stdio: "ignore" });
     execSync("git config user.name 'Test'", { cwd: workTree, stdio: "ignore" });
+    execSync("git config commit.gpgsign false", { cwd: workTree, stdio: "ignore" });
     fs.writeFileSync(path.join(workTree, "README.md"), "# Test Repo\n");
     execSync("git add .", { cwd: workTree, stdio: "ignore" });
     execSync("git commit -m 'initial commit'", { cwd: workTree, stdio: "ignore" });
