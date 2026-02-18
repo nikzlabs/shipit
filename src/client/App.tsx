@@ -12,7 +12,7 @@ import { PreviewFrame, formatErrorForMessage, type PreviewStatus } from "./compo
 import { usePreviewErrors, type PreviewError } from "./hooks/usePreviewErrors.js";
 import { GitHistory, type GitCommit } from "./components/GitHistory.js";
 import { AuthOverlay } from "./components/AuthOverlay.js";
-import { GitHubAuthOverlay } from "./components/GitHubAuthOverlay.js";
+import { ProjectSettings } from "./components/ProjectSettings.js";
 import { SessionSidebar } from "./components/SessionSidebar.js";
 import { DocsViewer } from "./components/DocsViewer.js";
 import { FileTree, type FileTreeNode } from "./components/FileTree.js";
@@ -29,7 +29,6 @@ import { type TemplateInfo } from "./components/TemplateSelector.js";
 import { HomeScreen } from "./components/HomeScreen.js";
 import { UsageModal, type SessionUsage, type UsageStats, type TurnTokenData } from "./components/UsageModal.js";
 import { StatusBar, type ModelInfo } from "./components/StatusBar.js";
-import { SystemPromptEditor } from "./components/SystemPromptEditor.js";
 import { GitIdentityOverlay } from "./components/GitIdentityOverlay.js";
 import { ThreadIndicator, type ThreadInfo } from "./components/ThreadIndicator.js";
 import { ThreadTimeline } from "./components/ThreadTimeline.js";
@@ -117,8 +116,6 @@ export default function App() {
   const [selectedRepoUrl, setSelectedRepoUrl] = useState<string | null>(null);
   const [creatingRepo, setCreatingRepo] = useState(false);
   const [githubStatus, setGithubStatus] = useState<{ authenticated: boolean; username?: string; avatarUrl?: string }>({ authenticated: false });
-  const [showGitHubAuth, setShowGitHubAuth] = useState(false);
-  const [confirmingGitHubLogout, setConfirmingGitHubLogout] = useState(false);
   const [currentSessionUsage, setCurrentSessionUsage] = useState<SessionUsage | null>(null);
   const [allUsageStats, setAllUsageStats] = useState<UsageStats | null>(null);
   const [showUsageModal, setShowUsageModal] = useState(false);
@@ -126,7 +123,7 @@ export default function App() {
   const [contextTokens, setContextTokens] = useState(0);
   const [turnTokens, setTurnTokens] = useState<TurnTokenData[]>([]);
   const [fileChangeCount, setFileChangeCount] = useState(0);
-  const [systemPromptOpen, setSystemPromptOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [hasSystemPrompt, setHasSystemPrompt] = useState(false);
   const [systemPromptContent, setSystemPromptContent] = useState("");
   const [gitIdentityNeeded, setGitIdentityNeeded] = useState(false);
@@ -760,7 +757,6 @@ export default function App() {
         username: data.username,
         avatarUrl: data.avatarUrl,
       });
-      setShowGitHubAuth(false);
     }
 
     if (data.type === "github_push_result" || data.type === "github_pull_result") {
@@ -877,7 +873,7 @@ export default function App() {
     if (data.type === "system_prompt_saved") {
       setSystemPromptContent(data.content);
       setHasSystemPrompt(data.content.length > 0);
-      setSystemPromptOpen(false);
+      setSettingsOpen(false);
     }
 
     if (data.type === "thread_list") {
@@ -1369,12 +1365,12 @@ export default function App() {
     setShowUsageModal(true);
   }, [send]);
 
-  const handleSystemPromptOpen = useCallback(() => {
+  const handleSettingsOpen = useCallback(() => {
     send({ type: "get_system_prompt" });
-    setSystemPromptOpen(true);
+    setSettingsOpen(true);
   }, [send]);
 
-  const handleSystemPromptSave = useCallback(
+  const handleInstructionsSave = useCallback(
     (content: string) => {
       send({ type: "set_system_prompt", content });
     },
@@ -1819,18 +1815,15 @@ export default function App() {
       {gitIdentityNeeded && (
         <GitIdentityOverlay onSubmit={handleGitIdentitySubmit} />
       )}
-      {showGitHubAuth && (
-        <GitHubAuthOverlay
-          onSubmit={handleGitHubTokenSubmit}
-          onClose={() => setShowGitHubAuth(false)}
-        />
-      )}
       {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
-      {systemPromptOpen && (
-        <SystemPromptEditor
+      {settingsOpen && (
+        <ProjectSettings
           initialContent={systemPromptContent}
-          onSave={handleSystemPromptSave}
-          onClose={() => setSystemPromptOpen(false)}
+          onSaveInstructions={handleInstructionsSave}
+          githubStatus={githubStatus}
+          onGitHubTokenSubmit={handleGitHubTokenSubmit}
+          onGitHubLogout={handleGitHubLogout}
+          onClose={() => setSettingsOpen(false)}
         />
       )}
       {showDeployModal && (
@@ -1885,45 +1878,6 @@ export default function App() {
           </h1>
         </div>
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-          {githubStatus.authenticated ? (
-            <div className="hidden sm:flex items-center gap-1.5">
-              <span
-                className="inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300"
-                title={`Connected as ${githubStatus.username}`}
-              >
-                <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
-                {githubStatus.username ?? "GitHub"}
-              </span>
-              <button
-                onClick={() => {
-                  if (confirmingGitHubLogout) {
-                    handleGitHubLogout();
-                    setConfirmingGitHubLogout(false);
-                  } else {
-                    setConfirmingGitHubLogout(true);
-                  }
-                }}
-                onBlur={() => setConfirmingGitHubLogout(false)}
-                className={`text-xs px-1.5 py-0.5 rounded-full transition-colors ${
-                  confirmingGitHubLogout
-                    ? "bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300"
-                    : "bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-700 dark:hover:text-gray-300"
-                }`}
-                title="Disconnect from GitHub"
-              >
-                {confirmingGitHubLogout ? "Disconnect?" : "\u00d7"}
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={() => setShowGitHubAuth(true)}
-              className="hidden sm:inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
-              title="Connect to GitHub"
-            >
-              <span className="w-1.5 h-1.5 rounded-full bg-gray-400 dark:bg-gray-600" />
-              GitHub
-            </button>
-          )}
           {githubStatus.authenticated && (
             <button
               onClick={handlePROpen}
@@ -1949,14 +1903,14 @@ export default function App() {
             Deploy
           </button>
           <button
-            onClick={handleSystemPromptOpen}
+            onClick={handleSettingsOpen}
             className={`hidden sm:inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${
-              hasSystemPrompt
-                ? "text-blue-400 hover:text-blue-300 hover:bg-gray-800"
-                : "text-gray-500 hover:text-gray-300 hover:bg-gray-800"
+              hasSystemPrompt || githubStatus.authenticated
+                ? "text-blue-400 hover:text-blue-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+                : "text-gray-500 hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
             }`}
-            title="Project instructions"
-            aria-label="Project instructions"
+            title="Project settings"
+            aria-label="Project settings"
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
