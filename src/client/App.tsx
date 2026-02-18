@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useParams, useNavigate } from "react-router-dom";
 import { useWebSocket } from "./hooks/useWebSocket.js";
 import { useResizablePanel } from "./hooks/useResizablePanel.js";
 import { useSearch } from "./hooks/useSearch.js";
@@ -42,7 +43,6 @@ import type { WsServerMessage, WsSessionRenamed, WsUsageUpdate, WsModelInfo, Cla
 
 type RightTab = "preview" | "docs" | "files" | "terminal" | "features";
 
-const SESSION_STORAGE_KEY = "vibe-current-session";
 const PERMISSION_MODE_KEY = "vibe-permission-mode";
 const SIDEBAR_COLLAPSED_KEY = "vibe-sidebar-collapsed";
 
@@ -52,25 +52,6 @@ function getWsUrl(): string {
   return `${proto}//${host}/ws`;
 }
 
-function getSavedSessionId(): string | undefined {
-  try {
-    return localStorage.getItem(SESSION_STORAGE_KEY) ?? undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function saveSessionId(id: string | undefined): void {
-  try {
-    if (id) {
-      localStorage.setItem(SESSION_STORAGE_KEY, id);
-    } else {
-      localStorage.removeItem(SESSION_STORAGE_KEY);
-    }
-  } catch {
-    // localStorage may be unavailable
-  }
-}
 
 function getSavedPermissionMode(): PermissionMode {
   try {
@@ -107,6 +88,8 @@ function saveSidebarCollapsed(collapsed: boolean): void {
 }
 
 export default function App() {
+  const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
+  const navigate = useNavigate();
   const { send, lastMessage, status, reconnectAttempt, reconnect } = useWebSocket(getWsUrl());
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -132,7 +115,7 @@ export default function App() {
   const terminalRef = useRef<InteractiveTerminalHandle>(null);
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
   const [applyingTemplate, setApplyingTemplate] = useState(false);
-  const [showTemplates, setShowTemplates] = useState(!getSavedSessionId());
+  const [showTemplates, setShowTemplates] = useState(!urlSessionId);
   const [githubStatus, setGithubStatus] = useState<{ authenticated: boolean; username?: string; avatarUrl?: string }>({ authenticated: false });
   const [showGitHubAuth, setShowGitHubAuth] = useState(false);
   const [showCreateRepo, setShowCreateRepo] = useState(false);
@@ -186,7 +169,7 @@ export default function App() {
   const [pendingFiles, setPendingFiles] = useState<FileContextRef[]>([]);
   const [toast, setToast] = useState<ToastData | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(getSavedSidebarCollapsed());
-  const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
+  const sessionIdRef = useRef<string | undefined>(urlSessionId);
   // Track whether we've already requested history for the current connection
   const historyLoadedRef = useRef(false);
 
@@ -314,10 +297,10 @@ export default function App() {
     }
   }, [status, isLoading]);
 
-  const handleSessionResume = useCallback(
+  // Internal session resume (no navigation) — used by popstate/URL changes
+  const resumeSessionInternal = useCallback(
     (sessionId: string) => {
       sessionIdRef.current = sessionId;
-      saveSessionId(sessionId);
       setMessages([]);
       setIsLoading(false);
       setShowTemplates(false);
@@ -343,6 +326,41 @@ export default function App() {
     },
     [send]
   );
+
+  // Public session resume — also navigates to update the URL
+  const handleSessionResume = useCallback(
+    (sessionId: string) => {
+      resumeSessionInternal(sessionId);
+      navigate(`/session/${sessionId}`);
+    },
+    [resumeSessionInternal, navigate]
+  );
+
+  // Sync session state when the URL changes (back/forward navigation)
+  useEffect(() => {
+    if (urlSessionId && urlSessionId !== sessionIdRef.current) {
+      resumeSessionInternal(urlSessionId);
+    } else if (!urlSessionId && sessionIdRef.current) {
+      // Navigated back to "/" — reset to new session state
+      sessionIdRef.current = undefined;
+      setMessages([]);
+      setIsLoading(false);
+      setShowTemplates(true);
+      setViewingFile(null);
+      setViewingFileContent(null);
+      setViewingFileBinary(false);
+      setGitCommits([]);
+      setFileTree([]);
+      setCurrentSessionUsage(null);
+      setModelInfo(null);
+      setContextTokens(0);
+      setTurnTokens([]);
+      setThreads([]);
+      setActiveThreadId("");
+      setShellStarted(false);
+      setTerminalMode("logs");
+    }
+  }, [urlSessionId, resumeSessionInternal]);
 
   // Process incoming WebSocket messages
   useEffect(() => {
@@ -559,7 +577,7 @@ export default function App() {
 
     if (data.type === "session_started") {
       sessionIdRef.current = data.session.id;
-      saveSessionId(data.session.id);
+      navigate(`/session/${data.session.id}`, { replace: true });
       setSessions((prev) => {
         const exists = prev.some((s) => s.id === data.session.id);
         if (exists) {
@@ -900,7 +918,7 @@ export default function App() {
     if (data.type === "terminal_exit") {
       setShellStarted(false);
     }
-  }, [lastMessage, send, rightTab, viewingFile, notify, handleSessionResume]);
+  }, [lastMessage, send, rightTab, viewingFile, notify, handleSessionResume, navigate]);
 
   // Forward preview errors to the server for terminal log relay
   useEffect(() => {
@@ -1104,7 +1122,6 @@ export default function App() {
 
   const handleSessionNew = useCallback(() => {
     sessionIdRef.current = undefined;
-    saveSessionId(undefined);
     setMessages([]);
     setIsLoading(false);
     setCurrentSessionUsage(null);
@@ -1122,12 +1139,13 @@ export default function App() {
     setActiveThreadId("");
     setShellStarted(false);
     setTerminalMode("logs");
+    navigate("/");
     send({ type: "new_session" });
     // Request templates for the picker
     if (templates.length === 0) {
       send({ type: "list_templates" });
     }
-  }, [send, templates.length]);
+  }, [send, templates.length, navigate]);
 
   const handleTemplateSelect = useCallback(
     (templateId: string) => {
@@ -1358,7 +1376,6 @@ export default function App() {
     (feature: FeatureInfo) => {
       // Create a new session
       sessionIdRef.current = undefined;
-      saveSessionId(undefined);
       setMessages([]);
       setIsLoading(false);
       setCurrentSessionUsage(null);
