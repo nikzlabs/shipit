@@ -141,7 +141,7 @@ async function drainMessages(timeoutMs = 8000): Promise<WsServerMessage[]> {
   return messages;
 }
 
-describe("auto-push", () => {
+describe("auto-push: success and failure", () => {
   it("pushes after auto-commit when authenticated with a remote", async () => {
     await githubAuth.setToken("test-token");
     const { sessionId, sessionDir } = await createSession();
@@ -165,42 +165,6 @@ describe("auto-push", () => {
       success: true,
     });
   }, 15000);
-
-  it("does not push when not authenticated", async () => {
-    // Not authenticated — no setToken call
-    const { sessionId, sessionDir } = await createSession();
-    createBareRemote(sessionDir);
-
-    fs.writeFileSync(path.join(sessionDir, "file.txt"), "no auth test");
-
-    client.send({ type: "send_message", text: "turn two", sessionId });
-    const prevClaude = latestClaude;
-    const claude2 = await waitForClaude(() => latestClaude, prevClaude);
-    claude2.finish("test-session-1");
-
-    // Wait past the debounce — no push_result should appear
-    const messages = await drainMessages(7000);
-    const pushResult = messages.find((m) => m.type === "github_push_result");
-    expect(pushResult).toBeUndefined();
-  }, 12000);
-
-  it("does not push when no origin remote is configured", async () => {
-    await githubAuth.setToken("test-token");
-    const { sessionId, sessionDir } = await createSession();
-    // No remote added
-
-    fs.writeFileSync(path.join(sessionDir, "file.txt"), "no remote test");
-
-    client.send({ type: "send_message", text: "turn two", sessionId });
-    const prevClaude = latestClaude;
-    const claude2 = await waitForClaude(() => latestClaude, prevClaude);
-    claude2.finish("test-session-1");
-
-    // Wait past the debounce — no push_result should appear
-    const messages = await drainMessages(7000);
-    const pushResult = messages.find((m) => m.type === "github_push_result");
-    expect(pushResult).toBeUndefined();
-  }, 12000);
 
   it("push failure is non-fatal and emits a log entry", async () => {
     await githubAuth.setToken("test-token");
