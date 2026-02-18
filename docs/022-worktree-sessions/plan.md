@@ -1,3 +1,6 @@
+---
+status: done
+---
 # 022 — Git Worktree Parallel Sessions
 
 ## Summary

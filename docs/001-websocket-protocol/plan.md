@@ -1,3 +1,6 @@
+---
+status: done
+---
 # WebSocket Protocol
 
 All client-server communication uses JSON over a single WebSocket connection at `/ws`. Types are defined in `src/server/types.ts`.

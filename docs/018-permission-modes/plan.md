@@ -1,3 +1,6 @@
+---
+status: done
+---
 # 018 — Permission Modes
 
 ## Summary

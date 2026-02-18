@@ -1,3 +1,6 @@
+---
+status: done
+---
 # 026 — Interactive Terminal
 
 ## Summary

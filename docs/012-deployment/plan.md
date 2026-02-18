@@ -1,3 +1,6 @@
+---
+status: done
+---
 # Deployment Integration
 
 Users can deploy to Vercel or Cloudflare Pages from the UI. Pluggable `DeployTarget` interface supports adding new platforms.

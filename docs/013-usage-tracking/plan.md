@@ -1,3 +1,6 @@
+---
+status: done
+---
 # Usage & Cost Tracking
 
 Tracks per-turn API costs and duration from Claude CLI `result` events.

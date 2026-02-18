@@ -1,3 +1,6 @@
+---
+status: in-progress
+---
 # 030 — GitHub Device Authorization Flow
 
 ## Summary

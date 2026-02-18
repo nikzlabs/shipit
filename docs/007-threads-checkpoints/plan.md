@@ -1,3 +1,6 @@
+---
+status: done
+---
 # Conversation Threads & Checkpoints
 
 Users can create checkpoints (snapshots of conversation + git state) and fork from them to explore alternative approaches.

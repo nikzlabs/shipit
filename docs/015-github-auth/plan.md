@@ -1,3 +1,6 @@
+---
+status: done
+---
 # GitHub Authentication
 
 Status: **Implemented** — token-based auth (PAT), git credential configuration, push/pull, remote management, repo creation, and status UI are all complete. Device authorization flow split out to doc 030.
