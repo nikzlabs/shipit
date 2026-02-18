@@ -2006,7 +2006,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           }
 
           // 6. Fire non-blocking Claude call to generate session name + branch slug
-          generateSessionName(text).then(async (nameResult) => {
+          generateSessionName(text, sessionDir).then(async (nameResult) => {
             if (!nameResult) return;
             try {
               const newBranchName = `${branchPrefix}-${nameResult.slug}`;
