@@ -75,6 +75,8 @@ export interface SessionInfo {
   lastUsedAt: string;
   /** Per-session workspace directory, e.g. "/workspace/sessions/abc123". */
   workspaceDir?: string;
+  /** Cached origin remote URL (e.g. "https://github.com/owner/repo.git"). */
+  remoteUrl?: string;
 }
 
 // ---- Feature types ----

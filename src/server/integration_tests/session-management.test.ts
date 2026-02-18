@@ -155,3 +155,136 @@ describe("Integration: Session management", () => {
     client.close();
   });
 });
+
+describe("Integration: list_sessions remoteUrl caching", () => {
+  let app: FastifyInstance;
+  let port: number;
+  let tmpDir: string;
+  let sessionManager: SessionManager;
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-session-remote-"));
+
+    const sessionsFile = path.join(tmpDir, "sessions.json");
+    sessionManager = new SessionManager(sessionsFile);
+
+    app = await buildApp({
+      createGitManager: (dir: string) => new GitManager(dir),
+      sessionManager,
+      viteManager: new StubViteManager() as unknown as ViteManager,
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
+      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
+      workspaceDir: tmpDir,
+      serveStatic: false,
+      startVite: false,
+      portScanIntervalMs: 0,
+    });
+
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+    const match = address.match(/:(\d+)$/);
+    port = match ? Number(match[1]) : 0;
+  });
+
+  afterEach(async () => {
+    await app.close();
+    await new Promise((r) => setTimeout(r, 50));
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch {
+      // Ignore cleanup errors
+    }
+  });
+
+  it("list_sessions returns cached remoteUrl from session metadata", async () => {
+    sessionManager.track("sess-remote", "My repo", path.join(tmpDir, "sess-remote"));
+    sessionManager.setRemoteUrl("sess-remote", "https://github.com/owner/repo.git");
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "list_sessions" });
+    const msg = await client.receive();
+
+    expect(msg.type).toBe("session_list");
+    const sessions = (msg as any).sessions as Array<{ id: string; remoteUrl?: string }>;
+    const session = sessions.find((s) => s.id === "sess-remote");
+    expect(session?.remoteUrl).toBe("https://github.com/owner/repo.git");
+
+    client.close();
+  });
+
+  it("list_sessions lazy-populates remoteUrl from git config", async () => {
+    // Create a real git repo with an origin remote
+    const sessionDir = path.join(tmpDir, "sess-git");
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const git = new GitManager(sessionDir);
+    await git.init();
+    await git.addRemote("origin", "https://github.com/lazy/populated.git");
+
+    sessionManager.track("sess-git", "Lazy session", sessionDir);
+    // No remoteUrl cached yet
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "list_sessions" });
+    const msg = await client.receive();
+
+    expect(msg.type).toBe("session_list");
+    const sessions = (msg as any).sessions as Array<{ id: string; remoteUrl?: string }>;
+    const session = sessions.find((s) => s.id === "sess-git");
+    expect(session?.remoteUrl).toBe("https://github.com/lazy/populated.git");
+
+    // Should also be persisted in the manager
+    expect(sessionManager.get("sess-git")?.remoteUrl).toBe("https://github.com/lazy/populated.git");
+
+    client.close();
+  });
+
+  it("list_sessions handles sessions with missing workspace dirs gracefully", async () => {
+    sessionManager.track("sess-missing", "Gone session", path.join(tmpDir, "does-not-exist"));
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "list_sessions" });
+    const msg = await client.receive();
+
+    expect(msg.type).toBe("session_list");
+    const sessions = (msg as any).sessions as Array<{ id: string; remoteUrl?: string }>;
+    const session = sessions.find((s) => s.id === "sess-missing");
+    // Should not crash and remoteUrl stays undefined
+    expect(session?.remoteUrl).toBeUndefined();
+
+    client.close();
+  });
+
+  it("github_set_remote caches remoteUrl in session metadata", async () => {
+    // Create a real git session and activate it
+    const sessionDir = path.join(tmpDir, "sess-set-remote");
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const git = new GitManager(sessionDir);
+    await git.init();
+
+    sessionManager.track("sess-set-remote", "Set remote session", sessionDir);
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Activate the session
+    client.send({ type: "get_chat_history", sessionId: "sess-set-remote" });
+    await client.receive(); // chat_history
+
+    // Set the remote
+    client.send({ type: "github_set_remote", name: "origin", url: "https://github.com/cached/url.git" });
+    const msg = await client.receive();
+
+    expect(msg.type).toBe("github_remotes");
+
+    // Verify the remoteUrl is cached
+    expect(sessionManager.get("sess-set-remote")?.remoteUrl).toBe("https://github.com/cached/url.git");
+
+    client.close();
+  });
+});

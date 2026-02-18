@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 ---
 
 # 033 — Session Sidebar with Remote Grouping
