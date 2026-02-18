@@ -13,7 +13,6 @@ import { usePreviewErrors, type PreviewError } from "./hooks/usePreviewErrors.js
 import { GitHistory, type GitCommit } from "./components/GitHistory.js";
 import { AuthOverlay } from "./components/AuthOverlay.js";
 import { GitHubAuthOverlay } from "./components/GitHubAuthOverlay.js";
-import { GitHubCreateRepoOverlay } from "./components/GitHubCreateRepoOverlay.js";
 import { SessionSidebar } from "./components/SessionSidebar.js";
 import { DocsViewer } from "./components/DocsViewer.js";
 import { FileTree, type FileTreeNode } from "./components/FileTree.js";
@@ -37,7 +36,6 @@ import { ThreadTimeline } from "./components/ThreadTimeline.js";
 import { DeployModal, type DeployPhase } from "./components/DeployModal.js";
 import { FeaturesPanel } from "./components/FeaturesPanel.js";
 import { PullRequestModal } from "./components/PullRequestModal.js";
-import { ImportRepoOverlay } from "./components/ImportRepoOverlay.js";
 import { PrStatusBar } from "./components/PrStatusBar.js";
 import { Toast, type ToastData } from "./components/Toast.js";
 import type { WsServerMessage, WsSessionRenamed, WsUsageUpdate, WsModelInfo, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, FeatureInfo, PermissionMode, FileContextRef, SessionInfo, AgentEvent, AgentContentBlock } from "../server/types.js";
@@ -120,7 +118,6 @@ export default function App() {
   const [creatingRepo, setCreatingRepo] = useState(false);
   const [githubStatus, setGithubStatus] = useState<{ authenticated: boolean; username?: string; avatarUrl?: string }>({ authenticated: false });
   const [showGitHubAuth, setShowGitHubAuth] = useState(false);
-  const [showCreateRepo, setShowCreateRepo] = useState(false);
   const [confirmingGitHubLogout, setConfirmingGitHubLogout] = useState(false);
   const [currentSessionUsage, setCurrentSessionUsage] = useState<SessionUsage | null>(null);
   const [allUsageStats, setAllUsageStats] = useState<UsageStats | null>(null);
@@ -151,10 +148,7 @@ export default function App() {
   const prDescGeneratingRef = useRef(false);
   const [prDescError, setPrDescError] = useState<string | null>(null);
   const [prGeneratedDesc, setPrGeneratedDesc] = useState<string | null>(null);
-  const [showImportOverlay, setShowImportOverlay] = useState(false);
   const [importSearchResults, setImportSearchResults] = useState<Array<{ fullName: string; description: string | null; private: boolean; defaultBranch: string; cloneUrl: string }>>([]);
-  const [importProgress, setImportProgress] = useState<{ stage: "cloning" | "installing" | "ready"; message: string } | null>(null);
-  const [importingRepo, setImportingRepo] = useState(false);
   const [prStatus, setPrStatus] = useState<{
     url: string;
     number: number;
@@ -799,20 +793,6 @@ export default function App() {
       }
     }
 
-    if (data.type === "github_repo_created") {
-      const msg = data.success
-        ? `Repository created: ${data.fullName}\n${data.url}`
-        : `Failed to create repository: ${data.message}`;
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant" as const,
-          text: msg,
-          streaming: false,
-          isError: !data.success,
-        },
-      ]);
-    }
 
     if (data.type === "github_pr_created") {
       setPrResult({
@@ -831,20 +811,6 @@ export default function App() {
       setImportSearchResults(data.repos);
     }
 
-    if (data.type === "github_import_progress") {
-      setImportProgress({ stage: data.stage, message: data.message });
-    }
-
-    if (data.type === "github_import_complete") {
-      setImportingRepo(false);
-      if (data.success && data.sessionId) {
-        setShowImportOverlay(false);
-        setImportProgress(null);
-        setImportSearchResults([]);
-        // Switch to the new session
-        handleSessionResume(data.sessionId);
-      }
-    }
 
     if (data.type === "pr_status") {
       setPrStatus(data.pr);
@@ -1339,13 +1305,6 @@ export default function App() {
     send({ type: "github_logout" });
   }, [send]);
 
-  const handleCreateRepo = useCallback(
-    (name: string, description: string, isPrivate: boolean) => {
-      send({ type: "github_create_repo", name, description, isPrivate });
-      setShowCreateRepo(false);
-    },
-    [send],
-  );
 
   const handleHomeCreateRepo = useCallback(
     (name: string, description: string, isPrivate: boolean, templateId: string) => {
@@ -1541,21 +1500,6 @@ export default function App() {
     [send],
   );
 
-  const handleImportRepo = useCallback(
-    (url: string, branch?: string) => {
-      setImportingRepo(true);
-      setImportProgress(null);
-      send({ type: "github_import_repo", url, branch });
-    },
-    [send],
-  );
-
-  const handleImportOpen = useCallback(() => {
-    setImportSearchResults([]);
-    setImportProgress(null);
-    setImportingRepo(false);
-    setShowImportOverlay(true);
-  }, []);
 
   const handleMergePr = useCallback(
     (method: "merge" | "squash" | "rebase") => {
@@ -1881,13 +1825,6 @@ export default function App() {
           onClose={() => setShowGitHubAuth(false)}
         />
       )}
-      {showCreateRepo && githubStatus.username && (
-        <GitHubCreateRepoOverlay
-          username={githubStatus.username}
-          onSubmit={handleCreateRepo}
-          onClose={() => setShowCreateRepo(false)}
-        />
-      )}
       {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
       {systemPromptOpen && (
         <SystemPromptEditor
@@ -1927,16 +1864,6 @@ export default function App() {
           generatedDescription={prGeneratedDesc}
         />
       )}
-      {showImportOverlay && (
-        <ImportRepoOverlay
-          onSearch={handleImportSearch}
-          onImport={handleImportRepo}
-          onClose={() => setShowImportOverlay(false)}
-          searchResults={importSearchResults}
-          progress={importProgress}
-          importing={importingRepo}
-        />
-      )}
       {showUsageModal && (
         <UsageModal
           currentSessionUsage={currentSessionUsage}
@@ -1967,20 +1894,6 @@ export default function App() {
                 <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
                 {githubStatus.username ?? "GitHub"}
               </span>
-              <button
-                onClick={() => setShowCreateRepo(true)}
-                className="text-xs px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
-                title="Create new GitHub repository"
-              >
-                + Repo
-              </button>
-              <button
-                onClick={handleImportOpen}
-                className="text-xs px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
-                title="Import from GitHub"
-              >
-                Import
-              </button>
               <button
                 onClick={() => {
                   if (confirmingGitHubLogout) {

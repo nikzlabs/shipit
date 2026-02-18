@@ -1675,45 +1675,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         send({ type: "github_status", ...githubAuthManager.getStatus() });
       }
 
-      if (msg.type === "github_create_repo") {
-        if (!githubAuthManager.authenticated) {
-          send({ type: "error", message: "Not authenticated with GitHub" });
-        } else {
-          const repoName = typeof msg.name === "string" ? msg.name.trim() : "";
-          if (!repoName) {
-            send({ type: "error", message: "Repository name is required" });
-          } else if (!/^[a-zA-Z0-9._-]+$/.test(repoName)) {
-            send({ type: "error", message: "Repository name contains invalid characters" });
-          } else {
-            const result = await githubAuthManager.createRepo(repoName, {
-              description: msg.description,
-              isPrivate: msg.isPrivate,
-            });
-            if (result.success && result.cloneUrl) {
-              // Auto-configure the remote so the user can push immediately
-              try {
-                const git = getActiveGitManager();
-                await git.addRemote("origin", result.cloneUrl);
-                if (activeAppSessionId) {
-                  sessionManager.setRemoteUrl(activeAppSessionId, result.cloneUrl);
-                }
-              } catch {
-                // Remote may already exist — that's fine
-              }
-            }
-            send({
-              type: "github_repo_created",
-              success: result.success,
-              name: result.name,
-              fullName: result.fullName,
-              url: result.url,
-              cloneUrl: result.cloneUrl,
-              message: result.message,
-            });
-          }
-        }
-      }
-
       if (msg.type === "github_create_pr") {
         if (!githubAuthManager.authenticated) {
           send({ type: "error", message: "Not authenticated with GitHub" });
@@ -1773,80 +1734,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           });
         } catch (err) {
           send({ type: "error", message: `Failed to create PR: ${getErrorMessage(err)}` });
-        }
-      }
-
-      if (msg.type === "github_import_repo") {
-        if (!githubAuthManager.authenticated) {
-          send({ type: "error", message: "Not authenticated with GitHub" });
-          return;
-        }
-
-        let url = typeof msg.url === "string" ? msg.url.trim() : "";
-        if (!url) {
-          send({ type: "error", message: "Repository URL is required" });
-          return;
-        }
-
-        // Support "owner/repo" shorthand → full HTTPS URL
-        if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(url)) {
-          url = `https://github.com/${url}.git`;
-        }
-
-        // Validate URL format
-        if (!url.startsWith("https://") && !url.startsWith("git@")) {
-          send({ type: "error", message: "Invalid repository URL" });
-          return;
-        }
-
-        try {
-          // 1. Create a new session
-          send({ type: "github_import_progress", stage: "cloning", message: "Creating session..." });
-          const importSessionId = crypto.randomUUID();
-          const importSessionDir = path.join(sessionsRoot, importSessionId);
-          await fs.mkdir(importSessionDir, { recursive: true });
-
-          // 2. Clone the repo (use authenticated URL so private repos work)
-          send({ type: "github_import_progress", stage: "cloning", message: "Cloning repository..." });
-          const git = createGitManager(importSessionDir);
-          const cloneUrl = githubAuthManager.getAuthenticatedCloneUrl(url);
-          await git.clone(cloneUrl, msg.branch || undefined);
-
-          // 3. Configure credentials and identity for future push/pull
-          if (githubAuthManager.authenticated) {
-            githubAuthManager.configureGitCredentials(importSessionDir);
-          }
-          const storedIdentity = gitIdentityStore.get();
-          if (storedIdentity) {
-            await git.setIdentity(storedIdentity.name, storedIdentity.email);
-          }
-
-          // 4. Register session
-          const repoName = url.split("/").pop()?.replace(".git", "") ?? "imported-repo";
-          sessionManager.track(importSessionId, repoName, importSessionDir);
-          sessionManager.setRemoteUrl(importSessionId, url);
-          threadManager.init(importSessionId);
-
-          // 5. Detect and install dependencies
-          const pkgJsonPath = path.join(importSessionDir, "package.json");
-          const hasPkg = await fs.access(pkgJsonPath).then(() => true).catch(() => false);
-          if (hasPkg) {
-            send({ type: "github_import_progress", stage: "installing", message: "Installing dependencies..." });
-          }
-
-          send({ type: "github_import_progress", stage: "ready", message: "Import complete" });
-          send({
-            type: "github_import_complete",
-            success: true,
-            sessionId: importSessionId,
-            message: `Imported ${repoName} successfully`,
-          });
-        } catch (err) {
-          send({
-            type: "github_import_complete",
-            success: false,
-            message: `Import failed: ${getErrorMessage(err)}`,
-          });
         }
       }
 
