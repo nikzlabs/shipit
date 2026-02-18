@@ -31,6 +31,7 @@ import { GitIdentityOverlay } from "./components/GitIdentityOverlay.js";
 import { ThreadIndicator, type ThreadInfo } from "./components/ThreadIndicator.js";
 import { ThreadTimeline } from "./components/ThreadTimeline.js";
 import { DeployModal, type DeployPhase } from "./components/DeployModal.js";
+import { PullRequestModal } from "./components/PullRequestModal.js";
 import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal";
@@ -108,6 +109,10 @@ export default function App() {
   const [lastDeployUrl, setLastDeployUrl] = useState<string | null>(null);
   const [lastDeployError, setLastDeployError] = useState<string | null>(null);
   const [deployHistory, setDeployHistory] = useState<DeploymentRecord[]>([]);
+  const [showPRModal, setShowPRModal] = useState(false);
+  const [prCurrentBranch, setPrCurrentBranch] = useState("");
+  const [prRemoteBranches, setPrRemoteBranches] = useState<string[]>([]);
+  const [prResult, setPrResult] = useState<{ success: boolean; url?: string; number?: number; message?: string } | null>(null);
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
   const historyLoadedRef = useRef(false);
@@ -539,6 +544,20 @@ export default function App() {
           isError: !data.success,
         },
       ]);
+    }
+
+    if (data.type === "github_pr_created") {
+      setPrResult({
+        success: data.success,
+        url: data.url,
+        number: data.number,
+        message: data.message,
+      });
+    }
+
+    if (data.type === "github_branches") {
+      setPrCurrentBranch(data.current);
+      setPrRemoteBranches(data.remote);
     }
 
     if (data.type === "usage_update") {
@@ -986,6 +1005,24 @@ export default function App() {
     [send],
   );
 
+  const handlePROpen = useCallback(() => {
+    setPrResult(null);
+    setPrCurrentBranch("");
+    setPrRemoteBranches([]);
+    setShowPRModal(true);
+  }, []);
+
+  const handlePRSubmit = useCallback(
+    (data: { title: string; body: string; base: string; draft: boolean }) => {
+      send({ type: "github_create_pr", title: data.title, body: data.body, base: data.base, draft: data.draft });
+    },
+    [send],
+  );
+
+  const handlePRRequestBranches = useCallback(() => {
+    send({ type: "github_list_branches" });
+  }, [send]);
+
   const handleUsageBadgeClick = useCallback(() => {
     send({ type: "get_usage_stats" });
     setShowUsageModal(true);
@@ -1333,6 +1370,16 @@ export default function App() {
           onClose={() => setShowDeployModal(false)}
         />
       )}
+      {showPRModal && (
+        <PullRequestModal
+          currentBranch={prCurrentBranch}
+          remoteBranches={prRemoteBranches}
+          onSubmit={handlePRSubmit}
+          onRequestBranches={handlePRRequestBranches}
+          onClose={() => setShowPRModal(false)}
+          result={prResult}
+        />
+      )}
       {showUsageModal && (
         <UsageModal
           currentSessionUsage={currentSessionUsage}
@@ -1404,6 +1451,19 @@ export default function App() {
             >
               <span className="w-1.5 h-1.5 rounded-full bg-gray-400 dark:bg-gray-600" />
               GitHub
+            </button>
+          )}
+          {githubStatus.authenticated && (
+            <button
+              onClick={handlePROpen}
+              className="hidden sm:inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800 transition-colors font-medium"
+              title="Create pull request"
+              aria-label="Create PR"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+              </svg>
+              PR
             </button>
           )}
           <button
