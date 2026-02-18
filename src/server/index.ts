@@ -1294,7 +1294,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           return;
         }
         // Validate git branch name: no spaces, no '..' or '~', no control chars
-        if (/[\s~^:?*\[\\]/.test(branchName) || branchName.includes("..")) {
+        if (/[\s~^:?*[\\]/.test(branchName) || branchName.includes("..")) {
           send({ type: "error", message: "Invalid branch name" });
           return;
         }
