@@ -6,7 +6,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { ClaudeProcess } from "./claude.js";
 import { ViteManager } from "./vite-manager.js";
-import { GitManager } from "./git.js";
+import { GitManager, generateBranchPrefix } from "./git.js";
 import { AuthManager } from "./auth.js";
 import { GitHubAuthManager } from "./github-auth.js";
 import { SessionManager } from "./sessions.js";
@@ -24,6 +24,7 @@ import { DeploymentStore } from "./deployment-store.js";
 import { VercelTarget } from "./deploy-targets/vercel.js";
 import { CloudflareTarget } from "./deploy-targets/cloudflare.js";
 import { TerminalProcess } from "./terminal.js";
+import { generateSessionName } from "./session-namer.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeResultEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment, FileAttachment, FileContextRef, PermissionMode } from "./types.js";
 
 function getErrorMessage(err: unknown): string {
@@ -544,14 +545,19 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
    * Create a new isolated session directory with its own git repo.
    * Returns the app-generated session ID and workspace directory path.
    */
-  const createSessionDir = async (title: string): Promise<{ appSessionId: string; sessionDir: string }> => {
+  const createSessionDir = async (
+    title: string,
+    opts?: { skipGitInit?: boolean },
+  ): Promise<{ appSessionId: string; sessionDir: string }> => {
     const appSessionId = crypto.randomUUID();
     const sessionDir = path.join(sessionsRoot, appSessionId);
     await fs.mkdir(sessionDir, { recursive: true });
 
-    // Initialize a fresh git repo for this session
-    const git = createGitManager(sessionDir);
-    await git.init();
+    if (!opts?.skipGitInit) {
+      // Initialize a fresh git repo for this session
+      const git = createGitManager(sessionDir);
+      await git.init();
+    }
 
     // Configure GitHub credentials in the new repo if available
     if (githubAuthManager.authenticated) {
@@ -684,6 +690,262 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       }
     };
 
+    /**
+     * Core Claude execution logic. Shared between send_message and
+     * home_send_with_repo handlers. Session state (activeAppSessionId,
+     * activeSessionDir) must already be set before calling this.
+     */
+    const runClaudeWithMessage = async (opts: {
+      userText: string;
+      images?: ImageAttachment[];
+      validatedFiles: FileAttachment[];
+      agentSessionId?: string;
+      permissionMode?: PermissionMode;
+      isNewSession: boolean;
+    }): Promise<void> => {
+      const { userText, images, validatedFiles, permissionMode, isNewSession } = opts;
+      let { agentSessionId } = opts;
+
+      turnSummary = "";
+      accumulatedText = "";
+      accumulatedToolUse = [];
+      let receivedResult = false;
+      claude = claudeFactory();
+      const currentClaude = claude;
+
+      // Relay CLI log lines (PTY merges stdout+stderr) to the terminal panel
+      currentClaude.on("log", (source: "stderr" | "stdout" | "server", text: string) => {
+        broadcastLog(source as "stderr" | "stdout" | "server", text);
+      });
+
+      // Build images metadata for chat history persistence (inline base64)
+      const historyImages = images?.map((img) => ({
+        data: img.data,
+        mediaType: img.mediaType,
+      }));
+
+      // Build file metadata for chat history persistence (path + preview only)
+      const historyFiles = validatedFiles.length > 0
+        ? validatedFiles.map((f) => ({
+            path: f.path,
+            contentPreview: f.content.slice(0, 200),
+            startLine: f.startLine,
+            endLine: f.endLine,
+          }))
+        : undefined;
+
+      // Persist the user message once we know the session
+      const persistUserMessage = (sessionId: string) => {
+        chatHistoryManager.append(sessionId, {
+          role: "user",
+          text: userText,
+          images: historyImages,
+          files: historyFiles,
+        });
+      };
+
+      currentClaude.on("event", (event: ClaudeEvent) => {
+        send({ type: "claude_event", event });
+
+        // Log unrecognized event types for debugging
+        const knownTypes = ["system", "assistant", "user", "result"];
+        if (!knownTypes.includes(event.type)) {
+          console.warn("[claude] Unrecognized event type:", event.type);
+          broadcastLog("server", `Unknown Claude event type: ${event.type}`);
+        }
+
+        // Track agent session when we get the session_id from init event
+        if (event.type === "system" && event.subtype === "init" && event.session_id) {
+          if (activeAppSessionId) {
+            // Store the agent's conversation ID on the app session
+            sessionManager.setAgentSessionId(activeAppSessionId, event.session_id);
+            const session = sessionManager.get(activeAppSessionId);
+            if (session) {
+              send({ type: "session_started", session });
+            }
+            // Persist the user message for new sessions
+            if (isNewSession) {
+              persistUserMessage(activeAppSessionId);
+            }
+          } else {
+            // Legacy fallback: no app session created (shouldn't happen with isolation)
+            const title = userText.slice(0, 80) || "New session";
+            const session = sessionManager.track(event.session_id, title);
+            activeAppSessionId = event.session_id;
+            send({ type: "session_started", session });
+            persistUserMessage(event.session_id);
+          }
+
+          // Forward model info to the client
+          if (event.model) {
+            send({
+              type: "model_info",
+              model: event.model,
+              contextWindowTokens: getContextWindowSize(event.model),
+            });
+          }
+        }
+
+        // Collect assistant text and tool use blocks for commit message + persistence
+        if (event.type === "assistant") {
+          const text = (event.message?.content ?? [])
+            .filter((b: ClaudeContentBlock): b is ClaudeContentBlockText => b.type === "text")
+            .map((b) => b.text)
+            .join("");
+          if (text) {
+            turnSummary = text;
+            accumulatedText += text;
+          }
+
+          const toolBlocks = (event.message?.content ?? [])
+            .filter((b: ClaudeContentBlock): b is ClaudeContentBlockToolUse => b.type === "tool_use");
+          if (toolBlocks.length > 0) {
+            accumulatedToolUse.push(...toolBlocks);
+          }
+        }
+
+        // On result: persist the final assistant message, update session, record usage
+        if (event.type === "result") {
+          receivedResult = true;
+        }
+        if (event.type === "result" && event.session_id) {
+          const resultEvent = event as ClaudeResultEvent;
+          if (activeAppSessionId) {
+            sessionManager.setAgentSessionId(activeAppSessionId, event.session_id);
+            sessionManager.track(activeAppSessionId);
+          }
+
+          const usageSessionId = activeAppSessionId ?? event.session_id;
+          // Record cost/duration if present
+          if (resultEvent.total_cost_usd !== undefined) {
+            usageManager.record(
+              usageSessionId,
+              resultEvent.total_cost_usd,
+              resultEvent.duration_ms ?? 0,
+              resultEvent.input_tokens,
+              resultEvent.output_tokens,
+            );
+            const sessionUsage = usageManager.getSessionUsage(usageSessionId);
+            if (sessionUsage) {
+              const tokenTotals = usageManager.getSessionTokenTotals(usageSessionId);
+              send({
+                type: "usage_update",
+                sessionId: sessionUsage.sessionId,
+                totalCostUsd: sessionUsage.totalCostUsd,
+                totalDurationMs: sessionUsage.totalDurationMs,
+                turnCount: sessionUsage.turnCount,
+                lastTurnInputTokens: resultEvent.input_tokens,
+                lastTurnOutputTokens: resultEvent.output_tokens,
+                cumulativeInputTokens: tokenTotals?.cumulativeInputTokens,
+              });
+            }
+          }
+
+          // Persist the assistant response
+          if (accumulatedText || accumulatedToolUse.length > 0) {
+            chatHistoryManager.append(usageSessionId, {
+              role: "assistant",
+              text: accumulatedText,
+              toolUse: accumulatedToolUse.length > 0 ? accumulatedToolUse : undefined,
+            });
+          }
+        }
+      });
+
+      // For resumed sessions (sessionId already known), persist user message immediately
+      if (!isNewSession && activeAppSessionId) {
+        persistUserMessage(activeAppSessionId);
+      }
+
+      currentClaude.on("done", async (code: number | null) => {
+        console.log("[claude] process exited with code", code);
+        broadcastLog("server", `Claude process exited with code ${code}`);
+        claude = null;
+
+        // If the process exited without producing a result event, notify the
+        // client so it can clear the loading state instead of hanging forever.
+        if (!receivedResult) {
+          const reason = code !== 0
+            ? `Claude process exited with code ${code}`
+            : "Claude process ended without a response";
+          send({ type: "error", message: reason });
+        }
+
+        // Auto-commit after Claude turn using the session's git manager
+        try {
+          const git = getActiveGitManager();
+          const firstLine = turnSummary.split("\n")[0]?.slice(0, 120) || "Claude turn";
+          const hash = await git.autoCommit(firstLine);
+          if (hash) {
+            send({ type: "git_committed", hash, message: firstLine });
+            // Schedule auto-push (debounced)
+            scheduleAutoPush(git, send);
+          }
+        } catch (err) {
+          console.error("[git] auto-commit failed:", getErrorMessage(err));
+        }
+
+        // Restart Vite after Claude finishes in case new files were created
+        if (!viteManager.running) {
+          viteManager.start(getActiveDir());
+        }
+
+        // Scan for non-Vite dev servers that Claude may have started.
+        await runPortScan();
+      });
+
+      currentClaude.on("auth_required", () => {
+        console.log("[server] Claude CLI requires authentication, starting OAuth flow");
+        send({ type: "auth_required" });
+        authManager.startOAuthFlow();
+      });
+
+      currentClaude.on("error", (err: Error) => {
+        console.error("[claude] process error:", err.message);
+        broadcastLog("server", `Claude process error: ${err.message}`);
+        const errorMsg = `Claude process error: ${err.message}`;
+        send({ type: "error", message: errorMsg });
+        // Persist the error so it shows up in history
+        if (activeAppSessionId) {
+          chatHistoryManager.append(activeAppSessionId, {
+            role: "assistant",
+            text: `Error: ${err.message}`,
+            isError: true,
+          });
+        }
+        claude = null;
+      });
+
+      // Build the system prompt, incorporating conversation replay for forked threads
+      let systemPrompt = await readSystemPrompt();
+      if (activeAppSessionId) {
+        const activeThread = threadManager.getActiveThread(activeAppSessionId);
+        if (activeThread) {
+          const replay = threadManager.consumeConversationReplay(
+            activeAppSessionId,
+            activeThread.id,
+          );
+          if (replay) {
+            // On a forked thread with replay context, start a fresh session
+            // (no --resume) and inject the conversation history as system prompt.
+            agentSessionId = undefined;
+            systemPrompt = systemPrompt
+              ? `${systemPrompt}\n\n${replay}`
+              : replay;
+          }
+        }
+      }
+      // Prepend file context to the prompt if files are attached
+      let prompt = userText;
+      if (validatedFiles.length > 0) {
+        const context = formatFileContext(validatedFiles);
+        prompt = `${context}\n\n${prompt}`;
+      }
+
+      currentClaude.run(prompt, agentSessionId, systemPrompt, images, getActiveDir(), permissionMode);
+      broadcastLog("server", "Claude process started");
+    };
+
     socket.on("message", async (raw: Buffer) => {
       let msg: WsClientMessage;
       try {
@@ -736,18 +998,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           validatedFiles = result.files;
         }
 
-        turnSummary = "";
-        accumulatedText = "";
-        accumulatedToolUse = [];
-        let receivedResult = false;
         const userText = msg.text;
-        claude = claudeFactory();
-        const currentClaude = claude;
-
-        // Relay CLI log lines (PTY merges stdout+stderr) to the terminal panel
-        currentClaude.on("log", (source: "stderr" | "stdout" | "server", text: string) => {
-          broadcastLog(source as "stderr" | "stdout" | "server", text);
-        });
 
         // Determine session context: resume existing or create new
         let agentSessionId: string | undefined;
@@ -786,239 +1037,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           checkGitIdentity(sessionDir);
         }
 
-        // If the claude process was replaced or killed during async session setup, bail out
-        if (claude !== currentClaude) {
-          return;
-        }
-
-        // Build images metadata for chat history persistence (inline base64)
-        const historyImages = images?.map((img) => ({
-          data: img.data,
-          mediaType: img.mediaType,
-        }));
-
-        // Build file metadata for chat history persistence (path + preview only)
-        const historyFiles = validatedFiles.length > 0
-          ? validatedFiles.map((f) => ({
-              path: f.path,
-              contentPreview: f.content.slice(0, 200),
-              startLine: f.startLine,
-              endLine: f.endLine,
-            }))
-          : undefined;
-
-        // Persist the user message once we know the session
-        const persistUserMessage = (sessionId: string) => {
-          chatHistoryManager.append(sessionId, {
-            role: "user",
-            text: userText,
-            images: historyImages,
-            files: historyFiles,
-          });
-        };
-
-        currentClaude.on("event", (event: ClaudeEvent) => {
-          send({ type: "claude_event", event });
-
-          // Log unrecognized event types for debugging
-          const knownTypes = ["system", "assistant", "user", "result"];
-          if (!knownTypes.includes(event.type)) {
-            console.warn("[claude] Unrecognized event type:", event.type);
-            broadcastLog("server", `Unknown Claude event type: ${event.type}`);
-          }
-
-          // Track agent session when we get the session_id from init event
-          if (event.type === "system" && event.subtype === "init" && event.session_id) {
-            if (activeAppSessionId) {
-              // Store the agent's conversation ID on the app session
-              sessionManager.setAgentSessionId(activeAppSessionId, event.session_id);
-              const session = sessionManager.get(activeAppSessionId);
-              if (session) {
-                send({ type: "session_started", session });
-              }
-              // Persist the user message for new sessions
-              if (!msg.sessionId) {
-                persistUserMessage(activeAppSessionId);
-              }
-            } else {
-              // Legacy fallback: no app session created (shouldn't happen with isolation)
-              const title = userText.slice(0, 80) || "New session";
-              const session = sessionManager.track(event.session_id, title);
-              activeAppSessionId = event.session_id;
-              send({ type: "session_started", session });
-              persistUserMessage(event.session_id);
-            }
-
-            // Forward model info to the client
-            if (event.model) {
-              send({
-                type: "model_info",
-                model: event.model,
-                contextWindowTokens: getContextWindowSize(event.model),
-              });
-            }
-          }
-
-          // Collect assistant text and tool use blocks for commit message + persistence
-          if (event.type === "assistant") {
-            const text = (event.message?.content ?? [])
-              .filter((b: ClaudeContentBlock): b is ClaudeContentBlockText => b.type === "text")
-              .map((b) => b.text)
-              .join("");
-            if (text) {
-              turnSummary = text;
-              accumulatedText += text;
-            }
-
-            const toolBlocks = (event.message?.content ?? [])
-              .filter((b: ClaudeContentBlock): b is ClaudeContentBlockToolUse => b.type === "tool_use");
-            if (toolBlocks.length > 0) {
-              accumulatedToolUse.push(...toolBlocks);
-            }
-          }
-
-          // On result: persist the final assistant message, update session, record usage
-          if (event.type === "result") {
-            receivedResult = true;
-          }
-          if (event.type === "result" && event.session_id) {
-            const resultEvent = event as ClaudeResultEvent;
-            if (activeAppSessionId) {
-              sessionManager.setAgentSessionId(activeAppSessionId, event.session_id);
-              sessionManager.track(activeAppSessionId);
-            }
-
-            const usageSessionId = activeAppSessionId ?? event.session_id;
-            // Record cost/duration if present
-            if (resultEvent.total_cost_usd !== undefined) {
-              usageManager.record(
-                usageSessionId,
-                resultEvent.total_cost_usd,
-                resultEvent.duration_ms ?? 0,
-                resultEvent.input_tokens,
-                resultEvent.output_tokens,
-              );
-              const sessionUsage = usageManager.getSessionUsage(usageSessionId);
-              if (sessionUsage) {
-                const tokenTotals = usageManager.getSessionTokenTotals(usageSessionId);
-                send({
-                  type: "usage_update",
-                  sessionId: sessionUsage.sessionId,
-                  totalCostUsd: sessionUsage.totalCostUsd,
-                  totalDurationMs: sessionUsage.totalDurationMs,
-                  turnCount: sessionUsage.turnCount,
-                  lastTurnInputTokens: resultEvent.input_tokens,
-                  lastTurnOutputTokens: resultEvent.output_tokens,
-                  cumulativeInputTokens: tokenTotals?.cumulativeInputTokens,
-                });
-              }
-            }
-
-            // Persist the assistant response
-            if (accumulatedText || accumulatedToolUse.length > 0) {
-              chatHistoryManager.append(usageSessionId, {
-                role: "assistant",
-                text: accumulatedText,
-                toolUse: accumulatedToolUse.length > 0 ? accumulatedToolUse : undefined,
-              });
-            }
-          }
+        await runClaudeWithMessage({
+          userText,
+          images,
+          validatedFiles,
+          agentSessionId,
+          permissionMode: msg.permissionMode,
+          isNewSession: !msg.sessionId,
         });
-
-        // For resumed sessions (sessionId already known), persist user message immediately
-        if (msg.sessionId && activeAppSessionId) {
-          persistUserMessage(activeAppSessionId);
-        }
-
-        currentClaude.on("done", async (code: number | null) => {
-          console.log("[claude] process exited with code", code);
-          broadcastLog("server", `Claude process exited with code ${code}`);
-          claude = null;
-
-          // If the process exited without producing a result event, notify the
-          // client so it can clear the loading state instead of hanging forever.
-          if (!receivedResult) {
-            const reason = code !== 0
-              ? `Claude process exited with code ${code}`
-              : "Claude process ended without a response";
-            send({ type: "error", message: reason });
-          }
-
-          // Auto-commit after Claude turn using the session's git manager
-          try {
-            const git = getActiveGitManager();
-            const firstLine = turnSummary.split("\n")[0]?.slice(0, 120) || "Claude turn";
-            const hash = await git.autoCommit(firstLine);
-            if (hash) {
-              send({ type: "git_committed", hash, message: firstLine });
-              // Schedule auto-push (debounced)
-              scheduleAutoPush(git, send);
-            }
-          } catch (err) {
-            console.error("[git] auto-commit failed:", getErrorMessage(err));
-          }
-
-          // Restart Vite after Claude finishes in case new files were created
-          if (!viteManager.running) {
-            viteManager.start(getActiveDir());
-          }
-
-          // Scan for non-Vite dev servers that Claude may have started.
-          await runPortScan();
-        });
-
-        currentClaude.on("auth_required", () => {
-          console.log("[server] Claude CLI requires authentication, starting OAuth flow");
-          send({ type: "auth_required" });
-          authManager.startOAuthFlow();
-        });
-
-        currentClaude.on("error", (err: Error) => {
-          console.error("[claude] process error:", err.message);
-          broadcastLog("server", `Claude process error: ${err.message}`);
-          const errorMsg = `Claude process error: ${err.message}`;
-          send({ type: "error", message: errorMsg });
-          // Persist the error so it shows up in history
-          if (activeAppSessionId) {
-            chatHistoryManager.append(activeAppSessionId, {
-              role: "assistant",
-              text: `Error: ${err.message}`,
-              isError: true,
-            });
-          }
-          claude = null;
-        });
-
-        // Build the system prompt, incorporating conversation replay for forked threads
-        let systemPrompt = await readSystemPrompt();
-        if (activeAppSessionId) {
-          const activeThread = threadManager.getActiveThread(activeAppSessionId);
-          if (activeThread) {
-            const replay = threadManager.consumeConversationReplay(
-              activeAppSessionId,
-              activeThread.id,
-            );
-            if (replay) {
-              // On a forked thread with replay context, start a fresh session
-              // (no --resume) and inject the conversation history as system prompt.
-              agentSessionId = undefined;
-              systemPrompt = systemPrompt
-                ? `${systemPrompt}\n\n${replay}`
-                : replay;
-            }
-          }
-        }
-        // Prepend file context to the prompt if files are attached
-        let prompt = msg.text;
-        if (validatedFiles.length > 0) {
-          const context = formatFileContext(validatedFiles);
-          prompt = `${context}\n\n${prompt}`;
-        }
-
-        // Determine permission mode from client message
-        const permissionMode: PermissionMode | undefined = msg.permissionMode;
-        currentClaude.run(prompt, agentSessionId, systemPrompt, images, getActiveDir(), permissionMode);
-        broadcastLog("server", "Claude process started");
       }
 
       if (msg.type === "get_git_log") {
@@ -1725,6 +1751,207 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
         const repos = await githubAuthManager.searchRepos(query);
         send({ type: "github_search_results", repos });
+      }
+
+      // ---- Home screen handlers ----
+
+      if (msg.type === "home_create_repo_with_template") {
+        const repoName = typeof msg.repoName === "string" ? msg.repoName.trim() : "";
+        if (!repoName) {
+          send({ type: "home_repo_ready", success: false, message: "Repository name is required" });
+          return;
+        }
+        if (!/^[a-zA-Z0-9._-]+$/.test(repoName)) {
+          send({ type: "home_repo_ready", success: false, message: "Repository name contains invalid characters" });
+          return;
+        }
+        const templateId = typeof msg.templateId === "string" ? msg.templateId.trim() : "";
+        if (!templateId) {
+          send({ type: "home_repo_ready", success: false, message: "Template is required" });
+          return;
+        }
+        const template = getTemplate(templateId);
+        if (!template) {
+          send({ type: "home_repo_ready", success: false, message: `Unknown template: ${templateId}` });
+          return;
+        }
+        if (!githubAuthManager.authenticated) {
+          send({ type: "home_repo_ready", success: false, message: "Not authenticated with GitHub" });
+          return;
+        }
+
+        try {
+          // 1. Create GitHub repo
+          const repoResult = await githubAuthManager.createRepo(repoName, {
+            description: msg.description,
+            isPrivate: msg.isPrivate,
+          });
+          if (!repoResult.success || !repoResult.cloneUrl) {
+            send({ type: "home_repo_ready", success: false, message: repoResult.message || "Failed to create repository" });
+            return;
+          }
+
+          // 2. Create session
+          const { appSessionId, sessionDir } = await createSessionDir(template.name);
+          activeAppSessionId = appSessionId;
+          activeSessionDir = sessionDir;
+          fileWatcher.stop();
+          fileWatcher.start(sessionDir);
+
+          // 3. Add remote and configure credentials
+          const git = createGitManager(sessionDir);
+          await git.addRemote("origin", repoResult.cloneUrl);
+
+          // 4. Apply template
+          await applyTemplate(template, sessionDir);
+          await git.autoCommit(`Initial setup: ${template.name}`);
+
+          // 5. Push to main
+          await git.push("origin", "main");
+
+          // 6. Update session metadata
+          sessionManager.setRemoteUrl(appSessionId, repoResult.cloneUrl);
+          const session = sessionManager.get(appSessionId);
+
+          // 7. Notify client
+          if (session) {
+            send({ type: "session_started", session });
+          }
+
+          // Restart Vite
+          viteManager.restart(sessionDir);
+
+          send({
+            type: "home_repo_ready",
+            success: true,
+            repoUrl: repoResult.cloneUrl,
+            sessionId: appSessionId,
+          });
+        } catch (err) {
+          send({ type: "home_repo_ready", success: false, message: getErrorMessage(err) });
+        }
+      }
+
+      if (msg.type === "home_send_with_repo") {
+        // Check auth before spawning
+        if (!authManager.authenticated) {
+          authManager.checkCredentials();
+        }
+        if (!authManager.authenticated) {
+          send({ type: "auth_required" });
+          authManager.startOAuthFlow();
+          return;
+        }
+
+        if (claude) {
+          claude.kill();
+        }
+
+        let repoUrl = typeof msg.repoUrl === "string" ? msg.repoUrl.trim() : "";
+        const text = typeof msg.text === "string" ? msg.text.trim() : "";
+        if (!repoUrl) {
+          send({ type: "error", message: "Repository URL is required" });
+          return;
+        }
+        if (!text) {
+          send({ type: "error", message: "Message text is required" });
+          return;
+        }
+        if (text.length > 10000) {
+          send({ type: "error", message: "Message too long (max 10000 characters)" });
+          return;
+        }
+
+        // Support owner/repo shorthand
+        if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(repoUrl)) {
+          repoUrl = `https://github.com/${repoUrl}.git`;
+        }
+
+        // Validate images if provided
+        const images: ImageAttachment[] | undefined = msg.images && msg.images.length > 0 ? msg.images : undefined;
+        if (images) {
+          const imageError = validateImages(images);
+          if (imageError) {
+            send({ type: "error", message: imageError });
+            return;
+          }
+        }
+
+        // Validate file attachments
+        const fileRefs: FileContextRef[] | undefined = msg.files && msg.files.length > 0 ? msg.files : undefined;
+        let validatedFiles: FileAttachment[] = [];
+        if (fileRefs) {
+          const dir = activeSessionDir ?? workspaceDir;
+          const result = await resolveFileAttachments(fileRefs, dir);
+          if (result.error) {
+            send({ type: "error", message: result.error });
+            return;
+          }
+          validatedFiles = result.files;
+        }
+
+        try {
+          // 1. Create session dir WITHOUT git init (we'll clone instead)
+          const { appSessionId, sessionDir } = await createSessionDir(
+            text.slice(0, 80),
+            { skipGitInit: true },
+          );
+
+          // 2. Clone repo
+          const git = createGitManager(sessionDir);
+          await git.clone(repoUrl);
+
+          // 3. Configure credentials
+          if (githubAuthManager.authenticated) {
+            githubAuthManager.configureGitCredentials(sessionDir);
+          }
+
+          // 4. Create temporary branch with random prefix
+          const branchPrefix = generateBranchPrefix();
+          await git.checkoutNewBranch(branchPrefix);
+
+          // 5. Store remote URL and activate session
+          sessionManager.setRemoteUrl(appSessionId, repoUrl);
+          activeAppSessionId = appSessionId;
+          activeSessionDir = sessionDir;
+          fileWatcher.stop();
+          fileWatcher.start(sessionDir);
+
+          const session = sessionManager.get(appSessionId);
+          if (session) {
+            send({ type: "session_started", session });
+          }
+
+          // 6. Fire non-blocking Claude call to generate session name + branch slug
+          generateSessionName(text).then(async (nameResult) => {
+            if (!nameResult) return;
+            try {
+              const newBranchName = `${branchPrefix}-${nameResult.slug}`;
+              const sessionGit = createGitManager(sessionDir);
+              await sessionGit.renameBranch(branchPrefix, newBranchName);
+              sessionManager.rename(appSessionId, nameResult.title);
+              const updatedSession = sessionManager.get(appSessionId);
+              if (updatedSession) {
+                send({ type: "session_renamed", session: updatedSession });
+              }
+            } catch (err) {
+              console.warn("[home] Branch rename failed:", getErrorMessage(err));
+            }
+          }).catch((err) => {
+            console.warn("[home] Session naming failed:", err);
+          });
+
+          // 7. Run Claude with the user's message
+          await runClaudeWithMessage({
+            userText: text,
+            images,
+            validatedFiles,
+            permissionMode: msg.permissionMode,
+            isNewSession: true,
+          });
+        } catch (err) {
+          send({ type: "error", message: `Failed to setup repo: ${getErrorMessage(err)}` });
+        }
       }
 
       if (msg.type === "get_pr_status") {

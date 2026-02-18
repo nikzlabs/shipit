@@ -282,6 +282,25 @@ export interface WsGitHubSearchRepos {
   query: string;
 }
 
+// ---- Home screen messages ----
+
+export interface WsHomeCreateRepoWithTemplate {
+  type: "home_create_repo_with_template";
+  repoName: string;
+  description?: string;
+  isPrivate?: boolean;
+  templateId: string;
+}
+
+export interface WsHomeSendWithRepo {
+  type: "home_send_with_repo";
+  repoUrl: string;
+  text: string;
+  images?: ImageAttachment[];
+  files?: FileContextRef[];
+  permissionMode?: PermissionMode;
+}
+
 // ---- AI PR description messages ----
 
 export interface WsGeneratePRDescription {
@@ -418,7 +437,9 @@ export type WsClientMessage =
   | WsDeleteDeployConfig
   | WsTerminalStart
   | WsTerminalInput
-  | WsTerminalResize;
+  | WsTerminalResize
+  | WsHomeCreateRepoWithTemplate
+  | WsHomeSendWithRepo;
 
 export interface WsClaudeEvent {
   type: "claude_event";
@@ -736,6 +757,16 @@ export interface WsGitHubSearchResults {
   }>;
 }
 
+// ---- Home screen server messages ----
+
+export interface WsHomeRepoReady {
+  type: "home_repo_ready";
+  success: boolean;
+  repoUrl?: string;
+  sessionId?: string;
+  message?: string;
+}
+
 // ---- AI PR description server messages ----
 
 export interface WsGeneratedPRDescription {
@@ -1014,4 +1045,5 @@ export type WsServerMessage =
   | WsMergePrResult
   | WsModelInfo
   | WsTerminalOutput
-  | WsTerminalExit;
+  | WsTerminalExit
+  | WsHomeRepoReady;

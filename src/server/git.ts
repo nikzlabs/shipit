@@ -1,6 +1,12 @@
+import crypto from "node:crypto";
 import simpleGit, { type SimpleGit, type LogResult } from "simple-git";
 
 const DEFAULT_WORKSPACE_DIR = "/workspace";
+
+/** Generate a short random alphanumeric prefix for branch names (5 chars). */
+export function generateBranchPrefix(): string {
+  return crypto.randomBytes(4).toString("base64url").slice(0, 5).toLowerCase();
+}
 
 export interface GitCommitInfo {
   hash: string;
@@ -112,6 +118,18 @@ export class GitManager {
   async getCurrentBranch(): Promise<string> {
     const status = await this.git.status();
     return status.current ?? "main";
+  }
+
+  /** Create and checkout a new local branch. */
+  async checkoutNewBranch(branchName: string): Promise<void> {
+    await this.git.checkoutLocalBranch(branchName);
+    console.log("[git] Created and checked out branch:", branchName);
+  }
+
+  /** Rename a branch. */
+  async renameBranch(oldName: string, newName: string): Promise<void> {
+    await this.git.branch(["-m", oldName, newName]);
+    console.log("[git] Renamed branch:", oldName, "→", newName);
   }
 
   /** Push to a remote. Returns a summary string. */
