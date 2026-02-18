@@ -1,6 +1,6 @@
 # GitHub Authentication
 
-Status: **Partially implemented** — token-based auth and git credential configuration exist. Push/pull UI and device flow are not yet built.
+Status: **Implemented** — token-based auth (PAT), git credential configuration, push/pull, remote management, repo creation, and status UI are all complete. Device authorization flow split out to doc 030.
 
 ## Current state
 
@@ -10,16 +10,15 @@ Status: **Partially implemented** — token-based auth and git credential config
 - Git credential configuration per session (`git config credential.helper`)
 - User info retrieval (username, avatar)
 
-## Planned
+## Implemented
 
-- GitHub device authorization flow (no redirect URI needed, matches Claude OAuth UX)
-- Push/pull buttons in `GitHistory` panel
-- GitHub status indicator in header (auth state, username, disconnect)
 - `GitHubAuthOverlay` for PAT entry
 - `GitHubCreateRepoOverlay` for creating new repos
-- New `GitManager` methods: `push()`, `pull()`, `addRemote()`, `getRemotes()`, `getCurrentBranch()`
+- Push/pull buttons in `GitHistory` panel
+- GitHub status indicator in header (auth state, username, disconnect)
+- `GitManager` methods: `push()`, `pull()`, `addRemote()`, `getRemotes()`, `getCurrentBranch()`
 
-## Planned WS messages
+## WS messages
 
 Client → Server: `github_set_token`, `github_get_status`, `github_push`, `github_pull`, `github_set_remote`, `github_get_remotes`, `github_logout`, `github_create_repo`
 
@@ -28,6 +27,8 @@ Server → Client: `github_status`, `github_push_result`, `github_pull_result`, 
 ## Key files
 
 - `src/server/github-auth.ts` — `GitHubAuthManager` class
-- `src/server/git.ts` — `GitManager` (to be extended with push/pull)
+- `src/server/git.ts` — `GitManager`
 - `src/server/index.ts` — WS handlers, credential configuration on session create
 - `src/server/types.ts` — WS message types
+- `src/client/components/GitHubAuthOverlay.tsx` — PAT entry overlay
+- `src/client/components/GitHubCreateRepoOverlay.tsx` — repo creation overlay
