@@ -233,6 +233,63 @@ export class GitHubAuthManager extends EventEmitter {
   }
 
   /**
+   * Create a pull request on GitHub.
+   * Returns the PR URL on success, or an error message.
+   */
+  async createPullRequest(options: {
+    owner: string;
+    repo: string;
+    title: string;
+    body: string;
+    head: string;
+    base: string;
+    draft?: boolean;
+  }): Promise<{ success: boolean; url?: string; number?: number; message?: string }> {
+    if (!this._token) {
+      return { success: false, message: "Not authenticated with GitHub" };
+    }
+
+    try {
+      const res = await fetch(
+        `https://api.github.com/repos/${options.owner}/${options.repo}/pulls`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this._token}`,
+            Accept: "application/vnd.github+json",
+            "Content-Type": "application/json",
+            "User-Agent": "ShipIt",
+          },
+          body: JSON.stringify({
+            title: options.title,
+            body: options.body,
+            head: options.head,
+            base: options.base,
+            draft: options.draft ?? false,
+          }),
+        },
+      );
+
+      if (!res.ok) {
+        const err = (await res.json()) as { message?: string };
+        return { success: false, message: err.message || `GitHub API returned ${res.status}` };
+      }
+
+      const data = (await res.json()) as { html_url: string; number: number };
+      return {
+        success: true,
+        url: data.html_url,
+        number: data.number,
+      };
+    } catch (err) {
+      return {
+        success: false,
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  /**
    * Load cached user info from GitHub API using stored token.
    * Called on startup when checkCredentials() finds a token file.
    */

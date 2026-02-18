@@ -1343,6 +1343,84 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         }
       }
 
+      if (msg.type === "github_create_pr") {
+        if (!githubAuthManager.authenticated) {
+          send({ type: "error", message: "Not authenticated with GitHub" });
+          return;
+        }
+
+        const title = typeof msg.title === "string" ? msg.title.trim() : "";
+        const body = typeof msg.body === "string" ? msg.body.trim() : "";
+        const base = typeof msg.base === "string" ? msg.base.trim() : "";
+
+        if (!title) {
+          send({ type: "error", message: "PR title is required" });
+          return;
+        }
+        if (title.length > 256) {
+          send({ type: "error", message: "PR title too long (max 256 characters)" });
+          return;
+        }
+        if (!base) {
+          send({ type: "error", message: "Base branch is required" });
+          return;
+        }
+
+        try {
+          const git = getActiveGitManager();
+          const remotes = await git.getRemotes();
+          const origin = remotes.find((r) => r.name === "origin");
+          if (!origin) {
+            send({ type: "error", message: "No 'origin' remote configured" });
+            return;
+          }
+
+          const parsed = GitManager.parseGitHubRemote(origin.url);
+          if (!parsed) {
+            send({ type: "error", message: "Remote URL is not a GitHub repository" });
+            return;
+          }
+
+          const head = await git.getCurrentBranch();
+
+          const result = await githubAuthManager.createPullRequest({
+            owner: parsed.owner,
+            repo: parsed.repo,
+            title,
+            body,
+            head,
+            base,
+            draft: msg.draft,
+          });
+
+          send({
+            type: "github_pr_created",
+            success: result.success,
+            url: result.url,
+            number: result.number,
+            message: result.message,
+          });
+        } catch (err) {
+          send({ type: "error", message: `Failed to create PR: ${getErrorMessage(err)}` });
+        }
+      }
+
+      if (msg.type === "github_list_branches") {
+        try {
+          const git = getActiveGitManager();
+          const current = await git.getCurrentBranch();
+          let remote: string[] = [];
+          try {
+            remote = await git.listRemoteBranches();
+          } catch {
+            // No remote branches (e.g., never pushed) — that's fine
+          }
+          send({ type: "github_branches", current, remote });
+        } catch (err) {
+          send({ type: "error", message: `Failed to list branches: ${getErrorMessage(err)}` });
+        }
+      }
+
       if (msg.type === "get_system_prompt") {
         // System prompt is global (root workspace)
         try {
