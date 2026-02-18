@@ -33,6 +33,8 @@ import { ThreadTimeline } from "./components/ThreadTimeline.js";
 import { DeployModal, type DeployPhase } from "./components/DeployModal.js";
 import { FeaturesPanel } from "./components/FeaturesPanel.js";
 import { PullRequestModal } from "./components/PullRequestModal.js";
+import { ImportRepoOverlay } from "./components/ImportRepoOverlay.js";
+import { PrStatusBar } from "./components/PrStatusBar.js";
 import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, FeatureInfo, PermissionMode } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal" | "features";
@@ -134,6 +136,22 @@ export default function App() {
   const [prCurrentBranch, setPrCurrentBranch] = useState("");
   const [prRemoteBranches, setPrRemoteBranches] = useState<string[]>([]);
   const [prResult, setPrResult] = useState<{ success: boolean; url?: string; number?: number; message?: string } | null>(null);
+  const [showImportOverlay, setShowImportOverlay] = useState(false);
+  const [importSearchResults, setImportSearchResults] = useState<Array<{ fullName: string; description: string | null; private: boolean; defaultBranch: string; cloneUrl: string }>>([]);
+  const [importProgress, setImportProgress] = useState<{ stage: "cloning" | "installing" | "ready"; message: string } | null>(null);
+  const [importingRepo, setImportingRepo] = useState(false);
+  const [prStatus, setPrStatus] = useState<{
+    url: string;
+    number: number;
+    title: string;
+    baseBranch: string;
+    headBranch: string;
+    insertions: number;
+    deletions: number;
+    checks: { state: "pending" | "success" | "failure" | "none"; total: number; passed: number; failed: number; pending: number };
+    autoMergeEnabled: boolean;
+    mergeable: boolean;
+  } | null>(null);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(getSavedPermissionMode());
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
@@ -207,6 +225,23 @@ export default function App() {
     }
   }, [status, send]);
 
+  // Fetch PR status on session load
+  useEffect(() => {
+    if (status === "open" && sessionIdRef.current) {
+      send({ type: "get_pr_status" });
+    }
+  }, [status, send]);
+
+  // Poll PR status while CI is pending
+  useEffect(() => {
+    if (prStatus?.checks.state === "pending") {
+      const interval = setInterval(() => {
+        send({ type: "get_pr_status" });
+      }, 30_000);
+      return () => clearInterval(interval);
+    }
+  }, [prStatus?.checks.state, send]);
+
   // Request templates when connected and the template picker is shown
   useEffect(() => {
     if (status === "open" && showTemplates && templates.length === 0) {
@@ -244,6 +279,31 @@ export default function App() {
       });
     }
   }, [status, isLoading]);
+
+  const handleSessionResume = useCallback(
+    (sessionId: string) => {
+      sessionIdRef.current = sessionId;
+      saveSessionId(sessionId);
+      setMessages([]);
+      setIsLoading(false);
+      setShowTemplates(false);
+      // Reset session-specific UI state (each session has its own workspace)
+      setViewingFile(null);
+      setViewingFileContent(null);
+      setViewingFileBinary(false);
+      setGitCommits([]);
+      setFileTree([]);
+      setCurrentSessionUsage(null);
+      setThreads([]);
+      setActiveThreadId("");
+      // Load persisted chat history for this session (also activates session on server)
+      send({ type: "get_chat_history", sessionId });
+      // Refresh file tree and git log for the new session's workspace
+      send({ type: "get_file_tree" });
+      send({ type: "get_git_log" });
+    },
+    [send]
+  );
 
   // Process incoming WebSocket messages
   useEffect(() => {
@@ -551,6 +611,10 @@ export default function App() {
           isError: !data.success,
         },
       ]);
+      // Refresh PR status after push
+      if (data.type === "github_push_result" && data.success) {
+        send({ type: "get_pr_status" });
+      }
     }
 
     if (data.type === "github_repo_created") {
@@ -575,6 +639,41 @@ export default function App() {
         number: data.number,
         message: data.message,
       });
+      // Refresh PR status after PR creation
+      if (data.success) {
+        send({ type: "get_pr_status" });
+      }
+    }
+
+    if (data.type === "github_search_results") {
+      setImportSearchResults(data.repos);
+    }
+
+    if (data.type === "github_import_progress") {
+      setImportProgress({ stage: data.stage, message: data.message });
+    }
+
+    if (data.type === "github_import_complete") {
+      setImportingRepo(false);
+      if (data.success && data.sessionId) {
+        setShowImportOverlay(false);
+        setImportProgress(null);
+        setImportSearchResults([]);
+        // Switch to the new session
+        handleSessionResume(data.sessionId);
+      }
+    }
+
+    if (data.type === "pr_status") {
+      setPrStatus(data.pr);
+    }
+
+    if (data.type === "merge_pr_result") {
+      if (data.success && !data.autoMergeEnabled) {
+        setPrStatus(null);
+      } else if (data.autoMergeEnabled) {
+        send({ type: "get_pr_status" });
+      }
     }
 
     if (data.type === "github_branches") {
@@ -705,7 +804,7 @@ export default function App() {
         setUnreadLogCount((prev) => prev + 1);
       }
     }
-  }, [lastMessage, send, rightTab, viewingFile, notify]);
+  }, [lastMessage, send, rightTab, viewingFile, notify, handleSessionResume]);
 
   // Forward preview errors to the server for terminal log relay
   useEffect(() => {
@@ -879,31 +978,6 @@ export default function App() {
   const handleSessionRefresh = useCallback(() => {
     send({ type: "list_sessions" });
   }, [send]);
-
-  const handleSessionResume = useCallback(
-    (sessionId: string) => {
-      sessionIdRef.current = sessionId;
-      saveSessionId(sessionId);
-      setMessages([]);
-      setIsLoading(false);
-      setShowTemplates(false);
-      // Reset session-specific UI state (each session has its own workspace)
-      setViewingFile(null);
-      setViewingFileContent(null);
-      setViewingFileBinary(false);
-      setGitCommits([]);
-      setFileTree([]);
-      setCurrentSessionUsage(null);
-      setThreads([]);
-      setActiveThreadId("");
-      // Load persisted chat history for this session (also activates session on server)
-      send({ type: "get_chat_history", sessionId });
-      // Refresh file tree and git log for the new session's workspace
-      send({ type: "get_file_tree" });
-      send({ type: "get_git_log" });
-    },
-    [send]
-  );
 
   const handleSessionNew = useCallback(() => {
     sessionIdRef.current = undefined;
@@ -1177,6 +1251,36 @@ export default function App() {
       setMobilePanel("chat");
     },
     [send, requestPermission],
+  );
+
+  const handleImportSearch = useCallback(
+    (query: string) => {
+      send({ type: "github_search_repos", query });
+    },
+    [send],
+  );
+
+  const handleImportRepo = useCallback(
+    (url: string, branch?: string) => {
+      setImportingRepo(true);
+      setImportProgress(null);
+      send({ type: "github_import_repo", url, branch });
+    },
+    [send],
+  );
+
+  const handleImportOpen = useCallback(() => {
+    setImportSearchResults([]);
+    setImportProgress(null);
+    setImportingRepo(false);
+    setShowImportOverlay(true);
+  }, []);
+
+  const handleMergePr = useCallback(
+    (method: "merge" | "squash" | "rebase") => {
+      send({ type: "merge_pr", method });
+    },
+    [send],
   );
 
   const handlePermissionModeChange = useCallback((mode: PermissionMode) => {
@@ -1481,6 +1585,16 @@ export default function App() {
           result={prResult}
         />
       )}
+      {showImportOverlay && (
+        <ImportRepoOverlay
+          onSearch={handleImportSearch}
+          onImport={handleImportRepo}
+          onClose={() => setShowImportOverlay(false)}
+          searchResults={importSearchResults}
+          progress={importProgress}
+          importing={importingRepo}
+        />
+      )}
       {showUsageModal && (
         <UsageModal
           currentSessionUsage={currentSessionUsage}
@@ -1523,6 +1637,13 @@ export default function App() {
                 title="Create new GitHub repository"
               >
                 + Repo
+              </button>
+              <button
+                onClick={handleImportOpen}
+                className="text-xs px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
+                title="Import from GitHub"
+              >
+                Import
               </button>
               <button
                 onClick={() => {
@@ -1633,6 +1754,21 @@ export default function App() {
       </header>
 
       <ConnectionBanner status={status} reconnectAttempt={reconnectAttempt} onReconnect={reconnect} />
+
+      {prStatus && (
+        <PrStatusBar
+          baseBranch={prStatus.baseBranch}
+          headBranch={prStatus.headBranch}
+          insertions={prStatus.insertions}
+          deletions={prStatus.deletions}
+          prUrl={prStatus.url}
+          prNumber={prStatus.number}
+          checks={prStatus.checks}
+          autoMergeEnabled={prStatus.autoMergeEnabled}
+          mergeable={prStatus.mergeable}
+          onMerge={handleMergePr}
+        />
+      )}
 
       {isMobile ? (
         /* ── Mobile: single panel with bottom tab bar ── */

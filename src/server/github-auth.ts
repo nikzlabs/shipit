@@ -290,6 +290,240 @@ export class GitHubAuthManager extends EventEmitter {
   }
 
   /**
+   * Search the user's accessible repos by name.
+   */
+  async searchRepos(query: string): Promise<Array<{
+    fullName: string;
+    description: string | null;
+    private: boolean;
+    defaultBranch: string;
+    cloneUrl: string;
+  }>> {
+    if (!this._token) return [];
+
+    const res = await fetch(
+      `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}+in:name&sort=updated&per_page=10`,
+      {
+        headers: {
+          Authorization: `Bearer ${this._token}`,
+          Accept: "application/vnd.github+json",
+          "User-Agent": "ShipIt",
+        },
+      },
+    );
+
+    if (!res.ok) return [];
+
+    const data = (await res.json()) as { items: Array<{ full_name: string; description: string | null; private: boolean; default_branch: string; clone_url: string }> };
+    return data.items.map((r) => ({
+      fullName: r.full_name,
+      description: r.description,
+      private: r.private,
+      defaultBranch: r.default_branch,
+      cloneUrl: r.clone_url,
+    }));
+  }
+
+  /**
+   * Check if an open PR exists for the given head branch.
+   * Returns PR metadata if found, null otherwise.
+   */
+  async findPullRequest(
+    owner: string,
+    repo: string,
+    head: string,
+  ): Promise<{ url: string; number: number; base: string; title: string } | null> {
+    if (!this._token) return null;
+
+    const res = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/pulls?head=${owner}:${head}&state=open`,
+      {
+        headers: {
+          Authorization: `Bearer ${this._token}`,
+          Accept: "application/vnd.github+json",
+          "User-Agent": "ShipIt",
+        },
+      },
+    );
+
+    if (!res.ok) return null;
+    const prs = (await res.json()) as Array<{ html_url: string; number: number; base: { ref: string }; title: string }>;
+    if (prs.length === 0) return null;
+
+    const pr = prs[0];
+    return {
+      url: pr.html_url,
+      number: pr.number,
+      base: pr.base.ref,
+      title: pr.title,
+    };
+  }
+
+  /**
+   * Merge a pull request.
+   */
+  async mergePullRequest(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+    method: "merge" | "squash" | "rebase" = "merge",
+  ): Promise<{ success: boolean; message: string }> {
+    if (!this._token) return { success: false, message: "Not authenticated" };
+
+    const res = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}/merge`,
+      {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${this._token}`,
+          Accept: "application/vnd.github+json",
+          "Content-Type": "application/json",
+          "User-Agent": "ShipIt",
+        },
+        body: JSON.stringify({ merge_method: method }),
+      },
+    );
+
+    if (!res.ok) {
+      const err = (await res.json()) as { message?: string };
+      if (res.status === 405) {
+        return { success: false, message: err.message || "PR is not mergeable" };
+      }
+      return { success: false, message: err.message || `GitHub API returned ${res.status}` };
+    }
+
+    return { success: true, message: "Pull request merged" };
+  }
+
+  /**
+   * Enable auto-merge on a pull request.
+   * Uses the GraphQL API since REST doesn't support auto-merge.
+   */
+  async enableAutoMerge(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+    method: "MERGE" | "SQUASH" | "REBASE" = "MERGE",
+  ): Promise<{ success: boolean; message: string }> {
+    if (!this._token) return { success: false, message: "Not authenticated" };
+
+    // First, get the PR's node ID (needed for GraphQL)
+    const prRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
+      {
+        headers: {
+          Authorization: `Bearer ${this._token}`,
+          Accept: "application/vnd.github+json",
+          "User-Agent": "ShipIt",
+        },
+      },
+    );
+
+    if (!prRes.ok) return { success: false, message: "Failed to fetch PR details" };
+    const prData = (await prRes.json()) as { node_id: string };
+    const nodeId = prData.node_id;
+
+    // Enable auto-merge via GraphQL
+    const graphqlRes = await fetch("https://api.github.com/graphql", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this._token}`,
+        "Content-Type": "application/json",
+        "User-Agent": "ShipIt",
+      },
+      body: JSON.stringify({
+        query: `mutation EnableAutoMerge($prId: ID!, $method: PullRequestMergeMethod!) {
+          enablePullRequestAutoMerge(input: { pullRequestId: $prId, mergeMethod: $method }) {
+            pullRequest { autoMergeRequest { enabledAt } }
+          }
+        }`,
+        variables: { prId: nodeId, method },
+      }),
+    });
+
+    if (!graphqlRes.ok) return { success: false, message: "Failed to enable auto-merge" };
+    const graphqlData = (await graphqlRes.json()) as { errors?: Array<{ message: string }> };
+
+    if (graphqlData.errors) {
+      const errMsg = graphqlData.errors[0]?.message ?? "Unknown error";
+      if (errMsg.includes("auto-merge")) {
+        return { success: false, message: "Auto-merge is not enabled for this repository. Enable it in repo Settings > General." };
+      }
+      return { success: false, message: errMsg };
+    }
+
+    return { success: true, message: "Auto-merge enabled — PR will merge when checks pass" };
+  }
+
+  /**
+   * Get CI check status for a PR's head commit.
+   */
+  async getCheckStatus(
+    owner: string,
+    repo: string,
+    ref: string,
+  ): Promise<{ state: "pending" | "success" | "failure" | "none"; total: number; passed: number; failed: number; pending: number }> {
+    if (!this._token) return { state: "none", total: 0, passed: 0, failed: 0, pending: 0 };
+
+    let passed = 0, failed = 0, pending = 0;
+
+    // Get combined status (legacy status API)
+    try {
+      const statusRes = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/commits/${ref}/status`,
+        {
+          headers: {
+            Authorization: `Bearer ${this._token}`,
+            Accept: "application/vnd.github+json",
+            "User-Agent": "ShipIt",
+          },
+        },
+      );
+
+      if (statusRes.ok) {
+        const statusData = (await statusRes.json()) as { statuses: Array<{ state: string }> };
+        for (const s of statusData.statuses) {
+          if (s.state === "success") passed++;
+          else if (s.state === "failure" || s.state === "error") failed++;
+          else pending++;
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    // Also get check runs (GitHub Actions uses this API)
+    try {
+      const checksRes = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/commits/${ref}/check-runs`,
+        {
+          headers: {
+            Authorization: `Bearer ${this._token}`,
+            Accept: "application/vnd.github+json",
+            "User-Agent": "ShipIt",
+          },
+        },
+      );
+
+      if (checksRes.ok) {
+        const checksData = (await checksRes.json()) as { check_runs: Array<{ conclusion: string | null; status: string }> };
+        for (const check of checksData.check_runs) {
+          if (check.conclusion === "success") passed++;
+          else if (check.conclusion === "failure" || check.conclusion === "cancelled" || check.conclusion === "timed_out") failed++;
+          else if (check.status !== "completed") pending++;
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    const total = passed + failed + pending;
+    const state = total === 0 ? "none" as const : failed > 0 ? "failure" as const : pending > 0 ? "pending" as const : "success" as const;
+
+    return { state, total, passed, failed, pending };
+  }
+
+  /**
    * Load cached user info from GitHub API using stored token.
    * Called on startup when checkCredentials() finds a token file.
    */
