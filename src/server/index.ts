@@ -1196,6 +1196,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         }
       }
 
+      if (msg.type === "clear_api_key") {
+        delete process.env.ANTHROPIC_API_KEY;
+        const stillAuthenticated = authManager.checkCredentials();
+        if (!stillAuthenticated) {
+          authManager.startOAuthFlow();
+        }
+      }
+
       if (msg.type === "paste_auth_code") {
         const code = typeof msg.code === "string" ? msg.code.trim() : "";
         if (!code) {

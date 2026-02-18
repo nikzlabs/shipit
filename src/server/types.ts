@@ -371,6 +371,10 @@ export interface WsPasteAuthCode {
   code: string;
 }
 
+export interface WsClearApiKey {
+  type: "clear_api_key";
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsGetGitLog
@@ -408,6 +412,7 @@ export type WsClientMessage =
   | WsListThreads
   | WsSetApiKey
   | WsPasteAuthCode
+  | WsClearApiKey
   | WsListFeatures
   | WsGitHubSearchRepos
   | WsGeneratePRDescription

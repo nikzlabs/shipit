@@ -10,6 +10,9 @@ const defaultProps: ProjectSettingsProps = {
   githubStatus: { authenticated: false },
   onGitHubTokenSubmit: vi.fn(),
   onGitHubLogout: vi.fn(),
+  authUrl: null,
+  onApiKey: vi.fn(),
+  onClearApiKey: vi.fn(),
   onClose: vi.fn(),
 };
 
@@ -53,27 +56,126 @@ describe("ProjectSettings", () => {
   });
 });
 
-describe("ProjectSettings - GitHub tab", () => {
-  it("shows GitHub tab by default", () => {
+describe("ProjectSettings - Agent tab", () => {
+  it("shows Agent tab by default", () => {
     render(<ProjectSettings {...defaultProps} />);
-    const tab = screen.getByText("GitHub");
+    const tab = screen.getByText("Agent");
     expect(tab.className).toContain("font-medium");
   });
 
-  it("shows token input when not authenticated", () => {
+  it("shows authenticated state when authUrl is null", () => {
+    render(<ProjectSettings {...defaultProps} authUrl={null} />);
+    expect(screen.getByText("Claude CLI")).toBeInTheDocument();
+    expect(screen.getByText("Authenticated")).toBeInTheDocument();
+  });
+
+  it("shows auth required state when authUrl is set", () => {
+    render(<ProjectSettings {...defaultProps} authUrl="https://auth.example.com" />);
+    expect(screen.getByText("Claude CLI")).toBeInTheDocument();
+    expect(screen.getByText("Authentication required")).toBeInTheDocument();
+  });
+
+  it("shows API key input", () => {
     render(<ProjectSettings {...defaultProps} />);
+    const input = screen.getByTestId("project-settings-api-key-input");
+    expect(input).toBeInTheDocument();
+    expect(input).toHaveAttribute("type", "password");
+  });
+
+  it("submit button is disabled when input is empty", () => {
+    render(<ProjectSettings {...defaultProps} />);
+    expect(screen.getByTestId("project-settings-api-key-submit")).toBeDisabled();
+  });
+
+  it("calls onApiKey with valid key on submit", () => {
+    const onApiKey = vi.fn();
+    render(<ProjectSettings {...defaultProps} onApiKey={onApiKey} />);
+    fireEvent.change(screen.getByTestId("project-settings-api-key-input"), {
+      target: { value: "sk-ant-test123" },
+    });
+    fireEvent.click(screen.getByTestId("project-settings-api-key-submit"));
+    expect(onApiKey).toHaveBeenCalledWith("sk-ant-test123");
+  });
+
+  it("shows error for invalid API key format", () => {
+    const onApiKey = vi.fn();
+    render(<ProjectSettings {...defaultProps} onApiKey={onApiKey} />);
+    fireEvent.change(screen.getByTestId("project-settings-api-key-input"), {
+      target: { value: "invalid-key" },
+    });
+    fireEvent.click(screen.getByTestId("project-settings-api-key-submit"));
+    expect(onApiKey).not.toHaveBeenCalled();
+    expect(screen.getByTestId("project-settings-api-key-error")).toHaveTextContent("sk-ant-");
+  });
+
+  it("calls onApiKey on Enter in input", () => {
+    const onApiKey = vi.fn();
+    render(<ProjectSettings {...defaultProps} onApiKey={onApiKey} />);
+    const input = screen.getByTestId("project-settings-api-key-input");
+    fireEvent.change(input, { target: { value: "sk-ant-test123" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onApiKey).toHaveBeenCalledWith("sk-ant-test123");
+  });
+
+  it("clears error when input changes", () => {
+    render(<ProjectSettings {...defaultProps} />);
+    const input = screen.getByTestId("project-settings-api-key-input");
+    fireEvent.change(input, { target: { value: "bad" } });
+    fireEvent.click(screen.getByTestId("project-settings-api-key-submit"));
+    expect(screen.getByTestId("project-settings-api-key-error")).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: "sk-ant-new" } });
+    expect(screen.queryByTestId("project-settings-api-key-error")).not.toBeInTheDocument();
+  });
+
+  it("shows Authenticate button when auth is required", () => {
+    render(<ProjectSettings {...defaultProps} authUrl="https://auth.example.com" />);
+    expect(screen.getByTestId("project-settings-api-key-submit")).toHaveTextContent("Authenticate");
+  });
+
+  it("shows Set API Key button when already authenticated", () => {
+    render(<ProjectSettings {...defaultProps} authUrl={null} />);
+    expect(screen.getByTestId("project-settings-api-key-submit")).toHaveTextContent("Set API Key");
+  });
+
+  it("shows Clear API Key button when authenticated", () => {
+    render(<ProjectSettings {...defaultProps} authUrl={null} />);
+    expect(screen.getByTestId("project-settings-clear-api-key")).toHaveTextContent("Clear API Key");
+  });
+
+  it("calls onClearApiKey when Clear API Key is clicked", () => {
+    const onClearApiKey = vi.fn();
+    render(<ProjectSettings {...defaultProps} authUrl={null} onClearApiKey={onClearApiKey} />);
+    fireEvent.click(screen.getByTestId("project-settings-clear-api-key"));
+    expect(onClearApiKey).toHaveBeenCalledOnce();
+  });
+
+  it("does not show Clear API Key button when auth is required", () => {
+    render(<ProjectSettings {...defaultProps} authUrl="https://auth.example.com" />);
+    expect(screen.queryByTestId("project-settings-clear-api-key")).not.toBeInTheDocument();
+  });
+});
+
+describe("ProjectSettings - GitHub tab", () => {
+  function renderOnGitHubTab(props: Partial<ProjectSettingsProps> = {}) {
+    const result = render(<ProjectSettings {...defaultProps} {...props} />);
+    fireEvent.click(screen.getByText("GitHub"));
+    return result;
+  }
+
+  it("shows token input when not authenticated", () => {
+    renderOnGitHubTab();
     const input = screen.getByTestId("project-settings-token-input");
     expect(input).toBeInTheDocument();
     expect(input).toHaveAttribute("type", "password");
   });
 
   it("Connect button is disabled when input is empty", () => {
-    render(<ProjectSettings {...defaultProps} />);
+    renderOnGitHubTab();
     expect(screen.getByTestId("project-settings-connect")).toBeDisabled();
   });
 
   it("Connect button is enabled when input has a value", () => {
-    render(<ProjectSettings {...defaultProps} />);
+    renderOnGitHubTab();
     fireEvent.change(screen.getByTestId("project-settings-token-input"), {
       target: { value: "ghp_test123" },
     });
@@ -82,7 +184,7 @@ describe("ProjectSettings - GitHub tab", () => {
 
   it("calls onGitHubTokenSubmit with trimmed token on Connect click", () => {
     const onGitHubTokenSubmit = vi.fn();
-    render(<ProjectSettings {...defaultProps} onGitHubTokenSubmit={onGitHubTokenSubmit} />);
+    renderOnGitHubTab({ onGitHubTokenSubmit });
     fireEvent.change(screen.getByTestId("project-settings-token-input"), {
       target: { value: "  ghp_test123  " },
     });
@@ -92,7 +194,7 @@ describe("ProjectSettings - GitHub tab", () => {
 
   it("calls onGitHubTokenSubmit on Enter in input", () => {
     const onGitHubTokenSubmit = vi.fn();
-    render(<ProjectSettings {...defaultProps} onGitHubTokenSubmit={onGitHubTokenSubmit} />);
+    renderOnGitHubTab({ onGitHubTokenSubmit });
     const input = screen.getByTestId("project-settings-token-input");
     fireEvent.change(input, { target: { value: "ghp_test123" } });
     fireEvent.keyDown(input, { key: "Enter" });
@@ -101,41 +203,28 @@ describe("ProjectSettings - GitHub tab", () => {
 
   it("does not call onGitHubTokenSubmit on Enter with empty input", () => {
     const onGitHubTokenSubmit = vi.fn();
-    render(<ProjectSettings {...defaultProps} onGitHubTokenSubmit={onGitHubTokenSubmit} />);
+    renderOnGitHubTab({ onGitHubTokenSubmit });
     fireEvent.keyDown(screen.getByTestId("project-settings-token-input"), { key: "Enter" });
     expect(onGitHubTokenSubmit).not.toHaveBeenCalled();
   });
 
   it("shows connected state with username when authenticated", () => {
-    render(
-      <ProjectSettings
-        {...defaultProps}
-        githubStatus={{ authenticated: true, username: "octocat" }}
-      />,
-    );
+    renderOnGitHubTab({ githubStatus: { authenticated: true, username: "octocat" } });
     expect(screen.getByText("octocat")).toBeInTheDocument();
     expect(screen.getByText("Connected")).toBeInTheDocument();
   });
 
   it("shows Disconnect button when authenticated", () => {
-    render(
-      <ProjectSettings
-        {...defaultProps}
-        githubStatus={{ authenticated: true, username: "octocat" }}
-      />,
-    );
+    renderOnGitHubTab({ githubStatus: { authenticated: true, username: "octocat" } });
     expect(screen.getByTestId("project-settings-disconnect")).toHaveTextContent("Disconnect");
   });
 
   it("Disconnect button requires double-click confirmation", () => {
     const onGitHubLogout = vi.fn();
-    render(
-      <ProjectSettings
-        {...defaultProps}
-        githubStatus={{ authenticated: true, username: "octocat" }}
-        onGitHubLogout={onGitHubLogout}
-      />,
-    );
+    renderOnGitHubTab({
+      githubStatus: { authenticated: true, username: "octocat" },
+      onGitHubLogout,
+    });
     const btn = screen.getByTestId("project-settings-disconnect");
     fireEvent.click(btn);
     expect(onGitHubLogout).not.toHaveBeenCalled();
@@ -145,12 +234,7 @@ describe("ProjectSettings - GitHub tab", () => {
   });
 
   it("Disconnect confirmation resets on blur", () => {
-    render(
-      <ProjectSettings
-        {...defaultProps}
-        githubStatus={{ authenticated: true, username: "octocat" }}
-      />,
-    );
+    renderOnGitHubTab({ githubStatus: { authenticated: true, username: "octocat" } });
     const btn = screen.getByTestId("project-settings-disconnect");
     fireEvent.click(btn);
     expect(btn).toHaveTextContent("Click again to disconnect");
@@ -159,14 +243,14 @@ describe("ProjectSettings - GitHub tab", () => {
   });
 
   it("links to GitHub token settings page", () => {
-    render(<ProjectSettings {...defaultProps} />);
+    renderOnGitHubTab();
     const link = screen.getByText("GitHub Settings");
     expect(link).toHaveAttribute("href", "https://github.com/settings/tokens/new");
     expect(link).toHaveAttribute("target", "_blank");
   });
 
   it("mentions classic token requirement", () => {
-    render(<ProjectSettings {...defaultProps} />);
+    renderOnGitHubTab();
     expect(screen.getByText("classic")).toBeInTheDocument();
     expect(screen.getByText(/fine-grained tokens are not supported/i)).toBeInTheDocument();
   });
@@ -250,23 +334,30 @@ describe("ProjectSettings - Instructions tab", () => {
 });
 
 describe("ProjectSettings - Tab switching", () => {
-  it("GitHub tab is selected by default", () => {
+  it("Agent tab is selected by default", () => {
     render(<ProjectSettings {...defaultProps} />);
+    expect(screen.getByTestId("project-settings-api-key-input")).toBeInTheDocument();
+  });
+
+  it("clicking GitHub tab switches to GitHub section", () => {
+    render(<ProjectSettings {...defaultProps} />);
+    fireEvent.click(screen.getByText("GitHub"));
     expect(screen.getByTestId("project-settings-token-input")).toBeInTheDocument();
+    expect(screen.queryByTestId("project-settings-api-key-input")).not.toBeInTheDocument();
   });
 
   it("clicking Instructions tab switches to instructions section", () => {
     render(<ProjectSettings {...defaultProps} />);
     fireEvent.click(screen.getByText("Instructions"));
     expect(screen.getByTestId("project-settings-textarea")).toBeInTheDocument();
-    expect(screen.queryByTestId("project-settings-token-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("project-settings-api-key-input")).not.toBeInTheDocument();
   });
 
-  it("clicking GitHub tab switches back", () => {
+  it("clicking Agent tab switches back", () => {
     render(<ProjectSettings {...defaultProps} />);
-    fireEvent.click(screen.getByText("Instructions"));
     fireEvent.click(screen.getByText("GitHub"));
-    expect(screen.getByTestId("project-settings-token-input")).toBeInTheDocument();
-    expect(screen.queryByTestId("project-settings-textarea")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Agent"));
+    expect(screen.getByTestId("project-settings-api-key-input")).toBeInTheDocument();
+    expect(screen.queryByTestId("project-settings-token-input")).not.toBeInTheDocument();
   });
 });

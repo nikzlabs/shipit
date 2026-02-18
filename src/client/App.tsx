@@ -1823,6 +1823,9 @@ export default function App() {
           githubStatus={githubStatus}
           onGitHubTokenSubmit={handleGitHubTokenSubmit}
           onGitHubLogout={handleGitHubLogout}
+          authUrl={authUrl}
+          onApiKey={(key) => send({ type: "set_api_key", key })}
+          onClearApiKey={() => send({ type: "clear_api_key" })}
           onClose={() => setSettingsOpen(false)}
         />
       )}
