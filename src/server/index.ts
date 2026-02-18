@@ -23,7 +23,7 @@ import { DeploymentManager } from "./deployment-manager.js";
 import { DeploymentStore } from "./deployment-store.js";
 import { VercelTarget } from "./deploy-targets/vercel.js";
 import { CloudflareTarget } from "./deploy-targets/cloudflare.js";
-import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment, PermissionMode } from "./types.js";
+import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment, FileAttachment, FileContextRef, PermissionMode } from "./types.js";
 
 function getErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -84,6 +84,82 @@ function validateImages(images: ImageAttachment[]): string | null {
   }
 
   return null;
+}
+
+// ---- File attachment validation constants ----
+const MAX_FILE_SIZE_BYTES = 100 * 1024; // 100 KB per file
+const MAX_TOTAL_FILE_SIZE_BYTES = 500 * 1024; // 500 KB total
+const MAX_FILES_PER_MESSAGE = 10;
+
+/**
+ * Format file attachments as <file> tags for Claude's prompt context.
+ */
+function formatFileContext(files: FileAttachment[]): string {
+  return files.map(f => {
+    const lineRange = f.startLine && f.endLine
+      ? ` lines="${f.startLine}-${f.endLine}"`
+      : "";
+    const header = `<file path="${f.path}"${lineRange}>`;
+    return `${header}\n${f.content}\n</file>`;
+  }).join("\n\n");
+}
+
+/**
+ * Validate and read file attachments from disk. The client sends only paths;
+ * the server reads the content and validates sizes.
+ */
+async function resolveFileAttachments(
+  refs: FileContextRef[],
+  sessionDir: string,
+): Promise<{ files: FileAttachment[]; error: string | null }> {
+  if (!Array.isArray(refs) || refs.length === 0) {
+    return { files: [], error: null };
+  }
+
+  if (refs.length > MAX_FILES_PER_MESSAGE) {
+    return { files: [], error: `Maximum ${MAX_FILES_PER_MESSAGE} file attachments per message` };
+  }
+
+  const validated: FileAttachment[] = [];
+  let totalSize = 0;
+
+  for (const ref of refs) {
+    const filePath = typeof ref.path === "string" ? ref.path.trim() : "";
+    if (!filePath) {
+      return { files: [], error: "File path is required" };
+    }
+
+    // Path traversal check
+    const resolved = path.resolve(sessionDir, filePath);
+    if (!resolved.startsWith(sessionDir + "/") && resolved !== sessionDir) {
+      return { files: [], error: `Invalid file path: ${filePath}` };
+    }
+
+    let content: string;
+    try {
+      content = await fs.readFile(resolved, "utf-8");
+    } catch {
+      return { files: [], error: `File not found: ${filePath}` };
+    }
+
+    const size = Buffer.byteLength(content, "utf-8");
+
+    if (size > MAX_FILE_SIZE_BYTES) {
+      return { files: [], error: `File too large: ${filePath} (max 100KB per file)` };
+    }
+
+    totalSize += size;
+    if (totalSize > MAX_TOTAL_FILE_SIZE_BYTES) {
+      return { files: [], error: "Total file attachments exceed 500KB" };
+    }
+
+    validated.push({
+      path: filePath,
+      content,
+    });
+  }
+
+  return { files: validated, error: null };
 }
 
 /**
@@ -605,6 +681,19 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           }
         }
 
+        // Validate and read file attachments from disk if provided
+        const fileRefs: FileContextRef[] | undefined = msg.files && msg.files.length > 0 ? msg.files : undefined;
+        let validatedFiles: FileAttachment[] = [];
+        if (fileRefs) {
+          const dir = activeSessionDir ?? workspaceDir;
+          const result = await resolveFileAttachments(fileRefs, dir);
+          if (result.error) {
+            send({ type: "error", message: result.error });
+            return;
+          }
+          validatedFiles = result.files;
+        }
+
         turnSummary = "";
         accumulatedText = "";
         accumulatedToolUse = [];
@@ -666,12 +755,23 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           mediaType: img.mediaType,
         }));
 
+        // Build file metadata for chat history persistence (path + preview only)
+        const historyFiles = validatedFiles.length > 0
+          ? validatedFiles.map((f) => ({
+              path: f.path,
+              contentPreview: f.content.slice(0, 200),
+              startLine: f.startLine,
+              endLine: f.endLine,
+            }))
+          : undefined;
+
         // Persist the user message once we know the session
         const persistUserMessage = (sessionId: string) => {
           chatHistoryManager.append(sessionId, {
             role: "user",
             text: userText,
             images: historyImages,
+            files: historyFiles,
           });
         };
 
@@ -850,9 +950,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             }
           }
         }
+        // Prepend file context to the prompt if files are attached
+        let prompt = msg.text;
+        if (validatedFiles.length > 0) {
+          const context = formatFileContext(validatedFiles);
+          prompt = `${context}\n\n${prompt}`;
+        }
+
         // Determine permission mode from client message
         const permissionMode: PermissionMode | undefined = msg.permissionMode;
-        currentClaude.run(msg.text, agentSessionId, systemPrompt, images, getActiveDir(), permissionMode);
+        currentClaude.run(prompt, agentSessionId, systemPrompt, images, getActiveDir(), permissionMode);
         broadcastLog("server", "Claude process started");
       }
 
