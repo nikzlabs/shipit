@@ -151,6 +151,41 @@ export class GitManager {
     return null;
   }
 
+  /**
+   * Clone a remote repository into this workspace directory.
+   * The workspace dir must be empty or non-existent.
+   */
+  async clone(url: string, branch?: string): Promise<void> {
+    const args = ["clone", url, "."];
+    if (branch) args.push("--branch", branch);
+    await this.git.raw(args);
+  }
+
+  /**
+   * Get the default branch name from a remote (e.g., "main" or "master").
+   */
+  async getDefaultBranch(remote = "origin"): Promise<string> {
+    const result = await this.git.remote(["show", remote]);
+    const match = (result ?? "").match(/HEAD branch:\s*(\S+)/);
+    return match?.[1] ?? "main";
+  }
+
+  /**
+   * Get total insertions/deletions between the current branch and a base branch.
+   * Used for the PR status bar diff stats.
+   */
+  async diffStatVsBranch(baseBranch: string): Promise<{ insertions: number; deletions: number }> {
+    try {
+      const result = await this.git.diffSummary([`origin/${baseBranch}...HEAD`]);
+      return {
+        insertions: result.insertions,
+        deletions: result.deletions,
+      };
+    } catch {
+      return { insertions: 0, deletions: 0 };
+    }
+  }
+
   /** Check whether git has a user.name and user.email configured (any scope). */
   async hasIdentity(): Promise<boolean> {
     try {
