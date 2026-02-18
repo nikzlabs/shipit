@@ -77,6 +77,8 @@ export interface SessionInfo {
   workspaceDir?: string;
   /** Cached origin remote URL (e.g. "https://github.com/owner/repo.git"). */
   remoteUrl?: string;
+  /** Whether this session has been archived (hidden from sidebar). */
+  archived?: boolean;
 }
 
 // ---- Feature types ----
@@ -160,8 +162,8 @@ export interface WsNewSession {
   type: "new_session";
 }
 
-export interface WsDeleteSession {
-  type: "delete_session";
+export interface WsArchiveSession {
+  type: "archive_session";
   sessionId: string;
 }
 
@@ -369,7 +371,7 @@ export type WsClientMessage =
   | WsRollback
   | WsListSessions
   | WsNewSession
-  | WsDeleteSession
+  | WsArchiveSession
   | WsRenameSession
   | WsListDocs
   | WsGetDoc

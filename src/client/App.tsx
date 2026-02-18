@@ -1125,9 +1125,9 @@ export default function App() {
     setShowTemplates(false);
   }, []);
 
-  const handleSessionDelete = useCallback(
+  const handleSessionArchive = useCallback(
     (sessionId: string) => {
-      send({ type: "delete_session", sessionId });
+      send({ type: "archive_session", sessionId });
     },
     [send]
   );
@@ -1960,7 +1960,7 @@ export default function App() {
             currentSessionId={sessionIdRef.current}
             onResume={handleSessionResume}
             onNew={handleSessionNew}
-            onDelete={handleSessionDelete}
+            onArchive={handleSessionArchive}
             onRename={handleSessionRename}
             onRefresh={handleSessionRefresh}
             collapsed={sidebarCollapsed}

@@ -9,7 +9,7 @@ interface SessionSidebarProps {
   currentSessionId: string | undefined;
   onResume: (sessionId: string) => void;
   onNew: () => void;
-  onDelete: (sessionId: string) => void;
+  onArchive: (sessionId: string) => void;
   onRename: (sessionId: string, title: string) => void;
   onRefresh: () => void;
   collapsed: boolean;
@@ -60,10 +60,10 @@ function PencilIcon() {
   );
 }
 
-function XIcon() {
+function ArchiveIcon() {
   return (
-    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="m20.25 7.5-.625 10.632a2.25 2.25 0 0 1-2.247 2.118H6.622a2.25 2.25 0 0 1-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125Z" />
     </svg>
   );
 }
@@ -72,11 +72,11 @@ interface SessionItemProps {
   session: SessionInfo;
   isCurrent: boolean;
   onResume: (id: string) => void;
-  onDelete: (id: string) => void;
+  onArchive: (id: string) => void;
   onRename: (id: string, title: string) => void;
 }
 
-function SessionItem({ session, isCurrent, onResume, onDelete, onRename }: SessionItemProps) {
+function SessionItem({ session, isCurrent, onResume, onArchive, onRename }: SessionItemProps) {
   const [editingTitle, setEditingTitle] = useState("");
   const [isEditing, setIsEditing] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -159,11 +159,11 @@ function SessionItem({ session, isCurrent, onResume, onDelete, onRename }: Sessi
           </button>
           {!isCurrent && (
             <button
-              onClick={(e) => { e.stopPropagation(); onDelete(session.id); }}
-              className="p-0.5 rounded text-gray-600 hover:text-red-400 hover:bg-gray-700 transition-colors"
-              title="Delete session"
+              onClick={(e) => { e.stopPropagation(); onArchive(session.id); }}
+              className="p-0.5 rounded text-gray-600 hover:text-yellow-400 hover:bg-gray-700 transition-colors"
+              title="Archive session"
             >
-              <XIcon />
+              <ArchiveIcon />
             </button>
           )}
         </div>
@@ -177,11 +177,11 @@ interface GroupProps {
   sessions: SessionInfo[];
   currentSessionId: string | undefined;
   onResume: (id: string) => void;
-  onDelete: (id: string) => void;
+  onArchive: (id: string) => void;
   onRename: (id: string, title: string) => void;
 }
 
-function SessionGroup({ label, sessions, currentSessionId, onResume, onDelete, onRename }: GroupProps) {
+function SessionGroup({ label, sessions, currentSessionId, onResume, onArchive, onRename }: GroupProps) {
   const [expanded, setExpanded] = useState(true);
 
   return (
@@ -202,7 +202,7 @@ function SessionGroup({ label, sessions, currentSessionId, onResume, onDelete, o
               session={s}
               isCurrent={s.id === currentSessionId}
               onResume={onResume}
-              onDelete={onDelete}
+              onArchive={onArchive}
               onRename={onRename}
             />
           ))}
@@ -217,7 +217,7 @@ export function SessionSidebar({
   currentSessionId,
   onResume,
   onNew,
-  onDelete,
+  onArchive,
   onRename,
   onRefresh: _onRefresh,
   collapsed,
@@ -308,7 +308,7 @@ export function SessionSidebar({
               sessions={groupSessions}
               currentSessionId={currentSessionId}
               onResume={onResume}
-              onDelete={onDelete}
+              onArchive={onArchive}
               onRename={onRename}
             />
           ))
