@@ -209,6 +209,18 @@ export interface WsGitHubCreateRepo {
   isPrivate?: boolean;
 }
 
+export interface WsGitHubCreatePR {
+  type: "github_create_pr";
+  title: string;
+  body: string;
+  base: string;
+  draft?: boolean;
+}
+
+export interface WsGitHubListBranches {
+  type: "github_list_branches";
+}
+
 // ---- Git identity messages ----
 
 export interface WsSetGitIdentity {
@@ -298,6 +310,8 @@ export type WsClientMessage =
   | WsGitHubGetRemotes
   | WsGitHubLogout
   | WsGitHubCreateRepo
+  | WsGitHubCreatePR
+  | WsGitHubListBranches
   | WsSetGitIdentity
   | WsCreateCheckpoint
   | WsForkThread
@@ -542,6 +556,20 @@ export interface WsGitHubRepoCreated {
   message?: string;
 }
 
+export interface WsGitHubPRCreated {
+  type: "github_pr_created";
+  success: boolean;
+  url?: string;
+  number?: number;
+  message?: string;
+}
+
+export interface WsGitHubBranches {
+  type: "github_branches";
+  current: string;
+  remote: string[];
+}
+
 // ---- System prompt server messages ----
 
 export interface WsSystemPrompt {
@@ -751,6 +779,8 @@ export type WsServerMessage =
   | WsGitHubPullResult
   | WsGitHubRemotes
   | WsGitHubRepoCreated
+  | WsGitHubPRCreated
+  | WsGitHubBranches
   | WsGitIdentityRequired
   | WsGitIdentitySet
   | WsCheckpointCreated
