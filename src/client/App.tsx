@@ -1953,7 +1953,7 @@ export default function App() {
       <header className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-gray-200 dark:border-gray-800">
         <div className="flex items-center gap-3 sm:gap-4 min-w-0">
           <h1 className="text-lg font-semibold tracking-tight shrink-0 flex items-center gap-1.5">
-            <img src={theme === "dark" ? "./favicon.svg" : "./favicon-light.svg"} alt="" className="w-5 h-5" />
+            <img src={theme === "dark" ? "/favicon.svg" : "/favicon-light.svg"} alt="" className="w-5 h-5" />
             ShipIt
           </h1>
         </div>
