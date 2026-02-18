@@ -26,7 +26,8 @@ import { activityFromTool, type StreamingActivity } from "./components/Streaming
 import { ConnectionBanner } from "./components/ConnectionBanner.js";
 import { MobileTabBar, type MobilePanel } from "./components/MobileTabBar.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
-import { TemplateSelector, type TemplateInfo } from "./components/TemplateSelector.js";
+import { type TemplateInfo } from "./components/TemplateSelector.js";
+import { HomeScreen } from "./components/HomeScreen.js";
 import { UsageModal, type SessionUsage, type UsageStats, type TurnTokenData } from "./components/UsageModal.js";
 import { StatusBar, type ModelInfo } from "./components/StatusBar.js";
 import { SystemPromptEditor } from "./components/SystemPromptEditor.js";
@@ -114,8 +115,9 @@ export default function App() {
   const [shellStarted, setShellStarted] = useState(false);
   const terminalRef = useRef<InteractiveTerminalHandle>(null);
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
-  const [applyingTemplate, setApplyingTemplate] = useState(false);
   const [showTemplates, setShowTemplates] = useState(!urlSessionId);
+  const [selectedRepoUrl, setSelectedRepoUrl] = useState<string | null>(null);
+  const [creatingRepo, setCreatingRepo] = useState(false);
   const [githubStatus, setGithubStatus] = useState<{ authenticated: boolean; username?: string; avatarUrl?: string }>({ authenticated: false });
   const [showGitHubAuth, setShowGitHubAuth] = useState(false);
   const [showCreateRepo, setShowCreateRepo] = useState(false);
@@ -346,6 +348,7 @@ export default function App() {
       setMessages([]);
       setIsLoading(false);
       setShowTemplates(true);
+      setSelectedRepoUrl(null);
       setViewingFile(null);
       setViewingFileContent(null);
       setViewingFileBinary(false);
@@ -513,7 +516,6 @@ export default function App() {
       }
       setIsLoading(false);
       setActivity(undefined);
-      setApplyingTemplate(false);
       // Mark any in-flight streaming message as done, then append the error
       setMessages((prev) => {
         const last = prev[prev.length - 1];
@@ -651,10 +653,16 @@ export default function App() {
     }
 
     if (data.type === "template_applied") {
-      setApplyingTemplate(false);
       setShowTemplates(false);
       // Refresh file tree in case user is on that tab
       send({ type: "get_file_tree" });
+    }
+
+    if (data.type === "home_repo_ready") {
+      setCreatingRepo(false);
+      if (data.success && data.repoUrl) {
+        setSelectedRepoUrl(data.repoUrl);
+      }
     }
 
     if (data.type === "github_status") {
@@ -1129,6 +1137,7 @@ export default function App() {
     setContextTokens(0);
     setTurnTokens([]);
     setShowTemplates(true);
+    setSelectedRepoUrl(null);
     // Reset session-specific UI state
     setViewingFile(null);
     setViewingFileContent(null);
@@ -1147,17 +1156,6 @@ export default function App() {
     }
   }, [send, templates.length, navigate]);
 
-  const handleTemplateSelect = useCallback(
-    (templateId: string) => {
-      setApplyingTemplate(true);
-      send({ type: "apply_template", templateId });
-    },
-    [send],
-  );
-
-  const handleTemplateDismiss = useCallback(() => {
-    setShowTemplates(false);
-  }, []);
 
   const handleSessionArchive = useCallback(
     (sessionId: string) => {
@@ -1252,6 +1250,34 @@ export default function App() {
       setShowCreateRepo(false);
     },
     [send],
+  );
+
+  const handleHomeCreateRepo = useCallback(
+    (name: string, description: string, isPrivate: boolean, templateId: string) => {
+      setCreatingRepo(true);
+      send({ type: "home_create_repo_with_template", repoName: name, description, isPrivate, templateId });
+    },
+    [send],
+  );
+
+  const handleHomeSendWithRepo = useCallback(
+    (repoUrl: string, text: string, images?: Array<{ data: string; mediaType: string; filename: string }>) => {
+      requestPermission();
+      setShowTemplates(false);
+      setMessages((prev) => [...prev, { role: "user", text }]);
+      setIsLoading(true);
+      setActivity({ label: "Setting up repository..." });
+      send({
+        type: "home_send_with_repo",
+        repoUrl,
+        text,
+        images: images?.map((img) => ({ data: img.data, mediaType: img.mediaType })),
+        files: pendingFiles.length > 0 ? pendingFiles : undefined,
+        permissionMode: permissionMode !== "auto" ? permissionMode : undefined,
+      });
+      setPendingFiles([]);
+    },
+    [send, requestPermission, permissionMode, pendingFiles],
   );
 
   const handlePROpen = useCallback(() => {
@@ -1652,6 +1678,7 @@ export default function App() {
 
   // Show template picker for new sessions with no messages
   const showTemplatePicker = showTemplates && messages.length === 0 && !isLoading;
+  const showHomeScreen = showTemplatePicker;
 
   // Shared chat panel content
   const chatPanel = (
@@ -1670,12 +1697,25 @@ export default function App() {
           }}
         />
       )}
-      {showTemplatePicker ? (
-        <TemplateSelector
+      {showHomeScreen ? (
+        <HomeScreen
+          sessions={sessions}
+          githubStatus={githubStatus}
           templates={templates}
-          onSelect={handleTemplateSelect}
-          onDismiss={handleTemplateDismiss}
-          applying={applyingTemplate}
+          onSendWithRepo={handleHomeSendWithRepo}
+          onNewRepo={handleHomeCreateRepo}
+          onSearchRepos={handleImportSearch}
+          searchResults={importSearchResults}
+          disabled={isLoading || status !== "open"}
+          permissionMode={permissionMode}
+          onPermissionModeChange={handlePermissionModeChange}
+          pendingFiles={pendingFiles}
+          onRemoveFile={handleRemoveFile}
+          onAddFile={handleAddFile}
+          fileTree={fileTree}
+          creatingRepo={creatingRepo}
+          selectedRepoUrl={selectedRepoUrl}
+          onSelectRepo={setSelectedRepoUrl}
         />
       ) : (
         <MessageList
@@ -1689,7 +1729,7 @@ export default function App() {
           checkpoints={checkpointDividers}
         />
       )}
-      {!showTemplatePicker && (
+      {!showHomeScreen && (
         <div className="border-t border-gray-200 dark:border-gray-800 px-4 py-1.5 flex items-center gap-2">
           <ThreadIndicator
             threads={threads}
@@ -1701,7 +1741,7 @@ export default function App() {
           />
         </div>
       )}
-      {!showTemplatePicker && threads.length > 0 && (
+      {!showHomeScreen && threads.length > 0 && (
         <ThreadTimeline
           threads={threads}
           activeThreadId={activeThreadId}
@@ -1709,17 +1749,17 @@ export default function App() {
           onSwitchThread={handleSwitchThread}
         />
       )}
-      {!showTemplatePicker && (
+      {!showHomeScreen && (
         <GitHistory
           commits={gitCommits}
           onRollback={handleRollback}
           onRefresh={handleGitRefresh}
         />
       )}
-      {!showTemplatePicker && (
+      {!showHomeScreen && (
         <StatusBar modelInfo={modelInfo} contextTokens={contextTokens} />
       )}
-      {!showTemplatePicker && (
+      {!showHomeScreen && (
         <MessageInput
           onSend={handleSend}
           disabled={isLoading || status !== "open"}
@@ -1975,13 +2015,13 @@ export default function App() {
         /* ── Mobile: single panel with bottom tab bar ── */
         <>
           <div className="flex flex-col flex-1 min-h-0">
-            {showTemplatePicker || mobilePanel === "chat" ? (
+            {showHomeScreen || mobilePanel === "chat" ? (
               <div className="flex flex-col flex-1 min-h-0">{chatPanel}</div>
             ) : (
               <div className="flex flex-col flex-1 min-h-0 bg-gray-50 dark:bg-gray-900">{rightPanel}</div>
             )}
           </div>
-          {!showTemplatePicker && (
+          {!showHomeScreen && (
             <MobileTabBar activePanel={mobilePanel} onChangePanel={setMobilePanel} />
           )}
         </>
@@ -2007,13 +2047,13 @@ export default function App() {
           <div ref={containerRef} className="flex flex-1 min-h-0">
             {/* Left column — Chat */}
             <div
-              className={`flex flex-col min-w-0 ${showTemplatePicker ? "" : "border-r border-gray-200 dark:border-gray-800"}`}
-              style={{ width: showTemplatePicker ? "100%" : `${fraction * 100}%` }}
+              className={`flex flex-col min-w-0 ${showHomeScreen ? "" : "border-r border-gray-200 dark:border-gray-800"}`}
+              style={{ width: showHomeScreen ? "100%" : `${fraction * 100}%` }}
             >
               {chatPanel}
             </div>
 
-            {!showTemplatePicker && (
+            {!showHomeScreen && (
               <>
                 {/* Drag handle */}
                 <ResizeHandle isDragging={isDragging} onMouseDown={onMouseDown} onTouchStart={onTouchStart} />
