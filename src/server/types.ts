@@ -243,6 +243,32 @@ export interface WsGitHubListBranches {
   type: "github_list_branches";
 }
 
+// ---- GitHub import messages ----
+
+export interface WsGitHubImportRepo {
+  type: "github_import_repo";
+  /** Full clone URL or "owner/repo" shorthand. */
+  url: string;
+  /** Optional branch to check out. Defaults to repo's default branch. */
+  branch?: string;
+}
+
+export interface WsGitHubSearchRepos {
+  type: "github_search_repos";
+  query: string;
+}
+
+// ---- PR status & merge messages ----
+
+export interface WsGetPrStatus {
+  type: "get_pr_status";
+}
+
+export interface WsMergePr {
+  type: "merge_pr";
+  method?: "merge" | "squash" | "rebase";
+}
+
 // ---- Git identity messages ----
 
 export interface WsSetGitIdentity {
@@ -348,6 +374,10 @@ export type WsClientMessage =
   | WsSetApiKey
   | WsPasteAuthCode
   | WsListFeatures
+  | WsGitHubImportRepo
+  | WsGitHubSearchRepos
+  | WsGetPrStatus
+  | WsMergePr
   | WsListDeployTargets
   | WsDeployConfigure
   | WsInitiateDeploy
@@ -599,6 +629,63 @@ export interface WsGitHubBranches {
   remote: string[];
 }
 
+// ---- GitHub import server messages ----
+
+export interface WsGitHubImportProgress {
+  type: "github_import_progress";
+  stage: "cloning" | "installing" | "ready";
+  message: string;
+}
+
+export interface WsGitHubImportComplete {
+  type: "github_import_complete";
+  success: boolean;
+  sessionId?: string;
+  message?: string;
+}
+
+export interface WsGitHubSearchResults {
+  type: "github_search_results";
+  repos: Array<{
+    fullName: string;
+    description: string | null;
+    private: boolean;
+    defaultBranch: string;
+    cloneUrl: string;
+  }>;
+}
+
+// ---- PR status & merge server messages ----
+
+export interface WsPrStatus {
+  type: "pr_status";
+  pr: {
+    url: string;
+    number: number;
+    title: string;
+    baseBranch: string;
+    headBranch: string;
+    insertions: number;
+    deletions: number;
+    checks: {
+      state: "pending" | "success" | "failure" | "none";
+      total: number;
+      passed: number;
+      failed: number;
+      pending: number;
+    };
+    autoMergeEnabled: boolean;
+    mergeable: boolean;
+  } | null;
+}
+
+export interface WsMergePrResult {
+  type: "merge_pr_result";
+  success: boolean;
+  message: string;
+  autoMergeEnabled?: boolean;
+}
+
 // ---- Feature server messages ----
 
 export interface WsFeatureList {
@@ -830,4 +917,9 @@ export type WsServerMessage =
   | WsDeployStatus
   | WsDeployComplete
   | WsDeployError
-  | WsDeployHistory;
+  | WsDeployHistory
+  | WsGitHubImportProgress
+  | WsGitHubImportComplete
+  | WsGitHubSearchResults
+  | WsPrStatus
+  | WsMergePrResult;

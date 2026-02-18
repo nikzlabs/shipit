@@ -212,6 +212,55 @@ export class StubGitHubAuthManager extends EventEmitter {
       number: 1,
     };
   }
+
+  async searchRepos(_query: string) {
+    return [
+      {
+        fullName: "test-user/test-repo",
+        description: "A test repository",
+        private: false,
+        defaultBranch: "main",
+        cloneUrl: "https://github.com/test-user/test-repo.git",
+      },
+    ];
+  }
+
+  async findPullRequest(_owner: string, _repo: string, _head: string) {
+    return this._prData;
+  }
+
+  async mergePullRequest(_owner: string, _repo: string, _pullNumber: number, _method: string = "merge") {
+    return this._mergeResult ?? { success: true, message: "Pull request merged" };
+  }
+
+  async enableAutoMerge(_owner: string, _repo: string, _pullNumber: number, _method: string = "MERGE") {
+    return { success: true, message: "Auto-merge enabled — PR will merge when checks pass" };
+  }
+
+  async getCheckStatus(_owner: string, _repo: string, _ref: string) {
+    return this._checkStatus ?? { state: "none" as const, total: 0, passed: 0, failed: 0, pending: 0 };
+  }
+
+  // ---- Test control methods ----
+
+  private _prData: { url: string; number: number; base: string; title: string } | null = null;
+  private _mergeResult: { success: boolean; message: string } | null = null;
+  private _checkStatus: { state: "pending" | "success" | "failure" | "none"; total: number; passed: number; failed: number; pending: number } | null = null;
+
+  /** Set what findPullRequest returns for tests. */
+  setPrData(data: { url: string; number: number; base: string; title: string } | null) {
+    this._prData = data;
+  }
+
+  /** Set what mergePullRequest returns for tests. */
+  setMergeResult(result: { success: boolean; message: string } | null) {
+    this._mergeResult = result;
+  }
+
+  /** Set what getCheckStatus returns for tests. */
+  setCheckStatus(status: { state: "pending" | "success" | "failure" | "none"; total: number; passed: number; failed: number; pending: number } | null) {
+    this._checkStatus = status;
+  }
 }
 
 /**

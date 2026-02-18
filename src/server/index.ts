@@ -461,6 +461,31 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
     let claude: ClaudeProcess | null = null;
     let turnSummary = "";
+
+    // ---- Auto-push debounce state ----
+    let pushTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleAutoPush = (git: GitManager, sendFn: typeof send) => {
+      if (pushTimer) clearTimeout(pushTimer);
+      pushTimer = setTimeout(async () => {
+        pushTimer = null;
+        try {
+          // Check conditions: authenticated, remote exists, not detached HEAD
+          if (!githubAuthManager.authenticated) return;
+          const remotes = await git.getRemotes();
+          const origin = remotes.find((r) => r.name === "origin");
+          if (!origin) return;
+
+          const branch = await git.getCurrentBranch();
+          if (!branch) return;
+
+          await git.push("origin", branch);
+          sendFn({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
+        } catch (err) {
+          broadcastLog("server", `Auto-push failed: ${getErrorMessage(err)}`);
+        }
+      }, 5000);
+    };
     // Per-connection active session state
     let activeAppSessionId: string | undefined;
     let activeSessionDir: string | null = null;
@@ -768,6 +793,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             const hash = await git.autoCommit(firstLine);
             if (hash) {
               send({ type: "git_committed", hash, message: firstLine });
+              // Schedule auto-push (debounced)
+              scheduleAutoPush(git, send);
             }
           } catch (err) {
             console.error("[git] auto-commit failed:", getErrorMessage(err));
@@ -1158,6 +1185,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
               const hash = await git.autoCommit(firstLine);
               if (hash) {
                 send({ type: "git_committed", hash, message: firstLine });
+                // Schedule auto-push (debounced)
+                scheduleAutoPush(git, send);
               }
             } catch (err) {
               console.error("[git] auto-commit failed:", getErrorMessage(err));
@@ -1422,6 +1451,197 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           });
         } catch (err) {
           send({ type: "error", message: `Failed to create PR: ${getErrorMessage(err)}` });
+        }
+      }
+
+      if (msg.type === "github_import_repo") {
+        if (!githubAuthManager.authenticated) {
+          send({ type: "error", message: "Not authenticated with GitHub" });
+          return;
+        }
+
+        let url = typeof msg.url === "string" ? msg.url.trim() : "";
+        if (!url) {
+          send({ type: "error", message: "Repository URL is required" });
+          return;
+        }
+
+        // Support "owner/repo" shorthand → full HTTPS URL
+        if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(url)) {
+          url = `https://github.com/${url}.git`;
+        }
+
+        // Validate URL format
+        if (!url.startsWith("https://") && !url.startsWith("git@")) {
+          send({ type: "error", message: "Invalid repository URL" });
+          return;
+        }
+
+        try {
+          // 1. Create a new session
+          send({ type: "github_import_progress", stage: "cloning", message: "Creating session..." });
+          const importSessionId = crypto.randomUUID();
+          const importSessionDir = path.join(sessionsRoot, importSessionId);
+          await fs.mkdir(importSessionDir, { recursive: true });
+
+          // 2. Clone the repo
+          send({ type: "github_import_progress", stage: "cloning", message: "Cloning repository..." });
+          const git = createGitManager(importSessionDir);
+          await git.clone(url, msg.branch || undefined);
+
+          // 3. Configure credentials for push
+          if (githubAuthManager.authenticated) {
+            githubAuthManager.configureGitCredentials(importSessionDir);
+          }
+
+          // 4. Register session
+          const repoName = url.split("/").pop()?.replace(".git", "") ?? "imported-repo";
+          sessionManager.track(importSessionId, repoName, importSessionDir);
+          threadManager.init(importSessionId);
+
+          // 5. Detect and install dependencies
+          const pkgJsonPath = path.join(importSessionDir, "package.json");
+          const hasPkg = await fs.access(pkgJsonPath).then(() => true).catch(() => false);
+          if (hasPkg) {
+            send({ type: "github_import_progress", stage: "installing", message: "Installing dependencies..." });
+          }
+
+          send({ type: "github_import_progress", stage: "ready", message: "Import complete" });
+          send({
+            type: "github_import_complete",
+            success: true,
+            sessionId: importSessionId,
+            message: `Imported ${repoName} successfully`,
+          });
+        } catch (err) {
+          send({
+            type: "github_import_complete",
+            success: false,
+            message: `Import failed: ${getErrorMessage(err)}`,
+          });
+        }
+      }
+
+      if (msg.type === "github_search_repos") {
+        const query = typeof msg.query === "string" ? msg.query.trim() : "";
+        if (!query || query.length < 2) {
+          send({ type: "github_search_results", repos: [] });
+          return;
+        }
+
+        const repos = await githubAuthManager.searchRepos(query);
+        send({ type: "github_search_results", repos });
+      }
+
+      if (msg.type === "get_pr_status") {
+        if (!githubAuthManager.authenticated) {
+          send({ type: "pr_status", pr: null });
+          return;
+        }
+
+        try {
+          const git = getActiveGitManager();
+          const remotes = await git.getRemotes();
+          const origin = remotes.find((r) => r.name === "origin");
+          if (!origin) {
+            send({ type: "pr_status", pr: null });
+            return;
+          }
+
+          const parsed = GitManager.parseGitHubRemote(origin.url);
+          if (!parsed) {
+            send({ type: "pr_status", pr: null });
+            return;
+          }
+
+          const head = await git.getCurrentBranch();
+          const pr = await githubAuthManager.findPullRequest(parsed.owner, parsed.repo, head);
+
+          if (!pr) {
+            send({ type: "pr_status", pr: null });
+            return;
+          }
+
+          const stats = await git.diffStatVsBranch(pr.base);
+          const checks = await githubAuthManager.getCheckStatus(parsed.owner, parsed.repo, head);
+
+          send({
+            type: "pr_status",
+            pr: {
+              url: pr.url,
+              number: pr.number,
+              title: pr.title,
+              baseBranch: pr.base,
+              headBranch: head,
+              insertions: stats.insertions,
+              deletions: stats.deletions,
+              checks,
+              autoMergeEnabled: false,
+              mergeable: true,
+            },
+          });
+        } catch {
+          send({ type: "pr_status", pr: null });
+        }
+      }
+
+      if (msg.type === "merge_pr") {
+        if (!githubAuthManager.authenticated) {
+          send({ type: "merge_pr_result", success: false, message: "Not authenticated with GitHub" });
+          return;
+        }
+
+        try {
+          const git = getActiveGitManager();
+          const remotes = await git.getRemotes();
+          const origin = remotes.find((r) => r.name === "origin");
+          if (!origin) {
+            send({ type: "merge_pr_result", success: false, message: "No origin remote configured" });
+            return;
+          }
+
+          const parsed = GitManager.parseGitHubRemote(origin.url);
+          if (!parsed) {
+            send({ type: "merge_pr_result", success: false, message: "Remote URL is not a GitHub repository" });
+            return;
+          }
+
+          const head = await git.getCurrentBranch();
+          const pr = await githubAuthManager.findPullRequest(parsed.owner, parsed.repo, head);
+          if (!pr) {
+            send({ type: "merge_pr_result", success: false, message: "No active PR for current branch" });
+            return;
+          }
+
+          const method = msg.method || "merge";
+
+          // First, try direct merge
+          const result = await githubAuthManager.mergePullRequest(parsed.owner, parsed.repo, pr.number, method);
+
+          if (result.success) {
+            send({ type: "merge_pr_result", success: true, message: "Pull request merged" });
+            send({ type: "pr_status", pr: null });
+            return;
+          }
+
+          // If merge failed because checks are pending, enable auto-merge
+          const checks = await githubAuthManager.getCheckStatus(parsed.owner, parsed.repo, head);
+          if (checks.state === "pending") {
+            const graphqlMethod = method === "merge" ? "MERGE" as const : method === "squash" ? "SQUASH" as const : "REBASE" as const;
+            const autoResult = await githubAuthManager.enableAutoMerge(parsed.owner, parsed.repo, pr.number, graphqlMethod);
+            send({
+              type: "merge_pr_result",
+              success: autoResult.success,
+              message: autoResult.message,
+              autoMergeEnabled: autoResult.success,
+            });
+            return;
+          }
+
+          // Checks failed or other issue
+          send({ type: "merge_pr_result", success: false, message: result.message });
+        } catch (err) {
+          send({ type: "merge_pr_result", success: false, message: `Merge failed: ${getErrorMessage(err)}` });
         }
       }
 
@@ -1869,6 +2089,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       if (claude) {
         claude.kill();
         claude = null;
+      }
+      if (pushTimer) {
+        clearTimeout(pushTimer);
+        pushTimer = null;
       }
 
       // Stop periodic port scanning when the last client disconnects
