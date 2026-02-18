@@ -3,6 +3,8 @@ status: paused
 ---
 # 030 — GitHub Device Authorization Flow
 
+> **Paused**: This feature requires deploying a publicly accessible website and registering a new GitHub OAuth App before implementation can proceed.
+
 ## Summary
 
 Add GitHub's device authorization flow as an alternative to manual PAT entry. Users click "Sign in with GitHub", see a one-time code, authorize in a browser tab, and are authenticated — no token copy/paste needed.
