@@ -35,7 +35,7 @@ import { FeaturesPanel } from "./components/FeaturesPanel.js";
 import { PullRequestModal } from "./components/PullRequestModal.js";
 import { ImportRepoOverlay } from "./components/ImportRepoOverlay.js";
 import { PrStatusBar } from "./components/PrStatusBar.js";
-import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, FeatureInfo, PermissionMode } from "../server/types.js";
+import type { WsServerMessage, WsSessionRenamed, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, FeatureInfo, PermissionMode, FileContextRef } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal" | "features";
 
@@ -153,6 +153,7 @@ export default function App() {
     mergeable: boolean;
   } | null>(null);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(getSavedPermissionMode());
+  const [pendingFiles, setPendingFiles] = useState<FileContextRef[]>([]);
   const sessionIdRef = useRef<string | undefined>(getSavedSessionId());
   // Track whether we've already requested history for the current connection
   const historyLoadedRef = useRef(false);
@@ -575,6 +576,7 @@ export default function App() {
         text: m.text,
         toolUse: m.toolUse,
         images: m.images,
+        files: m.files,
         isError: m.isError,
         streaming: false,
       }));
@@ -914,6 +916,24 @@ export default function App() {
     });
   }, []);
 
+  const handleAddFile = useCallback(
+    (filePath: string) => {
+      setPendingFiles((prev) => {
+        // Deduplicate by path
+        if (prev.some((f) => f.path === filePath)) return prev;
+        return [...prev, { path: filePath }];
+      });
+    },
+    [],
+  );
+
+  const handleRemoveFile = useCallback(
+    (index: number) => {
+      setPendingFiles((prev) => prev.filter((_, i) => i !== index));
+    },
+    [],
+  );
+
   const handleSend = useCallback(
     (text: string, images?: Array<{ data: string; mediaType: string; filename: string }>) => {
       requestPermission();
@@ -926,18 +946,27 @@ export default function App() {
         data: img.data,
         mediaType: img.mediaType,
       }));
-      setMessages((prev) => [...prev, { role: "user", text, images: messageImages }]);
+      const filesForMessage = pendingFiles.length > 0
+        ? pendingFiles.map((f) => ({
+            path: f.path,
+            contentPreview: "",
+          }))
+        : undefined;
+      setMessages((prev) => [...prev, { role: "user", text, images: messageImages, files: filesForMessage }]);
       setIsLoading(true);
       setActivity({ label: "Thinking..." });
+      const fileRefs = pendingFiles.length > 0 ? pendingFiles : undefined;
       send({
         type: "send_message",
         text,
         sessionId: sessionIdRef.current,
         images,
+        files: fileRefs,
         permissionMode: permissionMode !== "auto" ? permissionMode : undefined,
       });
+      setPendingFiles([]);
     },
-    [send, requestPermission, permissionMode]
+    [send, requestPermission, permissionMode, pendingFiles]
   );
 
   const handleEditMessage = useCallback(
@@ -1433,6 +1462,7 @@ export default function App() {
             onRefresh={handleFileTreeRefresh}
             onFileClick={handleFileClick}
             selectedFile={viewingFile}
+            onAddToChat={handleAddFile}
           />
         )}
       </div>
@@ -1526,6 +1556,10 @@ export default function App() {
           disabled={isLoading || status !== "open"}
           permissionMode={permissionMode}
           onPermissionModeChange={handlePermissionModeChange}
+          pendingFiles={pendingFiles}
+          onRemoveFile={handleRemoveFile}
+          onAddFile={handleAddFile}
+          fileTree={fileTree}
         />
       )}
     </>

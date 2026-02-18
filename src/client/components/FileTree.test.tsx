@@ -125,8 +125,9 @@ describe("FileTree", () => {
     render(
       <FileTree tree={sampleTree} onRefresh={() => {}} selectedFile="src/index.ts" />
     );
-    const fileButton = screen.getByText("index.ts").closest("button");
-    expect(fileButton?.className).toContain("bg-blue-900");
+    // The highlight class is on the wrapper div, not the inner button
+    const fileRow = screen.getByText("index.ts").closest("div[draggable]") ?? screen.getByText("index.ts").closest("button")?.parentElement;
+    expect(fileRow?.className).toContain("bg-blue-900");
   });
 
   it("does not highlight non-selected files", () => {

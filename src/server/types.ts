@@ -111,13 +111,29 @@ export interface ImageAttachment {
   filename?: string;  // optional original filename
 }
 
+export interface FileAttachment {
+  /** Relative path within the workspace (e.g., "src/utils/format.ts"). */
+  path: string;
+  /** Full file content at the time of attachment. */
+  content: string;
+  /** Optional line range — if the user selected specific lines. */
+  startLine?: number;
+  endLine?: number;
+}
+
 export type PermissionMode = "auto" | "plan" | "normal";
+
+export interface FileContextRef {
+  /** Relative path within the workspace. */
+  path: string;
+}
 
 export interface WsSendMessage {
   type: "send_message";
   text: string;
   sessionId?: string;
   images?: ImageAttachment[];
+  files?: FileContextRef[];
   permissionMode?: PermissionMode;
 }
 
@@ -472,6 +488,12 @@ export interface WsChatHistoryMessage {
   images?: Array<{
     data: string;      // base64 image data (inlined for small images)
     mediaType: string;
+  }>;
+  files?: Array<{
+    path: string;
+    contentPreview: string;  // first 200 chars of content
+    startLine?: number;
+    endLine?: number;
   }>;
   isError?: boolean;
 }
