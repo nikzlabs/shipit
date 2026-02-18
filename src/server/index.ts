@@ -313,6 +313,11 @@ export interface AppDeps {
    * Defaults to `new GitIdentityStore(workspaceDir)`.
    */
   gitIdentityStore?: GitIdentityStore;
+  /**
+   * Debounce delay in milliseconds for auto-push after commit.
+   * Defaults to 5000 (5 seconds). Set lower in tests to avoid long waits.
+   */
+  autoPushDebounceMs?: number;
 }
 
 /**
@@ -334,6 +339,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     serverPort = 3000,
     portScanIntervalMs = 5000,
     baselinePorts = [],
+    autoPushDebounceMs = 5000,
   } = deps;
 
   // Build effective agent factory — agentFactory takes precedence over claudeFactory
@@ -675,7 +681,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         } catch (err) {
           broadcastLog("server", `Auto-push failed: ${getErrorMessage(err)}`);
         }
-      }, 5000);
+      }, autoPushDebounceMs);
     };
     // Per-connection interactive terminal
     let terminal: TerminalProcess | null = null;

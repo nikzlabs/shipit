@@ -23,7 +23,7 @@ import {
   waitForClaude,
 } from "./test-helpers.js";
 
-describe("Integration: Conversation threads & checkpoints", () => {
+describe("Integration: Threads — fork & switch", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
@@ -73,16 +73,10 @@ describe("Integration: Conversation threads & checkpoints", () => {
     }
   });
 
-  /** Drain initial connect messages (preview_status, buffered logs, etc.). */
   async function drainConnect(client: TestClient): Promise<void> {
-    // The first non-log message on connect is preview_status
     await client.receiveSkipLogs(5000);
   }
 
-  /**
-   * Wait for a specific message type, skipping log_entry messages.
-   * Returns the matching message or throws on timeout.
-   */
   async function waitForMessage(client: TestClient, type: string, timeoutMs = 5000): Promise<any> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -98,10 +92,6 @@ describe("Integration: Conversation threads & checkpoints", () => {
     throw new Error(`Never received ${type}`);
   }
 
-  /**
-   * Helper: send a message and complete the Claude turn.
-   * Returns the session ID from the session_started event.
-   */
   async function doMessageTurn(
     client: TestClient,
     text: string,
@@ -110,14 +100,12 @@ describe("Integration: Conversation threads & checkpoints", () => {
     client.send({ type: "send_message", text, sessionId });
     const claude = await waitForClaude(() => lastClaude);
 
-    // Simulate init event
     claude.emit("event", {
       type: "system",
       subtype: "init",
       session_id: "agent-session-1",
     });
 
-    // Collect session ID from session_started
     let sid = sessionId;
     const sessionMsg = await waitForMessage(client, "session_started");
     if (!sid) {
@@ -125,113 +113,25 @@ describe("Integration: Conversation threads & checkpoints", () => {
     }
     if (!sid) throw new Error("Never received session_started");
 
-    // Simulate assistant response
     claude.emit("event", {
       type: "assistant",
       message: { content: [{ type: "text", text: `Response to: ${text}` }] },
     });
 
-    // Complete the turn
     claude.finish("agent-session-1");
 
-    // Drain all remaining messages for this turn (claude_event, result, done, git_committed, logs...)
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
       try {
         const msg = await client.receive(500);
-        // Stop after we've seen the git_committed (or timeout)
         if (msg.type === "git_committed") break;
       } catch {
-        // Timeout on receive — we've drained everything
         break;
       }
     }
 
     return sid!;
   }
-
-  // ---- list_threads ----
-
-  it("list_threads returns error when no active session", async () => {
-    const client = await TestClient.connect(port);
-    await drainConnect(client);
-
-    client.send({ type: "list_threads" } as any);
-    const msg = await client.receiveSkipLogs();
-
-    expect(msg).toMatchObject({
-      type: "error",
-      message: "No active session",
-    });
-
-    client.close();
-  });
-
-  it("list_threads returns threads after session established", async () => {
-    const client = await TestClient.connect(port);
-    await drainConnect(client);
-
-    await doMessageTurn(client, "Hello");
-
-    client.send({ type: "list_threads" } as any);
-    const msg = await waitForMessage(client, "thread_list");
-
-    expect(msg.threads).toHaveLength(1);
-    expect(msg.threads[0].name).toBe("main");
-    expect(msg.threads[0].isActive).toBe(true);
-    expect(msg.activeThreadId).toBe(msg.threads[0].id);
-
-    client.close();
-  });
-
-  // ---- create_checkpoint ----
-
-  it("create_checkpoint returns error when no active session", async () => {
-    const client = await TestClient.connect(port);
-    await drainConnect(client);
-
-    client.send({ type: "create_checkpoint" } as any);
-    const msg = await client.receiveSkipLogs();
-
-    expect(msg).toMatchObject({
-      type: "error",
-      message: "No active session",
-    });
-
-    client.close();
-  });
-
-  it("create_checkpoint creates checkpoint on active thread", async () => {
-    const client = await TestClient.connect(port);
-    await drainConnect(client);
-
-    const sessionId = await doMessageTurn(client, "Build a todo app");
-
-    client.send({ type: "create_checkpoint", label: "Before refactor" } as any);
-    const msg = await waitForMessage(client, "checkpoint_created");
-
-    expect(msg.checkpoint.label).toBe("Before refactor");
-    expect(msg.checkpoint.sessionId).toBe(sessionId);
-    expect(msg.checkpoint.messageIndex).toBeGreaterThan(0);
-    expect(msg.threadId).toBeDefined();
-
-    client.close();
-  });
-
-  it("create_checkpoint rejects label over 200 characters", async () => {
-    const client = await TestClient.connect(port);
-    await drainConnect(client);
-
-    await doMessageTurn(client, "Hello");
-
-    const longLabel = "x".repeat(201);
-    client.send({ type: "create_checkpoint", label: longLabel } as any);
-    const msg = await waitForMessage(client, "error");
-
-    expect(msg.message).toBe("Checkpoint label too long (max 200 characters)");
-
-    client.close();
-  });
 
   // ---- fork_thread ----
 
@@ -362,116 +262,6 @@ describe("Integration: Conversation threads & checkpoints", () => {
       type: "error",
       message: "No active session",
     });
-
-    client.close();
-  });
-
-  // ---- Conversation replay on fork ----
-
-  it("fork_thread stores conversation replay for new thread", async () => {
-    const client = await TestClient.connect(port);
-    await drainConnect(client);
-
-    const sessionId = await doMessageTurn(client, "Build a todo app");
-
-    // Create checkpoint
-    client.send({ type: "create_checkpoint", label: "v1" } as any);
-    const cpMsg = await waitForMessage(client, "checkpoint_created");
-
-    // Fork from it
-    client.send({ type: "fork_thread", checkpointId: cpMsg.checkpoint.id } as any);
-    const forkResp = await client.receiveSkipLogs(5000);
-    expect(forkResp.type).toBe("thread_forked");
-
-    if (forkResp.type === "thread_forked") {
-      // The new thread should have a conversation replay set on the server
-      const activeThread = threadManager.getActiveThread(sessionId);
-      expect(activeThread).toBeDefined();
-      // Verify replay was set (peek at thread data without consuming)
-      const data = threadManager.listThreads(sessionId);
-      const forkedThread = data.threads.find((t) => t.id === forkResp.thread.id);
-      expect(forkedThread?.conversationReplay).toBeDefined();
-      expect(forkedThread?.conversationReplay).toContain("Build a todo app");
-      expect(forkedThread?.conversationReplay).toContain("You are continuing a conversation");
-    }
-
-    client.close();
-  });
-
-  it("fork_thread with conversation replay: new message starts fresh session", async () => {
-    const client = await TestClient.connect(port);
-    await drainConnect(client);
-
-    const sessionId = await doMessageTurn(client, "Build a todo app");
-
-    // Create checkpoint and fork
-    client.send({ type: "create_checkpoint" } as any);
-    const cpMsg = await waitForMessage(client, "checkpoint_created");
-
-    client.send({ type: "fork_thread", checkpointId: cpMsg.checkpoint.id } as any);
-    const forkResp = await client.receiveSkipLogs(5000);
-    expect(forkResp.type).toBe("thread_forked");
-
-    // Now send a message on the forked thread — it should use the replay
-    // as system prompt (no --resume) since this is a fresh CLI session.
-    const prevClaude = lastClaude;
-    client.send({ type: "send_message", text: "Add tests", sessionId } as any);
-    const claude = await waitForClaude(() => lastClaude, prevClaude);
-
-    // The replay should have been consumed and passed as system prompt
-    expect(claude.lastSystemPrompt).toBeDefined();
-    expect(claude.lastSystemPrompt).toContain("You are continuing a conversation");
-    expect(claude.lastSystemPrompt).toContain("Build a todo app");
-    // Should NOT resume an existing session (starts fresh)
-    expect(claude.lastSessionId).toBeUndefined();
-
-    // Clean up the Claude process
-    claude.emit("event", {
-      type: "system",
-      subtype: "init",
-      session_id: "agent-session-fork",
-    });
-    claude.finish("agent-session-fork");
-
-    // Drain remaining messages
-    const deadline = Date.now() + 3000;
-    while (Date.now() < deadline) {
-      try { await client.receive(200); } catch { break; }
-    }
-
-    // After consuming, replay should be cleared
-    const data = threadManager.listThreads(sessionId);
-    if (forkResp.type === "thread_forked") {
-      const thread = data.threads.find((t) => t.id === forkResp.thread.id);
-      expect(thread?.conversationReplay).toBeUndefined();
-    }
-
-    client.close();
-  });
-
-  // ---- Session lifecycle ----
-
-  it("archive_session preserves thread data", async () => {
-    const client = await TestClient.connect(port);
-    await drainConnect(client);
-
-    const sessionId = await doMessageTurn(client, "Hello");
-
-    // Create a checkpoint
-    client.send({ type: "create_checkpoint" } as any);
-    await waitForMessage(client, "checkpoint_created");
-
-    // Verify thread data exists
-    const beforeArchive = threadManager.listThreads(sessionId);
-    expect(beforeArchive.threads[0].checkpoints).toHaveLength(1);
-
-    // Archive the session
-    client.send({ type: "archive_session", sessionId });
-    await waitForMessage(client, "session_list");
-
-    // Verify thread data is still present (archive preserves data)
-    const afterArchive = threadManager.listThreads(sessionId);
-    expect(afterArchive.threads[0].checkpoints).toHaveLength(1);
 
     client.close();
   });

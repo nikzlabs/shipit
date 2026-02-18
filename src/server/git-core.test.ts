@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { GitManager } from "./git.js";
 
-describe("GitManager: init, autoCommit, log", () => {
+describe("GitManager: init & autoCommit", () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -104,52 +104,5 @@ describe("GitManager: init, autoCommit, log", () => {
 
     const log = await git.log();
     expect(log[0].message).toBe("Claude turn");
-  });
-
-  // ---- log ----
-
-  it("returns commits in reverse chronological order", async () => {
-    const git = new GitManager(tmpDir);
-    await git.init();
-
-    fs.writeFileSync(path.join(tmpDir, "a.txt"), "a");
-    await git.autoCommit("First");
-
-    fs.writeFileSync(path.join(tmpDir, "b.txt"), "b");
-    await git.autoCommit("Second");
-
-    const log = await git.log();
-    expect(log[0].message).toBe("Second");
-    expect(log[1].message).toBe("First");
-  });
-
-  it("respects maxCount parameter", async () => {
-    const git = new GitManager(tmpDir);
-    await git.init();
-
-    fs.writeFileSync(path.join(tmpDir, "a.txt"), "a");
-    await git.autoCommit("First");
-
-    fs.writeFileSync(path.join(tmpDir, "b.txt"), "b");
-    await git.autoCommit("Second");
-
-    const log = await git.log(1);
-    expect(log).toHaveLength(1);
-    expect(log[0].message).toBe("Second");
-  });
-
-  it("returns commit info with hash, message, date, and author", async () => {
-    const git = new GitManager(tmpDir);
-    await git.init();
-
-    fs.writeFileSync(path.join(tmpDir, "test.txt"), "test");
-    await git.autoCommit("Test commit");
-
-    const log = await git.log();
-    const commit = log[0];
-    expect(commit.hash).toMatch(/^[a-f0-9]+$/);
-    expect(commit.message).toBe("Test commit");
-    expect(commit.date).toBeTruthy();
-    expect(commit.author).toBe("ShipIt");
   });
 });
