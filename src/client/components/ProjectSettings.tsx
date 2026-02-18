@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 
 const MAX_LENGTH = 50_000;
 
-type Tab = "github" | "instructions";
+type Tab = "agent" | "github" | "instructions";
 
 export interface ProjectSettingsProps {
   initialContent: string;
@@ -10,6 +10,9 @@ export interface ProjectSettingsProps {
   githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
   onGitHubTokenSubmit: (token: string) => void;
   onGitHubLogout: () => void;
+  authUrl: string | null;
+  onApiKey: (key: string) => void;
+  onClearApiKey: () => void;
   onClose: () => void;
 }
 
@@ -19,23 +22,31 @@ export function ProjectSettings({
   githubStatus,
   onGitHubTokenSubmit,
   onGitHubLogout,
+  authUrl,
+  onApiKey,
+  onClearApiKey,
   onClose,
 }: ProjectSettingsProps) {
-  const [activeTab, setActiveTab] = useState<Tab>("github");
+  const [activeTab, setActiveTab] = useState<Tab>("agent");
   const [content, setContent] = useState(initialContent);
   const [token, setToken] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [apiKeyError, setApiKeyError] = useState("");
   const [confirmingLogout, setConfirmingLogout] = useState(false);
   const savedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const tokenInputRef = useRef<HTMLInputElement>(null);
+  const apiKeyInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (activeTab === "instructions") {
       textareaRef.current?.focus();
     } else if (activeTab === "github" && !githubStatus.authenticated) {
       tokenInputRef.current?.focus();
+    } else if (activeTab === "agent" && authUrl !== null) {
+      apiKeyInputRef.current?.focus();
     }
-  }, [activeTab, githubStatus.authenticated]);
+  }, [activeTab, githubStatus.authenticated, authUrl]);
 
   const handleSave = () => {
     savedRef.current = true;
@@ -73,6 +84,24 @@ export function ProjectSettings({
     }
   };
 
+  const handleApiKeySubmit = () => {
+    const trimmed = apiKey.trim();
+    if (!trimmed) return;
+    if (!trimmed.startsWith("sk-ant-")) {
+      setApiKeyError("API key must start with sk-ant-");
+      return;
+    }
+    setApiKeyError("");
+    onApiKey(trimmed);
+  };
+
+  const handleApiKeyKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleApiKeySubmit();
+    }
+  };
+
   const charCount = content.length;
   const isOverLimit = charCount > MAX_LENGTH;
 
@@ -105,7 +134,7 @@ export function ProjectSettings({
         <div className="flex flex-1 min-h-0">
           {/* Left tab sidebar */}
           <nav className="w-40 shrink-0 border-r border-gray-200 dark:border-gray-700 py-2">
-            {(["github", "instructions"] as const).map((tab) => (
+            {(["agent", "github", "instructions"] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -115,12 +144,100 @@ export function ProjectSettings({
                     : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800/50"
                 }`}
               >
-                {tab === "github" ? "GitHub" : "Instructions"}
+                {tab === "agent" ? "Agent" : tab === "github" ? "GitHub" : "Instructions"}
               </button>
             ))}
           </nav>
 
           {/* Right content area */}
+          {activeTab === "agent" && (
+            <div className="flex-1 min-w-0 px-5 py-4 flex flex-col gap-4 overflow-y-auto">
+              {authUrl === null ? (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
+                    <span className="w-2.5 h-2.5 rounded-full bg-green-400 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                        Claude CLI
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">Authenticated</p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <p className="text-sm text-gray-600 dark:text-gray-400">
+                      Override authentication with an API key:
+                    </p>
+                    <input
+                      ref={apiKeyInputRef}
+                      type="password"
+                      value={apiKey}
+                      onChange={(e) => { setApiKey(e.target.value); setApiKeyError(""); }}
+                      onKeyDown={handleApiKeyKeyDown}
+                      placeholder="sk-ant-..."
+                      className="w-full rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono"
+                      data-testid="project-settings-api-key-input"
+                    />
+                    {apiKeyError && <p className="text-xs text-red-500" data-testid="project-settings-api-key-error">{apiKeyError}</p>}
+                    <button
+                      onClick={handleApiKeySubmit}
+                      disabled={!apiKey.trim()}
+                      className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      data-testid="project-settings-api-key-submit"
+                    >
+                      Set API Key
+                    </button>
+                  </div>
+
+                  <button
+                    onClick={onClearApiKey}
+                    className="w-full px-3 py-2 text-sm rounded-md border bg-gray-50 dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                    data-testid="project-settings-clear-api-key"
+                  >
+                    Clear API Key
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
+                    <span className="w-2.5 h-2.5 rounded-full bg-yellow-400 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                        Claude CLI
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">Authentication required</p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <p className="text-sm text-gray-600 dark:text-gray-400">
+                      Enter your Anthropic API key to authenticate:
+                    </p>
+                    <input
+                      ref={apiKeyInputRef}
+                      type="password"
+                      value={apiKey}
+                      onChange={(e) => { setApiKey(e.target.value); setApiKeyError(""); }}
+                      onKeyDown={handleApiKeyKeyDown}
+                      placeholder="sk-ant-..."
+                      className="w-full rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono"
+                      data-testid="project-settings-api-key-input"
+                    />
+                    {apiKeyError && <p className="text-xs text-red-500" data-testid="project-settings-api-key-error">{apiKeyError}</p>}
+                    <button
+                      onClick={handleApiKeySubmit}
+                      disabled={!apiKey.trim()}
+                      className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      data-testid="project-settings-api-key-submit"
+                    >
+                      Authenticate
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {activeTab === "instructions" && (
             <div className="flex-1 min-w-0 px-5 py-4 flex flex-col gap-3 overflow-y-auto">
               <p className="text-sm text-gray-600 dark:text-gray-400">
