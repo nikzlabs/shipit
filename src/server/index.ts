@@ -17,6 +17,7 @@ import { scanPorts, snapshotBaselinePorts, DEFAULT_SCAN_PORTS } from "./port-sca
 import { UsageManager } from "./usage.js";
 import { FileWatcher } from "./file-watcher.js";
 import { listTemplates, getTemplate, applyTemplate } from "./templates.js";
+import { FeatureManager } from "./features.js";
 import { ThreadManager } from "./threads.js";
 import { DeploymentManager } from "./deployment-manager.js";
 import { DeploymentStore } from "./deployment-store.js";
@@ -156,6 +157,11 @@ export interface AppDeps {
    * Deployment store instance. Defaults to `new DeploymentStore(workspaceDir)`.
    */
   deploymentStore?: DeploymentStore;
+  /**
+   * Feature manager instance. Defaults to `new FeatureManager(workspaceDir)`.
+   * Scans docs/ for feature directories and parses status from frontmatter.
+   */
+  featureManager?: FeatureManager;
 }
 
 /**
@@ -233,6 +239,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Deployment store ----
   const deploymentStore = deps.deploymentStore ?? new DeploymentStore(workspaceDir);
+
+  // ---- Feature manager ----
+  const featureManager = deps.featureManager ?? new FeatureManager(workspaceDir);
 
   // ---- File watcher ----
   const fileWatcher = deps.fileWatcher ?? new FileWatcher();
@@ -964,6 +973,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           send({ type: "doc_content", path: msg.path, content });
         } catch (err) {
           send({ type: "error", message: `Failed to read doc: ${getErrorMessage(err)}` });
+        }
+      }
+
+      if (msg.type === "list_features") {
+        try {
+          const features = await featureManager.list();
+          send({ type: "feature_list", features });
+        } catch (err) {
+          send({ type: "error", message: `Failed to list features: ${getErrorMessage(err)}` });
         }
       }
 

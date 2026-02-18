@@ -73,6 +73,25 @@ export interface SessionInfo {
   workspaceDir?: string;
 }
 
+// ---- Feature types ----
+
+export type FeatureStatus = "planned" | "in-progress" | "done";
+
+export interface FeatureInfo {
+  /** Directory name, e.g. "001-websocket-protocol". */
+  id: string;
+  /** Numeric prefix extracted from the directory name. */
+  number: number;
+  /** Human-readable name derived from the directory name. */
+  name: string;
+  /** Current status from YAML frontmatter. Defaults to "planned". */
+  status: FeatureStatus;
+  /** Relative path to plan.md from workspace root. */
+  planPath: string;
+  /** Relative path to checklist.md if it exists. */
+  checklistPath?: string;
+}
+
 // ---- Template types ----
 
 export interface ProjectTemplate {
@@ -259,6 +278,12 @@ export interface WsListThreads {
   type: "list_threads";
 }
 
+// ---- Feature client messages ----
+
+export interface WsListFeatures {
+  type: "list_features";
+}
+
 export interface WsSetApiKey {
   type: "set_api_key";
   key: string;
@@ -305,6 +330,7 @@ export type WsClientMessage =
   | WsListThreads
   | WsSetApiKey
   | WsPasteAuthCode
+  | WsListFeatures
   | WsListDeployTargets
   | WsDeployConfigure
   | WsInitiateDeploy
@@ -542,6 +568,13 @@ export interface WsGitHubRepoCreated {
   message?: string;
 }
 
+// ---- Feature server messages ----
+
+export interface WsFeatureList {
+  type: "feature_list";
+  features: FeatureInfo[];
+}
+
 // ---- System prompt server messages ----
 
 export interface WsSystemPrompt {
@@ -743,6 +776,7 @@ export type WsServerMessage =
   | WsUsageUpdate
   | WsTemplateList
   | WsTemplateApplied
+  | WsFeatureList
   | WsSystemPrompt
   | WsSystemPromptSaved
   | WsFilesChanged
