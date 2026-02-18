@@ -4,7 +4,7 @@ import { execSync } from "node:child_process";
 
 const DEFAULT_TOKEN_PATH = "/workspace/.github-token";
 
-const GITHUB_CLIENT_ID = process.env.GITHUB_OAUTH_CLIENT_ID || "Ov23liUkBMbMLCaPBvbN";
+const GITHUB_CLIENT_ID = process.env.GITHUB_OAUTH_CLIENT_ID;
 
 export interface GitHubAuthStatus {
   authenticated: boolean;
@@ -179,6 +179,10 @@ export class GitHubAuthManager extends EventEmitter {
     expiresIn: number;
     interval: number;
   }> {
+    if (!GITHUB_CLIENT_ID) {
+      throw new Error("GitHub OAuth is not configured. Set the GITHUB_OAUTH_CLIENT_ID environment variable.");
+    }
+
     const res = await fetch("https://github.com/login/device/code", {
       method: "POST",
       headers: {
@@ -216,6 +220,10 @@ export class GitHubAuthManager extends EventEmitter {
     | { status: "expired" }
     | { status: "error"; message: string }
   > {
+    if (!GITHUB_CLIENT_ID) {
+      return { status: "error", message: "GitHub OAuth is not configured" };
+    }
+
     const res = await fetch("https://github.com/login/oauth/access_token", {
       method: "POST",
       headers: {
