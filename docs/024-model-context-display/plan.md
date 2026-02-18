@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 ---
 # 024 — Model & Context Display
 
