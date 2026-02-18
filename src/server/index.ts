@@ -21,6 +21,7 @@ import { FeatureManager } from "./features.js";
 import { ThreadManager } from "./threads.js";
 import { DeploymentManager } from "./deployment-manager.js";
 import { DeploymentStore } from "./deployment-store.js";
+import { GitIdentityStore } from "./git-identity-store.js";
 import { VercelTarget } from "./deploy-targets/vercel.js";
 import { CloudflareTarget } from "./deploy-targets/cloudflare.js";
 import { TerminalProcess } from "./terminal.js";
@@ -307,6 +308,11 @@ export interface AppDeps {
    * Inject a stub in tests.
    */
   generateText?: (prompt: string, cwd?: string) => Promise<string>;
+  /**
+   * Git identity store for global name/email persistence.
+   * Defaults to `new GitIdentityStore(workspaceDir)`.
+   */
+  gitIdentityStore?: GitIdentityStore;
 }
 
 /**
@@ -391,6 +397,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Feature manager ----
   const featureManager = deps.featureManager ?? new FeatureManager(workspaceDir);
+
+  // ---- Git identity store ----
+  const gitIdentityStore = deps.gitIdentityStore ?? new GitIdentityStore(workspaceDir);
 
   // ---- Text generation (AI-powered features) ----
   const generateText = deps.generateText ?? ((prompt: string, cwd?: string): Promise<string> => {
@@ -614,6 +623,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       // Initialize a fresh git repo for this session
       const git = createGitManager(sessionDir);
       await git.init();
+      // Apply stored global identity so commits use the user's name/email
+      const stored = gitIdentityStore.get();
+      if (stored) await git.setIdentity(stored.name, stored.email);
     }
 
     // Configure GitHub credentials in the new repo if available
@@ -721,13 +733,21 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
 
     // Check git identity when a session becomes active (deferred — no root git repo).
+    // If the session repo lacks identity, auto-apply from global store before prompting.
     const checkGitIdentity = async (sessionDir: string) => {
       try {
         const git = createGitManager(sessionDir);
-        const has = await git.hasIdentity();
-        if (!has) {
-          send({ type: "git_identity_required" });
+        if (await git.hasIdentity()) return;
+
+        // Try to apply stored global identity
+        const stored = gitIdentityStore.get();
+        if (stored) {
+          await git.setIdentity(stored.name, stored.email);
+          send({ type: "git_identity_set", name: stored.name, email: stored.email });
+          return;
         }
+
+        send({ type: "git_identity_required" });
       } catch {
         // Session dir may not exist yet; identity will be checked after creation
       }
@@ -1147,6 +1167,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           try {
             const git = getActiveGitManager();
             await git.setIdentity(name, email);
+            // Persist globally so future sessions auto-apply this identity
+            gitIdentityStore.set(name, email);
             send({ type: "git_identity_set", name, email });
           } catch (err) {
             send({ type: "error", message: `Failed to set git identity: ${getErrorMessage(err)}` });
@@ -1790,9 +1812,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           const cloneUrl = githubAuthManager.getAuthenticatedCloneUrl(url);
           await git.clone(cloneUrl, msg.branch || undefined);
 
-          // 3. Configure credentials for future push/pull
+          // 3. Configure credentials and identity for future push/pull
           if (githubAuthManager.authenticated) {
             githubAuthManager.configureGitCredentials(importSessionDir);
+          }
+          const storedIdentity = gitIdentityStore.get();
+          if (storedIdentity) {
+            await git.setIdentity(storedIdentity.name, storedIdentity.email);
           }
 
           // 4. Register session
@@ -1984,9 +2010,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           const cloneUrl = githubAuthManager.getAuthenticatedCloneUrl(repoUrl);
           await git.clone(cloneUrl);
 
-          // 3. Configure credentials for future push/pull
+          // 3. Configure credentials and identity for future push/pull
           if (githubAuthManager.authenticated) {
             githubAuthManager.configureGitCredentials(sessionDir);
+          }
+          const storedId = gitIdentityStore.get();
+          if (storedId) {
+            await git.setIdentity(storedId.name, storedId.email);
           }
 
           // 4. Create temporary branch with random prefix

@@ -5,6 +5,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { buildApp } from "../index.js";
 import { GitManager } from "../git.js";
+import { GitIdentityStore } from "../git-identity-store.js";
 import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../auth.js";
 import { GitHubAuthManager } from "../github-auth.js";
@@ -70,7 +71,7 @@ describe("Integration: git identity flow", () => {
     execSync("git config --unset user.email", { cwd: sessionDir, env });
   }
 
-  async function startApp(): Promise<number> {
+  async function startApp(extraDeps?: { gitIdentityStore?: GitIdentityStore }): Promise<number> {
     const sessionsFile = path.join(tmpDir, "sessions.json");
     sessionManager = new SessionManager(sessionsFile);
     sessionManager.track(sessionId, "Test session", sessionDir);
@@ -87,6 +88,7 @@ describe("Integration: git identity flow", () => {
       serveStatic: false,
       startVite: false,
       portScanIntervalMs: 0,
+      ...extraDeps,
     });
     const address = await app.listen({ port: 0, host: "127.0.0.1" });
     const match = address.match(/:(\d+)$/);
@@ -210,6 +212,62 @@ describe("Integration: git identity flow", () => {
     client.send({ type: "set_git_identity", name: "   ", email: "test@example.com" });
     const resp = await client.receive();
     expect(resp).toMatchObject({ type: "error", message: "Git user name cannot be empty" });
+
+    client.close();
+  });
+
+  it("persists identity to global store when set_git_identity is called", async () => {
+    await initSessionRepoWithoutIdentity();
+    const store = new GitIdentityStore(tmpDir);
+    expect(store.hasIdentity()).toBe(false);
+
+    port = await startApp({ gitIdentityStore: store });
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Activate session and set identity
+    client.send({ type: "get_chat_history", sessionId });
+    await client.receive(); // chat_history
+    await client.receive(); // git_identity_required
+
+    client.send({ type: "set_git_identity", name: "Global User", email: "global@example.com" });
+    const resp = await client.receive();
+    expect(resp).toMatchObject({ type: "git_identity_set", name: "Global User", email: "global@example.com" });
+
+    // Verify the global store now has the identity
+    const reloaded = new GitIdentityStore(tmpDir);
+    expect(reloaded.get()).toEqual({ name: "Global User", email: "global@example.com" });
+
+    client.close();
+  });
+
+  it("auto-applies stored global identity instead of prompting", async () => {
+    await initSessionRepoWithoutIdentity();
+    // Pre-populate global identity store
+    const store = new GitIdentityStore(tmpDir);
+    store.set("Stored User", "stored@example.com");
+
+    port = await startApp({ gitIdentityStore: store });
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Activate the session — should auto-apply, not prompt
+    client.send({ type: "get_chat_history", sessionId });
+    await client.receive(); // chat_history
+
+    // Should receive git_identity_set (auto-applied), NOT git_identity_required
+    const msg = await client.receive();
+    expect(msg).toMatchObject({
+      type: "git_identity_set",
+      name: "Stored User",
+      email: "stored@example.com",
+    });
+
+    // Verify identity is actually configured in the session's git repo
+    const git = new GitManager(sessionDir);
+    expect(await git.hasIdentity()).toBe(true);
 
     client.close();
   });
