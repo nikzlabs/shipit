@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: paused
 ---
 # 030 — GitHub Device Authorization Flow
 
