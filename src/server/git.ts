@@ -186,6 +186,23 @@ export class GitManager {
     }
   }
 
+  /**
+   * Get per-file diff summary (files changed with insertions/deletions).
+   * Returns an empty array if there are no commits or no changes.
+   */
+  async diffSummary(): Promise<Array<{ file: string; insertions: number; deletions: number }>> {
+    try {
+      const result = await this.git.diffSummary(["HEAD~1...HEAD"]);
+      return result.files.map((f) => ({
+        file: f.file,
+        insertions: (f as { insertions: number }).insertions ?? 0,
+        deletions: (f as { deletions: number }).deletions ?? 0,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
   /** Check whether git has a user.name and user.email configured (any scope). */
   async hasIdentity(): Promise<boolean> {
     try {

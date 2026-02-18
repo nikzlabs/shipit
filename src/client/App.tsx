@@ -136,6 +136,10 @@ export default function App() {
   const [prCurrentBranch, setPrCurrentBranch] = useState("");
   const [prRemoteBranches, setPrRemoteBranches] = useState<string[]>([]);
   const [prResult, setPrResult] = useState<{ success: boolean; url?: string; number?: number; message?: string } | null>(null);
+  const [prDescGenerating, setPrDescGenerating] = useState(false);
+  const prDescGeneratingRef = useRef(false);
+  const [prDescError, setPrDescError] = useState<string | null>(null);
+  const [prGeneratedDesc, setPrGeneratedDesc] = useState<string | null>(null);
   const [showImportOverlay, setShowImportOverlay] = useState(false);
   const [importSearchResults, setImportSearchResults] = useState<Array<{ fullName: string; description: string | null; private: boolean; defaultBranch: string; cloneUrl: string }>>([]);
   const [importProgress, setImportProgress] = useState<{ stage: "cloning" | "installing" | "ready"; message: string } | null>(null);
@@ -448,6 +452,13 @@ export default function App() {
     }
 
     if (data.type === "error") {
+      // If we're generating a PR description, show the error in the modal
+      if (prDescGeneratingRef.current) {
+        setPrDescGenerating(false);
+        prDescGeneratingRef.current = false;
+        setPrDescError(data.message);
+        return;
+      }
       setIsLoading(false);
       setActivity(undefined);
       setApplyingTemplate(false);
@@ -681,6 +692,12 @@ export default function App() {
     if (data.type === "github_branches") {
       setPrCurrentBranch(data.current);
       setPrRemoteBranches(data.remote);
+    }
+
+    if (data.type === "generated_pr_description") {
+      setPrDescGenerating(false);
+      prDescGeneratingRef.current = false;
+      setPrGeneratedDesc(data.description);
     }
 
     if (data.type === "usage_update") {
@@ -1141,8 +1158,20 @@ export default function App() {
     setPrResult(null);
     setPrCurrentBranch("");
     setPrRemoteBranches([]);
+    setPrDescGenerating(false);
+    prDescGeneratingRef.current = false;
+    setPrDescError(null);
+    setPrGeneratedDesc(null);
     setShowPRModal(true);
   }, []);
+
+  const handlePRGenerateDescription = useCallback(() => {
+    setPrDescGenerating(true);
+    prDescGeneratingRef.current = true;
+    setPrDescError(null);
+    setPrGeneratedDesc(null);
+    send({ type: "generate_pr_description" });
+  }, [send]);
 
   const handlePRSubmit = useCallback(
     (data: { title: string; body: string; base: string; draft: boolean }) => {
@@ -1615,8 +1644,12 @@ export default function App() {
           remoteBranches={prRemoteBranches}
           onSubmit={handlePRSubmit}
           onRequestBranches={handlePRRequestBranches}
+          onGenerateDescription={handlePRGenerateDescription}
           onClose={() => setShowPRModal(false)}
           result={prResult}
+          isGeneratingDescription={prDescGenerating}
+          generateDescriptionError={prDescError}
+          generatedDescription={prGeneratedDesc}
         />
       )}
       {showImportOverlay && (
