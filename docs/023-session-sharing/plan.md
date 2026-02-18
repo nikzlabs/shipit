@@ -1,3 +1,6 @@
+---
+status: done
+---
 # 023 — Session Sharing
 
 ## Summary

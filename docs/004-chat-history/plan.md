@@ -1,3 +1,6 @@
+---
+status: in-progress
+---
 # Chat History
 
 Messages are persisted to disk per session so conversations survive page reloads, browser restarts, and session switching.

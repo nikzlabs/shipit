@@ -1,3 +1,6 @@
+---
+status: in-progress
+---
 # 026 — Interactive Terminal
 
 ## Summary
