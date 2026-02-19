@@ -280,25 +280,25 @@ describe("DeployModal", () => {
     expect(screen.getByText("https://old-deploy.vercel.app")).toBeInTheDocument();
   });
 
-  it("shows Configure button in not-configured view when onOpenProjectSettings is provided", () => {
-    const onOpenProjectSettings = vi.fn();
+  it("shows Configure button in not-configured view when onOpenDeploySettings is provided", () => {
+    const onOpenDeploySettings = vi.fn();
     const onClose = vi.fn();
     render(
       <DeployModal
         {...defaultProps}
         onClose={onClose}
-        onOpenProjectSettings={onOpenProjectSettings}
+        onOpenDeploySettings={onOpenDeploySettings}
       />,
     );
-    const btn = screen.getByTestId("deploy-open-project-settings");
+    const btn = screen.getByTestId("deploy-open-deploy-settings");
     expect(btn).toHaveTextContent("Configure");
     fireEvent.click(btn);
     expect(onClose).toHaveBeenCalled();
-    expect(onOpenProjectSettings).toHaveBeenCalled();
+    expect(onOpenDeploySettings).toHaveBeenCalled();
   });
 
-  it("does not show Configure button when onOpenProjectSettings is not provided", () => {
+  it("does not show Configure button when onOpenDeploySettings is not provided", () => {
     render(<DeployModal {...defaultProps} />);
-    expect(screen.queryByTestId("deploy-open-project-settings")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("deploy-open-deploy-settings")).not.toBeInTheDocument();
   });
 });
