@@ -48,6 +48,10 @@ export interface ChatMessage {
   streaming?: boolean;
   /** When true, this message represents an error (CLI crash, WS drop, etc.) */
   isError?: boolean;
+  /** When true, this message is queued and waiting for Claude to become available. */
+  queued?: boolean;
+  /** 1-indexed position in the queue, shown as a badge. */
+  queuePosition?: number;
 }
 
 function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQuestionDisabled }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void; isQuestionDisabled: boolean }) {
@@ -607,7 +611,7 @@ export function MessageList({
         const hasCodeBlocks = segments.some((s) => s.type === "code");
         const useMarkdown = msg.role === "assistant" && !msg.isError;
         const isEditing = editingIndex === i;
-        const showEditActions = canEdit && msg.role === "user" && !msg.isError && !isEditing;
+        const showEditActions = canEdit && msg.role === "user" && !msg.isError && !isEditing && !msg.queued;
 
         return (
           <div key={i}>
@@ -668,11 +672,21 @@ export function MessageList({
               } ${
                 msg.isError
                   ? "bg-red-100 dark:bg-red-900/60 text-red-700 dark:text-red-200 border border-red-300 dark:border-red-700/50"
+                  : msg.queued
+                  ? "bg-blue-600/40 text-white/70 border border-blue-500/30"
                   : msg.role === "user"
                   ? "bg-blue-600 text-white"
                   : "bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100"
               }`}
             >
+              {msg.queued && (
+                <div className="flex items-center gap-1.5 mb-1.5 text-xs text-blue-200/80 font-medium">
+                  <svg className="w-3 h-3 animate-pulse" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/>
+                  </svg>
+                  Queued{msg.queuePosition !== undefined ? ` #${msg.queuePosition}` : ""}
+                </div>
+              )}
               {useMarkdown ? (
                 <MarkdownContent text={msg.text} />
               ) : hasCodeBlocks ? (

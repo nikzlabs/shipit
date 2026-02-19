@@ -689,6 +689,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     // Per-connection active session state
     let activeAppSessionId: string | undefined;
     let activeSessionDir: string | null = null;
+
+    // Per-connection message queue (prompt queuing feature)
+    const messageQueue: Array<{
+      text: string;
+      images?: ImageAttachment[];
+      files?: FileContextRef[];
+      permissionMode?: PermissionMode;
+    }> = [];
+    let isClaudeRunning = false;
     // Accumulate the assistant response across streaming events for persistence
     let accumulatedText = "";
     let accumulatedToolUse: Array<{ type: "tool_use"; id: string; name: string; input: Record<string, unknown> }> = [];
@@ -973,6 +982,46 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
         // Scan for non-Vite dev servers that the agent may have started.
         await runPortScan();
+
+        // Mark Claude as no longer running, then process the next queued message
+        isClaudeRunning = false;
+        if (messageQueue.length > 0) {
+          const next = messageQueue.shift()!;
+          // Notify the client that the queue is now one shorter
+          send({
+            type: "queue_updated",
+            queue: messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 })),
+          });
+          isClaudeRunning = true;
+          // Resolve file attachments for the queued message (session dir is already active)
+          const nextImages = next.images && next.images.length > 0 ? next.images : undefined;
+          const nextFileRefs = next.files && next.files.length > 0 ? next.files : undefined;
+          let nextValidatedFiles: FileAttachment[] = [];
+          if (nextFileRefs) {
+            const dir = activeSessionDir ?? workspaceDir;
+            const fileResult = await resolveFileAttachments(nextFileRefs, dir);
+            if (fileResult.error) {
+              send({ type: "error", message: fileResult.error });
+              isClaudeRunning = false;
+              return;
+            }
+            nextValidatedFiles = fileResult.files;
+          }
+          const nextSession = activeAppSessionId ? sessionManager.get(activeAppSessionId) : undefined;
+          try {
+            await runClaudeWithMessage({
+              userText: next.text,
+              images: nextImages,
+              validatedFiles: nextValidatedFiles,
+              agentSessionId: nextSession?.agentSessionId,
+              permissionMode: next.permissionMode,
+              isNewSession: false,
+            });
+          } catch (err) {
+            console.error("[queue] Error processing queued message:", getErrorMessage(err));
+            isClaudeRunning = false;
+          }
+        }
       });
 
       currentAgent.on("auth_required", () => {
@@ -1058,12 +1107,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           return;
         }
 
-        // Kill any existing process before starting a new one
-        if (claude) {
-          claude.kill();
-        }
-
-        // Validate images if provided
+        // Validate images if provided (do this before queue check so we reject bad images immediately)
         const images: ImageAttachment[] | undefined = msg.images && msg.images.length > 0 ? msg.images : undefined;
         if (images) {
           const imageError = validateImages(images);
@@ -1071,6 +1115,22 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             send({ type: "error", message: imageError });
             return;
           }
+        }
+
+        // If Claude is already processing, queue this message and return
+        if (isClaudeRunning) {
+          messageQueue.push({ text: msg.text, images: msg.images, files: msg.files, permissionMode: msg.permissionMode });
+          send({
+            type: "message_queued",
+            position: messageQueue.length,
+            text: msg.text,
+          });
+          return;
+        }
+
+        // Kill any stale process (safety net — normally null if not running)
+        if (claude) {
+          claude.kill();
         }
 
         // Validate and read file attachments from disk if provided
@@ -1092,6 +1152,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         let agentSessionId: string | undefined;
         if (msg.sessionId) {
           // Resuming an existing session
+          // Clear the queue when switching to a different session
+          if (activeAppSessionId && msg.sessionId !== activeAppSessionId && messageQueue.length > 0) {
+            messageQueue.length = 0;
+            send({ type: "queue_updated", queue: [] });
+          }
           activateSession(msg.sessionId);
           const session = sessionManager.get(msg.sessionId);
           // Only resume if we have a real Claude CLI session ID (set via system init event).
@@ -1125,6 +1190,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           checkGitIdentity(sessionDir);
         }
 
+        isClaudeRunning = true;
         await runClaudeWithMessage({
           userText,
           images,
@@ -1132,6 +1198,21 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           agentSessionId,
           permissionMode: msg.permissionMode,
           isNewSession: !msg.sessionId,
+        });
+      }
+
+      if (msg.type === "cancel_queued_message") {
+        if (msg.position === "all") {
+          messageQueue.length = 0;
+        } else {
+          const idx = typeof msg.position === "number" ? msg.position : -1;
+          if (idx >= 0 && idx < messageQueue.length) {
+            messageQueue.splice(idx, 1);
+          }
+        }
+        send({
+          type: "queue_updated",
+          queue: messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 })),
         });
       }
 
@@ -1241,6 +1322,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         // Clear active session — next send_message or apply_template will create a new one
         activeAppSessionId = undefined;
         activeSessionDir = null;
+        // Clear the queue when starting a new session
+        if (messageQueue.length > 0) {
+          messageQueue.length = 0;
+          send({ type: "queue_updated", queue: [] });
+        }
         send({ type: "session_list", sessions: sessionManager.list() });
       }
 
@@ -2596,6 +2682,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         clearTimeout(pushTimer);
         pushTimer = null;
       }
+      // Clear the queue — it belongs to this connection's context
+      messageQueue.length = 0;
+      isClaudeRunning = false;
 
       // Stop periodic port scanning when the last client disconnects
       if (clients.size === 0) {

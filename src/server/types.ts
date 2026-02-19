@@ -430,7 +430,8 @@ export type WsClientMessage =
   | WsTerminalResize
   | WsHomeCreateRepoWithTemplate
   | WsHomeSendWithRepo
-  | WsSetAgentMessage;
+  | WsSetAgentMessage
+  | WsCancelQueuedMessage;
 
 export interface WsClaudeEvent {
   type: "claude_event";
@@ -445,6 +446,30 @@ export interface WsAgentEvent {
 export interface WsSetAgentMessage {
   type: "set_agent";
   agentId: import("./agents/agent-process.js").AgentId;
+}
+
+// ---- Prompt queuing messages ----
+
+/** Client → Server: cancel a specific queued message or clear the entire queue. */
+export interface WsCancelQueuedMessage {
+  type: "cancel_queued_message";
+  /** 0-indexed position in queue to cancel, or "all" to clear the entire queue. */
+  position: number | "all";
+}
+
+/** Server → Client: a message was queued because Claude is busy. */
+export interface WsMessageQueued {
+  type: "message_queued";
+  /** 1-indexed display position in the queue. */
+  position: number;
+  text: string;
+}
+
+/** Server → Client: the queue changed (after a cancel or session switch). */
+export interface WsQueueUpdated {
+  type: "queue_updated";
+  /** Current queue contents after the change. */
+  queue: Array<{ text: string; position: number }>;
 }
 
 export interface WsError {
@@ -1020,4 +1045,6 @@ export type WsServerMessage =
   | WsModelInfo
   | WsTerminalOutput
   | WsTerminalExit
-  | WsHomeRepoReady;
+  | WsHomeRepoReady
+  | WsMessageQueued
+  | WsQueueUpdated;

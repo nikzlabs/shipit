@@ -224,7 +224,7 @@ describe("Integration: Claude message flow — basics", () => {
     client.close();
   });
 
-  it("sending a new message kills the previous ClaudeProcess", async () => {
+  it("sending a new message while Claude is running queues it instead of killing", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
 
@@ -233,13 +233,21 @@ describe("Integration: Claude message flow — basics", () => {
     await waitForClaude(() => lastClaude);
     const firstClaude = lastClaude;
 
-    // Second message before first completes
+    // Second message before first completes — should be queued, NOT kill the first
     client.send({ type: "send_message", text: "Second" });
-    await waitForClaude(() => lastClaude, firstClaude);
 
-    expect(firstClaude.killed).toBe(true);
-    expect(lastClaude.lastPrompt).toBe("Second");
-    expect(lastClaude).not.toBe(firstClaude);
+    // Drain messages until we see message_queued
+    let queued: any = null;
+    for (let i = 0; i < 20 && !queued; i++) {
+      const msg = await client.receive(2000) as any;
+      if (msg.type === "message_queued") queued = msg;
+    }
+
+    expect(queued).toMatchObject({ type: "message_queued", text: "Second", position: 1 });
+    // First Claude should NOT have been killed
+    expect(firstClaude.killed).toBe(false);
+    // A second Claude process should NOT have been started yet
+    expect(lastClaude).toBe(firstClaude);
 
     client.close();
   });
