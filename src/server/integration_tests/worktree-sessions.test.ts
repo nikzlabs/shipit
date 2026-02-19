@@ -462,7 +462,7 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     expect(session2Msg.type).toBe("session_started");
     const session2 = (session2Msg as any).session;
 
-    const claude2 = await waitForClaude(() => lastClaude);
+    const claude2 = await waitForClaude(() => lastClaude, claude1);
     claude2.finish();
 
     // Drain remaining messages
@@ -520,7 +520,7 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     client2.send({ type: "home_send_with_repo", repoUrl, text: "Second" } as any);
 
     let session2Id = "";
-    const claude2 = await waitForClaude(() => lastClaude);
+    const claude2 = await waitForClaude(() => lastClaude, claude1);
     claude2.finish();
     try {
       while (true) {
