@@ -179,6 +179,11 @@ export class GitManager {
     await this.git.raw(args);
   }
 
+  /** Fetch all branches from a remote. */
+  async fetch(remote = "origin"): Promise<void> {
+    await this.git.fetch(remote);
+  }
+
   /**
    * Get the default branch name from a remote (e.g., "main" or "master").
    */

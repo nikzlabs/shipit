@@ -2088,13 +2088,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             await repoGit.clone(cloneUrl);
             console.log("[home] Cloned repo to shared dir:", repoDir);
           } else {
-            // Update existing shared clone
+            // Fetch latest from remote so the worktree starts up-to-date
             try {
               const repoGit = createGitManager(repoDir);
-              const defaultBranch = await repoGit.getDefaultBranch();
-              await repoGit.pull("origin", defaultBranch);
+              await repoGit.fetch("origin");
             } catch (err) {
-              console.warn("[home] Pull in shared repo failed (continuing):", getErrorMessage(err));
+              console.warn("[home] Fetch in shared repo failed (continuing):", getErrorMessage(err));
             }
           }
 
@@ -2107,9 +2106,18 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           // Remove the empty dir (worktree add needs it absent)
           await fs.rm(sessionDir, { recursive: true, force: true });
 
-          // Create worktree from shared repo
+          // Create worktree from shared repo, starting from latest remote default branch
           const repoGit = createGitManager(repoDir);
-          await repoGit.createWorktree(sessionDir, branchPrefix);
+          let startPoint: string | undefined;
+          try {
+            const defaultBranch = await repoGit.getDefaultBranch();
+            if (defaultBranch && !defaultBranch.includes("(")) {
+              startPoint = `origin/${defaultBranch}`;
+            }
+          } catch {
+            // Fallback: let git use HEAD
+          }
+          await repoGit.createWorktree(sessionDir, branchPrefix, startPoint);
 
           // Configure credentials and identity in the worktree
           if (githubAuthManager.authenticated) {
