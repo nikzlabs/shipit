@@ -83,6 +83,10 @@ export interface SessionInfo {
   remoteUrl?: string;
   /** Whether this session has been archived (hidden from sidebar). */
   archived?: boolean;
+  /** If this session is a worktree, the branch name. */
+  branch?: string;
+  /** Session type: "standalone" (default) or "worktree". */
+  sessionType?: "standalone" | "worktree";
 }
 
 // ---- Feature types ----
@@ -431,7 +435,10 @@ export type WsClientMessage =
   | WsHomeCreateRepoWithTemplate
   | WsHomeSendWithRepo
   | WsSetAgentMessage
-  | WsCancelQueuedMessage;
+  | WsCancelQueuedMessage
+  | WsForkSession
+  | WsListWorktrees
+  | WsMergeSession;
 
 export interface WsClaudeEvent {
   type: "claude_event";
@@ -470,6 +477,26 @@ export interface WsQueueUpdated {
   type: "queue_updated";
   /** Current queue contents after the change. */
   queue: Array<{ text: string; position: number }>;
+}
+
+// ---- Worktree session messages (client → server) ----
+
+export interface WsForkSession {
+  type: "fork_session";
+  /** Branch name for the new worktree. */
+  branchName: string;
+  /** Optional commit to start from (defaults to HEAD). */
+  startPoint?: string;
+}
+
+export interface WsListWorktrees {
+  type: "list_worktrees";
+}
+
+export interface WsMergeSession {
+  type: "merge_session";
+  /** Session ID to merge from. */
+  sourceSessionId: string;
 }
 
 export interface WsError {
@@ -881,6 +908,30 @@ export interface WsFilesChanged {
   paths: string[];
 }
 
+// ---- Worktree session messages (server → client) ----
+
+export interface WsSessionForked {
+  type: "session_forked";
+  session: SessionInfo;
+  parentSessionId: string;
+}
+
+export interface WsWorktreeList {
+  type: "worktree_list";
+  worktrees: Array<{
+    sessionId: string;
+    branch: string;
+    path: string;
+  }>;
+}
+
+export interface WsMergeResult {
+  type: "merge_result";
+  success: boolean;
+  message: string;
+  conflicts?: string[];
+}
+
 // ---- Deployment types ----
 
 export interface DeployTargetInfo {
@@ -1047,4 +1098,7 @@ export type WsServerMessage =
   | WsTerminalExit
   | WsHomeRepoReady
   | WsMessageQueued
-  | WsQueueUpdated;
+  | WsQueueUpdated
+  | WsSessionForked
+  | WsWorktreeList
+  | WsMergeResult;
