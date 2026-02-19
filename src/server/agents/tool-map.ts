@@ -33,6 +33,8 @@ const CODEX_TOOL_MAP: Record<string, CanonicalTool> = {
   shell: "shell",
   file_write: "file_write",
   file_read: "file_read",
+  file_edit: "file_edit",
+  web_search: "web_search",
 };
 
 const GEMINI_TOOL_MAP: Record<string, CanonicalTool> = {

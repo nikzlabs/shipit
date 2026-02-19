@@ -18,6 +18,8 @@ describe("canonicalizeTool", () => {
     expect(canonicalizeTool("codex", "shell")).toBe("shell");
     expect(canonicalizeTool("codex", "file_write")).toBe("file_write");
     expect(canonicalizeTool("codex", "file_read")).toBe("file_read");
+    expect(canonicalizeTool("codex", "file_edit")).toBe("file_edit");
+    expect(canonicalizeTool("codex", "web_search")).toBe("web_search");
   });
 
   it("returns null for unknown tool names", () => {
@@ -40,10 +42,12 @@ describe("agentToolName", () => {
     expect(agentToolName("codex", "shell")).toBe("shell");
     expect(agentToolName("codex", "file_write")).toBe("file_write");
     expect(agentToolName("codex", "file_read")).toBe("file_read");
+    expect(agentToolName("codex", "file_edit")).toBe("file_edit");
+    expect(agentToolName("codex", "web_search")).toBe("web_search");
   });
 
   it("returns null for unmapped canonical names", () => {
-    expect(agentToolName("codex", "file_edit")).toBeNull();
+    expect(agentToolName("codex", "ask_user")).toBeNull();
     expect(agentToolName("gemini", "shell")).toBeNull();
   });
 });

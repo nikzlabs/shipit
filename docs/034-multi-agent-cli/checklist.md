@@ -14,13 +14,19 @@
 - [x] Tests for `ClaudeAdapter` and `tool-map` (20 tests)
 - [x] All existing tests pass (1168/1168)
 
-## Phase 2: Codex adapter
+## Phase 2: Codex adapter (Complete)
 
-- [ ] Create `src/server/agents/codex-adapter.ts` implementing `AgentProcess`
-- [ ] Parse Codex CLI NDJSON output into `AgentEvent`
-- [ ] Map Codex tool names (`shell`, `file_write`, `file_read`) to canonical names
-- [ ] Integration tests for Codex adapter
-- [ ] Update `agentFactory` to handle `codex` agent ID
+- [x] Create `src/server/agents/codex-process.ts` — Codex CLI process spawning and NDJSON parsing
+- [x] Create `src/server/agents/codex-adapter.ts` implementing `AgentProcess`
+- [x] Parse Codex CLI NDJSON output (`thread.started`, `item.*`, `turn.*`, `error`) into `AgentEvent`
+- [x] Map Codex tool names (`shell`, `file_write`, `file_read`, `file_edit`, `web_search`) to canonical names
+- [x] Map ShipIt permission modes to Codex approval modes (`auto`→`full-auto`, `plan`→`suggest`, `normal`→`auto-edit`)
+- [x] Update `agentFactory` in `index.ts` to handle `codex` agent ID
+- [x] Update `AppDeps.agentFactory` type to return `AgentProcess` (not just `ClaudeAdapter`)
+- [x] Export `CodexAdapter` from `src/server/agents/index.ts`
+- [x] Unit tests for `CodexAdapter` (32 tests in `codex-adapter.test.ts`)
+- [x] Integration tests for Codex adapter (12 tests in `codex-agent.test.ts`)
+- [x] All existing tests pass (1264/1264)
 
 ## Phase 3: Agent picker UI
 
