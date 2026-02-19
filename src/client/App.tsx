@@ -1035,6 +1035,21 @@ export default function App() {
       }
     }
 
+    if (data.type === "full_reset_complete") {
+      // Clear all localStorage keys
+      try {
+        localStorage.removeItem("shipit-theme");
+        localStorage.removeItem(PERMISSION_MODE_KEY);
+        localStorage.removeItem(SIDEBAR_COLLAPSED_KEY);
+        localStorage.removeItem(AGENT_PREFERENCE_KEY);
+        localStorage.removeItem("vibe-panel-split");
+      } catch {
+        // localStorage may be unavailable
+      }
+      window.location.reload();
+      return;
+    }
+
     if (data.type === "claude_interrupted") {
       setIsLoading(false);
       setActivity(undefined);
@@ -1562,6 +1577,10 @@ export default function App() {
     [handleSend],
   );
 
+  const handleFullReset = useCallback(() => {
+    send({ type: "full_reset" });
+  }, [send]);
+
   const handleFeatureRefresh = useCallback(() => {
     send({ type: "list_features" });
   }, [send]);
@@ -1967,6 +1986,7 @@ export default function App() {
           agentList={agentList}
           onSetAgentEnv={(agentId, key, value) => send({ type: "set_agent_env", agentId, key, value })}
           onRequestAgentList={() => send({ type: "list_agents" })}
+          onFullReset={handleFullReset}
           onClose={() => setSettingsOpen(false)}
         />
       )}

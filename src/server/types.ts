@@ -386,6 +386,11 @@ export interface WsInterruptClaude {
   type: "interrupt_claude";
 }
 
+/** Client → Server: wipe all persistent state and reset the container. */
+export interface WsFullReset {
+  type: "full_reset";
+}
+
 // ---- Agent registry messages ----
 
 export interface WsListAgentsMessage {
@@ -461,7 +466,8 @@ export type WsClientMessage =
   | WsMergeSession
   | WsInterruptClaude
   | WsListAgentsMessage
-  | WsSetAgentEnvMessage;
+  | WsSetAgentEnvMessage
+  | WsFullReset;
 
 export interface WsClaudeEvent {
   type: "claude_event";
@@ -1092,6 +1098,11 @@ export interface WsClaudeInterrupted {
   type: "claude_interrupted";
 }
 
+/** Server → Client: full reset completed successfully. */
+export interface WsFullResetComplete {
+  type: "full_reset_complete";
+}
+
 export type WsServerMessage =
   | WsClaudeEvent
   | WsAgentEvent
@@ -1153,4 +1164,5 @@ export type WsServerMessage =
   | WsMergeResult
   | WsAgentListMessage
   | WsAgentEnvSetMessage
-  | WsClaudeInterrupted;
+  | WsClaudeInterrupted
+  | WsFullResetComplete;

@@ -2982,6 +2982,54 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           send({ type: "error", message: `Failed to switch thread: ${getErrorMessage(err)}` });
         }
       }
+
+      // ---- Full reset (wipe all persistent state) ----
+
+      if (msg.type === "full_reset") {
+        try {
+          // 1. Stop active processes to avoid file-lock issues
+          if (claude) {
+            claude.kill();
+            claude = null;
+          }
+          isClaudeRunning = false;
+          messageQueue.length = 0;
+          viteManager.stop();
+          fileWatcher.stop();
+          if (terminal) {
+            terminal.kill();
+            terminal = null;
+          }
+
+          // 2. Delete all persistent data
+          const deletePaths = [
+            path.join(workspaceDir, "sessions"),
+            path.join(workspaceDir, ".vibe-chat-history"),
+            path.join(workspaceDir, ".vibe-threads"),
+            path.join(workspaceDir, ".shipit-usage.json"),
+            path.join(workspaceDir, ".shipit"),
+            path.join(workspaceDir, ".github-token"),
+            path.join(workspaceDir, ".shipit-deploy"),
+            path.join(workspaceDir, ".vibe-sessions.json"),
+          ];
+
+          for (const p of deletePaths) {
+            try {
+              await fs.rm(p, { recursive: true, force: true });
+            } catch {
+              // Best-effort — ignore individual failures
+            }
+          }
+
+          // 3. Reset connection state
+          activeAppSessionId = undefined;
+          activeSessionDir = null;
+
+          send({ type: "full_reset_complete" });
+        } catch (err) {
+          send({ type: "error", message: `Full reset failed: ${getErrorMessage(err)}` });
+        }
+      }
     });
 
     socket.on("close", () => {

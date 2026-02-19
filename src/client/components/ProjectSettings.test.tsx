@@ -457,6 +457,61 @@ describe("ProjectSettings - Gemini agent section", () => {
   });
 });
 
+describe("ProjectSettings - Advanced tab", () => {
+  function renderOnAdvancedTab(props: Partial<ProjectSettingsProps> = {}) {
+    const result = render(<ProjectSettings {...defaultProps} {...props} />);
+    fireEvent.click(screen.getByText("Advanced"));
+    return result;
+  }
+
+  it("renders Reset Container section", () => {
+    renderOnAdvancedTab();
+    expect(screen.getByText("Reset Container")).toBeInTheDocument();
+    expect(screen.getByText(/Delete all sessions, chat history/)).toBeInTheDocument();
+  });
+
+  it("renders Reset Everything button", () => {
+    renderOnAdvancedTab();
+    expect(screen.getByTestId("project-settings-reset")).toHaveTextContent("Reset Everything");
+  });
+
+  it("first click shows confirmation text", () => {
+    renderOnAdvancedTab();
+    const btn = screen.getByTestId("project-settings-reset");
+    fireEvent.click(btn);
+    expect(btn).toHaveTextContent("Click again to confirm reset");
+  });
+
+  it("confirmation resets on blur", () => {
+    renderOnAdvancedTab();
+    const btn = screen.getByTestId("project-settings-reset");
+    fireEvent.click(btn);
+    expect(btn).toHaveTextContent("Click again to confirm reset");
+    fireEvent.blur(btn);
+    expect(btn).toHaveTextContent("Reset Everything");
+  });
+
+  it("second click calls onFullReset", () => {
+    const onFullReset = vi.fn();
+    renderOnAdvancedTab({ onFullReset });
+    const btn = screen.getByTestId("project-settings-reset");
+    fireEvent.click(btn);
+    expect(onFullReset).not.toHaveBeenCalled();
+    fireEvent.click(btn);
+    expect(onFullReset).toHaveBeenCalledOnce();
+  });
+
+  it("button shows disabled/loading state after confirmation click", () => {
+    const onFullReset = vi.fn();
+    renderOnAdvancedTab({ onFullReset });
+    const btn = screen.getByTestId("project-settings-reset");
+    fireEvent.click(btn); // first click — confirm
+    fireEvent.click(btn); // second click — trigger
+    expect(btn).toBeDisabled();
+    expect(btn).toHaveTextContent("Resetting...");
+  });
+});
+
 describe("ProjectSettings - Tab switching", () => {
   it("Agent tab is selected by default", () => {
     render(<ProjectSettings {...defaultProps} />);
@@ -474,6 +529,13 @@ describe("ProjectSettings - Tab switching", () => {
     render(<ProjectSettings {...defaultProps} />);
     fireEvent.click(screen.getByText("Instructions"));
     expect(screen.getByTestId("project-settings-textarea")).toBeInTheDocument();
+    expect(screen.queryByTestId("project-settings-api-key-input")).not.toBeInTheDocument();
+  });
+
+  it("clicking Advanced tab switches to advanced section", () => {
+    render(<ProjectSettings {...defaultProps} />);
+    fireEvent.click(screen.getByText("Advanced"));
+    expect(screen.getByTestId("project-settings-reset")).toBeInTheDocument();
     expect(screen.queryByTestId("project-settings-api-key-input")).not.toBeInTheDocument();
   });
 
