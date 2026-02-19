@@ -2738,20 +2738,18 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         deploymentManager.cancel();
       }
 
-      if (msg.type === "get_deploy_config") {
-        if (!activeAppSessionId) {
-          send({ type: "error", message: "No active session" });
-          return;
-        }
+      if (msg.type === "get_project_settings") {
         const targets = deploymentManager.getTargets();
-        const configured: Record<string, { configured: boolean; projectName?: string }> = {};
-        for (const t of targets) {
-          const config = deploymentStore.loadConfig(activeAppSessionId, t.id);
-          configured[t.id] = config
-            ? { configured: true, projectName: config.projectName }
-            : { configured: false };
+        const deployConfig: Record<string, { configured: boolean; projectName?: string }> = {};
+        if (activeAppSessionId) {
+          for (const t of targets) {
+            const config = deploymentStore.loadConfig(activeAppSessionId, t.id);
+            deployConfig[t.id] = config
+              ? { configured: true, projectName: config.projectName }
+              : { configured: false };
+          }
         }
-        send({ type: "deploy_config", targets: configured });
+        send({ type: "project_settings", deployConfig });
       }
 
       if (msg.type === "delete_deploy_config") {

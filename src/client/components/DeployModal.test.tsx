@@ -33,51 +33,26 @@ const defaultProps: DeployModalProps = {
   lastDeployUrl: null,
   lastDeployError: null,
   deployHistory: [],
-  onConfigure: vi.fn(),
   onDeploy: vi.fn(),
   onCancel: vi.fn(),
   onGetHistory: vi.fn(),
-  onDeleteConfig: vi.fn(),
   onSendErrorToChat: vi.fn(),
   onClose: vi.fn(),
 };
 
 describe("DeployModal", () => {
-  it("renders the target picker with multiple targets", () => {
+  it("shows not-configured message when no targets are configured", () => {
     render(<DeployModal {...defaultProps} />);
-    expect(screen.getByText("Vercel")).toBeInTheDocument();
-    expect(screen.getByText("Deploy to Vercel")).toBeInTheDocument();
-    expect(screen.getByText("Cloudflare Pages")).toBeInTheDocument();
+    expect(screen.getByText(/no deploy targets configured/i)).toBeInTheDocument();
+    expect(screen.getByText(/Project Settings/)).toBeInTheDocument();
   });
 
-  it("shows 'Configured' badge for configured targets", () => {
-    render(
-      <DeployModal
-        {...defaultProps}
-        configStatus={{ vercel: { configured: true } }}
-      />,
-    );
-    expect(screen.getByText("Configured")).toBeInTheDocument();
+  it("shows not-configured message when targets exist but none are configured", () => {
+    render(<DeployModal {...defaultProps} targets={[fakeTarget]} configStatus={{}} />);
+    expect(screen.getByText(/no deploy targets configured/i)).toBeInTheDocument();
   });
 
-  it("shows config form when target is clicked", () => {
-    render(<DeployModal {...defaultProps} />);
-    fireEvent.click(screen.getByText("Vercel"));
-    expect(screen.getByText("Token")).toBeInTheDocument();
-    expect(screen.getByText("Save Configuration")).toBeInTheDocument();
-  });
-
-  it("calls onConfigure when config form is submitted", () => {
-    const onConfigure = vi.fn();
-    render(<DeployModal {...defaultProps} onConfigure={onConfigure} />);
-    fireEvent.click(screen.getByText("Vercel"));
-    const input = screen.getByPlaceholderText("tok_xxx");
-    fireEvent.change(input, { target: { value: "my-token" } });
-    fireEvent.click(screen.getByText("Save Configuration"));
-    expect(onConfigure).toHaveBeenCalledWith("vercel", { token: "my-token" }, undefined);
-  });
-
-  it("auto-selects single target and shows ready view when configured", () => {
+  it("auto-selects single configured target and shows ready view", () => {
     render(
       <DeployModal
         {...defaultProps}
@@ -85,7 +60,34 @@ describe("DeployModal", () => {
         configStatus={{ vercel: { configured: true } }}
       />,
     );
-    // With a single configured target, should go straight to ready view
+    expect(screen.getByText("Deploy to Production")).toBeInTheDocument();
+  });
+
+  it("shows target picker when multiple configured targets exist", () => {
+    render(
+      <DeployModal
+        {...defaultProps}
+        configStatus={{
+          vercel: { configured: true },
+          cloudflare: { configured: true },
+        }}
+      />,
+    );
+    expect(screen.getByText("Vercel")).toBeInTheDocument();
+    expect(screen.getByText("Cloudflare Pages")).toBeInTheDocument();
+  });
+
+  it("selects target from picker and shows ready view", () => {
+    render(
+      <DeployModal
+        {...defaultProps}
+        configStatus={{
+          vercel: { configured: true },
+          cloudflare: { configured: true },
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByText("Vercel"));
     expect(screen.getByText("Deploy to Production")).toBeInTheDocument();
   });
 
@@ -115,6 +117,31 @@ describe("DeployModal", () => {
     expect(onDeploy).toHaveBeenCalledWith("vercel", "production");
   });
 
+  it("shows Switch target link when multiple targets are configured", () => {
+    render(
+      <DeployModal
+        {...defaultProps}
+        configStatus={{
+          vercel: { configured: true },
+          cloudflare: { configured: true },
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByText("Vercel"));
+    expect(screen.getByText("Switch target")).toBeInTheDocument();
+  });
+
+  it("does not show Switch target link with single configured target", () => {
+    render(
+      <DeployModal
+        {...defaultProps}
+        targets={[fakeTarget]}
+        configStatus={{ vercel: { configured: true } }}
+      />,
+    );
+    expect(screen.queryByText("Switch target")).not.toBeInTheDocument();
+  });
+
   it("shows deploying state with cancel button", () => {
     render(
       <DeployModal
@@ -125,7 +152,6 @@ describe("DeployModal", () => {
       />,
     );
     expect(screen.getByText("Cancel")).toBeInTheDocument();
-    // Header says "Deploying..."
     const heading = screen.getByRole("heading");
     expect(heading.textContent).toBe("Deploying...");
   });
@@ -204,7 +230,14 @@ describe("DeployModal", () => {
 
   it("calls onClose when backdrop is clicked", () => {
     const onClose = vi.fn();
-    render(<DeployModal {...defaultProps} onClose={onClose} />);
+    render(
+      <DeployModal
+        {...defaultProps}
+        targets={[fakeTarget]}
+        configStatus={{ vercel: { configured: true } }}
+        onClose={onClose}
+      />,
+    );
     const backdrop = screen.getByRole("dialog");
     fireEvent.click(backdrop);
     expect(onClose).toHaveBeenCalled();
@@ -212,14 +245,16 @@ describe("DeployModal", () => {
 
   it("calls onClose when close button is clicked", () => {
     const onClose = vi.fn();
-    render(<DeployModal {...defaultProps} onClose={onClose} />);
+    render(
+      <DeployModal
+        {...defaultProps}
+        targets={[fakeTarget]}
+        configStatus={{ vercel: { configured: true } }}
+        onClose={onClose}
+      />,
+    );
     fireEvent.click(screen.getByLabelText("Close"));
     expect(onClose).toHaveBeenCalled();
-  });
-
-  it("shows empty state when no targets are available", () => {
-    render(<DeployModal {...defaultProps} targets={[]} />);
-    expect(screen.getByText("No deployment targets available.")).toBeInTheDocument();
   });
 
   it("shows deploy history in ready view", () => {
@@ -245,30 +280,25 @@ describe("DeployModal", () => {
     expect(screen.getByText("https://old-deploy.vercel.app")).toBeInTheDocument();
   });
 
-  it("shows 'Back' button on config view and navigates to picker", () => {
-    render(<DeployModal {...defaultProps} />);
-    // Select a target from picker
-    fireEvent.click(screen.getByText("Vercel"));
-    // Should be on config view
-    expect(screen.getByText("Save Configuration")).toBeInTheDocument();
-    // Back goes to picker
-    fireEvent.click(screen.getByText("Back"));
-    // Both targets should be visible
-    expect(screen.getByText("Vercel")).toBeInTheDocument();
-    expect(screen.getByText("Cloudflare Pages")).toBeInTheDocument();
-  });
-
-  it("calls onDeleteConfig from the ready view", () => {
-    const onDeleteConfig = vi.fn();
+  it("shows Configure button in not-configured view when onOpenProjectSettings is provided", () => {
+    const onOpenProjectSettings = vi.fn();
+    const onClose = vi.fn();
     render(
       <DeployModal
         {...defaultProps}
-        targets={[fakeTarget]}
-        configStatus={{ vercel: { configured: true } }}
-        onDeleteConfig={onDeleteConfig}
+        onClose={onClose}
+        onOpenProjectSettings={onOpenProjectSettings}
       />,
     );
-    fireEvent.click(screen.getByText("Remove credentials"));
-    expect(onDeleteConfig).toHaveBeenCalledWith("vercel");
+    const btn = screen.getByTestId("deploy-open-project-settings");
+    expect(btn).toHaveTextContent("Configure");
+    fireEvent.click(btn);
+    expect(onClose).toHaveBeenCalled();
+    expect(onOpenProjectSettings).toHaveBeenCalled();
+  });
+
+  it("does not show Configure button when onOpenProjectSettings is not provided", () => {
+    render(<DeployModal {...defaultProps} />);
+    expect(screen.queryByTestId("deploy-open-project-settings")).not.toBeInTheDocument();
   });
 });

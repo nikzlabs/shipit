@@ -451,7 +451,7 @@ export type WsClientMessage =
   | WsDeployConfigure
   | WsInitiateDeploy
   | WsGetDeployHistory
-  | WsGetDeployConfig
+  | WsGetProjectSettings
   | WsCancelDeploy
   | WsDeleteDeployConfig
   | WsTerminalStart
@@ -1018,8 +1018,8 @@ export interface WsGetDeployHistory {
   type: "get_deploy_history";
 }
 
-export interface WsGetDeployConfig {
-  type: "get_deploy_config";
+export interface WsGetProjectSettings {
+  type: "get_project_settings";
 }
 
 export interface WsCancelDeploy {
@@ -1043,9 +1043,9 @@ export interface WsDeployConfigSaved {
   targetId: string;
 }
 
-export interface WsDeployConfigStatus {
-  type: "deploy_config";
-  targets: Record<string, { configured: boolean; projectName?: string }>;
+export interface WsProjectSettings {
+  type: "project_settings";
+  deployConfig: Record<string, { configured: boolean; projectName?: string }>;
 }
 
 export interface WsDeployStatus {
@@ -1144,7 +1144,7 @@ export type WsServerMessage =
   | WsThreadForked
   | WsDeployTargets
   | WsDeployConfigSaved
-  | WsDeployConfigStatus
+  | WsProjectSettings
   | WsDeployStatus
   | WsDeployComplete
   | WsDeployError

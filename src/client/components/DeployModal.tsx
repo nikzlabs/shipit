@@ -10,16 +10,15 @@ export interface DeployModalProps {
   lastDeployUrl: string | null;
   lastDeployError: string | null;
   deployHistory: DeploymentRecord[];
-  onConfigure: (targetId: string, credentials: Record<string, string>, projectName?: string) => void;
   onDeploy: (targetId: string, environment: "production" | "preview") => void;
   onCancel: () => void;
   onGetHistory: () => void;
-  onDeleteConfig: (targetId: string) => void;
   onSendErrorToChat: (errorMessage: string) => void;
+  onOpenProjectSettings?: () => void;
   onClose: () => void;
 }
 
-type ModalView = "picker" | "config" | "ready" | "deploying" | "complete" | "error";
+type ModalView = "picker" | "ready" | "deploying" | "complete" | "error" | "not-configured";
 
 export function DeployModal({
   targets,
@@ -28,41 +27,38 @@ export function DeployModal({
   lastDeployUrl,
   lastDeployError,
   deployHistory,
-  onConfigure,
   onDeploy,
   onCancel,
   onGetHistory,
-  onDeleteConfig,
   onSendErrorToChat,
+  onOpenProjectSettings,
   onClose,
 }: DeployModalProps) {
   const [selectedTarget, setSelectedTarget] = useState<DeployTargetInfo | null>(null);
-  const [configValues, setConfigValues] = useState<Record<string, string>>({});
-  const [projectName, setProjectName] = useState("");
   const [environment, setEnvironment] = useState<"production" | "preview">("production");
   const dialogRef = useRef<HTMLDivElement>(null);
+
+  const configuredTargets = targets.filter((t) => configStatus[t.id]?.configured);
 
   // Determine the view based on state
   const getView = (): ModalView => {
     if (deployStatus === "building" || deployStatus === "deploying") return "deploying";
     if (deployStatus === "complete" || lastDeployUrl) return "complete";
     if (deployStatus === "error" || lastDeployError) return "error";
-    if (selectedTarget) {
-      const status = configStatus[selectedTarget.id];
-      if (status?.configured) return "ready";
-      return "config";
-    }
+    if (configuredTargets.length === 0) return "not-configured";
+    if (selectedTarget) return "ready";
+    if (configuredTargets.length === 1) return "ready";
     return "picker";
   };
 
   const view = getView();
 
-  // Auto-select target if only one exists and it's configured
+  // Auto-select target if only one configured target exists
   useEffect(() => {
-    if (targets.length === 1 && !selectedTarget) {
-      setSelectedTarget(targets[0]);
+    if (configuredTargets.length === 1 && !selectedTarget) {
+      setSelectedTarget(configuredTargets[0]);
     }
-  }, [targets, selectedTarget]);
+  }, [configuredTargets, selectedTarget]);
 
   // Request history when entering ready view
   useEffect(() => {
@@ -80,21 +76,11 @@ export function DeployModal({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
 
-  const handleConfigSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedTarget) return;
-    onConfigure(selectedTarget.id, configValues, projectName || undefined);
-  };
+  const activeTarget = selectedTarget ?? configuredTargets[0] ?? null;
 
   const handleDeploy = () => {
-    if (!selectedTarget) return;
-    onDeploy(selectedTarget.id, environment);
-  };
-
-  const handleBackToPicker = () => {
-    setSelectedTarget(null);
-    setConfigValues({});
-    setProjectName("");
+    if (!activeTarget) return;
+    onDeploy(activeTarget.id, environment);
   };
 
   return (
@@ -115,8 +101,8 @@ export function DeployModal({
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
             {view === "picker" && "Deploy"}
-            {view === "config" && `Configure ${selectedTarget?.name ?? ""}`}
-            {view === "ready" && `Deploy to ${selectedTarget?.name ?? ""}`}
+            {view === "not-configured" && "Deploy"}
+            {view === "ready" && `Deploy to ${activeTarget?.name ?? ""}`}
             {view === "deploying" && "Deploying..."}
             {view === "complete" && "Deployed!"}
             {view === "error" && "Deploy Failed"}
@@ -131,109 +117,55 @@ export function DeployModal({
         </div>
 
         <div className="px-6 py-4">
-          {/* Target picker */}
-          {view === "picker" && (
-            <div className="space-y-3">
-              {targets.length === 0 ? (
-                <p className="text-gray-500 text-sm">No deployment targets available.</p>
-              ) : (
-                targets.map((target) => {
-                  const status = configStatus[target.id];
-                  return (
-                    <button
-                      key={target.id}
-                      onClick={() => setSelectedTarget(target)}
-                      className="w-full text-left p-4 rounded-lg border border-gray-200 dark:border-gray-700 hover:border-blue-400 dark:hover:border-blue-500 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
-                    >
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="font-medium text-gray-900 dark:text-gray-100">{target.name}</div>
-                          <div className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">{target.description}</div>
-                        </div>
-                        {status?.configured && (
-                          <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300">
-                            Configured
-                          </span>
-                        )}
-                      </div>
-                    </button>
-                  );
-                })
-              )}
+          {/* No configured targets */}
+          {view === "not-configured" && (
+            <div className="space-y-3 text-center">
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                No deploy targets configured.
+              </p>
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                Set up a deploy target in <strong className="text-gray-700 dark:text-gray-300">Project Settings</strong>.
+              </p>
+              <div className="flex gap-2 justify-center">
+                {onOpenProjectSettings && (
+                  <button
+                    onClick={() => { onClose(); onOpenProjectSettings(); }}
+                    className="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors font-medium"
+                    data-testid="deploy-open-project-settings"
+                  >
+                    Configure
+                  </button>
+                )}
+                <button
+                  onClick={onClose}
+                  className="px-4 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           )}
 
-          {/* Config form */}
-          {view === "config" && selectedTarget && (
-            <form onSubmit={handleConfigSubmit} className="space-y-4">
-              {selectedTarget.configFields.map((field) => (
-                <div key={field.key}>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    {field.label}
-                    {field.required && <span className="text-red-500 ml-0.5">*</span>}
-                  </label>
-                  <input
-                    type={field.sensitive ? "password" : "text"}
-                    placeholder={field.placeholder}
-                    value={configValues[field.key] || ""}
-                    onChange={(e) =>
-                      setConfigValues((prev) => ({ ...prev, [field.key]: e.target.value }))
-                    }
-                    className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    required={field.required}
-                    autoComplete="off"
-                  />
-                  {field.helpText && (
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{field.helpText}</p>
-                  )}
-                  {field.helpUrl && (
-                    <a
-                      href={field.helpUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-xs text-blue-500 hover:text-blue-400 mt-1 inline-block"
-                    >
-                      Get credentials &rarr;
-                    </a>
-                  )}
-                </div>
+          {/* Target picker (multiple configured targets) */}
+          {view === "picker" && (
+            <div className="space-y-3">
+              {configuredTargets.map((target) => (
+                <button
+                  key={target.id}
+                  onClick={() => setSelectedTarget(target)}
+                  className="w-full text-left p-4 rounded-lg border border-gray-200 dark:border-gray-700 hover:border-blue-400 dark:hover:border-blue-500 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                >
+                  <div className="font-medium text-gray-900 dark:text-gray-100">{target.name}</div>
+                  <div className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">{target.description}</div>
+                </button>
               ))}
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  Project Name <span className="text-gray-400 font-normal">(optional)</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="Auto-generated from directory name"
-                  value={projectName}
-                  onChange={(e) => setProjectName(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              <div className="flex gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={handleBackToPicker}
-                  className="px-4 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
-                >
-                  Back
-                </button>
-                <button
-                  type="submit"
-                  className="flex-1 px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors font-medium"
-                >
-                  Save Configuration
-                </button>
-              </div>
-            </form>
+            </div>
           )}
 
           {/* Ready to deploy */}
-          {view === "ready" && selectedTarget && (
+          {view === "ready" && activeTarget && (
             <div className="space-y-4">
-              {selectedTarget.supportsPreview && (
+              {activeTarget.supportsPreview && (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                     Environment
@@ -270,21 +202,16 @@ export function DeployModal({
                 Deploy to {environment === "production" ? "Production" : "Preview"}
               </button>
 
-              <div className="flex gap-2 text-xs">
-                <button
-                  onClick={handleBackToPicker}
-                  className="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
-                >
-                  Switch target
-                </button>
-                <span className="text-gray-400">|</span>
-                <button
-                  onClick={() => onDeleteConfig(selectedTarget.id)}
-                  className="text-red-500 hover:text-red-400 transition-colors"
-                >
-                  Remove credentials
-                </button>
-              </div>
+              {configuredTargets.length > 1 && (
+                <div className="text-xs">
+                  <button
+                    onClick={() => setSelectedTarget(null)}
+                    className="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
+                  >
+                    Switch target
+                  </button>
+                </div>
+              )}
 
               {/* Deploy history */}
               {deployHistory.length > 0 && (
@@ -394,7 +321,7 @@ export function DeployModal({
                 </button>
                 <button
                   onClick={() => {
-                    if (selectedTarget) {
+                    if (activeTarget) {
                       handleDeploy();
                     }
                   }}

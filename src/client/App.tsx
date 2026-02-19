@@ -12,6 +12,7 @@ import { PreviewFrame, formatErrorForMessage, type PreviewStatus } from "./compo
 import { usePreviewErrors, type PreviewError } from "./hooks/usePreviewErrors.js";
 import { GitHistory, type GitCommit } from "./components/GitHistory.js";
 import { AuthOverlay } from "./components/AuthOverlay.js";
+import { Settings } from "./components/Settings.js";
 import { ProjectSettings } from "./components/ProjectSettings.js";
 import { SessionSidebar } from "./components/SessionSidebar.js";
 import { DocsViewer } from "./components/DocsViewer.js";
@@ -150,6 +151,7 @@ export default function App() {
   const [gitIdentityNeeded, setGitIdentityNeeded] = useState(false);
   const [threads, setThreads] = useState<ThreadInfo[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string>("");
+  const [projectSettingsOpen, setProjectSettingsOpen] = useState(false);
   const [showDeployModal, setShowDeployModal] = useState(false);
   const [deployTargets, setDeployTargets] = useState<DeployTargetInfo[]>([]);
   const [deployConfigStatus, setDeployConfigStatus] = useState<Record<string, { configured: boolean; projectName?: string }>>({});
@@ -968,11 +970,11 @@ export default function App() {
 
     if (data.type === "deploy_config_saved") {
       // Refresh config status after save
-      send({ type: "get_deploy_config" });
+      send({ type: "get_project_settings" });
     }
 
-    if (data.type === "deploy_config") {
-      setDeployConfigStatus(data.targets);
+    if (data.type === "project_settings") {
+      setDeployConfigStatus(data.deployConfig);
     }
 
     if (data.type === "deploy_status") {
@@ -1496,6 +1498,12 @@ export default function App() {
     setSettingsOpen(true);
   }, [send]);
 
+  const handleProjectSettingsOpen = useCallback(() => {
+    send({ type: "list_deploy_targets" });
+    send({ type: "get_project_settings" });
+    setProjectSettingsOpen(true);
+  }, [send]);
+
   const handleInstructionsSave = useCallback(
     (content: string) => {
       send({ type: "set_system_prompt", content });
@@ -1526,7 +1534,7 @@ export default function App() {
 
   const handleDeployOpen = useCallback(() => {
     send({ type: "list_deploy_targets" });
-    send({ type: "get_deploy_config" });
+    send({ type: "get_project_settings" });
     setDeployStatus(null);
     setLastDeployUrl(null);
     setLastDeployError(null);
@@ -1974,7 +1982,7 @@ export default function App() {
       )}
       {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
       {settingsOpen && (
-        <ProjectSettings
+        <Settings
           initialContent={systemPromptContent}
           onSaveInstructions={handleInstructionsSave}
           githubStatus={githubStatus}
@@ -1990,6 +1998,15 @@ export default function App() {
           onClose={() => setSettingsOpen(false)}
         />
       )}
+      {projectSettingsOpen && (
+        <ProjectSettings
+          deployTargets={deployTargets}
+          deployConfigStatus={deployConfigStatus}
+          onDeployConfigure={handleDeployConfigure}
+          onDeployDeleteConfig={handleDeployDeleteConfig}
+          onClose={() => setProjectSettingsOpen(false)}
+        />
+      )}
       {showDeployModal && (
         <DeployModal
           targets={deployTargets}
@@ -1998,12 +2015,11 @@ export default function App() {
           lastDeployUrl={lastDeployUrl}
           lastDeployError={lastDeployError}
           deployHistory={deployHistory}
-          onConfigure={handleDeployConfigure}
           onDeploy={handleDeployInitiate}
           onCancel={handleDeployCancel}
           onGetHistory={handleDeployGetHistory}
-          onDeleteConfig={handleDeployDeleteConfig}
           onSendErrorToChat={handleDeploySendError}
+          onOpenProjectSettings={handleProjectSettingsOpen}
           onClose={() => setShowDeployModal(false)}
         />
       )}
@@ -2066,6 +2082,18 @@ export default function App() {
             </svg>
             Deploy
           </button>
+          {sessionIdRef.current && (
+            <button
+              onClick={handleProjectSettingsOpen}
+              className="hidden sm:inline-flex items-center justify-center w-7 h-7 rounded transition-colors text-gray-500 hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+              title="Project settings"
+              aria-label="Project settings"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                <path fillRule="evenodd" d="M2 4.75A.75.75 0 0 1 2.75 4h14.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 4.75Zm0 10.5a.75.75 0 0 1 .75-.75h7.5a.75.75 0 0 1 0 1.5h-7.5a.75.75 0 0 1-.75-.75ZM2 10a.75.75 0 0 1 .75-.75h14.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 10Z" clipRule="evenodd" />
+              </svg>
+            </button>
+          )}
           <button
             onClick={handleSettingsOpen}
             className={`hidden sm:inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${
@@ -2073,8 +2101,8 @@ export default function App() {
                 ? "text-blue-400 hover:text-blue-300 hover:bg-gray-100 dark:hover:bg-gray-800"
                 : "text-gray-500 hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
             }`}
-            title="Project settings"
-            aria-label="Project settings"
+            title="Settings"
+            aria-label="Settings"
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"

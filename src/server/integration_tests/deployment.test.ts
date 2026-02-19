@@ -209,12 +209,12 @@ describe("Integration: Deployment", () => {
       msg = await client.receiveSkipLogs();
     } while (msg.type !== "claude_event" || (msg as any).event?.type !== "result");
 
-    client.send({ type: "get_deploy_config" } as any);
+    client.send({ type: "get_project_settings" } as any);
     const configMsg = await client.receiveSkipLogs();
 
-    expect(configMsg.type).toBe("deploy_config");
-    expect((configMsg as any).targets).toHaveProperty("test-target");
-    expect((configMsg as any).targets["test-target"].configured).toBe(false);
+    expect(configMsg.type).toBe("project_settings");
+    expect((configMsg as any).deployConfig).toHaveProperty("test-target");
+    expect((configMsg as any).deployConfig["test-target"].configured).toBe(false);
 
     client.close();
   });
