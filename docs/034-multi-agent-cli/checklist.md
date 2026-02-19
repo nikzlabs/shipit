@@ -36,13 +36,13 @@
 - [x] Integration tests for agent registry WS messages (6 tests)
 - [x] Component tests for Codex/Gemini settings sections (15 tests)
 
-## Phase 3: Agent picker UI
+## Phase 3: Agent picker UI (Complete)
 
-- [ ] Agent selector dropdown in `MessageInput` or `StatusBar`
-- [ ] Send `set_agent` WS message when user switches agents
-- [ ] Show active agent indicator in chat header
-- [ ] Component tests for agent picker
-- [ ] Persist agent preference in localStorage
+- [x] Agent selector dropdown in chat toolbar (`src/client/components/AgentPicker.tsx`)
+- [x] Send `set_agent` WS message when user switches agents
+- [x] Show active agent indicator in StatusBar (`src/client/components/StatusBar.tsx`)
+- [x] Component tests for agent picker (16 tests in `AgentPicker.test.tsx`)
+- [x] Persist agent preference in localStorage
 
 ## Phase 4: Gemini adapter
 

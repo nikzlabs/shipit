@@ -38,12 +38,14 @@ import { PullRequestModal } from "./components/PullRequestModal.js";
 import { PrStatusBar } from "./components/PrStatusBar.js";
 import { Toast, type ToastData } from "./components/Toast.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
-import type { WsServerMessage, WsSessionRenamed, WsUsageUpdate, WsModelInfo, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, FeatureInfo, PermissionMode, FileContextRef, SessionInfo, AgentEvent, AgentContentBlock, WsMessageQueued, WsQueueUpdated } from "../server/types.js";
+import { AgentPicker, type AgentOption } from "./components/AgentPicker.js";
+import type { WsServerMessage, WsSessionRenamed, WsUsageUpdate, WsModelInfo, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, FeatureInfo, PermissionMode, FileContextRef, SessionInfo, AgentEvent, AgentContentBlock, AgentId, WsMessageQueued, WsQueueUpdated } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal" | "features";
 
 const PERMISSION_MODE_KEY = "vibe-permission-mode";
 const SIDEBAR_COLLAPSED_KEY = "vibe-sidebar-collapsed";
+const AGENT_PREFERENCE_KEY = "vibe-agent-id";
 
 function getWsUrl(): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -81,6 +83,24 @@ function getSavedSidebarCollapsed(): boolean {
 function saveSidebarCollapsed(collapsed: boolean): void {
   try {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+function getSavedAgentId(): AgentId {
+  try {
+    const saved = localStorage.getItem(AGENT_PREFERENCE_KEY);
+    if (saved === "claude" || saved === "codex" || saved === "gemini") return saved;
+  } catch {
+    // localStorage may be unavailable
+  }
+  return "claude";
+}
+
+function saveAgentId(agentId: AgentId): void {
+  try {
+    localStorage.setItem(AGENT_PREFERENCE_KEY, agentId);
   } catch {
     // localStorage may be unavailable
   }
@@ -138,7 +158,8 @@ export default function App() {
   const [lastDeployError, setLastDeployError] = useState<string | null>(null);
   const [deployHistory, setDeployHistory] = useState<DeploymentRecord[]>([]);
   const [features, setFeatures] = useState<FeatureInfo[]>([]);
-  const [agentList, setAgentList] = useState<Array<{ id: string; name: string; installed: boolean; authConfigured: boolean; models: string[] }>>([]);
+  const [agentList, setAgentList] = useState<AgentOption[]>([]);
+  const [activeAgentId, setActiveAgentId] = useState<AgentId>(getSavedAgentId());
   const [showPRModal, setShowPRModal] = useState(false);
   const [prCurrentBranch, setPrCurrentBranch] = useState("");
   const [prRemoteBranches, setPrRemoteBranches] = useState<string[]>([]);
@@ -232,6 +253,12 @@ export default function App() {
     if (status === "open") {
       send({ type: "github_get_status" });
       send({ type: "list_sessions" });
+      send({ type: "list_agents" });
+      // Restore saved agent preference on connect
+      const savedAgent = getSavedAgentId();
+      if (savedAgent !== "claude") {
+        send({ type: "set_agent", agentId: savedAgent });
+      }
     }
     if (status === "closed") {
       historyLoadedRef.current = false;
@@ -1560,6 +1587,12 @@ export default function App() {
     savePermissionMode(mode);
   }, []);
 
+  const handleAgentChange = useCallback((agentId: AgentId) => {
+    setActiveAgentId(agentId);
+    saveAgentId(agentId);
+    send({ type: "set_agent", agentId });
+  }, [send]);
+
   const handleClearLogs = useCallback(() => {
     setLogEntries([]);
     send({ type: "clear_logs" });
@@ -1825,6 +1858,12 @@ export default function App() {
             onSwitchThread={handleSwitchThread}
             disabled={isLoading || status !== "open"}
           />
+          <AgentPicker
+            agents={agentList}
+            activeAgentId={activeAgentId}
+            onAgentChange={handleAgentChange}
+            disabled={isLoading || status !== "open"}
+          />
         </div>
       )}
       {!showHomeScreen && threads.length > 0 && (
@@ -1843,7 +1882,7 @@ export default function App() {
         />
       )}
       {!showHomeScreen && (
-        <StatusBar modelInfo={modelInfo} contextTokens={contextTokens} />
+        <StatusBar modelInfo={modelInfo} contextTokens={contextTokens} agentName={agentList.find((a) => a.id === activeAgentId)?.name} />
       )}
       {!showHomeScreen && queuedMessages.length > 0 && (
         <QueueIndicator
