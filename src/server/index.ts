@@ -1083,6 +1083,30 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           }
         }
       }
+
+      // For agents that don't support session resume (e.g. Codex), inject
+      // prior conversation history into the prompt so the agent has context.
+      // This replaces --resume with an explicit conversation prefix.
+      if (agentSessionId && !currentAgent.capabilities.supportsResume && activeAppSessionId) {
+        const history = chatHistoryManager.load(activeAppSessionId);
+        if (history.length > 0) {
+          const contextLines: string[] = ["<conversation_history>"];
+          for (const msg of history) {
+            const role = msg.role === "user" ? "User" : "Assistant";
+            contextLines.push(`[${role}]: ${msg.text}`);
+          }
+          contextLines.push("</conversation_history>");
+          contextLines.push("");
+          contextLines.push("Continue the conversation above. The user's new message follows:");
+          contextLines.push("");
+          systemPrompt = systemPrompt
+            ? `${systemPrompt}\n\n${contextLines.join("\n")}`
+            : contextLines.join("\n");
+        }
+        // Clear agentSessionId — stateless agents don't use it
+        agentSessionId = undefined;
+      }
+
       // Prepend file context to the prompt if files are attached
       let prompt = userText;
       if (validatedFiles.length > 0) {

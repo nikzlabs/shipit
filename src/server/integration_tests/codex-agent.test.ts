@@ -475,4 +475,69 @@ describe("Integration: Codex agent flow", () => {
 
     client.close();
   });
+
+  it("injects conversation history into prompt for continued sessions (no resume)", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "set_agent", agentId: "codex" });
+
+    // --- First message: starts a new session ---
+    client.send({ type: "send_message", text: "Create a hello.ts file" });
+
+    await waitForCodex(() => lastCodex);
+    const firstCodex = lastCodex;
+
+    // Simulate Codex completing with a thread.started → agent_init
+    firstCodex.emit("event", { type: "thread.started", thread_id: "codex-t1" });
+    firstCodex.emit("event", { type: "turn.started" });
+    firstCodex.emit("event", {
+      type: "item.completed",
+      item: { id: "m1", type: "agent_message", text: "I created hello.ts for you." },
+    });
+    firstCodex.emit("event", { type: "turn.completed", usage: { input_tokens: 100, output_tokens: 50 } });
+    firstCodex.emit("done", 0);
+
+    // Collect messages until we see session_started to get the session ID
+    let sessionId: string | undefined;
+    const deadline1 = Date.now() + 3000;
+    while (Date.now() < deadline1) {
+      const msg = await client.receive(500).catch(() => null) as any;
+      if (!msg) break;
+      if (msg.type === "session_started") {
+        sessionId = msg.session.id;
+        break;
+      }
+    }
+    expect(sessionId).toBeDefined();
+
+    // Drain remaining messages from first turn
+    const drainDeadline = Date.now() + 1000;
+    while (Date.now() < drainDeadline) {
+      await client.receive(200).catch(() => null);
+    }
+
+    // --- Second message: continues the session ---
+    const prevCodex = lastCodex;
+    client.send({ type: "send_message", text: "Now add a test", sessionId });
+
+    // Wait for a NEW CodexProcess (not the same instance)
+    const deadline2 = Date.now() + 5000;
+    while (Date.now() < deadline2) {
+      if (lastCodex !== prevCodex && lastCodex?.runCalled) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(lastCodex).not.toBe(prevCodex);
+    expect(lastCodex.runCalled).toBe(true);
+
+    // The prompt should contain the conversation history since Codex can't resume
+    const prompt = lastCodex.lastPrompt;
+    expect(prompt).toContain("<conversation_history>");
+    expect(prompt).toContain("[User]: Create a hello.ts file");
+    expect(prompt).toContain("[Assistant]: I created hello.ts for you.");
+    expect(prompt).toContain("</conversation_history>");
+    expect(prompt).toContain("Now add a test");
+
+    client.close();
+  });
 });

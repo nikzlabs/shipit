@@ -269,8 +269,17 @@ export class CodexAdapter
 
   run(params: AgentRunParams): void {
     const approvalMode = permissionToApprovalMode(params.permissionMode);
+
+    // Codex exec mode doesn't have a --system-prompt flag.
+    // If a system prompt is provided (e.g. conversation history for non-resumable
+    // sessions), prepend it to the user prompt.
+    let prompt = params.prompt;
+    if (params.systemPrompt) {
+      prompt = `${params.systemPrompt}\n\n${prompt}`;
+    }
+
     this.inner.run(
-      params.prompt,
+      prompt,
       approvalMode,
       undefined, // model — use Codex default
       params.cwd,

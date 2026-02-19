@@ -496,6 +496,23 @@ describe("CodexAdapter", () => {
     expect(inner.killed).toBe(true);
   });
 
+  // ---- System prompt handling ----
+
+  it("prepends systemPrompt to the user prompt (since Codex has no --system-prompt flag)", () => {
+    adapter.run({
+      prompt: "Fix the bug",
+      systemPrompt: "You are a helpful coding assistant.",
+    });
+
+    expect(inner.runCalled).toBe(true);
+    expect(inner.lastArgs[0]).toBe("You are a helpful coding assistant.\n\nFix the bug");
+  });
+
+  it("passes prompt unchanged when no systemPrompt is provided", () => {
+    adapter.run({ prompt: "Hello" });
+    expect(inner.lastArgs[0]).toBe("Hello");
+  });
+
   // ---- Full conversation flow test ----
 
   it("handles a complete conversation flow", () => {
