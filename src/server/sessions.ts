@@ -121,4 +121,24 @@ export class SessionManager {
     this.save();
     return true;
   }
+
+  /** Find all non-archived sessions with the given remote URL. */
+  findAllByRemoteUrl(remoteUrl: string): SessionInfo[] {
+    return this.sessions.filter(
+      (s) => s.remoteUrl === remoteUrl && s.archived !== true,
+    );
+  }
+
+  /** Set worktree-specific fields on a session. */
+  setWorktreeInfo(
+    id: string,
+    info: { branch: string; sessionType: "worktree" },
+  ): void {
+    const session = this.sessions.find((s) => s.id === id);
+    if (session) {
+      session.branch = info.branch;
+      session.sessionType = info.sessionType;
+      this.save();
+    }
+  }
 }

@@ -646,6 +646,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     return { appSessionId, sessionDir };
   };
 
+  // ---- Shared repo directory (one clone per repo URL, all sessions are worktrees) ----
+  const reposRoot = path.join(workspaceDir, "repos");
+
+  const getSharedRepoDir = (repoUrl: string): string => {
+    const hash = crypto.createHash("sha256").update(repoUrl).digest("hex").slice(0, 16);
+    return path.join(reposRoot, hash);
+  };
+
   // ---- WebSocket route ----
   app.get("/ws", { websocket: true }, (socket) => {
     console.log("[ws] client connected");
@@ -1245,6 +1253,41 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       }
 
       if (msg.type === "archive_session") {
+        const sessionToArchive = sessionManager.get(msg.sessionId);
+
+        // If archiving a worktree session, clean up the worktree + branch
+        if (sessionToArchive?.sessionType === "worktree" && sessionToArchive.workspaceDir) {
+          try {
+            let repoDir: string | null = null;
+            if (sessionToArchive.remoteUrl) {
+              repoDir = getSharedRepoDir(sessionToArchive.remoteUrl);
+            } else {
+              // Standalone worktree: read .git file to find main repo
+              const dotGit = path.join(sessionToArchive.workspaceDir, ".git");
+              const stat = await fs.stat(dotGit).catch(() => null);
+              if (stat?.isFile()) {
+                const content = await fs.readFile(dotGit, "utf-8");
+                const match = content.match(/gitdir:\s*(.+)/);
+                if (match) {
+                  // gitdir points to <main-repo>/.git/worktrees/<name>
+                  const gitDir = path.resolve(path.dirname(dotGit), match[1].trim());
+                  const mainGitDir = path.resolve(gitDir, "..", "..");
+                  repoDir = path.dirname(mainGitDir);
+                }
+              }
+            }
+            if (repoDir) {
+              const repoGit = createGitManager(repoDir);
+              await repoGit.removeWorktree(sessionToArchive.workspaceDir);
+              if (sessionToArchive.branch) {
+                await repoGit.deleteBranch(sessionToArchive.branch);
+              }
+            }
+          } catch (err) {
+            console.warn("[server] Worktree cleanup failed:", getErrorMessage(err));
+          }
+        }
+
         // If archiving the active session, clear it
         if (msg.sessionId === activeAppSessionId) {
           activeAppSessionId = undefined;
@@ -1265,6 +1308,147 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           } else {
             send({ type: "error", message: "Session not found" });
           }
+        }
+      }
+
+      // ---- Worktree session handlers ----
+
+      if (msg.type === "fork_session") {
+        const branchName = typeof msg.branchName === "string" ? msg.branchName.trim() : "";
+        if (!branchName) {
+          send({ type: "error", message: "Branch name is required" });
+          return;
+        }
+        // Validate git branch name: no spaces, no '..' or '~', no control chars
+        if (/[\s~^:?*[\\]/.test(branchName) || branchName.includes("..")) {
+          send({ type: "error", message: "Invalid branch name" });
+          return;
+        }
+        if (!activeSessionDir || !activeAppSessionId) {
+          send({ type: "error", message: "No active session to fork from" });
+          return;
+        }
+
+        try {
+          const activeSession = sessionManager.get(activeAppSessionId);
+
+          // Determine which repo to create the worktree from:
+          // - Repo-backed sessions: use the shared clone in /repos/
+          // - Standalone sessions: use the session's own .git dir
+          let gitDir: string;
+          if (activeSession?.remoteUrl) {
+            gitDir = getSharedRepoDir(activeSession.remoteUrl);
+          } else {
+            gitDir = activeSessionDir;
+          }
+
+          const newSessionId = crypto.randomUUID();
+          const newSessionDir = path.join(sessionsRoot, newSessionId);
+
+          const repoGit = createGitManager(gitDir);
+          await repoGit.createWorktree(newSessionDir, branchName, msg.startPoint);
+
+          // Apply identity & credentials to the worktree
+          const worktreeGit = createGitManager(newSessionDir);
+          const stored = gitIdentityStore.get();
+          if (stored) await worktreeGit.setIdentity(stored.name, stored.email);
+          if (githubAuthManager.authenticated) {
+            githubAuthManager.configureGitCredentials(newSessionDir);
+          }
+
+          // Track in session manager
+          const title = `${activeSession?.title ?? "Session"} (${branchName})`;
+          sessionManager.track(newSessionId, title, newSessionDir);
+          sessionManager.setWorktreeInfo(newSessionId, {
+            branch: branchName,
+            sessionType: "worktree",
+          });
+          if (activeSession?.remoteUrl) {
+            sessionManager.setRemoteUrl(newSessionId, activeSession.remoteUrl);
+          }
+
+          threadManager.init(newSessionId);
+
+          const newSession = sessionManager.get(newSessionId)!;
+          send({ type: "session_forked", session: newSession, parentSessionId: activeAppSessionId });
+          send({ type: "session_list", sessions: sessionManager.list() });
+          console.log("[server] Forked session:", newSessionId, "branch:", branchName);
+        } catch (err) {
+          send({ type: "error", message: `Failed to fork session: ${getErrorMessage(err)}` });
+        }
+      }
+
+      if (msg.type === "list_worktrees") {
+        if (!activeSessionDir || !activeAppSessionId) {
+          send({ type: "worktree_list", worktrees: [] });
+          return;
+        }
+
+        try {
+          // Find all sessions sharing the same repo
+          const activeSession = sessionManager.get(activeAppSessionId);
+          const siblings = activeSession?.remoteUrl
+            ? sessionManager.findAllByRemoteUrl(activeSession.remoteUrl)
+            : [activeSession].filter(Boolean) as import("./types.js").SessionInfo[];
+
+          const worktrees: Array<{ sessionId: string; branch: string; path: string }> = [];
+          for (const s of siblings) {
+            if (s.workspaceDir && s.branch) {
+              worktrees.push({
+                sessionId: s.id,
+                branch: s.branch,
+                path: s.workspaceDir,
+              });
+            }
+          }
+
+          send({ type: "worktree_list", worktrees });
+        } catch (err) {
+          send({ type: "error", message: `Failed to list worktrees: ${getErrorMessage(err)}` });
+        }
+      }
+
+      if (msg.type === "merge_session") {
+        const sourceSessionId = typeof msg.sourceSessionId === "string" ? msg.sourceSessionId.trim() : "";
+        if (!sourceSessionId) {
+          send({ type: "error", message: "Source session ID is required" });
+          return;
+        }
+        if (!activeSessionDir || !activeAppSessionId) {
+          send({ type: "error", message: "No active session to merge into" });
+          return;
+        }
+
+        const sourceSession = sessionManager.get(sourceSessionId);
+        if (!sourceSession) {
+          send({ type: "error", message: "Source session not found" });
+          return;
+        }
+        if (!sourceSession.branch) {
+          send({ type: "error", message: "Source session has no branch (not a worktree)" });
+          return;
+        }
+
+        try {
+          const git = getActiveGitManager();
+          const result = await git.merge(sourceSession.branch);
+
+          if (result.success) {
+            send({
+              type: "merge_result",
+              success: true,
+              message: `Merged branch '${sourceSession.branch}' successfully`,
+            });
+          } else {
+            send({
+              type: "merge_result",
+              success: false,
+              message: `Merge conflict on branch '${sourceSession.branch}'`,
+              conflicts: result.conflicts,
+            });
+          }
+        } catch (err) {
+          send({ type: "error", message: `Failed to merge: ${getErrorMessage(err)}` });
         }
       }
 
@@ -1900,32 +2084,65 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         }
 
         try {
-          // 1. Create session dir WITHOUT git init (we'll clone instead)
-          const { appSessionId, sessionDir } = await createSessionDir(
-            text.slice(0, 80),
-            { skipGitInit: true },
-          );
+          // Shared repo dir — one clone per repo URL, all sessions are worktrees
+          const repoDir = getSharedRepoDir(repoUrl);
+          const repoExists = await fs.stat(repoDir).then(() => true, () => false);
 
-          // 2. Clone repo (use authenticated URL so private repos work)
-          const git = createGitManager(sessionDir);
-          const cloneUrl = githubAuthManager.getAuthenticatedCloneUrl(repoUrl);
-          await git.clone(cloneUrl);
+          if (!repoExists) {
+            // First time: clone into shared repo dir
+            await fs.mkdir(repoDir, { recursive: true });
+            const cloneUrl = githubAuthManager.getAuthenticatedCloneUrl(repoUrl);
+            const repoGit = createGitManager(repoDir);
+            await repoGit.clone(cloneUrl);
+            console.log("[home] Cloned repo to shared dir:", repoDir);
+          } else {
+            // Fetch latest from remote so the worktree starts up-to-date
+            try {
+              const repoGit = createGitManager(repoDir);
+              await repoGit.fetch("origin");
+            } catch (err) {
+              console.warn("[home] Fetch in shared repo failed (continuing):", getErrorMessage(err));
+            }
+          }
 
-          // 3. Configure credentials and identity for future push/pull
+          // Create session dir (skip git init — worktree handles this)
+          const branchPrefix = generateBranchPrefix();
+          const created = await createSessionDir(text.slice(0, 80), { skipGitInit: true });
+          const appSessionId = created.appSessionId;
+          const sessionDir = created.sessionDir;
+
+          // Remove the empty dir (worktree add needs it absent)
+          await fs.rm(sessionDir, { recursive: true, force: true });
+
+          // Create worktree from shared repo, starting from latest remote default branch
+          const repoGit = createGitManager(repoDir);
+          let startPoint: string | undefined;
+          try {
+            const defaultBranch = await repoGit.getDefaultBranch();
+            if (defaultBranch && !defaultBranch.includes("(")) {
+              startPoint = `origin/${defaultBranch}`;
+            }
+          } catch {
+            // Fallback: let git use HEAD
+          }
+          await repoGit.createWorktree(sessionDir, branchPrefix, startPoint);
+
+          // Configure credentials and identity in the worktree
           if (githubAuthManager.authenticated) {
             githubAuthManager.configureGitCredentials(sessionDir);
           }
           const storedId = gitIdentityStore.get();
           if (storedId) {
+            const git = createGitManager(sessionDir);
             await git.setIdentity(storedId.name, storedId.email);
           }
 
-          // 4. Create temporary branch with random prefix
-          const branchPrefix = generateBranchPrefix();
-          await git.checkoutNewBranch(branchPrefix);
-
-          // 5. Store remote URL and activate session
+          // Store metadata and activate session
           sessionManager.setRemoteUrl(appSessionId, repoUrl);
+          sessionManager.setWorktreeInfo(appSessionId, {
+            branch: branchPrefix,
+            sessionType: "worktree",
+          });
           activeAppSessionId = appSessionId;
           activeSessionDir = sessionDir;
           fileWatcher.stop();
@@ -1936,7 +2153,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             send({ type: "session_started", session });
           }
 
-          // 6. Fire non-blocking Claude call to generate session name + branch slug
+          // Fire non-blocking Claude call to generate session name + branch slug
           generateSessionName(text, sessionDir).then(async (nameResult) => {
             if (!nameResult) return;
             try {
@@ -1944,9 +2161,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
               const sessionGit = createGitManager(sessionDir);
               await sessionGit.renameBranch(branchPrefix, newBranchName);
               sessionManager.rename(appSessionId, nameResult.title);
-              const updatedSession = sessionManager.get(appSessionId);
-              if (updatedSession) {
-                send({ type: "session_renamed", session: updatedSession });
+              sessionManager.setWorktreeInfo(appSessionId, {
+                branch: newBranchName,
+                sessionType: "worktree",
+              });
+              const finalSession = sessionManager.get(appSessionId);
+              if (finalSession) {
+                send({ type: "session_renamed", session: finalSession });
               }
             } catch (err) {
               console.warn("[home] Branch rename failed:", getErrorMessage(err));
@@ -1955,7 +2176,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             console.warn("[home] Session naming failed:", err);
           });
 
-          // 7. Run Claude with the user's message
+          // Run Claude with the user's message
           await runClaudeWithMessage({
             userText: text,
             images,
