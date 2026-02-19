@@ -217,7 +217,7 @@ export class GitHubAuthManager extends EventEmitter {
         body: JSON.stringify({
           name,
           description: options.description || "",
-          private: options.isPrivate ?? false,
+          private: options.isPrivate ?? true,
           auto_init: false,
         }),
       });

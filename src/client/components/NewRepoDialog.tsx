@@ -46,7 +46,7 @@ export function NewRepoDialog({
 }: NewRepoDialogProps) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [isPrivate, setIsPrivate] = useState(false);
+  const [isPrivate, setIsPrivate] = useState(true);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [filter, setFilter] = useState<TemplateInfo["category"] | "all">("all");
 
