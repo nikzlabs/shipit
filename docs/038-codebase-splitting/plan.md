@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 ---
 
 # 038: Split index.ts, App.tsx, and types.ts
