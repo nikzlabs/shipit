@@ -27,7 +27,8 @@ import { CloudflareTarget } from "./deploy-targets/cloudflare.js";
 import { TerminalProcess } from "./terminal.js";
 import { generateSessionName } from "./session-namer.js";
 import { ClaudeAdapter } from "./agents/claude-adapter.js";
-import type { AgentId, AgentEvent } from "./agents/agent-process.js";
+import { CodexAdapter } from "./agents/codex-adapter.js";
+import type { AgentId, AgentEvent, AgentProcess } from "./agents/agent-process.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment, FileAttachment, FileContextRef, PermissionMode } from "./types.js";
 
 function getErrorMessage(err: unknown): string {
@@ -248,7 +249,7 @@ export interface AppDeps {
    * When provided, takes precedence over claudeFactory.
    * Defaults to `(id) => new ClaudeAdapter()` (only "claude" is supported).
    */
-  agentFactory?: (agentId: AgentId) => ClaudeAdapter;
+  agentFactory?: (agentId: AgentId) => AgentProcess;
   /** Default agent ID for new sessions. Defaults to "claude". */
   defaultAgentId?: AgentId;
   /** Root workspace directory. Defaults to `/workspace`. */
@@ -343,7 +344,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   } = deps;
 
   // Build effective agent factory — agentFactory takes precedence over claudeFactory
-  const agentFactory = deps.agentFactory ?? ((_agentId: AgentId) => new ClaudeAdapter(claudeFactory()));
+  const agentFactory: (agentId: AgentId) => AgentProcess = deps.agentFactory ?? ((agentId: AgentId) => {
+    switch (agentId) {
+      case "codex":
+        return new CodexAdapter();
+      case "claude":
+      default:
+        return new ClaudeAdapter(claudeFactory());
+    }
+  });
 
   const app = Fastify({ logger: false });
 
@@ -663,7 +672,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     if (clients.size === 1) {
       startPortScanInterval();
     }
-    let claude: ClaudeProcess | ClaudeAdapter | null = null;
+    let claude: AgentProcess | null = null;
     let activeAgentId: AgentId = defaultAgentId;
     let turnSummary = "";
 
