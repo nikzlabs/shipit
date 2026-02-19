@@ -27,7 +27,13 @@ npx vitest run src/server/git.test.ts
 ```
 src/
   server/          Fastify backend with WebSocket at /ws
-    index.ts       Entry point — buildApp() with dependency injection
+    index.ts       Entry point — buildApp(), DI setup, switch dispatcher, inline send_message/answer_question/home_send_with_repo
+    validation.ts  Image/file validation (validateImages, resolveFileAttachments, formatFileContext, getErrorMessage)
+    ws-handlers/   Extracted WebSocket message handlers (one file per domain)
+      types.ts     HandlerContext interface shared by all handlers
+      git-handlers.ts, file-handlers.ts, terminal-handlers.ts, settings-handlers.ts,
+      misc-handlers.ts, deploy-handlers.ts, github-handlers.ts, pr-handlers.ts,
+      session-handlers.ts, worktree-handlers.ts, template-handlers.ts, thread-handlers.ts
     claude.ts      ClaudeProcess — spawns CLI, parses NDJSON, emits events
     git.ts         GitManager — init, autoCommit, log, rollback
     sessions.ts    SessionManager — persists session metadata to JSON
@@ -95,11 +101,49 @@ Key patterns:
 ## How to add a new WebSocket message type
 
 1. Add the interface to `src/server/types.ts` (both `WsClientMessage` and/or `WsServerMessage` unions)
-2. Add the handler in `src/server/index.ts` inside the `socket.on("message")` callback
-3. Add the client-side handler in the `useEffect` in `src/client/App.tsx` that processes `lastMessage`
-4. Wire up the UI component to call `send()` with the new message type
-5. Add integration tests in `src/server/integration_tests/` (happy path + error path)
-6. Update `docs/001-websocket-protocol/plan.md` with the new message
+2. Add the handler function in the appropriate `src/server/ws-handlers/*-handlers.ts` file (or create a new one if no domain matches). See "WebSocket handler pattern" below.
+3. Add a `case` to the `switch (msg.type)` dispatcher in `src/server/index.ts`
+4. Add the client-side handler in the `useEffect` in `src/client/App.tsx` that processes `lastMessage`
+5. Wire up the UI component to call `send()` with the new message type
+6. Add integration tests in `src/server/integration_tests/` (happy path + error path)
+7. Update `docs/001-websocket-protocol/plan.md` with the new message
+
+## WebSocket handler pattern
+
+Server-side WebSocket handlers live in `src/server/ws-handlers/`. Each file groups handlers by domain (git, deploy, github, etc.). Every handler function receives a `HandlerContext` (defined in `ws-handlers/types.ts`) that provides access to per-connection state and app-level managers.
+
+**Adding a handler to an existing domain file:**
+
+```ts
+// src/server/ws-handlers/git-handlers.ts
+import type { WsClientMessage } from "../types.js";
+import type { HandlerContext } from "./types.js";
+import { getErrorMessage } from "../validation.js";
+
+type WsMyNewMessage = Extract<WsClientMessage, { type: "my_new_message" }>;
+
+export async function handleMyNewMessage(ctx: HandlerContext, msg: WsMyNewMessage): Promise<void> {
+  try {
+    // Use ctx.send() to reply, ctx.getActiveGitManager() for git, etc.
+    ctx.send({ type: "my_response", data: "..." });
+  } catch (err) {
+    ctx.send({ type: "error", message: `Failed: ${getErrorMessage(err)}` });
+  }
+}
+```
+
+Then wire it up in `src/server/index.ts`:
+
+```ts
+case "my_new_message": return gitHandlers.handleMyNewMessage(ctx, msg);
+```
+
+**Key conventions:**
+- Use `Extract<WsClientMessage, { type: "..." }>` to get the narrowed message type — don't import individual message interfaces.
+- Handler functions are `async` only if they `await` something; otherwise use `void` return.
+- Access per-connection state via `ctx` getters/setters (`ctx.getActiveAppSessionId()`, `ctx.setActiveSessionDir(...)`, etc.), not closure variables.
+- Access app-level managers directly from `ctx` (`ctx.sessionManager`, `ctx.deploymentStore`, etc.).
+- Import `getErrorMessage` from `../validation.js` for consistent error formatting.
 
 ## How to add a new deploy target
 
