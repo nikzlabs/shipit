@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 
 const MAX_LENGTH = 50_000;
 
-type Tab = "agent" | "github" | "instructions";
+type Tab = "agent" | "github" | "instructions" | "advanced";
 
 export interface AgentListItem {
   id: string;
@@ -24,6 +24,7 @@ export interface ProjectSettingsProps {
   agentList?: AgentListItem[];
   onSetAgentEnv?: (agentId: string, key: string, value: string) => void;
   onRequestAgentList?: () => void;
+  onFullReset?: () => void;
   onClose: () => void;
 }
 
@@ -39,6 +40,7 @@ export function ProjectSettings({
   agentList = [],
   onSetAgentEnv,
   onRequestAgentList,
+  onFullReset,
   onClose,
 }: ProjectSettingsProps) {
   const [activeTab, setActiveTab] = useState<Tab>("agent");
@@ -48,6 +50,8 @@ export function ProjectSettings({
   const [apiKeyError, setApiKeyError] = useState("");
   const [codexKey, setCodexKey] = useState("");
   const [confirmingLogout, setConfirmingLogout] = useState(false);
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const savedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const tokenInputRef = useRef<HTMLInputElement>(null);
@@ -170,7 +174,7 @@ export function ProjectSettings({
         <div className="flex flex-1 min-h-0">
           {/* Left tab sidebar */}
           <nav className="w-40 shrink-0 border-r border-gray-200 dark:border-gray-700 py-2">
-            {(["agent", "github", "instructions"] as const).map((tab) => (
+            {(["agent", "github", "instructions", "advanced"] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -180,7 +184,7 @@ export function ProjectSettings({
                     : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800/50"
                 }`}
               >
-                {tab === "agent" ? "Agent" : tab === "github" ? "GitHub" : "Instructions"}
+                {tab === "agent" ? "Agent" : tab === "github" ? "GitHub" : tab === "instructions" ? "Instructions" : "Advanced"}
               </button>
             ))}
           </nav>
@@ -457,6 +461,41 @@ export function ProjectSettings({
                   </p>
                 </div>
               )}
+            </div>
+          )}
+
+          {activeTab === "advanced" && (
+            <div className="flex-1 min-w-0 px-5 py-4 flex flex-col gap-4 overflow-y-auto">
+              <div className="space-y-4">
+                <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">Reset Container</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  Delete all sessions, chat history, credentials, and settings. This cannot be undone.
+                </p>
+                <button
+                  onClick={() => {
+                    if (confirmingReset) {
+                      setResetting(true);
+                      onFullReset?.();
+                    } else {
+                      setConfirmingReset(true);
+                    }
+                  }}
+                  onBlur={() => {
+                    if (!resetting) setConfirmingReset(false);
+                  }}
+                  disabled={resetting}
+                  className={`w-full px-3 py-2 text-sm rounded-md border transition-colors ${
+                    resetting
+                      ? "bg-red-50 dark:bg-red-900/30 border-red-300 dark:border-red-700 text-red-700 dark:text-red-300 opacity-50 cursor-not-allowed"
+                      : confirmingReset
+                        ? "bg-red-50 dark:bg-red-900/30 border-red-300 dark:border-red-700 text-red-700 dark:text-red-300"
+                        : "bg-red-50 dark:bg-red-900/20 border-red-300 dark:border-red-800 text-red-700 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40"
+                  }`}
+                  data-testid="project-settings-reset"
+                >
+                  {resetting ? "Resetting..." : confirmingReset ? "Click again to confirm reset" : "Reset Everything"}
+                </button>
+              </div>
             </div>
           )}
         </div>
