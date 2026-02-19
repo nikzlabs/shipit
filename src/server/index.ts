@@ -672,7 +672,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     if (clients.size === 1) {
       startPortScanInterval();
     }
-    let claude: ClaudeProcess | ClaudeAdapter | null = null;
+    let claude: AgentProcess | null = null;
     let activeAgentId: AgentId = defaultAgentId;
     let turnSummary = "";
 
