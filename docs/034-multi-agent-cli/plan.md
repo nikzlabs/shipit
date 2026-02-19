@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 ---
 
 # 034 — Multi-Agent CLI Support (Codex, Gemini, etc.)
@@ -479,3 +479,9 @@ Not all agents support all features. The `AgentCapabilities` object drives this:
 3. **Per-session vs global agent selection** — Should users be able to switch agents mid-session, or only at session creation time? (Starting with session-creation-only is simpler.)
 4. **Cost normalization** — Different providers report costs differently (or not at all). How should the usage tracker handle this?
 5. **Agent-specific system prompts** — The current system prompt is tailored to Claude Code CLI's behavior. Each agent may need its own default system prompt. Where should these live?
+
+---
+
+## Status note
+
+Phases 1–3 (abstraction layer, Codex adapter, container setup, agent picker UI) are complete. Phase 4 (Gemini adapter) is **postponed** — the Gemini CLI does not currently support session management, which is required for meaningful integration with ShipIt's session-based architecture. The Gemini adapter will be revisited when the Gemini CLI adds session management capabilities.
