@@ -34,14 +34,16 @@ When a user switches sessions, preview-related state is not cleaned up:
 ## Design overview
 
 1. Introduce **`shipit.yaml`** — a per-project config file that declares the
-   preview command and ports.
+   preview command (with ports) **or** a static HTML entry point.
 2. Replace **ViteManager** with a general-purpose **PreviewManager** that reads
    config, spawns the right command, and tracks the process.
 3. Fall back to **`package.json` `dev` script** when `shipit.yaml` is absent.
-4. When neither exists, **prompt the user** with a button to generate
+4. Fall back to **`index.html` detection** — serve static files with the
+   bundled Vite binary when an HTML entry point exists but no config/scripts.
+5. When nothing is found, **prompt the user** with a button to generate
    `shipit.yaml` via Claude.
-5. Update all **templates** to ship with `shipit.yaml`.
-6. On **session change**, stop the old preview process, kill detected-port
+6. Update all **templates** to ship with `shipit.yaml`.
+7. On **session change**, stop the old preview process, kill detected-port
    processes, reset client state, and start the new session's preview.
 
 ---
@@ -50,10 +52,20 @@ When a user switches sessions, preview-related state is not cleaned up:
 
 Lives at the workspace root (e.g. `/workspace/sessions/{id}/shipit.yaml`).
 
+Two mutually exclusive modes — **`command`** (run a dev server) or **`html`**
+(serve static files):
+
 ```yaml
+# Mode 1: Run a dev server command
 preview:
-  command: npm run dev        # Shell command to start the dev server
-  ports: [3000]               # Port(s) the server listens on
+  command: npm run dev
+  ports: [3000]
+```
+
+```yaml
+# Mode 2: Serve static HTML with ShipIt's bundled Vite
+preview:
+  html: index.html
 ```
 
 A single command can expose multiple ports (e.g. frontend + API started via
@@ -72,15 +84,23 @@ iframe). All ports appear in the port selector dropdown so the user can switch.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `preview.command` | yes | — | Shell command to run. Executed with `cwd` set to the workspace root. |
-| `preview.ports` | no | auto-detect | Port(s) the command listens on. Array of numbers. If omitted, PreviewManager polls the scan-port list until one opens. |
+| `preview.command` | mutual-excl with `html` | — | Shell command to run. Executed with `cwd` set to the workspace root. |
+| `preview.html` | mutual-excl with `command` | — | Path to an HTML file relative to workspace root. Served by ShipIt's bundled Vite on port 5173 with error-capture plugin. |
+| `preview.ports` | no | auto-detect | Port(s) the command listens on. Array of numbers. Only used with `command`. If omitted, PreviewManager polls the scan-port list until one opens. |
 | `preview.directory` | no | `.` | Working directory relative to workspace root. For monorepos where the dev server lives in a subdirectory. |
 
-Minimal example (static HTML project using ShipIt's built-in Vite):
+Minimal examples:
 
 ```yaml
+# Static HTML project — no package.json or npm install needed
 preview:
-  command: vite
+  html: index.html
+```
+
+```yaml
+# Vite-based React app
+preview:
+  command: npm run dev
   ports: [5173]
 ```
 
@@ -95,11 +115,13 @@ Node). Validate with a type guard. Malformed files produce a
 New module: **`src/server/preview-config.ts`**
 
 ```ts
+type PreviewMode =
+  | { kind: "command"; command: string; ports?: number[]; directory?: string }
+  | { kind: "html"; html: string };
+
 interface PreviewConfig {
-  command: string;
-  ports?: number[];
-  directory?: string;
-  source: "shipit.yaml" | "package.json" | "none";
+  mode: PreviewMode;
+  source: "shipit.yaml" | "package.json" | "index.html" | "none";
 }
 
 async function resolvePreviewConfig(workspaceDir: string): Promise<PreviewConfig>
@@ -109,19 +131,30 @@ async function resolvePreviewConfig(workspaceDir: string): Promise<PreviewConfig
 
 ```
 1. Read <workspaceDir>/shipit.yaml
-   → if present and has `preview.command`: return config (source: "shipit.yaml")
-     - `preview.ports` is an array of numbers (e.g. [3000, 8080])
+   → if present and has `preview.command`:
+       return { mode: { kind: "command", command, ports, directory }, source: "shipit.yaml" }
+   → if present and has `preview.html`:
+       return { mode: { kind: "html", html }, source: "shipit.yaml" }
 
 2. Read <workspaceDir>/package.json
-   → if present and has `scripts.dev`: return { command: "npm run dev", source: "package.json" }
+   → if present and has `scripts.dev`:
+       return { mode: { kind: "command", command: "npm run dev", ports }, source: "package.json" }
      - Attempt to extract port from the dev script string (e.g. "--port 3001")
      - If found, return ports: [3001]. If not, leave ports undefined (auto-detect)
 
-3. Return { command: "", source: "none" }
+3. Check for <workspaceDir>/index.html
+   → if present:
+       return { mode: { kind: "html", html: "index.html" }, source: "index.html" }
+     (implicit static serving — preserves zero-config experience for blank sessions)
+
+4. Return { mode: { kind: "command", command: "" }, source: "none" }
 ```
 
 When source is `"none"`, the server sends a `preview_config_missing` message
 to the client so the UI can prompt the user.
+
+Step 3 is what preserves today's behavior: Claude writes an `index.html` in
+a blank session → preview works immediately with no config file needed.
 
 ---
 
@@ -145,8 +178,8 @@ class PreviewManager extends EventEmitter {
 
   /**
    * Resolve config and start the preview server.
-   * If the resolved command is "vite" (bare), use ShipIt's bundled Vite
-   * binary with the wrapper config (error-capture plugin).
+   * For "html" mode, use ShipIt's bundled Vite binary with the wrapper
+   * config (error-capture plugin). For "command" mode, spawn via shell.
    */
   async start(workspaceDir: string): Promise<void>;
 
@@ -171,22 +204,26 @@ start(workspaceDir):
     emit("config_missing")
     return
 
-  if config.command is bare "vite":
+  if config.mode.kind === "html":
     // Use ShipIt's bundled Vite binary with wrapper config (error capture)
-    port = config.ports?.[0] ?? 5173
-    spawn VITE_BIN with --config <wrapper> --port <port> --host 0.0.0.0
+    // Resolve html path to determine the root directory for Vite
+    spawn VITE_BIN with --config <wrapper> --port 5173 --host 0.0.0.0
     (same as current ViteManager.start)
-  else:
+    _ports = [5173]
+  else: // kind === "command"
     // General command: run via shell
-    cwd = resolve(workspaceDir, config.directory ?? ".")
-    spawn("sh", ["-c", config.command], { cwd })
+    cwd = resolve(workspaceDir, config.mode.directory ?? ".")
+    spawn("sh", ["-c", config.mode.command], { cwd })
 
   Monitor stdout for readiness patterns:
     "Local:", "ready in", "listening on", "started server on",
     "compiled successfully", "VITE", "http://localhost"
 
-  If config.ports is set:
-    Poll all ports in config.ports with checkPort() every 500ms (max 30s)
+  If mode is "html":
+    Poll port 5173 with checkPort() every 500ms (max 30s)
+    When open → _running = true, emit("ready")
+  Else if mode.ports is set:
+    Poll all ports in mode.ports with checkPort() every 500ms (max 30s)
     As each port opens, add to _ports
     When the first port opens → _running = true, emit("ready", _ports)
     Continue polling remaining ports in background (they may start later)
@@ -195,22 +232,24 @@ start(workspaceDir):
     When a new port opens → _ports = [port], _running = true, emit("ready")
 ```
 
-### Vite special case
+### `html` mode — bundled Vite
 
-When `command` is exactly `"vite"` (bare word, not `npm run dev` that invokes
-vite), PreviewManager uses ShipIt's bundled Vite binary and generates the
-wrapper config with the error-capture plugin. This preserves:
+When `mode.kind === "html"`, PreviewManager uses ShipIt's bundled Vite binary
+and generates the wrapper config with the error-capture plugin. This provides:
 
 - No npm install required (uses ShipIt's own `node_modules/.bin/vite`)
 - Error capture via `transformIndexHtml`
 - The wrapper config that merges the user's existing vite config
+- Always serves on port 5173
 
-This keeps the static-html template working (no package.json needed) and
-preserves error capture for projects that explicitly opt into bare `vite`.
+This is used by:
+- The static-html template (`html: index.html` in shipit.yaml)
+- The index.html fallback (no config, but `index.html` exists at root)
+- Any project that explicitly sets `html:` in shipit.yaml
 
 ### Error capture for non-Vite servers
 
-For non-Vite commands, the `transformIndexHtml` approach doesn't work. Error
+For `command` mode, the `transformIndexHtml` approach doesn't work. Error
 capture is **not available** in v1 for non-Vite projects. This is acceptable
 because:
 
@@ -359,20 +398,21 @@ The server handles this by sending a prompt to Claude:
 
 ```
 Analyze this project and create a shipit.yaml file at the workspace root.
-The file should declare the preview command and ports. Example format:
+The file configures the live preview. Use ONE of these two modes:
+
+For projects with a dev server (npm run dev, etc.):
 
 preview:
   command: npm run dev
   ports: [3000]
 
-For projects with multiple servers (e.g. frontend + API):
+For static HTML projects (no build step):
 
 preview:
-  command: concurrently "npm run dev:client" "npm run dev:api"
-  ports: [3000, 8080]
+  html: index.html
 
 Look at package.json scripts, framework config files, and project structure
-to determine the correct command and ports.
+to determine the correct mode, command, and ports.
 ```
 
 After Claude creates the file, the FileWatcher detects the change, and
@@ -426,7 +466,7 @@ don't serve HTTP (node-cli-ts) do not.
 | vue-vite-ts | `preview:\n  command: npm run dev\n  ports: [5173]` |
 | svelte-vite-ts | `preview:\n  command: npm run dev\n  ports: [5173]` |
 | vanilla-vite | `preview:\n  command: npm run dev\n  ports: [5173]` |
-| static-html | `preview:\n  command: vite\n  ports: [5173]` |
+| static-html | `preview:\n  html: index.html` |
 | nextjs | `preview:\n  command: npm run dev\n  ports: [3001]` |
 | astro | `preview:\n  command: npm run dev\n  ports: [5173]` |
 | express-ts | `preview:\n  command: npm run dev\n  ports: [3001]` |
@@ -434,8 +474,8 @@ don't serve HTTP (node-cli-ts) do not.
 | fastify-ts | `preview:\n  command: npm run dev\n  ports: [3001]` |
 | node-cli-ts | *(no shipit.yaml)* |
 
-The static-html template uses `command: vite` (bare) to trigger the
-ShipIt-bundled-Vite special case — no npm required.
+The static-html template uses `html: index.html` to serve via ShipIt's
+bundled Vite — no npm required.
 
 ---
 
@@ -486,7 +526,7 @@ const getPreviewStatus = (): WsServerMessage => {
       running: true,
       port: previewManager.port,              // primary port (first in config.ports)
       url: `http://localhost:${previewManager.port}`,
-      source: previewManager.config?.command === "vite" ? "vite" : "managed",
+      source: previewManager.config?.mode.kind === "html" ? "vite" : "managed",
       detectedPorts: allDetected.length > 0 ? allDetected : undefined,
     };
   }
@@ -577,15 +617,23 @@ changes are needed for multi-port support.
    Server calls `previewManager.restart()` to pick up new config.
 
 7. **`shipit.yaml` with unknown fields.** Ignored — only `preview.command`,
-   `preview.ports`, `preview.directory` are read. Forward-compatible.
+   `preview.html`, `preview.ports`, `preview.directory` are read.
+   Forward-compatible.
 
-8. **`package.json` dev script that isn't a server.** (e.g., `tsx src/index.ts`
+8. **`shipit.yaml` with both `command` and `html`.** Validation error —
+   `preview_config_error` sent to client. The fields are mutually exclusive.
+
+9. **`package.json` dev script that isn't a server.** (e.g., `tsx src/index.ts`
    for node-cli-ts). PreviewManager starts the command, polls for a port,
    times out after 30s, emits `"config_missing"` so the user sees the prompt.
    Port scanner also finds nothing. Acceptable — the CLI template doesn't need
    a preview.
 
-9. **Port conflict.** If the configured port is already occupied (e.g., by a
+10. **Blank session, Claude writes `index.html`.** No config files exist.
+    Post-turn, PreviewManager re-resolves config. Step 3 finds `index.html`
+    → starts bundled Vite. Preview works immediately, same as today.
+
+11. **Port conflict.** If the configured port is already occupied (e.g., by a
    leaked process from a previous session), the dev server may fail to start
    or pick a different port. PreviewManager detects the process exit and emits
    `"stopped"`. The port scanner can still find the actual port if the server
@@ -599,15 +647,18 @@ changes are needed for multi-port support.
 
 **`src/server/preview-config.test.ts`:**
 
-1. Resolves `shipit.yaml` with command and single port.
-2. Resolves `shipit.yaml` with command and multiple ports.
-3. Resolves `shipit.yaml` with command only (no ports — auto-detect).
-4. Resolves `shipit.yaml` with directory field.
-5. Falls back to `package.json` dev script when no `shipit.yaml`.
-6. Extracts port from `package.json` dev script (e.g. `--port 3001`) into `ports: [3001]`.
-7. Returns `source: "none"` when neither file exists.
-8. Returns `source: "none"` when `package.json` exists but has no dev script.
-9. Handles malformed `shipit.yaml` gracefully (returns error info).
+1. Resolves `shipit.yaml` with `command` and single port.
+2. Resolves `shipit.yaml` with `command` and multiple ports.
+3. Resolves `shipit.yaml` with `command` only (no ports — auto-detect).
+4. Resolves `shipit.yaml` with `html` field (static mode).
+5. Rejects `shipit.yaml` with both `command` and `html` (validation error).
+6. Resolves `shipit.yaml` with `directory` field.
+7. Falls back to `package.json` dev script when no `shipit.yaml`.
+8. Extracts port from `package.json` dev script (e.g. `--port 3001`) into `ports: [3001]`.
+9. Falls back to `index.html` detection when no config/scripts exist.
+10. Returns `source: "none"` when no files exist at all.
+11. Returns `source: "none"` when `package.json` exists but has no dev script and no `index.html`.
+12. Handles malformed `shipit.yaml` gracefully (returns error info).
 
 ### Integration tests
 
@@ -639,4 +690,4 @@ changes are needed for multi-port support.
 
 12. **All server templates include `shipit.yaml`.** Iterate templates, assert
     each server-capable template has `shipit.yaml` in its files map with valid
-    `preview.command` and `preview.ports`.
+    `preview.command`/`preview.ports` or `preview.html`.

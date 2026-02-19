@@ -3,12 +3,12 @@
 ### Phase 1: Foundation
 
 - [ ] Install `yaml` npm package (not currently in package.json)
-- [ ] Create `src/server/preview-config.ts` — `PreviewConfig` type, `resolvePreviewConfig()` with shipit.yaml → package.json → none fallback, port extraction from dev script strings
-- [ ] Write `src/server/preview-config.test.ts` — all 9 unit test cases from plan (single port, multiple ports, no ports, directory, package.json fallback, port extraction, missing files, no dev script, malformed yaml)
+- [ ] Create `src/server/preview-config.ts` — `PreviewConfig` / `PreviewMode` types, `resolvePreviewConfig()` with shipit.yaml → package.json → index.html → none fallback, port extraction from dev script strings, `command`/`html` mutual exclusivity validation
+- [ ] Write `src/server/preview-config.test.ts` — all 12 unit test cases from plan (command+single port, command+multiple ports, command-only, html mode, command+html rejection, directory, package.json fallback, port extraction, index.html fallback, no files, no dev script + no index.html, malformed yaml)
 
 ### Phase 2: PreviewManager
 
-- [ ] Create `src/server/preview-manager.ts` — extend EventEmitter, `start/stop/restart`, `running/port/ports/config` getters, bare-`vite` special case (reuse ViteManager's wrapper config + bundled binary logic), general shell command path, port polling (all configured ports or scan-port auto-detect)
+- [ ] Create `src/server/preview-manager.ts` — extend EventEmitter, `start/stop/restart`, `running/port/ports/config` getters, `html` mode (reuse ViteManager's wrapper config + bundled binary on port 5173), `command` mode (shell spawn + port polling), auto-detect fallback
 - [ ] Delete `src/server/vite-manager.ts` after migrating its logic into PreviewManager
 - [ ] Update `StubViteManager` in `test-helpers.ts` → `StubPreviewManager` with `ports` array, `config` getter, matching the new interface
 
@@ -16,7 +16,7 @@
 
 - [ ] Replace all `viteManager` references with `previewManager` in `buildApp()`
 - [ ] Update `AppDeps` type — replace `createViteManager` with `createPreviewManager` (or equivalent factory)
-- [ ] Update `getPreviewStatus()` — merge managed ports (after primary) with scanner-detected ports into `detectedPorts`; use `source: "managed"` instead of `"detected"` for config-driven previews
+- [ ] Update `getPreviewStatus()` — merge managed ports (after primary) with scanner-detected ports into `detectedPorts`; use `source: "managed"` for command mode, `"vite"` for html mode
 - [ ] Update `activateSession()` — on directory change: stop preview, `killProcessesOnPorts()`, clear `detectedPorts`, broadcast not-running status, clear log buffer, broadcast `clear_logs`, start preview for new dir, run fresh port scan
 - [ ] Update `new_session` handler — stop preview, kill port processes, clear detected ports, broadcast status, clear logs
 - [ ] Update post-turn handler — `previewManager.start()` instead of `viteManager.start()`
@@ -43,7 +43,7 @@
 
 ### Phase 6: Templates
 
-- [ ] Add `shipit.yaml` to every template in `templates.ts` that serves HTTP (all except node-cli-ts) — `preview:\n  command: ...\n  ports: [...]`
+- [ ] Add `shipit.yaml` to every template in `templates.ts` that serves HTTP (all except node-cli-ts) — command mode templates get `command`+`ports`, static-html gets `html: index.html`
 
 ### Phase 7: Integration tests
 
@@ -58,7 +58,7 @@
 
 ### Phase 9: Template tests
 
-- [ ] Test all HTTP-serving templates include valid `shipit.yaml` with `preview.command` and `preview.ports`
+- [ ] Test all HTTP-serving templates include valid `shipit.yaml` with `preview.command`/`preview.ports` or `preview.html`
 
 ### Phase 10: Final
 
