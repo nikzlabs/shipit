@@ -27,10 +27,11 @@ npx vitest run src/server/git.test.ts
 ```
 src/
   server/          Fastify backend with WebSocket at /ws
-    index.ts       Entry point — buildApp(), DI setup, switch dispatcher, inline send_message/answer_question/home_send_with_repo
+    index.ts       Entry point — buildApp(), DI setup, switch dispatcher
     validation.ts  Image/file validation (validateImages, resolveFileAttachments, formatFileContext, getErrorMessage)
     ws-handlers/   Extracted WebSocket message handlers (one file per domain)
       types.ts     HandlerContext interface shared by all handlers
+      send-message.ts  send_message, answer_question, home_send_with_repo + runClaudeWithMessage
       git-handlers.ts, file-handlers.ts, terminal-handlers.ts, settings-handlers.ts,
       misc-handlers.ts, deploy-handlers.ts, github-handlers.ts, pr-handlers.ts,
       session-handlers.ts, worktree-handlers.ts, template-handlers.ts, thread-handlers.ts

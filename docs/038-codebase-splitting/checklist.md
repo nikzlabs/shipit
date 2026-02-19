@@ -20,7 +20,7 @@
 - [x] Extract template-handlers.ts (list_templates, apply_template, home_create_repo_with_template)
 - [x] Extract thread-handlers.ts (list_threads, create_checkpoint, fork_thread, switch_thread)
 - [x] Convert if-chain to switch dispatcher in index.ts
-- [ ] Extract send-message.ts (send_message, home_send_with_repo, answer_question + runClaudeWithMessage)
+- [x] Extract send-message.ts (send_message, home_send_with_repo, answer_question + runClaudeWithMessage)
 
 ## Split 3: App.tsx → custom hooks
 - [ ] Create `src/client/utils/local-storage.ts`
