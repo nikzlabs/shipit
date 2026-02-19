@@ -14,7 +14,7 @@ export interface DeployModalProps {
   onCancel: () => void;
   onGetHistory: () => void;
   onSendErrorToChat: (errorMessage: string) => void;
-  onOpenProjectSettings?: () => void;
+  onOpenDeploySettings?: () => void;
   onClose: () => void;
 }
 
@@ -31,7 +31,7 @@ export function DeployModal({
   onCancel,
   onGetHistory,
   onSendErrorToChat,
-  onOpenProjectSettings,
+  onOpenDeploySettings,
   onClose,
 }: DeployModalProps) {
   const [selectedTarget, setSelectedTarget] = useState<DeployTargetInfo | null>(null);
@@ -127,11 +127,11 @@ export function DeployModal({
                 Set up a deploy target in <strong className="text-gray-700 dark:text-gray-300">Project Settings</strong>.
               </p>
               <div className="flex gap-2 justify-center">
-                {onOpenProjectSettings && (
+                {onOpenDeploySettings && (
                   <button
-                    onClick={() => { onClose(); onOpenProjectSettings(); }}
+                    onClick={() => { onClose(); onOpenDeploySettings(); }}
                     className="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors font-medium"
-                    data-testid="deploy-open-project-settings"
+                    data-testid="deploy-open-deploy-settings"
                   >
                     Configure
                   </button>

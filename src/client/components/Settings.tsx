@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from "react";
 import type { AgentOption } from "./AgentPicker.js";
+import type { DeployTargetInfo } from "../../server/types.js";
 
 const MAX_LENGTH = 50_000;
 
-type Tab = "agent" | "github" | "instructions" | "advanced";
+type Tab = "agent" | "github" | "instructions" | "advanced" | "deploy";
 
 export interface SettingsProps {
   initialContent: string;
@@ -18,6 +19,13 @@ export interface SettingsProps {
   onSetAgentEnv?: (agentId: string, key: string, value: string) => void;
   onRequestAgentList?: () => void;
   onFullReset?: () => void;
+  deployTargets: DeployTargetInfo[];
+  deployConfigStatus: Record<string, { configured: boolean; projectName?: string }>;
+  onDeployConfigure: (targetId: string, credentials: Record<string, string>, projectName?: string) => void;
+  onDeployDeleteConfig: (targetId: string) => void;
+  hasActiveSession: boolean;
+  initialTab?: Tab;
+  onDeployTabSelected?: () => void;
   onClose: () => void;
 }
 
@@ -34,9 +42,16 @@ export function Settings({
   onSetAgentEnv,
   onRequestAgentList,
   onFullReset,
+  deployTargets,
+  deployConfigStatus,
+  onDeployConfigure,
+  onDeployDeleteConfig,
+  hasActiveSession,
+  initialTab,
+  onDeployTabSelected,
   onClose,
 }: SettingsProps) {
-  const [activeTab, setActiveTab] = useState<Tab>("agent");
+  const [activeTab, setActiveTab] = useState<Tab>(initialTab ?? "agent");
   const [content, setContent] = useState(initialContent);
   const [token, setToken] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -45,6 +60,9 @@ export function Settings({
   const [confirmingLogout, setConfirmingLogout] = useState(false);
   const [confirmingReset, setConfirmingReset] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [selectedDeployTarget, setSelectedDeployTarget] = useState<DeployTargetInfo | null>(null);
+  const [deployConfigValues, setDeployConfigValues] = useState<Record<string, string>>({});
+  const [deployProjectName, setDeployProjectName] = useState("");
   const savedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const tokenInputRef = useRef<HTMLInputElement>(null);
@@ -53,6 +71,12 @@ export function Settings({
   useEffect(() => {
     onRequestAgentList?.();
   }, []);
+
+  useEffect(() => {
+    if (activeTab === "deploy") {
+      onDeployTabSelected?.();
+    }
+  }, [activeTab]);
 
   useEffect(() => {
     if (activeTab === "instructions") {
@@ -132,11 +156,34 @@ export function Settings({
     }
   };
 
+  const handleDeployConfigSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedDeployTarget) return;
+    onDeployConfigure(selectedDeployTarget.id, deployConfigValues, deployProjectName || undefined);
+  };
+
+  const handleDeployBackToList = () => {
+    setSelectedDeployTarget(null);
+    setDeployConfigValues({});
+    setDeployProjectName("");
+  };
+
   const charCount = content.length;
   const isOverLimit = charCount > MAX_LENGTH;
 
   const codexAgent = agentList.find((a) => a.id === "codex");
   const geminiAgent = agentList.find((a) => a.id === "gemini");
+
+  const generalTabs = ["agent", "github", "instructions", "advanced"] as const;
+  const tabLabel = (tab: Tab) => {
+    switch (tab) {
+      case "agent": return "Agent";
+      case "github": return "GitHub";
+      case "instructions": return "Instructions";
+      case "advanced": return "Advanced";
+      case "deploy": return "Deploy";
+    }
+  };
 
   return (
     <div
@@ -167,7 +214,10 @@ export function Settings({
         <div className="flex flex-1 min-h-0">
           {/* Left tab sidebar */}
           <nav className="w-40 shrink-0 border-r border-gray-200 dark:border-gray-700 py-2">
-            {(["agent", "github", "instructions", "advanced"] as const).map((tab) => (
+            <div className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+              General
+            </div>
+            {generalTabs.map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -177,9 +227,28 @@ export function Settings({
                     : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800/50"
                 }`}
               >
-                {tab === "agent" ? "Agent" : tab === "github" ? "GitHub" : tab === "instructions" ? "Instructions" : "Advanced"}
+                {tabLabel(tab)}
               </button>
             ))}
+
+            <div className="px-4 py-1.5 mt-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+              Project
+            </div>
+            <button
+              onClick={() => { if (hasActiveSession) setActiveTab("deploy"); }}
+              disabled={!hasActiveSession}
+              title={!hasActiveSession ? "Requires active session" : undefined}
+              className={`w-full text-left px-4 py-2 text-sm transition-colors ${
+                !hasActiveSession
+                  ? "text-gray-300 dark:text-gray-600 cursor-not-allowed"
+                  : activeTab === "deploy"
+                    ? "bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100 font-medium"
+                    : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800/50"
+              }`}
+              data-testid="settings-tab-deploy"
+            >
+              Deploy
+            </button>
           </nav>
 
           {/* Right content area */}
@@ -489,6 +558,141 @@ export function Settings({
                   {resetting ? "Resetting..." : confirmingReset ? "Click again to confirm reset" : "Reset Everything"}
                 </button>
               </div>
+            </div>
+          )}
+
+          {activeTab === "deploy" && (
+            <div className="flex-1 min-w-0 px-5 py-4 flex flex-col gap-4 overflow-y-auto">
+              {selectedDeployTarget ? (
+                <form onSubmit={handleDeployConfigSubmit} className="space-y-4" data-testid="deploy-config-form">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleDeployBackToList}
+                      className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                      aria-label="Back to targets"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+                      </svg>
+                    </button>
+                    <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      Configure {selectedDeployTarget.name}
+                    </h3>
+                  </div>
+
+                  {selectedDeployTarget.configFields.map((field) => (
+                    <div key={field.key}>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        {field.label}
+                        {field.required && <span className="text-red-500 ml-0.5">*</span>}
+                      </label>
+                      <input
+                        type={field.sensitive ? "password" : "text"}
+                        placeholder={field.placeholder}
+                        value={deployConfigValues[field.key] || ""}
+                        onChange={(e) =>
+                          setDeployConfigValues((prev) => ({ ...prev, [field.key]: e.target.value }))
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        required={field.required}
+                        autoComplete="off"
+                        data-testid={`deploy-config-field-${field.key}`}
+                      />
+                      {field.helpText && (
+                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{field.helpText}</p>
+                      )}
+                      {field.helpUrl && (
+                        <a
+                          href={field.helpUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-blue-500 hover:text-blue-400 mt-1 inline-block"
+                        >
+                          Get credentials &rarr;
+                        </a>
+                      )}
+                    </div>
+                  ))}
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Project Name <span className="text-gray-400 font-normal">(optional)</span>
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Auto-generated from directory name"
+                      value={deployProjectName}
+                      onChange={(e) => setDeployProjectName(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      data-testid="deploy-config-project-name"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors font-medium"
+                    data-testid="deploy-config-save"
+                  >
+                    Save Configuration
+                  </button>
+                </form>
+              ) : (
+                <div className="space-y-3" data-testid="deploy-target-list">
+                  <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Deploy Targets</h3>
+                  {deployTargets.length === 0 ? (
+                    <p className="text-sm text-gray-500 dark:text-gray-400">No deployment targets available.</p>
+                  ) : (
+                    deployTargets.map((target) => {
+                      const status = deployConfigStatus[target.id];
+                      return (
+                        <div
+                          key={target.id}
+                          className="p-4 rounded-lg border border-gray-200 dark:border-gray-700"
+                          data-testid={`deploy-target-${target.id}`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <div className="font-medium text-gray-900 dark:text-gray-100">{target.name}</div>
+                              <div className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">{target.description}</div>
+                            </div>
+                            {status?.configured && (
+                              <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300">
+                                Configured
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex gap-2 mt-3">
+                            <button
+                              onClick={() => {
+                                setSelectedDeployTarget(target);
+                                setDeployConfigValues({});
+                                setDeployProjectName(status?.projectName ?? "");
+                              }}
+                              className="text-xs text-blue-500 hover:text-blue-400 transition-colors"
+                              data-testid={`deploy-target-configure-${target.id}`}
+                            >
+                              {status?.configured ? "Reconfigure" : "Configure"}
+                            </button>
+                            {status?.configured && (
+                              <>
+                                <span className="text-gray-400 text-xs">|</span>
+                                <button
+                                  onClick={() => onDeployDeleteConfig(target.id)}
+                                  className="text-xs text-red-500 hover:text-red-400 transition-colors"
+                                  data-testid={`deploy-target-remove-${target.id}`}
+                                >
+                                  Remove credentials
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>

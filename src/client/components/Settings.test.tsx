@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { Settings, type SettingsProps } from "./Settings.js";
+import type { DeployTargetInfo } from "../../server/types.js";
 
 afterEach(cleanup);
 
@@ -13,6 +14,11 @@ const defaultProps: SettingsProps = {
   authUrl: null,
   onApiKey: vi.fn(),
   onClearApiKey: vi.fn(),
+  deployTargets: [],
+  deployConfigStatus: {},
+  onDeployConfigure: vi.fn(),
+  onDeployDeleteConfig: vi.fn(),
+  hasActiveSession: false,
   onClose: vi.fn(),
 };
 
@@ -512,6 +518,208 @@ describe("Settings - Advanced tab", () => {
   });
 });
 
+describe("Settings - Sidebar groups", () => {
+  it("renders General heading", () => {
+    render(<Settings {...defaultProps} />);
+    expect(screen.getByText("General")).toBeInTheDocument();
+  });
+
+  it("renders Project heading", () => {
+    render(<Settings {...defaultProps} />);
+    expect(screen.getByText("Project")).toBeInTheDocument();
+  });
+
+  it("renders Deploy tab in sidebar", () => {
+    render(<Settings {...defaultProps} />);
+    expect(screen.getByTestId("settings-tab-deploy")).toBeInTheDocument();
+  });
+});
+
+describe("Settings - Deploy tab disabled", () => {
+  it("Deploy tab is disabled when no active session", () => {
+    render(<Settings {...defaultProps} hasActiveSession={false} />);
+    expect(screen.getByTestId("settings-tab-deploy")).toBeDisabled();
+  });
+
+  it("Deploy tab has tooltip when disabled", () => {
+    render(<Settings {...defaultProps} hasActiveSession={false} />);
+    expect(screen.getByTestId("settings-tab-deploy")).toHaveAttribute("title", "Requires active session");
+  });
+
+  it("clicking disabled Deploy tab does not switch tabs", () => {
+    render(<Settings {...defaultProps} hasActiveSession={false} />);
+    fireEvent.click(screen.getByTestId("settings-tab-deploy"));
+    expect(screen.getByTestId("settings-api-key-input")).toBeInTheDocument();
+  });
+
+  it("Deploy tab is enabled when session is active", () => {
+    render(<Settings {...defaultProps} hasActiveSession={true} />);
+    expect(screen.getByTestId("settings-tab-deploy")).not.toBeDisabled();
+  });
+
+  it("Deploy tab has no tooltip when enabled", () => {
+    render(<Settings {...defaultProps} hasActiveSession={true} />);
+    expect(screen.getByTestId("settings-tab-deploy")).not.toHaveAttribute("title");
+  });
+});
+
+describe("Settings - Deploy tab", () => {
+  const fakeTarget: DeployTargetInfo = {
+    id: "vercel",
+    name: "Vercel",
+    description: "Deploy to Vercel",
+    configFields: [
+      { key: "token", label: "API Token", required: true, sensitive: true, placeholder: "tok_xxx" },
+    ],
+    supportsPreview: true,
+  };
+
+  const fakeTarget2: DeployTargetInfo = {
+    id: "cloudflare",
+    name: "Cloudflare Pages",
+    description: "Deploy to Cloudflare",
+    configFields: [
+      { key: "token", label: "CF Token", required: true, sensitive: true },
+      { key: "accountId", label: "Account ID", required: true, sensitive: false },
+    ],
+    supportsPreview: false,
+  };
+
+  function renderOnDeployTab(props: Partial<SettingsProps> = {}) {
+    return render(
+      <Settings
+        {...defaultProps}
+        hasActiveSession={true}
+        deployTargets={[fakeTarget, fakeTarget2]}
+        initialTab="deploy"
+        {...props}
+      />,
+    );
+  }
+
+  it("shows Deploy Targets heading", () => {
+    renderOnDeployTab();
+    expect(screen.getByText("Deploy Targets")).toBeInTheDocument();
+  });
+
+  it("shows target list with all targets", () => {
+    renderOnDeployTab();
+    expect(screen.getByText("Vercel")).toBeInTheDocument();
+    expect(screen.getByText("Cloudflare Pages")).toBeInTheDocument();
+  });
+
+  it("shows empty state when no targets available", () => {
+    renderOnDeployTab({ deployTargets: [] });
+    expect(screen.getByText("No deployment targets available.")).toBeInTheDocument();
+  });
+
+  it("shows Configured badge for configured targets", () => {
+    renderOnDeployTab({ deployConfigStatus: { vercel: { configured: true } } });
+    expect(screen.getByText("Configured")).toBeInTheDocument();
+  });
+
+  it("shows Configure link for unconfigured targets", () => {
+    renderOnDeployTab();
+    expect(screen.getByTestId("deploy-target-configure-vercel")).toHaveTextContent("Configure");
+  });
+
+  it("shows Reconfigure link for configured targets", () => {
+    renderOnDeployTab({ deployConfigStatus: { vercel: { configured: true } } });
+    expect(screen.getByTestId("deploy-target-configure-vercel")).toHaveTextContent("Reconfigure");
+  });
+
+  it("shows Remove credentials for configured targets", () => {
+    renderOnDeployTab({ deployConfigStatus: { vercel: { configured: true } } });
+    expect(screen.getByTestId("deploy-target-remove-vercel")).toHaveTextContent("Remove credentials");
+  });
+
+  it("does not show Remove credentials for unconfigured targets", () => {
+    renderOnDeployTab();
+    expect(screen.queryByTestId("deploy-target-remove-vercel")).not.toBeInTheDocument();
+  });
+
+  it("calls onDeployDeleteConfig when Remove credentials is clicked", () => {
+    const onDeployDeleteConfig = vi.fn();
+    renderOnDeployTab({
+      deployConfigStatus: { vercel: { configured: true } },
+      onDeployDeleteConfig,
+    });
+    fireEvent.click(screen.getByTestId("deploy-target-remove-vercel"));
+    expect(onDeployDeleteConfig).toHaveBeenCalledWith("vercel");
+  });
+
+  it("shows config form when Configure is clicked", () => {
+    renderOnDeployTab();
+    fireEvent.click(screen.getByTestId("deploy-target-configure-vercel"));
+    expect(screen.getByText("Configure Vercel")).toBeInTheDocument();
+    expect(screen.getByText("API Token")).toBeInTheDocument();
+    expect(screen.getByTestId("deploy-config-save")).toHaveTextContent("Save Configuration");
+  });
+
+  it("shows back button on config form", () => {
+    renderOnDeployTab();
+    fireEvent.click(screen.getByTestId("deploy-target-configure-vercel"));
+    fireEvent.click(screen.getByLabelText("Back to targets"));
+    expect(screen.getByText("Vercel")).toBeInTheDocument();
+    expect(screen.getByText("Cloudflare Pages")).toBeInTheDocument();
+  });
+
+  it("calls onDeployConfigure when config form is submitted", () => {
+    const onDeployConfigure = vi.fn();
+    renderOnDeployTab({ onDeployConfigure });
+    fireEvent.click(screen.getByTestId("deploy-target-configure-vercel"));
+    fireEvent.change(screen.getByTestId("deploy-config-field-token"), {
+      target: { value: "my-token" },
+    });
+    fireEvent.click(screen.getByTestId("deploy-config-save"));
+    expect(onDeployConfigure).toHaveBeenCalledWith("vercel", { token: "my-token" }, undefined);
+  });
+
+  it("passes project name when provided", () => {
+    const onDeployConfigure = vi.fn();
+    renderOnDeployTab({ onDeployConfigure });
+    fireEvent.click(screen.getByTestId("deploy-target-configure-vercel"));
+    fireEvent.change(screen.getByTestId("deploy-config-field-token"), {
+      target: { value: "my-token" },
+    });
+    fireEvent.change(screen.getByTestId("deploy-config-project-name"), {
+      target: { value: "my-project" },
+    });
+    fireEvent.click(screen.getByTestId("deploy-config-save"));
+    expect(onDeployConfigure).toHaveBeenCalledWith("vercel", { token: "my-token" }, "my-project");
+  });
+
+  it("pre-fills project name for configured targets", () => {
+    renderOnDeployTab({
+      deployConfigStatus: { vercel: { configured: true, projectName: "existing-project" } },
+    });
+    fireEvent.click(screen.getByTestId("deploy-target-configure-vercel"));
+    expect(screen.getByTestId("deploy-config-project-name")).toHaveValue("existing-project");
+  });
+
+  it("shows multiple config fields for targets with multiple fields", () => {
+    renderOnDeployTab();
+    fireEvent.click(screen.getByTestId("deploy-target-configure-cloudflare"));
+    expect(screen.getByText("CF Token")).toBeInTheDocument();
+    expect(screen.getByText("Account ID")).toBeInTheDocument();
+  });
+
+  it("calls onDeployTabSelected when deploy tab is activated", () => {
+    const onDeployTabSelected = vi.fn();
+    render(<Settings {...defaultProps} hasActiveSession={true} onDeployTabSelected={onDeployTabSelected} />);
+    fireEvent.click(screen.getByTestId("settings-tab-deploy"));
+    expect(onDeployTabSelected).toHaveBeenCalled();
+  });
+
+  it("calls onDeployTabSelected on mount when initialTab is deploy", () => {
+    const onDeployTabSelected = vi.fn();
+    render(
+      <Settings {...defaultProps} hasActiveSession={true} initialTab="deploy" onDeployTabSelected={onDeployTabSelected} />,
+    );
+    expect(onDeployTabSelected).toHaveBeenCalled();
+  });
+});
+
 describe("Settings - Tab switching", () => {
   it("Agent tab is selected by default", () => {
     render(<Settings {...defaultProps} />);
@@ -536,6 +744,13 @@ describe("Settings - Tab switching", () => {
     render(<Settings {...defaultProps} />);
     fireEvent.click(screen.getByText("Advanced"));
     expect(screen.getByTestId("settings-reset")).toBeInTheDocument();
+    expect(screen.queryByTestId("settings-api-key-input")).not.toBeInTheDocument();
+  });
+
+  it("clicking Deploy tab switches to deploy section when session active", () => {
+    render(<Settings {...defaultProps} hasActiveSession={true} deployTargets={[]} />);
+    fireEvent.click(screen.getByTestId("settings-tab-deploy"));
+    expect(screen.getByText("Deploy Targets")).toBeInTheDocument();
     expect(screen.queryByTestId("settings-api-key-input")).not.toBeInTheDocument();
   });
 
