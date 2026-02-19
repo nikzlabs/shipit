@@ -187,4 +187,4 @@ status: in-progress
 ---
 ```
 
-When creating a new feature doc, set `status: planned`. Update to `in-progress` when work begins and `done` when complete. Set `paused` for features that have a design but are not currently planned for implementation. When adding a `checklist.md` for remaining work, ensure the status is `in-progress`. When a feature is done, set `status: done`, mark all checklist items as complete (`[x]`), and delete the `checklist.md` if every item is checked.
+When creating a new feature doc, set `status: planned`. Update to `in-progress` when work begins and `done` when complete. Set `paused` for features that have a design but are not currently planned for implementation. When adding a `checklist.md` for remaining work, ensure the status is `in-progress`. When a feature is done, set `status: done` and mark all checklist items as complete (`[x]`).
