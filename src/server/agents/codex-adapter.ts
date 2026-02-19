@@ -13,7 +13,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import type {
   AgentId,
@@ -106,6 +106,16 @@ export class CodexAdapter
    */
   run(params: AgentRunParams): void {
     this.turnStartTime = Date.now();
+
+    // Check binary exists before attempting spawn
+    try {
+      execFileSync("which", ["codex"], { stdio: "ignore" });
+    } catch {
+      this.emit("error", new Error(
+        "Codex CLI is not installed. Install it with: npm install -g @openai/codex"
+      ));
+      return;
+    }
 
     const cwd = params.cwd ?? "/workspace";
     const env: Record<string, string> = {

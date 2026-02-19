@@ -4,6 +4,14 @@ const MAX_LENGTH = 50_000;
 
 type Tab = "agent" | "github" | "instructions";
 
+export interface AgentListItem {
+  id: string;
+  name: string;
+  installed: boolean;
+  authConfigured: boolean;
+  models: string[];
+}
+
 export interface ProjectSettingsProps {
   initialContent: string;
   onSaveInstructions: (content: string) => void;
@@ -13,6 +21,9 @@ export interface ProjectSettingsProps {
   authUrl: string | null;
   onApiKey: (key: string) => void;
   onClearApiKey: () => void;
+  agentList?: AgentListItem[];
+  onSetAgentEnv?: (agentId: string, key: string, value: string) => void;
+  onRequestAgentList?: () => void;
   onClose: () => void;
 }
 
@@ -25,6 +36,9 @@ export function ProjectSettings({
   authUrl,
   onApiKey,
   onClearApiKey,
+  agentList = [],
+  onSetAgentEnv,
+  onRequestAgentList,
   onClose,
 }: ProjectSettingsProps) {
   const [activeTab, setActiveTab] = useState<Tab>("agent");
@@ -32,11 +46,16 @@ export function ProjectSettings({
   const [token, setToken] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [apiKeyError, setApiKeyError] = useState("");
+  const [codexKey, setCodexKey] = useState("");
   const [confirmingLogout, setConfirmingLogout] = useState(false);
   const savedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const tokenInputRef = useRef<HTMLInputElement>(null);
   const apiKeyInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    onRequestAgentList?.();
+  }, []);
 
   useEffect(() => {
     if (activeTab === "instructions") {
@@ -102,8 +121,25 @@ export function ProjectSettings({
     }
   };
 
+  const handleCodexKeySubmit = () => {
+    const trimmed = codexKey.trim();
+    if (!trimmed) return;
+    onSetAgentEnv?.("codex", "OPENAI_API_KEY", trimmed);
+    setCodexKey("");
+  };
+
+  const handleCodexKeyKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleCodexKeySubmit();
+    }
+  };
+
   const charCount = content.length;
   const isOverLimit = charCount > MAX_LENGTH;
+
+  const codexAgent = agentList.find((a) => a.id === "codex");
+  const geminiAgent = agentList.find((a) => a.id === "gemini");
 
   return (
     <div
@@ -232,6 +268,70 @@ export function ProjectSettings({
                     >
                       Authenticate
                     </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Codex agent section */}
+              {codexAgent && (
+                <div className="space-y-2 pt-2 border-t border-gray-200 dark:border-gray-700" data-testid="codex-agent-section">
+                  <div className="flex items-center gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
+                    <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                      !codexAgent.installed ? "bg-gray-400" : codexAgent.authConfigured ? "bg-green-400" : "bg-yellow-400"
+                    }`} />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                        Codex
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        {!codexAgent.installed
+                          ? "Not installed"
+                          : codexAgent.authConfigured
+                            ? "Authenticated"
+                            : "API key not set"}
+                      </p>
+                    </div>
+                  </div>
+
+                  {codexAgent.installed && !codexAgent.authConfigured && (
+                    <div className="space-y-2">
+                      <input
+                        type="password"
+                        value={codexKey}
+                        onChange={(e) => setCodexKey(e.target.value)}
+                        onKeyDown={handleCodexKeyKeyDown}
+                        placeholder="OPENAI_API_KEY"
+                        className="w-full rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono"
+                        data-testid="codex-api-key-input"
+                      />
+                      <button
+                        onClick={handleCodexKeySubmit}
+                        disabled={!codexKey.trim()}
+                        className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        data-testid="codex-api-key-submit"
+                      >
+                        Save
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Gemini agent section */}
+              {geminiAgent && (
+                <div className="space-y-2 pt-2 border-t border-gray-200 dark:border-gray-700" data-testid="gemini-agent-section">
+                  <div className="flex items-center gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
+                    <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                      !geminiAgent.installed ? "bg-gray-400" : geminiAgent.authConfigured ? "bg-green-400" : "bg-yellow-400"
+                    }`} />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                        Gemini
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        {!geminiAgent.installed ? "Not installed" : geminiAgent.authConfigured ? "Authenticated" : "API key not set"}
+                      </p>
+                    </div>
                   </div>
                 </div>
               )}

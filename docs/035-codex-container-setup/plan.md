@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 ---
 
 # 035 — Codex Container Setup & Runtime Integration
