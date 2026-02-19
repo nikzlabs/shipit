@@ -1296,6 +1296,73 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         }
       }
 
+      if (msg.type === "get_global_settings") {
+        const stored = gitIdentityStore.get();
+        const gitIdentity = stored ? { name: stored.name, email: stored.email } : { name: "", email: "" };
+        let systemPrompt = "";
+        try {
+          systemPrompt = (await fs.readFile(path.join(workspaceDir, ".shipit", "system-prompt.md"), "utf-8")).trim();
+        } catch { /* no file */ }
+        const agents = agentRegistry.list().map((a) => ({
+          id: a.id, name: a.name, installed: a.installed,
+          authConfigured: a.authConfigured, models: a.capabilities.models,
+        }));
+        send({ type: "global_settings", gitIdentity, systemPrompt, agents, defaultAgentId });
+      }
+
+      if (msg.type === "save_global_settings") {
+        // Save git identity if provided
+        if (msg.gitIdentity) {
+          const name = typeof msg.gitIdentity.name === "string" ? msg.gitIdentity.name.trim() : "";
+          const email = typeof msg.gitIdentity.email === "string" ? msg.gitIdentity.email.trim() : "";
+          if (!name) {
+            send({ type: "error", message: "Git user name cannot be empty" });
+            return;
+          } else if (!email) {
+            send({ type: "error", message: "Git email cannot be empty" });
+            return;
+          } else if (name.length > 200) {
+            send({ type: "error", message: "Git user name is too long (max 200 characters)" });
+            return;
+          } else if (email.length > 200) {
+            send({ type: "error", message: "Git email is too long (max 200 characters)" });
+            return;
+          }
+          gitIdentityStore.set(name, email);
+        }
+
+        // Save system prompt if provided
+        if (msg.systemPrompt !== undefined) {
+          const content = typeof msg.systemPrompt === "string" ? msg.systemPrompt : "";
+          if (content.length > 50_000) {
+            send({ type: "error", message: "System prompt too long (max 50,000 characters)" });
+            return;
+          }
+          const dir = path.join(workspaceDir, ".shipit");
+          const filePath = path.join(dir, "system-prompt.md");
+          const trimmed = content.trim();
+          if (trimmed) {
+            await fs.mkdir(dir, { recursive: true });
+            await fs.writeFile(filePath, trimmed + "\n", "utf-8");
+          } else {
+            try { await fs.unlink(filePath); } catch { /* ok if missing */ }
+          }
+        }
+
+        // Respond with full global settings
+        const stored = gitIdentityStore.get();
+        const gitIdentity = stored ? { name: stored.name, email: stored.email } : { name: "", email: "" };
+        let systemPrompt = "";
+        try {
+          systemPrompt = (await fs.readFile(path.join(workspaceDir, ".shipit", "system-prompt.md"), "utf-8")).trim();
+        } catch { /* no file */ }
+        const agents = agentRegistry.list().map((a) => ({
+          id: a.id, name: a.name, installed: a.installed,
+          authConfigured: a.authConfigured, models: a.capabilities.models,
+        }));
+        send({ type: "global_settings", gitIdentity, systemPrompt, agents, defaultAgentId });
+      }
+
       if (msg.type === "set_git_identity") {
         const name = typeof msg.name === "string" ? msg.name.trim() : "";
         const email = typeof msg.email === "string" ? msg.email.trim() : "";
@@ -2530,42 +2597,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         } catch (err) {
           send({ type: "error", message: `Failed to generate description: ${getErrorMessage(err)}` });
         }
-      }
-
-      if (msg.type === "get_system_prompt") {
-        // System prompt is global (root workspace)
-        try {
-          const filePath = path.join(workspaceDir, ".shipit", "system-prompt.md");
-          const content = await fs.readFile(filePath, "utf-8");
-          send({ type: "system_prompt", content: content.trim() });
-        } catch {
-          // File doesn't exist — no system prompt
-          send({ type: "system_prompt", content: "" });
-        }
-      }
-
-      if (msg.type === "set_system_prompt") {
-        // System prompt is global (root workspace)
-        const content = msg.content;
-        if (typeof content !== "string") {
-          send({ type: "error", message: "System prompt must be a string" });
-          return;
-        }
-        if (content.length > 50_000) {
-          send({ type: "error", message: "System prompt too long (max 50,000 characters)" });
-          return;
-        }
-        const dir = path.join(workspaceDir, ".shipit");
-        const filePath = path.join(dir, "system-prompt.md");
-        const trimmed = content.trim();
-        if (trimmed) {
-          await fs.mkdir(dir, { recursive: true });
-          await fs.writeFile(filePath, trimmed + "\n", "utf-8");
-        } else {
-          // Empty prompt — delete the file
-          try { await fs.unlink(filePath); } catch { /* ok if missing */ }
-        }
-        send({ type: "system_prompt_saved", content: trimmed });
       }
 
       if (msg.type === "preview_error") {

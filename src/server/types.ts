@@ -327,15 +327,33 @@ export interface WsGitIdentitySet {
   email: string;
 }
 
-// ---- System prompt messages ----
+// ---- Global settings messages ----
 
-export interface WsGetSystemPrompt {
-  type: "get_system_prompt";
+/** Fetch all global settings in a single request. */
+export interface WsGetGlobalSettings {
+  type: "get_global_settings";
 }
 
-export interface WsSetSystemPrompt {
-  type: "set_system_prompt";
-  content: string;
+/** Save global settings. Only provided fields are updated. */
+export interface WsSaveGlobalSettings {
+  type: "save_global_settings";
+  gitIdentity?: { name: string; email: string };
+  systemPrompt?: string;
+}
+
+/** Bundled response containing all global settings. */
+export interface WsGlobalSettings {
+  type: "global_settings";
+  gitIdentity: { name: string; email: string };
+  systemPrompt: string;
+  agents: Array<{
+    id: import("./agents/agent-process.js").AgentId;
+    name: string;
+    installed: boolean;
+    authConfigured: boolean;
+    models: string[];
+  }>;
+  defaultAgentId: import("./agents/agent-process.js").AgentId;
 }
 
 // ---- Thread & checkpoint messages ----
@@ -423,8 +441,6 @@ export type WsClientMessage =
   | WsAnswerQuestion
   | WsListTemplates
   | WsApplyTemplate
-  | WsGetSystemPrompt
-  | WsSetSystemPrompt
   | WsGitHubSetToken
   | WsGitHubGetStatus
   | WsGitHubPush
@@ -435,6 +451,8 @@ export type WsClientMessage =
   | WsGitHubCreatePR
   | WsGitHubListBranches
   | WsSetGitIdentity
+  | WsGetGlobalSettings
+  | WsSaveGlobalSettings
   | WsCreateCheckpoint
   | WsForkThread
   | WsSwitchThread
@@ -869,17 +887,6 @@ export interface WsFeatureList {
   features: FeatureInfo[];
 }
 
-// ---- System prompt server messages ----
-
-export interface WsSystemPrompt {
-  type: "system_prompt";
-  content: string;
-}
-
-export interface WsSystemPromptSaved {
-  type: "system_prompt_saved";
-  content: string;
-}
 
 // ---- Thread & checkpoint server messages ----
 
@@ -1127,8 +1134,7 @@ export type WsServerMessage =
   | WsTemplateList
   | WsTemplateApplied
   | WsFeatureList
-  | WsSystemPrompt
-  | WsSystemPromptSaved
+  | WsGlobalSettings
   | WsFilesChanged
   | WsGitHubStatus
   | WsGitHubPushResult

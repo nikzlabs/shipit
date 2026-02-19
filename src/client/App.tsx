@@ -148,9 +148,10 @@ export default function App() {
   const [hasSystemPrompt, setHasSystemPrompt] = useState(false);
   const [systemPromptContent, setSystemPromptContent] = useState("");
   const [gitIdentityNeeded, setGitIdentityNeeded] = useState(false);
+  const [gitIdentity, setGitIdentity] = useState<{ name: string; email: string }>({ name: "", email: "" });
   const [threads, setThreads] = useState<ThreadInfo[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string>("");
-  const [initialSettingsTab, setInitialSettingsTab] = useState<"agent" | "github" | "instructions" | "advanced" | "deploy" | undefined>(undefined);
+  const [initialSettingsTab, setInitialSettingsTab] = useState<"agent" | "github" | "git" | "instructions" | "advanced" | "deploy" | undefined>(undefined);
   const [showDeployModal, setShowDeployModal] = useState(false);
   const [deployTargets, setDeployTargets] = useState<DeployTargetInfo[]>([]);
   const [deployConfigStatus, setDeployConfigStatus] = useState<Record<string, { configured: boolean; projectName?: string }>>({});
@@ -688,12 +689,22 @@ export default function App() {
       setAgentList(data.agents);
     }
 
+    if (data.type === "global_settings") {
+      setGitIdentity({ name: data.gitIdentity.name, email: data.gitIdentity.email });
+      setSystemPromptContent(data.systemPrompt);
+      setHasSystemPrompt(data.systemPrompt.length > 0);
+      setAgentList(data.agents);
+    }
+
     if (data.type === "git_identity_required") {
       setGitIdentityNeeded(true);
     }
 
     if (data.type === "git_identity_set") {
       setGitIdentityNeeded(false);
+      if (data.name || data.email) {
+        setGitIdentity({ name: data.name, email: data.email });
+      }
     }
 
     if (data.type === "session_list") {
@@ -900,17 +911,6 @@ export default function App() {
 
     if (data.type === "usage_stats") {
       setAllUsageStats(data.stats);
-    }
-
-    if (data.type === "system_prompt") {
-      setSystemPromptContent(data.content);
-      setHasSystemPrompt(data.content.length > 0);
-    }
-
-    if (data.type === "system_prompt_saved") {
-      setSystemPromptContent(data.content);
-      setHasSystemPrompt(data.content.length > 0);
-      setSettingsOpen(false);
     }
 
     if (data.type === "thread_list") {
@@ -1492,8 +1492,8 @@ export default function App() {
     setShowUsageModal(true);
   }, [send]);
 
-  const handleSettingsOpen = useCallback((tab?: "agent" | "github" | "instructions" | "advanced" | "deploy") => {
-    send({ type: "get_system_prompt" });
+  const handleSettingsOpen = useCallback((tab?: "agent" | "github" | "git" | "instructions" | "advanced" | "deploy") => {
+    send({ type: "get_global_settings" });
     setInitialSettingsTab(tab);
     setSettingsOpen(true);
   }, [send]);
@@ -1505,7 +1505,8 @@ export default function App() {
 
   const handleInstructionsSave = useCallback(
     (content: string) => {
-      send({ type: "set_system_prompt", content });
+      send({ type: "save_global_settings", systemPrompt: content });
+      setSettingsOpen(false);
     },
     [send],
   );
@@ -1992,8 +1993,9 @@ export default function App() {
           onClearApiKey={() => send({ type: "clear_api_key" })}
           agentList={agentList}
           onSetAgentEnv={(agentId, key, value) => send({ type: "set_agent_env", agentId, key, value })}
-          onRequestAgentList={() => send({ type: "list_agents" })}
           onFullReset={handleFullReset}
+          gitIdentity={gitIdentity}
+          onGitIdentitySave={(name, email) => send({ type: "save_global_settings", gitIdentity: { name, email } })}
           deployTargets={deployTargets}
           deployConfigStatus={deployConfigStatus}
           onDeployConfigure={handleDeployConfigure}

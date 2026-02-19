@@ -62,31 +62,31 @@ describe("Integration: System prompt", () => {
     }
   });
 
-  it("get_system_prompt returns empty string when no file exists", async () => {
+  it("get_global_settings returns empty system prompt when no file exists", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    client.send({ type: "get_system_prompt" } as any);
+    client.send({ type: "get_global_settings" } as any);
     const msg = await client.receive();
 
     expect(msg).toMatchObject({
-      type: "system_prompt",
-      content: "",
+      type: "global_settings",
+      systemPrompt: "",
     });
 
     client.close();
   });
 
-  it("set_system_prompt persists and confirms", async () => {
+  it("save_global_settings persists system prompt and confirms", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    client.send({ type: "set_system_prompt", content: "Always use TypeScript." } as any);
+    client.send({ type: "save_global_settings", systemPrompt: "Always use TypeScript." } as any);
     const msg = await client.receive();
 
     expect(msg).toMatchObject({
-      type: "system_prompt_saved",
-      content: "Always use TypeScript.",
+      type: "global_settings",
+      systemPrompt: "Always use TypeScript.",
     });
 
     // Verify it was persisted to disk
@@ -97,41 +97,41 @@ describe("Integration: System prompt", () => {
     client.close();
   });
 
-  it("get_system_prompt returns saved content", async () => {
+  it("get_global_settings returns saved system prompt", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     // Set a prompt first
-    client.send({ type: "set_system_prompt", content: "Use Tailwind CSS." } as any);
-    await client.receive(); // system_prompt_saved
+    client.send({ type: "save_global_settings", systemPrompt: "Use Tailwind CSS." } as any);
+    await client.receive(); // global_settings
 
     // Now retrieve it
-    client.send({ type: "get_system_prompt" } as any);
+    client.send({ type: "get_global_settings" } as any);
     const msg = await client.receive();
 
     expect(msg).toMatchObject({
-      type: "system_prompt",
-      content: "Use Tailwind CSS.",
+      type: "global_settings",
+      systemPrompt: "Use Tailwind CSS.",
     });
 
     client.close();
   });
 
-  it("set_system_prompt with empty string deletes the file", async () => {
+  it("save_global_settings with empty system prompt deletes the file", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     // First create a prompt
-    client.send({ type: "set_system_prompt", content: "Something" } as any);
-    await client.receive(); // system_prompt_saved
+    client.send({ type: "save_global_settings", systemPrompt: "Something" } as any);
+    await client.receive(); // global_settings
 
     // Now clear it
-    client.send({ type: "set_system_prompt", content: "" } as any);
+    client.send({ type: "save_global_settings", systemPrompt: "" } as any);
     const msg = await client.receive();
 
     expect(msg).toMatchObject({
-      type: "system_prompt_saved",
-      content: "",
+      type: "global_settings",
+      systemPrompt: "",
     });
 
     // File should be deleted
@@ -141,47 +141,47 @@ describe("Integration: System prompt", () => {
     client.close();
   });
 
-  it("set_system_prompt with whitespace-only string deletes the file", async () => {
+  it("save_global_settings with whitespace-only system prompt deletes the file", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     // First create a prompt
-    client.send({ type: "set_system_prompt", content: "Something" } as any);
-    await client.receive(); // system_prompt_saved
+    client.send({ type: "save_global_settings", systemPrompt: "Something" } as any);
+    await client.receive(); // global_settings
 
     // Now send whitespace-only
-    client.send({ type: "set_system_prompt", content: "   \n  \t  " } as any);
+    client.send({ type: "save_global_settings", systemPrompt: "   \n  \t  " } as any);
     const msg = await client.receive();
 
     expect(msg).toMatchObject({
-      type: "system_prompt_saved",
-      content: "",
+      type: "global_settings",
+      systemPrompt: "",
     });
 
     client.close();
   });
 
-  it("set_system_prompt trims whitespace", async () => {
+  it("save_global_settings trims whitespace from system prompt", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    client.send({ type: "set_system_prompt", content: "  Use strict mode.  \n" } as any);
+    client.send({ type: "save_global_settings", systemPrompt: "  Use strict mode.  \n" } as any);
     const msg = await client.receive();
 
     expect(msg).toMatchObject({
-      type: "system_prompt_saved",
-      content: "Use strict mode.",
+      type: "global_settings",
+      systemPrompt: "Use strict mode.",
     });
 
     client.close();
   });
 
-  it("set_system_prompt rejects content over 50KB", async () => {
+  it("save_global_settings rejects system prompt over 50KB", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     const hugeContent = "x".repeat(50_001);
-    client.send({ type: "set_system_prompt", content: hugeContent } as any);
+    client.send({ type: "save_global_settings", systemPrompt: hugeContent } as any);
     const msg = await client.receive();
 
     expect(msg).toMatchObject({
@@ -192,28 +192,13 @@ describe("Integration: System prompt", () => {
     client.close();
   });
 
-  it("set_system_prompt rejects non-string content", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "set_system_prompt", content: 42 } as any);
-    const msg = await client.receive();
-
-    expect(msg).toMatchObject({
-      type: "error",
-      message: "System prompt must be a string",
-    });
-
-    client.close();
-  });
-
   it("system prompt is passed to ClaudeProcess.run() when set", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     // Set a system prompt
-    client.send({ type: "set_system_prompt", content: "Be concise." } as any);
-    await client.receive(); // system_prompt_saved
+    client.send({ type: "save_global_settings", systemPrompt: "Be concise." } as any);
+    await client.receive(); // global_settings
 
     // Send a message to Claude
     client.send({ type: "send_message", text: "Hello" });
