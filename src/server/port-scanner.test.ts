@@ -121,11 +121,13 @@ describe("port-scanner", () => {
   describe("snapshotBaselinePorts", () => {
     let server: net.Server;
     let openPort: number;
+    let closedPort: number;
 
     beforeEach(async () => {
       const result = await createTestServer();
       server = result.server;
       openPort = result.port;
+      closedPort = await getClosedPort();
     });
 
     afterEach(() => {
@@ -133,13 +135,13 @@ describe("port-scanner", () => {
     });
 
     it("returns ports that are already open", async () => {
-      const result = await snapshotBaselinePorts([openPort, openPort + 5000]);
+      const result = await snapshotBaselinePorts([openPort, closedPort]);
       expect(result).toContain(openPort);
-      expect(result).not.toContain(openPort + 5000);
+      expect(result).not.toContain(closedPort);
     });
 
     it("returns empty array when no ports are open", async () => {
-      const result = await snapshotBaselinePorts([openPort + 5000]);
+      const result = await snapshotBaselinePorts([closedPort]);
       expect(result).toEqual([]);
     });
   });
