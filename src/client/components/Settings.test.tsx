@@ -14,6 +14,8 @@ const defaultProps: SettingsProps = {
   authUrl: null,
   onApiKey: vi.fn(),
   onClearApiKey: vi.fn(),
+  gitIdentity: { name: "", email: "" },
+  onGitIdentitySave: vi.fn(),
   deployTargets: [],
   deployConfigStatus: {},
   onDeployConfigure: vi.fn(),
@@ -262,6 +264,72 @@ describe("Settings - GitHub tab", () => {
   });
 });
 
+describe("Settings - Git tab", () => {
+  function renderOnGitTab(props: Partial<SettingsProps> = {}) {
+    const result = render(<Settings {...defaultProps} {...props} />);
+    fireEvent.click(screen.getByText("Git"));
+    return result;
+  }
+
+  it("shows description text", () => {
+    renderOnGitTab();
+    expect(screen.getByText(/git identity used for automatic commits/i)).toBeInTheDocument();
+  });
+
+  it("shows name and email inputs", () => {
+    renderOnGitTab();
+    expect(screen.getByTestId("settings-git-name")).toBeInTheDocument();
+    expect(screen.getByTestId("settings-git-email")).toBeInTheDocument();
+  });
+
+  it("pre-fills inputs from gitIdentity prop", () => {
+    renderOnGitTab({ gitIdentity: { name: "Alice", email: "alice@example.com" } });
+    expect(screen.getByTestId("settings-git-name")).toHaveValue("Alice");
+    expect(screen.getByTestId("settings-git-email")).toHaveValue("alice@example.com");
+  });
+
+  it("Save button is disabled when name is empty", () => {
+    renderOnGitTab({ gitIdentity: { name: "", email: "a@b.com" } });
+    expect(screen.getByTestId("settings-git-save")).toBeDisabled();
+  });
+
+  it("Save button is disabled when email is empty", () => {
+    renderOnGitTab({ gitIdentity: { name: "Alice", email: "" } });
+    fireEvent.change(screen.getByTestId("settings-git-email"), { target: { value: "" } });
+    expect(screen.getByTestId("settings-git-save")).toBeDisabled();
+  });
+
+  it("calls onGitIdentitySave with trimmed values on Save click", () => {
+    const onGitIdentitySave = vi.fn();
+    renderOnGitTab({ onGitIdentitySave });
+    fireEvent.change(screen.getByTestId("settings-git-name"), { target: { value: "  Bob  " } });
+    fireEvent.change(screen.getByTestId("settings-git-email"), { target: { value: "  bob@test.com  " } });
+    fireEvent.click(screen.getByTestId("settings-git-save"));
+    expect(onGitIdentitySave).toHaveBeenCalledWith("Bob", "bob@test.com");
+  });
+
+  it("shows Saved label after saving", () => {
+    const onGitIdentitySave = vi.fn();
+    renderOnGitTab({ onGitIdentitySave });
+    fireEvent.change(screen.getByTestId("settings-git-name"), { target: { value: "Bob" } });
+    fireEvent.change(screen.getByTestId("settings-git-email"), { target: { value: "bob@test.com" } });
+    fireEvent.click(screen.getByTestId("settings-git-save"));
+    expect(screen.getByTestId("settings-git-save")).toHaveTextContent("Saved");
+  });
+
+  it("resets Saved label when input changes", () => {
+    const onGitIdentitySave = vi.fn();
+    renderOnGitTab({ onGitIdentitySave });
+    fireEvent.change(screen.getByTestId("settings-git-name"), { target: { value: "Bob" } });
+    fireEvent.change(screen.getByTestId("settings-git-email"), { target: { value: "bob@test.com" } });
+    fireEvent.click(screen.getByTestId("settings-git-save"));
+    expect(screen.getByTestId("settings-git-save")).toHaveTextContent("Saved");
+    fireEvent.change(screen.getByTestId("settings-git-name"), { target: { value: "Charlie" } });
+    expect(screen.getByTestId("settings-git-save")).toHaveTextContent("Save");
+  });
+
+});
+
 describe("Settings - Instructions tab", () => {
   function renderOnInstructionsTab(props: Partial<SettingsProps> = {}) {
     const result = render(<Settings {...defaultProps} {...props} />);
@@ -336,14 +404,6 @@ describe("Settings - Instructions tab", () => {
     });
     fireEvent.click(screen.getByTestId("settings-save"));
     expect(onSaveInstructions).toHaveBeenCalledWith("");
-  });
-});
-
-describe("Settings - Agent list", () => {
-  it("calls onRequestAgentList on mount", () => {
-    const onRequestAgentList = vi.fn();
-    render(<Settings {...defaultProps} onRequestAgentList={onRequestAgentList} />);
-    expect(onRequestAgentList).toHaveBeenCalledOnce();
   });
 });
 
@@ -709,6 +769,13 @@ describe("Settings - Tab switching", () => {
     render(<Settings {...defaultProps} />);
     fireEvent.click(screen.getByText("GitHub"));
     expect(screen.getByTestId("settings-token-input")).toBeInTheDocument();
+    expect(screen.queryByTestId("settings-api-key-input")).not.toBeInTheDocument();
+  });
+
+  it("clicking Git tab switches to git section", () => {
+    render(<Settings {...defaultProps} />);
+    fireEvent.click(screen.getByText("Git"));
+    expect(screen.getByTestId("settings-git-name")).toBeInTheDocument();
     expect(screen.queryByTestId("settings-api-key-input")).not.toBeInTheDocument();
   });
 

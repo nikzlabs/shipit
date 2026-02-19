@@ -271,4 +271,87 @@ describe("Integration: git identity flow", () => {
 
     client.close();
   });
+
+  it("get_global_settings returns stored git identity", async () => {
+    const store = new GitIdentityStore(tmpDir);
+    store.set("Stored User", "stored@example.com");
+
+    const git = new GitManager(sessionDir);
+    await git.init();
+    port = await startApp({ gitIdentityStore: store });
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "get_global_settings" });
+    const resp = await client.receive();
+    expect(resp).toMatchObject({
+      type: "global_settings",
+      gitIdentity: { name: "Stored User", email: "stored@example.com" },
+      systemPrompt: "",
+    });
+    expect((resp as any).agents).toBeDefined();
+
+    client.close();
+  });
+
+  it("get_global_settings returns empty git identity when none stored", async () => {
+    const store = new GitIdentityStore(tmpDir);
+
+    const git = new GitManager(sessionDir);
+    await git.init();
+    port = await startApp({ gitIdentityStore: store });
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "get_global_settings" });
+    const resp = await client.receive();
+    expect(resp).toMatchObject({
+      type: "global_settings",
+      gitIdentity: { name: "", email: "" },
+    });
+
+    client.close();
+  });
+
+  it("save_global_settings saves git identity without requiring active session", async () => {
+    const store = new GitIdentityStore(tmpDir);
+
+    const git = new GitManager(sessionDir);
+    await git.init();
+    port = await startApp({ gitIdentityStore: store });
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // No session activated — save_global_settings should still work
+    client.send({ type: "save_global_settings", gitIdentity: { name: "Global User", email: "global@test.com" } });
+    const resp = await client.receive();
+    expect(resp).toMatchObject({
+      type: "global_settings",
+      gitIdentity: { name: "Global User", email: "global@test.com" },
+    });
+
+    // Verify it persisted to the global store
+    const reloaded = new GitIdentityStore(tmpDir);
+    expect(reloaded.get()).toEqual({ name: "Global User", email: "global@test.com" });
+
+    client.close();
+  });
+
+  it("save_global_settings returns error for empty git name", async () => {
+    const git = new GitManager(sessionDir);
+    await git.init();
+    port = await startApp();
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "save_global_settings", gitIdentity: { name: "", email: "a@b.com" } });
+    const resp = await client.receive();
+    expect(resp).toMatchObject({ type: "error", message: "Git user name cannot be empty" });
+
+    client.close();
+  });
 });

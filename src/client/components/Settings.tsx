@@ -4,7 +4,7 @@ import type { DeployTargetInfo } from "../../server/types.js";
 
 const MAX_LENGTH = 50_000;
 
-type Tab = "agent" | "github" | "instructions" | "advanced" | "deploy";
+type Tab = "agent" | "github" | "git" | "instructions" | "advanced" | "deploy";
 
 export interface SettingsProps {
   initialContent: string;
@@ -17,8 +17,9 @@ export interface SettingsProps {
   onClearApiKey: () => void;
   agentList?: AgentOption[];
   onSetAgentEnv?: (agentId: string, key: string, value: string) => void;
-  onRequestAgentList?: () => void;
   onFullReset?: () => void;
+  gitIdentity: { name: string; email: string };
+  onGitIdentitySave: (name: string, email: string) => void;
   deployTargets: DeployTargetInfo[];
   deployConfigStatus: Record<string, { configured: boolean; projectName?: string }>;
   onDeployConfigure: (targetId: string, credentials: Record<string, string>, projectName?: string) => void;
@@ -40,8 +41,9 @@ export function Settings({
   onClearApiKey,
   agentList = [],
   onSetAgentEnv,
-  onRequestAgentList,
   onFullReset,
+  gitIdentity,
+  onGitIdentitySave,
   deployTargets,
   deployConfigStatus,
   onDeployConfigure,
@@ -63,20 +65,24 @@ export function Settings({
   const [selectedDeployTarget, setSelectedDeployTarget] = useState<DeployTargetInfo | null>(null);
   const [deployConfigValues, setDeployConfigValues] = useState<Record<string, string>>({});
   const [deployProjectName, setDeployProjectName] = useState("");
+  const [gitName, setGitName] = useState(gitIdentity.name);
+  const [gitEmail, setGitEmail] = useState(gitIdentity.email);
+  const [gitSaved, setGitSaved] = useState(false);
   const savedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const tokenInputRef = useRef<HTMLInputElement>(null);
   const apiKeyInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    onRequestAgentList?.();
-  }, []);
-
-  useEffect(() => {
     if (activeTab === "deploy") {
       onDeployTabSelected?.();
     }
   }, [activeTab]);
+
+  useEffect(() => {
+    setGitName(gitIdentity.name);
+    setGitEmail(gitIdentity.email);
+  }, [gitIdentity.name, gitIdentity.email]);
 
   useEffect(() => {
     if (activeTab === "instructions") {
@@ -173,11 +179,12 @@ export function Settings({
 
   const codexAgent = agentList.find((a) => a.id === "codex");
 
-  const generalTabs = ["agent", "github", "instructions", "advanced"] as const;
+  const generalTabs = ["agent", "github", "git", "instructions", "advanced"] as const;
   const tabLabel = (tab: Tab) => {
     switch (tab) {
       case "agent": return "Agent";
       case "github": return "GitHub";
+      case "git": return "Git";
       case "instructions": return "Instructions";
       case "advanced": return "Advanced";
       case "deploy": return "Deploy";
@@ -504,6 +511,52 @@ export function Settings({
                   </p>
                 </div>
               )}
+            </div>
+          )}
+
+          {activeTab === "git" && (
+            <div className="flex-1 min-w-0 px-5 py-4 flex flex-col gap-4 overflow-y-auto">
+              <div className="space-y-4">
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  Git identity used for automatic commits in all sessions.
+                </p>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Name</label>
+                  <input
+                    type="text"
+                    value={gitName}
+                    onChange={(e) => { setGitName(e.target.value); setGitSaved(false); }}
+                    placeholder="Your Name"
+                    className="w-full rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                    data-testid="settings-git-name"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email</label>
+                  <input
+                    type="email"
+                    value={gitEmail}
+                    onChange={(e) => { setGitEmail(e.target.value); setGitSaved(false); }}
+                    placeholder="you@example.com"
+                    className="w-full rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                    data-testid="settings-git-email"
+                  />
+                </div>
+
+                <button
+                  onClick={() => {
+                    onGitIdentitySave(gitName.trim(), gitEmail.trim());
+                    setGitSaved(true);
+                  }}
+                  disabled={!gitName.trim() || !gitEmail.trim()}
+                  className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  data-testid="settings-git-save"
+                >
+                  {gitSaved ? "Saved" : "Save"}
+                </button>
+              </div>
             </div>
           )}
 
