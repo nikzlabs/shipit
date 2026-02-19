@@ -7,7 +7,6 @@ afterEach(cleanup);
 const agents: AgentOption[] = [
   { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-sonnet-4"] },
   { id: "codex", name: "Codex", installed: true, authConfigured: true, models: ["o4-mini"] },
-  { id: "gemini", name: "Gemini", installed: false, authConfigured: false, models: [] },
 ];
 
 describe("AgentPicker", () => {
@@ -42,7 +41,6 @@ describe("AgentPicker", () => {
     fireEvent.click(screen.getByTestId("agent-picker-trigger"));
     expect(screen.getByTestId("agent-option-claude")).toBeInTheDocument();
     expect(screen.getByTestId("agent-option-codex")).toBeInTheDocument();
-    expect(screen.getByTestId("agent-option-gemini")).toBeInTheDocument();
   });
 
   it("calls onAgentChange when an available agent is selected", () => {
@@ -61,17 +59,27 @@ describe("AgentPicker", () => {
   });
 
   it("does not call onAgentChange for uninstalled agents", () => {
+    const agentsWithUninstalled: AgentOption[] = [
+      { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: [] },
+      { id: "codex", name: "Codex", installed: true, authConfigured: true, models: [] },
+      { id: "other", name: "Other", installed: false, authConfigured: false, models: [] },
+    ];
     const onAgentChange = vi.fn();
-    render(<AgentPicker agents={agents} activeAgentId="claude" onAgentChange={onAgentChange} />);
+    render(<AgentPicker agents={agentsWithUninstalled} activeAgentId="claude" onAgentChange={onAgentChange} />);
     fireEvent.click(screen.getByTestId("agent-picker-trigger"));
-    fireEvent.click(screen.getByTestId("agent-option-gemini"));
+    fireEvent.click(screen.getByTestId("agent-option-other"));
     expect(onAgentChange).not.toHaveBeenCalled();
   });
 
   it("shows 'not installed' label for uninstalled agents", () => {
-    render(<AgentPicker agents={agents} activeAgentId="claude" onAgentChange={vi.fn()} />);
+    const agentsWithUninstalled: AgentOption[] = [
+      { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: [] },
+      { id: "codex", name: "Codex", installed: true, authConfigured: true, models: [] },
+      { id: "other", name: "Other", installed: false, authConfigured: false, models: [] },
+    ];
+    render(<AgentPicker agents={agentsWithUninstalled} activeAgentId="claude" onAgentChange={vi.fn()} />);
     fireEvent.click(screen.getByTestId("agent-picker-trigger"));
-    expect(screen.getByTestId("agent-option-gemini")).toHaveTextContent("not installed");
+    expect(screen.getByTestId("agent-option-other")).toHaveTextContent("not installed");
   });
 
   it("shows 'needs auth' label for installed but unconfigured agents", () => {

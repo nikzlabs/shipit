@@ -27,7 +27,6 @@ describe("canonicalizeTool", () => {
   it("returns null for unknown tool names", () => {
     expect(canonicalizeTool("claude", "UnknownTool")).toBeNull();
     expect(canonicalizeTool("codex", "UnknownTool")).toBeNull();
-    expect(canonicalizeTool("gemini", "UnknownTool")).toBeNull();
   });
 });
 
@@ -49,6 +48,5 @@ describe("agentToolName", () => {
 
   it("returns null for unmapped canonical names", () => {
     expect(agentToolName("codex", "web_fetch")).toBeNull();
-    expect(agentToolName("gemini", "shell")).toBeNull();
   });
 });

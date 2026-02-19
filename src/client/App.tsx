@@ -91,7 +91,7 @@ function saveSidebarCollapsed(collapsed: boolean): void {
 function getSavedAgentId(): AgentId {
   try {
     const saved = localStorage.getItem(AGENT_PREFERENCE_KEY);
-    if (saved === "claude" || saved === "codex" || saved === "gemini") return saved;
+    if (saved === "claude" || saved === "codex") return saved;
   } catch {
     // localStorage may be unavailable
   }

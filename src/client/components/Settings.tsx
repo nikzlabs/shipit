@@ -172,7 +172,6 @@ export function Settings({
   const isOverLimit = charCount > MAX_LENGTH;
 
   const codexAgent = agentList.find((a) => a.id === "codex");
-  const geminiAgent = agentList.find((a) => a.id === "gemini");
 
   const generalTabs = ["agent", "github", "instructions", "advanced"] as const;
   const tabLabel = (tab: Tab) => {
@@ -383,24 +382,6 @@ export function Settings({
                 </div>
               )}
 
-              {/* Gemini agent section */}
-              {geminiAgent && (
-                <div className="space-y-2 pt-2 border-t border-gray-200 dark:border-gray-700" data-testid="gemini-agent-section">
-                  <div className="flex items-center gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
-                    <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-                      !geminiAgent.installed ? "bg-gray-400" : geminiAgent.authConfigured ? "bg-green-400" : "bg-yellow-400"
-                    }`} />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                        Gemini
-                      </p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">
-                        {!geminiAgent.installed ? "Not installed" : geminiAgent.authConfigured ? "Authenticated" : "API key not set"}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
             </div>
           )}
 

@@ -92,7 +92,7 @@ describe("Integration: Agent registry — list_agents", () => {
     const data = msg as any;
 
     expect(data.defaultAgentId).toBe("claude");
-    expect(data.agents).toHaveLength(3);
+    expect(data.agents).toHaveLength(2);
 
     const claude = data.agents.find((a: any) => a.id === "claude");
     expect(claude.installed).toBe(true);
@@ -103,20 +103,17 @@ describe("Integration: Agent registry — list_agents", () => {
     // Codex auth depends on OPENAI_API_KEY being set
     expect(codex.name).toBe("Codex");
 
-    const gemini = data.agents.find((a: any) => a.id === "gemini");
-    expect(gemini.installed).toBe(false);
-
     client.close();
   });
 
-  it("set_agent rejects unavailable (not installed) agent", async () => {
+  it("set_agent rejects unknown agent", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    client.send({ type: "set_agent", agentId: "gemini" } as any);
+    client.send({ type: "set_agent", agentId: "unknown-agent" } as any);
 
     const msg = await receiveByType(client, "error");
-    expect((msg as any).message).toContain("not installed");
+    expect((msg as any).message).toContain("Unknown agent");
 
     client.close();
   });
