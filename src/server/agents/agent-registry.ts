@@ -51,30 +51,15 @@ const AGENT_DEFS: Array<{ id: AgentId; name: string; binary: string; capabilitie
       models: ["codex-mini-latest", "o4-mini", "o3", "gpt-4.1"],
     },
   },
-  {
-    id: "gemini",
-    name: "Gemini",
-    binary: "gemini",
-    capabilities: {
-      supportsResume: false,
-      supportsImages: false,
-      supportsSystemPrompt: false,
-      supportsPermissionModes: false,
-      supportedPermissionModes: [],
-      toolNames: [],
-      models: [],
-    },
-  },
 ];
 
 /** Env var required for each agent's auth (Claude uses OAuth, not an env var). */
 const AUTH_ENV_KEYS: Partial<Record<AgentId, string>> = {
   codex: "OPENAI_API_KEY",
-  gemini: "GOOGLE_API_KEY",
 };
 
 /** Allowed env var keys that can be set via the `set_agent_env` message. */
-export const ALLOWED_ENV_KEYS = new Set(["OPENAI_API_KEY", "GOOGLE_API_KEY"]);
+export const ALLOWED_ENV_KEYS = new Set(["OPENAI_API_KEY"]);
 
 export class AgentRegistry {
   private agents = new Map<AgentId, AgentInfo>();

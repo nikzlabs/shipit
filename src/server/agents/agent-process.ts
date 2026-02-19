@@ -1,7 +1,7 @@
 /**
  * AgentProcess — provider-agnostic interface for agent CLI backends.
  *
- * Every agent adapter (Claude, Codex, Gemini, etc.) implements this interface.
+ * Every agent adapter (Claude, Codex, etc.) implements this interface.
  * The server and client speak only in terms of AgentEvent, never raw CLI output.
  * CLI-specific logic lives entirely inside adapter classes.
  */
@@ -11,7 +11,7 @@ import type { ImageAttachment, PermissionMode } from "../types.js";
 
 // ---- Agent identity ----
 
-export type AgentId = "claude" | "codex" | "gemini";
+export type AgentId = "claude" | "codex";
 
 // ---- Agent capabilities ----
 

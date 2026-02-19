@@ -39,14 +39,9 @@ const CODEX_TOOL_MAP: Record<string, CanonicalTool> = {
   apply_patch: "file_edit",
 };
 
-const GEMINI_TOOL_MAP: Record<string, CanonicalTool> = {
-  // Placeholder — will be populated once Gemini CLI tool names are confirmed
-};
-
 const AGENT_TOOL_MAPS: Record<AgentId, Record<string, CanonicalTool>> = {
   claude: CLAUDE_TOOL_MAP,
   codex: CODEX_TOOL_MAP,
-  gemini: GEMINI_TOOL_MAP,
 };
 
 /**

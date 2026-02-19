@@ -444,27 +444,6 @@ describe("Settings - Codex agent section", () => {
   });
 });
 
-describe("Settings - Gemini agent section", () => {
-  const geminiNotInstalled = {
-    id: "gemini",
-    name: "Gemini",
-    installed: false,
-    authConfigured: false,
-    models: [],
-  };
-
-  it("shows Gemini section when gemini is in agentList", () => {
-    render(<Settings {...defaultProps} agentList={[geminiNotInstalled]} />);
-    expect(screen.getByTestId("gemini-agent-section")).toBeInTheDocument();
-    expect(screen.getByText("Gemini")).toBeInTheDocument();
-  });
-
-  it("shows 'Not installed' for gemini when not installed", () => {
-    render(<Settings {...defaultProps} agentList={[geminiNotInstalled]} />);
-    expect(screen.getByText("Not installed")).toBeInTheDocument();
-  });
-});
-
 describe("Settings - Advanced tab", () => {
   function renderOnAdvancedTab(props: Partial<SettingsProps> = {}) {
     const result = render(<Settings {...defaultProps} {...props} />);

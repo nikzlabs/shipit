@@ -1630,7 +1630,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           return;
         }
         if (!info.authConfigured) {
-          const envKey = msg.agentId === "codex" ? "OPENAI_API_KEY" : msg.agentId === "gemini" ? "GOOGLE_API_KEY" : "";
+          const envKey = msg.agentId === "codex" ? "OPENAI_API_KEY" : "";
           send({ type: "error", message: `${envKey || "API key"} is not set. Add it in Settings \u2192 Agents.` });
           return;
         }

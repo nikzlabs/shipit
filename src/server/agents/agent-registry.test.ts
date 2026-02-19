@@ -3,20 +3,15 @@ import { AgentRegistry, ALLOWED_ENV_KEYS } from "./agent-registry.js";
 
 describe("AgentRegistry", () => {
   let savedOpenAIKey: string | undefined;
-  let savedGoogleKey: string | undefined;
 
   beforeEach(() => {
     savedOpenAIKey = process.env.OPENAI_API_KEY;
-    savedGoogleKey = process.env.GOOGLE_API_KEY;
     delete process.env.OPENAI_API_KEY;
-    delete process.env.GOOGLE_API_KEY;
   });
 
   afterEach(() => {
     if (savedOpenAIKey !== undefined) process.env.OPENAI_API_KEY = savedOpenAIKey;
     else delete process.env.OPENAI_API_KEY;
-    if (savedGoogleKey !== undefined) process.env.GOOGLE_API_KEY = savedGoogleKey;
-    else delete process.env.GOOGLE_API_KEY;
   });
 
   function createRegistry(opts: {
@@ -41,10 +36,6 @@ describe("AgentRegistry", () => {
     const codex = registry.get("codex");
     expect(codex).toBeDefined();
     expect(codex!.installed).toBe(true);
-
-    const gemini = registry.get("gemini");
-    expect(gemini).toBeDefined();
-    expect(gemini!.installed).toBe(false);
   });
 
   it("list() returns all agents", async () => {
@@ -52,8 +43,8 @@ describe("AgentRegistry", () => {
     await registry.detect();
 
     const agents = registry.list();
-    expect(agents).toHaveLength(3);
-    expect(agents.map((a) => a.id)).toEqual(["claude", "codex", "gemini"]);
+    expect(agents).toHaveLength(2);
+    expect(agents.map((a) => a.id)).toEqual(["claude", "codex"]);
   });
 
   it("checks Claude auth via checkClaudeAuth callback", async () => {
@@ -75,17 +66,6 @@ describe("AgentRegistry", () => {
     const registry2 = createRegistry({ installedBinaries: ["codex"] });
     await registry2.detect();
     expect(registry2.get("codex")!.authConfigured).toBe(true);
-  });
-
-  it("checks Gemini auth via GOOGLE_API_KEY", async () => {
-    const registry = createRegistry({ installedBinaries: ["gemini"] });
-    await registry.detect();
-    expect(registry.get("gemini")!.authConfigured).toBe(false);
-
-    process.env.GOOGLE_API_KEY = "test-google-key";
-    const registry2 = createRegistry({ installedBinaries: ["gemini"] });
-    await registry2.detect();
-    expect(registry2.get("gemini")!.authConfigured).toBe(true);
   });
 
   it("available() returns only installed + auth-configured agents", async () => {
@@ -118,15 +98,13 @@ describe("AgentRegistry", () => {
   });
 
   it("agents have correct metadata", async () => {
-    const registry = createRegistry({ installedBinaries: ["claude", "codex", "gemini"] });
+    const registry = createRegistry({ installedBinaries: ["claude", "codex"] });
     await registry.detect();
 
     expect(registry.get("claude")!.name).toBe("Claude Code");
     expect(registry.get("claude")!.binary).toBe("claude");
     expect(registry.get("codex")!.name).toBe("Codex");
     expect(registry.get("codex")!.binary).toBe("codex");
-    expect(registry.get("gemini")!.name).toBe("Gemini");
-    expect(registry.get("gemini")!.binary).toBe("gemini");
   });
 
   it("agents have capabilities", async () => {
@@ -143,7 +121,6 @@ describe("AgentRegistry", () => {
 describe("ALLOWED_ENV_KEYS", () => {
   it("contains expected keys", () => {
     expect(ALLOWED_ENV_KEYS.has("OPENAI_API_KEY")).toBe(true);
-    expect(ALLOWED_ENV_KEYS.has("GOOGLE_API_KEY")).toBe(true);
   });
 
   it("does not contain arbitrary keys", () => {
