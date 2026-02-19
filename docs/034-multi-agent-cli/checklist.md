@@ -14,13 +14,14 @@
 - [x] Tests for `ClaudeAdapter` and `tool-map` (20 tests)
 - [x] All existing tests pass (1168/1168)
 
-## Phase 2: Codex adapter
+## Phase 2: Codex adapter (Complete)
 
-- [ ] Create `src/server/agents/codex-adapter.ts` implementing `AgentProcess`
-- [ ] Parse Codex CLI NDJSON output into `AgentEvent`
-- [ ] Map Codex tool names (`shell`, `file_write`, `file_read`) to canonical names
-- [ ] Integration tests for Codex adapter
-- [ ] Update `agentFactory` to handle `codex` agent ID
+- [x] Create `src/server/agents/codex-adapter.ts` implementing `AgentProcess`
+- [x] Implement Codex App Server JSON-RPC 2.0 protocol (initialize, thread/start, turn/start)
+- [x] Map Codex tool names (`shell`, `file_write`, `file_read`, `file_edit`, `command`, `apply_diff`, `apply_patch`) to canonical names
+- [x] Integration tests for Codex adapter (10 tests in `codex-agent.test.ts`)
+- [x] Unit tests for CodexAdapter (23 tests in `codex-adapter.test.ts`)
+- [x] Update `agentFactory` to handle `codex` agent ID
 
 ## Phase 3: Agent picker UI
 
