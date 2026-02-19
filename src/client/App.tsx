@@ -37,7 +37,8 @@ import { FeaturesPanel } from "./components/FeaturesPanel.js";
 import { PullRequestModal } from "./components/PullRequestModal.js";
 import { PrStatusBar } from "./components/PrStatusBar.js";
 import { Toast, type ToastData } from "./components/Toast.js";
-import type { WsServerMessage, WsSessionRenamed, WsUsageUpdate, WsModelInfo, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, FeatureInfo, PermissionMode, FileContextRef, SessionInfo, AgentEvent, AgentContentBlock } from "../server/types.js";
+import { QueueIndicator } from "./components/QueueIndicator.js";
+import type { WsServerMessage, WsSessionRenamed, WsUsageUpdate, WsModelInfo, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse, WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, FeatureInfo, PermissionMode, FileContextRef, SessionInfo, AgentEvent, AgentContentBlock, WsMessageQueued, WsQueueUpdated } from "../server/types.js";
 
 type RightTab = "preview" | "docs" | "files" | "terminal" | "features";
 
@@ -160,6 +161,7 @@ export default function App() {
   } | null>(null);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(getSavedPermissionMode());
   const [pendingFiles, setPendingFiles] = useState<FileContextRef[]>([]);
+  const [queuedMessages, setQueuedMessages] = useState<Array<{ text: string; position: number }>>([]);
   const [toast, setToast] = useState<ToastData | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(getSavedSidebarCollapsed());
   const sessionIdRef = useRef<string | undefined>(urlSessionId);
@@ -297,6 +299,7 @@ export default function App() {
       setMessages([]);
       setIsLoading(false);
       setShowTemplates(false);
+      setQueuedMessages([]);
       // Reset session-specific UI state (each session has its own workspace)
       setViewingFile(null);
       setViewingFileContent(null);
@@ -353,6 +356,7 @@ export default function App() {
       setActiveThreadId("");
       setShellStarted(false);
       setTerminalMode("logs");
+      setQueuedMessages([]);
     }
   }, [urlSessionId, resumeSessionInternal]);
 
@@ -964,6 +968,41 @@ export default function App() {
       setFeatures(data.features);
     }
 
+    if (data.type === "message_queued") {
+      const queued = data as WsMessageQueued;
+      setQueuedMessages((prev) => [...prev, { text: queued.text, position: queued.position }]);
+      // Add the queued message to the chat list with queued=true
+      setMessages((prev) => [...prev, { role: "user" as const, text: queued.text, queued: true, queuePosition: queued.position }]);
+    }
+
+    if (data.type === "queue_updated") {
+      const update = data as WsQueueUpdated;
+      setQueuedMessages(update.queue);
+      // Sync queued state on chat messages: remove queued flag from items no longer in queue
+      if (update.queue.length === 0) {
+        // All queued items are now either executing or cancelled — clear queued flags
+        setMessages((prev) =>
+          prev.map((m) => (m.queued ? { ...m, queued: false, queuePosition: undefined } : m))
+        );
+      } else {
+        // Keep only the first queued message as "currently executing" (no queued flag)
+        // Others remain queued with updated positions
+        const queueTexts = new Set(update.queue.map((q) => q.text));
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (!m.queued) return m;
+            if (!queueTexts.has(m.text)) {
+              // This message was either dequeued for execution or cancelled
+              return { ...m, queued: false, queuePosition: undefined };
+            }
+            // Update position from server's authoritative queue
+            const queueItem = update.queue.find((q) => q.text === m.text);
+            return queueItem ? { ...m, queuePosition: queueItem.position } : m;
+          })
+        );
+      }
+    }
+
     if (data.type === "log_entry") {
       setLogEntries((prev) => {
         const next = [...prev, { source: data.source, text: data.text, timestamp: data.timestamp }];
@@ -1425,6 +1464,13 @@ export default function App() {
     send({ type: "cancel_deploy" });
   }, [send]);
 
+  const handleCancelQueued = useCallback(
+    (position: number | "all") => {
+      send({ type: "cancel_queued_message", position });
+    },
+    [send],
+  );
+
   const handleDeployGetHistory = useCallback(() => {
     send({ type: "get_deploy_history" });
   }, [send]);
@@ -1794,10 +1840,16 @@ export default function App() {
       {!showHomeScreen && (
         <StatusBar modelInfo={modelInfo} contextTokens={contextTokens} />
       )}
+      {!showHomeScreen && queuedMessages.length > 0 && (
+        <QueueIndicator
+          queue={queuedMessages}
+          onCancel={handleCancelQueued}
+        />
+      )}
       {!showHomeScreen && (
         <MessageInput
           onSend={handleSend}
-          disabled={isLoading || status !== "open"}
+          disabled={status !== "open"}
           permissionMode={permissionMode}
           onPermissionModeChange={handlePermissionModeChange}
           pendingFiles={pendingFiles}
