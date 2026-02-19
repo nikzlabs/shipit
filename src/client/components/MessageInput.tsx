@@ -18,6 +18,8 @@ const MAX_IMAGES = 5;
 export function MessageInput({
   onSend,
   disabled,
+  isLoading = false,
+  onInterrupt,
   permissionMode = "auto",
   onPermissionModeChange,
   pendingFiles = [],
@@ -27,6 +29,8 @@ export function MessageInput({
 }: {
   onSend: (text: string, images?: Array<{ data: string; mediaType: string; filename: string }>) => void;
   disabled: boolean;
+  isLoading?: boolean;
+  onInterrupt?: () => void;
   permissionMode?: PermissionMode;
   onPermissionModeChange?: (mode: PermissionMode) => void;
   pendingFiles?: FileContextRef[];
@@ -365,13 +369,27 @@ export function MessageInput({
           rows={1}
           className="flex-1 resize-none rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 field-sizing-content"
         />
-        <button
-          onClick={handleSubmit}
-          disabled={disabled || (!text.trim() && images.length === 0)}
-          className="rounded-lg bg-blue-600 px-4 py-3 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          Send
-        </button>
+        {isLoading && onInterrupt ? (
+          <button
+            onClick={onInterrupt}
+            className="rounded-lg bg-red-600 px-4 py-3 text-sm font-medium text-white hover:bg-red-500 transition-colors"
+            title="Stop (Esc)"
+            aria-label="Stop Claude"
+            data-testid="stop-button"
+          >
+            <svg className="w-4 h-4" viewBox="0 0 16 16" fill="currentColor">
+              <rect x="3" y="3" width="10" height="10" rx="1" />
+            </svg>
+          </button>
+        ) : (
+          <button
+            onClick={handleSubmit}
+            disabled={disabled || (!text.trim() && images.length === 0)}
+            className="rounded-lg bg-blue-600 px-4 py-3 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            Send
+          </button>
+        )}
       </div>
     </div>
   );

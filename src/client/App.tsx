@@ -1035,6 +1035,27 @@ export default function App() {
       }
     }
 
+    if (data.type === "claude_interrupted") {
+      setIsLoading(false);
+      setActivity(undefined);
+      setQueuedMessages([]);
+      // Mark any streaming assistant message as complete with an interrupted note
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (last?.role === "assistant" && last.streaming) {
+          return [
+            ...prev.slice(0, -1),
+            {
+              ...last,
+              streaming: false,
+              text: last.text + "\n\n_(Interrupted by user)_",
+            },
+          ];
+        }
+        return prev;
+      });
+    }
+
     if (data.type === "log_entry") {
       setLogEntries((prev) => {
         const next = [...prev, { source: data.source, text: data.text, timestamp: data.timestamp }];
@@ -1216,6 +1237,25 @@ export default function App() {
     },
     [send, requestPermission, permissionMode, pendingFiles]
   );
+
+  const handleInterrupt = useCallback(() => {
+    send({ type: "interrupt_claude" });
+    // Don't set isLoading = false yet — wait for server confirmation
+  }, [send]);
+
+  // Escape key to interrupt Claude while loading (only when not typing in an input or overlay open)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isLoading && !searchOpen && !shortcutsOpen && !settingsOpen) {
+        const tag = (e.target as HTMLElement)?.tagName;
+        if (tag === "INPUT" || tag === "SELECT") return;
+        e.preventDefault();
+        handleInterrupt();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isLoading, searchOpen, shortcutsOpen, settingsOpen, handleInterrupt]);
 
   const handleEditMessage = useCallback(
     (messageIndex: number, newText: string) => {
@@ -1894,6 +1934,8 @@ export default function App() {
         <MessageInput
           onSend={handleSend}
           disabled={status !== "open"}
+          isLoading={isLoading}
+          onInterrupt={handleInterrupt}
           permissionMode={permissionMode}
           onPermissionModeChange={handlePermissionModeChange}
           pendingFiles={pendingFiles}

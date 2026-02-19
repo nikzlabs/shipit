@@ -115,6 +115,8 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
   run(params: AgentRunParams): void;
   /** Write data to the running process's stdin. */
   writeStdin(data: string): void;
+  /** Interrupt the running process (Ctrl+C equivalent). Falls back to kill. */
+  interrupt(): void;
   /** Kill the running process. */
   kill(): void;
 }

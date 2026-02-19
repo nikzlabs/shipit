@@ -66,6 +66,10 @@ class FakeCodexProcess extends EventEmitter<AgentProcessEvents> implements Agent
     // no-op for tests
   }
 
+  interrupt(): void {
+    this.kill();
+  }
+
   kill(): void {
     this.killed = true;
   }
