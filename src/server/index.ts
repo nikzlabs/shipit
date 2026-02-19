@@ -28,6 +28,7 @@ import { TerminalProcess } from "./terminal.js";
 import { generateSessionName } from "./session-namer.js";
 import { ClaudeAdapter } from "./agents/claude-adapter.js";
 import { CodexAdapter } from "./agents/codex-adapter.js";
+import { AgentRegistry, ALLOWED_ENV_KEYS } from "./agents/agent-registry.js";
 import type { AgentId, AgentEvent, AgentProcess } from "./agents/agent-process.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry, ClaudeEvent, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment, FileAttachment, FileContextRef, PermissionMode } from "./types.js";
 
@@ -319,6 +320,11 @@ export interface AppDeps {
    * Defaults to 5000 (5 seconds). Set lower in tests to avoid long waits.
    */
   autoPushDebounceMs?: number;
+  /**
+   * Agent registry instance. Defaults to a new `AgentRegistry()` with
+   * auto-detection at startup.
+   */
+  agentRegistry?: AgentRegistry;
 }
 
 /**
@@ -382,6 +388,17 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const authManager = deps.authManager ?? new AuthManager();
   const hasCredentials = authManager.checkCredentials();
   console.log("[server] Claude credentials found:", hasCredentials);
+
+  // ---- Agent registry ----
+  const agentRegistry = deps.agentRegistry ?? new AgentRegistry({
+    checkClaudeAuth: () => authManager.checkCredentials(),
+  });
+  await agentRegistry.detect();
+  const detectedAgents = agentRegistry.list();
+  const installedStr = detectedAgents.map((a) => `${a.binary} ${a.installed ? "\u2713" : "\u2717"}`).join(", ");
+  const authStr = detectedAgents.map((a) => `${a.binary} ${a.authConfigured ? "\u2713" : "\u2717"}`).join(", ");
+  console.log(`[server] Agent CLIs detected: ${installedStr}`);
+  console.log(`[server] Agent auth status: ${authStr}`);
 
   // ---- GitHub auth manager ----
   const githubAuthManager = deps.githubAuthManager ?? new GitHubAuthManager(workspaceDir);
@@ -1580,12 +1597,59 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       }
 
       if (msg.type === "set_agent") {
-        const validAgentIds: AgentId[] = ["claude", "codex", "gemini"];
-        if (!validAgentIds.includes(msg.agentId)) {
+        const info = agentRegistry.get(msg.agentId);
+        if (!info) {
           send({ type: "error", message: `Unknown agent: ${msg.agentId}` });
           return;
         }
+        if (!info.installed) {
+          send({ type: "error", message: `${info.name} CLI is not installed in this environment` });
+          return;
+        }
+        if (!info.authConfigured) {
+          const envKey = msg.agentId === "codex" ? "OPENAI_API_KEY" : msg.agentId === "gemini" ? "GOOGLE_API_KEY" : "";
+          send({ type: "error", message: `${envKey || "API key"} is not set. Add it in Settings \u2192 Agents.` });
+          return;
+        }
         activeAgentId = msg.agentId;
+      }
+
+      if (msg.type === "list_agents") {
+        const agents = agentRegistry.list().map((a) => ({
+          id: a.id,
+          name: a.name,
+          installed: a.installed,
+          authConfigured: a.authConfigured,
+          models: a.capabilities.models,
+        }));
+        send({ type: "agent_list", agents, defaultAgentId });
+      }
+
+      if (msg.type === "set_agent_env") {
+        if (!msg.agentId || !msg.key || typeof msg.value !== "string") {
+          send({ type: "error", message: "Invalid set_agent_env request" });
+          return;
+        }
+        if (!ALLOWED_ENV_KEYS.has(msg.key)) {
+          send({ type: "error", message: `Environment variable ${msg.key} is not in the allowlist` });
+          return;
+        }
+        if (msg.value.trim().length === 0) {
+          send({ type: "error", message: "Value cannot be empty" });
+          return;
+        }
+        process.env[msg.key] = msg.value;
+        agentRegistry.refreshAuth(msg.agentId);
+        send({ type: "agent_env_set", agentId: msg.agentId, key: msg.key, success: true });
+        // Send updated agent list so client can refresh UI
+        const agents = agentRegistry.list().map((a) => ({
+          id: a.id,
+          name: a.name,
+          installed: a.installed,
+          authConfigured: a.authConfigured,
+          models: a.capabilities.models,
+        }));
+        send({ type: "agent_list", agents, defaultAgentId });
       }
 
       if (msg.type === "list_features") {

@@ -138,6 +138,7 @@ export default function App() {
   const [lastDeployError, setLastDeployError] = useState<string | null>(null);
   const [deployHistory, setDeployHistory] = useState<DeploymentRecord[]>([]);
   const [features, setFeatures] = useState<FeatureInfo[]>([]);
+  const [agentList, setAgentList] = useState<Array<{ id: string; name: string; installed: boolean; authConfigured: boolean; models: string[] }>>([]);
   const [showPRModal, setShowPRModal] = useState(false);
   const [prCurrentBranch, setPrCurrentBranch] = useState("");
   const [prRemoteBranches, setPrRemoteBranches] = useState<string[]>([]);
@@ -653,6 +654,10 @@ export default function App() {
 
     if (data.type === "auth_complete") {
       setAuthUrl(null);
+    }
+
+    if (data.type === "agent_list") {
+      setAgentList(data.agents);
     }
 
     if (data.type === "git_identity_required") {
@@ -1878,6 +1883,9 @@ export default function App() {
           authUrl={authUrl}
           onApiKey={(key) => send({ type: "set_api_key", key })}
           onClearApiKey={() => send({ type: "clear_api_key" })}
+          agentList={agentList}
+          onSetAgentEnv={(agentId, key, value) => send({ type: "set_agent_env", agentId, key, value })}
+          onRequestAgentList={() => send({ type: "list_agents" })}
           onClose={() => setSettingsOpen(false)}
         />
       )}
