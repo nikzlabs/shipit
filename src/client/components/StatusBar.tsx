@@ -6,6 +6,7 @@ export interface ModelInfo {
 interface StatusBarProps {
   modelInfo: ModelInfo | null;
   contextTokens: number;
+  agentName?: string;
 }
 
 /** Convert CLI model ID to a human-readable display name. */
@@ -41,7 +42,7 @@ const levelColors: Record<ContextLevel, { bar: string; text: string }> = {
   red: { bar: "bg-red-500", text: "text-red-400" },
 };
 
-export function StatusBar({ modelInfo, contextTokens }: StatusBarProps) {
+export function StatusBar({ modelInfo, contextTokens, agentName }: StatusBarProps) {
   if (!modelInfo) return null;
 
   const percentage = modelInfo.contextWindowTokens > 0
@@ -55,6 +56,14 @@ export function StatusBar({ modelInfo, contextTokens }: StatusBarProps) {
       className="flex items-center gap-3 px-4 py-1 border-t border-gray-200 dark:border-gray-800 text-xs text-gray-500 dark:text-gray-400"
       data-testid="status-bar"
     >
+      {agentName && agentName !== "Claude Code" && (
+        <>
+          <span className="font-medium text-gray-600 dark:text-gray-300" data-testid="agent-name">
+            {agentName}
+          </span>
+          <span className="text-gray-400 dark:text-gray-600">/</span>
+        </>
+      )}
       <span className="font-medium text-gray-600 dark:text-gray-300" data-testid="model-name">
         {formatModelName(modelInfo.model)}
       </span>
