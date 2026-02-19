@@ -18,6 +18,7 @@ import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../auth.js";
 import { ViteManager } from "../vite-manager.js";
 import { FileWatcher } from "../file-watcher.js";
+import { AgentRegistry } from "../agents/agent-registry.js";
 import type { FastifyInstance } from "fastify";
 import type { WsServerMessage } from "../types.js";
 import type {
@@ -118,15 +119,27 @@ describe("Integration: Codex agent — set_agent and message flow", () => {
   let chatHistoryManager: ChatHistoryManager;
   let lastClaude: FakeClaudeProcess = null as any;
   let lastCodex: FakeCodexProcess = null as any;
+  let savedOpenAIKey: string | undefined;
 
   beforeEach(async () => {
     lastClaude = null as any;
     lastCodex = null as any;
+    savedOpenAIKey = process.env.OPENAI_API_KEY;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-codex-agent-"));
 
     const sessionsFile = path.join(tmpDir, "sessions.json");
     sessionManager = new SessionManager(sessionsFile);
     chatHistoryManager = new ChatHistoryManager(path.join(tmpDir, "chat-history"));
+
+    // Create registry that reports codex as installed and auth-configured
+    const registry = new AgentRegistry({
+      checkBinary: async (binary) => binary === "claude" || binary === "codex",
+      checkClaudeAuth: () => true,
+    });
+    await registry.detect();
+    // Set OPENAI_API_KEY so codex auth check passes
+    process.env.OPENAI_API_KEY = "test-key-for-codex";
+    registry.refreshAuth("codex");
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
@@ -134,6 +147,7 @@ describe("Integration: Codex agent — set_agent and message flow", () => {
       chatHistoryManager,
       viteManager: new StubViteManager() as unknown as ViteManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
+      agentRegistry: registry,
       agentFactory: (agentId: AgentId) => {
         if (agentId === "codex") {
           lastCodex = new FakeCodexProcess();
@@ -184,6 +198,8 @@ describe("Integration: Codex agent — set_agent and message flow", () => {
   afterEach(async () => {
     await app.close();
     await new Promise((r) => setTimeout(r, 50));
+    if (savedOpenAIKey !== undefined) process.env.OPENAI_API_KEY = savedOpenAIKey;
+    else delete process.env.OPENAI_API_KEY;
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     } catch {

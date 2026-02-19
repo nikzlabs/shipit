@@ -23,6 +23,19 @@
 - [x] Unit tests for CodexAdapter (23 tests in `codex-adapter.test.ts`)
 - [x] Update `agentFactory` to handle `codex` agent ID
 
+## Phase 2.5: Container setup & runtime integration (Complete — feature 035)
+
+- [x] Install `@openai/codex` in Docker images (`Dockerfile.dev`, `Dockerfile.prod`)
+- [x] Binary guard in `CodexAdapter.run()` — emits error if `codex` not on `$PATH`
+- [x] `AgentRegistry` for runtime detection of installed CLIs and auth status (`src/server/agents/agent-registry.ts`)
+- [x] `list_agents` / `agent_list` WS messages for querying agent availability
+- [x] `set_agent_env` / `agent_env_set` WS messages with allowlisted env vars
+- [x] Enhanced `set_agent` validation via AgentRegistry (installed + auth checks)
+- [x] Codex API key input in ProjectSettings Agent tab
+- [x] Unit tests for AgentRegistry (12 tests)
+- [x] Integration tests for agent registry WS messages (6 tests)
+- [x] Component tests for Codex/Gemini settings sections (15 tests)
+
 ## Phase 3: Agent picker UI
 
 - [ ] Agent selector dropdown in `MessageInput` or `StatusBar`

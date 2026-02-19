@@ -153,6 +153,109 @@ describe("ProjectSettings - Agent tab", () => {
     render(<ProjectSettings {...defaultProps} authUrl="https://auth.example.com" />);
     expect(screen.queryByTestId("project-settings-clear-api-key")).not.toBeInTheDocument();
   });
+
+  it("calls onRequestAgentList on mount", () => {
+    const onRequestAgentList = vi.fn();
+    render(<ProjectSettings {...defaultProps} onRequestAgentList={onRequestAgentList} />);
+    expect(onRequestAgentList).toHaveBeenCalledOnce();
+  });
+});
+
+describe("ProjectSettings - Codex agent section", () => {
+  const codexInstalled = {
+    id: "codex",
+    name: "Codex",
+    installed: true,
+    authConfigured: false,
+    models: ["codex-mini-latest"],
+  };
+
+  const codexAuthenticated = {
+    ...codexInstalled,
+    authConfigured: true,
+  };
+
+  const codexNotInstalled = {
+    id: "codex",
+    name: "Codex",
+    installed: false,
+    authConfigured: false,
+    models: ["codex-mini-latest"],
+  };
+
+  it("shows Codex section when codex is in agentList", () => {
+    render(<ProjectSettings {...defaultProps} agentList={[codexInstalled]} />);
+    expect(screen.getByTestId("codex-agent-section")).toBeInTheDocument();
+    expect(screen.getByText("Codex")).toBeInTheDocument();
+  });
+
+  it("does not show Codex section when agentList is empty", () => {
+    render(<ProjectSettings {...defaultProps} agentList={[]} />);
+    expect(screen.queryByTestId("codex-agent-section")).not.toBeInTheDocument();
+  });
+
+  it("shows 'Not installed' when codex is not installed", () => {
+    render(<ProjectSettings {...defaultProps} agentList={[codexNotInstalled]} />);
+    expect(screen.getByText("Not installed")).toBeInTheDocument();
+  });
+
+  it("shows 'API key not set' when installed but not auth-configured", () => {
+    render(<ProjectSettings {...defaultProps} agentList={[codexInstalled]} />);
+    expect(screen.getByText("API key not set")).toBeInTheDocument();
+  });
+
+  it("shows 'Authenticated' when installed and auth-configured", () => {
+    render(<ProjectSettings {...defaultProps} agentList={[codexAuthenticated]} />);
+    expect(screen.getAllByText("Authenticated")).toHaveLength(2); // Claude + Codex
+  });
+
+  it("shows API key input when installed but not auth-configured", () => {
+    render(<ProjectSettings {...defaultProps} agentList={[codexInstalled]} />);
+    expect(screen.getByTestId("codex-api-key-input")).toBeInTheDocument();
+    expect(screen.getByTestId("codex-api-key-input")).toHaveAttribute("type", "password");
+  });
+
+  it("hides API key input when auth is already configured", () => {
+    render(<ProjectSettings {...defaultProps} agentList={[codexAuthenticated]} />);
+    expect(screen.queryByTestId("codex-api-key-input")).not.toBeInTheDocument();
+  });
+
+  it("hides API key input when codex is not installed", () => {
+    render(<ProjectSettings {...defaultProps} agentList={[codexNotInstalled]} />);
+    expect(screen.queryByTestId("codex-api-key-input")).not.toBeInTheDocument();
+  });
+
+  it("Save button is disabled when codex key input is empty", () => {
+    render(<ProjectSettings {...defaultProps} agentList={[codexInstalled]} />);
+    expect(screen.getByTestId("codex-api-key-submit")).toBeDisabled();
+  });
+
+  it("calls onSetAgentEnv when Save is clicked with a key", () => {
+    const onSetAgentEnv = vi.fn();
+    render(<ProjectSettings {...defaultProps} agentList={[codexInstalled]} onSetAgentEnv={onSetAgentEnv} />);
+    const input = screen.getByTestId("codex-api-key-input");
+    fireEvent.change(input, { target: { value: "sk-test-key" } });
+    fireEvent.click(screen.getByTestId("codex-api-key-submit"));
+    expect(onSetAgentEnv).toHaveBeenCalledWith("codex", "OPENAI_API_KEY", "sk-test-key");
+  });
+
+  it("calls onSetAgentEnv on Enter in codex key input", () => {
+    const onSetAgentEnv = vi.fn();
+    render(<ProjectSettings {...defaultProps} agentList={[codexInstalled]} onSetAgentEnv={onSetAgentEnv} />);
+    const input = screen.getByTestId("codex-api-key-input");
+    fireEvent.change(input, { target: { value: "sk-test-key" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSetAgentEnv).toHaveBeenCalledWith("codex", "OPENAI_API_KEY", "sk-test-key");
+  });
+
+  it("clears codex key input after submit", () => {
+    const onSetAgentEnv = vi.fn();
+    render(<ProjectSettings {...defaultProps} agentList={[codexInstalled]} onSetAgentEnv={onSetAgentEnv} />);
+    const input = screen.getByTestId("codex-api-key-input");
+    fireEvent.change(input, { target: { value: "sk-test-key" } });
+    fireEvent.click(screen.getByTestId("codex-api-key-submit"));
+    expect(input).toHaveValue("");
+  });
 });
 
 describe("ProjectSettings - GitHub tab", () => {
@@ -330,6 +433,27 @@ describe("ProjectSettings - Instructions tab", () => {
     });
     fireEvent.click(screen.getByTestId("project-settings-save"));
     expect(onSaveInstructions).toHaveBeenCalledWith("");
+  });
+});
+
+describe("ProjectSettings - Gemini agent section", () => {
+  const geminiNotInstalled = {
+    id: "gemini",
+    name: "Gemini",
+    installed: false,
+    authConfigured: false,
+    models: [],
+  };
+
+  it("shows Gemini section when gemini is in agentList", () => {
+    render(<ProjectSettings {...defaultProps} agentList={[geminiNotInstalled]} />);
+    expect(screen.getByTestId("gemini-agent-section")).toBeInTheDocument();
+    expect(screen.getByText("Gemini")).toBeInTheDocument();
+  });
+
+  it("shows 'Not installed' for gemini when not installed", () => {
+    render(<ProjectSettings {...defaultProps} agentList={[geminiNotInstalled]} />);
+    expect(screen.getByText("Not installed")).toBeInTheDocument();
   });
 });
 

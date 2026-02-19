@@ -379,6 +379,19 @@ export interface WsClearApiKey {
   type: "clear_api_key";
 }
 
+// ---- Agent registry messages ----
+
+export interface WsListAgentsMessage {
+  type: "list_agents";
+}
+
+export interface WsSetAgentEnvMessage {
+  type: "set_agent_env";
+  agentId: import("./agents/agent-process.js").AgentId;
+  key: string;
+  value: string;
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsGetGitLog
@@ -438,7 +451,9 @@ export type WsClientMessage =
   | WsCancelQueuedMessage
   | WsForkSession
   | WsListWorktrees
-  | WsMergeSession;
+  | WsMergeSession
+  | WsListAgentsMessage
+  | WsSetAgentEnvMessage;
 
 export interface WsClaudeEvent {
   type: "claude_event";
@@ -1043,6 +1058,27 @@ export interface WsDeployHistory {
   deployments: DeploymentRecord[];
 }
 
+// ---- Agent registry server messages ----
+
+export interface WsAgentListMessage {
+  type: "agent_list";
+  agents: Array<{
+    id: import("./agents/agent-process.js").AgentId;
+    name: string;
+    installed: boolean;
+    authConfigured: boolean;
+    models: string[];
+  }>;
+  defaultAgentId: import("./agents/agent-process.js").AgentId;
+}
+
+export interface WsAgentEnvSetMessage {
+  type: "agent_env_set";
+  agentId: import("./agents/agent-process.js").AgentId;
+  key: string;
+  success: boolean;
+}
+
 export type WsServerMessage =
   | WsClaudeEvent
   | WsAgentEvent
@@ -1101,4 +1137,6 @@ export type WsServerMessage =
   | WsQueueUpdated
   | WsSessionForked
   | WsWorktreeList
-  | WsMergeResult;
+  | WsMergeResult
+  | WsAgentListMessage
+  | WsAgentEnvSetMessage;

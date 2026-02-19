@@ -65,6 +65,10 @@ vi.mock("node:child_process", () => ({
     fakeProc = new FakeChildProcess();
     return fakeProc;
   },
+  execFileSync: () => {
+    // Simulate `which codex` succeeding (binary found)
+    return Buffer.from("/usr/local/bin/codex\n");
+  },
 }));
 
 describe("CodexAdapter", () => {
