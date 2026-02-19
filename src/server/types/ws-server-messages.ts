@@ -272,6 +272,14 @@ export interface WsFullResetComplete {
   type: "full_reset_complete";
 }
 
+/** Server → Client: install command status update. */
+export interface WsInstallStatus {
+  type: "install_status";
+  status: "running" | "complete" | "error";
+  /** Human-readable message (e.g. error details). */
+  message?: string;
+}
+
 export type WsServerMessage =
   | WsClaudeEvent
   | WsAgentEvent
@@ -333,4 +341,5 @@ export type WsServerMessage =
   | WsAgentListMessage
   | WsAgentEnvSetMessage
   | WsClaudeInterrupted
-  | WsFullResetComplete;
+  | WsFullResetComplete
+  | WsInstallStatus;

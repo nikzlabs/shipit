@@ -44,7 +44,7 @@ export interface WsTerminalExit {
 export interface WsLogEntry {
   type: "log_entry";
   /** Where the log line originated. */
-  source: "stderr" | "stdout" | "server" | "preview" | "deploy";
+  source: "stderr" | "stdout" | "server" | "preview" | "deploy" | "install";
   text: string;
   timestamp: string;
 }
