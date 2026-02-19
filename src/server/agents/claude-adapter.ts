@@ -136,6 +136,10 @@ export class ClaudeAdapter
     this.inner.writeStdin(data);
   }
 
+  interrupt(): void {
+    this.inner.interrupt();
+  }
+
   kill(): void {
     this.inner.kill();
   }

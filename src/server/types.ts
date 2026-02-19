@@ -379,6 +379,13 @@ export interface WsClearApiKey {
   type: "clear_api_key";
 }
 
+// ---- Interrupt messages ----
+
+/** Client → Server: interrupt the currently running Claude process. */
+export interface WsInterruptClaude {
+  type: "interrupt_claude";
+}
+
 // ---- Agent registry messages ----
 
 export interface WsListAgentsMessage {
@@ -452,6 +459,7 @@ export type WsClientMessage =
   | WsForkSession
   | WsListWorktrees
   | WsMergeSession
+  | WsInterruptClaude
   | WsListAgentsMessage
   | WsSetAgentEnvMessage;
 
@@ -1079,6 +1087,11 @@ export interface WsAgentEnvSetMessage {
   success: boolean;
 }
 
+/** Server → Client: Claude was interrupted by user. */
+export interface WsClaudeInterrupted {
+  type: "claude_interrupted";
+}
+
 export type WsServerMessage =
   | WsClaudeEvent
   | WsAgentEvent
@@ -1139,4 +1152,5 @@ export type WsServerMessage =
   | WsWorktreeList
   | WsMergeResult
   | WsAgentListMessage
-  | WsAgentEnvSetMessage;
+  | WsAgentEnvSetMessage
+  | WsClaudeInterrupted;

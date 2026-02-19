@@ -130,6 +130,27 @@ export class ClaudeProcess extends EventEmitter {
     }
   }
 
+  /** Send Ctrl+C to the running process, with a force-kill fallback after 5s. */
+  interrupt(): void {
+    if (!this.proc) return;
+
+    // Send Ctrl+C (ETX) character to the PTY
+    this.proc.write("\x03");
+
+    // If the process doesn't exit within 5 seconds, force kill
+    const forceKillTimer = setTimeout(() => {
+      if (this.proc) {
+        console.warn("[claude] Force killing process after interrupt timeout");
+        this.kill();
+      }
+    }, 5000);
+
+    // Clear the force-kill timer when the process exits normally
+    this.proc.onExit(() => {
+      clearTimeout(forceKillTimer);
+    });
+  }
+
   /** Kill the running process if any. */
   kill(): void {
     if (this.watchdog) {
