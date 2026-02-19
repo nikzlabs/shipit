@@ -278,6 +278,7 @@ export class FakeClaudeProcess extends EventEmitter {
   public lastCwd: string | undefined;
   public lastPermissionMode: string | undefined;
   public killed = false;
+  public interrupted = false;
   public stdinData: string[] = [];
 
   run(prompt: string, sessionId?: string, systemPrompt?: string, images?: Array<{ data: string; mediaType: string; filename?: string }>, cwd?: string, permissionMode?: string) {
@@ -292,6 +293,12 @@ export class FakeClaudeProcess extends EventEmitter {
 
   kill() {
     this.killed = true;
+  }
+
+  interrupt() {
+    this.interrupted = true;
+    // Simulate the process exiting after interrupt (non-zero exit code)
+    setTimeout(() => this.emit("done", 1), 10);
   }
 
   writeStdin(data: string) {

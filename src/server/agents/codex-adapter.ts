@@ -194,6 +194,11 @@ export class CodexAdapter
     }
   }
 
+  interrupt(): void {
+    // Codex doesn't have a graceful interrupt — just kill the process
+    this.kill();
+  }
+
   kill(): void {
     if (this.proc) {
       this.proc.kill("SIGTERM");

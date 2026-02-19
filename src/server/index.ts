@@ -732,6 +732,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       permissionMode?: PermissionMode;
     }> = [];
     let isClaudeRunning = false;
+    /** Set when user sends interrupt_claude, cleared when a new Claude process starts. */
+    let wasInterrupted = false;
     // Accumulate the assistant response across streaming events for persistence
     let accumulatedText = "";
     let accumulatedToolUse: Array<{ type: "tool_use"; id: string; name: string; input: Record<string, unknown> }> = [];
@@ -837,6 +839,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       accumulatedText = "";
       accumulatedToolUse = [];
       let receivedResult = false;
+      wasInterrupted = false;
       claude = agentFactory(activeAgentId);
       const currentAgent = claude;
 
@@ -988,7 +991,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
         // If the process exited without producing a result event, notify the
         // client so it can clear the loading state instead of hanging forever.
-        if (!receivedResult) {
+        // Don't show an error for user-initiated interrupts.
+        if (!receivedResult && !wasInterrupted) {
           const reason = code !== 0
             ? `Agent process exited with code ${code}`
             : "Agent process ended without a response";
@@ -1018,8 +1022,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         await runPortScan();
 
         // Mark Claude as no longer running, then process the next queued message
+        // If interrupted, clear the queue instead of dequeuing — the user wants to redirect.
         isClaudeRunning = false;
-        if (messageQueue.length > 0) {
+        if (wasInterrupted && messageQueue.length > 0) {
+          messageQueue.length = 0;
+          send({ type: "queue_updated", queue: [] });
+        }
+        if (!wasInterrupted && messageQueue.length > 0) {
           const next = messageQueue.shift()!;
           // Notify the client that the queue is now one shorter
           send({
@@ -1248,6 +1257,20 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           type: "queue_updated",
           queue: messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 })),
         });
+      }
+
+      if (msg.type === "interrupt_claude") {
+        if (claude) {
+          wasInterrupted = true;
+          claude.interrupt();
+          broadcastLog("server", "Claude process interrupted by user");
+          // Send claude_interrupted immediately so the client can update UI
+          // before the process fully exits. The "done" handler will still fire
+          // and handle auto-commit, port scan, etc.
+          send({ type: "claude_interrupted" });
+        } else {
+          send({ type: "error", message: "No active Claude process to interrupt" });
+        }
       }
 
       if (msg.type === "get_git_log") {
