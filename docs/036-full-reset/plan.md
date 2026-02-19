@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 ---
 
 # 036 — Full Reset (Wipe Container State)
