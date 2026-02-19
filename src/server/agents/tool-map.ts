@@ -31,8 +31,12 @@ const CLAUDE_TOOL_MAP: Record<string, CanonicalTool> = {
 
 const CODEX_TOOL_MAP: Record<string, CanonicalTool> = {
   shell: "shell",
+  command: "shell",
   file_write: "file_write",
   file_read: "file_read",
+  file_edit: "file_edit",
+  apply_diff: "file_edit",
+  apply_patch: "file_edit",
 };
 
 const GEMINI_TOOL_MAP: Record<string, CanonicalTool> = {
