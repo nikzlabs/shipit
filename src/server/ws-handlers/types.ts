@@ -1,4 +1,4 @@
-import type { WsServerMessage, WsLogEntry, ImageAttachment, FileContextRef, PermissionMode } from "../types.js";
+import type { WsServerMessage, WsLogEntry, ImageAttachment, FileContextRef, PermissionMode, ClaudeContentBlockToolUse } from "../types.js";
 import type { GitManager } from "../git.js";
 import type { SessionManager } from "../sessions.js";
 import type { ChatHistoryManager } from "../chat-history.js";
@@ -45,12 +45,23 @@ export interface HandlerContext {
   activateSession: (sessionId: string) => void;
 
   // Agent/claude state
+  agentFactory: (agentId: AgentId) => AgentProcess;
   getAgent: () => AgentProcess | null;
   setAgent: (a: AgentProcess | null) => void;
+  getActiveAgentId: () => AgentId;
+  setActiveAgentId: (id: AgentId) => void;
   getIsClaudeRunning: () => boolean;
   setIsClaudeRunning: (v: boolean) => void;
   getWasInterrupted: () => boolean;
   setWasInterrupted: (v: boolean) => void;
+
+  // Accumulated turn state
+  getTurnSummary: () => string;
+  setTurnSummary: (s: string) => void;
+  getAccumulatedText: () => string;
+  setAccumulatedText: (s: string) => void;
+  getAccumulatedToolUse: () => ClaudeContentBlockToolUse[];
+  setAccumulatedToolUse: (blocks: ClaudeContentBlockToolUse[]) => void;
 
   // Message queue
   getMessageQueue: () => QueuedMessage[];
@@ -83,6 +94,12 @@ export interface HandlerContext {
   createSessionDir: (title: string, opts?: { skipGitInit?: boolean }) => Promise<{ appSessionId: string; sessionDir: string }>;
   generateText: (prompt: string, cwd?: string) => Promise<string>;
   getSharedRepoDir: (repoUrl: string) => string;
+
+  // === Per-connection helpers ===
+  checkGitIdentity: (dir: string) => void;
+  readSystemPrompt: () => Promise<string | undefined>;
+  scheduleAutoPush: (git: GitManager, sendFn: (msg: WsServerMessage) => void) => void;
+  runPortScan: () => Promise<void>;
 
   // === Config ===
   workspaceDir: string;
