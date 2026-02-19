@@ -23,9 +23,11 @@
 - [x] Extract send-message.ts (send_message, home_send_with_repo, answer_question + runClaudeWithMessage)
 
 ## Split 3: App.tsx → custom hooks
-- [ ] Create `src/client/utils/local-storage.ts`
-- [ ] Create `src/client/hooks/useKeyboardShortcuts.ts`
-- [ ] Create `src/client/hooks/useConnectionSync.ts`
-- [ ] Create `src/client/hooks/useAutoFix.ts`
-- [ ] Create `src/client/hooks/useMessageHandler.ts`
-- [ ] Create `src/client/hooks/useAppCallbacks.ts`
+- [x] Create `src/client/utils/local-storage.ts` — localStorage helpers
+- [x] Create `src/client/hooks/useKeyboardShortcuts.ts` — Ctrl+F, ?, Escape handlers
+- [x] Create `src/client/hooks/useConnectionSync.ts` — reconnect, PR polling, template loading effects
+- [x] Create `src/client/hooks/useAutoFix.ts` — auto-fix preview error logic
+- [x] Create `src/client/hooks/useMessageHandler.ts` — WebSocket message processing
+- [x] Create `src/client/hooks/useAppCallbacks.ts` — all useCallback handlers
+- [x] Update `App.tsx` to use extracted hooks (~788 lines, down from 2,219)
+- [x] All tests pass (1,352 tests), typecheck clean, lint clean
