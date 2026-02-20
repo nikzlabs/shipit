@@ -58,8 +58,10 @@ export class SessionRunner extends EventEmitter {
   // Message queue
   private _messageQueue: QueuedMessage[] = [];
 
-  // Terminal (Phase 2 — stays per-connection for now)
+  // Terminal (per-session — survives connection drops)
   private _terminal: TerminalProcess | null = null;
+  private _terminalOutputBuffer = "";
+  private static readonly MAX_TERMINAL_BUFFER = 10_000;
 
   // Auto-push timer
   private _pushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -80,6 +82,9 @@ export class SessionRunner extends EventEmitter {
   private _fileWatcher: FileWatcher | null = null;
   private _createPreviewManager: (() => PreviewManager) | null;
   private _createFileWatcher: (() => FileWatcher) | null;
+
+  // Per-session detected ports (from port scanner)
+  private _detectedPorts: number[] = [];
 
   // Idle cleanup timer
   private _idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -161,6 +166,22 @@ export class SessionRunner extends EventEmitter {
   getTerminal(): TerminalProcess | null { return this._terminal; }
   setTerminal(t: TerminalProcess | null): void { this._terminal = t; }
 
+  /** Append data to the rolling terminal output buffer. */
+  appendTerminalOutput(data: string): void {
+    this._terminalOutputBuffer += data;
+    if (this._terminalOutputBuffer.length > SessionRunner.MAX_TERMINAL_BUFFER) {
+      this._terminalOutputBuffer = this._terminalOutputBuffer.slice(
+        -SessionRunner.MAX_TERMINAL_BUFFER
+      );
+    }
+  }
+
+  /** Get the buffered terminal output for reconnection replay. */
+  getTerminalOutputBuffer(): string { return this._terminalOutputBuffer; }
+
+  /** Clear the terminal output buffer. */
+  clearTerminalOutputBuffer(): void { this._terminalOutputBuffer = ""; }
+
   // --- Public API: Auto-push timer ---
 
   getPushTimer(): ReturnType<typeof setTimeout> | null { return this._pushTimer; }
@@ -201,6 +222,11 @@ export class SessionRunner extends EventEmitter {
     }
     this.emit("message", msg);
   }
+
+  // --- Public API: Detected ports (per-session) ---
+
+  get detectedPorts(): number[] { return this._detectedPorts; }
+  set detectedPorts(ports: number[]) { this._detectedPorts = ports; }
 
   // --- Public API: Viewer management ---
 
@@ -300,10 +326,10 @@ export class SessionRunner extends EventEmitter {
   }
 
   /** Build the current preview status message for this session. */
-  buildPreviewStatus(detectedPorts: number[] = []): WsServerMessage {
+  buildPreviewStatus(): WsServerMessage {
     if (this._preview?.running && this._preview.port) {
       const extraManagedPorts = this._preview.ports.slice(1);
-      const allDetected = [...extraManagedPorts, ...detectedPorts];
+      const allDetected = [...extraManagedPorts, ...this._detectedPorts];
       return {
         type: "preview_status",
         running: true,
@@ -313,14 +339,14 @@ export class SessionRunner extends EventEmitter {
         detectedPorts: allDetected.length > 0 ? allDetected : undefined,
       };
     }
-    if (detectedPorts.length > 0) {
+    if (this._detectedPorts.length > 0) {
       return {
         type: "preview_status",
         running: true,
-        port: detectedPorts[0],
-        url: `http://localhost:${detectedPorts[0]}`,
+        port: this._detectedPorts[0],
+        url: `http://localhost:${this._detectedPorts[0]}`,
         source: "detected",
-        detectedPorts,
+        detectedPorts: this._detectedPorts,
       };
     }
     return {

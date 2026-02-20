@@ -373,4 +373,74 @@ describe("Integration: persistent session runners", () => {
 
     client.close();
   });
+
+  it("multiple concurrent agents run across different sessions", async () => {
+    // Client 1 starts an agent in session 1
+    const client1 = await TestClient.connect(port);
+    await client1.receive(); // preview_status
+
+    client1.send({ type: "send_message", text: "Task for session 1" });
+    const claude1 = await waitForClaude(() => lastClaude);
+
+    claude1.emit("event", { type: "system", subtype: "init", session_id: "agent-session-c1" });
+    const session1Started = await drainUntil(client1, (m) => m.type === "session_started");
+    const session1Id = session1Started!.session.id;
+
+    // Create a second session manually
+    const session2Id = "concurrent-session-2-" + Date.now();
+    const session2Dir = path.join(tmpDir, "sessions", session2Id);
+    fs.mkdirSync(session2Dir, { recursive: true });
+    sessionManager.track(session2Id, "Session 2", session2Dir);
+
+    // Client 2 connects and switches to session 2
+    const client2 = await TestClient.connect(port);
+    await client2.receive(); // preview_status
+
+    client2.send({ type: "get_chat_history", sessionId: session2Id });
+    await drainUntil(client2, (m) => m.type === "chat_history");
+
+    // Client 2 starts a second agent in session 2 (must specify sessionId)
+    const prevClaude = lastClaude;
+    client2.send({ type: "send_message", text: "Task for session 2", sessionId: session2Id });
+    const claude2 = await waitForClaude(() => lastClaude, prevClaude);
+
+    claude2.emit("event", { type: "system", subtype: "init", session_id: "agent-session-c2" });
+
+    // Both agents should be running simultaneously
+    expect(claude1.killed).toBe(false);
+    expect(claude1.interrupted).toBe(false);
+    expect(claude2.killed).toBe(false);
+    expect(claude2.interrupted).toBe(false);
+    expect(claude1).not.toBe(claude2);
+
+    // Verify both sessions report running
+    client1.send({ type: "get_session_status", sessionId: session1Id } as any);
+    const status1 = await drainUntil(client1, (m) => m.type === "session_status" && m.sessionId === session1Id);
+    expect(status1!.running).toBe(true);
+
+    client2.send({ type: "get_session_status", sessionId: session2Id } as any);
+    const status2 = await drainUntil(client2, (m) => m.type === "session_status" && m.sessionId === session2Id);
+    expect(status2!.running).toBe(true);
+
+    // Finish session 1 — session 2 should still be running
+    claude1.finish("test-session-1");
+    await drainUntil(client1, (m) => m.type === "session_agent_finished");
+
+    expect(claude2.killed).toBe(false);
+    expect(claude2.interrupted).toBe(false);
+
+    // Verify session 1 stopped and session 2 still running
+    client1.send({ type: "get_session_status", sessionId: session1Id } as any);
+    const status1After = await drainUntil(client1, (m) => m.type === "session_status" && m.sessionId === session1Id);
+    expect(status1After!.running).toBe(false);
+
+    client2.send({ type: "get_session_status", sessionId: session2Id } as any);
+    const status2After = await drainUntil(client2, (m) => m.type === "session_status" && m.sessionId === session2Id);
+    expect(status2After!.running).toBe(true);
+
+    // Clean up
+    claude2.finish("test-session-2");
+    client1.close();
+    client2.close();
+  });
 });

@@ -14,7 +14,7 @@ import { ChatHistoryManager } from "./chat-history.js";
 import { scanPorts, snapshotBaselinePorts, DEFAULT_SCAN_PORTS } from "./port-scanner.js";
 import { UsageManager } from "./usage.js";
 import { FileWatcher } from "./file-watcher.js";
-import { TerminalProcess } from "./terminal.js";
+import type { TerminalProcess } from "./terminal.js";
 import { FeatureManager } from "./features.js";
 import { ThreadManager } from "./threads.js";
 import { DeploymentManager } from "./deployment-manager.js";
@@ -364,11 +364,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
   });
 
-  // Track all auto-detected dev server ports
+  // Track auto-detected dev server ports for pre-session state (global fallback).
+  // Once a session is active, detected ports are stored per-runner.
   let detectedPorts: number[] = [];
 
   /**
-   * Run a port scan and broadcast if the set of detected ports changed.
+   * Run a port scan and update detected ports per-runner (and global fallback).
    * Shared between the post-turn scan and the periodic interval scanner.
    *
    * The exclude list combines three sources:
@@ -376,6 +377,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
    *  2. managed preview ports — from the global preview manager and active runners
    *  3. baselinePorts       — ports that were already open before the session
    *                           started (system services, ShipIt's own dev Vite, etc.)
+   *
+   * Detected ports are stored on each active runner so each session tracks
+   * its own ports independently. The global `detectedPorts` is kept as a
+   * fallback for pre-session connections.
    */
   const runPortScan = async () => {
     try {
@@ -389,11 +394,35 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       }
       const excludeList = [serverPort, ...managedPorts, ...baselinePorts];
       const ports = await detectPorts(excludeList);
-      const changed =
+
+      // Update global fallback
+      const globalChanged =
         ports.length !== detectedPorts.length ||
         ports.some((p, i) => p !== detectedPorts[i]);
-      if (changed) {
+      if (globalChanged) {
         detectedPorts = ports;
+      }
+
+      // Update each active runner's detected ports and notify their viewers
+      let anyRunnerUpdated = false;
+      for (const sessionId of runnerRegistry.listActive()) {
+        const runner = runnerRegistry.get(sessionId);
+        if (!runner) continue;
+        const oldPorts = runner.detectedPorts;
+        const runnerChanged =
+          ports.length !== oldPorts.length ||
+          ports.some((p, i) => p !== oldPorts[i]);
+        if (runnerChanged) {
+          runner.detectedPorts = ports;
+          runner.emitMessage(runner.buildPreviewStatus());
+          anyRunnerUpdated = true;
+        }
+      }
+
+      // Broadcast global status only for connections NOT covered by a runner.
+      // When runners handle the update, their viewers already get notified via
+      // emitMessage(). Broadcasting globally too would cause duplicate messages.
+      if (globalChanged && !anyRunnerUpdated) {
         broadcastPreviewStatus();
       }
     } catch (err) {
@@ -584,7 +613,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     // Per-connection active agent selection (survives across runners)
     let perConnectionAgentId: AgentId = defaultAgentId;
 
-    // Per-connection interactive terminal (Phase 2 moves to runner)
+    // Per-connection fallback terminal (used only when no runner is attached)
     let terminal: TerminalProcess | null = null;
 
     // Per-connection runner attachment
@@ -640,7 +669,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
       // Send preview status from the runner's preview manager (if it has one)
       if (runner.getPreview()) {
-        send(runner.buildPreviewStatus(detectedPorts));
+        send(runner.buildPreviewStatus());
       }
     };
 
@@ -824,8 +853,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       setAccumulatedToolUse: (blocks) => { if (attachedRunner) attachedRunner.accumulatedToolUse = blocks; },
       getMessageQueue: () => attachedRunner?.messageQueue ?? [],
       clearMessageQueue: () => { if (attachedRunner) attachedRunner.clearQueue(); },
-      getTerminal: () => terminal,
-      setTerminal: (t) => { terminal = t; },
+      getTerminal: () => attachedRunner?.getTerminal() ?? terminal,
+      setTerminal: (t) => {
+        if (attachedRunner) { attachedRunner.setTerminal(t); }
+        else { terminal = t; }
+      },
       clearLogBuffer: () => { logBuffer = []; },
       // Session runner
       getRunner: () => attachedRunner,
@@ -1009,10 +1041,10 @@ to determine the correct install command, preview mode, command, and ports.`;
       console.log("[ws] client disconnected");
       clients.delete(socket);
 
-      // Detach from runner — runner keeps going!
+      // Detach from runner — runner keeps going (including its terminal)!
       detachFromRunner();
 
-      // Terminal stays per-connection for now (Phase 2 moves it to runner)
+      // Kill per-connection fallback terminal (only used when no runner attached)
       if (terminal) {
         terminal.kill();
         terminal = null;
