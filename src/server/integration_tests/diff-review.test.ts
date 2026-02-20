@@ -69,10 +69,10 @@ describe("Integration: Diff review", () => {
     }
   });
 
-  /** Helper: activate session and consume initial messages. */
+  /** Helper: activate session and consume initial messages (chat_history, git_log, file_tree). */
   async function activateSession(client: TestClient) {
     client.send({ type: "get_chat_history", sessionId });
-    await client.receiveType("chat_history"); // skip side-effects from activateSession
+    await client.receiveType("file_tree"); // drain all activation messages
   }
 
   it("get_turn_diff returns file changes between two commits", async () => {

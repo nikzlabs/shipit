@@ -115,24 +115,78 @@ describe("Integration: Session isolation — switching & resume", () => {
     expect(sessionBMsg.type).toBe("session_started");
     await client.receive(); // template_applied
 
-    // Switch back to session A — activateSession broadcasts preview_status + clear_logs
+    // Switch back to session A — activateSession broadcasts preview_status + clear_logs,
+    // then the server sends chat_history, git_log, and file_tree automatically.
     client.send({ type: "get_chat_history", sessionId: sessionA.id });
-    let historyMsg = await client.receive();
-    // Skip session-switch housekeeping messages (preview_status, clear_logs, config_missing)
-    while (historyMsg.type === "preview_status" || historyMsg.type === "clear_logs" || historyMsg.type === "preview_config_missing") {
-      historyMsg = await client.receive();
+    const responses: any[] = [];
+    // Collect messages until we have chat_history, git_log, and file_tree
+    while (!responses.some((m) => m.type === "file_tree")) {
+      responses.push(await client.receive());
     }
-    expect(historyMsg.type).toBe("chat_history");
+    expect(responses.some((m) => m.type === "chat_history")).toBe(true);
+    expect(responses.some((m) => m.type === "git_log")).toBe(true);
 
-    // File tree should now show session A's files
-    client.send({ type: "get_file_tree" });
-    const treeMsg = await client.receive();
-    expect(treeMsg.type).toBe("file_tree");
-    const flatNames = (treeMsg as any).tree.map((n: any) => n.name);
+    // File tree (sent by server after activation) should show session A's files
+    const treeMsg = responses.find((m) => m.type === "file_tree")!;
+    const flatNames = treeMsg.tree.map((n: any) => n.name);
     expect(flatNames).toContain("marker-a.txt");
     expect(flatNames).toContain("index.html");
     // Session B's files should NOT be in the tree
     expect(flatNames).not.toContain("App.tsx");
+
+    client.close();
+  });
+
+  it("get_chat_history returns git_log scoped to the activated session", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Create session A via template and commit a marker file
+    client.send({ type: "apply_template", templateId: "static-html" });
+    const sessionAMsg = await client.receive(); // session_started
+    const sessionA = (sessionAMsg as any).session;
+    await client.receive(); // template_applied
+
+    // Add a unique commit in session A
+    const gitA = new GitManager(sessionA.workspaceDir);
+    fs.writeFileSync(path.join(sessionA.workspaceDir, "a-only.txt"), "session A");
+    await gitA.autoCommit("Commit from session A");
+
+    // Create session B
+    client.send({ type: "new_session" });
+    await client.receive(); // session_list
+
+    client.send({ type: "apply_template", templateId: "react-vite-ts" });
+    const sessionBMsg = await client.receive(); // session_started
+    const sessionB = (sessionBMsg as any).session;
+    await client.receive(); // template_applied
+
+    // Add a unique commit in session B
+    const gitB = new GitManager(sessionB.workspaceDir);
+    fs.writeFileSync(path.join(sessionB.workspaceDir, "b-only.txt"), "session B");
+    await gitB.autoCommit("Commit from session B");
+
+    // Switch to session A — server sends git_log after activation
+    client.send({ type: "get_chat_history", sessionId: sessionA.id });
+    const responsesA: any[] = [];
+    while (!responsesA.some((m) => m.type === "git_log")) {
+      responsesA.push(await client.receive());
+    }
+    const gitLogA = responsesA.find((m) => m.type === "git_log")!;
+    const messagesA = gitLogA.commits.map((c: any) => c.message);
+    expect(messagesA).toContain("Commit from session A");
+    expect(messagesA).not.toContain("Commit from session B");
+
+    // Switch to session B — server sends git_log after activation
+    client.send({ type: "get_chat_history", sessionId: sessionB.id });
+    const responsesB: any[] = [];
+    while (!responsesB.some((m) => m.type === "git_log")) {
+      responsesB.push(await client.receive());
+    }
+    const gitLogB = responsesB.find((m) => m.type === "git_log")!;
+    const messagesB = gitLogB.commits.map((c: any) => c.message);
+    expect(messagesB).toContain("Commit from session B");
+    expect(messagesB).not.toContain("Commit from session A");
 
     client.close();
   });

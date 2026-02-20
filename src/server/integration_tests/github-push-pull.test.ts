@@ -100,7 +100,7 @@ describe("Integration: GitHub push, pull & remotes", () => {
 
     // Activate session so git operations work
     client.send({ type: "get_chat_history", sessionId });
-    await client.receiveType("chat_history"); // skip side-effects from activateSession
+    await client.receiveType("file_tree"); // drain all activation messages
 
     client.send({ type: "github_set_remote", name: "origin", url: "https://github.com/test/repo.git" });
     const msg = await client.receive();
@@ -147,7 +147,7 @@ describe("Integration: GitHub push, pull & remotes", () => {
 
     // Activate session so git operations work
     client.send({ type: "get_chat_history", sessionId });
-    await client.receiveType("chat_history"); // skip side-effects from activateSession
+    await client.receiveType("file_tree"); // drain all activation messages
 
     client.send({ type: "github_get_remotes" });
     const msg = await client.receive();
@@ -164,7 +164,7 @@ describe("Integration: GitHub push, pull & remotes", () => {
 
     // Activate session so git operations work
     client.send({ type: "get_chat_history", sessionId });
-    await client.receiveType("chat_history"); // skip side-effects from activateSession
+    await client.receiveType("file_tree"); // drain all activation messages
 
     // Authenticate first
     client.send({ type: "github_set_token", token: "ghp_test" });
