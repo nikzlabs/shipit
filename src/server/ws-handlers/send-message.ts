@@ -457,11 +457,20 @@ export async function handleSendMessage(ctx: HandlerContext, msg: WsSendMessage)
     // Only resume if we have a real Claude CLI session ID
     agentSessionId = session?.agentSessionId;
 
-    // If session has a workspaceDir but it was deleted, recreate it
+    // If session has a workspaceDir but it was deleted, handle recovery
     if (session?.workspaceDir) {
       try {
         await fs.access(session.workspaceDir);
       } catch {
+        if (session.sessionType === "worktree") {
+          // Worktree directories can't simply be recreated — the git
+          // worktree linkage (branch, shared repo) must be intact.
+          ctx.send({
+            type: "error",
+            message: "This session's workspace is no longer available. The worktree may have been cleaned up.",
+          });
+          return;
+        }
         console.log("[server] Recreating missing session directory:", session.workspaceDir);
         await fs.mkdir(session.workspaceDir, { recursive: true });
         const git = ctx.createGitManager(session.workspaceDir);
