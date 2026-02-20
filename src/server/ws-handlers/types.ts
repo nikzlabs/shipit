@@ -15,6 +15,7 @@ import type { AgentRegistry } from "../agents/agent-registry.js";
 import type { GitIdentityStore } from "../git-identity-store.js";
 import type { AgentId, AgentProcess } from "../agents/agent-process.js";
 import type { TerminalProcess } from "../terminal.js";
+import type { SessionRunner, SessionRunnerRegistry } from "../session-runner.js";
 
 /** Queued message waiting for the current Claude turn to finish. */
 export interface QueuedMessage {
@@ -28,6 +29,8 @@ export interface QueuedMessage {
  * Context bag passed to every extracted WebSocket handler function.
  * Provides access to per-connection state (via getters/setters) and
  * app-level managers (via direct references).
+ *
+ * Agent/claude state accessors now delegate to the active SessionRunner.
  */
 export interface HandlerContext {
   // === Communication ===
@@ -44,7 +47,7 @@ export interface HandlerContext {
   setActiveSessionDir: (dir: string | null) => void;
   activateSession: (sessionId: string) => void | Promise<void>;
 
-  // Agent/claude state
+  // Agent/claude state (delegates to attached runner)
   agentFactory: (agentId: AgentId) => AgentProcess;
   getAgent: () => AgentProcess | null;
   setAgent: (a: AgentProcess | null) => void;
@@ -55,7 +58,7 @@ export interface HandlerContext {
   getWasInterrupted: () => boolean;
   setWasInterrupted: (v: boolean) => void;
 
-  // Accumulated turn state
+  // Accumulated turn state (delegates to attached runner)
   getTurnSummary: () => string;
   setTurnSummary: (s: string) => void;
   getAccumulatedText: () => string;
@@ -63,7 +66,7 @@ export interface HandlerContext {
   getAccumulatedToolUse: () => ClaudeContentBlockToolUse[];
   setAccumulatedToolUse: (blocks: ClaudeContentBlockToolUse[]) => void;
 
-  // Message queue
+  // Message queue (delegates to attached runner)
   getMessageQueue: () => QueuedMessage[];
   clearMessageQueue: () => void;
 
@@ -73,6 +76,16 @@ export interface HandlerContext {
 
   // Log buffer
   clearLogBuffer: () => void;
+
+  // === Session runner ===
+  /** Get the runner attached to this connection (if any). */
+  getRunner: () => SessionRunner | null;
+  /** Get the app-level runner registry. */
+  getRunnerRegistry: () => SessionRunnerRegistry;
+  /** Attach this connection to a runner (detaches previous). */
+  attachToRunner: (runner: SessionRunner) => void;
+  /** Detach this connection from its current runner. */
+  detachFromRunner: () => void;
 
   // === App-level managers ===
   sessionManager: SessionManager;

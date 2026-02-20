@@ -145,6 +145,8 @@ export default function App() {
   const [turnDiff, setTurnDiff] = useState<TurnDiffData | null>(null);
   const [lastCommitPair, setLastCommitPair] = useState<{ from: string; to: string } | null>(null);
   const [diffBadgeCount, setDiffBadgeCount] = useState(0);
+  // Track sessions with active agent runners (for sidebar activity indicators)
+  const [activeRunnerSessions, setActiveRunnerSessions] = useState<Set<string>>(new Set());
   const sessionIdRef = useRef<string | undefined>(urlSessionId);
   // Track whether we've already requested history for the current connection
   const historyLoadedRef = useRef(false);
@@ -256,6 +258,7 @@ export default function App() {
     setQueuedMessages, setShellStarted, setToast,
     setConfigMissing, setInstallStatus,
     setTurnDiff, setLastCommitPair, setDiffBadgeCount,
+    setActiveRunnerSessions,
     prDescGeneratingRef, sessionIdRef, terminalRef,
     rightTab, viewingFile, gitCommits, notify,
     navigate,
@@ -792,6 +795,7 @@ export default function App() {
           <SessionSidebar
             sessions={sessions}
             currentSessionId={sessionIdRef.current}
+            activeRunnerSessions={activeRunnerSessions}
             onResume={callbacks.handleSessionResume}
             onNew={callbacks.handleSessionNew}
             onArchive={callbacks.handleSessionArchive}

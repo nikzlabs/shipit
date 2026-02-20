@@ -265,7 +265,7 @@ describe("Integration: Claude message flow — basics", () => {
     client2.close();
   });
 
-  it("disconnecting kills any running ClaudeProcess", async () => {
+  it("disconnecting detaches from runner but does NOT kill the agent (persistent runner)", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
 
@@ -273,11 +273,12 @@ describe("Integration: Claude message flow — basics", () => {
     await waitForClaude(() => lastClaude);
     const claude = lastClaude;
 
-    // Close the websocket — should kill the process
+    // Close the websocket — runner keeps going (persistent session runner)
     client.close();
     await new Promise((r) => setTimeout(r, 100));
 
-    expect(claude.killed).toBe(true);
+    // Agent process should NOT be killed — that's the key behavioral change
+    expect(claude.killed).toBe(false);
   });
 
   it("result event updates session lastUsedAt", async () => {

@@ -8,6 +8,7 @@ export type { SessionInfo };
 interface SessionSidebarProps {
   sessions: SessionInfo[];
   currentSessionId: string | undefined;
+  activeRunnerSessions?: Set<string>;
   onResume: (sessionId: string) => void;
   onNew: () => void;
   onArchive: (sessionId: string) => void;
@@ -50,12 +51,13 @@ function ArchiveIcon() {
 interface SessionItemProps {
   session: SessionInfo;
   isCurrent: boolean;
+  isRunning?: boolean;
   onResume: (id: string) => void;
   onArchive: (id: string) => void;
   onRename: (id: string, title: string) => void;
 }
 
-function SessionItem({ session, isCurrent, onResume, onArchive, onRename }: SessionItemProps) {
+function SessionItem({ session, isCurrent, isRunning, onResume, onArchive, onRename }: SessionItemProps) {
   const [editingTitle, setEditingTitle] = useState("");
   const [isEditing, setIsEditing] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -98,8 +100,12 @@ function SessionItem({ session, isCurrent, onResume, onArchive, onRename }: Sess
           : "text-gray-600 dark:text-gray-400 hover:bg-gray-100/60 dark:hover:bg-gray-800/60 hover:text-gray-800 dark:hover:text-gray-200"
       }`}
     >
-      {/* Active indicator */}
-      <span className={`mt-1 w-1.5 h-1.5 rounded-full shrink-0 ${isCurrent ? "bg-emerald-400" : "bg-transparent"}`} />
+      {/* Active / running indicator */}
+      <span className={`mt-1 w-1.5 h-1.5 rounded-full shrink-0 ${
+        isRunning && !isCurrent ? "bg-amber-400 animate-pulse" :
+        isRunning && isCurrent ? "bg-emerald-400 animate-pulse" :
+        isCurrent ? "bg-emerald-400" : "bg-transparent"
+      }`} />
 
       {isEditing ? (
         <form
@@ -155,12 +161,13 @@ interface GroupProps {
   label: string;
   sessions: SessionInfo[];
   currentSessionId: string | undefined;
+  activeRunnerSessions?: Set<string>;
   onResume: (id: string) => void;
   onArchive: (id: string) => void;
   onRename: (id: string, title: string) => void;
 }
 
-function SessionGroup({ label, sessions, currentSessionId, onResume, onArchive, onRename }: GroupProps) {
+function SessionGroup({ label, sessions, currentSessionId, activeRunnerSessions, onResume, onArchive, onRename }: GroupProps) {
   const [expanded, setExpanded] = useState(true);
 
   return (
@@ -180,6 +187,7 @@ function SessionGroup({ label, sessions, currentSessionId, onResume, onArchive, 
               key={s.id}
               session={s}
               isCurrent={s.id === currentSessionId}
+              isRunning={activeRunnerSessions?.has(s.id)}
               onResume={onResume}
               onArchive={onArchive}
               onRename={onRename}
@@ -194,6 +202,7 @@ function SessionGroup({ label, sessions, currentSessionId, onResume, onArchive, 
 export function SessionSidebar({
   sessions,
   currentSessionId,
+  activeRunnerSessions,
   onResume,
   onNew,
   onArchive,
@@ -286,6 +295,7 @@ export function SessionSidebar({
               label={key === "__no_remote__" ? "No Remote" : parseRepoLabel(key)}
               sessions={groupSessions}
               currentSessionId={currentSessionId}
+              activeRunnerSessions={activeRunnerSessions}
               onResume={onResume}
               onArchive={onArchive}
               onRename={onRename}

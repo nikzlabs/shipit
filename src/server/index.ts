@@ -25,8 +25,10 @@ import { CloudflareTarget } from "./deploy-targets/cloudflare.js";
 import { ClaudeAdapter } from "./agents/claude-adapter.js";
 import { CodexAdapter } from "./agents/codex-adapter.js";
 import { AgentRegistry } from "./agents/agent-registry.js";
+import { SessionRunnerRegistry } from "./session-runner.js";
+import type { SessionRunner } from "./session-runner.js";
 import type { AgentId, AgentEvent, AgentProcess } from "./agents/agent-process.js";
-import type { WsClientMessage, WsServerMessage, WsLogEntry, ImageAttachment, FileContextRef, PermissionMode } from "./types.js";
+import type { WsClientMessage, WsServerMessage, WsLogEntry } from "./types.js";
 import { getErrorMessage } from "./validation.js";
 import type { HandlerContext } from "./ws-handlers/types.js";
 import * as gitHandlers from "./ws-handlers/git-handlers.js";
@@ -288,6 +290,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const fileWatcher = deps.fileWatcher ?? new FileWatcher();
   fileWatcher.start(workspaceDir);
 
+  // ---- Session runner registry (app-level, shared across connections) ----
+  const runnerRegistry = new SessionRunnerRegistry();
+
   // Track connected WebSocket clients so we can broadcast
   const clients = new Set<{ readyState: number; send: (data: string) => void }>();
 
@@ -543,59 +548,85 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     if (clients.size === 1) {
       startPortScanInterval();
     }
-    let claude: AgentProcess | null = null;
-    let activeAgentId: AgentId = defaultAgentId;
-    let turnSummary = "";
-
-    // ---- Auto-push debounce state ----
-    let pushTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const scheduleAutoPush = (git: GitManager, sendFn: typeof send) => {
-      if (pushTimer) clearTimeout(pushTimer);
-      pushTimer = setTimeout(async () => {
-        pushTimer = null;
-        try {
-          // Check conditions: authenticated, remote exists, not detached HEAD
-          if (!githubAuthManager.authenticated) return;
-          const remotes = await git.getRemotes();
-          const origin = remotes.find((r) => r.name === "origin");
-          if (!origin) return;
-
-          const branch = await git.getCurrentBranch();
-          if (!branch) return;
-
-          await git.push("origin", branch);
-          sendFn({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
-        } catch (err) {
-          broadcastLog("server", `Auto-push failed: ${getErrorMessage(err)}`);
-        }
-      }, autoPushDebounceMs);
-    };
-    // Per-connection interactive terminal
-    let terminal: TerminalProcess | null = null;
-
-    // Per-connection active session state
+    // Per-connection active session state (lightweight — which session this tab views)
     let activeAppSessionId: string | undefined;
     let activeSessionDir: string | null = null;
 
-    // Per-connection message queue (prompt queuing feature)
-    const messageQueue: Array<{
-      text: string;
-      images?: ImageAttachment[];
-      files?: FileContextRef[];
-      permissionMode?: PermissionMode;
-    }> = [];
-    let isClaudeRunning = false;
-    /** Set when user sends interrupt_claude, cleared when a new Claude process starts. */
-    let wasInterrupted = false;
-    // Accumulate the assistant response across streaming events for persistence
-    let accumulatedText = "";
-    let accumulatedToolUse: Array<{ type: "tool_use"; id: string; name: string; input: Record<string, unknown> }> = [];
+    // Per-connection active agent selection (survives across runners)
+    let perConnectionAgentId: AgentId = defaultAgentId;
+
+    // Per-connection interactive terminal (Phase 2 moves to runner)
+    let terminal: TerminalProcess | null = null;
+
+    // Per-connection runner attachment
+    let attachedRunner: SessionRunner | null = null;
+    let runnerMessageListener: ((msg: WsServerMessage) => void) | null = null;
 
     const send = (msg: WsServerMessage) => {
       if (socket.readyState === 1) {
         socket.send(JSON.stringify(msg));
       }
+    };
+
+    // ---- Runner attach/detach helpers ----
+
+    const attachToRunner = (runner: SessionRunner) => {
+      // Detach from previous runner first
+      detachFromRunner();
+
+      attachedRunner = runner;
+      runnerMessageListener = (msg: WsServerMessage) => send(msg);
+      runner.on("message", runnerMessageListener);
+      runner.attachViewer();
+
+      // Replay buffered events from the current turn so client catches up
+      for (const buffered of runner.getTurnEventBuffer()) {
+        send(buffered);
+      }
+
+      // Send current queue state
+      if (runner.getQueueSnapshot().length > 0) {
+        send({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+      }
+
+      // Send running status so client shows the right UI state
+      send({
+        type: "session_status",
+        sessionId: runner.sessionId,
+        running: runner.running,
+        queueLength: runner.queueLength,
+      });
+    };
+
+    const detachFromRunner = () => {
+      if (attachedRunner && runnerMessageListener) {
+        attachedRunner.off("message", runnerMessageListener);
+        attachedRunner.detachViewer();
+      }
+      attachedRunner = null;
+      runnerMessageListener = null;
+    };
+
+    // ---- Auto-push (per-runner, but created here for githubAuthManager access) ----
+    const scheduleAutoPush = (git: GitManager, _sendFn: typeof send) => {
+      const runner = attachedRunner;
+      if (!runner) return;
+      runner.clearPushTimer();
+      runner.setPushTimer(setTimeout(async () => {
+        runner.setPushTimer(null);
+        try {
+          if (!githubAuthManager.authenticated) return;
+          const remotes = await git.getRemotes();
+          const origin = remotes.find((r) => r.name === "origin");
+          if (!origin) return;
+          const branch = await git.getCurrentBranch();
+          if (!branch) return;
+          await git.push("origin", branch);
+          runner.emitMessage({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
+        } catch (err) {
+          broadcastLog("server", `Auto-push failed: ${getErrorMessage(err)}`);
+        }
+      }, autoPushDebounceMs));
     };
 
     /** Get the effective workspace directory for file operations. */
@@ -617,6 +648,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       const session = sessionManager.get(sessionId);
       activeAppSessionId = sessionId;
       const dir = session?.workspaceDir ?? null;
+
+      // Attach to runner if one exists for this session
+      const existingRunner = runnerRegistry.get(sessionId);
+      if (existingRunner) {
+        attachToRunner(existingRunner);
+      } else {
+        detachFromRunner();
+      }
+
       if (dir !== activeSessionDir) {
         const oldDir = activeSessionDir;
         activeSessionDir = dir;
@@ -700,6 +740,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     };
 
     // ---- Handler context for extracted WebSocket handlers ----
+    // Agent state getters/setters delegate to the attached SessionRunner.
+    // If no runner is attached, they use safe defaults (null, false, etc.).
     const ctx: HandlerContext = {
       send,
       broadcast,
@@ -712,25 +754,31 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       setActiveSessionDir: (dir) => { activeSessionDir = dir; },
       activateSession,
       agentFactory,
-      getAgent: () => claude,
-      setAgent: (a) => { claude = a; },
-      getActiveAgentId: () => activeAgentId,
-      setActiveAgentId: (id) => { activeAgentId = id; },
-      getIsClaudeRunning: () => isClaudeRunning,
-      setIsClaudeRunning: (v) => { isClaudeRunning = v; },
-      getWasInterrupted: () => wasInterrupted,
-      setWasInterrupted: (v) => { wasInterrupted = v; },
-      getTurnSummary: () => turnSummary,
-      setTurnSummary: (s) => { turnSummary = s; },
-      getAccumulatedText: () => accumulatedText,
-      setAccumulatedText: (s) => { accumulatedText = s; },
-      getAccumulatedToolUse: () => accumulatedToolUse,
-      setAccumulatedToolUse: (blocks) => { accumulatedToolUse = blocks; },
-      getMessageQueue: () => messageQueue,
-      clearMessageQueue: () => { messageQueue.length = 0; },
+      // Agent state delegates to runner
+      getAgent: () => attachedRunner?.getAgent() ?? null,
+      setAgent: (a) => { if (attachedRunner) attachedRunner.setAgent(a); },
+      getActiveAgentId: () => attachedRunner?.agentId ?? perConnectionAgentId,
+      setActiveAgentId: (id) => { perConnectionAgentId = id; if (attachedRunner) attachedRunner.agentId = id; },
+      getIsClaudeRunning: () => attachedRunner?.running ?? false,
+      setIsClaudeRunning: (v) => { if (attachedRunner) attachedRunner.running = v; },
+      getWasInterrupted: () => attachedRunner?.wasInterrupted ?? false,
+      setWasInterrupted: (v) => { if (attachedRunner) attachedRunner.wasInterrupted = v; },
+      getTurnSummary: () => attachedRunner?.turnSummary ?? "",
+      setTurnSummary: (s) => { if (attachedRunner) attachedRunner.turnSummary = s; },
+      getAccumulatedText: () => attachedRunner?.accumulatedText ?? "",
+      setAccumulatedText: (s) => { if (attachedRunner) attachedRunner.accumulatedText = s; },
+      getAccumulatedToolUse: () => attachedRunner?.accumulatedToolUse ?? [],
+      setAccumulatedToolUse: (blocks) => { if (attachedRunner) attachedRunner.accumulatedToolUse = blocks; },
+      getMessageQueue: () => attachedRunner?.messageQueue ?? [],
+      clearMessageQueue: () => { if (attachedRunner) attachedRunner.clearQueue(); },
       getTerminal: () => terminal,
       setTerminal: (t) => { terminal = t; },
       clearLogBuffer: () => { logBuffer = []; },
+      // Session runner
+      getRunner: () => attachedRunner,
+      getRunnerRegistry: () => runnerRegistry,
+      attachToRunner,
+      detachFromRunner,
       sessionManager,
       chatHistoryManager,
       createGitManager,
@@ -805,7 +853,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         case "save_global_settings": return settingsHandlers.handleSaveGlobalSettings(ctx, msg);
         case "set_agent": {
           const result = settingsHandlers.handleSetAgent(ctx, msg);
-          if (result) activeAgentId = result.newAgentId as AgentId;
+          if (result) ctx.setActiveAgentId(result.newAgentId as AgentId);
           break;
         }
         case "list_agents": return settingsHandlers.handleListAgents(ctx);
@@ -819,6 +867,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         case "archive_session": return sessionHandlers.handleArchiveSession(ctx, msg);
         case "rename_session": return sessionHandlers.handleRenameSession(ctx, msg);
         case "get_chat_history": return sessionHandlers.handleGetChatHistory(ctx, msg);
+        case "get_session_status": return sessionHandlers.handleGetSessionStatus(ctx, msg);
 
         // ---- Worktree operations ----
         case "fork_session": return worktreeHandlers.handleForkSession(ctx, msg);
@@ -902,24 +951,19 @@ to determine the correct install command, preview mode, command, and ports.`;
       }
     });
 
+    // ---- On disconnect: detach from runner (don't kill anything!) ----
     socket.on("close", () => {
       console.log("[ws] client disconnected");
       clients.delete(socket);
-      if (claude) {
-        claude.kill();
-        claude = null;
-      }
+
+      // Detach from runner — runner keeps going!
+      detachFromRunner();
+
+      // Terminal stays per-connection for now (Phase 2 moves it to runner)
       if (terminal) {
         terminal.kill();
         terminal = null;
       }
-      if (pushTimer) {
-        clearTimeout(pushTimer);
-        pushTimer = null;
-      }
-      // Clear the queue — it belongs to this connection's context
-      messageQueue.length = 0;
-      isClaudeRunning = false;
 
       // Stop periodic port scanning when the last client disconnects
       if (clients.size === 0) {
@@ -936,6 +980,7 @@ to determine the correct install command, preview mode, command, and ports.`;
     fileWatcher.stop();
     previewManager.stop();
     authManager.kill();
+    runnerRegistry.disposeAll();
   });
 
   return app;
