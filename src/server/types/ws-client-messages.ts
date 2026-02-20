@@ -210,6 +210,33 @@ export interface WsCancelQueuedMessage {
   position: number | "all";
 }
 
+// ---- Diff review messages (client → server) ----
+
+export interface WsGetTurnDiff {
+  type: "get_turn_diff";
+  /** Base commit hash (before the turn). */
+  fromCommit: string;
+  /** Target commit hash (after the turn). */
+  toCommit: string;
+}
+
+export interface WsRejectChanges {
+  type: "reject_changes";
+  /** Commit to revert to. */
+  fromCommit: string;
+  /** Files to revert. Empty array = revert all. */
+  files: string[];
+}
+
+export interface WsDiffComment {
+  type: "diff_comment";
+  comments: Array<{
+    file: string;
+    line: number;
+    text: string;
+  }>;
+}
+
 // ---- Worktree session messages (client → server) ----
 
 export interface WsForkSession {
@@ -294,4 +321,7 @@ export type WsClientMessage =
   | WsListAgentsMessage
   | WsSetAgentEnvMessage
   | WsFullReset
-  | WsInitPreviewConfig;
+  | WsInitPreviewConfig
+  | WsGetTurnDiff
+  | WsRejectChanges
+  | WsDiffComment;

@@ -14,6 +14,7 @@ import type { DeployPhase } from "../components/DeployModal.js";
 import type { ThreadInfo } from "../components/ThreadIndicator.js";
 import type { AgentOption } from "../components/AgentPicker.js";
 import type { ToastData } from "../components/Toast.js";
+import type { TurnDiffData } from "../components/DiffPanel.js";
 import type {
   WsServerMessage, WsSessionRenamed, WsUsageUpdate, WsModelInfo,
   ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse,
@@ -23,7 +24,7 @@ import type {
 } from "../../server/types.js";
 import { PERMISSION_MODE_KEY, SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY } from "../utils/local-storage.js";
 
-type RightTab = "preview" | "docs" | "files" | "terminal" | "features";
+type RightTab = "preview" | "docs" | "files" | "terminal" | "features" | "changes";
 
 export function useMessageHandler(params: {
   lastMessage: MessageEvent | null;
@@ -95,6 +96,9 @@ export function useMessageHandler(params: {
   setToast: Dispatch<SetStateAction<ToastData | null>>;
   setConfigMissing: Dispatch<SetStateAction<boolean>>;
   setInstallStatus: Dispatch<SetStateAction<{ status: "running" | "complete" | "error"; message?: string } | null>>;
+  setTurnDiff: Dispatch<SetStateAction<TurnDiffData | null>>;
+  setLastCommitPair: Dispatch<SetStateAction<{ from: string; to: string } | null>>;
+  setDiffBadgeCount: Dispatch<SetStateAction<number>>;
 
   // Refs
   prDescGeneratingRef: MutableRefObject<boolean>;
@@ -104,6 +108,7 @@ export function useMessageHandler(params: {
   // Dependencies
   rightTab: RightTab;
   viewingFile: string | null;
+  gitCommits: GitCommit[];
   notify: (msg: string) => void;
   navigate: (path: string, opts?: { replace?: boolean }) => void;
   handleSessionResume: (sessionId: string) => void;
@@ -137,8 +142,9 @@ export function useMessageHandler(params: {
     setPrDescError, setPrGeneratedDesc, setImportSearchResults, setPrStatus,
     setQueuedMessages, setShellStarted, setToast,
     setConfigMissing, setInstallStatus,
+    setTurnDiff, setLastCommitPair, setDiffBadgeCount,
     prDescGeneratingRef, sessionIdRef, terminalRef,
-    rightTab, viewingFile, notify, navigate, handleSessionResume,
+    rightTab, viewingFile, gitCommits, notify, navigate, handleSessionResume,
     githubStatus, prStatus,
   } = params;
 
@@ -407,6 +413,13 @@ export function useMessageHandler(params: {
     }
 
     if (data.type === "git_committed") {
+      // Track the commit pair for diff review (previous HEAD → new commit)
+      const prevHash = gitCommits[0]?.hash;
+      if (prevHash) {
+        setLastCommitPair({ from: prevHash, to: data.hash });
+        setTurnDiff(null); // Clear stale diff data
+        setDiffBadgeCount((prev) => prev + 1);
+      }
       // Prepend the new commit to the list
       setGitCommits((prev) => [
         { hash: data.hash, message: data.message, date: new Date().toISOString(), author: "ShipIt" },
@@ -865,6 +878,24 @@ export function useMessageHandler(params: {
       setInstallStatus(null);
     }
 
+    if (data.type === "turn_diff") {
+      setTurnDiff({
+        fromCommit: data.fromCommit,
+        toCommit: data.toCommit,
+        files: data.files,
+        stats: data.stats,
+      });
+    }
+
+    if (data.type === "reject_changes_complete") {
+      // Clear the diff data and refresh git log
+      setTurnDiff(null);
+      setLastCommitPair(null);
+      setDiffBadgeCount(0);
+      send({ type: "get_git_log" });
+      send({ type: "get_file_tree" });
+    }
+
     if (data.type === "terminal_output") {
       terminalRef.current?.write(data.data);
     }
@@ -872,7 +903,7 @@ export function useMessageHandler(params: {
     if (data.type === "terminal_exit") {
       setShellStarted(false);
     }
-  }, [lastMessage, send, rightTab, viewingFile, notify, handleSessionResume, navigate,
+  }, [lastMessage, send, rightTab, viewingFile, gitCommits, notify, handleSessionResume, navigate,
       setPreview, setSelectedPort, setMessages, setIsLoading, setActivity,
       setGitCommits, setAuthUrl, setSessions, setDocFiles, setDocContent,
       setFileTree, setViewingFileContent, setViewingFileBinary,
@@ -887,6 +918,7 @@ export function useMessageHandler(params: {
       setPrDescError, setPrGeneratedDesc, setImportSearchResults, setPrStatus,
       setQueuedMessages, setShellStarted, setToast,
       setConfigMissing, setInstallStatus,
+      setTurnDiff, setLastCommitPair, setDiffBadgeCount,
       prDescGeneratingRef, sessionIdRef, terminalRef,
       githubStatus, prStatus]);
 }

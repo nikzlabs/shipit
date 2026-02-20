@@ -303,6 +303,46 @@ export class GitManager {
     }
   }
 
+  /**
+   * Get the contents of a file at a specific commit.
+   * Returns empty string if the file doesn't exist at that commit.
+   */
+  async getFileAtCommit(commitHash: string, filePath: string): Promise<string> {
+    try {
+      return await this.git.show([`${commitHash}:${filePath}`]);
+    } catch {
+      return "";
+    }
+  }
+
+  /**
+   * Get list of changed files between two commits with their status.
+   * Returns entries like { status: "A", path: "src/foo.ts", oldPath?: "src/bar.ts" }.
+   */
+  async diffNameStatus(fromCommit: string, toCommit: string): Promise<Array<{ status: string; path: string; oldPath?: string }>> {
+    try {
+      const output = await this.git.diff(["--name-status", fromCommit, toCommit]);
+      if (!output.trim()) return [];
+      return output.trim().split("\n").map((line) => {
+        const parts = line.split("\t");
+        const status = parts[0].charAt(0); // R100 → R, etc.
+        if (status === "R" && parts.length >= 3) {
+          return { status, path: parts[2], oldPath: parts[1] };
+        }
+        return { status, path: parts[1] };
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Checkout specific files from a commit, reverting them.
+   */
+  async checkoutFiles(commitHash: string, files: string[]): Promise<void> {
+    await this.git.checkout([commitHash, "--", ...files]);
+  }
+
   /** Delete a local branch. */
   async deleteBranch(branchName: string): Promise<void> {
     await this.git.branch(["-D", branchName]);

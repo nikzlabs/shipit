@@ -19,7 +19,9 @@ import type {
 } from "../../server/types.js";
 import { savePermissionMode, saveAgentId } from "../utils/local-storage.js";
 
-type RightTab = "preview" | "docs" | "files" | "terminal" | "features";
+import type { TurnDiffData } from "../components/DiffPanel.js";
+
+type RightTab = "preview" | "docs" | "files" | "terminal" | "features" | "changes";
 
 export function useAppCallbacks(params: {
   send: (msg: WsClientMessage) => void;
@@ -84,6 +86,11 @@ export function useAppCallbacks(params: {
   setSelectedPort: Dispatch<SetStateAction<number | null>>;
   setPrCurrentBranch: Dispatch<SetStateAction<string>>;
   setPrRemoteBranches: Dispatch<SetStateAction<string[]>>;
+  setTurnDiff: Dispatch<SetStateAction<TurnDiffData | null>>;
+  setLastCommitPair: Dispatch<SetStateAction<{ from: string; to: string } | null>>;
+  setDiffBadgeCount: Dispatch<SetStateAction<number>>;
+  lastCommitPair: { from: string; to: string } | null;
+  turnDiff: TurnDiffData | null;
 
   // Refs
   sessionIdRef: MutableRefObject<string | undefined>;
@@ -110,6 +117,8 @@ export function useAppCallbacks(params: {
     sessionIdRef, prDescGeneratingRef,
     disableAutoFix,
     setSelectedPort, setPrCurrentBranch, setPrRemoteBranches,
+    setTurnDiff, setLastCommitPair, setDiffBadgeCount,
+    lastCommitPair, turnDiff,
   } = params;
 
   // Internal session resume (no navigation) — used by popstate/URL changes
@@ -666,9 +675,37 @@ export function useAppCallbacks(params: {
       if (tab === "features") {
         send({ type: "list_features" });
       }
+      if (tab === "changes") {
+        setDiffBadgeCount(0);
+        // Lazy-load the diff if we have a commit pair but haven't loaded it yet
+        if (lastCommitPair && !turnDiff) {
+          send({ type: "get_turn_diff", fromCommit: lastCommitPair.from, toCommit: lastCommitPair.to });
+        }
+      }
     },
-    [send, docFiles.length, setRightTab, setFileChangeCount, setUnreadLogCount]
+    [send, docFiles.length, setRightTab, setFileChangeCount, setUnreadLogCount, setDiffBadgeCount, lastCommitPair, turnDiff]
   );
+
+  const handleDiffAcceptAll = useCallback(() => {
+    // Changes are already committed — just dismiss the panel
+    setTurnDiff(null);
+    setLastCommitPair(null);
+    setDiffBadgeCount(0);
+    setRightTab("preview");
+  }, [setTurnDiff, setLastCommitPair, setDiffBadgeCount, setRightTab]);
+
+  const handleDiffRejectFiles = useCallback(
+    (files: string[]) => {
+      if (!lastCommitPair) return;
+      send({ type: "reject_changes", fromCommit: lastCommitPair.from, files });
+      setRightTab("preview");
+    },
+    [send, lastCommitPair, setRightTab],
+  );
+
+  const handleDiffClose = useCallback(() => {
+    setRightTab("preview");
+  }, [setRightTab]);
 
   return {
     resumeSessionInternal,
@@ -729,5 +766,8 @@ export function useAppCallbacks(params: {
     handleTerminalStart,
     handleTerminalModeChange,
     handleTabChange,
+    handleDiffAcceptAll,
+    handleDiffRejectFiles,
+    handleDiffClose,
   };
 }

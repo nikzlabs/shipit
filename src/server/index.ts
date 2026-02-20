@@ -41,6 +41,7 @@ import * as sessionHandlers from "./ws-handlers/session-handlers.js";
 import * as worktreeHandlers from "./ws-handlers/worktree-handlers.js";
 import * as templateHandlers from "./ws-handlers/template-handlers.js";
 import * as threadHandlers from "./ws-handlers/thread-handlers.js";
+import * as diffHandlers from "./ws-handlers/diff-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
 export { getContextWindowSize } from "./ws-handlers/send-message.js";
 
@@ -769,6 +770,19 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         // ---- Git operations ----
         case "get_git_log": return gitHandlers.handleGetGitLog(ctx);
         case "rollback": return gitHandlers.handleRollback(ctx, msg);
+
+        // ---- Diff review operations ----
+        case "get_turn_diff": return diffHandlers.handleGetTurnDiff(ctx, msg);
+        case "reject_changes": return diffHandlers.handleRejectChanges(ctx, msg);
+        case "diff_comment": {
+          // Format comments into a prompt and send to Claude (like init_preview_config)
+          const commentLines = msg.comments.map((c: { file: string; line: number; text: string }) =>
+            `File: ${c.file}, Line ${c.line}:\n"${c.text}"`
+          ).join("\n\n");
+          const prompt = `The user has reviewed your changes and left the following inline comments:\n\n${commentLines}\n\nPlease address these comments and update the code accordingly.`;
+          sendMessageHandlers.handleSendMessage(ctx, { type: "send_message", text: prompt });
+          return;
+        }
 
         // ---- File operations ----
         case "get_file_tree": return fileHandlers.handleGetFileTree(ctx);

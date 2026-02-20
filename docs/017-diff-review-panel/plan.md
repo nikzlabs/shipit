@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 ---
 # 017 — Visual Diff Review Panel
 
