@@ -573,4 +573,226 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     const session1 = sessionManager.get(session1Id)!;
     expect(fs.existsSync(path.join(session1.workspaceDir!, "new-file.txt"))).toBe(false);
   }, 15_000);
+
+  // ---- Edge case: missing worktree on session resume ----
+
+  /** Wait for a session_started message, skipping other messages. */
+  async function waitForSessionStarted(client: TestClient, timeoutMs = 5000): Promise<any> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const msg = await client.receive(deadline - Date.now());
+      if (msg.type === "session_started") return msg;
+    }
+    throw new Error("Timed out waiting for session_started");
+  }
+
+  it("send_message returns error when worktree directory is missing", async () => {
+    const bareRepoPath = createBareRepo();
+    const repoUrl = `file://${bareRepoPath}`;
+
+    // Create a worktree session via home_send_with_repo
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "home_send_with_repo", repoUrl, text: "My session" } as any);
+
+    const sessionMsg = await waitForSessionStarted(client);
+    const session = sessionMsg.session;
+
+    const claude1 = await waitForClaude(() => lastClaude);
+    claude1.finish();
+    try { while (true) { await client.receive(300); } } catch { /* drain */ }
+    client.close();
+
+    // Verify it's a worktree session
+    const sessionInfo = sessionManager.get(session.id)!;
+    expect(sessionInfo.sessionType).toBe("worktree");
+
+    // Delete the worktree directory to simulate it going missing
+    fs.rmSync(sessionInfo.workspaceDir!, { recursive: true, force: true });
+
+    // Try to send a message to this session — should get graceful error
+    const client2 = await TestClient.connect(port);
+    await client2.receive(); // preview_status
+
+    client2.send({ type: "send_message", text: "hello", sessionId: session.id });
+
+    // Wait for the worktree-missing error (skip other messages)
+    const deadline = Date.now() + 5000;
+    let errorMsg: any = null;
+    while (Date.now() < deadline && !errorMsg) {
+      const msg = await client2.receive(deadline - Date.now());
+      if (msg.type === "error" && (msg as any).message?.includes("workspace")) {
+        errorMsg = msg;
+      }
+    }
+    expect(errorMsg).not.toBeNull();
+    expect(errorMsg.message).toContain("workspace is no longer available");
+
+    client2.close();
+  }, 15_000);
+
+  it("get_chat_history returns history + error when worktree directory is missing", async () => {
+    const bareRepoPath = createBareRepo();
+    const repoUrl = `file://${bareRepoPath}`;
+
+    // Create a worktree session
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "home_send_with_repo", repoUrl, text: "My session" } as any);
+
+    const sessionMsg = await waitForSessionStarted(client);
+    const session = sessionMsg.session;
+
+    const claude1 = await waitForClaude(() => lastClaude);
+    claude1.finish();
+    try { while (true) { await client.receive(300); } } catch { /* drain */ }
+    client.close();
+
+    const sessionInfo = sessionManager.get(session.id)!;
+    expect(sessionInfo.sessionType).toBe("worktree");
+
+    // Delete the worktree directory
+    fs.rmSync(sessionInfo.workspaceDir!, { recursive: true, force: true });
+
+    // Load chat history — should return history AND an error
+    const client2 = await TestClient.connect(port);
+    await client2.receive(); // preview_status
+
+    client2.send({ type: "get_chat_history", sessionId: session.id });
+
+    // Collect both chat_history and error messages
+    let historyMsg: any = null;
+    let errorMsg: any = null;
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && (!historyMsg || !errorMsg)) {
+      try {
+        const msg = await client2.receive(1000);
+        if (msg.type === "chat_history") historyMsg = msg;
+        if (msg.type === "error") errorMsg = msg;
+      } catch { break; }
+    }
+
+    expect(historyMsg).not.toBeNull();
+    expect(historyMsg.sessionId).toBe(session.id);
+    expect(errorMsg).not.toBeNull();
+    expect(errorMsg.message).toContain("workspace is no longer available");
+
+    client2.close();
+  }, 15_000);
+
+  // ---- Edge case: shared repo cleanup ----
+
+  it("shared repo is cleaned up when all sessions for it are archived", async () => {
+    const bareRepoPath = createBareRepo();
+    const repoUrl = `file://${bareRepoPath}`;
+
+    // Create first worktree session
+    const client1 = await TestClient.connect(port);
+    await client1.receive(); // preview_status
+
+    client1.send({ type: "home_send_with_repo", repoUrl, text: "First" } as any);
+    const s1Msg = await client1.receiveSkipLogs();
+    expect(s1Msg.type).toBe("session_started");
+    const session1Id = (s1Msg as any).session.id;
+
+    const claude1 = await waitForClaude(() => lastClaude);
+    claude1.finish();
+    try { while (true) { await client1.receive(300); } } catch { /* drain */ }
+    client1.close();
+
+    // Create second worktree session
+    const client2 = await TestClient.connect(port);
+    await client2.receive(); // preview_status
+
+    client2.send({ type: "home_send_with_repo", repoUrl, text: "Second" } as any);
+    const s2Msg = await client2.receiveSkipLogs();
+    expect(s2Msg.type).toBe("session_started");
+    const session2Id = (s2Msg as any).session.id;
+
+    const claude2 = await waitForClaude(() => lastClaude, claude1, 10_000);
+    claude2.finish();
+    try { while (true) { await client2.receive(300); } } catch { /* drain */ }
+    client2.close();
+
+    // Verify shared repo exists
+    const reposDir = path.join(tmpDir, "repos");
+    expect(fs.existsSync(reposDir)).toBe(true);
+    const repoDirs = fs.readdirSync(reposDir);
+    expect(repoDirs.length).toBe(1);
+    const sharedRepoDir = path.join(reposDir, repoDirs[0]);
+
+    // Archive first session — shared repo should still exist (one session remains)
+    const client3 = await TestClient.connect(port);
+    await client3.receive(); // preview_status
+
+    client3.send({ type: "archive_session", sessionId: session1Id });
+    let listMsg: any = null;
+    const deadline1 = Date.now() + 5000;
+    while (Date.now() < deadline1 && !listMsg) {
+      const msg = await client3.receive();
+      if (msg.type === "session_list") listMsg = msg;
+    }
+
+    expect(fs.existsSync(sharedRepoDir)).toBe(true);
+
+    // Archive second session — now shared repo should be cleaned up
+    client3.send({ type: "archive_session", sessionId: session2Id });
+    listMsg = null;
+    const deadline2 = Date.now() + 5000;
+    while (Date.now() < deadline2 && !listMsg) {
+      const msg = await client3.receive();
+      if (msg.type === "session_list") listMsg = msg;
+    }
+
+    expect(fs.existsSync(sharedRepoDir)).toBe(false);
+
+    client3.close();
+  }, 20_000);
+
+  it("shared repo is NOT cleaned up when other sessions still use it", async () => {
+    const bareRepoPath = createBareRepo();
+    const repoUrl = `file://${bareRepoPath}`;
+
+    // Create two sessions
+    const client1 = await TestClient.connect(port);
+    await client1.receive(); // preview_status
+    client1.send({ type: "home_send_with_repo", repoUrl, text: "First" } as any);
+    const s1Msg = await client1.receiveSkipLogs();
+    const session1Id = (s1Msg as any).session.id;
+    const claude1 = await waitForClaude(() => lastClaude);
+    claude1.finish();
+    try { while (true) { await client1.receive(300); } } catch { /* drain */ }
+    client1.close();
+
+    const client2 = await TestClient.connect(port);
+    await client2.receive(); // preview_status
+    client2.send({ type: "home_send_with_repo", repoUrl, text: "Second" } as any);
+    const s2Msg = await client2.receiveSkipLogs();
+    expect(s2Msg.type).toBe("session_started");
+    const claude2 = await waitForClaude(() => lastClaude, claude1, 10_000);
+    claude2.finish();
+    try { while (true) { await client2.receive(300); } } catch { /* drain */ }
+    client2.close();
+
+    // Archive only the first session
+    const client3 = await TestClient.connect(port);
+    await client3.receive(); // preview_status
+    client3.send({ type: "archive_session", sessionId: session1Id });
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const msg = await client3.receive();
+      if (msg.type === "session_list") break;
+    }
+
+    // Shared repo should still exist
+    const reposDir = path.join(tmpDir, "repos");
+    const repoDirs = fs.readdirSync(reposDir);
+    expect(repoDirs.length).toBe(1);
+    const sharedRepoDir = path.join(reposDir, repoDirs[0]);
+    expect(fs.existsSync(sharedRepoDir)).toBe(true);
+
+    client3.close();
+  }, 15_000);
 });
