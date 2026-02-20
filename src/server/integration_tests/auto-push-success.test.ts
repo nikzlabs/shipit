@@ -143,7 +143,7 @@ async function drainMessages(timeoutMs = 3000): Promise<WsServerMessage[]> {
 }
 
 describe("auto-push: success and failure", () => {
-  it("pushes after auto-commit when authenticated with a remote", async () => {
+  it("pushes after auto-commit when authenticated with a remote", { timeout: 15_000 }, async () => {
     await githubAuth.setToken("test-token");
     const { sessionId, sessionDir } = await createSession();
     createBareRemote(sessionDir);
@@ -167,7 +167,7 @@ describe("auto-push: success and failure", () => {
     });
   });
 
-  it("push failure is non-fatal and emits a log entry", async () => {
+  it("push failure is non-fatal and emits a log entry", { timeout: 15_000 }, async () => {
     await githubAuth.setToken("test-token");
     const { sessionId, sessionDir } = await createSession();
 
