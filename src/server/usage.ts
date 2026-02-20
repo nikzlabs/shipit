@@ -119,6 +119,11 @@ export class UsageManager {
     };
   }
 
+  /** Clear all in-memory usage data (used by full reset). */
+  clear(): void {
+    this.turns = [];
+  }
+
   /** Delete all usage data for a session. */
   delete(sessionId: string): boolean {
     const before = this.turns.length;

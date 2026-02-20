@@ -93,7 +93,11 @@ export async function handleFullReset(ctx: HandlerContext): Promise<void> {
       }
     }
 
-    // 3. Reset connection state
+    // 3. Clear in-memory state so managers don't serve stale data
+    ctx.sessionManager.clear();
+    ctx.usageManager.clear();
+
+    // 4. Reset connection state
     ctx.setActiveAppSessionId(undefined);
     ctx.setActiveSessionDir(null);
 
