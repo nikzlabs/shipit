@@ -1,8 +1,8 @@
-import { useState, useCallback, useMemo, useEffect } from "react";
-import { marked } from "marked";
+import { useState, useCallback } from "react";
 import { RepoSelector } from "./RepoSelector.js";
 import { NewRepoDialog } from "./NewRepoDialog.js";
 import { MessageInput } from "./MessageInput.js";
+import { DocsViewer } from "./DocsViewer.js";
 import type { TemplateInfo } from "./TemplateSelector.js";
 import type { SessionInfo, PermissionMode, FileContextRef, FileTreeNode } from "../../server/types.js";
 
@@ -67,7 +67,6 @@ export function HomeScreen({
 }: HomeScreenProps) {
   const [showNewRepoDialog, setShowNewRepoDialog] = useState(false);
   const [docsExpanded, setDocsExpanded] = useState(false);
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
 
   const handleSend = useCallback(
     (text: string, images?: Array<{ data: string; mediaType: string; filename: string }>) => {
@@ -84,18 +83,6 @@ export function HomeScreen({
     },
     [onNewRepo],
   );
-
-  // Auto-select the first doc when the list loads
-  useEffect(() => {
-    if (repoDocFiles.length > 0 && !selectedRepoDoc) {
-      onSelectRepoDoc(repoDocFiles[0]);
-    }
-  }, [repoDocFiles, selectedRepoDoc, onSelectRepoDoc]);
-
-  const renderedHtml = useMemo(() => {
-    if (!repoDocContent) return "";
-    return marked.parse(repoDocContent, { async: false }) as string;
-  }, [repoDocContent]);
 
   const hasRepoDocs = repoDocFiles.length > 0;
 
@@ -146,58 +133,14 @@ export function HomeScreen({
             </button>
 
             {docsExpanded && (
-              <div className="bg-white dark:bg-gray-900">
-                {/* File selector */}
-                <div className="flex items-center justify-between px-3 py-1.5 border-b border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400">
-                  <div className="relative flex-1 min-w-0">
-                    <button
-                      onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-                      className="flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors max-w-full"
-                    >
-                      <span className="truncate">{selectedRepoDoc || "Select a file..."}</span>
-                      <span className="shrink-0">{isDropdownOpen ? "\u25B2" : "\u25BC"}</span>
-                    </button>
-                    {isDropdownOpen && (
-                      <div className="absolute top-full left-0 mt-1 w-64 max-h-60 overflow-y-auto bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded shadow-lg z-10">
-                        {repoDocFiles.map((file) => (
-                          <button
-                            key={file}
-                            onClick={() => {
-                              onSelectRepoDoc(file);
-                              setIsDropdownOpen(false);
-                            }}
-                            className={`block w-full text-left px-3 py-1.5 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors truncate ${
-                              file === selectedRepoDoc ? "bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200" : "text-gray-500 dark:text-gray-400"
-                            }`}
-                          >
-                            {file}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <button
-                    onClick={onRefreshRepoDocs}
-                    className="px-2 py-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors shrink-0 ml-2"
-                    title="Refresh file list"
-                  >
-                    Reload
-                  </button>
-                </div>
-
-                {/* Markdown content */}
-                <div className="max-h-80 overflow-y-auto p-4">
-                  {repoDocContent === null ? (
-                    <div className="flex items-center justify-center py-8 text-gray-500 text-sm">
-                      Loading...
-                    </div>
-                  ) : (
-                    <div
-                      className="prose dark:prose-invert prose-sm max-w-none"
-                      dangerouslySetInnerHTML={{ __html: renderedHtml }}
-                    />
-                  )}
-                </div>
+              <div className="h-80">
+                <DocsViewer
+                  files={repoDocFiles}
+                  selectedFile={selectedRepoDoc}
+                  content={repoDocContent}
+                  onSelectFile={onSelectRepoDoc}
+                  onRefresh={onRefreshRepoDocs}
+                />
               </div>
             )}
           </div>
