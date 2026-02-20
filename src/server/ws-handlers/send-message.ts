@@ -72,6 +72,8 @@ function wireAgentListeners(
     isNewSession: boolean;
     persistUserMessage: (sessionId: string) => void;
     fallbackTitle?: string;
+    /** Session ID captured at turn start — immune to session switches. */
+    capturedSessionId?: string;
   },
 ): void {
   const runner = ctx.getRunner();
@@ -97,15 +99,16 @@ function wireAgentListeners(
     }
 
     if (event.type === "agent_init") {
-      const activeAppSessionId = ctx.getActiveAppSessionId();
-      if (activeAppSessionId) {
-        ctx.sessionManager.setAgentSessionId(activeAppSessionId, event.sessionId);
-        const session = ctx.sessionManager.get(activeAppSessionId);
+      // Use the session ID captured at turn start — immune to session switches
+      const turnSessionId = opts.capturedSessionId;
+      if (turnSessionId) {
+        ctx.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
+        const session = ctx.sessionManager.get(turnSessionId);
         if (session) {
           emitToViewers({ type: "session_started", session });
         }
         if (opts.isNewSession) {
-          opts.persistUserMessage(activeAppSessionId);
+          opts.persistUserMessage(turnSessionId);
         }
       } else {
         const title = opts.fallbackTitle ?? "New session";
@@ -142,13 +145,13 @@ function wireAgentListeners(
     }
 
     if (event.type === "agent_result") {
-      const activeAppSessionId = ctx.getActiveAppSessionId();
-      if (activeAppSessionId) {
-        ctx.sessionManager.setAgentSessionId(activeAppSessionId, event.sessionId);
-        ctx.sessionManager.track(activeAppSessionId);
+      const turnSessionId = opts.capturedSessionId;
+      if (turnSessionId) {
+        ctx.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
+        ctx.sessionManager.track(turnSessionId);
       }
 
-      const usageSessionId = activeAppSessionId ?? event.sessionId;
+      const usageSessionId = turnSessionId ?? event.sessionId;
       if (event.cost?.totalUsd !== undefined) {
         ctx.usageManager.record(
           usageSessionId,
@@ -195,9 +198,9 @@ function wireAgentListeners(
     console.error("[agent] process error:", err.message);
     ctx.broadcastLog("server", `Agent process error: ${err.message}`);
     emitToViewers({ type: "error", message: `Agent process error: ${err.message}` });
-    const activeAppSessionId = ctx.getActiveAppSessionId();
-    if (activeAppSessionId) {
-      ctx.chatHistoryManager.append(activeAppSessionId, {
+    const turnSessionId = opts.capturedSessionId;
+    if (turnSessionId) {
+      ctx.chatHistoryManager.append(turnSessionId, {
         role: "assistant",
         text: `Error: ${err.message}`,
         isError: true,
@@ -227,6 +230,12 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
   // Clear the turn event buffer for the new turn
   if (runner) runner.clearTurnEventBuffer();
 
+  // Capture the session context at turn start. These values must NOT be read
+  // from ctx later because the user may switch sessions while the agent runs,
+  // which would change ctx.getActiveAppSessionId() / ctx.getActiveSessionDir().
+  const capturedSessionId = ctx.getActiveAppSessionId();
+  const capturedSessionDir = ctx.getActiveSessionDir();
+
   ctx.setTurnSummary("");
   ctx.setAccumulatedText("");
   ctx.setAccumulatedToolUse([]);
@@ -236,9 +245,8 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
   ctx.setAgent(currentAgent);
 
   // Broadcast session_agent_started to all clients (sidebar activity)
-  const sessionId = ctx.getActiveAppSessionId();
-  if (sessionId) {
-    ctx.broadcast({ type: "session_agent_started", sessionId });
+  if (capturedSessionId) {
+    ctx.broadcast({ type: "session_agent_started", sessionId: capturedSessionId });
   }
 
   // Build images metadata for chat history persistence (inline base64)
@@ -270,6 +278,7 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
     isNewSession,
     persistUserMessage,
     fallbackTitle: userText.slice(0, 80) || "New session",
+    capturedSessionId,
   });
 
   // Track whether we got a result event
@@ -280,8 +289,8 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
   });
 
   // For resumed sessions (sessionId already known), persist user message immediately
-  if (!isNewSession && ctx.getActiveAppSessionId()) {
-    persistUserMessage(ctx.getActiveAppSessionId()!);
+  if (!isNewSession && capturedSessionId) {
+    persistUserMessage(capturedSessionId);
   }
 
   // Helper: emit to all viewers via runner, or fall back to ctx.send
@@ -307,23 +316,27 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
       emitDone({ type: "error", message: reason });
     }
 
-    // Auto-commit after agent turn using the session's git manager
+    // Auto-commit after agent turn using the session dir captured at turn start.
+    // Do NOT use ctx.getActiveGitManager() — the user may have switched sessions.
     try {
-      const git = ctx.getActiveGitManager();
-      const firstLine = ctx.getTurnSummary().split("\n")[0]?.slice(0, 120) || "Agent turn";
-      const hash = await git.autoCommit(firstLine);
-      if (hash) {
-        emitDone({ type: "git_committed", hash, message: firstLine });
-        // Schedule auto-push (debounced)
-        ctx.scheduleAutoPush(git, ctx.send);
+      if (capturedSessionDir) {
+        const git = ctx.createGitManager(capturedSessionDir);
+        const firstLine = ctx.getTurnSummary().split("\n")[0]?.slice(0, 120) || "Agent turn";
+        const hash = await git.autoCommit(firstLine);
+        if (hash) {
+          emitDone({ type: "git_committed", hash, message: firstLine });
+          // Schedule auto-push (debounced)
+          ctx.scheduleAutoPush(git, ctx.send);
+        }
       }
     } catch (err) {
       console.error("[git] auto-commit failed:", getErrorMessage(err));
     }
 
-    // Restart preview after agent finishes in case new files were created
-    if (!ctx.previewManager.running) {
-      await ctx.previewManager.start(ctx.getActiveDir());
+    // Restart preview after agent finishes in case new files were created.
+    // Use the captured session dir to avoid restarting the wrong preview.
+    if (capturedSessionDir && !ctx.previewManager.running) {
+      await ctx.previewManager.start(capturedSessionDir);
     }
 
     // Scan for dev servers that the agent may have started.
@@ -350,7 +363,7 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
       const nextFileRefs = next.files && next.files.length > 0 ? next.files : undefined;
       let nextValidatedFiles: FileAttachment[] = [];
       if (nextFileRefs) {
-        const dir = ctx.getActiveSessionDir() ?? ctx.workspaceDir;
+        const dir = capturedSessionDir ?? ctx.workspaceDir;
         const fileResult = await resolveFileAttachments(nextFileRefs, dir);
         if (fileResult.error) {
           emitDone({ type: "error", message: fileResult.error });
@@ -359,8 +372,8 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
         }
         nextValidatedFiles = fileResult.files;
       }
-      const nextSession = ctx.getActiveAppSessionId()
-        ? ctx.sessionManager.get(ctx.getActiveAppSessionId()!)
+      const nextSession = capturedSessionId
+        ? ctx.sessionManager.get(capturedSessionId)
         : undefined;
       try {
         await runClaudeWithMessage(ctx, {
@@ -378,9 +391,8 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
     }
 
     // Broadcast session_agent_finished to all clients (sidebar activity)
-    const doneSessionId = ctx.getActiveAppSessionId();
-    if (doneSessionId && !ctx.getIsClaudeRunning()) {
-      ctx.broadcast({ type: "session_agent_finished", sessionId: doneSessionId });
+    if (capturedSessionId && !ctx.getIsClaudeRunning()) {
+      ctx.broadcast({ type: "session_agent_finished", sessionId: capturedSessionId });
       if (runner) runner.onAgentFinished();
     }
   });
@@ -586,6 +598,10 @@ export async function handleAnswerQuestion(ctx: HandlerContext, msg: WsAnswerQue
     }
   }
 
+  // Capture session context at turn start — immune to session switches
+  const capturedSessionId = ctx.getActiveAppSessionId();
+  const capturedSessionDir = ctx.getActiveSessionDir();
+
   ctx.setTurnSummary("");
   ctx.setAccumulatedText("");
   ctx.setAccumulatedToolUse([]);
@@ -597,15 +613,15 @@ export async function handleAnswerQuestion(ctx: HandlerContext, msg: WsAnswerQue
   };
 
   // Persist the user answer immediately if we have a session
-  const activeAppSessionId = ctx.getActiveAppSessionId();
-  if (activeAppSessionId) {
-    persistUserMessage(activeAppSessionId);
+  if (capturedSessionId) {
+    persistUserMessage(capturedSessionId);
   }
 
   wireAgentListeners(ctx, currentAgent, {
     isNewSession: false,
     persistUserMessage,
     fallbackTitle: answerText.slice(0, 80) || "Answer",
+    capturedSessionId,
   });
 
   currentAgent.on("done", async (code: number | null) => {
@@ -614,34 +630,36 @@ export async function handleAnswerQuestion(ctx: HandlerContext, msg: WsAnswerQue
     ctx.setAgent(null);
 
     try {
-      const git = ctx.getActiveGitManager();
-      const firstLine = ctx.getTurnSummary().split("\n")[0]?.slice(0, 120) || "Agent turn";
-      const hash = await git.autoCommit(firstLine);
-      if (hash) {
-        ctx.send({ type: "git_committed", hash, message: firstLine });
-        // Schedule auto-push (debounced)
-        ctx.scheduleAutoPush(git, ctx.send);
+      if (capturedSessionDir) {
+        const git = ctx.createGitManager(capturedSessionDir);
+        const firstLine = ctx.getTurnSummary().split("\n")[0]?.slice(0, 120) || "Agent turn";
+        const hash = await git.autoCommit(firstLine);
+        if (hash) {
+          ctx.send({ type: "git_committed", hash, message: firstLine });
+          // Schedule auto-push (debounced)
+          ctx.scheduleAutoPush(git, ctx.send);
+        }
       }
     } catch (err) {
       console.error("[git] auto-commit failed:", getErrorMessage(err));
     }
 
-    if (!ctx.previewManager.running) {
-      await ctx.previewManager.start(ctx.getActiveDir());
+    if (capturedSessionDir && !ctx.previewManager.running) {
+      await ctx.previewManager.start(capturedSessionDir);
     }
     await ctx.runPortScan();
   });
 
   // Look up agent session ID for --resume
-  const session = activeAppSessionId ? ctx.sessionManager.get(activeAppSessionId) : undefined;
-  const agentSessionId = session?.agentSessionId ?? activeAppSessionId;
+  const session = capturedSessionId ? ctx.sessionManager.get(capturedSessionId) : undefined;
+  const agentSessionId = session?.agentSessionId ?? capturedSessionId;
 
   const systemPrompt = await ctx.readSystemPrompt();
   currentAgent.run({
     prompt: answerText,
     sessionId: agentSessionId,
     systemPrompt,
-    cwd: ctx.getActiveDir(),
+    cwd: capturedSessionDir ?? ctx.workspaceDir,
   });
   ctx.broadcastLog("server", "Agent process started");
 }
