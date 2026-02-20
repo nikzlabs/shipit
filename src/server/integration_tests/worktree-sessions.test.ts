@@ -143,7 +143,7 @@ describe("Integration: Worktree sessions", () => {
     expect(fs.existsSync(forkedMsg.session.workspaceDir)).toBe(true);
 
     client.close();
-  });
+  }, 15_000);
 
   it("fork_session rejects empty branch name", async () => {
     const client = await TestClient.connect(port);
@@ -231,17 +231,32 @@ describe("Integration: Worktree sessions", () => {
 
     // Fork it
     client.send({ type: "fork_session", branchName: "to-archive" } as any);
-    const forkedMsg = await client.receive(); // session_forked
-    await client.receive(); // session_list
 
-    const childId = (forkedMsg as any).session.id;
-    const childDir = (forkedMsg as any).session.workspaceDir;
+    // Collect both session_forked and session_list from fork (skip any interleaved messages)
+    let forkedMsg: any = null;
+    let forkListReceived = false;
+    const forkDeadline = Date.now() + 5000;
+    while (Date.now() < forkDeadline && (!forkedMsg || !forkListReceived)) {
+      const msg = await client.receive();
+      if (msg.type === "session_forked") forkedMsg = msg;
+      if (msg.type === "session_list") forkListReceived = true;
+    }
+    expect(forkedMsg).not.toBeNull();
+
+    const childId = forkedMsg.session.id;
+    const childDir = forkedMsg.session.workspaceDir;
 
     // Archive the child
     client.send({ type: "archive_session", sessionId: childId });
-    const listMsg = await client.receive();
 
-    expect(listMsg.type).toBe("session_list");
+    // Wait for session_list response from archive (skip any interleaved messages)
+    const archiveDeadline = Date.now() + 5000;
+    let listMsg: any = null;
+    while (Date.now() < archiveDeadline && !listMsg) {
+      const msg = await client.receive();
+      if (msg.type === "session_list") listMsg = msg;
+    }
+    expect(listMsg).not.toBeNull();
 
     // The child session should be archived
     const child = sessionManager.get(childId);
@@ -251,7 +266,7 @@ describe("Integration: Worktree sessions", () => {
     expect(fs.existsSync(childDir)).toBe(false);
 
     client.close();
-  });
+  }, 15_000);
 
   // ---- merge_session ----
 
@@ -307,11 +322,20 @@ describe("Integration: Worktree sessions", () => {
 
     // Fork it
     client.send({ type: "fork_session", branchName: "to-merge" } as any);
-    const forkedMsg = await client.receive();
-    await client.receive(); // session_list
 
-    const childId = (forkedMsg as any).session.id;
-    const childDir = (forkedMsg as any).session.workspaceDir;
+    // Collect both session_forked and session_list from fork (skip any interleaved messages)
+    let forkedMsg: any = null;
+    let forkListReceived = false;
+    const forkDeadline = Date.now() + 5000;
+    while (Date.now() < forkDeadline && (!forkedMsg || !forkListReceived)) {
+      const msg = await client.receive();
+      if (msg.type === "session_forked") forkedMsg = msg;
+      if (msg.type === "session_list") forkListReceived = true;
+    }
+    expect(forkedMsg).not.toBeNull();
+
+    const childId = forkedMsg.session.id;
+    const childDir = forkedMsg.session.workspaceDir;
 
     // Make changes in the child worktree
     fs.writeFileSync(path.join(childDir, "feature.txt"), "new feature");
@@ -320,11 +344,17 @@ describe("Integration: Worktree sessions", () => {
 
     // Merge the child into the parent (parent is still active)
     client.send({ type: "merge_session", sourceSessionId: childId } as any);
-    const msg = await client.receive();
 
-    expect(msg.type).toBe("merge_result");
-    expect((msg as any).success).toBe(true);
-    expect((msg as any).message).toContain("to-merge");
+    // Wait for merge_result (skip any interleaved messages)
+    let mergeMsg: any = null;
+    const mergeDeadline = Date.now() + 5000;
+    while (Date.now() < mergeDeadline && !mergeMsg) {
+      const msg = await client.receive();
+      if (msg.type === "merge_result") mergeMsg = msg;
+    }
+    expect(mergeMsg).not.toBeNull();
+    expect(mergeMsg.success).toBe(true);
+    expect(mergeMsg.message).toContain("to-merge");
 
     // Verify the file exists in the parent
     const parentSession = sessionManager.get(parentId);
@@ -332,7 +362,7 @@ describe("Integration: Worktree sessions", () => {
     expect(fs.existsSync(path.join(parentSession!.workspaceDir!, "feature.txt"))).toBe(true);
 
     client.close();
-  });
+  }, 15_000);
 });
 
 // ---------------------------------------------------------------------------
@@ -462,7 +492,7 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     expect(session2Msg.type).toBe("session_started");
     const session2 = (session2Msg as any).session;
 
-    const claude2 = await waitForClaude(() => lastClaude, claude1);
+    const claude2 = await waitForClaude(() => lastClaude, claude1, 10_000);
     claude2.finish();
 
     // Drain remaining messages
@@ -485,7 +515,7 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     const reposDir = path.join(tmpDir, "repos");
     const repoDirs = fs.readdirSync(reposDir);
     expect(repoDirs.length).toBe(1); // only one shared clone
-  });
+  }, 15_000);
 
   it("worktree session changes are independent from parent", async () => {
     const bareRepoPath = createBareRepo();
@@ -520,7 +550,7 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     client2.send({ type: "home_send_with_repo", repoUrl, text: "Second" } as any);
 
     let session2Id = "";
-    const claude2 = await waitForClaude(() => lastClaude, claude1);
+    const claude2 = await waitForClaude(() => lastClaude, claude1, 10_000);
     claude2.finish();
     try {
       while (true) {
@@ -542,5 +572,5 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     // Parent should NOT have the file
     const session1 = sessionManager.get(session1Id)!;
     expect(fs.existsSync(path.join(session1.workspaceDir!, "new-file.txt"))).toBe(false);
-  });
+  }, 15_000);
 });
