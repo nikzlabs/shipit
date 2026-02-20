@@ -87,6 +87,23 @@ export async function handleArchiveSession(ctx: HandlerContext, msg: WsArchiveSe
     ctx.setActiveSessionDir(null);
   }
   ctx.sessionManager.archive(msg.sessionId);
+
+  // Clean up the shared repo directory when no non-archived sessions remain for it
+  if (sessionToArchive?.remoteUrl) {
+    const remaining = ctx.sessionManager.findAllByRemoteUrl(sessionToArchive.remoteUrl);
+    if (remaining.length === 0) {
+      try {
+        const fs = await import("node:fs/promises");
+        const repoDir = ctx.getSharedRepoDir(sessionToArchive.remoteUrl);
+        await fs.rm(repoDir, { recursive: true, force: true });
+        console.log("[server] Cleaned up shared repo (no remaining sessions):", repoDir);
+      } catch (err) {
+        const { getErrorMessage } = await import("../validation.js");
+        console.warn("[server] Shared repo cleanup failed:", getErrorMessage(err));
+      }
+    }
+  }
+
   ctx.send({ type: "session_list", sessions: ctx.sessionManager.list() });
 }
 
@@ -105,6 +122,25 @@ export function handleRenameSession(ctx: HandlerContext, msg: WsRenameSession): 
 }
 
 export async function handleGetChatHistory(ctx: HandlerContext, msg: WsGetChatHistory): Promise<void> {
+  const session = ctx.sessionManager.get(msg.sessionId);
+
+  // Check if a worktree session's directory is missing before activating
+  if (session?.sessionType === "worktree" && session.workspaceDir) {
+    const fsModule = await import("node:fs/promises");
+    const dirExists = await fsModule.stat(session.workspaceDir).then(() => true, () => false);
+    if (!dirExists) {
+      // Still send the chat history so the user can see past messages,
+      // but warn that the workspace is gone.
+      const messages = ctx.chatHistoryManager.load(msg.sessionId);
+      ctx.send({ type: "chat_history", sessionId: msg.sessionId, messages });
+      ctx.send({
+        type: "error",
+        message: "This session's workspace is no longer available. The worktree may have been cleaned up.",
+      });
+      return;
+    }
+  }
+
   // Activate the requested session (session switch)
   await ctx.activateSession(msg.sessionId);
   const messages = ctx.chatHistoryManager.load(msg.sessionId);

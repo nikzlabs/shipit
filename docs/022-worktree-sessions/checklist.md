@@ -32,7 +32,7 @@
 - [x] Integration test — all sessions are worktrees from single shared clone
 - [x] Integration test — worktree session changes are independent
 
-## Phase 4: Edge Cases
+## Phase 4: Edge Cases (Done)
 
-- [ ] Graceful error when worktree directory is missing on session resume
-- [ ] Shared repo cleanup when all sessions for a repo are archived
+- [x] Graceful error when worktree directory is missing on session resume
+- [x] Shared repo cleanup when all sessions for a repo are archived
