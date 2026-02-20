@@ -52,48 +52,6 @@ When a user switches sessions, preview-related state is not cleaned up:
 
 Lives at the workspace root (e.g. `/workspace/sessions/{id}/shipit.yaml`).
 
-Two top-level keys — **`install`** (dependency installation) and **`preview`**
-(dev server or static HTML).
-
-### `install` key
-
-An optional shell command that installs project dependencies. Runs before the
-preview server starts. Typically `npm install`, but can be any command
-(`yarn install`, `pnpm install`, `pip install -r requirements.txt`, etc.).
-
-```yaml
-# Install dependencies before starting preview
-install: npm install
-preview:
-  command: npm run dev
-  ports: [5173]
-```
-
-The `install` command runs:
-
-1. **After template application** — when `apply_template` or
-   `home_create_repo_with_template` scaffolds files that include a
-   `shipit.yaml` with an `install` field.
-2. **After `shipit.yaml` is created or modified** — when Claude (or the user)
-   writes `shipit.yaml` mid-session and the FileWatcher detects it.
-3. **On session resume** — when the user switches to a session whose
-   `shipit.yaml` has an `install` field, if the install has not already run
-   (determined by checking for an install marker file `.shipit/.install-done`).
-4. **Before the preview command** — PreviewManager always runs `install` (if
-   configured) before spawning the preview command. If install fails, the
-   preview does not start and an `install_status` error message is sent.
-
-The install process:
-- Runs with `cwd` set to the workspace root (or `preview.directory` if set).
-- stdout/stderr are streamed to the client as `log_entry` messages with
-  `source: "install"`.
-- On success, writes a marker file `.shipit/.install-done` to avoid redundant
-  re-runs on session switches.
-- On failure, sends `install_status { status: "error" }` and does not start
-  the preview.
-
-### `preview` key
-
 Two mutually exclusive modes — **`command`** (run a dev server) or **`html`**
 (serve static files):
 
@@ -122,21 +80,14 @@ preview:
 The first port in the list is the **primary** preview (shown by default in the
 iframe). All ports appear in the port selector dropdown so the user can switch.
 
-### Full example
-
-```yaml
-install: npm install
-preview:
-  command: npm run dev
-  ports: [5173]
-  directory: packages/frontend
-```
+`shipit.yaml` also supports an optional `install` field for dependency
+installation — see [039 — Install command](../039-install-command/plan.md).
 
 **Fields:**
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `install` | no | — | Shell command to install dependencies. Runs before the preview starts. Executed with `cwd` set to workspace root (or `preview.directory`). |
+| `install` | no | — | Shell command to install dependencies. See [doc 039](../039-install-command/plan.md). |
 | `preview.command` | mutual-excl with `html` | — | Shell command to run. Executed with `cwd` set to the workspace root. |
 | `preview.html` | mutual-excl with `command` | — | Path to an HTML file relative to workspace root. Served by ShipIt's bundled Vite on port 5173 with error-capture plugin. |
 | `preview.ports` | no | auto-detect | Port(s) the command listens on. Array of numbers. Only used with `command`. If omitted, PreviewManager polls the scan-port list until one opens. |
@@ -151,19 +102,10 @@ preview:
 ```
 
 ```yaml
-# Vite-based React app with dependency install
-install: npm install
+# Vite-based React app
 preview:
   command: npm run dev
   ports: [5173]
-```
-
-```yaml
-# Python project
-install: pip install -r requirements.txt
-preview:
-  command: python -m http.server 8000
-  ports: [8000]
 ```
 
 **Parsing:** Use a small YAML parser (`yaml` npm package, already available in
@@ -270,25 +212,10 @@ start(workspaceDir):
     emit("config_missing")
     return
 
-  // ---- Install step ----
+  // Install step — see doc 039 for details
   if config.install:
-    cwd = resolve(workspaceDir, config.mode.directory ?? ".")
-    markerDir = join(workspaceDir, ".shipit")
-    markerFile = join(markerDir, ".install-done")
+    run install command, skip if marker exists, emit install_status events
 
-    // Skip if install has already succeeded for this workspace
-    if not exists(markerFile):
-      emit("install_status", { status: "running" })
-      exitCode = await runCommand(config.install, { cwd })
-      if exitCode !== 0:
-        emit("install_status", { status: "error", message: "Install failed with exit code ${exitCode}" })
-        return   // Do not start preview
-      // Write marker to avoid redundant re-runs
-      mkdirSync(markerDir, { recursive: true })
-      writeFileSync(markerFile, new Date().toISOString())
-      emit("install_status", { status: "complete" })
-
-  // ---- Preview step ----
   if config.mode.kind === "html":
     // Use ShipIt's bundled Vite binary with wrapper config (error capture)
     // Resolve html path to determine the root directory for Vite
@@ -516,25 +443,6 @@ interface WsPreviewConfigError {
 }
 ```
 
-### `install_status` (server → client)
-
-Sent when the install command starts, completes, or fails. Allows the client
-to show install progress in the preview pane or status bar.
-
-```ts
-interface WsInstallStatus {
-  type: "install_status";
-  status: "running" | "complete" | "error";
-  /** Human-readable message (e.g. error details). */
-  message?: string;
-}
-```
-
-**UI behavior:**
-- `running`: PreviewFrame shows "Installing dependencies..." with a spinner.
-- `complete`: Clears the install indicator; preview starts normally.
-- `error`: PreviewFrame shows the error message with a "Retry" button.
-
 ---
 
 ## 6. Client UI for missing config
@@ -564,7 +472,8 @@ and PreviewManager starts, the normal preview replaces this prompt.
 
 Every template that runs a dev server gets a `shipit.yaml`. Templates that
 don't serve HTTP (node-cli-ts) do not. Templates with a `package.json` include
-`install: npm install` so dependencies are installed automatically.
+`install: npm install` so dependencies are installed automatically (see
+[doc 039](../039-install-command/plan.md)).
 
 | Template | `shipit.yaml` contents |
 |----------|----------------------|
@@ -689,10 +598,10 @@ changes are needed for multi-port support.
 | File | Changes |
 |------|---------|
 | `src/server/preview-config.ts` | **New.** `resolvePreviewConfig()`, YAML parsing, `PreviewConfig` type (with `install` field). |
-| `src/server/preview-manager.ts` | **New.** Replaces `src/server/vite-manager.ts`. Config-driven process lifecycle. Runs `install` command before starting preview, writes `.shipit/.install-done` marker on success. |
+| `src/server/preview-manager.ts` | **New.** Replaces `src/server/vite-manager.ts`. Config-driven process lifecycle. Runs `install` command before starting preview (see [doc 039](../039-install-command/plan.md)). |
 | `src/server/vite-manager.ts` | **Deleted.** Logic moves into PreviewManager's bare-`vite` special case. |
 | `src/server/index.ts` | Replace `viteManager` with `previewManager`. Update `activateSession()`, `new_session`, post-turn handler, `getPreviewStatus()`, FileWatcher `shipit.yaml` detection. Add `killProcessesOnPorts()`. Handle `init_preview_config` and `preview_config_missing` / `preview_config_error` / `install_status` messages. |
-| `src/server/types.ts` | Add `WsPreviewConfigMissing`, `WsPreviewConfigError`, `WsInitPreviewConfig`, `WsInstallStatus` to message unions. |
+| `src/server/types.ts` | Add `WsPreviewConfigMissing`, `WsPreviewConfigError`, `WsInitPreviewConfig` to message unions. |
 | `src/server/templates.ts` | Add `shipit.yaml` (with `install: npm install` where applicable) to each template's `files` map (except node-cli-ts). |
 | `src/client/App.tsx` | Reset preview state in `resumeSessionInternal()` and `handleSessionNew()`. Handle `preview_config_missing` / `preview_config_error` / `install_status`. Handle `init_preview_config` send. |
 | `src/client/components/PreviewFrame.tsx` | Show "no config" prompt with "Set up with Claude" button when config missing. Show install progress/errors. |
@@ -746,28 +655,6 @@ changes are needed for multi-port support.
    `"stopped"`. The port scanner can still find the actual port if the server
    chose a fallback.
 
-12. **Install command fails.** PreviewManager emits `install_status` with
-   `status: "error"` and does not start the preview. The client shows the
-   error with a "Retry" button. On retry, the marker file is absent (never
-   written on failure), so install runs again.
-
-13. **Install already completed.** `.shipit/.install-done` marker exists. The
-   install step is skipped entirely. To force a re-install, delete the marker
-   file (or run the install command via the interactive terminal).
-
-14. **`shipit.yaml` changed mid-install.** The FileWatcher fires and calls
-   `previewManager.restart()`. The `stop()` call sends SIGTERM to the install
-   process. The new `start()` reads the updated config and re-runs install.
-
-15. **`install` with no `preview`.** If `shipit.yaml` has `install` but no
-   `preview` key, config resolution returns `source: "none"` — the install
-   field is only used when preview config is also present. This avoids
-   running install for projects with no preview intent.
-
-16. **Session switch during install.** `stop()` kills the install process.
-   The marker file was never written (install didn't complete), so the next
-   `start()` for this session will re-run install.
-
 ---
 
 ## Testing
@@ -788,10 +675,6 @@ changes are needed for multi-port support.
 10. Returns `source: "none"` when no files exist at all.
 11. Returns `source: "none"` when `package.json` exists but has no dev script and no `index.html`.
 12. Handles malformed `shipit.yaml` gracefully (returns error info).
-13. Resolves `shipit.yaml` with `install` field — returns `install: "npm install"`.
-14. Resolves `shipit.yaml` without `install` field — returns `install: undefined`.
-15. Non-string `install` value is rejected (validation error).
-16. Fallback to `package.json` does not set `install` (only `shipit.yaml` can).
 
 ### Integration tests
 
@@ -819,25 +702,8 @@ changes are needed for multi-port support.
 11. **Config-missing button sends `init_preview_config`.** Click button.
     Assert WS message sent.
 
-### Install tests
-
-**`src/server/integration_tests/session-switch-preview.test.ts`** (additional):
-
-8. **Install runs before preview.** Session with `shipit.yaml` containing
-   `install: npm install`. Assert `install_status { status: "running" }`
-   is sent before preview starts.
-9. **Install failure blocks preview.** Stub install command to exit with
-   code 1. Assert `install_status { status: "error" }` sent and preview
-   does not start.
-10. **Install skipped when marker exists.** Write `.shipit/.install-done`
-    before starting. Assert no `install_status` message sent.
-11. **Install marker written on success.** After successful install, assert
-    `.shipit/.install-done` exists in workspace dir.
-
 ### Template tests
 
 12. **All server templates include `shipit.yaml`.** Iterate templates, assert
     each server-capable template has `shipit.yaml` in its files map with valid
     `preview.command`/`preview.ports` or `preview.html`.
-13. **All npm templates include `install` field.** Iterate templates that have
-    `package.json`, assert their `shipit.yaml` includes `install: npm install`.
