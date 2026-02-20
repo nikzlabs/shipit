@@ -621,10 +621,12 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     const deadline = Date.now() + 5000;
     let errorMsg: any = null;
     while (Date.now() < deadline && !errorMsg) {
-      const msg = await client2.receive(deadline - Date.now());
-      if (msg.type === "error" && (msg as any).message?.includes("workspace")) {
-        errorMsg = msg;
-      }
+      try {
+        const msg = await client2.receive(1000);
+        if (msg.type === "error" && (msg as any).message?.includes("workspace")) {
+          errorMsg = msg;
+        }
+      } catch { break; }
     }
     expect(errorMsg).not.toBeNull();
     expect(errorMsg.message).toContain("workspace is no longer available");
