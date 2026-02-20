@@ -113,6 +113,11 @@ export class SessionManager {
     return true;
   }
 
+  /** Clear all in-memory session data (used by full reset). */
+  clear(): void {
+    this.sessions = [];
+  }
+
   /** Delete a session by id. */
   delete(id: string): boolean {
     const idx = this.sessions.findIndex((s) => s.id === id);
