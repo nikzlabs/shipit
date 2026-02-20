@@ -89,14 +89,14 @@ describe("Integration: PR creation — happy path", () => {
     await createSession(client);
 
     client.send({ type: "github_set_token", token: "ghp_test" });
-    await client.receive(); // github_status
+    await client.receiveSkipLogs(); // github_status (skip any runner messages)
 
     client.send({
       type: "github_set_remote",
       name: "origin",
       url: "https://github.com/test-user/my-project.git",
     });
-    await client.receive(); // github_remotes
+    await client.receiveSkipLogs(); // github_remotes (skip any runner messages)
   }
 
   it("creates a PR successfully with auth + remote configured", async () => {

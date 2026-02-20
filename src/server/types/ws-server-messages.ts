@@ -309,6 +309,28 @@ export interface WsPreviewConfigError {
   message: string;
 }
 
+// ---- Session runner messages (server → client) ----
+
+/** Server → Client: current runtime state of a session. */
+export interface WsSessionStatus {
+  type: "session_status";
+  sessionId: string;
+  running: boolean;
+  queueLength: number;
+}
+
+/** Server → Client: agent started running in a session (broadcast to all clients). */
+export interface WsSessionAgentStarted {
+  type: "session_agent_started";
+  sessionId: string;
+}
+
+/** Server → Client: agent finished in a session (broadcast to all clients). */
+export interface WsSessionAgentFinished {
+  type: "session_agent_finished";
+  sessionId: string;
+}
+
 export type WsServerMessage =
   | WsClaudeEvent
   | WsAgentEvent
@@ -376,4 +398,7 @@ export type WsServerMessage =
   | WsPreviewConfigError
   | WsClearLogs
   | WsTurnDiff
-  | WsRejectChangesComplete;
+  | WsRejectChangesComplete
+  | WsSessionStatus
+  | WsSessionAgentStarted
+  | WsSessionAgentFinished;

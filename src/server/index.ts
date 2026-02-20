@@ -25,8 +25,10 @@ import { CloudflareTarget } from "./deploy-targets/cloudflare.js";
 import { ClaudeAdapter } from "./agents/claude-adapter.js";
 import { CodexAdapter } from "./agents/codex-adapter.js";
 import { AgentRegistry } from "./agents/agent-registry.js";
+import { SessionRunnerRegistry } from "./session-runner.js";
+import type { SessionRunner } from "./session-runner.js";
 import type { AgentId, AgentEvent, AgentProcess } from "./agents/agent-process.js";
-import type { WsClientMessage, WsServerMessage, WsLogEntry, ImageAttachment, FileContextRef, PermissionMode } from "./types.js";
+import type { WsClientMessage, WsServerMessage, WsLogEntry } from "./types.js";
 import { getErrorMessage } from "./validation.js";
 import type { HandlerContext } from "./ws-handlers/types.js";
 import * as gitHandlers from "./ws-handlers/git-handlers.js";
@@ -112,6 +114,16 @@ export interface AppDeps {
    * Inject a stub in tests to avoid real filesystem watching.
    */
   fileWatcher?: FileWatcher;
+  /**
+   * Factory for creating per-session PreviewManager instances (inside SessionRunner).
+   * Defaults to `() => new PreviewManager()`. Inject a stub factory in tests.
+   */
+  createPreviewManager?: () => PreviewManager;
+  /**
+   * Factory for creating per-session FileWatcher instances (inside SessionRunner).
+   * Defaults to `() => new FileWatcher()`. Inject a stub factory in tests.
+   */
+  createFileWatcher?: () => FileWatcher;
   /**
    * Thread manager instance. Defaults to `new ThreadManager()`.
    * Manages conversation threads and checkpoints.
@@ -284,9 +296,21 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     });
   });
 
-  // ---- File watcher ----
+  // ---- File watcher (global instance — used as fallback before any session is active) ----
   const fileWatcher = deps.fileWatcher ?? new FileWatcher();
-  fileWatcher.start(workspaceDir);
+
+  // ---- Session runner registry (app-level, shared across connections) ----
+  // Runners create per-session preview and file watcher instances, ref-counted by viewers.
+  // When deps provides a singleton (test stubs), we don't create per-runner instances
+  // unless an explicit factory is given. In production (no deps), use real factories.
+  const runnerCreatePreviewManager = deps.createPreviewManager
+    ?? (deps.previewManager ? undefined : () => new PreviewManager());
+  const runnerCreateFileWatcher = deps.createFileWatcher
+    ?? (deps.fileWatcher ? undefined : () => new FileWatcher());
+  const runnerRegistry = new SessionRunnerRegistry({
+    createPreviewManager: runnerCreatePreviewManager,
+    createFileWatcher: runnerCreateFileWatcher,
+  });
 
   // Track connected WebSocket clients so we can broadcast
   const clients = new Set<{ readyState: number; send: (data: string) => void }>();
@@ -329,17 +353,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     broadcast({ type: "deploy_error", message: err.message, phase: err.phase as "building" | "deploying" });
   });
 
-  // ---- File watcher event handler ----
+  // ---- File watcher event handler (global fallback) ----
+  // Per-session file watcher events are handled inside SessionRunner.
+  // This global handler fires only when no runner is managing a session's file watcher
+  // (e.g., pre-session state, or in tests that don't use per-runner factories).
   fileWatcher.on("changes", (changedFiles: string[]) => {
     broadcast({ type: "files_changed", paths: changedFiles });
-    // Detect shipit.yaml changes and restart preview with new config
     if (changedFiles.some((f) => f === "shipit.yaml" || f.endsWith("/shipit.yaml"))) {
-      previewManager.restart(activeSessionDirForFileWatcher ?? workspaceDir);
+      previewManager.restart(workspaceDir);
     }
   });
-
-  // Track the active session dir at app level for file watcher integration
-  let activeSessionDirForFileWatcher: string | null = null;
 
   // Track all auto-detected dev server ports
   let detectedPorts: number[] = [];
@@ -350,13 +373,20 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
    *
    * The exclude list combines three sources:
    *  1. serverPort          — ShipIt's own Fastify server
-   *  2. previewManager ports — the managed preview server ports
+   *  2. managed preview ports — from the global preview manager and active runners
    *  3. baselinePorts       — ports that were already open before the session
    *                           started (system services, ShipIt's own dev Vite, etc.)
    */
   const runPortScan = async () => {
     try {
-      const managedPorts = previewManager.port ? [previewManager.port] : [];
+      // Collect managed ports from global preview and all active runners
+      const managedPorts: number[] = [];
+      if (previewManager.port) managedPorts.push(previewManager.port);
+      for (const sessionId of runnerRegistry.listActive()) {
+        const runner = runnerRegistry.get(sessionId);
+        const rp = runner?.getPreview()?.port;
+        if (rp) managedPorts.push(rp);
+      }
       const excludeList = [serverPort, ...managedPorts, ...baselinePorts];
       const ports = await detectPorts(excludeList);
       const changed =
@@ -389,8 +419,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   };
 
   /**
-   * Build the current preview status message. Managed preview takes priority
-   * when running; otherwise fall back to any port found by the port scanner.
+   * Build the current preview status message. Checks the global preview manager
+   * (used before any session is active) as a fallback. Per-session preview status
+   * is handled by SessionRunner.buildPreviewStatus() and emitted to viewers.
    */
   const getPreviewStatus = (): WsServerMessage => {
     if (previewManager.running && previewManager.port) {
@@ -431,6 +462,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
   };
 
+  // Preview events for the global (pre-session) preview manager.
+  // Per-session preview events are wired inside SessionRunner.wirePreviewEvents().
+  // In production, the global preview is stopped when a runner takes over.
   previewManager.on("ready", () => {
     console.log("[server] Preview server is ready");
     broadcastPreviewStatus();
@@ -543,59 +577,102 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     if (clients.size === 1) {
       startPortScanInterval();
     }
-    let claude: AgentProcess | null = null;
-    let activeAgentId: AgentId = defaultAgentId;
-    let turnSummary = "";
-
-    // ---- Auto-push debounce state ----
-    let pushTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const scheduleAutoPush = (git: GitManager, sendFn: typeof send) => {
-      if (pushTimer) clearTimeout(pushTimer);
-      pushTimer = setTimeout(async () => {
-        pushTimer = null;
-        try {
-          // Check conditions: authenticated, remote exists, not detached HEAD
-          if (!githubAuthManager.authenticated) return;
-          const remotes = await git.getRemotes();
-          const origin = remotes.find((r) => r.name === "origin");
-          if (!origin) return;
-
-          const branch = await git.getCurrentBranch();
-          if (!branch) return;
-
-          await git.push("origin", branch);
-          sendFn({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
-        } catch (err) {
-          broadcastLog("server", `Auto-push failed: ${getErrorMessage(err)}`);
-        }
-      }, autoPushDebounceMs);
-    };
-    // Per-connection interactive terminal
-    let terminal: TerminalProcess | null = null;
-
-    // Per-connection active session state
+    // Per-connection active session state (lightweight — which session this tab views)
     let activeAppSessionId: string | undefined;
     let activeSessionDir: string | null = null;
 
-    // Per-connection message queue (prompt queuing feature)
-    const messageQueue: Array<{
-      text: string;
-      images?: ImageAttachment[];
-      files?: FileContextRef[];
-      permissionMode?: PermissionMode;
-    }> = [];
-    let isClaudeRunning = false;
-    /** Set when user sends interrupt_claude, cleared when a new Claude process starts. */
-    let wasInterrupted = false;
-    // Accumulate the assistant response across streaming events for persistence
-    let accumulatedText = "";
-    let accumulatedToolUse: Array<{ type: "tool_use"; id: string; name: string; input: Record<string, unknown> }> = [];
+    // Per-connection active agent selection (survives across runners)
+    let perConnectionAgentId: AgentId = defaultAgentId;
+
+    // Per-connection interactive terminal (Phase 2 moves to runner)
+    let terminal: TerminalProcess | null = null;
+
+    // Per-connection runner attachment
+    let attachedRunner: SessionRunner | null = null;
+    let runnerMessageListener: ((msg: WsServerMessage) => void) | null = null;
 
     const send = (msg: WsServerMessage) => {
       if (socket.readyState === 1) {
         socket.send(JSON.stringify(msg));
       }
+    };
+
+    // ---- Runner attach/detach helpers ----
+
+    const attachToRunner = (runner: SessionRunner) => {
+      // Already attached to this runner — nothing to do
+      if (attachedRunner === runner) return;
+
+      // Detach from previous runner first
+      detachFromRunner();
+
+      // Stop the global file watcher and preview manager before the runner
+      // starts its own per-session instances (avoids duplicate watchers).
+      // In test mode (no per-runner factories), the globals remain active.
+      if (runnerCreateFileWatcher) fileWatcher.stop();
+      if (runnerCreatePreviewManager) previewManager.stop();
+
+      attachedRunner = runner;
+      runnerMessageListener = (msg: WsServerMessage) => send(msg);
+      runner.on("message", runnerMessageListener);
+      runner.attachViewer();
+
+      // Replay buffered events from the current turn so client catches up
+      for (const buffered of runner.getTurnEventBuffer()) {
+        send(buffered);
+      }
+
+      // Send current queue state
+      if (runner.getQueueSnapshot().length > 0) {
+        send({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+      }
+
+      // Send running status so client shows the right UI state
+      // (only when the runner has activity to report — avoids noise for fresh runners)
+      if (runner.running || runner.queueLength > 0 || runner.getTurnEventBuffer().length > 0) {
+        send({
+          type: "session_status",
+          sessionId: runner.sessionId,
+          running: runner.running,
+          queueLength: runner.queueLength,
+        });
+      }
+
+      // Send preview status from the runner's preview manager (if it has one)
+      if (runner.getPreview()) {
+        send(runner.buildPreviewStatus(detectedPorts));
+      }
+    };
+
+    const detachFromRunner = () => {
+      if (attachedRunner && runnerMessageListener) {
+        attachedRunner.off("message", runnerMessageListener);
+        attachedRunner.detachViewer();
+      }
+      attachedRunner = null;
+      runnerMessageListener = null;
+    };
+
+    // ---- Auto-push (per-runner, but created here for githubAuthManager access) ----
+    const scheduleAutoPush = (git: GitManager, _sendFn: typeof send) => {
+      const runner = attachedRunner;
+      if (!runner) return;
+      runner.clearPushTimer();
+      runner.setPushTimer(setTimeout(async () => {
+        runner.setPushTimer(null);
+        try {
+          if (!githubAuthManager.authenticated) return;
+          const remotes = await git.getRemotes();
+          const origin = remotes.find((r) => r.name === "origin");
+          if (!origin) return;
+          const branch = await git.getCurrentBranch();
+          if (!branch) return;
+          await git.push("origin", branch);
+          runner.emitMessage({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
+        } catch (err) {
+          broadcastLog("server", `Auto-push failed: ${getErrorMessage(err)}`);
+        }
+      }, autoPushDebounceMs));
     };
 
     /** Get the effective workspace directory for file operations. */
@@ -617,14 +694,28 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       const session = sessionManager.get(sessionId);
       activeAppSessionId = sessionId;
       const dir = session?.workspaceDir ?? null;
+
+      // Attach to an existing runner if one exists for this session.
+      // In production (with per-runner factories), also eagerly create a runner
+      // so that preview/file-watcher start when the first viewer attaches.
+      const existingRunner = runnerRegistry.get(sessionId);
+      if (existingRunner) {
+        attachToRunner(existingRunner);
+      } else if (dir && (runnerCreatePreviewManager || runnerCreateFileWatcher)) {
+        // Production: create runner eagerly for per-session resources
+        const runner = runnerRegistry.getOrCreate(sessionId, dir, perConnectionAgentId);
+        attachToRunner(runner);
+      } else {
+        detachFromRunner();
+      }
+
       if (dir !== activeSessionDir) {
         const oldDir = activeSessionDir;
         activeSessionDir = dir;
-        activeSessionDirForFileWatcher = dir;
 
         // Only perform full cleanup when switching away from a previous session
         if (oldDir !== null) {
-          // 1. Stop current preview process
+          // 1. Stop global preview process (runner's preview handled by detach)
           previewManager.stop();
 
           // 2. Clear detected ports
@@ -638,16 +729,18 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           broadcast({ type: "clear_logs" });
         }
 
-        // 5. Restart file watcher to the new directory
-        fileWatcher.stop();
-        fileWatcher.start(getActiveDir());
-
-        // 6. Start preview for the new session's workspace (if it exists)
-        if (dir) {
+        // 5. If the runner doesn't have per-session resources (test mode),
+        //    use the global file watcher and preview manager as fallback.
+        const runner = attachedRunner;
+        if (runner && !runner.getFileWatcher()) {
+          fileWatcher.stop();
+          fileWatcher.start(getActiveDir());
+        }
+        if (runner && !runner.getPreview() && dir) {
           await previewManager.start(dir);
         }
 
-        // 7. Run a fresh port scan
+        // 6. Run a fresh port scan
         await runPortScan();
       }
       // Check git identity for the newly activated session
@@ -700,6 +793,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     };
 
     // ---- Handler context for extracted WebSocket handlers ----
+    // Agent state getters/setters delegate to the attached SessionRunner.
+    // If no runner is attached, they use safe defaults (null, false, etc.).
     const ctx: HandlerContext = {
       send,
       broadcast,
@@ -712,25 +807,31 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       setActiveSessionDir: (dir) => { activeSessionDir = dir; },
       activateSession,
       agentFactory,
-      getAgent: () => claude,
-      setAgent: (a) => { claude = a; },
-      getActiveAgentId: () => activeAgentId,
-      setActiveAgentId: (id) => { activeAgentId = id; },
-      getIsClaudeRunning: () => isClaudeRunning,
-      setIsClaudeRunning: (v) => { isClaudeRunning = v; },
-      getWasInterrupted: () => wasInterrupted,
-      setWasInterrupted: (v) => { wasInterrupted = v; },
-      getTurnSummary: () => turnSummary,
-      setTurnSummary: (s) => { turnSummary = s; },
-      getAccumulatedText: () => accumulatedText,
-      setAccumulatedText: (s) => { accumulatedText = s; },
-      getAccumulatedToolUse: () => accumulatedToolUse,
-      setAccumulatedToolUse: (blocks) => { accumulatedToolUse = blocks; },
-      getMessageQueue: () => messageQueue,
-      clearMessageQueue: () => { messageQueue.length = 0; },
+      // Agent state delegates to runner
+      getAgent: () => attachedRunner?.getAgent() ?? null,
+      setAgent: (a) => { if (attachedRunner) attachedRunner.setAgent(a); },
+      getActiveAgentId: () => attachedRunner?.agentId ?? perConnectionAgentId,
+      setActiveAgentId: (id) => { perConnectionAgentId = id; if (attachedRunner) attachedRunner.agentId = id; },
+      getIsClaudeRunning: () => attachedRunner?.running ?? false,
+      setIsClaudeRunning: (v) => { if (attachedRunner) attachedRunner.running = v; },
+      getWasInterrupted: () => attachedRunner?.wasInterrupted ?? false,
+      setWasInterrupted: (v) => { if (attachedRunner) attachedRunner.wasInterrupted = v; },
+      getTurnSummary: () => attachedRunner?.turnSummary ?? "",
+      setTurnSummary: (s) => { if (attachedRunner) attachedRunner.turnSummary = s; },
+      getAccumulatedText: () => attachedRunner?.accumulatedText ?? "",
+      setAccumulatedText: (s) => { if (attachedRunner) attachedRunner.accumulatedText = s; },
+      getAccumulatedToolUse: () => attachedRunner?.accumulatedToolUse ?? [],
+      setAccumulatedToolUse: (blocks) => { if (attachedRunner) attachedRunner.accumulatedToolUse = blocks; },
+      getMessageQueue: () => attachedRunner?.messageQueue ?? [],
+      clearMessageQueue: () => { if (attachedRunner) attachedRunner.clearQueue(); },
       getTerminal: () => terminal,
       setTerminal: (t) => { terminal = t; },
       clearLogBuffer: () => { logBuffer = []; },
+      // Session runner
+      getRunner: () => attachedRunner,
+      getRunnerRegistry: () => runnerRegistry,
+      attachToRunner,
+      detachFromRunner,
       sessionManager,
       chatHistoryManager,
       createGitManager,
@@ -740,9 +841,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       deploymentStore,
       featureManager,
       usageManager,
-      previewManager,
+      get previewManager() { return attachedRunner?.getPreview() ?? previewManager; },
       authManager,
-      fileWatcher,
+      get fileWatcher() { return attachedRunner?.getFileWatcher() ?? fileWatcher; },
       agentRegistry,
       gitIdentityStore,
       createSessionDir,
@@ -805,7 +906,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         case "save_global_settings": return settingsHandlers.handleSaveGlobalSettings(ctx, msg);
         case "set_agent": {
           const result = settingsHandlers.handleSetAgent(ctx, msg);
-          if (result) activeAgentId = result.newAgentId as AgentId;
+          if (result) ctx.setActiveAgentId(result.newAgentId as AgentId);
           break;
         }
         case "list_agents": return settingsHandlers.handleListAgents(ctx);
@@ -819,6 +920,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         case "archive_session": return sessionHandlers.handleArchiveSession(ctx, msg);
         case "rename_session": return sessionHandlers.handleRenameSession(ctx, msg);
         case "get_chat_history": return sessionHandlers.handleGetChatHistory(ctx, msg);
+        case "get_session_status": return sessionHandlers.handleGetSessionStatus(ctx, msg);
 
         // ---- Worktree operations ----
         case "fork_session": return worktreeHandlers.handleForkSession(ctx, msg);
@@ -902,24 +1004,19 @@ to determine the correct install command, preview mode, command, and ports.`;
       }
     });
 
+    // ---- On disconnect: detach from runner (don't kill anything!) ----
     socket.on("close", () => {
       console.log("[ws] client disconnected");
       clients.delete(socket);
-      if (claude) {
-        claude.kill();
-        claude = null;
-      }
+
+      // Detach from runner — runner keeps going!
+      detachFromRunner();
+
+      // Terminal stays per-connection for now (Phase 2 moves it to runner)
       if (terminal) {
         terminal.kill();
         terminal = null;
       }
-      if (pushTimer) {
-        clearTimeout(pushTimer);
-        pushTimer = null;
-      }
-      // Clear the queue — it belongs to this connection's context
-      messageQueue.length = 0;
-      isClaudeRunning = false;
 
       // Stop periodic port scanning when the last client disconnects
       if (clients.size === 0) {
@@ -936,6 +1033,7 @@ to determine the correct install command, preview mode, command, and ports.`;
     fileWatcher.stop();
     previewManager.stop();
     authManager.kill();
+    runnerRegistry.disposeAll();
   });
 
   return app;

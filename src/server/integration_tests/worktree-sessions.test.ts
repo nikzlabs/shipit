@@ -464,7 +464,7 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
 
     client1.send({ type: "home_send_with_repo", repoUrl, text: "First session" } as any);
 
-    const session1Msg = await client1.receiveSkipLogs();
+    const session1Msg = await client1.receiveSkipLogs(10_000);
     expect(session1Msg.type).toBe("session_started");
     const session1 = (session1Msg as any).session;
 
@@ -472,7 +472,7 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     claude1.finish();
 
     // Drain remaining messages
-    try { while (true) { await client1.receive(300); } } catch { /* done */ }
+    try { while (true) { await client1.receive(500); } } catch { /* done */ }
     client1.close();
 
     // All sessions are worktrees from the shared repo clone
@@ -488,7 +488,7 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
 
     client2.send({ type: "home_send_with_repo", repoUrl, text: "Second session" } as any);
 
-    const session2Msg = await client2.receiveSkipLogs();
+    const session2Msg = await client2.receiveSkipLogs(10_000);
     expect(session2Msg.type).toBe("session_started");
     const session2 = (session2Msg as any).session;
 
@@ -693,13 +693,13 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     await client1.receive(); // preview_status
 
     client1.send({ type: "home_send_with_repo", repoUrl, text: "First" } as any);
-    const s1Msg = await client1.receiveSkipLogs();
+    const s1Msg = await client1.receiveSkipLogs(10_000);
     expect(s1Msg.type).toBe("session_started");
     const session1Id = (s1Msg as any).session.id;
 
     const claude1 = await waitForClaude(() => lastClaude);
     claude1.finish();
-    try { while (true) { await client1.receive(300); } } catch { /* drain */ }
+    try { while (true) { await client1.receive(500); } } catch { /* drain */ }
     client1.close();
 
     // Create second worktree session
@@ -707,13 +707,13 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     await client2.receive(); // preview_status
 
     client2.send({ type: "home_send_with_repo", repoUrl, text: "Second" } as any);
-    const s2Msg = await client2.receiveSkipLogs();
+    const s2Msg = await client2.receiveSkipLogs(10_000);
     expect(s2Msg.type).toBe("session_started");
     const session2Id = (s2Msg as any).session.id;
 
     const claude2 = await waitForClaude(() => lastClaude, claude1, 10_000);
     claude2.finish();
-    try { while (true) { await client2.receive(300); } } catch { /* drain */ }
+    try { while (true) { await client2.receive(500); } } catch { /* drain */ }
     client2.close();
 
     // Verify shared repo exists
@@ -759,21 +759,21 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     const client1 = await TestClient.connect(port);
     await client1.receive(); // preview_status
     client1.send({ type: "home_send_with_repo", repoUrl, text: "First" } as any);
-    const s1Msg = await client1.receiveSkipLogs();
+    const s1Msg = await client1.receiveSkipLogs(10_000);
     const session1Id = (s1Msg as any).session.id;
     const claude1 = await waitForClaude(() => lastClaude);
     claude1.finish();
-    try { while (true) { await client1.receive(300); } } catch { /* drain */ }
+    try { while (true) { await client1.receive(500); } } catch { /* drain */ }
     client1.close();
 
     const client2 = await TestClient.connect(port);
     await client2.receive(); // preview_status
     client2.send({ type: "home_send_with_repo", repoUrl, text: "Second" } as any);
-    const s2Msg = await client2.receiveSkipLogs();
+    const s2Msg = await client2.receiveSkipLogs(10_000);
     expect(s2Msg.type).toBe("session_started");
     const claude2 = await waitForClaude(() => lastClaude, claude1, 10_000);
     claude2.finish();
-    try { while (true) { await client2.receive(300); } } catch { /* drain */ }
+    try { while (true) { await client2.receive(500); } } catch { /* drain */ }
     client2.close();
 
     // Archive only the first session

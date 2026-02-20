@@ -74,16 +74,26 @@ function wireAgentListeners(
     fallbackTitle?: string;
   },
 ): void {
+  const runner = ctx.getRunner();
+  // Helper: emit to all viewers via runner, or fall back to ctx.send
+  const emitToViewers = (msg: import("../types.js").WsServerMessage) => {
+    if (runner) {
+      runner.emitMessage(msg);
+    } else {
+      ctx.send(msg);
+    }
+  };
+
   agent.on("log", (source: string, text: string) => {
     ctx.broadcastLog(source as "stderr" | "stdout" | "server", text);
   });
 
   agent.on("event", (event: AgentEvent) => {
-    ctx.send({ type: "agent_event", event });
+    emitToViewers({ type: "agent_event", event });
 
     const legacyEvent = agentEventToClaudeEvent(event);
     if (legacyEvent) {
-      ctx.send({ type: "claude_event", event: legacyEvent });
+      emitToViewers({ type: "claude_event", event: legacyEvent });
     }
 
     if (event.type === "agent_init") {
@@ -92,7 +102,7 @@ function wireAgentListeners(
         ctx.sessionManager.setAgentSessionId(activeAppSessionId, event.sessionId);
         const session = ctx.sessionManager.get(activeAppSessionId);
         if (session) {
-          ctx.send({ type: "session_started", session });
+          emitToViewers({ type: "session_started", session });
         }
         if (opts.isNewSession) {
           opts.persistUserMessage(activeAppSessionId);
@@ -101,12 +111,12 @@ function wireAgentListeners(
         const title = opts.fallbackTitle ?? "New session";
         const session = ctx.sessionManager.track(event.sessionId, title);
         ctx.setActiveAppSessionId(event.sessionId);
-        ctx.send({ type: "session_started", session });
+        emitToViewers({ type: "session_started", session });
         opts.persistUserMessage(event.sessionId);
       }
 
       if (event.model) {
-        ctx.send({
+        emitToViewers({
           type: "model_info",
           model: event.model,
           contextWindowTokens: getContextWindowSize(event.model),
@@ -150,7 +160,7 @@ function wireAgentListeners(
         const sessionUsage = ctx.usageManager.getSessionUsage(usageSessionId);
         if (sessionUsage) {
           const tokenTotals = ctx.usageManager.getSessionTokenTotals(usageSessionId);
-          ctx.send({
+          emitToViewers({
             type: "usage_update",
             sessionId: sessionUsage.sessionId,
             totalCostUsd: sessionUsage.totalCostUsd,
@@ -177,14 +187,14 @@ function wireAgentListeners(
 
   agent.on("auth_required", () => {
     console.log("[server] Agent CLI requires authentication, starting OAuth flow");
-    ctx.send({ type: "auth_required" });
+    emitToViewers({ type: "auth_required" });
     ctx.authManager.startOAuthFlow();
   });
 
   agent.on("error", (err: Error) => {
     console.error("[agent] process error:", err.message);
     ctx.broadcastLog("server", `Agent process error: ${err.message}`);
-    ctx.send({ type: "error", message: `Agent process error: ${err.message}` });
+    emitToViewers({ type: "error", message: `Agent process error: ${err.message}` });
     const activeAppSessionId = ctx.getActiveAppSessionId();
     if (activeAppSessionId) {
       ctx.chatHistoryManager.append(activeAppSessionId, {
@@ -213,6 +223,10 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
   const { userText, images, validatedFiles, permissionMode, isNewSession } = opts;
   let { agentSessionId } = opts;
 
+  const runner = ctx.getRunner();
+  // Clear the turn event buffer for the new turn
+  if (runner) runner.clearTurnEventBuffer();
+
   ctx.setTurnSummary("");
   ctx.setAccumulatedText("");
   ctx.setAccumulatedToolUse([]);
@@ -220,6 +234,12 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
   ctx.setWasInterrupted(false);
   const currentAgent = ctx.agentFactory(ctx.getActiveAgentId());
   ctx.setAgent(currentAgent);
+
+  // Broadcast session_agent_started to all clients (sidebar activity)
+  const sessionId = ctx.getActiveAppSessionId();
+  if (sessionId) {
+    ctx.broadcast({ type: "session_agent_started", sessionId });
+  }
 
   // Build images metadata for chat history persistence (inline base64)
   const historyImages = images?.map((img) => ({
@@ -264,6 +284,15 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
     persistUserMessage(ctx.getActiveAppSessionId()!);
   }
 
+  // Helper: emit to all viewers via runner, or fall back to ctx.send
+  const emitDone = (msg: import("../types.js").WsServerMessage) => {
+    if (runner) {
+      runner.emitMessage(msg);
+    } else {
+      ctx.send(msg);
+    }
+  };
+
   currentAgent.on("done", async (code: number | null) => {
     console.log("[agent] process exited with code", code);
     ctx.broadcastLog("server", `Agent process exited with code ${code}`);
@@ -275,7 +304,7 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
       const reason = code !== 0
         ? `Agent process exited with code ${code}`
         : "Agent process ended without a response";
-      ctx.send({ type: "error", message: reason });
+      emitDone({ type: "error", message: reason });
     }
 
     // Auto-commit after agent turn using the session's git manager
@@ -284,7 +313,7 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
       const firstLine = ctx.getTurnSummary().split("\n")[0]?.slice(0, 120) || "Agent turn";
       const hash = await git.autoCommit(firstLine);
       if (hash) {
-        ctx.send({ type: "git_committed", hash, message: firstLine });
+        emitDone({ type: "git_committed", hash, message: firstLine });
         // Schedule auto-push (debounced)
         ctx.scheduleAutoPush(git, ctx.send);
       }
@@ -306,12 +335,12 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
     const messageQueue = ctx.getMessageQueue();
     if (ctx.getWasInterrupted() && messageQueue.length > 0) {
       ctx.clearMessageQueue();
-      ctx.send({ type: "queue_updated", queue: [] });
+      emitDone({ type: "queue_updated", queue: [] });
     }
     if (!ctx.getWasInterrupted() && messageQueue.length > 0) {
       const next = messageQueue.shift()!;
       // Notify the client that the queue is now one shorter
-      ctx.send({
+      emitDone({
         type: "queue_updated",
         queue: messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 })),
       });
@@ -324,7 +353,7 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
         const dir = ctx.getActiveSessionDir() ?? ctx.workspaceDir;
         const fileResult = await resolveFileAttachments(nextFileRefs, dir);
         if (fileResult.error) {
-          ctx.send({ type: "error", message: fileResult.error });
+          emitDone({ type: "error", message: fileResult.error });
           ctx.setIsClaudeRunning(false);
           return;
         }
@@ -346,6 +375,13 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
         console.error("[queue] Error processing queued message:", getErrorMessage(err));
         ctx.setIsClaudeRunning(false);
       }
+    }
+
+    // Broadcast session_agent_finished to all clients (sidebar activity)
+    const doneSessionId = ctx.getActiveAppSessionId();
+    if (doneSessionId && !ctx.getIsClaudeRunning()) {
+      ctx.broadcast({ type: "session_agent_finished", sessionId: doneSessionId });
+      if (runner) runner.onAgentFinished();
     }
   });
 
@@ -493,6 +529,15 @@ export async function handleSendMessage(ctx: HandlerContext, msg: WsSendMessage)
     ctx.checkGitIdentity(sessionDir);
   }
 
+  // Ensure a runner exists for this session and attach to it
+  const activeId = ctx.getActiveAppSessionId();
+  const activeDir = ctx.getActiveSessionDir();
+  if (activeId && activeDir) {
+    const registry = ctx.getRunnerRegistry();
+    const runner = registry.getOrCreate(activeId, activeDir, ctx.getActiveAgentId());
+    ctx.attachToRunner(runner);
+  }
+
   ctx.setIsClaudeRunning(true);
   await runClaudeWithMessage(ctx, {
     userText,
@@ -528,6 +573,17 @@ export async function handleAnswerQuestion(ctx: HandlerContext, msg: WsAnswerQue
     ctx.send({ type: "auth_required" });
     ctx.authManager.startOAuthFlow();
     return;
+  }
+
+  // Ensure a runner exists for this session and attach to it
+  {
+    const answerActiveId = ctx.getActiveAppSessionId();
+    const answerActiveDir = ctx.getActiveSessionDir();
+    if (answerActiveId && answerActiveDir && !ctx.getRunner()) {
+      const registry = ctx.getRunnerRegistry();
+      const answerRunner = registry.getOrCreate(answerActiveId, answerActiveDir, ctx.getActiveAgentId());
+      ctx.attachToRunner(answerRunner);
+    }
   }
 
   ctx.setTurnSummary("");
@@ -742,7 +798,15 @@ export async function handleHomeSendWithRepo(ctx: HandlerContext, msg: WsHomeSen
       console.warn("[home] Session naming failed:", err);
     });
 
+    // Ensure a runner exists for this session and attach to it
+    {
+      const registry = ctx.getRunnerRegistry();
+      const homeRunner = registry.getOrCreate(appSessionId, sessionDir, ctx.getActiveAgentId());
+      ctx.attachToRunner(homeRunner);
+    }
+
     // Run Claude with the user's message
+    ctx.setIsClaudeRunning(true);
     await runClaudeWithMessage(ctx, {
       userText: text,
       images,
