@@ -45,6 +45,8 @@ export async function handleApplyTemplate(ctx: HandlerContext, msg: WsApplyTempl
     const git = ctx.getActiveGitManager();
     await git.autoCommit(`Apply template: ${template.name}`);
     // Restart Vite so it picks up the new project files
+    // Note: the install command from shipit.yaml is handled by PreviewManager
+    // when it starts the preview (see preview-manager.ts / install-runner.ts).
     ctx.viteManager.restart(dir);
     ctx.send({ type: "template_applied", templateId: template.id, name: template.name });
   } catch (err) {
@@ -115,7 +117,7 @@ export async function handleHomeCreateRepoWithTemplate(ctx: HandlerContext, msg:
       ctx.send({ type: "session_started", session });
     }
 
-    // Restart Vite
+    // Restart Vite — install from shipit.yaml is handled by PreviewManager
     ctx.viteManager.restart(sessionDir);
 
     ctx.send({

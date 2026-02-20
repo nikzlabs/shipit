@@ -80,10 +80,14 @@ preview:
 The first port in the list is the **primary** preview (shown by default in the
 iframe). All ports appear in the port selector dropdown so the user can switch.
 
+`shipit.yaml` also supports an optional `install` field for dependency
+installation — see [039 — Install command](../039-install-command/plan.md).
+
 **Fields:**
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
+| `install` | no | — | Shell command to install dependencies. See [doc 039](../039-install-command/plan.md). |
 | `preview.command` | mutual-excl with `html` | — | Shell command to run. Executed with `cwd` set to the workspace root. |
 | `preview.html` | mutual-excl with `command` | — | Path to an HTML file relative to workspace root. Served by ShipIt's bundled Vite on port 5173 with error-capture plugin. |
 | `preview.ports` | no | auto-detect | Port(s) the command listens on. Array of numbers. Only used with `command`. If omitted, PreviewManager polls the scan-port list until one opens. |
@@ -122,6 +126,8 @@ type PreviewMode =
 interface PreviewConfig {
   mode: PreviewMode;
   source: "shipit.yaml" | "package.json" | "index.html" | "none";
+  /** Shell command to install dependencies. From shipit.yaml `install` field. */
+  install?: string;
 }
 
 async function resolvePreviewConfig(workspaceDir: string): Promise<PreviewConfig>
@@ -132,9 +138,10 @@ async function resolvePreviewConfig(workspaceDir: string): Promise<PreviewConfig
 ```
 1. Read <workspaceDir>/shipit.yaml
    → if present and has `preview.command`:
-       return { mode: { kind: "command", command, ports, directory }, source: "shipit.yaml" }
+       return { mode: { kind: "command", command, ports, directory }, source: "shipit.yaml", install }
    → if present and has `preview.html`:
-       return { mode: { kind: "html", html }, source: "shipit.yaml" }
+       return { mode: { kind: "html", html }, source: "shipit.yaml", install }
+   (install is read from the top-level `install` field, if present)
 
 2. Read <workspaceDir>/package.json
    → if present and has `scripts.dev`:
@@ -189,7 +196,8 @@ class PreviewManager extends EventEmitter {
   /** Stop then start with the given workspace dir. */
   async restart(workspaceDir: string): Promise<void>;
 
-  // Events: "ready" (ports), "stopped" (code), "error" (err), "config_missing"
+  // Events: "ready" (ports), "stopped" (code), "error" (err), "config_missing",
+  //         "install_status" ({ status, message? })
 }
 ```
 
@@ -203,6 +211,10 @@ start(workspaceDir):
   if config.source === "none":
     emit("config_missing")
     return
+
+  // Install step — see doc 039 for details
+  if config.install:
+    run install command, skip if marker exists, emit install_status events
 
   if config.mode.kind === "html":
     // Use ShipIt's bundled Vite binary with wrapper config (error capture)
@@ -398,25 +410,27 @@ The server handles this by sending a prompt to Claude:
 
 ```
 Analyze this project and create a shipit.yaml file at the workspace root.
-The file configures the live preview. Use ONE of these two modes:
+The file configures the live preview and dependency installation.
 
-For projects with a dev server (npm run dev, etc.):
+For projects with dependencies (npm, yarn, pip, etc.), include an install command:
 
+install: npm install
 preview:
   command: npm run dev
   ports: [3000]
 
-For static HTML projects (no build step):
+For static HTML projects (no build step, no dependencies):
 
 preview:
   html: index.html
 
 Look at package.json scripts, framework config files, and project structure
-to determine the correct mode, command, and ports.
+to determine the correct install command, preview mode, command, and ports.
 ```
 
 After Claude creates the file, the FileWatcher detects the change, and
-PreviewManager re-resolves config and starts the preview.
+PreviewManager re-resolves config and starts the preview (running install
+first if configured).
 
 ### `preview_config_error` (server → client)
 
@@ -457,25 +471,27 @@ and PreviewManager starts, the normal preview replaces this prompt.
 ## 7. Template updates
 
 Every template that runs a dev server gets a `shipit.yaml`. Templates that
-don't serve HTTP (node-cli-ts) do not.
+don't serve HTTP (node-cli-ts) do not. Templates with a `package.json` include
+`install: npm install` so dependencies are installed automatically (see
+[doc 039](../039-install-command/plan.md)).
 
 | Template | `shipit.yaml` contents |
 |----------|----------------------|
-| react-vite-ts | `preview:\n  command: npm run dev\n  ports: [5173]` |
-| react-tailwind-vite-ts | `preview:\n  command: npm run dev\n  ports: [5173]` |
-| vue-vite-ts | `preview:\n  command: npm run dev\n  ports: [5173]` |
-| svelte-vite-ts | `preview:\n  command: npm run dev\n  ports: [5173]` |
-| vanilla-vite | `preview:\n  command: npm run dev\n  ports: [5173]` |
+| react-vite-ts | `install: npm install\npreview:\n  command: npm run dev\n  ports: [5173]` |
+| react-tailwind-vite-ts | `install: npm install\npreview:\n  command: npm run dev\n  ports: [5173]` |
+| vue-vite-ts | `install: npm install\npreview:\n  command: npm run dev\n  ports: [5173]` |
+| svelte-vite-ts | `install: npm install\npreview:\n  command: npm run dev\n  ports: [5173]` |
+| vanilla-vite | `install: npm install\npreview:\n  command: npm run dev\n  ports: [5173]` |
 | static-html | `preview:\n  html: index.html` |
-| nextjs | `preview:\n  command: npm run dev\n  ports: [3001]` |
-| astro | `preview:\n  command: npm run dev\n  ports: [5173]` |
-| express-ts | `preview:\n  command: npm run dev\n  ports: [3001]` |
-| hono-ts | `preview:\n  command: npm run dev\n  ports: [3001]` |
-| fastify-ts | `preview:\n  command: npm run dev\n  ports: [3001]` |
+| nextjs | `install: npm install\npreview:\n  command: npm run dev\n  ports: [3001]` |
+| astro | `install: npm install\npreview:\n  command: npm run dev\n  ports: [5173]` |
+| express-ts | `install: npm install\npreview:\n  command: npm run dev\n  ports: [3001]` |
+| hono-ts | `install: npm install\npreview:\n  command: npm run dev\n  ports: [3001]` |
+| fastify-ts | `install: npm install\npreview:\n  command: npm run dev\n  ports: [3001]` |
 | node-cli-ts | *(no shipit.yaml)* |
 
 The static-html template uses `html: index.html` to serve via ShipIt's
-bundled Vite — no npm required.
+bundled Vite — no npm or install step required.
 
 ---
 
@@ -581,14 +597,14 @@ changes are needed for multi-port support.
 
 | File | Changes |
 |------|---------|
-| `src/server/preview-config.ts` | **New.** `resolvePreviewConfig()`, YAML parsing, `PreviewConfig` type. |
-| `src/server/preview-manager.ts` | **New.** Replaces `src/server/vite-manager.ts`. Config-driven process lifecycle. |
+| `src/server/preview-config.ts` | **New.** `resolvePreviewConfig()`, YAML parsing, `PreviewConfig` type (with `install` field). |
+| `src/server/preview-manager.ts` | **New.** Replaces `src/server/vite-manager.ts`. Config-driven process lifecycle. Runs `install` command before starting preview (see [doc 039](../039-install-command/plan.md)). |
 | `src/server/vite-manager.ts` | **Deleted.** Logic moves into PreviewManager's bare-`vite` special case. |
-| `src/server/index.ts` | Replace `viteManager` with `previewManager`. Update `activateSession()`, `new_session`, post-turn handler, `getPreviewStatus()`, FileWatcher `shipit.yaml` detection. Add `killProcessesOnPorts()`. Handle `init_preview_config` and `preview_config_missing` / `preview_config_error` messages. |
+| `src/server/index.ts` | Replace `viteManager` with `previewManager`. Update `activateSession()`, `new_session`, post-turn handler, `getPreviewStatus()`, FileWatcher `shipit.yaml` detection. Add `killProcessesOnPorts()`. Handle `init_preview_config` and `preview_config_missing` / `preview_config_error` / `install_status` messages. |
 | `src/server/types.ts` | Add `WsPreviewConfigMissing`, `WsPreviewConfigError`, `WsInitPreviewConfig` to message unions. |
-| `src/server/templates.ts` | Add `shipit.yaml` to each template's `files` map (except node-cli-ts). |
-| `src/client/App.tsx` | Reset preview state in `resumeSessionInternal()` and `handleSessionNew()`. Handle `preview_config_missing` / `preview_config_error`. Handle `init_preview_config` send. |
-| `src/client/components/PreviewFrame.tsx` | Show "no config" prompt with "Set up with Claude" button when config missing. |
+| `src/server/templates.ts` | Add `shipit.yaml` (with `install: npm install` where applicable) to each template's `files` map (except node-cli-ts). |
+| `src/client/App.tsx` | Reset preview state in `resumeSessionInternal()` and `handleSessionNew()`. Handle `preview_config_missing` / `preview_config_error` / `install_status`. Handle `init_preview_config` send. |
+| `src/client/components/PreviewFrame.tsx` | Show "no config" prompt with "Set up with Claude" button when config missing. Show install progress/errors. |
 
 ---
 
@@ -616,9 +632,9 @@ changes are needed for multi-port support.
 6. **`shipit.yaml` created mid-session.** FileWatcher detects the change.
    Server calls `previewManager.restart()` to pick up new config.
 
-7. **`shipit.yaml` with unknown fields.** Ignored — only `preview.command`,
-   `preview.html`, `preview.ports`, `preview.directory` are read.
-   Forward-compatible.
+7. **`shipit.yaml` with unknown fields.** Ignored — only `install`,
+   `preview.command`, `preview.html`, `preview.ports`, `preview.directory`
+   are read. Forward-compatible.
 
 8. **`shipit.yaml` with both `command` and `html`.** Validation error —
    `preview_config_error` sent to client. The fields are mutually exclusive.

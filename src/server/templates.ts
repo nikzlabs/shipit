@@ -98,6 +98,11 @@ export function App() {
   );
 }
 `,
+      "shipit.yaml": `install: npm install
+preview:
+  command: npm run dev
+  ports: [5173]
+`,
     },
   },
 
@@ -200,6 +205,11 @@ export function App() {
   );
 }
 `,
+      "shipit.yaml": `install: npm install
+preview:
+  command: npm run dev
+  ports: [5173]
+`,
     },
   },
 
@@ -297,6 +307,11 @@ declare module "*.vue" {
   export default component;
 }
 `,
+      "shipit.yaml": `install: npm install
+preview:
+  command: npm run dev
+  ports: [5173]
+`,
     },
   },
 
@@ -387,6 +402,11 @@ export default app;
   <button onclick={() => count++}>Count: {count}</button>
 </div>
 `,
+      "shipit.yaml": `install: npm install
+preview:
+  command: npm run dev
+  ports: [5173]
+`,
     },
   },
 
@@ -476,6 +496,11 @@ button:hover {
   border-color: #747bff;
 }
 `,
+      "shipit.yaml": `install: npm install
+preview:
+  command: npm run dev
+  ports: [5173]
+`,
     },
   },
 
@@ -528,6 +553,9 @@ h1 {
 }
 `,
       "main.js": `console.log("Hello from main.js");
+`,
+      "shipit.yaml": `preview:
+  html: index.html
 `,
     },
   },
@@ -616,6 +644,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   );
 }
 `,
+      "shipit.yaml": `install: npm install
+preview:
+  command: npm run dev
+  ports: [3001]
+`,
     },
   },
 
@@ -689,6 +722,11 @@ const title = "My Astro Site";
   </body>
 </html>
 `,
+      "shipit.yaml": `install: npm install
+preview:
+  command: npm run dev
+  ports: [5173]
+`,
     },
   },
 
@@ -758,6 +796,11 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(\`Server running at http://localhost:\${PORT}\`);
 });
 `,
+      "shipit.yaml": `install: npm install
+preview:
+  command: npm run dev
+  ports: [3001]
+`,
     },
   },
 
@@ -822,6 +865,11 @@ console.log("Server running at http://localhost:3001");
 
 serve({ fetch: app.fetch, port: 3001, hostname: "0.0.0.0" });
 `,
+      "shipit.yaml": `install: npm install
+preview:
+  command: npm run dev
+  ports: [3001]
+`,
     },
   },
 
@@ -883,6 +931,11 @@ app.get("/api/health", async () => {
 });
 
 app.listen({ port: 3001, host: "0.0.0.0" });
+`,
+      "shipit.yaml": `install: npm install
+preview:
+  command: npm run dev
+  ports: [3001]
 `,
     },
   },
