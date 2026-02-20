@@ -93,6 +93,8 @@ export function useMessageHandler(params: {
   setQueuedMessages: Dispatch<SetStateAction<Array<{ text: string; position: number }>>>;
   setShellStarted: Dispatch<SetStateAction<boolean>>;
   setToast: Dispatch<SetStateAction<ToastData | null>>;
+  setConfigMissing: Dispatch<SetStateAction<boolean>>;
+  setInstallStatus: Dispatch<SetStateAction<{ status: "running" | "complete" | "error"; message?: string } | null>>;
 
   // Refs
   prDescGeneratingRef: MutableRefObject<boolean>;
@@ -134,6 +136,7 @@ export function useMessageHandler(params: {
     setPrCurrentBranch, setPrRemoteBranches, setPrResult, setPrDescGenerating,
     setPrDescError, setPrGeneratedDesc, setImportSearchResults, setPrStatus,
     setQueuedMessages, setShellStarted, setToast,
+    setConfigMissing, setInstallStatus,
     prDescGeneratingRef, sessionIdRef, terminalRef,
     rightTab, viewingFile, notify, navigate, handleSessionResume,
     githubStatus, prStatus,
@@ -162,7 +165,7 @@ export function useMessageHandler(params: {
       setSelectedPort((prev) => {
         if (prev === null) return null;
         const allAvailable = [...(data.detectedPorts ?? [])];
-        if (data.source === "vite") allAvailable.push(data.port);
+        if (data.source === "vite" || data.source === "managed") allAvailable.push(data.port);
         return allAvailable.includes(prev) ? prev : null;
       });
     }
@@ -833,6 +836,35 @@ export function useMessageHandler(params: {
       }
     }
 
+    if (data.type === "clear_logs") {
+      setLogEntries([]);
+      setUnreadLogCount(0);
+    }
+
+    if (data.type === "preview_config_missing") {
+      setConfigMissing(true);
+    }
+
+    if (data.type === "preview_config_error") {
+      setConfigMissing(false);
+      // Show the config error as a toast notification
+      setToast({ message: `Preview config error: ${data.message}` });
+    }
+
+    if (data.type === "install_status") {
+      setInstallStatus({ status: data.status, message: data.message });
+      if (data.status === "complete") {
+        // Clear install status after a brief delay
+        setTimeout(() => setInstallStatus(null), 1000);
+      }
+    }
+
+    // Clear config missing state when preview starts running
+    if (data.type === "preview_status" && data.running) {
+      setConfigMissing(false);
+      setInstallStatus(null);
+    }
+
     if (data.type === "terminal_output") {
       terminalRef.current?.write(data.data);
     }
@@ -854,6 +886,7 @@ export function useMessageHandler(params: {
       setPrCurrentBranch, setPrRemoteBranches, setPrResult, setPrDescGenerating,
       setPrDescError, setPrGeneratedDesc, setImportSearchResults, setPrStatus,
       setQueuedMessages, setShellStarted, setToast,
+      setConfigMissing, setInstallStatus,
       prDescGeneratingRef, sessionIdRef, terminalRef,
       githubStatus, prStatus]);
 }

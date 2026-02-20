@@ -194,6 +194,13 @@ export interface WsSetAgentMessage {
   agentId: AgentId;
 }
 
+// ---- Preview config messages ----
+
+/** Client → Server: request Claude to generate a shipit.yaml config. */
+export interface WsInitPreviewConfig {
+  type: "init_preview_config";
+}
+
 // ---- Prompt queuing messages ----
 
 /** Client → Server: cancel a specific queued message or clear the entire queue. */
@@ -286,4 +293,5 @@ export type WsClientMessage =
   | WsInterruptClaude
   | WsListAgentsMessage
   | WsSetAgentEnvMessage
-  | WsFullReset;
+  | WsFullReset
+  | WsInitPreviewConfig;

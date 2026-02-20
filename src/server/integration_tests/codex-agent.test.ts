@@ -16,7 +16,7 @@ import { GitManager } from "../git.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../auth.js";
-import { ViteManager } from "../vite-manager.js";
+import { PreviewManager } from "../preview-manager.js";
 import { FileWatcher } from "../file-watcher.js";
 import { AgentRegistry } from "../agents/agent-registry.js";
 import type { FastifyInstance } from "fastify";
@@ -30,7 +30,7 @@ import type {
 } from "../agents/agent-process.js";
 import {
   TestClient,
-  StubViteManager,
+  StubPreviewManager,
   StubAuthManager,
   FakeClaudeProcess,
   StubFileWatcher,
@@ -149,7 +149,7 @@ describe("Integration: Codex agent — set_agent and message flow", () => {
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       chatHistoryManager,
-      viteManager: new StubViteManager() as unknown as ViteManager,
+      previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentRegistry: registry,
       agentFactory: (agentId: AgentId) => {
@@ -190,7 +190,7 @@ describe("Integration: Codex agent — set_agent and message flow", () => {
       fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
-      startVite: false,
+      startPreview: false,
       portScanIntervalMs: 0,
     });
 

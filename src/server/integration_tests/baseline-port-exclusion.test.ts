@@ -6,13 +6,13 @@ import { buildApp } from "../index.js";
 import { GitManager } from "../git.js";
 import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../auth.js";
-import { ViteManager } from "../vite-manager.js";
+import { PreviewManager } from "../preview-manager.js";
 import { ClaudeProcess } from "../claude.js";
 import { FileWatcher } from "../file-watcher.js";
 import type { FastifyInstance } from "fastify";
 import {
   TestClient,
-  StubViteManager,
+  StubPreviewManager,
   StubAuthManager,
   FakeClaudeProcess,
   StubFileWatcher,
@@ -40,7 +40,7 @@ describe("Integration: Baseline port exclusion", () => {
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
-      viteManager: new StubViteManager() as unknown as ViteManager,
+      previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       claudeFactory: () => {
         lastClaude = new FakeClaudeProcess();
@@ -54,7 +54,7 @@ describe("Integration: Baseline port exclusion", () => {
       fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
-      startVite: false,
+      startPreview: false,
       portScanIntervalMs: 0,
       // Simulate ports 8080 and 5174 already open before the session started
       // (e.g. ShipIt's own dev Vite server, or other host tooling).

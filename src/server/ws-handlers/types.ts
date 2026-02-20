@@ -8,7 +8,7 @@ import type { DeploymentManager } from "../deployment-manager.js";
 import type { DeploymentStore } from "../deployment-store.js";
 import type { FeatureManager } from "../features.js";
 import type { UsageManager } from "../usage.js";
-import type { ViteManager } from "../vite-manager.js";
+import type { PreviewManager } from "../preview-manager.js";
 import type { AuthManager } from "../auth.js";
 import type { FileWatcher } from "../file-watcher.js";
 import type { AgentRegistry } from "../agents/agent-registry.js";
@@ -42,7 +42,7 @@ export interface HandlerContext {
   setActiveAppSessionId: (id: string | undefined) => void;
   getActiveSessionDir: () => string | null;
   setActiveSessionDir: (dir: string | null) => void;
-  activateSession: (sessionId: string) => void;
+  activateSession: (sessionId: string) => void | Promise<void>;
 
   // Agent/claude state
   agentFactory: (agentId: AgentId) => AgentProcess;
@@ -84,7 +84,7 @@ export interface HandlerContext {
   deploymentStore: DeploymentStore;
   featureManager: FeatureManager;
   usageManager: UsageManager;
-  viteManager: ViteManager;
+  previewManager: PreviewManager;
   authManager: AuthManager;
   fileWatcher: FileWatcher;
   agentRegistry: AgentRegistry;

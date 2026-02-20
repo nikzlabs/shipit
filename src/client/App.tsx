@@ -63,6 +63,8 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [preview, setPreview] = useState<PreviewStatus | null>(null);
   const [selectedPort, setSelectedPort] = useState<number | null>(null);
+  const [configMissing, setConfigMissing] = useState(false);
+  const [installStatus, setInstallStatus] = useState<{ status: "running" | "complete" | "error"; message?: string } | null>(null);
   const detectedPorts = preview?.detectedPorts ?? [];
   const [gitCommits, setGitCommits] = useState<GitCommit[]>([]);
   const [authUrl, setAuthUrl] = useState<string | null>(null);
@@ -244,6 +246,7 @@ export default function App() {
     setPrCurrentBranch, setPrRemoteBranches, setPrResult, setPrDescGenerating,
     setPrDescError, setPrGeneratedDesc, setImportSearchResults, setPrStatus,
     setQueuedMessages, setShellStarted, setToast,
+    setConfigMissing, setInstallStatus,
     prDescGeneratingRef, sessionIdRef, terminalRef,
     rightTab, viewingFile, notify,
     navigate,
@@ -365,6 +368,9 @@ export default function App() {
             autoFixEnabled={autoFixEnabled}
             onToggleAutoFix={handleToggleAutoFix}
             autoFixRetries={autoFixRetries}
+            configMissing={configMissing}
+            installStatus={installStatus}
+            onInitPreviewConfig={() => send({ type: "init_preview_config" })}
           />
         ) : rightTab === "docs" ? (
           <DocsViewer

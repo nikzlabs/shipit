@@ -21,7 +21,7 @@ export async function handleRollback(ctx: HandlerContext, msg: WsRollback): Prom
     ctx.send({ type: "rollback_complete", commitHash: msg.commitHash });
 
     // Restart Vite after rollback since files changed
-    ctx.viteManager.restart(ctx.getActiveDir());
+    ctx.previewManager.restart(ctx.getActiveDir());
   } catch (err) {
     ctx.send({ type: "error", message: `Rollback failed: ${getErrorMessage(err)}` });
   }

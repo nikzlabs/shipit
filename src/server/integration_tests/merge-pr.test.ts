@@ -4,7 +4,7 @@ import path from "node:path";
 import { buildApp } from "../index.js";
 import {
   TestClient,
-  StubViteManager,
+  StubPreviewManager,
   StubAuthManager,
   StubGitHubAuthManager,
   StubFileWatcher,
@@ -38,7 +38,7 @@ beforeEach(async () => {
       latestClaude = c;
       return c as any;
     },
-    viteManager: new StubViteManager() as any,
+    previewManager: new StubPreviewManager() as any,
     authManager: new StubAuthManager() as any,
     githubAuthManager: githubAuth as any,
     sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
@@ -47,7 +47,7 @@ beforeEach(async () => {
     threadManager: new ThreadManager(path.join(tmpDir, "threads")),
     fileWatcher: new StubFileWatcher() as any,
     serveStatic: false,
-    startVite: false,
+    startPreview: false,
     detectPorts: async () => [],
     deploymentManager: new StubDeploymentManager() as any,
     deploymentStore: new StubDeploymentStore() as any,

@@ -104,9 +104,9 @@ export function handleRenameSession(ctx: HandlerContext, msg: WsRenameSession): 
   }
 }
 
-export function handleGetChatHistory(ctx: HandlerContext, msg: WsGetChatHistory): void {
+export async function handleGetChatHistory(ctx: HandlerContext, msg: WsGetChatHistory): Promise<void> {
   // Activate the requested session (session switch)
-  ctx.activateSession(msg.sessionId);
+  await ctx.activateSession(msg.sessionId);
   const messages = ctx.chatHistoryManager.load(msg.sessionId);
   ctx.send({ type: "chat_history", sessionId: msg.sessionId, messages });
 }

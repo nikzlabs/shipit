@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { ClaudeProcess } from "./claude.js";
-import { ViteManager } from "./vite-manager.js";
+import { PreviewManager } from "./preview-manager.js";
 import { GitManager } from "./git.js";
 import { AuthManager } from "./auth.js";
 import { GitHubAuthManager } from "./github-auth.js";
@@ -57,8 +57,8 @@ export interface AppDeps {
    * Defaults to `(dir) => new GitManager(dir)`.
    */
   createGitManager?: (workspaceDir: string) => GitManager;
-  /** Vite dev server manager. Defaults to `new ViteManager()` with auto-start. */
-  viteManager?: ViteManager;
+  /** Preview manager. Defaults to `new PreviewManager()` with auto-start. */
+  previewManager?: PreviewManager;
   /** Session manager instance. Defaults to `new SessionManager()`. */
   sessionManager?: SessionManager;
   /** Auth manager instance. Defaults to `new AuthManager()`. */
@@ -83,8 +83,8 @@ export interface AppDeps {
   workspaceDir?: string;
   /** Whether to serve static files from dist/client. Defaults to true. */
   serveStatic?: boolean;
-  /** Whether to start the Vite dev server. Defaults to true. */
-  startVite?: boolean;
+  /** Whether to start the preview server. Defaults to true. */
+  startPreview?: boolean;
   /**
    * Port detection function called after each Claude turn and periodically to
    * find non-Vite dev servers. Returns all detected ports. Defaults to scanning
@@ -167,7 +167,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     defaultAgentId = "claude" as AgentId,
     workspaceDir = WORKSPACE,
     serveStatic: shouldServeStatic = true,
-    startVite = true,
+    startPreview = true,
     detectPorts = (excludePorts: number[]) => scanPorts(DEFAULT_SCAN_PORTS, excludePorts),
     serverPort = 3000,
     portScanIntervalMs = 5000,
@@ -196,8 +196,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // ---- Per-session GitManager factory ----
   const createGitManager = deps.createGitManager ?? ((dir: string) => new GitManager(dir));
 
-  // ---- Vite dev server manager ----
-  const viteManager = deps.viteManager ?? new ViteManager();
+  // ---- Preview manager (replaces ViteManager) ----
+  const previewManager = deps.previewManager ?? new PreviewManager();
 
   // ---- Session manager ----
   const sessionManager = deps.sessionManager ?? new SessionManager();
@@ -331,9 +331,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // ---- File watcher event handler ----
   fileWatcher.on("changes", (changedFiles: string[]) => {
     broadcast({ type: "files_changed", paths: changedFiles });
+    // Detect shipit.yaml changes and restart preview with new config
+    if (changedFiles.some((f) => f === "shipit.yaml" || f.endsWith("/shipit.yaml"))) {
+      previewManager.restart(activeSessionDirForFileWatcher ?? workspaceDir);
+    }
   });
 
-  // Track all auto-detected dev server ports (non-Vite)
+  // Track the active session dir at app level for file watcher integration
+  let activeSessionDirForFileWatcher: string | null = null;
+
+  // Track all auto-detected dev server ports
   let detectedPorts: number[] = [];
 
   /**
@@ -341,14 +348,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
    * Shared between the post-turn scan and the periodic interval scanner.
    *
    * The exclude list combines three sources:
-   *  1. serverPort       — ShipIt's own Fastify server
-   *  2. viteManager.port — the managed Vite preview for the user's project
-   *  3. baselinePorts    — ports that were already open before the session
-   *                        started (system services, ShipIt's own dev Vite, etc.)
+   *  1. serverPort          — ShipIt's own Fastify server
+   *  2. previewManager ports — the managed preview server ports
+   *  3. baselinePorts       — ports that were already open before the session
+   *                           started (system services, ShipIt's own dev Vite, etc.)
    */
   const runPortScan = async () => {
     try {
-      const excludeList = [serverPort, viteManager.port, ...baselinePorts];
+      const managedPorts = previewManager.port ? [previewManager.port] : [];
+      const excludeList = [serverPort, ...managedPorts, ...baselinePorts];
       const ports = await detectPorts(excludeList);
       const changed =
         ports.length !== detectedPorts.length ||
@@ -380,18 +388,21 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   };
 
   /**
-   * Build the current preview status message. Vite takes priority when running;
-   * otherwise fall back to any port found by the port scanner.
+   * Build the current preview status message. Managed preview takes priority
+   * when running; otherwise fall back to any port found by the port scanner.
    */
   const getPreviewStatus = (): WsServerMessage => {
-    if (viteManager.running) {
+    if (previewManager.running && previewManager.port) {
+      // Merge managed ports (after primary) with scanner-detected ports
+      const extraManagedPorts = previewManager.ports.slice(1);
+      const allDetected = [...extraManagedPorts, ...detectedPorts];
       return {
         type: "preview_status",
         running: true,
-        port: viteManager.port,
-        url: `http://localhost:${viteManager.port}`,
-        source: "vite",
-        detectedPorts: detectedPorts.length > 0 ? detectedPorts : undefined,
+        port: previewManager.port,
+        url: `http://localhost:${previewManager.port}`,
+        source: previewManager.config?.mode.kind === "html" ? "vite" : "managed",
+        detectedPorts: allDetected.length > 0 ? allDetected : undefined,
       };
     }
     if (detectedPorts.length > 0) {
@@ -407,8 +418,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     return {
       type: "preview_status",
       running: false,
-      port: viteManager.port,
-      url: `http://localhost:${viteManager.port}`,
+      port: 5173,
+      url: "http://localhost:5173",
     };
   };
 
@@ -419,13 +430,29 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
   };
 
-  viteManager.on("ready", () => {
-    console.log("[server] Vite dev server is ready");
+  previewManager.on("ready", () => {
+    console.log("[server] Preview server is ready");
     broadcastPreviewStatus();
   });
 
-  viteManager.on("stopped", () => {
+  previewManager.on("stopped", () => {
     broadcastPreviewStatus();
+  });
+
+  previewManager.on("config_missing", (checked: string[]) => {
+    broadcast({ type: "preview_config_missing", checked: checked as ("shipit.yaml" | "package.json")[] });
+  });
+
+  previewManager.on("config_error", (message: string) => {
+    broadcast({ type: "preview_config_error", message });
+  });
+
+  previewManager.on("install_status", (status: { status: "running" | "complete" | "error"; message?: string }) => {
+    broadcast({ type: "install_status", ...status });
+  });
+
+  previewManager.on("log", ({ source, text }: { source: string; text: string }) => {
+    broadcastLog(source as WsLogEntry["source"], text);
   });
 
   // ---- Auth event handlers ----
@@ -441,9 +468,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     console.log("[auth] OAuth flow failed — client should provide API key");
   });
 
-  // Start the Vite dev server (skipped in tests)
-  if (startVite) {
-    viteManager.start();
+  // Start preview server (skipped in tests)
+  if (startPreview) {
+    previewManager.start(workspaceDir);
   }
 
   // Serve the built client files from dist/client/
@@ -585,15 +612,42 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
      * Activate a session by ID — sets activeSessionDir and restarts the
      * file watcher to watch the session's directory.
      */
-    const activateSession = (sessionId: string) => {
+    const activateSession = async (sessionId: string) => {
       const session = sessionManager.get(sessionId);
       activeAppSessionId = sessionId;
       const dir = session?.workspaceDir ?? null;
       if (dir !== activeSessionDir) {
+        const oldDir = activeSessionDir;
         activeSessionDir = dir;
-        // Restart file watcher to the new directory
+        activeSessionDirForFileWatcher = dir;
+
+        // Only perform full cleanup when switching away from a previous session
+        if (oldDir !== null) {
+          // 1. Stop current preview process
+          previewManager.stop();
+
+          // 2. Clear detected ports
+          detectedPorts = [];
+
+          // 3. Broadcast clean "not running" preview status immediately
+          broadcastPreviewStatus();
+
+          // 4. Clear terminal logs (old session's output is irrelevant)
+          logBuffer = [];
+          broadcast({ type: "clear_logs" });
+        }
+
+        // 5. Restart file watcher to the new directory
         fileWatcher.stop();
         fileWatcher.start(getActiveDir());
+
+        // 6. Start preview for the new session's workspace (if it exists)
+        if (dir) {
+          await previewManager.start(dir);
+        }
+
+        // 7. Run a fresh port scan
+        await runPortScan();
       }
       // Check git identity for the newly activated session
       if (dir) {
@@ -685,7 +739,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       deploymentStore,
       featureManager,
       usageManager,
-      viteManager,
+      previewManager,
       authManager,
       fileWatcher,
       agentRegistry,
@@ -800,6 +854,33 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         case "interrupt_claude": return miscHandlers.handleInterruptClaude(ctx);
         case "full_reset": return miscHandlers.handleFullReset(ctx);
 
+        // ---- Preview config ----
+        case "init_preview_config": {
+          // Send a prompt to Claude asking it to create shipit.yaml
+          const prompt = `Analyze this project and create a shipit.yaml file at the workspace root.
+The file configures the live preview and dependency installation.
+
+For projects with dependencies (npm, yarn, pip, etc.), include an install command:
+
+install: npm install
+preview:
+  command: npm run dev
+  ports: [3000]
+
+For static HTML projects (no build step, no dependencies):
+
+preview:
+  html: index.html
+
+Look at package.json scripts, framework config files, and project structure
+to determine the correct install command, preview mode, command, and ports.`;
+          sendMessageHandlers.handleSendMessage(ctx, {
+            type: "send_message",
+            text: prompt,
+          });
+          return;
+        }
+
         // ---- Send message / answer / repo import ----
         case "send_message": return sendMessageHandlers.handleSendMessage(ctx, msg);
         case "answer_question": return sendMessageHandlers.handleAnswerQuestion(ctx, msg);
@@ -839,7 +920,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   app.addHook("onClose", async () => {
     stopPortScanInterval();
     fileWatcher.stop();
-    viteManager.stop();
+    previewManager.stop();
     authManager.kill();
   });
 
@@ -857,7 +938,7 @@ if (!process.env.VITEST) {
     console.log("[server] baseline ports (will be excluded from preview):", baselinePorts);
   }
 
-  const app = await buildApp({ serveStatic: true, startVite: true, baselinePorts });
+  const app = await buildApp({ serveStatic: true, startPreview: true, baselinePorts });
 
   const shutdown = () => {
     app.close();
