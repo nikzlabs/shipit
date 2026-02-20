@@ -78,11 +78,16 @@ export async function handleArchiveSession(ctx: HandlerContext, msg: WsArchiveSe
     }
   }
 
-  // If archiving the active session, clear it
+  // If archiving the active session, clear it and detach
   if (msg.sessionId === ctx.getActiveAppSessionId()) {
+    ctx.detachFromRunner();
     ctx.setActiveAppSessionId(undefined);
     ctx.setActiveSessionDir(null);
   }
+
+  // Dispose the session's runner (kills agent, cleans up resources)
+  ctx.getRunnerRegistry().dispose(msg.sessionId);
+
   ctx.sessionManager.archive(msg.sessionId);
 
   // Clean up the shared repo directory when no non-archived sessions remain for it

@@ -248,6 +248,119 @@ describe("Integration: persistent session runners", () => {
     client.close();
   });
 
+  it("session switch does not kill previous session's agent", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Start Claude in session 1
+    client.send({ type: "send_message", text: "Hello" });
+    const claude1 = await waitForClaude(() => lastClaude);
+
+    // Emit init event to get session ID
+    claude1.emit("event", { type: "system", subtype: "init", session_id: "agent-session-s1" });
+    await drainUntil(client, (m) => m.type === "session_started");
+
+    // Create a second session manually
+    const session2Id = "session-2-" + Date.now();
+    const session2Dir = path.join(tmpDir, "sessions", session2Id);
+    fs.mkdirSync(session2Dir, { recursive: true });
+    sessionManager.track(session2Id, "Session 2", session2Dir);
+
+    // Switch to session 2 via get_chat_history
+    client.send({ type: "get_chat_history", sessionId: session2Id });
+    await drainUntil(client, (m) => m.type === "chat_history");
+
+    // Claude in session 1 should still be alive
+    expect(claude1.killed).toBe(false);
+    expect(claude1.interrupted).toBe(false);
+
+    // Finish session 1's agent
+    claude1.finish("test-session-id");
+    client.close();
+  });
+
+  it("interrupt works via runner", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Start Claude
+    client.send({ type: "send_message", text: "Hello" });
+    const claude = await waitForClaude(() => lastClaude);
+
+    // Interrupt
+    client.send({ type: "interrupt_claude" } as any);
+
+    // Should receive claude_interrupted
+    const interrupted = await drainUntil(client, (m) => m.type === "claude_interrupted");
+    expect(interrupted).toBeTruthy();
+
+    // Finish Claude
+    claude.finish("test-session-id");
+    client.close();
+  });
+
+  it("archive kills runner", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Start Claude
+    client.send({ type: "send_message", text: "Hello" });
+    const claude = await waitForClaude(() => lastClaude);
+
+    // Emit init event to get session ID
+    claude.emit("event", { type: "system", subtype: "init", session_id: "agent-session-arch" });
+    const sessionStarted = await drainUntil(client, (m) => m.type === "session_started");
+    const sessionId = sessionStarted!.session.id;
+
+    // Archive the session
+    client.send({ type: "archive_session", sessionId } as any);
+    await drainUntil(client, (m) => m.type === "session_list");
+
+    // Claude should be killed
+    expect(claude.killed).toBe(true);
+
+    client.close();
+  });
+
+  it("queue persists across connection drops", async () => {
+    const client1 = await TestClient.connect(port);
+    await client1.receive(); // preview_status
+
+    // Start Claude
+    client1.send({ type: "send_message", text: "Hello" });
+    const claude = await waitForClaude(() => lastClaude);
+
+    // Emit init event to get session ID
+    claude.emit("event", { type: "system", subtype: "init", session_id: "agent-session-q" });
+    const sessionStarted = await drainUntil(client1, (m) => m.type === "session_started");
+    const sessionId = sessionStarted!.session.id;
+
+    // Send another message while agent is running — should be queued
+    client1.send({ type: "send_message", text: "Second message" });
+    const queued = await drainUntil(client1, (m) => m.type === "message_queued");
+    expect(queued).toBeTruthy();
+
+    // Disconnect
+    client1.close();
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Reconnect
+    const client2 = await TestClient.connect(port);
+    await client2.receive(); // preview_status
+
+    // Activate the same session
+    client2.send({ type: "get_chat_history", sessionId });
+
+    // Should receive queue_updated showing the queued message
+    const queueMsg = await drainUntil(client2, (m) => m.type === "queue_updated");
+    expect(queueMsg).toBeTruthy();
+    expect(queueMsg!.queue.length).toBeGreaterThanOrEqual(1);
+
+    // Finish Claude
+    claude.finish("test-session-id");
+    client2.close();
+  });
+
   it("get_session_status returns not running for unknown sessions", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status

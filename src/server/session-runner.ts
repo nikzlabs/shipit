@@ -12,8 +12,10 @@
 
 import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId } from "./agents/agent-process.js";
-import type { WsServerMessage, ImageAttachment, FileContextRef, PermissionMode, ClaudeContentBlockToolUse } from "./types.js";
+import type { WsServerMessage, WsLogEntry, ImageAttachment, FileContextRef, PermissionMode, ClaudeContentBlockToolUse } from "./types.js";
 import type { TerminalProcess } from "./terminal.js";
+import type { PreviewManager } from "./preview-manager.js";
+import type { FileWatcher } from "./file-watcher.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -67,8 +69,17 @@ export class SessionRunner extends EventEmitter {
   private _turnEventBuffer: WsServerMessage[] = [];
   private static readonly MAX_TURN_BUFFER = 1000;
 
+  // Message queue cap
+  private static readonly MAX_QUEUE_SIZE = 50;
+
   // Viewer tracking (ref-counted for preview/file-watcher)
   private _viewerCount = 0;
+
+  // Per-session preview and file watcher (ref-counted by viewers)
+  private _preview: PreviewManager | null = null;
+  private _fileWatcher: FileWatcher | null = null;
+  private _createPreviewManager: (() => PreviewManager) | null;
+  private _createFileWatcher: (() => FileWatcher) | null;
 
   // Idle cleanup timer
   private _idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -81,12 +92,16 @@ export class SessionRunner extends EventEmitter {
     sessionDir: string;
     defaultAgentId: AgentId;
     idleTimeoutMs?: number; // default: 10 minutes
+    createPreviewManager?: () => PreviewManager;
+    createFileWatcher?: () => FileWatcher;
   }) {
     super();
     this.sessionId = opts.sessionId;
     this.sessionDir = opts.sessionDir;
     this._agentId = opts.defaultAgentId;
     this._idleTimeoutMs = opts.idleTimeoutMs ?? 10 * 60 * 1000;
+    this._createPreviewManager = opts.createPreviewManager ?? null;
+    this._createFileWatcher = opts.createFileWatcher ?? null;
     this.resetIdleTimer();
   }
 
@@ -121,6 +136,9 @@ export class SessionRunner extends EventEmitter {
   get queueLength(): number { return this._messageQueue.length; }
 
   enqueue(msg: QueuedMessage): number {
+    if (this._messageQueue.length >= SessionRunner.MAX_QUEUE_SIZE) {
+      throw new Error(`Message queue is full (max ${SessionRunner.MAX_QUEUE_SIZE})`);
+    }
     this._messageQueue.push(msg);
     return this._messageQueue.length;
   }
@@ -188,12 +206,129 @@ export class SessionRunner extends EventEmitter {
 
   get viewerCount(): number { return this._viewerCount; }
 
+  /** Get the per-session preview manager (only active when viewers are attached). */
+  getPreview(): PreviewManager | null { return this._preview; }
+
+  /** Get the per-session file watcher (only active when viewers are attached). */
+  getFileWatcher(): FileWatcher | null { return this._fileWatcher; }
+
   attachViewer(): void {
     this._viewerCount++;
+    if (this._viewerCount === 1 && !this._disposed) {
+      this.startSessionResources();
+    }
   }
 
   detachViewer(): void {
     this._viewerCount = Math.max(0, this._viewerCount - 1);
+    if (this._viewerCount === 0) {
+      this.stopSessionResources();
+    }
+  }
+
+  /** Start preview server and file watcher for this session (first viewer attached). */
+  private startSessionResources(): void {
+    if (this._createFileWatcher) {
+      this._fileWatcher = this._createFileWatcher();
+      this._fileWatcher.start(this.sessionDir);
+      this._fileWatcher.on("changes", (paths: string[]) => {
+        this.emitMessage({ type: "files_changed", paths });
+        // Detect shipit.yaml changes and restart preview with new config
+        if (paths.some((p: string) => p === "shipit.yaml" || p.endsWith("/shipit.yaml"))) {
+          this._preview?.restart(this.sessionDir);
+        }
+      });
+    }
+
+    if (this._createPreviewManager) {
+      this._preview = this._createPreviewManager();
+      this.wirePreviewEvents();
+      this._preview.start(this.sessionDir);
+    }
+  }
+
+  /** Stop preview server and file watcher (last viewer detached). */
+  private stopSessionResources(): void {
+    if (this._preview) {
+      this._preview.stop();
+      this._preview.removeAllListeners();
+      this._preview = null;
+    }
+    if (this._fileWatcher) {
+      this._fileWatcher.stop();
+      this._fileWatcher.removeAllListeners();
+      this._fileWatcher = null;
+    }
+  }
+
+  /** Wire preview manager events to emit messages to attached viewers. */
+  private wirePreviewEvents(): void {
+    if (!this._preview) return;
+
+    this._preview.on("ready", () => {
+      this.emitMessage(this.buildPreviewStatus());
+    });
+
+    this._preview.on("stopped", () => {
+      this.emitMessage(this.buildPreviewStatus());
+    });
+
+    this._preview.on("config_missing", (checked: string[]) => {
+      this.emitMessage({
+        type: "preview_config_missing",
+        checked: checked as ("shipit.yaml" | "package.json")[],
+      });
+    });
+
+    this._preview.on("config_error", (message: string) => {
+      this.emitMessage({ type: "preview_config_error", message });
+    });
+
+    this._preview.on("install_status", (status: { status: "running" | "complete" | "error"; message?: string }) => {
+      this.emitMessage({ type: "install_status", ...status });
+    });
+
+    this._preview.on("log", ({ source, text }: { source: string; text: string }) => {
+      const entry: WsLogEntry = {
+        type: "log_entry",
+        source: source as WsLogEntry["source"],
+        text,
+        timestamp: new Date().toISOString(),
+      };
+      this.emitMessage(entry);
+    });
+  }
+
+  /** Build the current preview status message for this session. */
+  buildPreviewStatus(detectedPorts: number[] = []): WsServerMessage {
+    if (this._preview?.running && this._preview.port) {
+      const extraManagedPorts = this._preview.ports.slice(1);
+      const allDetected = [...extraManagedPorts, ...detectedPorts];
+      return {
+        type: "preview_status",
+        running: true,
+        port: this._preview.port,
+        url: `http://localhost:${this._preview.port}`,
+        source: this._preview.config?.mode.kind === "html" ? "vite" : "managed",
+        detectedPorts: allDetected.length > 0 ? allDetected : undefined,
+      };
+    }
+    if (detectedPorts.length > 0) {
+      return {
+        type: "preview_status",
+        running: true,
+        port: detectedPorts[0],
+        url: `http://localhost:${detectedPorts[0]}`,
+        source: "detected",
+        detectedPorts,
+      };
+    }
+    return {
+      type: "preview_status",
+      running: false,
+      port: 5173,
+      url: "http://localhost:5173",
+    };
   }
 
   // --- Lifecycle ---
@@ -225,6 +360,7 @@ export class SessionRunner extends EventEmitter {
     this._disposed = true;
     if (this.agent) { this.agent.kill(); this.agent = null; }
     if (this._terminal) { this._terminal.kill(); this._terminal = null; }
+    this.stopSessionResources();
     this.clearPushTimer();
     if (this._idleTimer) { clearTimeout(this._idleTimer); this._idleTimer = null; }
     this._messageQueue.length = 0;
@@ -247,10 +383,19 @@ export class SessionRunnerRegistry {
   private runners = new Map<string, SessionRunner>();
   private _maxConcurrentRunners: number;
   private _defaultIdleTimeoutMs: number;
+  private _createPreviewManager: (() => PreviewManager) | undefined;
+  private _createFileWatcher: (() => FileWatcher) | undefined;
 
-  constructor(opts?: { maxConcurrentRunners?: number; defaultIdleTimeoutMs?: number }) {
+  constructor(opts?: {
+    maxConcurrentRunners?: number;
+    defaultIdleTimeoutMs?: number;
+    createPreviewManager?: () => PreviewManager;
+    createFileWatcher?: () => FileWatcher;
+  }) {
     this._maxConcurrentRunners = opts?.maxConcurrentRunners ?? 10;
     this._defaultIdleTimeoutMs = opts?.defaultIdleTimeoutMs ?? 10 * 60 * 1000;
+    this._createPreviewManager = opts?.createPreviewManager;
+    this._createFileWatcher = opts?.createFileWatcher;
   }
 
   /** Get or create a runner for the given session. */
@@ -282,6 +427,8 @@ export class SessionRunnerRegistry {
       sessionDir,
       defaultAgentId,
       idleTimeoutMs: this._defaultIdleTimeoutMs,
+      createPreviewManager: this._createPreviewManager,
+      createFileWatcher: this._createFileWatcher,
     });
     runner.on("disposed", () => this.runners.delete(sessionId));
     this.runners.set(sessionId, runner);
