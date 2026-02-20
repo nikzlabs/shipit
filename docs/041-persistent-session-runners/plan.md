@@ -13,9 +13,11 @@ Today, all per-session runtime state (Claude process, terminal, message queue, a
 
 3. **Only one session can be actively working at a time.** Because there is a single `claude` variable per connection, users cannot have multiple sessions running agents concurrently.
 
+4. **Multiple browser tabs cause conflicting state.** Per-connection state means two tabs fight over the global preview server, file watcher, and port scanner. `activateSession()` from one tab stomps the other's view. This is noted as unsupported in doc 040 (section 5.4).
+
 ### Goal
 
-Closing a tab, switching sessions, or navigating away should **never** affect running agents. Multiple sessions should be able to run agents simultaneously. When the user reconnects or switches back to a session, they should see the current state (streaming output, or completed results they missed).
+Closing a tab, switching sessions, or navigating away should **never** affect running agents. Multiple sessions should be able to run agents simultaneously. Multiple browser tabs should work correctly — each tab views one session at a time, with no cross-tab interference. When the user reconnects or switches back to a session, they should see the current state (streaming output, or completed results they missed).
 
 ---
 
@@ -509,6 +511,31 @@ The client will need updates to:
 
 ---
 
+## Multi-Tab Support
+
+Doc 040 (section 5.4) identified multi-tab as unsupported due to per-connection state causing conflicts. This design resolves all identified issues:
+
+| Doc 040 concern | How 041 resolves it |
+|------------------|---------------------|
+| Conflicting `activateSession()` calls | Each connection tracks its own `activeAppSessionId` (which session it's viewing). `activateSession()` attaches the connection to the session's runner — no global state to conflict. |
+| Claude processes from one tab interfering with another | Agent processes live in SessionRunner, scoped per-session. Two tabs viewing different sessions have fully isolated agents. |
+| Preview/file-watcher global singleton stomped by other tab | Preview and file watcher are per-session, ref-counted by viewers. Two tabs on different sessions each get their own. |
+| `full_reset` from one tab surprising the other | `full_reset` broadcasts `full_reset_complete` to all connected clients and calls `registry.disposeAll()`. All tabs see the reset and reload. This is inherently a destructive operation — broadcasting it is the correct behavior. |
+| Port scanner/detected ports shared globally | Port scanning moves per-session. Each runner tracks its own detected ports and sends results only to its attached viewers. |
+
+**What remains per-connection** (lightweight, no conflict):
+- `activeAppSessionId` — which session this tab is viewing
+- `activeSessionDir` — derived from above
+- The `send()` function — sends to this specific WebSocket client
+
+**What moves per-session** (in SessionRunner, shared by tabs viewing the same session):
+- Agent process, message queue, accumulated turn state
+- Preview server, file watcher, detected ports (ref-counted)
+- Terminal (Phase 2)
+- Auto-push timer, turn event buffer
+
+---
+
 ## Edge Cases
 
 ### 1. User sends message to session A, switches to session B, switches back to A
@@ -521,19 +548,31 @@ Connection closes → detach (runner keeps going). New connection opens → clie
 
 ### 3. Two browser tabs viewing the same session
 
-Both connections attach to the same SessionRunner. Both receive the same event stream. One tab sending `interrupt_claude` interrupts the shared agent — both tabs see the interruption.
+Both connections attach to the same SessionRunner. Both receive the same event stream via the runner's `"message"` event. They share one preview server and one file watcher (ref count = 2). One tab sending `interrupt_claude` interrupts the shared agent — both tabs see the interruption. Both tabs sending `send_message` at the same time results in one running and one queued (the runner serializes execution).
 
-### 4. Agent finishes while no client is connected
+### 4. Two browser tabs viewing different sessions
+
+Each tab attaches to a different SessionRunner. Each session has its own agent, preview server, file watcher, and detected ports — fully isolated. Sending a message in tab A has zero effect on tab B. This is the core multi-tab use case.
+
+### 5. Agent finishes while no client is connected
 
 The runner completes the turn: auto-commit, port scan, queue processing all happen normally. Results are persisted to chat history. When the client reconnects, they see the completed conversation from chat history.
 
-### 5. Idle timeout fires while agent is running
+### 6. Idle timeout fires while agent is running
 
 The idle timer only fires when `!isRunning && queue.length === 0`. A running agent resets the timer on completion. So this case cannot happen.
 
-### 6. Archive session with running agent
+### 7. Archive session with running agent
 
-Archiving a session should stop its runner. `handleArchiveSession` calls `registry.dispose(sessionId)` which kills the agent and cleans up.
+Archiving a session should stop its runner. `handleArchiveSession` calls `registry.dispose(sessionId)` which kills the agent and cleans up. If other tabs are viewing that session, they receive a notification that the session was archived and their viewer detaches.
+
+### 8. `full_reset` with multiple tabs open
+
+`full_reset` calls `registry.disposeAll()` which kills all runners across all sessions. All tabs receive `full_reset_complete` (broadcast, not per-connection). Each tab clears its local state and reloads, same as today.
+
+### 9. Request-response operations from different tabs
+
+Operations like `get_file_tree`, `get_git_log`, `read_file` are stateless reads scoped to the connection's currently-viewed session. Two tabs viewing different sessions get independent responses — no conflict. These don't go through the runner; they use `ctx.getActiveDir()` which is still per-connection state (which session this tab is viewing).
 
 ---
 
@@ -561,6 +600,13 @@ Archiving a session should stop its runner. `handleArchiveSession` calls `regist
   - Archive kills runner
   - Queue persists across connection drops
   - Sidebar activity broadcast messages
+- `multi-tab.test.ts`:
+  - Two connections viewing different sessions get isolated agents and previews
+  - Two connections viewing same session share agent events and preview
+  - Interrupt from one tab affects shared runner, both tabs notified
+  - Session switch in one tab doesn't affect the other tab's view
+  - `full_reset` from one tab notifies and resets all tabs
+  - File tree / git log requests scoped to each connection's viewed session
 
 ---
 
