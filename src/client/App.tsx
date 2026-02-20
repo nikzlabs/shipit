@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, lazy, Suspense } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useWebSocket } from "./hooks/useWebSocket.js";
 import { useResizablePanel } from "./hooks/useResizablePanel.js";
@@ -40,6 +40,9 @@ import { ThreadIndicator, type ThreadInfo } from "./components/ThreadIndicator.j
 import { ThreadTimeline } from "./components/ThreadTimeline.js";
 import { DeployModal, type DeployPhase } from "./components/DeployModal.js";
 import { FeaturesPanel } from "./components/FeaturesPanel.js";
+import type { TurnDiffData } from "./components/DiffPanel.js";
+
+const DiffPanel = lazy(() => import("./components/DiffPanel.js").then(m => ({ default: m.DiffPanel })));
 import { PullRequestModal } from "./components/PullRequestModal.js";
 import { PrStatusBar } from "./components/PrStatusBar.js";
 import { Toast, type ToastData } from "./components/Toast.js";
@@ -47,7 +50,7 @@ import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentPicker, type AgentOption } from "./components/AgentPicker.js";
 import type { DeployTargetInfo, DeploymentRecord, FeatureInfo, PermissionMode, FileContextRef, SessionInfo, AgentId } from "../server/types.js";
 
-type RightTab = "preview" | "docs" | "files" | "terminal" | "features";
+type RightTab = "preview" | "docs" | "files" | "terminal" | "features" | "changes";
 
 function getWsUrl(): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -139,6 +142,9 @@ export default function App() {
   const [queuedMessages, setQueuedMessages] = useState<Array<{ text: string; position: number }>>([]);
   const [toast, setToast] = useState<ToastData | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(getSavedSidebarCollapsed());
+  const [turnDiff, setTurnDiff] = useState<TurnDiffData | null>(null);
+  const [lastCommitPair, setLastCommitPair] = useState<{ from: string; to: string } | null>(null);
+  const [diffBadgeCount, setDiffBadgeCount] = useState(0);
   const sessionIdRef = useRef<string | undefined>(urlSessionId);
   // Track whether we've already requested history for the current connection
   const historyLoadedRef = useRef(false);
@@ -196,6 +202,8 @@ export default function App() {
     setAutoFixEnabled: () => {}, // not used — disableAutoFix is used instead
     setHasSystemPrompt,
     setSelectedPort, setPrCurrentBranch, setPrRemoteBranches,
+    setTurnDiff, setLastCommitPair, setDiffBadgeCount,
+    lastCommitPair, turnDiff,
     sessionIdRef, prDescGeneratingRef, autoFixRetriesRef,
     disableAutoFix,
     setAutoFixRetries: () => {}, // not used — disableAutoFix handles this
@@ -247,8 +255,9 @@ export default function App() {
     setPrDescError, setPrGeneratedDesc, setImportSearchResults, setPrStatus,
     setQueuedMessages, setShellStarted, setToast,
     setConfigMissing, setInstallStatus,
+    setTurnDiff, setLastCommitPair, setDiffBadgeCount,
     prDescGeneratingRef, sessionIdRef, terminalRef,
-    rightTab, viewingFile, notify,
+    rightTab, viewingFile, gitCommits, notify,
     navigate,
     handleSessionResume: callbacks.handleSessionResume,
     githubStatus, prStatus,
@@ -279,6 +288,9 @@ export default function App() {
       setShellStarted(false);
       setTerminalMode("logs");
       setQueuedMessages([]);
+      setTurnDiff(null);
+      setLastCommitPair(null);
+      setDiffBadgeCount(0);
     }
   }, [urlSessionId, callbacks.resumeSessionInternal]);
 
@@ -342,6 +354,23 @@ export default function App() {
             </span>
           )}
         </button>
+        {lastCommitPair && (
+          <button
+            onClick={() => callbacks.handleTabChange("changes")}
+            className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+              rightTab === "changes"
+                ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500"
+                : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+            }`}
+          >
+            Changes
+            {diffBadgeCount > 0 && rightTab !== "changes" && (
+              <span className="ml-1.5 inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-orange-600 text-white">
+                {diffBadgeCount > 99 ? "99+" : diffBadgeCount}
+              </span>
+            )}
+          </button>
+        )}
         <button
           onClick={() => callbacks.handleTabChange("features")}
           className={`px-4 py-2 text-sm font-medium transition-colors ${
@@ -397,6 +426,21 @@ export default function App() {
               ) : null
             }
           />
+        ) : rightTab === "changes" ? (
+          turnDiff ? (
+            <Suspense fallback={<div className="flex items-center justify-center h-full text-gray-500 text-sm">Loading diff viewer...</div>}>
+              <DiffPanel
+                diff={turnDiff}
+                onAcceptAll={callbacks.handleDiffAcceptAll}
+                onRejectFiles={callbacks.handleDiffRejectFiles}
+                onClose={callbacks.handleDiffClose}
+              />
+            </Suspense>
+          ) : (
+            <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+              Loading diff...
+            </div>
+          )
         ) : rightTab === "features" ? (
           <FeaturesPanel
             features={features}

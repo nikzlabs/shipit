@@ -1,6 +1,6 @@
 import type { ClaudeEvent } from "./claude-types.js";
 import type { AgentId, AgentEvent } from "./agent-types.js";
-import type { GitCommitInfo, SessionInfo, FeatureInfo, ProjectTemplate, FileTreeNode, WsChatHistoryMessage } from "./domain-types.js";
+import type { GitCommitInfo, SessionInfo, FeatureInfo, ProjectTemplate, FileTreeNode, WsChatHistoryMessage, FileDiff } from "./domain-types.js";
 import type {
   WsGitHubStatus,
   WsGitHubPushResult,
@@ -241,6 +241,22 @@ export interface WsMergeResult {
   conflicts?: string[];
 }
 
+// ---- Diff review messages (server → client) ----
+
+export interface WsTurnDiff {
+  type: "turn_diff";
+  fromCommit: string;
+  toCommit: string;
+  files: FileDiff[];
+  stats: { totalInsertions: number; totalDeletions: number; filesChanged: number };
+}
+
+export interface WsRejectChangesComplete {
+  type: "reject_changes_complete";
+  revertedFiles: string[];
+  commitHash: string;
+}
+
 // ---- Agent registry server messages ----
 
 export interface WsAgentListMessage {
@@ -358,4 +374,6 @@ export type WsServerMessage =
   | WsInstallStatus
   | WsPreviewConfigMissing
   | WsPreviewConfigError
-  | WsClearLogs;
+  | WsClearLogs
+  | WsTurnDiff
+  | WsRejectChangesComplete;

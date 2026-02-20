@@ -67,6 +67,26 @@ export interface FileTreeNode {
   children?: FileTreeNode[];
 }
 
+// ---- Diff types ----
+
+export interface DiffFileStat {
+  path: string;
+  insertions: number;
+  deletions: number;
+  binary: boolean;
+}
+
+export interface FileDiff {
+  path: string;
+  oldPath?: string;
+  status: "added" | "modified" | "deleted" | "renamed";
+  insertions: number;
+  deletions: number;
+  binary: boolean;
+  oldContent: string;
+  newContent: string;
+}
+
 // ---- Chat history message (shared data type) ----
 
 export interface WsChatHistoryMessage {
