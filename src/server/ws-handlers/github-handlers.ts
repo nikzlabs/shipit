@@ -21,14 +21,22 @@ export async function handleGithubSetToken(ctx: HandlerContext, msg: WsGithubSet
         ctx.githubAuthManager.configureGitCredentials(activeSessionDir);
       }
       ctx.send({ type: "github_status", ...ctx.githubAuthManager.getStatus() });
+      // Auto-send user repos so the RepoSelector is populated immediately
+      const repos = await ctx.githubAuthManager.listUserRepos();
+      ctx.send({ type: "github_search_results", repos });
     } else {
       ctx.send({ type: "error", message: "Invalid GitHub token" });
     }
   }
 }
 
-export function handleGithubGetStatus(ctx: HandlerContext): void {
+export async function handleGithubGetStatus(ctx: HandlerContext): Promise<void> {
   ctx.send({ type: "github_status", ...ctx.githubAuthManager.getStatus() });
+  // Auto-send user repos on connect so the RepoSelector is pre-populated
+  if (ctx.githubAuthManager.authenticated) {
+    const repos = await ctx.githubAuthManager.listUserRepos();
+    ctx.send({ type: "github_search_results", repos });
+  }
 }
 
 export async function handleGithubPush(ctx: HandlerContext, msg: WsGithubPush): Promise<void> {
@@ -98,6 +106,7 @@ export async function handleGithubGetRemotes(ctx: HandlerContext): Promise<void>
 export function handleGithubLogout(ctx: HandlerContext): void {
   ctx.githubAuthManager.clearCredentials();
   ctx.send({ type: "github_status", ...ctx.githubAuthManager.getStatus() });
+  ctx.send({ type: "github_search_results", repos: [] });
 }
 
 export async function handleGithubSearchRepos(ctx: HandlerContext, msg: WsGithubSearchRepos): Promise<void> {

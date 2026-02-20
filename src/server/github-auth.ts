@@ -309,6 +309,46 @@ export class GitHubAuthManager extends EventEmitter {
   }
 
   /**
+   * List the authenticated user's repos, sorted by most recently pushed.
+   * Used to populate the repo selector before the user types a search query.
+   */
+  async listUserRepos(): Promise<Array<{
+    fullName: string;
+    description: string | null;
+    private: boolean;
+    defaultBranch: string;
+    cloneUrl: string;
+  }>> {
+    if (!this._token) return [];
+
+    try {
+      const res = await fetch(
+        "https://api.github.com/user/repos?sort=pushed&per_page=15&affiliation=owner,collaborator",
+        {
+          headers: {
+            Authorization: `Bearer ${this._token}`,
+            Accept: "application/vnd.github+json",
+            "User-Agent": "ShipIt",
+          },
+        },
+      );
+
+      if (!res.ok) return [];
+
+      const data = (await res.json()) as Array<{ full_name: string; description: string | null; private: boolean; default_branch: string; clone_url: string }>;
+      return data.map((r) => ({
+        fullName: r.full_name,
+        description: r.description,
+        private: r.private,
+        defaultBranch: r.default_branch,
+        cloneUrl: r.clone_url,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Search the user's accessible repos by name.
    */
   async searchRepos(query: string): Promise<Array<{

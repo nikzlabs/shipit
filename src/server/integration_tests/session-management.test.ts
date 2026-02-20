@@ -279,7 +279,7 @@ describe("Integration: list_sessions remoteUrl caching", () => {
 
     // Activate the session
     client.send({ type: "get_chat_history", sessionId: "sess-set-remote" });
-    await client.receive(); // chat_history
+    await client.receiveType("chat_history"); // skip side-effects from activateSession
 
     // Set the remote
     client.send({ type: "github_set_remote", name: "origin", url: "https://github.com/cached/url.git" });

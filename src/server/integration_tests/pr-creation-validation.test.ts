@@ -90,6 +90,7 @@ describe("Integration: PR creation — validation errors", () => {
 
     client.send({ type: "github_set_token", token: "ghp_test" });
     await client.receive(); // github_status
+    await client.receive(); // github_search_results (user repos)
 
     client.send({
       type: "github_set_remote",
@@ -128,6 +129,7 @@ describe("Integration: PR creation — validation errors", () => {
     // Authenticate but don't add a remote
     client.send({ type: "github_set_token", token: "ghp_test" });
     await client.receive(); // github_status
+    await client.receive(); // github_search_results (user repos)
 
     client.send({
       type: "github_create_pr",
@@ -152,6 +154,7 @@ describe("Integration: PR creation — validation errors", () => {
     // Authenticate
     client.send({ type: "github_set_token", token: "ghp_test" });
     await client.receive(); // github_status
+    await client.receive(); // github_search_results (user repos)
 
     // Add a non-GitHub remote
     client.send({
