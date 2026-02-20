@@ -7,13 +7,13 @@ import { GitManager } from "../git.js";
 import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../auth.js";
 import { GitHubAuthManager } from "../github-auth.js";
-import { ViteManager } from "../vite-manager.js";
+import { PreviewManager } from "../preview-manager.js";
 import { ClaudeProcess } from "../claude.js";
 import { FileWatcher } from "../file-watcher.js";
 import type { FastifyInstance } from "fastify";
 import {
   TestClient,
-  StubViteManager,
+  StubPreviewManager,
   StubAuthManager,
   StubGitHubAuthManager,
   FakeClaudeProcess,
@@ -38,7 +38,7 @@ describe("Integration: Session isolation — switching & resume", () => {
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
-      viteManager: new StubViteManager() as unknown as ViteManager,
+      previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
       claudeFactory: () => {
@@ -48,7 +48,7 @@ describe("Integration: Session isolation — switching & resume", () => {
       fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
-      startVite: false,
+      startPreview: false,
       portScanIntervalMs: 0,
     });
 
@@ -115,9 +115,13 @@ describe("Integration: Session isolation — switching & resume", () => {
     expect(sessionBMsg.type).toBe("session_started");
     await client.receive(); // template_applied
 
-    // Switch back to session A
+    // Switch back to session A — activateSession broadcasts preview_status + clear_logs
     client.send({ type: "get_chat_history", sessionId: sessionA.id });
-    const historyMsg = await client.receive();
+    let historyMsg = await client.receive();
+    // Skip session-switch housekeeping messages (preview_status, clear_logs, config_missing)
+    while (historyMsg.type === "preview_status" || historyMsg.type === "clear_logs" || historyMsg.type === "preview_config_missing") {
+      historyMsg = await client.receive();
+    }
     expect(historyMsg.type).toBe("chat_history");
 
     // File tree should now show session A's files

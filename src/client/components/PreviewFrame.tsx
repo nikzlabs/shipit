@@ -5,8 +5,8 @@ export interface PreviewStatus {
   running: boolean;
   port: number;
   url: string;
-  /** "vite" for the managed Vite server, "detected" for auto-detected ports. */
-  source?: "vite" | "detected";
+  /** "vite" for bundled Vite server, "managed" for command mode, "detected" for auto-detected ports. */
+  source?: "vite" | "managed" | "detected";
   /** All ports found by port scanning (non-Vite dev servers). */
   detectedPorts?: number[];
 }
@@ -31,6 +31,12 @@ interface PreviewFrameProps {
   onToggleAutoFix: () => void;
   /** Current auto-fix retry count (for display). */
   autoFixRetries: number;
+  /** Whether no preview config was found for the session. */
+  configMissing?: boolean;
+  /** Install command status (running, complete, or error). */
+  installStatus?: { status: "running" | "complete" | "error"; message?: string } | null;
+  /** Called when user clicks "Set up with Claude" to generate shipit.yaml. */
+  onInitPreviewConfig?: () => void;
 }
 
 function formatErrorForMessage(errors: PreviewError[]): string {
@@ -65,16 +71,77 @@ export function PreviewFrame({
   autoFixEnabled,
   onToggleAutoFix,
   autoFixRetries,
+  configMissing,
+  installStatus,
+  onInitPreviewConfig,
 }: PreviewFrameProps) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
 
+  // Show install progress
+  if (installStatus && installStatus.status === "running") {
+    return (
+      <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+        <div className="text-center space-y-3">
+          <div className="inline-block w-6 h-6 border-2 border-gray-400 border-t-blue-500 rounded-full animate-spin" />
+          <p>Installing dependencies...</p>
+          <p className="text-xs text-gray-400 dark:text-gray-600">
+            This may take a moment.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show install error
+  if (installStatus && installStatus.status === "error") {
+    return (
+      <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+        <div className="text-center space-y-2">
+          <div className="text-2xl text-red-500">!</div>
+          <p className="text-red-400">Install failed</p>
+          {installStatus.message && (
+            <p className="text-xs text-gray-400 dark:text-gray-600 max-w-sm">
+              {installStatus.message}
+            </p>
+          )}
+          <p className="text-xs text-gray-400 dark:text-gray-600">
+            Check the terminal logs for details.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (!preview || !preview.running) {
+    // Show config missing state with option to set up
+    if (configMissing) {
+      return (
+        <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+          <div className="text-center space-y-3">
+            <div className="text-2xl">&#9881;</div>
+            <p>No preview configuration found.</p>
+            <p className="text-xs text-gray-400 dark:text-gray-600 max-w-sm">
+              Create a shipit.yaml file to configure how the preview server runs, or let Claude set it up for you.
+            </p>
+            {onInitPreviewConfig && (
+              <button
+                onClick={onInitPreviewConfig}
+                className="px-3 py-1.5 rounded bg-blue-600 text-white text-xs hover:bg-blue-500 transition-colors"
+              >
+                Set up with Claude
+              </button>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="flex items-center justify-center h-full text-gray-500 text-sm">
         <div className="text-center space-y-2">
           <div className="text-2xl">&#9654;</div>
-          <p>Preview will appear here when a dev server is running in /workspace.</p>
+          <p>Preview will appear here when a dev server is running.</p>
           <p className="text-xs text-gray-400 dark:text-gray-600">
             Ask the agent to create a project to get started. Vite, Express, Next.js, and other servers are auto-detected.
           </p>
@@ -86,16 +153,17 @@ export function PreviewFrame({
   // The active port: user selection takes priority, then the server default
   const activePort = selectedPort ?? preview.port;
   const activeUrl = `http://localhost:${activePort}`;
-  const isVite = preview.source === "vite" && activePort === preview.port;
-  const showSelector = detectedPorts.length > 1 || (preview.source === "vite" && detectedPorts.length > 0);
+  const isManaged = (preview.source === "vite" || preview.source === "managed") && activePort === preview.port;
+  const showSelector = detectedPorts.length > 1 || ((preview.source === "vite" || preview.source === "managed") && detectedPorts.length > 0);
 
   // Build the list of all available ports for the selector
   const allPorts: { port: number; label: string }[] = [];
-  if (preview.source === "vite") {
-    allPorts.push({ port: preview.port, label: `${preview.port} (Vite)` });
+  if (preview.source === "vite" || preview.source === "managed") {
+    const label = preview.source === "vite" ? `${preview.port} (Vite)` : `${preview.port} (Preview)`;
+    allPorts.push({ port: preview.port, label });
   }
   for (const p of detectedPorts) {
-    if (p !== preview.port || preview.source !== "vite") {
+    if (p !== preview.port || (preview.source !== "vite" && preview.source !== "managed")) {
       allPorts.push({ port: p, label: `${p}` });
     }
   }
@@ -123,7 +191,7 @@ export function PreviewFrame({
           ) : (
             <>
               localhost:{activePort}
-              {!isVite && preview.source === "detected" && (
+              {!isManaged && preview.source === "detected" && (
                 <span className="text-yellow-400">(auto-detected)</span>
               )}
             </>

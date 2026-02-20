@@ -67,7 +67,7 @@ export async function handleFullReset(ctx: HandlerContext): Promise<void> {
     }
     ctx.setIsClaudeRunning(false);
     ctx.clearMessageQueue();
-    ctx.viteManager.stop();
+    ctx.previewManager.stop();
     ctx.fileWatcher.stop();
     const terminal = ctx.getTerminal();
     if (terminal) {

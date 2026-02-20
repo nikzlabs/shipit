@@ -8,14 +8,14 @@ import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../auth.js";
 import { GitHubAuthManager } from "../github-auth.js";
-import { ViteManager } from "../vite-manager.js";
+import { PreviewManager } from "../preview-manager.js";
 import { ClaudeProcess } from "../claude.js";
 import { FileWatcher } from "../file-watcher.js";
 import { ThreadManager } from "../threads.js";
 import type { FastifyInstance } from "fastify";
 import {
   TestClient,
-  StubViteManager,
+  StubPreviewManager,
   StubAuthManager,
   StubGitHubAuthManager,
   FakeClaudeProcess,
@@ -44,7 +44,7 @@ describe("Integration: Threads — replay & lifecycle", () => {
       sessionManager,
       chatHistoryManager,
       threadManager,
-      viteManager: new StubViteManager() as unknown as ViteManager,
+      previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
       claudeFactory: () => {
@@ -54,7 +54,7 @@ describe("Integration: Threads — replay & lifecycle", () => {
       fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
-      startVite: false,
+      startPreview: false,
       portScanIntervalMs: 0,
     });
 

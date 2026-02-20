@@ -125,7 +125,7 @@ export async function handleForkThread(ctx: HandlerContext, msg: WsForkThread): 
     }
 
     // Restart Vite after git rollback
-    ctx.viteManager.restart(ctx.getActiveDir());
+    ctx.previewManager.restart(ctx.getActiveDir());
 
     ctx.send({
       type: "thread_forked",
@@ -183,7 +183,7 @@ export async function handleSwitchThread(ctx: HandlerContext, msg: WsSwitchThrea
             isActive: t.id === threadId,
           })),
         });
-        ctx.viteManager.restart(ctx.getActiveDir());
+        ctx.previewManager.restart(ctx.getActiveDir());
       }
     }
 

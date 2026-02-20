@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 ---
 
 # 037 — Config-driven preview & session change cleanup

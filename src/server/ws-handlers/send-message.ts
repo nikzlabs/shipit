@@ -292,12 +292,12 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
       console.error("[git] auto-commit failed:", getErrorMessage(err));
     }
 
-    // Restart Vite after agent finishes in case new files were created
-    if (!ctx.viteManager.running) {
-      ctx.viteManager.start(ctx.getActiveDir());
+    // Restart preview after agent finishes in case new files were created
+    if (!ctx.previewManager.running) {
+      await ctx.previewManager.start(ctx.getActiveDir());
     }
 
-    // Scan for non-Vite dev servers that the agent may have started.
+    // Scan for dev servers that the agent may have started.
     await ctx.runPortScan();
 
     // Mark Claude as no longer running, then process the next queued message
@@ -452,7 +452,7 @@ export async function handleSendMessage(ctx: HandlerContext, msg: WsSendMessage)
       ctx.clearMessageQueue();
       ctx.send({ type: "queue_updated", queue: [] });
     }
-    ctx.activateSession(msg.sessionId);
+    await ctx.activateSession(msg.sessionId);
     const session = ctx.sessionManager.get(msg.sessionId);
     // Only resume if we have a real Claude CLI session ID
     agentSessionId = session?.agentSessionId;
@@ -561,8 +561,8 @@ export async function handleAnswerQuestion(ctx: HandlerContext, msg: WsAnswerQue
       console.error("[git] auto-commit failed:", getErrorMessage(err));
     }
 
-    if (!ctx.viteManager.running) {
-      ctx.viteManager.start(ctx.getActiveDir());
+    if (!ctx.previewManager.running) {
+      await ctx.previewManager.start(ctx.getActiveDir());
     }
     await ctx.runPortScan();
   });

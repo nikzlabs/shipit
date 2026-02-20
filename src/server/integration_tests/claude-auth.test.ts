@@ -6,13 +6,13 @@ import { buildApp } from "../index.js";
 import { GitManager } from "../git.js";
 import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../auth.js";
-import { ViteManager } from "../vite-manager.js";
+import { PreviewManager } from "../preview-manager.js";
 import { ClaudeProcess } from "../claude.js";
 import { FileWatcher } from "../file-watcher.js";
 import type { FastifyInstance } from "fastify";
 import {
   TestClient,
-  StubViteManager,
+  StubPreviewManager,
   StubAuthManager,
   StubGitHubAuthManager,
   FakeClaudeProcess,
@@ -33,13 +33,13 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
-      viteManager: new StubViteManager() as unknown as ViteManager,
+      previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
       fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
-      startVite: false,
+      startPreview: false,
       portScanIntervalMs: 0,
     });
 
@@ -70,14 +70,14 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     const unauthApp = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: unauthSessions,
-      viteManager: new StubViteManager() as unknown as ViteManager,
+      previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: unauthStub,
       githubAuthManager: new StubGitHubAuthManager() as unknown as import("../github-auth.js").GitHubAuthManager,
       claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
       fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: unauthTmpDir,
       serveStatic: false,
-      startVite: false,
+      startPreview: false,
       portScanIntervalMs: 0,
     });
     const addr = await unauthApp.listen({ port: 0, host: "127.0.0.1" });
@@ -121,14 +121,14 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     const unauthApp = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: unauthSessions,
-      viteManager: new StubViteManager() as unknown as ViteManager,
+      previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: unauthStub,
       githubAuthManager: new StubGitHubAuthManager() as unknown as import("../github-auth.js").GitHubAuthManager,
       claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
       fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: unauthTmpDir,
       serveStatic: false,
-      startVite: false,
+      startPreview: false,
       portScanIntervalMs: 0,
     });
     const addr = await unauthApp.listen({ port: 0, host: "127.0.0.1" });
