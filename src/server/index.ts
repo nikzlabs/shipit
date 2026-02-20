@@ -995,6 +995,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         case "github_logout": return githubHandlers.handleGithubLogout(ctx);
         case "github_search_repos": return githubHandlers.handleGithubSearchRepos(ctx, msg);
         case "github_list_branches": return githubHandlers.handleGithubListBranches(ctx);
+        case "list_repo_docs": return githubHandlers.handleListRepoDocs(ctx, msg);
+        case "get_repo_doc": return githubHandlers.handleGetRepoDoc(ctx, msg);
 
         // ---- PR operations ----
         case "github_create_pr": return prHandlers.handleGithubCreatePr(ctx, msg);

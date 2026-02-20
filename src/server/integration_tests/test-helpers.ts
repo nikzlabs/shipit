@@ -286,11 +286,23 @@ export class StubGitHubAuthManager extends EventEmitter {
     return this._checkStatus ?? { state: "none" as const, total: 0, passed: 0, failed: 0, pending: 0 };
   }
 
+  async listRepoMarkdownFiles(_owner: string, _repo: string, _branch?: string): Promise<string[]> {
+    return this._repoDocFiles;
+  }
+
+  async getRepoFileContent(_owner: string, _repo: string, _filePath: string): Promise<string> {
+    const content = this._repoDocContents.get(_filePath);
+    if (content === undefined) throw new Error(`File not found: ${_filePath}`);
+    return content;
+  }
+
   // ---- Test control methods ----
 
   private _prData: { url: string; number: number; base: string; title: string } | null = null;
   private _mergeResult: { success: boolean; message: string } | null = null;
   private _checkStatus: { state: "pending" | "success" | "failure" | "none"; total: number; passed: number; failed: number; pending: number } | null = null;
+  private _repoDocFiles: string[] = [];
+  private _repoDocContents = new Map<string, string>();
 
   /** Set what findPullRequest returns for tests. */
   setPrData(data: { url: string; number: number; base: string; title: string } | null) {
@@ -305,6 +317,16 @@ export class StubGitHubAuthManager extends EventEmitter {
   /** Set what getCheckStatus returns for tests. */
   setCheckStatus(status: { state: "pending" | "success" | "failure" | "none"; total: number; passed: number; failed: number; pending: number } | null) {
     this._checkStatus = status;
+  }
+
+  /** Set what listRepoMarkdownFiles returns for tests. */
+  setRepoDocFiles(files: string[]) {
+    this._repoDocFiles = files;
+  }
+
+  /** Set what getRepoFileContent returns for a specific path. */
+  setRepoDocContent(filePath: string, content: string) {
+    this._repoDocContents.set(filePath, content);
   }
 }
 

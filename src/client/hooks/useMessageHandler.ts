@@ -100,6 +100,8 @@ export function useMessageHandler(params: {
   setLastCommitPair: Dispatch<SetStateAction<{ from: string; to: string } | null>>;
   setDiffBadgeCount: Dispatch<SetStateAction<number>>;
   setActiveRunnerSessions: Dispatch<SetStateAction<Set<string>>>;
+  setRepoDocFiles: Dispatch<SetStateAction<string[]>>;
+  setRepoDocContent: Dispatch<SetStateAction<string | null>>;
 
   // Refs
   prDescGeneratingRef: MutableRefObject<boolean>;
@@ -145,6 +147,7 @@ export function useMessageHandler(params: {
     setConfigMissing, setInstallStatus,
     setTurnDiff, setLastCommitPair, setDiffBadgeCount,
     setActiveRunnerSessions,
+    setRepoDocFiles, setRepoDocContent,
     prDescGeneratingRef, sessionIdRef, terminalRef,
     rightTab, viewingFile, gitCommits, notify, navigate, handleSessionResume,
     githubStatus, prStatus,
@@ -505,6 +508,14 @@ export function useMessageHandler(params: {
 
     if (data.type === "doc_content") {
       setDocContent(data.content);
+    }
+
+    if (data.type === "repo_doc_list") {
+      setRepoDocFiles(data.files);
+    }
+
+    if (data.type === "repo_doc_content") {
+      setRepoDocContent(data.content);
     }
 
     if (data.type === "file_tree") {
@@ -956,6 +967,7 @@ export function useMessageHandler(params: {
       setConfigMissing, setInstallStatus,
       setTurnDiff, setLastCommitPair, setDiffBadgeCount,
       setActiveRunnerSessions,
+      setRepoDocFiles, setRepoDocContent,
       prDescGeneratingRef, sessionIdRef, terminalRef,
       githubStatus, prStatus]);
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, lazy, Suspense } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useWebSocket } from "./hooks/useWebSocket.js";
 import { useResizablePanel } from "./hooks/useResizablePanel.js";
@@ -89,6 +89,9 @@ export default function App() {
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
   const [showTemplates, setShowTemplates] = useState(!urlSessionId);
   const [selectedRepoUrl, setSelectedRepoUrl] = useState<string | null>(null);
+  const [repoDocFiles, setRepoDocFiles] = useState<string[]>([]);
+  const [selectedRepoDoc, setSelectedRepoDoc] = useState<string | null>(null);
+  const [repoDocContent, setRepoDocContent] = useState<string | null>(null);
   const [creatingRepo, setCreatingRepo] = useState(false);
   const [githubStatus, setGithubStatus] = useState<{ authenticated: boolean; username?: string; avatarUrl?: string }>({ authenticated: false });
   const [currentSessionUsage, setCurrentSessionUsage] = useState<SessionUsage | null>(null);
@@ -257,6 +260,7 @@ export default function App() {
     setConfigMissing, setInstallStatus,
     setTurnDiff, setLastCommitPair, setDiffBadgeCount,
     setActiveRunnerSessions,
+    setRepoDocFiles, setRepoDocContent,
     prDescGeneratingRef, sessionIdRef, terminalRef,
     rightTab, viewingFile, gitCommits, notify,
     navigate,
@@ -275,6 +279,9 @@ export default function App() {
       setIsLoading(false);
       setShowTemplates(true);
       setSelectedRepoUrl(null);
+      setRepoDocFiles([]);
+      setSelectedRepoDoc(null);
+      setRepoDocContent(null);
       setViewingFile(null);
       setViewingFileContent(null);
       setViewingFileBinary(false);
@@ -294,6 +301,38 @@ export default function App() {
       setDiffBadgeCount(0);
     }
   }, [urlSessionId, callbacks.resumeSessionInternal]);
+
+  // Extract owner/repo from a GitHub URL (e.g., "https://github.com/owner/repo.git" → "owner/repo")
+  const repoFullName = useMemo(() => {
+    if (!selectedRepoUrl) return null;
+    const match = selectedRepoUrl.match(/github\.com\/([^/]+)\/([^/.]+)/);
+    return match ? `${match[1]}/${match[2]}` : null;
+  }, [selectedRepoUrl]);
+
+  // Fetch repo docs from GitHub when a repo is selected on the HomeScreen
+  useEffect(() => {
+    if (repoFullName && status === "open") {
+      setRepoDocFiles([]);
+      setSelectedRepoDoc(null);
+      setRepoDocContent(null);
+      send({ type: "list_repo_docs", repoFullName });
+    }
+  }, [repoFullName, send, status]);
+
+  const handleSelectRepoDoc = useCallback(
+    (filePath: string) => {
+      if (!repoFullName) return;
+      setSelectedRepoDoc(filePath);
+      setRepoDocContent(null);
+      send({ type: "get_repo_doc", repoFullName, path: filePath });
+    },
+    [send, repoFullName],
+  );
+
+  const handleRefreshRepoDocs = useCallback(() => {
+    if (!repoFullName) return;
+    send({ type: "list_repo_docs", repoFullName });
+  }, [send, repoFullName]);
 
   // Shared right-panel content (Preview / Docs / Files with tab bar)
   const rightPanel = (
@@ -524,6 +563,11 @@ export default function App() {
           creatingRepo={creatingRepo}
           selectedRepoUrl={selectedRepoUrl}
           onSelectRepo={setSelectedRepoUrl}
+          repoDocFiles={repoDocFiles}
+          repoDocContent={repoDocContent}
+          selectedRepoDoc={selectedRepoDoc}
+          onSelectRepoDoc={handleSelectRepoDoc}
+          onRefreshRepoDocs={handleRefreshRepoDocs}
         />
       ) : (
         <MessageList

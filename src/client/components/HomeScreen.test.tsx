@@ -36,6 +36,11 @@ const defaultProps: HomeScreenProps = {
   creatingRepo: false,
   selectedRepoUrl: null,
   onSelectRepo: vi.fn(),
+  repoDocFiles: [],
+  repoDocContent: null,
+  selectedRepoDoc: null,
+  onSelectRepoDoc: vi.fn(),
+  onRefreshRepoDocs: vi.fn(),
 };
 
 describe("HomeScreen", () => {

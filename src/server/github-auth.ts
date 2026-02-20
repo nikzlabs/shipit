@@ -555,6 +555,82 @@ export class GitHubAuthManager extends EventEmitter {
   }
 
   /**
+   * List markdown files in a GitHub repo using the Git Trees API.
+   * Works without auth for public repos; uses token for private repos.
+   */
+  async listRepoMarkdownFiles(
+    owner: string,
+    repo: string,
+    branch = "HEAD",
+  ): Promise<string[]> {
+    const headers: Record<string, string> = {
+      Accept: "application/vnd.github+json",
+      "User-Agent": "ShipIt",
+    };
+    if (this._token) {
+      headers.Authorization = `Bearer ${this._token}`;
+    }
+
+    const res = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`,
+      { headers },
+    );
+
+    if (!res.ok) {
+      throw new Error(`GitHub API returned ${res.status}`);
+    }
+
+    const data = (await res.json()) as {
+      tree: Array<{ path: string; type: string }>;
+    };
+
+    const SKIP_PREFIXES = ["node_modules/", ".git/", "vendor/", "dist/"];
+    return data.tree
+      .filter(
+        (entry) =>
+          entry.type === "blob" &&
+          entry.path.endsWith(".md") &&
+          !SKIP_PREFIXES.some((p) => entry.path.startsWith(p)),
+      )
+      .map((entry) => entry.path)
+      .sort();
+  }
+
+  /**
+   * Fetch a single file's content from a GitHub repo using the Contents API.
+   * Returns the decoded UTF-8 content.
+   */
+  async getRepoFileContent(
+    owner: string,
+    repo: string,
+    filePath: string,
+  ): Promise<string> {
+    const headers: Record<string, string> = {
+      Accept: "application/vnd.github+json",
+      "User-Agent": "ShipIt",
+    };
+    if (this._token) {
+      headers.Authorization = `Bearer ${this._token}`;
+    }
+
+    const res = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(filePath)}`,
+      { headers },
+    );
+
+    if (!res.ok) {
+      throw new Error(`GitHub API returned ${res.status}`);
+    }
+
+    const data = (await res.json()) as { content?: string; encoding?: string };
+    if (!data.content || data.encoding !== "base64") {
+      throw new Error("Unexpected response format from GitHub Contents API");
+    }
+
+    return Buffer.from(data.content, "base64").toString("utf-8");
+  }
+
+  /**
    * Load cached user info from GitHub API using stored token.
    * Called on startup when checkCredentials() finds a token file.
    */

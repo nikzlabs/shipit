@@ -14,6 +14,8 @@ import type {
   WsGeneratePRDescription,
   WsGetPrStatus,
   WsMergePr,
+  WsListRepoDocs,
+  WsGetRepoDoc,
 } from "./github-types.js";
 import type { WsTerminalStart, WsTerminalInput, WsTerminalResize, WsClearLogs, WsPreviewError } from "./terminal-types.js";
 import type { WsCreateCheckpoint, WsForkThread, WsSwitchThread, WsListThreads } from "./thread-types.js";
@@ -338,4 +340,6 @@ export type WsClientMessage =
   | WsGetTurnDiff
   | WsRejectChanges
   | WsDiffComment
-  | WsGetSessionStatus;
+  | WsGetSessionStatus
+  | WsListRepoDocs
+  | WsGetRepoDoc;

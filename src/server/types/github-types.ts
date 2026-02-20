@@ -52,6 +52,30 @@ export interface WsGitHubSearchRepos {
   query: string;
 }
 
+// ---- Repo docs messages (pre-session, fetched from GitHub API) ----
+
+export interface WsListRepoDocs {
+  type: "list_repo_docs";
+  repoFullName: string;
+}
+
+export interface WsGetRepoDoc {
+  type: "get_repo_doc";
+  repoFullName: string;
+  path: string;
+}
+
+export interface WsRepoDocList {
+  type: "repo_doc_list";
+  files: string[];
+}
+
+export interface WsRepoDocContent {
+  type: "repo_doc_content";
+  path: string;
+  content: string;
+}
+
 // ---- AI PR description messages ----
 
 export interface WsGeneratePRDescription {

@@ -2,11 +2,15 @@ import type { WsClientMessage } from "../types.js";
 import type { HandlerContext } from "./types.js";
 import { getErrorMessage } from "../validation.js";
 
+import { GitManager } from "../git.js";
+
 type WsGithubSetToken = Extract<WsClientMessage, { type: "github_set_token" }>;
 type WsGithubPush = Extract<WsClientMessage, { type: "github_push" }>;
 type WsGithubPull = Extract<WsClientMessage, { type: "github_pull" }>;
 type WsGithubSetRemote = Extract<WsClientMessage, { type: "github_set_remote" }>;
 type WsGithubSearchRepos = Extract<WsClientMessage, { type: "github_search_repos" }>;
+type WsListRepoDocs = Extract<WsClientMessage, { type: "list_repo_docs" }>;
+type WsGetRepoDoc = Extract<WsClientMessage, { type: "get_repo_doc" }>;
 
 export async function handleGithubSetToken(ctx: HandlerContext, msg: WsGithubSetToken): Promise<void> {
   const token = typeof msg.token === "string" ? msg.token.trim() : "";
@@ -133,5 +137,54 @@ export async function handleGithubListBranches(ctx: HandlerContext): Promise<voi
     ctx.send({ type: "github_branches", current, remote });
   } catch (err) {
     ctx.send({ type: "error", message: `Failed to list branches: ${getErrorMessage(err)}` });
+  }
+}
+
+/** Parse owner/repo from a full name like "owner/repo". */
+function parseRepoFullName(fullName: string): { owner: string; repo: string } | null {
+  const trimmed = fullName.trim();
+  // Accept "owner/repo" format or a GitHub URL
+  const parsed = GitManager.parseGitHubRemote(`https://github.com/${trimmed}`);
+  if (parsed) return parsed;
+  const parts = trimmed.split("/");
+  if (parts.length === 2 && parts[0] && parts[1]) {
+    return { owner: parts[0], repo: parts[1] };
+  }
+  return null;
+}
+
+export async function handleListRepoDocs(ctx: HandlerContext, msg: WsListRepoDocs): Promise<void> {
+  const parsed = parseRepoFullName(msg.repoFullName);
+  if (!parsed) {
+    ctx.send({ type: "error", message: "Invalid repository name" });
+    return;
+  }
+
+  try {
+    const files = await ctx.githubAuthManager.listRepoMarkdownFiles(parsed.owner, parsed.repo);
+    ctx.send({ type: "repo_doc_list", files });
+  } catch (err) {
+    ctx.send({ type: "error", message: `Failed to list repo docs: ${getErrorMessage(err)}` });
+  }
+}
+
+export async function handleGetRepoDoc(ctx: HandlerContext, msg: WsGetRepoDoc): Promise<void> {
+  const parsed = parseRepoFullName(msg.repoFullName);
+  if (!parsed) {
+    ctx.send({ type: "error", message: "Invalid repository name" });
+    return;
+  }
+
+  const filePath = msg.path?.trim();
+  if (!filePath) {
+    ctx.send({ type: "error", message: "File path is required" });
+    return;
+  }
+
+  try {
+    const content = await ctx.githubAuthManager.getRepoFileContent(parsed.owner, parsed.repo, filePath);
+    ctx.send({ type: "repo_doc_content", path: filePath, content });
+  } catch (err) {
+    ctx.send({ type: "error", message: `Failed to read repo doc: ${getErrorMessage(err)}` });
   }
 }

@@ -12,6 +12,8 @@ import type {
   WsGeneratedPRDescription,
   WsPrStatus,
   WsMergePrResult,
+  WsRepoDocList,
+  WsRepoDocContent,
 } from "./github-types.js";
 import type { WsTerminalOutput, WsTerminalExit, WsLogEntry, WsClearLogs } from "./terminal-types.js";
 import type { WsCheckpointCreated, WsThreadList, WsThreadSwitched, WsThreadForked } from "./thread-types.js";
@@ -401,4 +403,6 @@ export type WsServerMessage =
   | WsRejectChangesComplete
   | WsSessionStatus
   | WsSessionAgentStarted
-  | WsSessionAgentFinished;
+  | WsSessionAgentFinished
+  | WsRepoDocList
+  | WsRepoDocContent;
