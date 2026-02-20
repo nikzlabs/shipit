@@ -47,7 +47,7 @@ export async function handleApplyTemplate(ctx: HandlerContext, msg: WsApplyTempl
     // Restart Vite so it picks up the new project files
     // Note: the install command from shipit.yaml is handled by PreviewManager
     // when it starts the preview (see preview-manager.ts / install-runner.ts).
-    ctx.viteManager.restart(dir);
+    ctx.previewManager.restart(dir);
     ctx.send({ type: "template_applied", templateId: template.id, name: template.name });
   } catch (err) {
     ctx.send({ type: "error", message: `Failed to apply template: ${getErrorMessage(err)}` });
@@ -118,7 +118,7 @@ export async function handleHomeCreateRepoWithTemplate(ctx: HandlerContext, msg:
     }
 
     // Restart Vite — install from shipit.yaml is handled by PreviewManager
-    ctx.viteManager.restart(sessionDir);
+    ctx.previewManager.restart(sessionDir);
 
     ctx.send({
       type: "home_repo_ready",

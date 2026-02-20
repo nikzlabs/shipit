@@ -13,7 +13,7 @@ import type {
   WsPrStatus,
   WsMergePrResult,
 } from "./github-types.js";
-import type { WsTerminalOutput, WsTerminalExit, WsLogEntry } from "./terminal-types.js";
+import type { WsTerminalOutput, WsTerminalExit, WsLogEntry, WsClearLogs } from "./terminal-types.js";
 import type { WsCheckpointCreated, WsThreadList, WsThreadSwitched, WsThreadForked } from "./thread-types.js";
 import type {
   WsDeployTargets,
@@ -46,8 +46,8 @@ export interface WsPreviewStatus {
   running: boolean;
   port: number;
   url: string;
-  /** How the preview server was identified: "vite" (managed), "detected" (port scan), or omitted. */
-  source?: "vite" | "detected";
+  /** How the preview server was identified: "vite" (bundled), "managed" (command mode), "detected" (port scan), or omitted. */
+  source?: "vite" | "managed" | "detected";
   /** All ports detected by the port scanner (non-Vite dev servers). */
   detectedPorts?: number[];
 }
@@ -280,6 +280,19 @@ export interface WsInstallStatus {
   message?: string;
 }
 
+/** Server → Client: no preview config found for the session. */
+export interface WsPreviewConfigMissing {
+  type: "preview_config_missing";
+  /** What was checked and not found. */
+  checked: ("shipit.yaml" | "package.json")[];
+}
+
+/** Server → Client: shipit.yaml exists but is malformed. */
+export interface WsPreviewConfigError {
+  type: "preview_config_error";
+  message: string;
+}
+
 export type WsServerMessage =
   | WsClaudeEvent
   | WsAgentEvent
@@ -342,4 +355,7 @@ export type WsServerMessage =
   | WsAgentEnvSetMessage
   | WsClaudeInterrupted
   | WsFullResetComplete
-  | WsInstallStatus;
+  | WsInstallStatus
+  | WsPreviewConfigMissing
+  | WsPreviewConfigError
+  | WsClearLogs;

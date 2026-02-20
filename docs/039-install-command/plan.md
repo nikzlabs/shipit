@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 ---
 
 # 039 — Install command in `shipit.yaml`

@@ -238,6 +238,74 @@ describe("PreviewFrame", () => {
     expect(screen.getByText("[warn]")).toBeInTheDocument();
     expect(screen.getByText("Deprecation warning")).toBeInTheDocument();
   });
+
+  // ---- Config missing tests ----
+
+  it("shows config missing state with setup button", () => {
+    const onInitPreviewConfig = vi.fn();
+    render(
+      <PreviewFrame
+        preview={null}
+        {...defaultProps}
+        configMissing={true}
+        onInitPreviewConfig={onInitPreviewConfig}
+      />,
+    );
+    expect(screen.getByText(/No preview configuration found/)).toBeInTheDocument();
+    const btn = screen.getByText("Set up with Claude");
+    expect(btn).toBeInTheDocument();
+    fireEvent.click(btn);
+    expect(onInitPreviewConfig).toHaveBeenCalled();
+  });
+
+  it("shows config missing without button when onInitPreviewConfig is not provided", () => {
+    render(
+      <PreviewFrame preview={null} {...defaultProps} configMissing={true} />,
+    );
+    expect(screen.getByText(/No preview configuration found/)).toBeInTheDocument();
+    expect(screen.queryByText("Set up with Claude")).not.toBeInTheDocument();
+  });
+
+  // ---- Install status tests ----
+
+  it("shows install running state", () => {
+    render(
+      <PreviewFrame
+        preview={null}
+        {...defaultProps}
+        installStatus={{ status: "running" }}
+      />,
+    );
+    expect(screen.getByText(/Installing dependencies/)).toBeInTheDocument();
+  });
+
+  it("shows install error state with message", () => {
+    render(
+      <PreviewFrame
+        preview={null}
+        {...defaultProps}
+        installStatus={{ status: "error", message: "exit code 1" }}
+      />,
+    );
+    expect(screen.getByText(/Install failed/)).toBeInTheDocument();
+    expect(screen.getByText(/exit code 1/)).toBeInTheDocument();
+  });
+
+  // ---- Managed source tests ----
+
+  it("renders iframe for managed source preview", () => {
+    const preview: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "managed" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = screen.getByTitle("Live Preview");
+    expect(iframe).toHaveAttribute("src", "http://localhost:3000");
+  });
+
+  it("shows Preview label in port selector for managed source", () => {
+    const preview: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "managed", detectedPorts: [8080] };
+    render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[8080]} selectedPort={null} onSelectPort={vi.fn()} />);
+    const options = screen.getAllByRole("option");
+    expect(options[0]).toHaveTextContent("3000 (Preview)");
+  });
 });
 
 describe("formatErrorForMessage", () => {

@@ -12,14 +12,14 @@ import { GitManager } from "../git.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../auth.js";
-import { ViteManager } from "../vite-manager.js";
+import { PreviewManager } from "../preview-manager.js";
 import { FileWatcher } from "../file-watcher.js";
 import { AgentRegistry } from "../agents/agent-registry.js";
 import type { FastifyInstance } from "fastify";
 import type { WsServerMessage } from "../types.js";
 import {
   TestClient,
-  StubViteManager,
+  StubPreviewManager,
   StubAuthManager,
   StubFileWatcher,
 } from "./test-helpers.js";
@@ -57,13 +57,13 @@ describe("Integration: Agent registry — list_agents", () => {
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
       chatHistoryManager: new ChatHistoryManager(path.join(tmpDir, "chat-history")),
-      viteManager: new StubViteManager() as unknown as ViteManager,
+      previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentRegistry: registry,
       fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
-      startVite: false,
+      startPreview: false,
       portScanIntervalMs: 0,
     });
 
@@ -156,13 +156,13 @@ describe("Integration: Agent registry — set_agent_env", () => {
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
       chatHistoryManager: new ChatHistoryManager(path.join(tmpDir, "chat-history")),
-      viteManager: new StubViteManager() as unknown as ViteManager,
+      previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentRegistry: registry,
       fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
-      startVite: false,
+      startPreview: false,
       portScanIntervalMs: 0,
     });
 
