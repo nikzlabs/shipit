@@ -300,28 +300,19 @@ The turn event buffer is cleared when a new turn starts (new `send_message`), so
 
 The `session_agent_started`/`session_agent_finished` messages are **broadcast** to all connected clients so that the sidebar can show activity indicators on sessions that have agents running, even if the client isn't currently viewing that session.
 
-### 6. Preview and file watcher — per-session instances
+### 6. Preview and file watcher — stay connection-scoped
 
-Currently, `PreviewManager` and `FileWatcher` are global singletons that restart on every session switch. For true multi-session support, each active session needs its own preview and file watcher.
+Preview and file watcher remain **global singletons** that serve the currently-viewed session. They are **not** per-session — there's no value in running 5 preview servers in the background when nobody is looking at them.
 
-**Approach**: Move preview and file watcher ownership into SessionRunner.
+**Behavior**:
+- Preview and file watcher switch when the viewer switches sessions (same as today)
+- When the user switches from session A to session B, session A's preview stops and session B's starts
+- If a background agent in session A creates files that need previewing, the user will see the updated preview when they switch back to A (preview restarts on attach)
+- The file watcher similarly restarts on the viewed session's directory
 
-```typescript
-class SessionRunner {
-  private preview: PreviewManager;
-  private fileWatcher: FileWatcher;
+**Why not per-session**: Preview servers consume ports and memory. File watchers consume OS file descriptors. Running them for sessions nobody is looking at wastes resources for no benefit — the preview only matters when you're viewing it.
 
-  constructor(opts) {
-    this.preview = new PreviewManager();
-    this.fileWatcher = new FileWatcher();
-    this.fileWatcher.start(opts.sessionDir);
-  }
-}
-```
-
-**Constraint**: Multiple preview servers mean multiple ports. The port scanner must track which ports belong to which session. The client shows the preview for the currently-viewed session only.
-
-**Deferral option**: This is the most complex part. An acceptable first pass is to keep preview/file-watcher as global singletons that switch when the viewer switches sessions. Only the agent process and message queue need to be truly per-session in the first phase. See "Phased implementation" below.
+**One subtle consideration**: When the user switches back to a session whose agent just finished, `activateSession()` should start the preview and trigger a port scan, since the agent may have created new files or started dev servers. This is already the current behavior.
 
 ### 7. Terminal persistence
 
@@ -423,7 +414,7 @@ The sidebar can show a pulsing dot or spinner next to sessions with active agent
 - Change `socket.on("close")` to detach instead of kill
 - Change `activateSession()` to attach instead of kill
 - Add sidebar activity indicators for sessions with running agents
-- Keep preview/file-watcher as global singletons (switch on viewer switch)
+- Preview/file-watcher stay as global singletons (switch on viewer switch, same as today)
 - Terminal stays per-connection for now
 
 **Files to modify**:
@@ -447,15 +438,7 @@ The sidebar can show a pulsing dot or spinner next to sessions with active agent
 - Buffer recent PTY output (rolling 10K characters) for reconnection replay
 - Terminal switch on session switch shows existing terminal
 
-### Phase 3: Per-session preview and file watcher
-
-**Goal**: Each active session has its own preview server and file watcher running independently.
-
-**Scope**:
-- Move PreviewManager and FileWatcher instances into SessionRunner
-- Per-session port tracking
-- Client shows preview for currently-viewed session
-- Multiple simultaneous preview servers
+Note: There is no Phase 3 for per-session preview/file-watcher. These remain global singletons that switch with the viewed session. See section 6 for rationale.
 
 ---
 
