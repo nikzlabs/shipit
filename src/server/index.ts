@@ -600,6 +600,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     // ---- Runner attach/detach helpers ----
 
     const attachToRunner = (runner: SessionRunner) => {
+      // Already attached to this runner — nothing to do
+      if (attachedRunner === runner) return;
+
       // Detach from previous runner first
       detachFromRunner();
 
