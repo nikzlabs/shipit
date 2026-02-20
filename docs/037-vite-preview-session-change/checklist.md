@@ -3,12 +3,12 @@
 ### Phase 1: Foundation
 
 - [ ] Install `yaml` npm package (not currently in package.json)
-- [ ] Create `src/server/preview-config.ts` — `PreviewConfig` / `PreviewMode` types, `resolvePreviewConfig()` with shipit.yaml → package.json → index.html → none fallback, port extraction from dev script strings, `command`/`html` mutual exclusivity validation
+- [ ] Create `src/server/preview-config.ts` — `PreviewConfig` / `PreviewMode` types with `install?: string` field, `resolvePreviewConfig()` with shipit.yaml → package.json → index.html → none fallback, port extraction from dev script strings, `command`/`html` mutual exclusivity validation, `install` field extraction from shipit.yaml
 - [ ] Write `src/server/preview-config.test.ts` — all 12 unit test cases from plan (command+single port, command+multiple ports, command-only, html mode, command+html rejection, directory, package.json fallback, port extraction, index.html fallback, no files, no dev script + no index.html, malformed yaml)
 
 ### Phase 2: PreviewManager
 
-- [ ] Create `src/server/preview-manager.ts` — extend EventEmitter, `start/stop/restart`, `running/port/ports/config` getters, `html` mode (reuse ViteManager's wrapper config + bundled binary on port 5173), `command` mode (shell spawn + port polling), auto-detect fallback
+- [ ] Create `src/server/preview-manager.ts` — extend EventEmitter, `start/stop/restart`, `running/port/ports/config` getters, `html` mode (reuse ViteManager's wrapper config + bundled binary on port 5173), `command` mode (shell spawn + port polling), auto-detect fallback, install step before preview start (uses install-runner.ts from [doc 039](../039-install-command/plan.md))
 - [ ] Delete `src/server/vite-manager.ts` after migrating its logic into PreviewManager
 - [ ] Update `StubViteManager` in `test-helpers.ts` → `StubPreviewManager` with `ports` array, `config` getter, matching the new interface
 
@@ -23,10 +23,11 @@
 - [ ] Add FileWatcher integration — detect `shipit.yaml` in changed paths, call `previewManager.restart()`
 - [ ] Add `killProcessesOnPorts(ports, sessionsRoot)` helper — fuser + /proc/pid/cwd safety guard
 - [ ] Handle `init_preview_config` client message — send Claude a prompt to create shipit.yaml
-- [ ] Broadcast `preview_config_missing` / `preview_config_error` on PreviewManager events
+- [ ] Broadcast `preview_config_missing` / `preview_config_error` / `install_status` on PreviewManager events
 
 ### Phase 4: Types
 
+- [x] Add `WsInstallStatus` to `WsServerMessage` union in `src/server/types/ws-server-messages.ts`
 - [ ] Add `WsPreviewConfigMissing`, `WsPreviewConfigError`, `WsInitPreviewConfig` to `src/server/types.ts`
 - [ ] Add `clear_logs` to `WsServerMessage` union (if not already present)
 - [ ] Update `WsPreviewStatus.source` to include `"managed"` alongside existing `"vite" | "detected"`
@@ -37,13 +38,14 @@
 - [ ] Add preview state reset to `handleSessionNew()` in App.tsx — same resets
 - [ ] Handle `preview_config_missing` message — set state to show config-missing UI
 - [ ] Handle `preview_config_error` message — show error in preview pane
+- [ ] Handle `install_status` message — show install progress/error in preview pane
 - [ ] Handle `clear_logs` message — clear `logEntries` and `unreadLogCount`
 - [ ] Add `init_preview_config` send support — new callback for PreviewFrame
-- [ ] Update PreviewFrame — show "No preview server configured" + "Set up with Claude" button when config missing; spinner while waiting
+- [ ] Update PreviewFrame — show "No preview server configured" + "Set up with Claude" button when config missing; show "Installing dependencies..." spinner during install; show install errors with "Retry" button
 
-### Phase 6: Templates
+### Phase 6: Templates (done)
 
-- [ ] Add `shipit.yaml` to every template in `templates.ts` that serves HTTP (all except node-cli-ts) — command mode templates get `command`+`ports`, static-html gets `html: index.html`
+- [x] Add `shipit.yaml` to every template in `templates.ts` that serves HTTP (all except node-cli-ts) — command mode templates get `install`+`command`+`ports`, static-html gets `html: index.html`
 
 ### Phase 7: Integration tests
 
