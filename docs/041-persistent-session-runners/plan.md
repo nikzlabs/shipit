@@ -300,19 +300,57 @@ The turn event buffer is cleared when a new turn starts (new `send_message`), so
 
 The `session_agent_started`/`session_agent_finished` messages are **broadcast** to all connected clients so that the sidebar can show activity indicators on sessions that have agents running, even if the client isn't currently viewing that session.
 
-### 6. Preview and file watcher — stay connection-scoped
+### 6. Preview and file watcher — per-session, ref-counted by viewers
 
-Preview and file watcher remain **global singletons** that serve the currently-viewed session. They are **not** per-session — there's no value in running 5 preview servers in the background when nobody is looking at them.
+Preview and file watcher are **not** global singletons (a single global would break multi-tab). They are also **not** always-running per-session resources (no value running a preview server for a session nobody is looking at). Instead they are **per-session, ref-counted by active viewers**.
+
+A session's preview/file-watcher runs **if and only if** at least one connection is viewing that session.
 
 **Behavior**:
-- Preview and file watcher switch when the viewer switches sessions (same as today)
-- When the user switches from session A to session B, session A's preview stops and session B's starts
-- If a background agent in session A creates files that need previewing, the user will see the updated preview when they switch back to A (preview restarts on attach)
-- The file watcher similarly restarts on the viewed session's directory
+- When a connection attaches to a session (view/switch), increment the session's viewer ref count. If going from 0→1, start preview and file watcher for that session.
+- When a connection detaches (switch away, disconnect), decrement. If going from 1→0, stop preview and file watcher.
+- Two tabs viewing the same session share one preview server and one file watcher.
+- Two tabs viewing different sessions each get their own.
 
-**Why not per-session**: Preview servers consume ports and memory. File watchers consume OS file descriptors. Running them for sessions nobody is looking at wastes resources for no benefit — the preview only matters when you're viewing it.
+**Implementation**: `SessionRunner` holds optional `PreviewManager` and `FileWatcher` instances. They are lazily created when the first viewer attaches, and stopped when the last viewer detaches. The runner itself (agent, queue) lives independently of the viewer count.
 
-**One subtle consideration**: When the user switches back to a session whose agent just finished, `activateSession()` should start the preview and trigger a port scan, since the agent may have created new files or started dev servers. This is already the current behavior.
+```typescript
+class SessionRunner {
+  private viewerCount = 0;
+  private preview: PreviewManager | null = null;
+  private fileWatcher: FileWatcher | null = null;
+
+  attachViewer(): void {
+    this.viewerCount++;
+    if (this.viewerCount === 1) {
+      // First viewer — start preview and file watcher
+      this.preview = new PreviewManager();
+      this.preview.start(this.sessionDir);
+      this.fileWatcher = new FileWatcher();
+      this.fileWatcher.start(this.sessionDir);
+    }
+  }
+
+  detachViewer(): void {
+    this.viewerCount = Math.max(0, this.viewerCount - 1);
+    if (this.viewerCount === 0) {
+      // Last viewer left — stop preview and file watcher
+      this.preview?.stop();
+      this.preview = null;
+      this.fileWatcher?.stop();
+      this.fileWatcher = null;
+    }
+  }
+}
+```
+
+**Port scanning**: Each session's preview runs on its own port(s). The port scanner tracks which ports belong to which session. Detected ports are sent to viewers of that session only, not broadcast globally.
+
+**File change broadcast**: File watcher changes are sent to all viewers attached to that session's runner, not to all connected clients.
+
+**Why ref-counted instead of always-on**: Preview servers consume ports and memory. File watchers consume OS file descriptors. Running them for sessions nobody is looking at wastes resources for zero benefit.
+
+**On reattach after background agent finishes**: When the user switches back to a session whose agent finished while they were away, `attachViewer()` starts a fresh preview and triggers a port scan, so the user sees whatever the agent created.
 
 ### 7. Terminal persistence
 
@@ -414,12 +452,12 @@ The sidebar can show a pulsing dot or spinner next to sessions with active agent
 - Change `socket.on("close")` to detach instead of kill
 - Change `activateSession()` to attach instead of kill
 - Add sidebar activity indicators for sessions with running agents
-- Preview/file-watcher stay as global singletons (switch on viewer switch, same as today)
+- Preview/file-watcher move into SessionRunner, ref-counted by attached viewers (start on first viewer, stop on last)
 - Terminal stays per-connection for now
 
 **Files to modify**:
 - `src/server/session-runner.ts` — **new**: SessionRunner, SessionRunnerRegistry
-- `src/server/index.ts` — registry creation, connection attach/detach, remove per-connection agent state
+- `src/server/index.ts` — registry creation, connection attach/detach, remove per-connection agent state, remove global PreviewManager/FileWatcher
 - `src/server/ws-handlers/types.ts` — add runner methods to HandlerContext
 - `src/server/ws-handlers/send-message.ts` — delegate to runner
 - `src/server/ws-handlers/misc-handlers.ts` — interrupt via runner
@@ -438,7 +476,7 @@ The sidebar can show a pulsing dot or spinner next to sessions with active agent
 - Buffer recent PTY output (rolling 10K characters) for reconnection replay
 - Terminal switch on session switch shows existing terminal
 
-Note: There is no Phase 3 for per-session preview/file-watcher. These remain global singletons that switch with the viewed session. See section 6 for rationale.
+Note: Preview/file-watcher are handled in Phase 1 as part of the SessionRunner design (ref-counted by viewers). See section 6.
 
 ---
 
