@@ -11,6 +11,7 @@ npm install
 ## Commands
 
 - `npm test` — run all tests (vitest). **Requires `npm install` first.**
+- `npx vitest run --changed` — run only tests whose transitive dependencies have changed (uncommitted changes). Prefer this over `npm test` when iterating on a specific feature to avoid running the full suite.
 - `npm run lint` — ESLint on `src/`
 - `npm run typecheck` — TypeScript type checking (`tsc --noEmit`)
 - `npm run dev` — start dev server (tsx)
