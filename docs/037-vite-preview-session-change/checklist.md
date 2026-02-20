@@ -9,7 +9,7 @@
 ### Phase 2: PreviewManager
 
 - [x] Create `src/server/preview-manager.ts` — extend EventEmitter, `start/stop/restart`, `running/port/ports/config` getters, `html` mode (reuse ViteManager's wrapper config + bundled binary on port 5173), `command` mode (shell spawn + port polling), auto-detect fallback, install step before preview start (uses install-runner.ts from [doc 039](../039-install-command/plan.md))
-- [ ] Delete `src/server/vite-manager.ts` after migrating its logic into PreviewManager
+- [x] Delete `src/server/vite-manager.ts` after migrating its logic into PreviewManager
 - [x] Update `StubViteManager` in `test-helpers.ts` → `StubPreviewManager` with `ports` array, `config` getter, matching the new interface
 
 ### Phase 3: Server integration (`index.ts`)
