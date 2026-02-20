@@ -215,4 +215,72 @@ describe("Integration: Session isolation — switching & resume", () => {
 
     client.close();
   });
+
+  it("auto-commit goes to the correct session when user switches mid-turn", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Start session A — send a message to trigger agent
+    client.send({ type: "send_message", text: "Session A work" });
+    const claudeA = await waitForClaude(() => lastClaude);
+
+    // Simulate agent init (ClaudeEvent format — adapter translates to AgentEvent)
+    claudeA.emit("event", {
+      type: "system",
+      subtype: "init",
+      session_id: "agent-session-a",
+      model: "claude-sonnet-4-20250514",
+    });
+
+    // Wait for session_started so we know session A is created
+    const sessionAMsg = await client.receiveType("session_started");
+    const sessionA = (sessionAMsg as any).session;
+
+    // Write a file in session A's workspace (simulates agent writing code)
+    fs.writeFileSync(path.join(sessionA.workspaceDir, "from-agent-a.txt"), "session A output");
+
+    // Now create session B while agent A is still running
+    client.send({ type: "new_session" });
+    await client.receiveType("session_list");
+
+    // Apply a template to create session B with its own workspace
+    client.send({ type: "apply_template", templateId: "static-html" });
+    const sessionBMsg = await client.receiveType("session_started");
+    const sessionB = (sessionBMsg as any).session;
+    await client.receiveType("template_applied");
+
+    // Verify sessions are different directories
+    expect(sessionA.workspaceDir).not.toBe(sessionB.workspaceDir);
+
+    // Now agent A finishes — the auto-commit should go to session A's repo, NOT session B's.
+    // After new_session, we detached from session A's runner, so git_committed won't
+    // reach this client. Instead verify via git log directly.
+    claudeA.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "agent-session-a",
+    });
+    claudeA.emit("done", 0);
+
+    // Wait for the async done handler to complete (auto-commit is async)
+    await new Promise((r) => setTimeout(r, 500));
+
+    // Verify: session A should have the agent's commit
+    const gitA = new GitManager(sessionA.workspaceDir);
+    const logA = await gitA.log();
+    // Should have "Initial commit" + the auto-commit from agent done
+    expect(logA.length).toBeGreaterThanOrEqual(2);
+    expect(logA.some((c) => c.message === "Agent turn")).toBe(true);
+
+    // Verify: session B should NOT have the agent's commit (only template commits)
+    const gitB = new GitManager(sessionB.workspaceDir);
+    const logB = await gitB.log();
+    const logBMessages = logB.map((c) => c.message);
+    expect(logBMessages.every((m) => m !== "Agent turn")).toBe(true);
+
+    // Session B should only have template-related commits
+    expect(logBMessages.some((m) => m.includes("Apply template"))).toBe(true);
+
+    client.close();
+  });
 });
