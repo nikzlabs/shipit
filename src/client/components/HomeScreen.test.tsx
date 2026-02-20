@@ -203,7 +203,7 @@ describe("HomeScreen", () => {
     fireEvent.click(screen.getByText("React"));
     // Submit
     fireEvent.click(screen.getByText("Create & Setup"));
-    expect(onNewRepo).toHaveBeenCalledWith("new-app", "", false, "react");
+    expect(onNewRepo).toHaveBeenCalledWith("new-app", "", true, "react");
     // Dialog should close
     expect(screen.queryByText("Create New Repository")).toBeNull();
   });

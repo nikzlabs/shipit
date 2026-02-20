@@ -209,7 +209,7 @@ describe("NewRepoDialog", () => {
     fireEvent.click(screen.getByText("Create & Setup"));
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
-    expect(onSubmit).toHaveBeenCalledWith("my-repo", "A cool project", false, "nextjs");
+    expect(onSubmit).toHaveBeenCalledWith("my-repo", "A cool project", true, "nextjs");
   });
 
   it("trims name and description before submitting", () => {
@@ -221,7 +221,7 @@ describe("NewRepoDialog", () => {
     fireEvent.click(screen.getByText("React"));
     fireEvent.click(screen.getByText("Create & Setup"));
 
-    expect(onSubmit).toHaveBeenCalledWith("my-repo", "desc", false, "react");
+    expect(onSubmit).toHaveBeenCalledWith("my-repo", "desc", true, "react");
   });
 
   it("submits with isPrivate true when Private is selected", () => {
