@@ -756,16 +756,30 @@ export async function handleHomeSendWithRepo(ctx: HandlerContext, msg: WsHomeSen
 
     // Create worktree from shared repo, starting from latest remote default branch
     const repoGit = ctx.createGitManager(repoDir);
-    let startPoint: string | undefined;
-    try {
-      const defaultBranch = await repoGit.getDefaultBranch();
-      if (defaultBranch && !defaultBranch.includes("(")) {
-        startPoint = `origin/${defaultBranch}`;
+
+    // Detect empty repo (no commits yet — HEAD is invalid, can't create worktree)
+    const repoLog = await repoGit.log(1);
+    const isEmptyRepo = repoLog.length === 0;
+
+    if (isEmptyRepo) {
+      // Empty repo: can't use worktrees. Init a fresh repo with remote configured.
+      await fs.mkdir(sessionDir, { recursive: true });
+      const sessionGit = ctx.createGitManager(sessionDir);
+      await sessionGit.init();
+      const cloneUrl = ctx.githubAuthManager.getAuthenticatedCloneUrl(repoUrl);
+      await sessionGit.addRemote("origin", cloneUrl);
+    } else {
+      let startPoint: string | undefined;
+      try {
+        const defaultBranch = await repoGit.getDefaultBranch();
+        if (defaultBranch && !defaultBranch.includes("(")) {
+          startPoint = `origin/${defaultBranch}`;
+        }
+      } catch {
+        // Fallback: let git use HEAD
       }
-    } catch {
-      // Fallback: let git use HEAD
+      await repoGit.createWorktree(sessionDir, branchPrefix, startPoint);
     }
-    await repoGit.createWorktree(sessionDir, branchPrefix, startPoint);
 
     // Configure credentials and identity in the worktree
     if (ctx.githubAuthManager.authenticated) {
@@ -779,10 +793,12 @@ export async function handleHomeSendWithRepo(ctx: HandlerContext, msg: WsHomeSen
 
     // Store metadata and activate session
     ctx.sessionManager.setRemoteUrl(appSessionId, repoUrl);
-    ctx.sessionManager.setWorktreeInfo(appSessionId, {
-      branch: branchPrefix,
-      sessionType: "worktree",
-    });
+    if (!isEmptyRepo) {
+      ctx.sessionManager.setWorktreeInfo(appSessionId, {
+        branch: branchPrefix,
+        sessionType: "worktree",
+      });
+    }
     ctx.setActiveAppSessionId(appSessionId);
     ctx.setActiveSessionDir(sessionDir);
     ctx.fileWatcher.stop();
