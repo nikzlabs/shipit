@@ -143,11 +143,11 @@ export function useAppCallbacks(params: {
       setActiveThreadId("");
       setShellStarted(false);
       setTerminalMode("logs");
-      // Load persisted chat history for this session (also activates session on server)
+      // Load persisted chat history for this session (also activates session on server).
+      // The server sends git_log and file_tree automatically after activation completes,
+      // so we must NOT send separate get_git_log / get_file_tree here — those would
+      // race with the async activateSession and return stale data from the previous session.
       send({ type: "get_chat_history", sessionId });
-      // Refresh file tree and git log for the new session's workspace
-      send({ type: "get_file_tree" });
-      send({ type: "get_git_log" });
     },
     [send, sessionIdRef, setMessages, setIsLoading, setShowTemplates, setQueuedMessages,
      setViewingFile, setViewingFileContent, setViewingFileBinary,

@@ -1,5 +1,7 @@
 import type { WsClientMessage } from "../types.js";
 import type { HandlerContext } from "./types.js";
+import { getErrorMessage } from "../validation.js";
+import { scanFileTree } from "../file-tree.js";
 
 type WsArchiveSession = Extract<WsClientMessage, { type: "archive_session" }>;
 type WsRenameSession = Extract<WsClientMessage, { type: "rename_session" }>;
@@ -147,6 +149,26 @@ export async function handleGetChatHistory(ctx: HandlerContext, msg: WsGetChatHi
   await ctx.activateSession(msg.sessionId);
   const messages = ctx.chatHistoryManager.load(msg.sessionId);
   ctx.send({ type: "chat_history", sessionId: msg.sessionId, messages });
+
+  // Send git log and file tree now that the session is fully activated.
+  // The client must NOT send separate get_git_log / get_file_tree messages
+  // during session switch — those would race with activateSession (async)
+  // and return data from the *previous* session's workspace directory.
+  try {
+    const git = ctx.getActiveGitManager();
+    const commits = await git.log();
+    ctx.send({ type: "git_log", commits });
+  } catch {
+    // No workspace dir (e.g. blank session) — send empty log
+    ctx.send({ type: "git_log", commits: [] });
+  }
+  try {
+    const dir = ctx.getActiveDir();
+    const tree = await scanFileTree(dir);
+    ctx.send({ type: "file_tree", tree });
+  } catch (err) {
+    ctx.send({ type: "error", message: `Failed to scan file tree: ${getErrorMessage(err)}` });
+  }
 }
 
 export function handleGetSessionStatus(ctx: HandlerContext, msg: WsGetSessionStatus): void {

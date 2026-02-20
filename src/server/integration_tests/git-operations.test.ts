@@ -73,9 +73,10 @@ describe("Integration: Git operations", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    // Activate the session so git operations target the session dir
+    // Activate the session so git operations target the session dir.
+    // get_chat_history now also sends git_log + file_tree after activation.
     client.send({ type: "get_chat_history", sessionId });
-    await client.receiveType("chat_history"); // skip side-effects from activateSession
+    await client.receiveType("file_tree"); // drain all activation messages
 
     client.send({ type: "get_git_log" });
     const msg = await client.receive();
@@ -113,9 +114,9 @@ describe("Integration: Git operations", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    // Activate the session
+    // Activate the session — drain all activation messages (chat_history, git_log, file_tree)
     client.send({ type: "get_chat_history", sessionId });
-    await client.receiveType("chat_history"); // skip side-effects from activateSession
+    await client.receiveType("file_tree");
 
     client.send({ type: "rollback", commitHash: initialHash });
     const msg = await client.receive();
