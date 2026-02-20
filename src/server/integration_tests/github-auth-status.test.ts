@@ -71,7 +71,7 @@ describe("Integration: GitHub auth status & tokens", () => {
     client.close();
   });
 
-  it("github_set_token with valid token returns authenticated status", async () => {
+  it("github_set_token with valid token returns authenticated status and user repos", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
@@ -81,6 +81,11 @@ describe("Integration: GitHub auth status & tokens", () => {
     expect(msg.type).toBe("github_status");
     expect((msg as any).authenticated).toBe(true);
     expect((msg as any).username).toBe("test-user");
+
+    // Should also receive user repos for the RepoSelector
+    const reposMsg = await client.receive();
+    expect(reposMsg.type).toBe("github_search_results");
+    expect((reposMsg as any).repos.length).toBeGreaterThan(0);
 
     client.close();
   });
@@ -111,21 +116,25 @@ describe("Integration: GitHub auth status & tokens", () => {
     client.close();
   });
 
-  it("github_logout clears credentials", async () => {
+  it("github_logout clears credentials and repos", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     // First authenticate
     client.send({ type: "github_set_token", token: "ghp_test" });
-    const authMsg = await client.receive();
-    expect((authMsg as any).authenticated).toBe(true);
+    await client.receive(); // github_status
+    await client.receive(); // github_search_results (user repos)
 
     // Then logout
     client.send({ type: "github_logout" });
     const logoutMsg = await client.receive();
-
     expect(logoutMsg.type).toBe("github_status");
     expect((logoutMsg as any).authenticated).toBe(false);
+
+    // Should also receive empty repos to clear the RepoSelector
+    const reposMsg = await client.receive();
+    expect(reposMsg.type).toBe("github_search_results");
+    expect((reposMsg as any).repos).toEqual([]);
 
     client.close();
   });

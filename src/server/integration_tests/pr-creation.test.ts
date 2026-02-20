@@ -90,6 +90,7 @@ describe("Integration: PR creation — happy path", () => {
 
     client.send({ type: "github_set_token", token: "ghp_test" });
     await client.receiveSkipLogs(); // github_status (skip any runner messages)
+    await client.receiveSkipLogs(); // github_search_results (user repos)
 
     client.send({
       type: "github_set_remote",

@@ -102,6 +102,17 @@ export class TestClient {
     }
   }
 
+  /** Keep receiving until a message of the given type arrives (skips intermediate messages). */
+  async receiveType(type: string, timeoutMs = 3000): Promise<WsServerMessage> {
+    const deadline = Date.now() + timeoutMs;
+    while (true) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error(`receiveType("${type}") timed out`);
+      const msg = await this.receive(remaining);
+      if (msg.type === type) return msg;
+    }
+  }
+
   /** Send a typed client message. */
   send(msg: WsClientMessage): void {
     this.ws.send(JSON.stringify(msg));
@@ -242,6 +253,19 @@ export class StubGitHubAuthManager extends EventEmitter {
         private: false,
         defaultBranch: "main",
         cloneUrl: "https://github.com/test-user/test-repo.git",
+      },
+    ];
+  }
+
+  async listUserRepos() {
+    if (!this._authenticated) return [];
+    return [
+      {
+        fullName: "test-user/my-project",
+        description: "My project",
+        private: false,
+        defaultBranch: "main",
+        cloneUrl: "https://github.com/test-user/my-project.git",
       },
     ];
   }

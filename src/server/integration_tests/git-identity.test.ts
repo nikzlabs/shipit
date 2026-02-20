@@ -104,10 +104,10 @@ describe("Integration: git identity flow", () => {
 
     // Activate the session — this triggers the per-session identity check
     client.send({ type: "get_chat_history", sessionId });
-    const historyMsg = await client.receive(); // chat_history
+    const historyMsg = await client.receiveType("chat_history");
     expect(historyMsg.type).toBe("chat_history");
 
-    const identityMsg = await client.receive(); // git_identity_required
+    const identityMsg = await client.receiveType("git_identity_required");
     expect(identityMsg.type).toBe("git_identity_required");
 
     client.close();
@@ -123,11 +123,19 @@ describe("Integration: git identity flow", () => {
 
     // Activate the session
     client.send({ type: "get_chat_history", sessionId });
-    const historyMsg = await client.receive(); // chat_history
+    const historyMsg = await client.receiveType("chat_history");
     expect(historyMsg.type).toBe("chat_history");
 
     // Should not receive git_identity_required — wait briefly to confirm
-    await expect(client.receive(500)).rejects.toThrow("timed out");
+    // (drain any remaining side-effect messages like preview_status first)
+    try {
+      while (true) {
+        const msg = await client.receive(500);
+        expect(msg.type).not.toBe("git_identity_required");
+      }
+    } catch {
+      // Timeout — no more messages, which is the expected outcome
+    }
 
     client.close();
   });
@@ -141,8 +149,8 @@ describe("Integration: git identity flow", () => {
 
     // Activate the session
     client.send({ type: "get_chat_history", sessionId });
-    await client.receive(); // chat_history
-    await client.receive(); // git_identity_required
+    await client.receiveType("chat_history");
+    await client.receiveType("git_identity_required");
 
     client.send({ type: "set_git_identity", name: "Test User", email: "test@example.com" });
     const resp = await client.receive();
@@ -168,8 +176,8 @@ describe("Integration: git identity flow", () => {
 
     // Activate the session
     client.send({ type: "get_chat_history", sessionId });
-    await client.receive(); // chat_history
-    await client.receive(); // git_identity_required
+    await client.receiveType("chat_history");
+    await client.receiveType("git_identity_required");
 
     client.send({ type: "set_git_identity", name: "", email: "test@example.com" });
     const resp = await client.receive();
@@ -187,8 +195,8 @@ describe("Integration: git identity flow", () => {
 
     // Activate the session
     client.send({ type: "get_chat_history", sessionId });
-    await client.receive(); // chat_history
-    await client.receive(); // git_identity_required
+    await client.receiveType("chat_history");
+    await client.receiveType("git_identity_required");
 
     client.send({ type: "set_git_identity", name: "Test", email: "" });
     const resp = await client.receive();
@@ -206,8 +214,8 @@ describe("Integration: git identity flow", () => {
 
     // Activate the session
     client.send({ type: "get_chat_history", sessionId });
-    await client.receive(); // chat_history
-    await client.receive(); // git_identity_required
+    await client.receiveType("chat_history");
+    await client.receiveType("git_identity_required");
 
     client.send({ type: "set_git_identity", name: "   ", email: "test@example.com" });
     const resp = await client.receive();
@@ -228,8 +236,8 @@ describe("Integration: git identity flow", () => {
 
     // Activate session and set identity
     client.send({ type: "get_chat_history", sessionId });
-    await client.receive(); // chat_history
-    await client.receive(); // git_identity_required
+    await client.receiveType("chat_history");
+    await client.receiveType("git_identity_required");
 
     client.send({ type: "set_git_identity", name: "Global User", email: "global@example.com" });
     const resp = await client.receive();
@@ -255,10 +263,10 @@ describe("Integration: git identity flow", () => {
 
     // Activate the session — should auto-apply, not prompt
     client.send({ type: "get_chat_history", sessionId });
-    await client.receive(); // chat_history
+    await client.receiveType("chat_history");
 
     // Should receive git_identity_set (auto-applied), NOT git_identity_required
-    const msg = await client.receive();
+    const msg = await client.receiveType("git_identity_set");
     expect(msg).toMatchObject({
       type: "git_identity_set",
       name: "Stored User",

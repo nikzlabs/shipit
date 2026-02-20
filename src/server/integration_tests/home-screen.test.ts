@@ -81,6 +81,7 @@ describe("Integration: home_create_repo_with_template", () => {
     // Authenticate with GitHub first
     client.send({ type: "github_set_token", token: "ghp_test" });
     await client.receiveSkipLogs(); // github_status
+    await client.receiveSkipLogs(); // github_search_results (user repos)
 
     client.send({
       type: "home_create_repo_with_template",
@@ -118,6 +119,7 @@ describe("Integration: home_create_repo_with_template", () => {
     // Authenticate with GitHub first
     client.send({ type: "github_set_token", token: "ghp_test" });
     await client.receiveSkipLogs(); // github_status
+    await client.receiveSkipLogs(); // github_search_results (user repos)
 
     client.send({
       type: "home_create_repo_with_template",
@@ -142,6 +144,7 @@ describe("Integration: home_create_repo_with_template", () => {
     // Authenticate with GitHub first
     client.send({ type: "github_set_token", token: "ghp_test" });
     await client.receiveSkipLogs(); // github_status
+    await client.receiveSkipLogs(); // github_search_results (user repos)
 
     client.send({
       type: "home_create_repo_with_template",
@@ -166,6 +169,7 @@ describe("Integration: home_create_repo_with_template", () => {
     // Authenticate with GitHub first
     client.send({ type: "github_set_token", token: "ghp_test" });
     await client.receiveSkipLogs(); // github_status
+    await client.receiveSkipLogs(); // github_search_results (user repos)
 
     client.send({
       type: "home_create_repo_with_template",
@@ -190,6 +194,7 @@ describe("Integration: home_create_repo_with_template", () => {
     // Authenticate with GitHub first
     client.send({ type: "github_set_token", token: "ghp_test" });
     await client.receiveSkipLogs(); // github_status
+    await client.receiveSkipLogs(); // github_search_results (user repos)
 
     client.send({
       type: "home_create_repo_with_template",

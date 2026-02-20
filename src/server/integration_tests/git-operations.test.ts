@@ -75,7 +75,7 @@ describe("Integration: Git operations", () => {
 
     // Activate the session so git operations target the session dir
     client.send({ type: "get_chat_history", sessionId });
-    await client.receive(); // chat_history response
+    await client.receiveType("chat_history"); // skip side-effects from activateSession
 
     client.send({ type: "get_git_log" });
     const msg = await client.receive();
@@ -115,7 +115,7 @@ describe("Integration: Git operations", () => {
 
     // Activate the session
     client.send({ type: "get_chat_history", sessionId });
-    await client.receive(); // chat_history response
+    await client.receiveType("chat_history"); // skip side-effects from activateSession
 
     client.send({ type: "rollback", commitHash: initialHash });
     const msg = await client.receive();
