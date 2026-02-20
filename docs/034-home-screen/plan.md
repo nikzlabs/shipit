@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 ---
 
 # 034 — Home Screen with Repo Selector
