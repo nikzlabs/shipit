@@ -97,7 +97,8 @@ export async function handleFullReset(ctx: HandlerContext): Promise<void> {
     ctx.setActiveAppSessionId(undefined);
     ctx.setActiveSessionDir(null);
 
-    ctx.send({ type: "full_reset_complete" });
+    // Broadcast to all connected clients so all tabs see the reset
+    ctx.broadcast({ type: "full_reset_complete" });
   } catch (err) {
     ctx.send({ type: "error", message: `Full reset failed: ${getErrorMessage(err)}` });
   }
