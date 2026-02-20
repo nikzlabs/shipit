@@ -48,10 +48,13 @@ export function handleInterruptClaude(ctx: HandlerContext): void {
     ctx.setWasInterrupted(true);
     agent.interrupt();
     ctx.broadcastLog("server", "Claude process interrupted by user");
-    // Send claude_interrupted immediately so the client can update UI
-    // before the process fully exits. The "done" handler will still fire
-    // and handle auto-commit, port scan, etc.
-    ctx.send({ type: "claude_interrupted" });
+    // Emit via runner so all viewers see the interrupt
+    const runner = ctx.getRunner();
+    if (runner) {
+      runner.emitMessage({ type: "claude_interrupted" });
+    } else {
+      ctx.send({ type: "claude_interrupted" });
+    }
   } else {
     ctx.send({ type: "error", message: "No active Claude process to interrupt" });
   }
@@ -59,14 +62,9 @@ export function handleInterruptClaude(ctx: HandlerContext): void {
 
 export async function handleFullReset(ctx: HandlerContext): Promise<void> {
   try {
-    // 1. Stop active processes to avoid file-lock issues
-    const agent = ctx.getAgent();
-    if (agent) {
-      agent.kill();
-      ctx.setAgent(null);
-    }
-    ctx.setIsClaudeRunning(false);
-    ctx.clearMessageQueue();
+    // 1. Dispose all runners (kills all agent processes + queues)
+    ctx.getRunnerRegistry().disposeAll();
+    ctx.detachFromRunner();
     ctx.previewManager.stop();
     ctx.fileWatcher.stop();
     const terminal = ctx.getTerminal();

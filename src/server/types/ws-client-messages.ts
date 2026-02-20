@@ -210,6 +210,14 @@ export interface WsCancelQueuedMessage {
   position: number | "all";
 }
 
+// ---- Session runner messages (client → server) ----
+
+/** Client → Server: request current runtime status for a session. */
+export interface WsGetSessionStatus {
+  type: "get_session_status";
+  sessionId: string;
+}
+
 // ---- Diff review messages (client → server) ----
 
 export interface WsGetTurnDiff {
@@ -324,4 +332,5 @@ export type WsClientMessage =
   | WsInitPreviewConfig
   | WsGetTurnDiff
   | WsRejectChanges
-  | WsDiffComment;
+  | WsDiffComment
+  | WsGetSessionStatus;

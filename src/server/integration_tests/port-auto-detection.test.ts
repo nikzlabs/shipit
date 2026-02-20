@@ -81,9 +81,9 @@ describe("Integration: Port auto-detection", () => {
     lastClaude.finish();
 
     // Should receive preview_status with the detected port
-    // (may also receive git_committed if there were changes — drain until preview_status)
+    // (may also receive git_committed or runner messages — drain until preview_status)
     let previewMsg: any = null;
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 15; i++) {
       const msg = await client.receive();
       if (msg.type === "preview_status") {
         previewMsg = msg;
@@ -149,7 +149,7 @@ describe("Integration: Port auto-detection", () => {
     lastClaude.finish();
 
     let previewMsg: any = null;
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 15; i++) {
       const msg = await client.receive();
       if (msg.type === "preview_status") {
         previewMsg = msg;
@@ -166,7 +166,7 @@ describe("Integration: Port auto-detection", () => {
     lastClaude.finish();
 
     let updatedMsg: any = null;
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 15; i++) {
       const msg = await client.receive();
       if (msg.type === "preview_status") {
         updatedMsg = msg;
@@ -191,7 +191,7 @@ describe("Integration: Port auto-detection", () => {
     lastClaude.finish();
 
     // Drain messages until we see the updated preview_status
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 15; i++) {
       const msg = await client1.receive();
       if (msg.type === "preview_status" && (msg as any).running) break;
     }
@@ -222,7 +222,7 @@ describe("Integration: Port auto-detection", () => {
     lastClaude.finish();
 
     let previewMsg: any = null;
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 15; i++) {
       const msg = await client.receive();
       if (msg.type === "preview_status") {
         previewMsg = msg;

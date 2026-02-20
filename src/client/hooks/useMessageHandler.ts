@@ -99,6 +99,7 @@ export function useMessageHandler(params: {
   setTurnDiff: Dispatch<SetStateAction<TurnDiffData | null>>;
   setLastCommitPair: Dispatch<SetStateAction<{ from: string; to: string } | null>>;
   setDiffBadgeCount: Dispatch<SetStateAction<number>>;
+  setActiveRunnerSessions: Dispatch<SetStateAction<Set<string>>>;
 
   // Refs
   prDescGeneratingRef: MutableRefObject<boolean>;
@@ -143,6 +144,7 @@ export function useMessageHandler(params: {
     setQueuedMessages, setShellStarted, setToast,
     setConfigMissing, setInstallStatus,
     setTurnDiff, setLastCommitPair, setDiffBadgeCount,
+    setActiveRunnerSessions,
     prDescGeneratingRef, sessionIdRef, terminalRef,
     rightTab, viewingFile, gitCommits, notify, navigate, handleSessionResume,
     githubStatus, prStatus,
@@ -903,6 +905,40 @@ export function useMessageHandler(params: {
     if (data.type === "terminal_exit") {
       setShellStarted(false);
     }
+
+    // ---- Session runner messages ----
+    if (data.type === "session_status") {
+      // Update running state: if running, add to set; if not, remove
+      setActiveRunnerSessions((prev) => {
+        const next = new Set(prev);
+        if (data.running) {
+          next.add(data.sessionId);
+        } else {
+          next.delete(data.sessionId);
+        }
+        return next;
+      });
+      // If this is for the current session, update isLoading
+      if (data.sessionId === sessionIdRef.current) {
+        setIsLoading(data.running);
+      }
+    }
+
+    if (data.type === "session_agent_started") {
+      setActiveRunnerSessions((prev) => {
+        const next = new Set(prev);
+        next.add(data.sessionId);
+        return next;
+      });
+    }
+
+    if (data.type === "session_agent_finished") {
+      setActiveRunnerSessions((prev) => {
+        const next = new Set(prev);
+        next.delete(data.sessionId);
+        return next;
+      });
+    }
   }, [lastMessage, send, rightTab, viewingFile, gitCommits, notify, handleSessionResume, navigate,
       setPreview, setSelectedPort, setMessages, setIsLoading, setActivity,
       setGitCommits, setAuthUrl, setSessions, setDocFiles, setDocContent,
@@ -919,6 +955,7 @@ export function useMessageHandler(params: {
       setQueuedMessages, setShellStarted, setToast,
       setConfigMissing, setInstallStatus,
       setTurnDiff, setLastCommitPair, setDiffBadgeCount,
+      setActiveRunnerSessions,
       prDescGeneratingRef, sessionIdRef, terminalRef,
       githubStatus, prStatus]);
 }
