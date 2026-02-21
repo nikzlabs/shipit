@@ -14,6 +14,7 @@ const defaultProps: SettingsProps = {
   authUrl: null,
   onApiKey: vi.fn(),
   onClearApiKey: vi.fn(),
+  onStartAuth: vi.fn(),
   gitIdentity: { name: "", email: "" },
   onGitIdentitySave: vi.fn(),
   deployTargets: [],

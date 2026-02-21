@@ -15,6 +15,7 @@ export interface SettingsProps {
   authUrl: string | null;
   onApiKey: (key: string) => void;
   onClearApiKey: () => void;
+  onStartAuth: () => void;
   agentList?: AgentOption[];
   onSetAgentEnv?: (agentId: string, key: string, value: string) => void;
   onFullReset?: () => void;
@@ -39,6 +40,7 @@ export function Settings({
   authUrl,
   onApiKey,
   onClearApiKey,
+  onStartAuth,
   agentList = [],
   onSetAgentEnv,
   onFullReset,
@@ -58,6 +60,7 @@ export function Settings({
   const [token, setToken] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [apiKeyError, setApiKeyError] = useState("");
+  const [authPending, setAuthPending] = useState(false);
   const [codexKey, setCodexKey] = useState("");
   const [confirmingLogout, setConfirmingLogout] = useState(false);
   const [confirmingReset, setConfirmingReset] = useState(false);
@@ -83,6 +86,12 @@ export function Settings({
     setGitName(gitIdentity.name);
     setGitEmail(gitIdentity.email);
   }, [gitIdentity.name, gitIdentity.email]);
+
+  useEffect(() => {
+    if (authUrl !== null || agentList.find((a) => a.id === "claude")?.authConfigured) {
+      setAuthPending(false);
+    }
+  }, [authUrl, agentList]);
 
   useEffect(() => {
     if (activeTab === "instructions") {
@@ -275,9 +284,20 @@ export function Settings({
                     </div>
                   </div>
 
+                  {claudeAgent?.authConfigured === false && (
+                    <button
+                      onClick={() => { setAuthPending(true); onStartAuth(); }}
+                      disabled={authPending}
+                      className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      data-testid="settings-start-auth"
+                    >
+                      {authPending ? "Waiting for login..." : "Login with Claude"}
+                    </button>
+                  )}
+
                   <div className="space-y-2">
                     <p className="text-sm text-gray-600 dark:text-gray-400">
-                      Override authentication with an API key:
+                      {claudeAgent?.authConfigured !== false ? "Override authentication with an API key:" : "Or authenticate with an API key:"}
                     </p>
                     <input
                       ref={apiKeyInputRef}
@@ -300,13 +320,15 @@ export function Settings({
                     </button>
                   </div>
 
-                  <button
-                    onClick={onClearApiKey}
-                    className="w-full px-3 py-2 text-sm rounded-md border bg-gray-50 dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                    data-testid="settings-clear-api-key"
-                  >
-                    Clear API Key
-                  </button>
+                  {claudeAgent?.authConfigured !== false && (
+                    <button
+                      onClick={onClearApiKey}
+                      className="w-full px-3 py-2 text-sm rounded-md border bg-gray-50 dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                      data-testid="settings-clear-api-key"
+                    >
+                      Clear API Key
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-4">
