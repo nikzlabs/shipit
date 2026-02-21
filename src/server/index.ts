@@ -96,8 +96,11 @@ export interface AppDeps {
    * DEFAULT_SCAN_PORTS. Inject a stub in tests to avoid real port scanning.
    */
   detectPorts?: (excludePorts: number[]) => Promise<number[]>;
-  /** Port the Fastify server is listening on, excluded from port scans. Defaults to 3000. */
-  serverPort?: number;
+  /**
+   * Ports belonging to ShipIt itself, excluded from port scans. Defaults to
+   * [PORT, CLIENT_DEV_PORT] — the Fastify server and the client Vite HMR server.
+   */
+  serverPorts?: number[];
   /**
    * Interval in milliseconds for periodic port scanning. Set to 0 to disable.
    * The scanner runs while at least one WebSocket client is connected.
@@ -185,7 +188,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     serveStatic: shouldServeStatic = true,
     startPreview = true,
     detectPorts = (excludePorts: number[]) => scanPorts(DEFAULT_SCAN_PORTS, excludePorts),
-    serverPort = 3000,
+    serverPorts = [...new Set([Number(process.env.PORT) || 3000, Number(process.env.CLIENT_DEV_PORT) || 3000])],
     portScanIntervalMs = 5000,
     baselinePorts = [],
     autoPushDebounceMs = 5000,
@@ -384,10 +387,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
    * Shared between the post-turn scan and the periodic interval scanner.
    *
    * The exclude list combines three sources:
-   *  1. serverPort          — ShipIt's own Fastify server
+   *  1. serverPorts         — ShipIt's own ports (Fastify + dev Vite HMR)
    *  2. managed preview ports — from the global preview manager and active runners
    *  3. baselinePorts       — ports that were already open before the session
-   *                           started (system services, ShipIt's own dev Vite, etc.)
+   *                           started (other system services, host tooling, etc.)
    *
    * Detected ports are stored on each active runner so each session tracks
    * its own ports independently. The global `detectedPorts` is kept as a
@@ -403,7 +406,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         const rp = runner?.getPreview()?.port;
         if (rp) managedPorts.push(rp);
       }
-      const excludeList = [serverPort, ...managedPorts, ...baselinePorts];
+      const excludeList = [...serverPorts, ...managedPorts, ...baselinePorts];
       const ports = await detectPorts(excludeList);
 
       // Update global fallback
