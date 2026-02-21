@@ -197,6 +197,9 @@ export function NewRepoDialog({
 
             {/* Template grid */}
             <div className="space-y-4">
+              {templates.length === 0 && (
+                <p className="text-sm text-gray-500 text-center py-6">Loading templates...</p>
+              )}
               {grouped.map((group) => (
                 <div key={group.category}>
                   <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2 px-1">

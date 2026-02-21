@@ -17,6 +17,7 @@ export interface HomeScreenProps {
   sessions: SessionInfo[];
   githubStatus: { authenticated: boolean; username?: string };
   templates: TemplateInfo[];
+  onRequestTemplates: () => void;
   onSendWithRepo: (repoUrl: string, text: string, images?: Array<{ data: string; mediaType: string; filename: string }>) => void;
   onNewRepo: (repoName: string, description: string, isPrivate: boolean, templateId: string) => void;
   onSearchRepos: (query: string) => void;
@@ -37,6 +38,7 @@ export function HomeScreen({
   sessions,
   githubStatus,
   templates,
+  onRequestTemplates,
   onSendWithRepo,
   onNewRepo,
   onSearchRepos,
@@ -80,7 +82,10 @@ export function HomeScreen({
           onSearch={onSearchRepos}
           selectedRepoUrl={selectedRepoUrl}
           onSelect={onSelectRepo}
-          onNewRepo={() => setShowNewRepoDialog(true)}
+          onNewRepo={() => {
+            if (templates.length === 0) onRequestTemplates();
+            setShowNewRepoDialog(true);
+          }}
           disabled={disabled}
         />
 

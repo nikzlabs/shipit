@@ -229,9 +229,7 @@ export default function App() {
     send,
     sessionIdRef,
     historyLoadedRef,
-    showTemplates,
     templates,
-    setTemplates,
     isLoading,
     setIsLoading,
     setActivity,
@@ -511,6 +509,7 @@ export default function App() {
           sessions={sessions}
           githubStatus={githubStatus}
           templates={templates}
+          onRequestTemplates={() => send({ type: "list_templates" })}
           onSendWithRepo={callbacks.handleHomeSendWithRepo}
           onNewRepo={callbacks.handleHomeCreateRepo}
           onSearchRepos={callbacks.handleImportSearch}

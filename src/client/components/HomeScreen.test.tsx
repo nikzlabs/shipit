@@ -21,6 +21,7 @@ const defaultProps: HomeScreenProps = {
   templates: [
     { id: "react", name: "React", description: "React app", icon: "react", category: "frontend" },
   ],
+  onRequestTemplates: vi.fn(),
   onSendWithRepo: vi.fn(),
   onNewRepo: vi.fn(),
   onSearchRepos: vi.fn(),
@@ -146,6 +147,22 @@ describe("HomeScreen", () => {
     fireEvent.click(screen.getByText("New repository"));
     // NewRepoDialog should now be visible
     expect(screen.getByText("Create New Repository")).toBeTruthy();
+  });
+
+  it("requests templates when opening NewRepoDialog with empty templates", () => {
+    const onRequestTemplates = vi.fn();
+    render(
+      <HomeScreen
+        {...defaultProps}
+        templates={[]}
+        onRequestTemplates={onRequestTemplates}
+        githubStatus={{ authenticated: true, username: "testuser" }}
+      />,
+    );
+    const repoInput = screen.getByPlaceholderText("Select a repository...");
+    fireEvent.focus(repoInput);
+    fireEvent.click(screen.getByText("New repository"));
+    expect(onRequestTemplates).toHaveBeenCalledOnce();
   });
 
   it("does not show NewRepoDialog when githubStatus.username is absent", () => {
