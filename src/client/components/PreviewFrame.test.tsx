@@ -1,9 +1,17 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { PreviewFrame, formatErrorForMessage, type PreviewStatus } from "./PreviewFrame.js";
 import type { PreviewError } from "../hooks/usePreviewErrors.js";
 
-afterEach(cleanup);
+// Mock fetch so the URL-reachability poll resolves immediately in tests
+beforeEach(() => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response()));
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  cleanup();
+});
 
 const defaultProps = {
   detectedPorts: [] as number[],
@@ -39,10 +47,10 @@ describe("PreviewFrame", () => {
     expect(screen.getByText(/Preview will appear here/)).toBeInTheDocument();
   });
 
-  it("renders iframe when preview is running", () => {
+  it("renders iframe when preview is running", async () => {
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
-    const iframe = screen.getByTitle("Live Preview");
+    const iframe = await screen.findByTitle("Live Preview");
     expect(iframe).toBeInTheDocument();
     expect(iframe).toHaveAttribute("src", "http://localhost:5173");
   });
@@ -94,28 +102,28 @@ describe("PreviewFrame", () => {
     expect(onSelectPort).toHaveBeenCalledWith(8080);
   });
 
-  it("uses selectedPort for the iframe when provided", () => {
+  it("uses selectedPort for the iframe when provided", async () => {
     const preview: PreviewStatus = { running: true, port: 3001, url: "http://localhost:3001", source: "detected", detectedPorts: [3001, 8080] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001, 8080]} selectedPort={8080} onSelectPort={vi.fn()} />);
-    const iframe = screen.getByTitle("Live Preview");
+    const iframe = await screen.findByTitle("Live Preview");
     expect(iframe).toHaveAttribute("src", "http://localhost:8080");
   });
 
-  it("falls back to preview.port when selectedPort is null", () => {
+  it("falls back to preview.port when selectedPort is null", async () => {
     const preview: PreviewStatus = { running: true, port: 3001, url: "http://localhost:3001", source: "detected" };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001]} selectedPort={null} onSelectPort={vi.fn()} />);
-    const iframe = screen.getByTitle("Live Preview");
+    const iframe = await screen.findByTitle("Live Preview");
     expect(iframe).toHaveAttribute("src", "http://localhost:3001");
   });
 
-  it("increments refresh key when Reload is clicked", () => {
+  it("increments refresh key when Reload is clicked", async () => {
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
-    expect(screen.getByTitle("Live Preview")).toBeInTheDocument();
+    await screen.findByTitle("Live Preview");
 
     fireEvent.click(screen.getByText("Reload"));
     // iframe should have been re-mounted (different React key forces remount)
-    expect(screen.getByTitle("Live Preview")).toBeInTheDocument();
+    await screen.findByTitle("Live Preview");
   });
 
   it("selector value matches selectedPort", () => {
@@ -293,10 +301,10 @@ describe("PreviewFrame", () => {
 
   // ---- Managed source tests ----
 
-  it("renders iframe for managed source preview", () => {
+  it("renders iframe for managed source preview", async () => {
     const preview: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "managed" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
-    const iframe = screen.getByTitle("Live Preview");
+    const iframe = await screen.findByTitle("Live Preview");
     expect(iframe).toHaveAttribute("src", "http://localhost:3000");
   });
 

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { PreviewError } from "../hooks/usePreviewErrors.js";
 
 export interface PreviewStatus {
@@ -13,6 +13,8 @@ export interface PreviewStatus {
 
 interface PreviewFrameProps {
   preview: PreviewStatus | null;
+  /** Current session ID — used in iframe key to force reload on session switch. */
+  sessionId?: string;
   /** All detected ports available for selection. */
   detectedPorts: number[];
   /** The currently selected port override, or null to use the default. */
@@ -62,6 +64,7 @@ export { formatErrorForMessage };
 
 export function PreviewFrame({
   preview,
+  sessionId,
   detectedPorts,
   selectedPort,
   onSelectPort,
@@ -77,6 +80,38 @@ export function PreviewFrame({
 }: PreviewFrameProps) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
+  const [iframeReady, setIframeReady] = useState(false);
+
+  // Compute active port early so hooks can reference it (0 when not running)
+  const activePort = preview?.running ? (selectedPort ?? preview.port) : 0;
+
+  // Reset readiness when the iframe target changes (session switch, port change, reload)
+  useEffect(() => {
+    setIframeReady(false);
+  }, [sessionId, activePort, refreshKey]);
+
+  // Poll the preview URL until it responds, then allow iframe to render.
+  // Prevents showing a broken-page icon while the dev server is still starting
+  // or Docker port mapping is not yet established.
+  useEffect(() => {
+    if (!activePort || iframeReady) return;
+    let cancelled = false;
+    const poll = async () => {
+      for (let i = 0; i < 20 && !cancelled; i++) {
+        try {
+          await fetch(`http://localhost:${activePort}`, { mode: "no-cors" });
+          if (!cancelled) setIframeReady(true);
+          return;
+        } catch {
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      }
+      // Give up after ~10s — show iframe anyway
+      if (!cancelled) setIframeReady(true);
+    };
+    poll();
+    return () => { cancelled = true; };
+  }, [activePort, iframeReady]);
 
   // Show install progress
   if (installStatus && installStatus.status === "running") {
@@ -150,8 +185,7 @@ export function PreviewFrame({
     );
   }
 
-  // The active port: user selection takes priority, then the server default
-  const activePort = selectedPort ?? preview.port;
+  // activePort already computed above (before hooks)
   const activeUrl = `http://localhost:${activePort}`;
   const isManaged = (preview.source === "vite" || preview.source === "managed") && activePort === preview.port;
   const showSelector = detectedPorts.length > 1 || ((preview.source === "vite" || preview.source === "managed") && detectedPorts.length > 0);
@@ -234,14 +268,23 @@ export function PreviewFrame({
         </div>
       </div>
 
-      {/* Preview iframe */}
-      <iframe
-        key={`${activePort}-${refreshKey}`}
-        src={activeUrl}
-        title="Live Preview"
-        className={`flex-1 w-full bg-white ${hasErrors && errorPanelOpen ? "min-h-0" : ""}`}
-        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
-      />
+      {/* Preview content: spinner until URL is reachable, then iframe */}
+      {iframeReady ? (
+        <iframe
+          key={`${sessionId}-${activePort}-${refreshKey}`}
+          src={activeUrl}
+          title="Live Preview"
+          className={`flex-1 w-full bg-white ${hasErrors && errorPanelOpen ? "min-h-0" : ""}`}
+          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+        />
+      ) : (
+        <div className="flex-1 flex items-center justify-center bg-white text-gray-500 text-sm">
+          <div className="text-center space-y-3">
+            <div className="inline-block w-6 h-6 border-2 border-gray-400 border-t-blue-500 rounded-full animate-spin" />
+            <p>Starting dev server...</p>
+          </div>
+        </div>
+      )}
 
       {/* Error panel */}
       {hasErrors && errorPanelOpen && (
