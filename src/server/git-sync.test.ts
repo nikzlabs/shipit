@@ -21,7 +21,7 @@ describe("GitManager: push and pull", () => {
   it("push sends commits to a bare remote", async () => {
     // Create a bare repo to act as the remote
     const { execSync } = await import("node:child_process");
-    execSync("git init --bare", { cwd: bareDir });
+    execSync("git init --bare -b main", { cwd: bareDir });
 
     const git = new GitManager(tmpDir);
     await git.init();
@@ -40,7 +40,7 @@ describe("GitManager: push and pull", () => {
 
   it("pull fetches commits from a bare remote", async () => {
     const { execSync } = await import("node:child_process");
-    execSync("git init --bare", { cwd: bareDir });
+    execSync("git init --bare -b main", { cwd: bareDir });
 
     // Clone into two working copies
     const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-clone-"));
