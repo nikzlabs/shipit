@@ -1,63 +1,31 @@
 /**
- * Shared service layer — stateless business logic extracted from WS handlers.
+ * Read service functions — all Phase 1 GET endpoint logic.
  *
- * Functions here accept explicit parameters (managers, session IDs) instead of
- * HandlerContext. Both WebSocket handlers and HTTP routes can call these.
+ * These functions are stateless and accept explicit parameters (managers,
+ * session IDs) instead of HandlerContext.
  */
 
 import path from "node:path";
 import fs from "node:fs/promises";
-import type { SessionManager } from "./sessions.js";
-import type { GitManager } from "./git.js";
-import type { GitHubAuthManager } from "./github-auth.js";
-import type { CredentialStore } from "./credential-store.js";
-import type { AgentRegistry } from "./agents/agent-registry.js";
-import type { UsageManager } from "./usage.js";
-import type { FeatureManager } from "./features.js";
-import type { ThreadManager } from "./threads.js";
-import type { DeploymentManager } from "./deployment-manager.js";
-import type { DeploymentStore } from "./deployment-store.js";
-import type { SessionRunnerRegistry } from "./session-runner.js";
-import type { SessionInfo, ProjectTemplate, FileDiff } from "./types.js";
-import type { AgentId } from "./agents/agent-process.js";
-import { scanFileTree } from "./file-tree.js";
-import { findMarkdownFiles } from "./markdown.js";
-import { listTemplates } from "./templates.js";
-
-// ---- Types for service function results ----
-
-export interface AgentInfo {
-  id: AgentId;
-  name: string;
-  installed: boolean;
-  authConfigured: boolean;
-  models: string[];
-}
-
-export interface GlobalSettings {
-  gitIdentity: { name: string; email: string };
-  systemPrompt: string;
-  agents: AgentInfo[];
-  defaultAgentId: AgentId;
-}
-
-export interface GitHubStatus {
-  authenticated: boolean;
-  username?: string;
-  avatarUrl?: string;
-}
-
-export interface BootstrapData {
-  sessions: SessionInfo[];
-  agents: AgentInfo[];
-  defaultAgentId: AgentId;
-  templates: Array<Omit<ProjectTemplate, "files">>;
-  githubStatus: GitHubStatus;
-  githubRepos: Array<{ fullName: string; description: string | null; private: boolean; defaultBranch: string; cloneUrl: string }>;
-  settings: GlobalSettings;
-}
-
-// ---- Service functions ----
+import type { SessionManager } from "../sessions.js";
+import type { GitManager } from "../git.js";
+import type { GitHubAuthManager } from "../github-auth.js";
+import type { CredentialStore } from "../credential-store.js";
+import type { AgentRegistry } from "../agents/agent-registry.js";
+import type { UsageManager } from "../usage.js";
+import type { FeatureManager } from "../features.js";
+import type { ThreadManager } from "../threads.js";
+import type { DeploymentManager } from "../deployment-manager.js";
+import type { DeploymentStore } from "../deployment-store.js";
+import type { SessionRunnerRegistry } from "../session-runner.js";
+import type { SessionInfo, FileDiff } from "../types.js";
+import type { AgentId } from "../agents/agent-process.js";
+import { GitManager as GitManagerClass } from "../git.js";
+import { scanFileTree } from "../file-tree.js";
+import { findMarkdownFiles } from "../markdown.js";
+import { listTemplates } from "../templates.js";
+import type { AgentInfo, GlobalSettings, GitHubStatus, BootstrapData } from "./types.js";
+import { ServiceError } from "./types.js";
 
 /**
  * List all sessions, lazily populating remote URLs for sessions that have
@@ -439,7 +407,6 @@ export async function getPrStatus(
   const origin = remotes.find((r) => r.name === "origin");
   if (!origin) return null;
 
-  const { GitManager: GitManagerClass } = await import("./git.js");
   const parsed = GitManagerClass.parseGitHubRemote(origin.url);
   if (!parsed) return null;
 
@@ -462,16 +429,4 @@ export async function getPrStatus(
     autoMergeEnabled: false,
     mergeable: true,
   };
-}
-
-// ---- Error type for service-level errors with HTTP status codes ----
-
-export class ServiceError extends Error {
-  constructor(
-    public statusCode: number,
-    message: string,
-  ) {
-    super(message);
-    this.name = "ServiceError";
-  }
 }

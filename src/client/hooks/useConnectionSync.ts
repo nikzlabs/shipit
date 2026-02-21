@@ -4,7 +4,7 @@ import type { ChatMessage } from "../components/MessageList.js";
 import type { StreamingActivity } from "../components/StreamingIndicator.js";
 import type { TemplateInfo } from "../components/TemplateSelector.js";
 import type { AgentOption } from "../components/AgentPicker.js";
-import type { BootstrapData } from "../../server/services.js";
+import type { BootstrapData } from "../../server/services/index.js";
 import { getSavedAgentId } from "../utils/local-storage.js";
 
 export function useConnectionSync(params: {

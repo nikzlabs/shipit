@@ -16,7 +16,7 @@ import type { AgentOption } from "../components/AgentPicker.js";
 import type { ToastData } from "../components/Toast.js";
 import type { TurnDiffData } from "../components/DiffPanel.js";
 import type {
-  WsServerMessage, WsSessionRenamed, WsUsageUpdate, WsModelInfo,
+  WsServerMessage, WsUsageUpdate, WsModelInfo,
   ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse,
   WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, FeatureInfo,
   SessionInfo, AgentEvent, AgentContentBlock, WsClientMessage,
@@ -447,15 +447,6 @@ export function useMessageHandler(params: {
       }
     }
 
-    if (data.type === "rollback_complete") {
-      // Refresh the git log after rollback
-      if (sessionIdRef.current) {
-        apiGet<{ commits: GitCommit[] }>(`/api/sessions/${sessionIdRef.current}/git/log`)
-          .then((d) => setGitCommits(d.commits))
-          .catch(() => {});
-      }
-    }
-
     if (data.type === "auth_required") {
       setAuthUrl(data.url ?? "");
       setIsLoading(false);
@@ -481,13 +472,6 @@ export function useMessageHandler(params: {
       setGitIdentityNeeded(true);
     }
 
-    if (data.type === "git_identity_set") {
-      setGitIdentityNeeded(false);
-      if (data.name || data.email) {
-        setGitIdentity({ name: data.name, email: data.email });
-      }
-    }
-
     if (data.type === "session_list") {
       setSessions(data.sessions);
     }
@@ -506,13 +490,6 @@ export function useMessageHandler(params: {
       apiGet<{ threads: ThreadInfo[]; activeThreadId: string }>(`/api/sessions/${data.session.id}/threads`)
         .then((d) => { setThreads(d.threads); setActiveThreadId(d.activeThreadId); })
         .catch(() => {});
-    }
-
-    if (data.type === "session_renamed") {
-      const renamed = (data as WsSessionRenamed).session;
-      setSessions((prev) =>
-        prev.map((s) => (s.id === renamed.id ? renamed : s))
-      );
     }
 
     if (data.type === "file_tree") {
@@ -600,67 +577,6 @@ export function useMessageHandler(params: {
       });
     }
 
-    if (data.type === "github_push_result" || data.type === "github_pull_result") {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant" as const,
-          text: data.message,
-          streaming: false,
-          isError: !data.success,
-        },
-      ]);
-      // Refresh PR status after push
-      if (data.type === "github_push_result" && data.success && sessionIdRef.current) {
-        const sid = sessionIdRef.current;
-        apiGet<{ pr: typeof prStatus }>(`/api/sessions/${sid}/pr/status`)
-          .then((d) => setPrStatus(d.pr))
-          .catch(() => {});
-        // Show toast with PR creation shortcut
-        if (githubStatus.authenticated && !prStatus?.url) {
-          setToast({
-            message: `Pushed to origin/${data.branch ?? "branch"}`,
-            action: {
-              label: "Create PR",
-              onClick: () => {
-                setShowPRModal(true);
-                apiGet<{ current: string; remote: string[] }>(`/api/sessions/${sid}/git/branches`)
-                  .then((d) => { setPrCurrentBranch(d.current); setPrRemoteBranches(d.remote); })
-                  .catch(() => {});
-              },
-            },
-            duration: 8000,
-          });
-        }
-      }
-    }
-
-
-    if (data.type === "github_pr_created") {
-      setPrResult({
-        success: data.success,
-        url: data.url,
-        number: data.number,
-        message: data.message,
-      });
-      // Refresh PR status after PR creation
-      if (data.success && sessionIdRef.current) {
-        apiGet<{ pr: typeof prStatus }>(`/api/sessions/${sessionIdRef.current}/pr/status`)
-          .then((d) => setPrStatus(d.pr))
-          .catch(() => {});
-      }
-    }
-
-    if (data.type === "merge_pr_result") {
-      if (data.success && !data.autoMergeEnabled) {
-        setPrStatus(null);
-      } else if (data.autoMergeEnabled && sessionIdRef.current) {
-        apiGet<{ pr: typeof prStatus }>(`/api/sessions/${sessionIdRef.current}/pr/status`)
-          .then((d) => setPrStatus(d.pr))
-          .catch(() => {});
-      }
-    }
-
     if (data.type === "generated_pr_description") {
       setPrDescGenerating(false);
       prDescGeneratingRef.current = false;
@@ -702,17 +618,6 @@ export function useMessageHandler(params: {
       setActiveThreadId(data.activeThreadId);
     }
 
-    if (data.type === "checkpoint_created") {
-      // Update the thread's checkpoints in local state
-      setThreads((prev) =>
-        prev.map((t) =>
-          t.id === data.threadId
-            ? { ...t, checkpoints: [...t.checkpoints, data.checkpoint] }
-            : t,
-        ),
-      );
-    }
-
     if (data.type === "thread_forked") {
       setThreads((prev) => {
         const deactivated = prev.map((t) => ({ ...t, isActive: false }));
@@ -745,18 +650,6 @@ export function useMessageHandler(params: {
         streaming: false,
       }));
       setMessages(loaded);
-    }
-
-    if (data.type === "deploy_config_saved") {
-      // Refresh config status after save
-      if (sessionIdRef.current) {
-        apiGet<{ targets: DeployTargetInfo[]; projectSettings: Record<string, { configured: boolean; projectName?: string }> }>(
-          `/api/sessions/${sessionIdRef.current}/deploy/setup`,
-        ).then((d) => {
-          setDeployTargets(d.targets);
-          setDeployConfigStatus(d.projectSettings);
-        }).catch(() => {});
-      }
     }
 
     if (data.type === "deploy_status") {
@@ -895,21 +788,6 @@ export function useMessageHandler(params: {
         files: data.files,
         stats: data.stats,
       });
-    }
-
-    if (data.type === "reject_changes_complete") {
-      // Clear the diff data and refresh workspace state
-      setTurnDiff(null);
-      setLastCommitPair(null);
-      setDiffBadgeCount(0);
-      if (sessionIdRef.current) {
-        apiGet<{ gitLog: GitCommit[]; fileTree: FileTreeNode[] }>(
-          `/api/sessions/${sessionIdRef.current}/workspace-state`,
-        ).then((d) => {
-          setGitCommits(d.gitLog);
-          setFileTree(d.fileTree);
-        }).catch(() => {});
-      }
     }
 
     if (data.type === "terminal_output") {

@@ -60,59 +60,70 @@
 
 ### Session management
 
-- [ ] `PATCH /api/sessions/:id` — extract from `rename_session` (body: `{ title }`)
-- [ ] `DELETE /api/sessions/:id` — extract from `archive_session`
+- [x] `PATCH /api/sessions/:id` — extract from `rename_session` (body: `{ title }`)
+- [x] `DELETE /api/sessions/:id` — extract from `archive_session`
 
 ### Settings
 
-- [ ] `POST /api/settings/git-identity` — extract from `set_git_identity`
-- [ ] `PUT /api/settings` — extract from `save_global_settings`
-- [ ] `POST /api/settings/agent` — extract from `set_agent`
-- [ ] `POST /api/agents/:id/env` — extract from `set_agent_env`
+- [x] `POST /api/settings/git-identity` — extract from `set_git_identity`
+- [x] `PUT /api/settings` — extract from `save_global_settings`
+- [x] `POST /api/settings/agent` — extract from `set_agent`
+- [x] `POST /api/agents/:id/env` — extract from `set_agent_env`
 
 ### Auth
 
-- [ ] `POST /api/auth/api-key` — extract from `set_api_key`
-- [ ] `DELETE /api/auth/api-key` — extract from `clear_api_key`
-- [ ] `POST /api/github/token` — extract from `github_set_token`
-- [ ] `POST /api/github/logout` — extract from `github_logout`
+- [x] `POST /api/auth/api-key` — extract from `set_api_key`
+- [x] `DELETE /api/auth/api-key` — extract from `clear_api_key`
+- [x] `POST /api/github/token` — extract from `github_set_token`
+- [x] `POST /api/github/logout` — extract from `github_logout`
 
 ### Git operations
 
-- [ ] `POST /api/sessions/:id/git/remotes` — extract from `github_set_remote`
-- [ ] `POST /api/sessions/:id/git/push` — extract from `github_push`
-- [ ] `POST /api/sessions/:id/git/pull` — extract from `github_pull`
-- [ ] `POST /api/sessions/:id/git/rollback` — extract from `rollback`
-- [ ] `POST /api/sessions/:id/git/reject` — extract from `reject_changes`
+- [x] `POST /api/sessions/:id/git/remotes` — extract from `github_set_remote`
+- [x] `POST /api/sessions/:id/git/push` — extract from `github_push`
+- [x] `POST /api/sessions/:id/git/pull` — extract from `github_pull`
+- [x] `POST /api/sessions/:id/git/rollback` — extract from `rollback`
+- [x] `POST /api/sessions/:id/git/reject` — extract from `reject_changes`
 
 ### PR operations
 
-- [ ] `POST /api/sessions/:id/pr` — extract from `github_create_pr`
-- [ ] `POST /api/sessions/:id/pr/merge` — extract from `merge_pr`
+- [x] `POST /api/sessions/:id/pr` — extract from `github_create_pr`
+- [x] `POST /api/sessions/:id/pr/merge` — extract from `merge_pr`
 
 ### Deploy operations
 
-- [ ] `POST /api/deploy/:targetId/config` — extract from `deploy_configure`
-- [ ] `DELETE /api/deploy/:targetId/config` — extract from `delete_deploy_config`
+- [x] `POST /api/sessions/:id/deploy/config` — extract from `deploy_configure`
+- [x] `DELETE /api/sessions/:id/deploy/config/:targetId` — extract from `delete_deploy_config`
 
 ### Other mutations
 
-- [ ] `POST /api/sessions/:id/threads/checkpoint` — extract from `create_checkpoint`
-- [ ] `POST /api/sessions/:id/template` — extract from `apply_template`
-- [ ] `POST /api/reset` — extract from `full_reset`
-- [ ] `POST /api/sessions/:id/preview-errors` — extract from `preview_error`
+- [x] `POST /api/sessions/:id/threads/checkpoint` — extract from `create_checkpoint`
+- [x] `POST /api/sessions/:id/template` — extract from `apply_template`
+- [x] `POST /api/reset` — extract from `full_reset`
+- [x] `POST /api/sessions/:id/preview-errors` — extract from `preview_error`
+
+### Service layer split
+
+- [x] Split monolithic `services.ts` into domain-specific files under `src/server/services/` — types, reads, session, git, github, deploy, settings, threads, templates, misc
+- [ ] Split `reads.ts` (~330 lines, 27+ functions) into the existing domain-specific service files — merge read functions into `git.ts`, `github.ts`, `deploy.ts`, `session.ts`, `settings.ts`, `threads.ts`, `templates.ts`, `misc.ts` and add a new `files.ts` for file/doc reads
 
 ### Client updates for Phase 2
 
-- [ ] Update `useAppCallbacks` to call HTTP endpoints for all Tier 2 mutations
-- [ ] Replace WS send-then-listen patterns with `fetch()` calls that return responses directly
-- [ ] Remove corresponding `case` entries from switch dispatcher
-- [ ] Remove unused WS message types from type unions
+- [x] Update `useAppCallbacks` to call HTTP endpoints for all Tier 2 mutations
+- [x] Replace WS send-then-listen patterns with `fetch()` calls that return responses directly
+- [x] Update `useMessageHandler` to remove WS response handlers for migrated types
+- [x] Migrate `App.tsx` inline `send()` calls (`set_api_key`, `clear_api_key`, `set_agent_env`, `save_global_settings`) to HTTP
+- [x] Migrate `useAutoFix.ts` `preview_error` from WS to HTTP
+- [ ] Remove corresponding `case` entries from switch dispatcher (deferred — existing WS integration tests depend on them)
+- [ ] Remove unused WS message types from type unions (deferred — requires migrating WS integration tests first)
 
 ### Tests for Phase 2
 
-- [ ] Add HTTP route tests for each new mutation endpoint (happy path + validation errors)
-- [ ] Update or remove WS integration tests for migrated mutations
+- [x] Add HTTP route tests for each new mutation endpoint (34 tests) — `src/server/integration_tests/http-mutations.test.ts`
+- [ ] Migrate existing WS integration tests to use HTTP endpoints — tests in `sessions.test.ts`, `settings.test.ts`, `deploy.test.ts`, `github.test.ts`, `pr.test.ts`, `thread.test.ts`, `template.test.ts`, `git.test.ts`, `misc.test.ts` still exercise migrated messages via WS
+- [ ] Remove WS switch cases for all 22 migrated Phase 2 message types from `src/server/index.ts` after WS tests are migrated: `rename_session`, `archive_session`, `set_git_identity`, `save_global_settings`, `set_api_key`, `clear_api_key`, `github_set_token`, `github_logout`, `github_set_remote`, `github_push`, `github_pull`, `github_create_pr`, `merge_pr`, `deploy_configure`, `delete_deploy_config`, `rollback`, `reject_changes`, `set_agent`, `set_agent_env`, `create_checkpoint`, `apply_template`, `full_reset`, `preview_error`
+- [ ] Remove unused `WsClientMessage` types after switch cases are removed: same 22 message type interfaces
+- [ ] Remove unused `WsServerMessage` types that are no longer sent: `session_renamed`, `git_identity_set`, `rollback_complete`, `reject_changes_complete`, `github_push_result`, `github_pull_result`, `github_pr_created`, `merge_pr_result`, `deploy_config_saved`, `checkpoint_created`, `agent_env_set`
 
 ## Phase 3: Tier 3 — Borderline cases
 

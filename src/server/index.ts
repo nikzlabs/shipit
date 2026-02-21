@@ -557,43 +557,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     previewManager.start(workspaceDir);
   }
 
-  // ---- HTTP API routes ----
-  await registerApiRoutes(app, {
-    sessionManager,
-    createGitManager,
-    agentRegistry,
-    githubAuthManager,
-    credentialStore,
-    defaultAgentId,
-    workspaceDir,
-    threadManager,
-    deploymentManager,
-    deploymentStore,
-    featureManager,
-    usageManager,
-    runnerRegistry,
-    chatHistoryManager,
-  });
-
-  // Serve the built client files from dist/client/
-  if (shouldServeStatic) {
-    const clientDir = path.resolve(process.cwd(), "dist/client");
-    try {
-      await app.register(fastifyStatic, {
-        root: clientDir,
-        prefix: "/",
-        wildcard: false,
-      });
-      // SPA fallback — serve index.html for non-file routes
-      app.setNotFoundHandler((_req, reply) => {
-        reply.sendFile("index.html", clientDir);
-      });
-    } catch {
-      // Client build may not exist during dev; that's fine
-      console.log("[server] No built client found at", clientDir);
-    }
-  }
-
   /**
    * Create a new isolated session directory with its own git repo.
    * Returns the app-generated session ID and workspace directory path.
@@ -634,6 +597,49 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     const hash = crypto.createHash("sha256").update(repoUrl).digest("hex").slice(0, 16);
     return path.join(reposRoot, hash);
   };
+
+  // ---- HTTP API routes ----
+  await registerApiRoutes(app, {
+    sessionManager,
+    createGitManager,
+    agentRegistry,
+    githubAuthManager,
+    credentialStore,
+    defaultAgentId,
+    workspaceDir,
+    threadManager,
+    deploymentManager,
+    deploymentStore,
+    featureManager,
+    usageManager,
+    runnerRegistry,
+    chatHistoryManager,
+    previewManager,
+    authManager,
+    broadcast,
+    broadcastLog,
+    getSharedRepoDir,
+    createSessionDir,
+  });
+
+  // Serve the built client files from dist/client/
+  if (shouldServeStatic) {
+    const clientDir = path.resolve(process.cwd(), "dist/client");
+    try {
+      await app.register(fastifyStatic, {
+        root: clientDir,
+        prefix: "/",
+        wildcard: false,
+      });
+      // SPA fallback — serve index.html for non-file routes
+      app.setNotFoundHandler((_req, reply) => {
+        reply.sendFile("index.html", clientDir);
+      });
+    } catch {
+      // Client build may not exist during dev; that's fine
+      console.log("[server] No built client found at", clientDir);
+    }
+  }
 
   // ---- WebSocket route ----
   app.get("/ws", { websocket: true }, (socket) => {
