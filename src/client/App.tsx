@@ -614,6 +614,7 @@ export default function App() {
           authUrl={authUrl}
           onApiKey={(key) => send({ type: "set_api_key", key })}
           onClearApiKey={() => send({ type: "clear_api_key" })}
+          onStartAuth={() => send({ type: "start_auth" })}
           agentList={agentList}
           onSetAgentEnv={(agentId, key, value) => send({ type: "set_agent_env", agentId, key, value })}
           onFullReset={callbacks.handleFullReset}

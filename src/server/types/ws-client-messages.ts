@@ -164,6 +164,10 @@ export interface WsClearApiKey {
   type: "clear_api_key";
 }
 
+export interface WsStartAuth {
+  type: "start_auth";
+}
+
 // ---- Interrupt messages ----
 
 /** Client → Server: interrupt the currently running Claude process. */
@@ -303,6 +307,7 @@ export type WsClientMessage =
   | WsSetApiKey
   | WsPasteAuthCode
   | WsClearApiKey
+  | WsStartAuth
   | WsListFeatures
   | WsGitHubSearchRepos
   | WsGeneratePRDescription

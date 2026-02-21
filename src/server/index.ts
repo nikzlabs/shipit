@@ -943,6 +943,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         // ---- Settings operations ----
         case "set_api_key": return settingsHandlers.handleSetApiKey(ctx, msg);
         case "clear_api_key": return settingsHandlers.handleClearApiKey(ctx);
+        case "start_auth": return settingsHandlers.handleStartAuth(ctx);
         case "paste_auth_code": return settingsHandlers.handlePasteAuthCode(ctx, msg);
         case "set_git_identity": return settingsHandlers.handleSetGitIdentity(ctx, msg);
         case "get_global_settings": return settingsHandlers.handleGetGlobalSettings(ctx);
