@@ -16,7 +16,7 @@ import type { AgentOption } from "../components/AgentPicker.js";
 import type { ToastData } from "../components/Toast.js";
 import type { TurnDiffData } from "../components/DiffPanel.js";
 import type {
-  WsServerMessage, WsSessionRenamed, WsUsageUpdate, WsModelInfo,
+  WsServerMessage, WsUsageUpdate, WsModelInfo,
   ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse,
   WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, FeatureInfo,
   SessionInfo, AgentEvent, AgentContentBlock, WsClientMessage,
@@ -29,6 +29,7 @@ type RightTab = "preview" | "docs" | "files" | "terminal" | "features" | "change
 export function useMessageHandler(params: {
   lastMessage: MessageEvent | null;
   send: (msg: WsClientMessage) => void;
+  apiGet: <T>(path: string) => Promise<T>;
 
   // State setters
   setPreview: Dispatch<SetStateAction<PreviewStatus | null>>;
@@ -128,7 +129,7 @@ export function useMessageHandler(params: {
   } | null;
 }): void {
   const {
-    lastMessage, send,
+    lastMessage, send, apiGet,
     setPreview, setSelectedPort, setMessages, setIsLoading, setActivity,
     setGitCommits, setAuthUrl, setSessions, setDocFiles, setDocContent,
     setFileTree, setViewingFileContent, setViewingFileBinary,
@@ -428,18 +429,22 @@ export function useMessageHandler(params: {
         ...prev,
       ]);
       // Refresh file tree if the Files tab is active (files likely changed)
-      if (rightTab === "files") {
-        send({ type: "get_file_tree" });
-        // Re-fetch the viewed file's content so it stays up to date
+      if (rightTab === "files" && sessionIdRef.current) {
         if (viewingFile) {
-          send({ type: "get_file_content", path: viewingFile });
+          // Fetch file content with tree in one request
+          apiGet<{ content: string; isBinary?: boolean; tree: FileTreeNode[] }>(
+            `/api/sessions/${sessionIdRef.current}/files/${viewingFile}?tree=true`,
+          ).then((d) => {
+            setFileTree(d.tree);
+            setViewingFileContent(d.content);
+            setViewingFileBinary(d.isBinary ?? false);
+          }).catch(() => {});
+        } else {
+          apiGet<{ tree: FileTreeNode[] }>(`/api/sessions/${sessionIdRef.current}/files`)
+            .then((d) => setFileTree(d.tree))
+            .catch(() => {});
         }
       }
-    }
-
-    if (data.type === "rollback_complete") {
-      // Refresh the git log after rollback
-      send({ type: "get_git_log" });
     }
 
     if (data.type === "auth_required") {
@@ -467,13 +472,6 @@ export function useMessageHandler(params: {
       setGitIdentityNeeded(true);
     }
 
-    if (data.type === "git_identity_set") {
-      setGitIdentityNeeded(false);
-      if (data.name || data.email) {
-        setGitIdentity({ name: data.name, email: data.email });
-      }
-    }
-
     if (data.type === "session_list") {
       setSessions(data.sessions);
     }
@@ -489,44 +487,45 @@ export function useMessageHandler(params: {
         return [data.session, ...prev];
       });
       // Load threads for this session
-      send({ type: "list_threads" });
-    }
-
-    if (data.type === "session_renamed") {
-      const renamed = (data as WsSessionRenamed).session;
-      setSessions((prev) =>
-        prev.map((s) => (s.id === renamed.id ? renamed : s))
-      );
-    }
-
-    if (data.type === "doc_list") {
-      setDocFiles(data.files);
-    }
-
-    if (data.type === "doc_content") {
-      setDocContent(data.content);
+      apiGet<{ threads: ThreadInfo[]; activeThreadId: string }>(`/api/sessions/${data.session.id}/threads`)
+        .then((d) => { setThreads(d.threads); setActiveThreadId(d.activeThreadId); })
+        .catch(() => {});
     }
 
     if (data.type === "file_tree") {
       setFileTree(data.tree);
     }
 
-    if (data.type === "file_content") {
-      setViewingFileContent(data.content);
-      setViewingFileBinary(data.isBinary ?? false);
-    }
-
     if (data.type === "files_changed") {
       const paths: string[] = data.paths;
+      const sid = sessionIdRef.current;
 
-      // Auto-refresh file tree if the Files tab is active
-      if (rightTab === "files") {
-        send({ type: "get_file_tree" });
-      }
+      // Auto-refresh file tree and/or viewed file
+      if (sid) {
+        const needsTree = rightTab === "files";
+        const needsFile = viewingFile && paths.some((p) => viewingFile.endsWith(p));
 
-      // Auto-refresh the viewed file if it was modified
-      if (viewingFile && paths.some((p) => viewingFile.endsWith(p))) {
-        send({ type: "get_file_content", path: viewingFile });
+        if (needsTree && needsFile) {
+          // Fetch file content with tree in one request
+          apiGet<{ content: string; isBinary?: boolean; tree: FileTreeNode[] }>(
+            `/api/sessions/${sid}/files/${viewingFile}?tree=true`,
+          ).then((d) => {
+            setFileTree(d.tree);
+            setViewingFileContent(d.content);
+            setViewingFileBinary(d.isBinary ?? false);
+          }).catch(() => {});
+        } else if (needsTree) {
+          apiGet<{ tree: FileTreeNode[] }>(`/api/sessions/${sid}/files`)
+            .then((d) => setFileTree(d.tree))
+            .catch(() => {});
+        } else if (needsFile) {
+          apiGet<{ content: string; isBinary?: boolean }>(`/api/sessions/${sid}/files/${viewingFile}`)
+            .then((d) => {
+              setViewingFileContent(d.content);
+              setViewingFileBinary(d.isBinary ?? false);
+            })
+            .catch(() => {});
+        }
       }
 
       // Show a badge on the Files tab when changes occur while not viewing it
@@ -556,7 +555,11 @@ export function useMessageHandler(params: {
     if (data.type === "template_applied") {
       setShowTemplates(false);
       // Refresh file tree in case user is on that tab
-      send({ type: "get_file_tree" });
+      if (sessionIdRef.current) {
+        apiGet<{ tree: FileTreeNode[] }>(`/api/sessions/${sessionIdRef.current}/files`)
+          .then((d) => setFileTree(d.tree))
+          .catch(() => {});
+      }
     }
 
     if (data.type === "home_repo_ready") {
@@ -572,72 +575,6 @@ export function useMessageHandler(params: {
         username: data.username,
         avatarUrl: data.avatarUrl,
       });
-    }
-
-    if (data.type === "github_push_result" || data.type === "github_pull_result") {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant" as const,
-          text: data.message,
-          streaming: false,
-          isError: !data.success,
-        },
-      ]);
-      // Refresh PR status after push
-      if (data.type === "github_push_result" && data.success) {
-        send({ type: "get_pr_status" });
-        // Show toast with PR creation shortcut
-        if (githubStatus.authenticated && !prStatus?.url) {
-          setToast({
-            message: `Pushed to origin/${data.branch ?? "branch"}`,
-            action: {
-              label: "Create PR",
-              onClick: () => {
-                setShowPRModal(true);
-                send({ type: "github_list_branches" });
-              },
-            },
-            duration: 8000,
-          });
-        }
-      }
-    }
-
-
-    if (data.type === "github_pr_created") {
-      setPrResult({
-        success: data.success,
-        url: data.url,
-        number: data.number,
-        message: data.message,
-      });
-      // Refresh PR status after PR creation
-      if (data.success) {
-        send({ type: "get_pr_status" });
-      }
-    }
-
-    if (data.type === "github_search_results") {
-      setImportSearchResults(data.repos);
-    }
-
-
-    if (data.type === "pr_status") {
-      setPrStatus(data.pr);
-    }
-
-    if (data.type === "merge_pr_result") {
-      if (data.success && !data.autoMergeEnabled) {
-        setPrStatus(null);
-      } else if (data.autoMergeEnabled) {
-        send({ type: "get_pr_status" });
-      }
-    }
-
-    if (data.type === "github_branches") {
-      setPrCurrentBranch(data.current);
-      setPrRemoteBranches(data.remote);
     }
 
     if (data.type === "generated_pr_description") {
@@ -676,24 +613,9 @@ export function useMessageHandler(params: {
       }
     }
 
-    if (data.type === "usage_stats") {
-      setAllUsageStats(data.stats);
-    }
-
     if (data.type === "thread_list") {
       setThreads(data.threads);
       setActiveThreadId(data.activeThreadId);
-    }
-
-    if (data.type === "checkpoint_created") {
-      // Update the thread's checkpoints in local state
-      setThreads((prev) =>
-        prev.map((t) =>
-          t.id === data.threadId
-            ? { ...t, checkpoints: [...t.checkpoints, data.checkpoint] }
-            : t,
-        ),
-      );
     }
 
     if (data.type === "thread_forked") {
@@ -730,19 +652,6 @@ export function useMessageHandler(params: {
       setMessages(loaded);
     }
 
-    if (data.type === "deploy_targets") {
-      setDeployTargets(data.targets);
-    }
-
-    if (data.type === "deploy_config_saved") {
-      // Refresh config status after save
-      send({ type: "get_project_settings" });
-    }
-
-    if (data.type === "project_settings") {
-      setDeployConfigStatus(data.deployConfig);
-    }
-
     if (data.type === "deploy_status") {
       setDeployStatus(data.phase);
       setLastDeployUrl(null);
@@ -758,14 +667,6 @@ export function useMessageHandler(params: {
     if (data.type === "deploy_error") {
       setDeployStatus("error");
       setLastDeployError(data.message);
-    }
-
-    if (data.type === "deploy_history") {
-      setDeployHistory(data.deployments);
-    }
-
-    if (data.type === "feature_list") {
-      setFeatures(data.features);
     }
 
     if (data.type === "message_queued") {
@@ -889,15 +790,6 @@ export function useMessageHandler(params: {
       });
     }
 
-    if (data.type === "reject_changes_complete") {
-      // Clear the diff data and refresh git log
-      setTurnDiff(null);
-      setLastCommitPair(null);
-      setDiffBadgeCount(0);
-      send({ type: "get_git_log" });
-      send({ type: "get_file_tree" });
-    }
-
     if (data.type === "terminal_output") {
       terminalRef.current?.write(data.data);
     }
@@ -939,7 +831,7 @@ export function useMessageHandler(params: {
         return next;
       });
     }
-  }, [lastMessage, send, rightTab, viewingFile, gitCommits, notify, handleSessionResume, navigate,
+  }, [lastMessage, send, apiGet, rightTab, viewingFile, gitCommits, notify, handleSessionResume, navigate,
       setPreview, setSelectedPort, setMessages, setIsLoading, setActivity,
       setGitCommits, setAuthUrl, setSessions, setDocFiles, setDocContent,
       setFileTree, setViewingFileContent, setViewingFileBinary,

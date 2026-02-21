@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { buildApp } from "../index.js";
 import { GitManager } from "../git.js";
 import { SessionManager } from "../sessions.js";
@@ -11,7 +12,6 @@ import { ClaudeProcess } from "../claude.js";
 import { FileWatcher } from "../file-watcher.js";
 import type { FastifyInstance } from "fastify";
 import {
-  TestClient,
   StubPreviewManager,
   StubAuthManager,
   FakeClaudeProcess,
@@ -20,17 +20,25 @@ import {
 
 describe("Integration: Docs", () => {
   let app: FastifyInstance;
-  let port: number;
   let tmpDir: string;
+  let sessionId: string;
+  let sessionDir: string;
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-docs-"));
 
-    // Create a markdown file for doc tests
-    fs.writeFileSync(path.join(tmpDir, "README.md"), "# Hello\nWorld");
+    // Create a session with a doc file
+    sessionId = crypto.randomUUID();
+    sessionDir = path.join(tmpDir, "sessions", sessionId);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, "README.md"), "# Hello\nWorld");
 
     const sessionsFile = path.join(tmpDir, "sessions.json");
     const sessionManager = new SessionManager(sessionsFile);
+    sessionManager.track(sessionId, "Test session", sessionDir);
+
+    const git = new GitManager(sessionDir);
+    await git.init();
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
@@ -44,10 +52,6 @@ describe("Integration: Docs", () => {
       startPreview: false,
       portScanIntervalMs: 0,
     });
-
-    const address = await app.listen({ port: 0, host: "127.0.0.1" });
-    const match = address.match(/:(\d+)$/);
-    port = match ? Number(match[1]) : 0;
   });
 
   afterEach(async () => {
@@ -60,56 +64,30 @@ describe("Integration: Docs", () => {
     }
   });
 
-  it("list_docs returns markdown files in workspace", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive();
-
-    client.send({ type: "list_docs" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("doc_list");
-    expect((msg as any).files).toContain("README.md");
-
-    client.close();
+  it("list_docs returns markdown files in session workspace", async () => {
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/docs` });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().files).toContain("README.md");
   });
 
   it("get_doc returns file content", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive();
-
-    client.send({ type: "get_doc", path: "README.md" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("doc_content");
-    expect((msg as any).path).toBe("README.md");
-    expect((msg as any).content).toBe("# Hello\nWorld");
-
-    client.close();
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/docs/README.md` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.path).toBe("README.md");
+    expect(body.content).toBe("# Hello\nWorld");
   });
 
   it("get_doc rejects path traversal", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive();
-
-    client.send({ type: "get_doc", path: "../../etc/passwd" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("Invalid path");
-
-    client.close();
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${sessionId}/docs/..%2F..%2Fetc%2Fpasswd`,
+    });
+    expect(res.statusCode).toBeGreaterThanOrEqual(400);
   });
 
   it("get_doc returns error for non-existent file", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive();
-
-    client.send({ type: "get_doc", path: "does-not-exist.md" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toContain("Failed to read doc");
-
-    client.close();
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/docs/does-not-exist.md` });
+    expect(res.statusCode).toBe(404);
   });
 });

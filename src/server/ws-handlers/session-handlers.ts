@@ -3,10 +3,7 @@ import type { HandlerContext } from "./types.js";
 import { getErrorMessage } from "../validation.js";
 import { scanFileTree } from "../file-tree.js";
 
-type WsArchiveSession = Extract<WsClientMessage, { type: "archive_session" }>;
-type WsRenameSession = Extract<WsClientMessage, { type: "rename_session" }>;
 type WsGetChatHistory = Extract<WsClientMessage, { type: "get_chat_history" }>;
-type WsGetSessionStatus = Extract<WsClientMessage, { type: "get_session_status" }>;
 
 export async function handleListSessions(ctx: HandlerContext): Promise<void> {
   const sessions = ctx.sessionManager.list();
@@ -39,90 +36,6 @@ export function handleNewSession(ctx: HandlerContext): void {
   ctx.setActiveAppSessionId(undefined);
   ctx.setActiveSessionDir(null);
   ctx.send({ type: "session_list", sessions: ctx.sessionManager.list() });
-}
-
-export async function handleArchiveSession(ctx: HandlerContext, msg: WsArchiveSession): Promise<void> {
-  const sessionToArchive = ctx.sessionManager.get(msg.sessionId);
-
-  // If archiving a worktree session, clean up the worktree + branch
-  if (sessionToArchive?.sessionType === "worktree" && sessionToArchive.workspaceDir) {
-    try {
-      const path = await import("node:path");
-      const fs = await import("node:fs/promises");
-      let repoDir: string | null = null;
-      if (sessionToArchive.remoteUrl) {
-        repoDir = ctx.getSharedRepoDir(sessionToArchive.remoteUrl);
-      } else {
-        // Standalone worktree: read .git file to find main repo
-        const dotGit = path.join(sessionToArchive.workspaceDir, ".git");
-        const stat = await fs.stat(dotGit).catch(() => null);
-        if (stat?.isFile()) {
-          const content = await fs.readFile(dotGit, "utf-8");
-          const match = content.match(/gitdir:\s*(.+)/);
-          if (match) {
-            // gitdir points to <main-repo>/.git/worktrees/<name>
-            const gitDir = path.resolve(path.dirname(dotGit), match[1].trim());
-            const mainGitDir = path.resolve(gitDir, "..", "..");
-            repoDir = path.dirname(mainGitDir);
-          }
-        }
-      }
-      if (repoDir) {
-        const repoGit = ctx.createGitManager(repoDir);
-        await repoGit.removeWorktree(sessionToArchive.workspaceDir);
-        if (sessionToArchive.branch) {
-          await repoGit.deleteBranch(sessionToArchive.branch);
-        }
-      }
-    } catch (err) {
-      const { getErrorMessage } = await import("../validation.js");
-      console.warn("[server] Worktree cleanup failed:", getErrorMessage(err));
-    }
-  }
-
-  // If archiving the active session, clear it and detach
-  if (msg.sessionId === ctx.getActiveAppSessionId()) {
-    ctx.detachFromRunner();
-    ctx.setActiveAppSessionId(undefined);
-    ctx.setActiveSessionDir(null);
-  }
-
-  // Dispose the session's runner (kills agent, cleans up resources)
-  ctx.getRunnerRegistry().dispose(msg.sessionId);
-
-  ctx.sessionManager.archive(msg.sessionId);
-
-  // Clean up the shared repo directory when no non-archived sessions remain for it
-  if (sessionToArchive?.remoteUrl) {
-    const remaining = ctx.sessionManager.findAllByRemoteUrl(sessionToArchive.remoteUrl);
-    if (remaining.length === 0) {
-      try {
-        const fs = await import("node:fs/promises");
-        const repoDir = ctx.getSharedRepoDir(sessionToArchive.remoteUrl);
-        await fs.rm(repoDir, { recursive: true, force: true });
-        console.log("[server] Cleaned up shared repo (no remaining sessions):", repoDir);
-      } catch (err) {
-        const { getErrorMessage } = await import("../validation.js");
-        console.warn("[server] Shared repo cleanup failed:", getErrorMessage(err));
-      }
-    }
-  }
-
-  ctx.send({ type: "session_list", sessions: ctx.sessionManager.list() });
-}
-
-export function handleRenameSession(ctx: HandlerContext, msg: WsRenameSession): void {
-  const trimmed = msg.title.trim();
-  if (!trimmed) {
-    ctx.send({ type: "error", message: "Session title cannot be empty" });
-  } else {
-    const renamed = ctx.sessionManager.rename(msg.sessionId, trimmed);
-    if (renamed) {
-      ctx.send({ type: "session_renamed", session: renamed });
-    } else {
-      ctx.send({ type: "error", message: "Session not found" });
-    }
-  }
 }
 
 export async function handleGetChatHistory(ctx: HandlerContext, msg: WsGetChatHistory): Promise<void> {
@@ -171,13 +84,3 @@ export async function handleGetChatHistory(ctx: HandlerContext, msg: WsGetChatHi
   }
 }
 
-export function handleGetSessionStatus(ctx: HandlerContext, msg: WsGetSessionStatus): void {
-  const registry = ctx.getRunnerRegistry();
-  const runner = registry.get(msg.sessionId);
-  ctx.send({
-    type: "session_status",
-    sessionId: msg.sessionId,
-    running: runner?.running ?? false,
-    queueLength: runner?.queueLength ?? 0,
-  });
-}

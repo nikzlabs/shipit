@@ -17,10 +17,6 @@ export interface WsSwitchThread {
   threadId: string;
 }
 
-export interface WsListThreads {
-  type: "list_threads";
-}
-
 // ---- Thread & checkpoint server messages ----
 
 export interface CheckpointInfo {

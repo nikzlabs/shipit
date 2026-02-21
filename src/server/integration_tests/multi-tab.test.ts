@@ -130,9 +130,8 @@ describe("Integration: multi-tab scenarios", () => {
     claude1.finish("test-mt-1");
 
     // Verify session 2 is still running
-    tab2.send({ type: "get_session_status", sessionId: session2.sessionId } as any);
-    const status2 = await drainUntil(tab2, (m) => m.type === "session_status" && m.sessionId === session2.sessionId);
-    expect(status2!.running).toBe(true);
+    const statusRes = await app.inject({ method: "GET", url: `/api/sessions/${session2.sessionId}/status` });
+    expect(statusRes.json().running).toBe(true);
     expect(claude2.killed).toBe(false);
 
     // Clean up
@@ -282,8 +281,9 @@ describe("Integration: multi-tab scenarios", () => {
     const tab2 = await TestClient.connect(port);
     await tab2.receive(); // preview_status
 
-    // Tab 1 sends full_reset
-    tab1.send({ type: "full_reset" } as any);
+    // Full reset via HTTP — broadcasts full_reset_complete to all WS clients
+    const res = await app.inject({ method: "POST", url: "/api/reset" });
+    expect(res.statusCode).toBe(200);
 
     // Both tabs should receive full_reset_complete (broadcast)
     const tab1Reset = await drainUntil(tab1, (m) => m.type === "full_reset_complete");
@@ -316,18 +316,14 @@ describe("Integration: multi-tab scenarios", () => {
     await drainUntil(tab2, (m) => m.type === "chat_history");
 
     // Tab 1 requests file tree — should see session 1's files
-    tab1.send({ type: "get_file_tree" } as any);
-    const tree1 = await drainUntil(tab1, (m) => m.type === "file_tree");
-    expect(tree1).toBeTruthy();
-    const files1 = JSON.stringify(tree1!.tree);
+    const treeRes1 = await app.inject({ method: "GET", url: `/api/sessions/${session1.sessionId}/files` });
+    const files1 = JSON.stringify(treeRes1.json().tree);
     expect(files1).toContain("file-from-session1.txt");
     expect(files1).not.toContain("file-from-session2.txt");
 
     // Tab 2 requests file tree — should see session 2's files
-    tab2.send({ type: "get_file_tree" } as any);
-    const tree2 = await drainUntil(tab2, (m) => m.type === "file_tree");
-    expect(tree2).toBeTruthy();
-    const files2 = JSON.stringify(tree2!.tree);
+    const treeRes2 = await app.inject({ method: "GET", url: `/api/sessions/${session2.sessionId}/files` });
+    const files2 = JSON.stringify(treeRes2.json().tree);
     expect(files2).toContain("file-from-session2.txt");
     expect(files2).not.toContain("file-from-session1.txt");
 

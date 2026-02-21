@@ -25,15 +25,18 @@ describe("Integration: Usage & cost tracking", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
+  let sessionManager: SessionManager;
   let lastClaude: FakeClaudeProcess = null as any;
 
   beforeEach(async () => {
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-usage-integration-"));
 
+    sessionManager = new SessionManager(path.join(tmpDir, "sessions.json"));
+
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
-      sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
+      sessionManager,
       previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
@@ -65,22 +68,21 @@ describe("Integration: Usage & cost tracking", () => {
   });
 
   it("get_usage_stats returns empty stats initially", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    // Create a tracked session for the HTTP endpoint
+    const sid = "usage-empty-test";
+    const sdir = path.join(tmpDir, "sessions", sid);
+    fs.mkdirSync(sdir, { recursive: true });
+    sessionManager.track(sid, "Test", sdir);
 
-    client.send({ type: "get_usage_stats" } as any);
-    const msg = await client.receive();
-
-    expect(msg).toMatchObject({
-      type: "usage_stats",
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sid}/usage` });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
       stats: {
         sessions: [],
         totalCostUsd: 0,
         totalTurns: 0,
       },
     });
-
-    client.close();
   });
 
   it("usage_update is sent after result event with total_cost_usd", async () => {
@@ -225,19 +227,11 @@ describe("Integration: Usage & cost tracking", () => {
     lastClaude.emit("done", 0);
     await new Promise((r) => setTimeout(r, 100));
 
-    // Now request full stats
-    client.send({ type: "get_usage_stats" } as any);
+    // Now request full stats via HTTP
+    const statsRes = await app.inject({ method: "GET", url: `/api/sessions/${appSessionId}/usage` });
+    expect(statsRes.statusCode).toBe(200);
+    const statsMsg = statsRes.json();
 
-    let statsMsg: any = null;
-    for (let i = 0; i < 10; i++) {
-      const msg = await client.receive();
-      if (msg.type === "usage_stats") {
-        statsMsg = msg;
-        break;
-      }
-    }
-
-    expect(statsMsg).toBeDefined();
     expect(statsMsg.stats.totalCostUsd).toBeCloseTo(0.55);
     expect(statsMsg.stats.totalTurns).toBe(1);
     expect(statsMsg.stats.sessions).toHaveLength(1);
@@ -307,31 +301,14 @@ describe("Integration: Usage & cost tracking", () => {
     lastClaude.emit("done", 0);
     await new Promise((r) => setTimeout(r, 100));
 
-    // Archive the session
-    client.send({ type: "archive_session", sessionId: appSessionId });
+    // Archive the session via HTTP
+    const archiveRes = await app.inject({ method: "DELETE", url: `/api/sessions/${appSessionId}` });
+    expect(archiveRes.statusCode).toBe(200);
 
-    // Drain messages until we get session_list
-    let sessionList: any = null;
-    for (let i = 0; i < 10; i++) {
-      const msg = await client.receive();
-      if (msg.type === "session_list") {
-        sessionList = msg;
-        break;
-      }
-    }
-    expect(sessionList).toBeDefined();
-
-    // Verify usage is still present (archive preserves data)
-    client.send({ type: "get_usage_stats" } as any);
-    let statsMsg: any = null;
-    for (let i = 0; i < 10; i++) {
-      const msg = await client.receive();
-      if (msg.type === "usage_stats") {
-        statsMsg = msg;
-        break;
-      }
-    }
-    expect(statsMsg.stats.totalTurns).toBe(1);
+    // Verify usage is still present (archive preserves data) via HTTP
+    const statsRes = await app.inject({ method: "GET", url: `/api/sessions/${appSessionId}/usage` });
+    expect(statsRes.statusCode).toBe(200);
+    expect(statsRes.json().stats.totalTurns).toBe(1);
 
     client.close();
   });

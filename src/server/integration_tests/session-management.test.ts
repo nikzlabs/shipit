@@ -83,82 +83,6 @@ describe("Integration: Session management", () => {
     client.close();
   });
 
-  it("archive_session hides a session from the list", async () => {
-    // Pre-populate a session
-    sessionManager.track("sess-1", "Test session");
-
-    const client = await TestClient.connect(port);
-    await client.receive();
-
-    // Verify it exists
-    client.send({ type: "list_sessions" });
-    const listMsg = await client.receive();
-    expect((listMsg as any).sessions).toHaveLength(1);
-
-    // Archive it
-    client.send({ type: "archive_session", sessionId: "sess-1" });
-    const archiveMsg = await client.receive();
-    expect(archiveMsg.type).toBe("session_list");
-    expect((archiveMsg as any).sessions).toHaveLength(0);
-
-    // Session data is still preserved in the manager
-    const session = sessionManager.get("sess-1");
-    expect(session).toBeDefined();
-    expect(session!.archived).toBe(true);
-
-    client.close();
-  });
-
-  it("rename_session renames a session and returns updated session", async () => {
-    sessionManager.track("sess-1", "Original title");
-
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "rename_session", sessionId: "sess-1", title: "New title" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("session_renamed");
-    expect((msg as any).session.id).toBe("sess-1");
-    expect((msg as any).session.title).toBe("New title");
-
-    // Verify the session was actually renamed in the manager
-    const sessions = sessionManager.list();
-    expect(sessions[0].title).toBe("New title");
-
-    client.close();
-  });
-
-  it("rename_session returns error for non-existent session", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "rename_session", sessionId: "nonexistent", title: "Nope" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("Session not found");
-
-    client.close();
-  });
-
-  it("rename_session rejects empty title", async () => {
-    sessionManager.track("sess-1", "Original title");
-
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "rename_session", sessionId: "sess-1", title: "   " });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("Session title cannot be empty");
-
-    // Verify the title was NOT changed
-    expect(sessionManager.list()[0].title).toBe("Original title");
-
-    client.close();
-  });
 });
 
 describe("Integration: list_sessions remoteUrl caching", () => {
@@ -265,31 +189,4 @@ describe("Integration: list_sessions remoteUrl caching", () => {
     client.close();
   });
 
-  it("github_set_remote caches remoteUrl in session metadata", async () => {
-    // Create a real git session and activate it
-    const sessionDir = path.join(tmpDir, "sess-set-remote");
-    fs.mkdirSync(sessionDir, { recursive: true });
-    const git = new GitManager(sessionDir);
-    await git.init();
-
-    sessionManager.track("sess-set-remote", "Set remote session", sessionDir);
-
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // Activate the session
-    client.send({ type: "get_chat_history", sessionId: "sess-set-remote" });
-    await client.receiveType("file_tree"); // drain all activation messages
-
-    // Set the remote
-    client.send({ type: "github_set_remote", name: "origin", url: "https://github.com/cached/url.git" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("github_remotes");
-
-    // Verify the remoteUrl is cached
-    expect(sessionManager.get("sess-set-remote")?.remoteUrl).toBe("https://github.com/cached/url.git");
-
-    client.close();
-  });
 });

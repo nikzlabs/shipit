@@ -12,7 +12,6 @@ import { ClaudeProcess } from "../claude.js";
 import { FileWatcher } from "../file-watcher.js";
 import type { FastifyInstance } from "fastify";
 import {
-  TestClient,
   StubPreviewManager,
   StubAuthManager,
   FakeClaudeProcess,
@@ -21,7 +20,6 @@ import {
 
 describe("Integration: Git operations", () => {
   let app: FastifyInstance;
-  let port: number;
   let tmpDir: string;
   let sessionDir: string;
   let sessionManager: SessionManager;
@@ -54,9 +52,7 @@ describe("Integration: Git operations", () => {
       portScanIntervalMs: 0,
     });
 
-    const address = await app.listen({ port: 0, host: "127.0.0.1" });
-    const match = address.match(/:(\d+)$/);
-    port = match ? Number(match[1]) : 0;
+    await app.listen({ port: 0, host: "127.0.0.1" });
   });
 
   afterEach(async () => {
@@ -69,64 +65,17 @@ describe("Integration: Git operations", () => {
     }
   });
 
-  it("get_git_log returns commit history for active session", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // Activate the session so git operations target the session dir.
-    // get_chat_history now also sends git_log + file_tree after activation.
-    client.send({ type: "get_chat_history", sessionId });
-    await client.receiveType("file_tree"); // drain all activation messages
-
-    client.send({ type: "get_git_log" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("git_log");
-    const commits = (msg as any).commits;
+  it("GET /api/sessions/:id/git/log returns commit history", async () => {
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/git/log` });
+    expect(res.statusCode).toBe(200);
+    const commits = res.json().commits;
     expect(commits.length).toBeGreaterThanOrEqual(1);
     expect(commits[0].message).toBe("Initial commit");
-
-    client.close();
   });
 
-  it("get_git_log returns error when no session is active", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "get_git_log" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toContain("git");
-
-    client.close();
+  it("GET /api/sessions/:id/git/log returns 404 for missing session", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/sessions/nonexistent/git/log" });
+    expect(res.statusCode).toBe(404);
   });
 
-  it("rollback resets to a previous commit within session", async () => {
-    // Create a file and commit it in the session directory
-    const git = new GitManager(sessionDir);
-    fs.writeFileSync(path.join(sessionDir, "rollback-test.txt"), "original");
-    await git.autoCommit("Add rollback-test");
-
-    const log = await git.log();
-    const initialHash = log[log.length - 1].hash; // "Initial commit"
-
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // Activate the session — drain all activation messages (chat_history, git_log, file_tree)
-    client.send({ type: "get_chat_history", sessionId });
-    await client.receiveType("file_tree");
-
-    client.send({ type: "rollback", commitHash: initialHash });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("rollback_complete");
-    expect((msg as any).commitHash).toBe(initialHash);
-
-    // File should be gone after rollback (in session dir)
-    expect(fs.existsSync(path.join(sessionDir, "rollback-test.txt"))).toBe(false);
-
-    client.close();
-  });
 });

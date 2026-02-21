@@ -2,60 +2,8 @@ import type { WsClientMessage } from "../types.js";
 import type { HandlerContext } from "./types.js";
 import { getErrorMessage } from "../validation.js";
 
-type WsCreateCheckpoint = Extract<WsClientMessage, { type: "create_checkpoint" }>;
 type WsForkThread = Extract<WsClientMessage, { type: "fork_thread" }>;
 type WsSwitchThread = Extract<WsClientMessage, { type: "switch_thread" }>;
-
-export function handleListThreads(ctx: HandlerContext): void {
-  const activeAppSessionId = ctx.getActiveAppSessionId();
-  if (!activeAppSessionId) {
-    ctx.send({ type: "error", message: "No active session" });
-    return;
-  }
-  const data = ctx.threadManager.listThreads(activeAppSessionId);
-  ctx.send({ type: "thread_list", threads: data.threads, activeThreadId: data.activeThreadId });
-}
-
-export async function handleCreateCheckpoint(ctx: HandlerContext, msg: WsCreateCheckpoint): Promise<void> {
-  const activeAppSessionId = ctx.getActiveAppSessionId();
-  if (!activeAppSessionId) {
-    ctx.send({ type: "error", message: "No active session" });
-    return;
-  }
-  const label = typeof msg.label === "string" ? msg.label.trim() : undefined;
-  if (label !== undefined && label.length > 200) {
-    ctx.send({ type: "error", message: "Checkpoint label too long (max 200 characters)" });
-    return;
-  }
-
-  try {
-    const git = ctx.getActiveGitManager();
-    const commits = await git.log(1);
-    const commitHash = commits.length > 0 ? commits[0].hash : "";
-    const messages = ctx.chatHistoryManager.load(activeAppSessionId);
-
-    const checkpoint = ctx.threadManager.createCheckpoint(
-      activeAppSessionId,
-      messages.length,
-      commitHash,
-      label || undefined,
-    );
-
-    if (!checkpoint) {
-      ctx.send({ type: "error", message: "Failed to create checkpoint — no active thread" });
-      return;
-    }
-
-    const activeThread = ctx.threadManager.getActiveThread(activeAppSessionId);
-    ctx.send({
-      type: "checkpoint_created",
-      checkpoint,
-      threadId: activeThread?.id ?? "",
-    });
-  } catch (err) {
-    ctx.send({ type: "error", message: `Failed to create checkpoint: ${getErrorMessage(err)}` });
-  }
-}
 
 export async function handleForkThread(ctx: HandlerContext, msg: WsForkThread): Promise<void> {
   const activeAppSessionId = ctx.getActiveAppSessionId();

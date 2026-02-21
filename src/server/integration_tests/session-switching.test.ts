@@ -71,20 +71,24 @@ describe("Integration: Session isolation — switching & resume", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    // Create a session via template
-    client.send({ type: "apply_template", templateId: "static-html" });
-    const sessionMsg = await client.receive();
-    expect(sessionMsg.type).toBe("session_started");
-    const session = (sessionMsg as any).session;
-    await client.receive(); // template_applied
+    // Create a session via template using HTTP
+    const templateRes = await app.inject({
+      method: "POST",
+      url: "/api/sessions/new/template",
+      payload: { templateId: "static-html" },
+    });
+    expect(templateRes.statusCode).toBe(200);
+    const session = templateRes.json().session;
 
     // Verify directory exists
     expect(fs.existsSync(session.workspaceDir)).toBe(true);
 
-    // Archive the session
-    client.send({ type: "archive_session", sessionId: session.id });
-    const archiveMsg = await client.receive();
-    expect(archiveMsg.type).toBe("session_list");
+    // Archive the session via HTTP
+    const archiveRes = await app.inject({
+      method: "DELETE",
+      url: `/api/sessions/${session.id}`,
+    });
+    expect(archiveRes.statusCode).toBe(200);
 
     // Verify directory is still present (archive preserves data)
     expect(fs.existsSync(session.workspaceDir)).toBe(true);
@@ -96,24 +100,25 @@ describe("Integration: Session isolation — switching & resume", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    // Create session A via template
-    client.send({ type: "apply_template", templateId: "static-html" });
-    const sessionAMsg = await client.receive(); // session_started
-    const sessionA = (sessionAMsg as any).session;
-    await client.receive(); // template_applied
+    // Create session A via template using HTTP
+    const resA = await app.inject({
+      method: "POST",
+      url: "/api/sessions/new/template",
+      payload: { templateId: "static-html" },
+    });
+    expect(resA.statusCode).toBe(200);
+    const sessionA = resA.json().session;
 
     // Write a marker file in session A's directory
     fs.writeFileSync(path.join(sessionA.workspaceDir, "marker-a.txt"), "session A");
 
-    // Start new session
-    client.send({ type: "new_session" });
-    await client.receive(); // session_list
-
-    // Create session B
-    client.send({ type: "apply_template", templateId: "react-vite-ts" });
-    const sessionBMsg = await client.receive(); // session_started
-    expect(sessionBMsg.type).toBe("session_started");
-    await client.receive(); // template_applied
+    // Create session B via template using HTTP
+    const resB = await app.inject({
+      method: "POST",
+      url: "/api/sessions/new/template",
+      payload: { templateId: "react-vite-ts" },
+    });
+    expect(resB.statusCode).toBe(200);
 
     // Switch back to session A — activateSession broadcasts preview_status + clear_logs,
     // then the server sends chat_history, git_log, and file_tree automatically.
@@ -141,25 +146,28 @@ describe("Integration: Session isolation — switching & resume", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    // Create session A via template and commit a marker file
-    client.send({ type: "apply_template", templateId: "static-html" });
-    const sessionAMsg = await client.receive(); // session_started
-    const sessionA = (sessionAMsg as any).session;
-    await client.receive(); // template_applied
+    // Create session A via template using HTTP
+    const resA = await app.inject({
+      method: "POST",
+      url: "/api/sessions/new/template",
+      payload: { templateId: "static-html" },
+    });
+    expect(resA.statusCode).toBe(200);
+    const sessionA = resA.json().session;
 
     // Add a unique commit in session A
     const gitA = new GitManager(sessionA.workspaceDir);
     fs.writeFileSync(path.join(sessionA.workspaceDir, "a-only.txt"), "session A");
     await gitA.autoCommit("Commit from session A");
 
-    // Create session B
-    client.send({ type: "new_session" });
-    await client.receive(); // session_list
-
-    client.send({ type: "apply_template", templateId: "react-vite-ts" });
-    const sessionBMsg = await client.receive(); // session_started
-    const sessionB = (sessionBMsg as any).session;
-    await client.receive(); // template_applied
+    // Create session B via template using HTTP
+    const resB = await app.inject({
+      method: "POST",
+      url: "/api/sessions/new/template",
+      payload: { templateId: "react-vite-ts" },
+    });
+    expect(resB.statusCode).toBe(200);
+    const sessionB = resB.json().session;
 
     // Add a unique commit in session B
     const gitB = new GitManager(sessionB.workspaceDir);
@@ -239,15 +247,14 @@ describe("Integration: Session isolation — switching & resume", () => {
     // Write a file in session A's workspace (simulates agent writing code)
     fs.writeFileSync(path.join(sessionA.workspaceDir, "from-agent-a.txt"), "session A output");
 
-    // Now create session B while agent A is still running
-    client.send({ type: "new_session" });
-    await client.receiveType("session_list");
-
-    // Apply a template to create session B with its own workspace
-    client.send({ type: "apply_template", templateId: "static-html" });
-    const sessionBMsg = await client.receiveType("session_started");
-    const sessionB = (sessionBMsg as any).session;
-    await client.receiveType("template_applied");
+    // Now create session B while agent A is still running (via HTTP)
+    const resBTemplate = await app.inject({
+      method: "POST",
+      url: "/api/sessions/new/template",
+      payload: { templateId: "static-html" },
+    });
+    expect(resBTemplate.statusCode).toBe(200);
+    const sessionB = resBTemplate.json().session;
 
     // Verify sessions are different directories
     expect(sessionA.workspaceDir).not.toBe(sessionB.workspaceDir);

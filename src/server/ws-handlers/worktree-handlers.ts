@@ -74,38 +74,6 @@ export async function handleForkSession(ctx: HandlerContext, msg: WsForkSession)
   }
 }
 
-export async function handleListWorktrees(ctx: HandlerContext): Promise<void> {
-  const activeSessionDir = ctx.getActiveSessionDir();
-  const activeAppSessionId = ctx.getActiveAppSessionId();
-  if (!activeSessionDir || !activeAppSessionId) {
-    ctx.send({ type: "worktree_list", worktrees: [] });
-    return;
-  }
-
-  try {
-    // Find all sessions sharing the same repo
-    const activeSession = ctx.sessionManager.get(activeAppSessionId);
-    const siblings = activeSession?.remoteUrl
-      ? ctx.sessionManager.findAllByRemoteUrl(activeSession.remoteUrl)
-      : [activeSession].filter(Boolean) as import("../types.js").SessionInfo[];
-
-    const worktrees: Array<{ sessionId: string; branch: string; path: string }> = [];
-    for (const s of siblings) {
-      if (s.workspaceDir && s.branch) {
-        worktrees.push({
-          sessionId: s.id,
-          branch: s.branch,
-          path: s.workspaceDir,
-        });
-      }
-    }
-
-    ctx.send({ type: "worktree_list", worktrees });
-  } catch (err) {
-    ctx.send({ type: "error", message: `Failed to list worktrees: ${getErrorMessage(err)}` });
-  }
-}
-
 export async function handleMergeSession(ctx: HandlerContext, msg: WsMergeSession): Promise<void> {
   const sourceSessionId = typeof msg.sourceSessionId === "string" ? msg.sourceSessionId.trim() : "";
   if (!sourceSessionId) {

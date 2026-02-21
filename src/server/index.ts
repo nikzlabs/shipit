@@ -31,20 +31,17 @@ import type { AgentId, AgentEvent, AgentProcess } from "./agents/agent-process.j
 import type { WsClientMessage, WsServerMessage, WsLogEntry } from "./types.js";
 import { getErrorMessage } from "./validation.js";
 import type { HandlerContext } from "./ws-handlers/types.js";
-import * as gitHandlers from "./ws-handlers/git-handlers.js";
-import * as fileHandlers from "./ws-handlers/file-handlers.js";
 import * as terminalHandlers from "./ws-handlers/terminal-handlers.js";
 import * as settingsHandlers from "./ws-handlers/settings-handlers.js";
 import * as miscHandlers from "./ws-handlers/misc-handlers.js";
 import * as deployHandlers from "./ws-handlers/deploy-handlers.js";
-import * as githubHandlers from "./ws-handlers/github-handlers.js";
 import * as prHandlers from "./ws-handlers/pr-handlers.js";
 import * as sessionHandlers from "./ws-handlers/session-handlers.js";
 import * as worktreeHandlers from "./ws-handlers/worktree-handlers.js";
 import * as templateHandlers from "./ws-handlers/template-handlers.js";
 import * as threadHandlers from "./ws-handlers/thread-handlers.js";
-import * as diffHandlers from "./ws-handlers/diff-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
+import { registerApiRoutes } from "./api-routes.js";
 export { getContextWindowSize } from "./ws-handlers/send-message.js";
 
 const WORKSPACE = "/workspace";
@@ -557,25 +554,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     previewManager.start(workspaceDir);
   }
 
-  // Serve the built client files from dist/client/
-  if (shouldServeStatic) {
-    const clientDir = path.resolve(process.cwd(), "dist/client");
-    try {
-      await app.register(fastifyStatic, {
-        root: clientDir,
-        prefix: "/",
-        wildcard: false,
-      });
-      // SPA fallback — serve index.html for non-file routes
-      app.setNotFoundHandler((_req, reply) => {
-        reply.sendFile("index.html", clientDir);
-      });
-    } catch {
-      // Client build may not exist during dev; that's fine
-      console.log("[server] No built client found at", clientDir);
-    }
-  }
-
   /**
    * Create a new isolated session directory with its own git repo.
    * Returns the app-generated session ID and workspace directory path.
@@ -616,6 +594,49 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     const hash = crypto.createHash("sha256").update(repoUrl).digest("hex").slice(0, 16);
     return path.join(reposRoot, hash);
   };
+
+  // ---- HTTP API routes ----
+  await registerApiRoutes(app, {
+    sessionManager,
+    createGitManager,
+    agentRegistry,
+    githubAuthManager,
+    credentialStore,
+    defaultAgentId,
+    workspaceDir,
+    threadManager,
+    deploymentManager,
+    deploymentStore,
+    featureManager,
+    usageManager,
+    runnerRegistry,
+    chatHistoryManager,
+    previewManager,
+    authManager,
+    broadcast,
+    broadcastLog,
+    getSharedRepoDir,
+    createSessionDir,
+  });
+
+  // Serve the built client files from dist/client/
+  if (shouldServeStatic) {
+    const clientDir = path.resolve(process.cwd(), "dist/client");
+    try {
+      await app.register(fastifyStatic, {
+        root: clientDir,
+        prefix: "/",
+        wildcard: false,
+      });
+      // SPA fallback — serve index.html for non-file routes
+      app.setNotFoundHandler((_req, reply) => {
+        reply.sendFile("index.html", clientDir);
+      });
+    } catch {
+      // Client build may not exist during dev; that's fine
+      console.log("[server] No built client found at", clientDir);
+    }
+  }
 
   // ---- WebSocket route ----
   app.get("/ws", { websocket: true }, (socket) => {
@@ -920,13 +941,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       }
 
       switch (msg.type) {
-        // ---- Git operations ----
-        case "get_git_log": return gitHandlers.handleGetGitLog(ctx);
-        case "rollback": return gitHandlers.handleRollback(ctx, msg);
-
         // ---- Diff review operations ----
-        case "get_turn_diff": return diffHandlers.handleGetTurnDiff(ctx, msg);
-        case "reject_changes": return diffHandlers.handleRejectChanges(ctx, msg);
         case "diff_comment": {
           // Format comments into a prompt and send to Claude (like init_preview_config)
           const commentLines = msg.comments.map((c: { file: string; line: number; text: string }) =>
@@ -937,12 +952,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           return;
         }
 
-        // ---- File operations ----
-        case "get_file_tree": return fileHandlers.handleGetFileTree(ctx);
-        case "get_file_content": return fileHandlers.handleGetFileContent(ctx, msg);
-        case "list_docs": return fileHandlers.handleListDocs(ctx);
-        case "get_doc": return fileHandlers.handleGetDoc(ctx, msg);
-
         // ---- Terminal operations ----
         case "terminal_start": return terminalHandlers.handleTerminalStart(ctx);
         case "terminal_input": return terminalHandlers.handleTerminalInput(ctx, msg);
@@ -950,78 +959,50 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         case "clear_logs": return terminalHandlers.handleClearLogs(ctx);
 
         // ---- Settings operations ----
-        case "set_api_key": return settingsHandlers.handleSetApiKey(ctx, msg);
-        case "clear_api_key": return settingsHandlers.handleClearApiKey(ctx);
+        case "set_agent": {
+          // Per-connection state: must stay on WS (HTTP can't set WS connection state)
+          const agentId = msg.agentId;
+          const info = agentRegistry.get(agentId);
+          if (!info) { send({ type: "error", message: `Unknown agent: ${agentId}` }); return; }
+          if (!info.installed) { send({ type: "error", message: `${info.name} CLI is not installed` }); return; }
+          if (!info.authConfigured) {
+            const envKey = agentId === "codex" ? "OPENAI_API_KEY" : "";
+            send({ type: "error", message: `${envKey || "API key"} is not set. Add it in Settings → Agents.` });
+            return;
+          }
+          ctx.setActiveAgentId(agentId);
+          return;
+        }
         case "start_auth": return settingsHandlers.handleStartAuth(ctx);
         case "paste_auth_code": return settingsHandlers.handlePasteAuthCode(ctx, msg);
-        case "set_git_identity": return settingsHandlers.handleSetGitIdentity(ctx, msg);
-        case "get_global_settings": return settingsHandlers.handleGetGlobalSettings(ctx);
-        case "save_global_settings": return settingsHandlers.handleSaveGlobalSettings(ctx, msg);
-        case "set_agent": {
-          const result = settingsHandlers.handleSetAgent(ctx, msg);
-          if (result) ctx.setActiveAgentId(result.newAgentId as AgentId);
-          break;
-        }
-        case "list_agents": return settingsHandlers.handleListAgents(ctx);
-        case "set_agent_env": return settingsHandlers.handleSetAgentEnv(ctx, msg);
-        case "list_features": return settingsHandlers.handleListFeatures(ctx);
-        case "get_usage_stats": return settingsHandlers.handleGetUsageStats(ctx);
 
         // ---- Session operations ----
         case "list_sessions": return sessionHandlers.handleListSessions(ctx);
         case "new_session": return sessionHandlers.handleNewSession(ctx);
-        case "archive_session": return sessionHandlers.handleArchiveSession(ctx, msg);
-        case "rename_session": return sessionHandlers.handleRenameSession(ctx, msg);
         case "get_chat_history": return sessionHandlers.handleGetChatHistory(ctx, msg);
-        case "get_session_status": return sessionHandlers.handleGetSessionStatus(ctx, msg);
 
         // ---- Worktree operations ----
         case "fork_session": return worktreeHandlers.handleForkSession(ctx, msg);
-        case "list_worktrees": return worktreeHandlers.handleListWorktrees(ctx);
         case "merge_session": return worktreeHandlers.handleMergeSession(ctx, msg);
 
         // ---- Template operations ----
         case "list_templates": return templateHandlers.handleListTemplates(ctx);
-        case "apply_template": return templateHandlers.handleApplyTemplate(ctx, msg);
         case "home_create_repo_with_template": return templateHandlers.handleHomeCreateRepoWithTemplate(ctx, msg);
 
-        // ---- GitHub operations ----
-        case "github_set_token": return githubHandlers.handleGithubSetToken(ctx, msg);
-        case "github_get_status": return githubHandlers.handleGithubGetStatus(ctx);
-        case "github_push": return githubHandlers.handleGithubPush(ctx, msg);
-        case "github_pull": return githubHandlers.handleGithubPull(ctx, msg);
-        case "github_set_remote": return githubHandlers.handleGithubSetRemote(ctx, msg);
-        case "github_get_remotes": return githubHandlers.handleGithubGetRemotes(ctx);
-        case "github_logout": return githubHandlers.handleGithubLogout(ctx);
-        case "github_search_repos": return githubHandlers.handleGithubSearchRepos(ctx, msg);
-        case "github_list_branches": return githubHandlers.handleGithubListBranches(ctx);
-
         // ---- PR operations ----
-        case "github_create_pr": return prHandlers.handleGithubCreatePr(ctx, msg);
-        case "get_pr_status": return prHandlers.handleGetPrStatus(ctx);
-        case "merge_pr": return prHandlers.handleMergePr(ctx, msg);
         case "generate_pr_description": return prHandlers.handleGeneratePrDescription(ctx);
 
         // ---- Deploy operations ----
-        case "list_deploy_targets": return deployHandlers.handleListDeployTargets(ctx);
-        case "deploy_configure": return deployHandlers.handleDeployConfigure(ctx, msg);
         case "initiate_deploy": return deployHandlers.handleInitiateDeploy(ctx, msg);
-        case "get_deploy_history": return deployHandlers.handleGetDeployHistory(ctx);
         case "cancel_deploy": return deployHandlers.handleCancelDeploy(ctx);
-        case "get_project_settings": return deployHandlers.handleGetProjectSettings(ctx);
-        case "delete_deploy_config": return deployHandlers.handleDeleteDeployConfig(ctx, msg);
 
         // ---- Thread operations ----
-        case "list_threads": return threadHandlers.handleListThreads(ctx);
-        case "create_checkpoint": return threadHandlers.handleCreateCheckpoint(ctx, msg);
         case "fork_thread": return threadHandlers.handleForkThread(ctx, msg);
         case "switch_thread": return threadHandlers.handleSwitchThread(ctx, msg);
 
         // ---- Misc operations ----
-        case "preview_error": return miscHandlers.handlePreviewError(ctx, msg);
         case "cancel_queued_message": return miscHandlers.handleCancelQueuedMessage(ctx, msg);
         case "interrupt_claude": return miscHandlers.handleInterruptClaude(ctx);
-        case "full_reset": return miscHandlers.handleFullReset(ctx);
 
         // ---- Preview config ----
         case "init_preview_config": {

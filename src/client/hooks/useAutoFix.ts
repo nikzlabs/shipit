@@ -5,6 +5,7 @@ import type { WsClientMessage } from "../../server/types.js";
 import type { ChatMessage } from "../components/MessageList.js";
 import type { StreamingActivity } from "../components/StreamingIndicator.js";
 import type { Dispatch, SetStateAction, MutableRefObject } from "react";
+import { useApi } from "./useApi.js";
 
 export function useAutoFix(params: {
   previewErrors: PreviewError[];
@@ -17,6 +18,7 @@ export function useAutoFix(params: {
   setActivity: Dispatch<SetStateAction<StreamingActivity | undefined>>;
 }) {
   const { previewErrors, isLoading, status, send, sessionIdRef, setMessages, setIsLoading, setActivity } = params;
+  const { post: apiPost } = useApi();
 
   const [autoFixEnabled, setAutoFixEnabled] = useState(false);
   const autoFixRetriesRef = useRef(0);
@@ -26,17 +28,14 @@ export function useAutoFix(params: {
 
   // Forward preview errors to the server for terminal log relay
   useEffect(() => {
-    if (previewErrors.length === 0 || status !== "open") return;
+    if (previewErrors.length === 0 || status !== "open" || !sessionIdRef.current) return;
     // Send the latest error to the server
     const latest = previewErrors[previewErrors.length - 1];
-    send({
-      type: "preview_error",
+    apiPost(`/api/sessions/${sessionIdRef.current}/preview-errors`, {
       message: latest.message,
       stack: latest.stack,
-      source: latest.source,
-      line: latest.line,
-    });
-  }, [previewErrors.length, status, send, previewErrors]);
+    }).catch(() => {});
+  }, [previewErrors.length, status, apiPost, sessionIdRef, previewErrors]);
 
   const handleSendAutoFix = useCallback(
     (text: string) => {

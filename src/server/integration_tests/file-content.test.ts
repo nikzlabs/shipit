@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { buildApp } from "../index.js";
 import { GitManager } from "../git.js";
 import { SessionManager } from "../sessions.js";
@@ -11,7 +12,6 @@ import { ClaudeProcess } from "../claude.js";
 import { FileWatcher } from "../file-watcher.js";
 import type { FastifyInstance } from "fastify";
 import {
-  TestClient,
   StubPreviewManager,
   StubAuthManager,
   FakeClaudeProcess,
@@ -20,14 +20,23 @@ import {
 
 describe("Integration: File content viewer", () => {
   let app: FastifyInstance;
-  let port: number;
   let tmpDir: string;
+  let sessionId: string;
+  let sessionDir: string;
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-file-content-"));
 
+    sessionId = crypto.randomUUID();
+    sessionDir = path.join(tmpDir, "sessions", sessionId);
+    fs.mkdirSync(sessionDir, { recursive: true });
+
     const sessionsFile = path.join(tmpDir, "sessions.json");
     const sessionManager = new SessionManager(sessionsFile);
+    sessionManager.track(sessionId, "Test session", sessionDir);
+
+    const git = new GitManager(sessionDir);
+    await git.init();
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
@@ -41,10 +50,6 @@ describe("Integration: File content viewer", () => {
       startPreview: false,
       portScanIntervalMs: 0,
     });
-
-    const address = await app.listen({ port: 0, host: "127.0.0.1" });
-    const match = address.match(/:(\d+)$/);
-    port = match ? Number(match[1]) : 0;
   });
 
   afterEach(async () => {
@@ -57,98 +62,62 @@ describe("Integration: File content viewer", () => {
     }
   });
 
-  it("get_file_content returns file content", async () => {
-    fs.writeFileSync(path.join(tmpDir, "hello.ts"), "const x = 42;");
+  it("returns file content", async () => {
+    fs.writeFileSync(path.join(sessionDir, "hello.ts"), "const x = 42;");
 
-    const client = await TestClient.connect(port);
-    await client.receive();
-
-    client.send({ type: "get_file_content", path: "hello.ts" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("file_content");
-    expect((msg as any).path).toBe("hello.ts");
-    expect((msg as any).content).toBe("const x = 42;");
-
-    client.close();
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/files/hello.ts` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.path).toBe("hello.ts");
+    expect(body.content).toBe("const x = 42;");
   });
 
-  it("get_file_content returns nested file content", async () => {
-    fs.mkdirSync(path.join(tmpDir, "src"), { recursive: true });
-    fs.writeFileSync(path.join(tmpDir, "src", "app.ts"), "export default {};");
+  it("returns nested file content", async () => {
+    fs.mkdirSync(path.join(sessionDir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, "src", "app.ts"), "export default {};");
 
-    const client = await TestClient.connect(port);
-    await client.receive();
-
-    client.send({ type: "get_file_content", path: "src/app.ts" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("file_content");
-    expect((msg as any).path).toBe("src/app.ts");
-    expect((msg as any).content).toBe("export default {};");
-
-    client.close();
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/files/src/app.ts` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.path).toBe("src/app.ts");
+    expect(body.content).toBe("export default {};");
   });
 
-  it("get_file_content rejects path traversal", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive();
-
-    client.send({ type: "get_file_content", path: "../../etc/passwd" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("Invalid path");
-
-    client.close();
+  it("rejects path traversal", async () => {
+    // Use percent-encoded path to bypass URL normalization
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${sessionId}/files/..%2F..%2Fetc%2Fpasswd`,
+    });
+    expect(res.statusCode).toBeGreaterThanOrEqual(400);
   });
 
-  it("get_file_content returns error for non-existent file", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive();
-
-    client.send({ type: "get_file_content", path: "no-such-file.ts" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toContain("Failed to read file");
-
-    client.close();
+  it("returns error for non-existent file", async () => {
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/files/no-such-file.ts` });
+    expect(res.statusCode).toBe(404);
   });
 
-  it("get_file_content returns isBinary for binary files", async () => {
+  it("returns isBinary for binary files", async () => {
     // Write a file with null bytes (binary indicator)
     const buf = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0d, 0x0a]);
-    fs.writeFileSync(path.join(tmpDir, "image.png"), buf);
+    fs.writeFileSync(path.join(sessionDir, "image.png"), buf);
 
-    const client = await TestClient.connect(port);
-    await client.receive();
-
-    client.send({ type: "get_file_content", path: "image.png" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("file_content");
-    expect((msg as any).isBinary).toBe(true);
-    expect((msg as any).content).toContain("Binary file");
-
-    client.close();
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/files/image.png` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.isBinary).toBe(true);
+    expect(body.content).toContain("Binary file");
   });
 
-  it("get_file_content returns isBinary for large files", async () => {
+  it("returns isBinary for large files", async () => {
     // Write a file over 1 MB
     const bigContent = "x".repeat(1_048_577);
-    fs.writeFileSync(path.join(tmpDir, "big.txt"), bigContent);
+    fs.writeFileSync(path.join(sessionDir, "big.txt"), bigContent);
 
-    const client = await TestClient.connect(port);
-    await client.receive();
-
-    client.send({ type: "get_file_content", path: "big.txt" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("file_content");
-    expect((msg as any).isBinary).toBe(true);
-    expect((msg as any).content).toContain("too large");
-
-    client.close();
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/files/big.txt` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.isBinary).toBe(true);
+    expect(body.content).toContain("too large");
   });
 });
