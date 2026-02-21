@@ -454,6 +454,10 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
 
     const claude1 = await waitForClaude(() => lastClaude);
     claude1.finish();
+    // Wait for the done handler to fully complete (auto-commit, port scan, etc.)
+    // before starting the second session — prevents git lock contention on the
+    // shared repo between the first session's cleanup and the second worktree add.
+    await client1.receiveType("session_agent_finished", 5000);
     try { while (true) { await client1.receive(500); } } catch { /* drain */ }
     client1.close();
 
