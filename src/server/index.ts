@@ -6,7 +6,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { ClaudeProcess } from "./claude.js";
 import { PreviewManager } from "./preview-manager.js";
-import { GitManager } from "./git.js";
+import { GitManager, ensureGlobalGitIdentity } from "./git.js";
 import { AuthManager } from "./auth.js";
 import { GitHubAuthManager } from "./github-auth.js";
 import { SessionManager } from "./sessions.js";
@@ -173,6 +173,10 @@ export interface AppDeps {
  * to the app without spawning real child processes.
  */
 export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
+  // Ensure global ~/.gitconfig has a fallback identity so git commit always
+  // works. Individual session repos override via setIdentity() in local config.
+  ensureGlobalGitIdentity();
+
   const {
     claudeFactory = () => new ClaudeProcess(),
     defaultAgentId = "claude" as AgentId,

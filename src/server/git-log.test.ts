@@ -57,6 +57,6 @@ describe("GitManager: log", () => {
     expect(commit.hash).toMatch(/^[a-f0-9]+$/);
     expect(commit.message).toBe("Test commit");
     expect(commit.date).toBeTruthy();
-    expect(commit.author).toBe("ShipIt");
+    expect(commit.author).toBeTruthy();
   });
 });

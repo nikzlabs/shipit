@@ -113,7 +113,8 @@ describe("Integration: git identity flow", () => {
 
   it("does not send git_identity_required when session has identity", async () => {
     const git = new GitManager(sessionDir);
-    await git.init(); // init() sets default identity
+    await git.init();
+    await git.setIdentity("Test User", "test@example.com");
     port = await startApp();
 
     const client = await TestClient.connect(port);

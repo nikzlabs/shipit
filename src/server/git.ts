@@ -1,7 +1,31 @@
 import crypto from "node:crypto";
+import { execSync } from "node:child_process";
 import simpleGit, { type SimpleGit, type LogResult } from "simple-git";
 
 const DEFAULT_WORKSPACE_DIR = "/workspace";
+
+/**
+ * Ensure ~/.gitconfig has a fallback identity so `git commit` always works.
+ * Only writes if user.name is not already configured globally.
+ * Call once at app startup — individual repos override via setIdentity().
+ */
+export function ensureGlobalGitIdentity(): void {
+  try {
+    execSync("git config --global user.name", { stdio: "pipe" });
+    // Already configured — don't overwrite
+  } catch {
+    try {
+      execSync('git config --global user.name "ShipIt"');
+      execSync('git config --global user.email "shipit@local"');
+      execSync("git config --global commit.gpgsign false");
+      console.log(
+        "[git] Set global fallback identity: ShipIt <shipit@local>",
+      );
+    } catch (err) {
+      console.warn("[git] Could not set global git identity:", err);
+    }
+  }
+}
 
 /** Generate a short random alphanumeric prefix for branch names (5 chars). */
 export function generateBranchPrefix(): string {
@@ -36,8 +60,6 @@ export class GitManager {
     const isRepo = await this.git.checkIsRepo();
     if (!isRepo) {
       await this.git.init(["--initial-branch=main"]);
-      await this.git.addConfig("user.email", "shipit@local");
-      await this.git.addConfig("user.name", "ShipIt");
       // Disable commit signing — the workspace repo doesn't need GPG/SSH signatures
       await this.git.addConfig("commit.gpgsign", "false");
       // Create initial commit so rollback always has a base
@@ -226,11 +248,11 @@ export class GitManager {
     }
   }
 
-  /** Check whether git has a user.name and user.email configured (any scope). */
+  /** Check whether this repo has a local user.name and user.email configured. */
   async hasIdentity(): Promise<boolean> {
     try {
-      const name = await this.git.getConfig("user.name");
-      const email = await this.git.getConfig("user.email");
+      const name = await this.git.getConfig("user.name", "local");
+      const email = await this.git.getConfig("user.email", "local");
       return Boolean(name.value?.trim()) && Boolean(email.value?.trim());
     } catch {
       return false;
