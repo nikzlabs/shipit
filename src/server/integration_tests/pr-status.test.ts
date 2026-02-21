@@ -12,6 +12,7 @@ import {
   StubDeploymentManager,
   StubDeploymentStore,
   FakeClaudeProcess,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
@@ -36,6 +37,7 @@ beforeEach(async () => {
   sessionId = crypto.randomUUID();
   sessionDir = path.join(tmpDir, "sessions", sessionId);
   fs.mkdirSync(sessionDir, { recursive: true });
+  const credentialStore = createTestCredentialStore(tmpDir);
   const git = new GitManager(sessionDir);
   await git.init();
 
@@ -43,6 +45,7 @@ beforeEach(async () => {
   sessionManager.track(sessionId, "Test session", sessionDir);
 
   app = await buildApp({
+    credentialStore,
     workspaceDir: tmpDir,
     createGitManager: (dir: string) => new GitManager(dir),
     claudeFactory: () => new FakeClaudeProcess() as any,

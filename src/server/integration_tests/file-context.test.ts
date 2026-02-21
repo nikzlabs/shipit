@@ -17,6 +17,7 @@ import {
   FakeClaudeProcess,
   StubFileWatcher,
   waitForClaude,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 
 describe("Integration: File context attachments", () => {
@@ -33,6 +34,7 @@ describe("Integration: File context attachments", () => {
     const sessionManager = new SessionManager(sessionsFile);
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       previewManager: new StubPreviewManager() as unknown as PreviewManager,

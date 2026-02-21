@@ -7,8 +7,11 @@
  */
 
 import { EventEmitter } from "node:events";
+import path from "node:path";
 import WebSocket from "ws";
 import type { WsServerMessage, WsClientMessage } from "../types.js";
+import { CredentialStore } from "../credential-store.js";
+import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 
 // ---------------------------------------------------------------------------
 // TestClient
@@ -515,4 +518,16 @@ export async function waitForClaude(
     if (Date.now() > deadline) throw new Error("Timed out waiting for ClaudeProcess.run()");
     await new Promise((r) => setTimeout(r, 10));
   }
+}
+
+/**
+ * Create a CredentialStore for tests and configure global git identity.
+ * Sets GIT_CONFIG_GLOBAL to a temp-dir-scoped file so tests don't
+ * interfere with each other or with real config.
+ */
+export function createTestCredentialStore(tmpDir: string): CredentialStore {
+  const credDir = path.join(tmpDir, "credentials");
+  initGlobalGitConfig(credDir);
+  setGitIdentity("Test User", "test@test.com");
+  return new CredentialStore(credDir);
 }

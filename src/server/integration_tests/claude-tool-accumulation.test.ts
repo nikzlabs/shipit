@@ -18,6 +18,7 @@ import {
   FakeClaudeProcess,
   StubFileWatcher,
   waitForClaude,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 
 describe("Integration: Claude tool use accumulation", () => {
@@ -37,6 +38,7 @@ describe("Integration: Claude tool use accumulation", () => {
     chatHistoryManager = new ChatHistoryManager(path.join(tmpDir, "chat-history"));
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       chatHistoryManager,

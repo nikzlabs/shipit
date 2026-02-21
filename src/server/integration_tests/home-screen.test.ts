@@ -20,6 +20,7 @@ import {
   FakeClaudeProcess,
   StubFileWatcher,
   waitForClaude,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 
 // ---------------------------------------------------------------------------
@@ -39,6 +40,7 @@ describe("Integration: home_create_repo_with_template (HTTP)", () => {
     const githubAuthManager = new StubGitHubAuthManager();
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => {
         const gm = new GitManager(dir);
         // Stub push so it doesn't attempt a real remote push
@@ -195,6 +197,7 @@ describe("Integration: home_send_with_repo", () => {
     githubAuthManager = new StubGitHubAuthManager();
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => {
         const gm = new GitManager(dir);
         // Stub checkoutNewBranch and renameBranch so they work even if clone
