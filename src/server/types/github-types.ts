@@ -35,12 +35,6 @@ export interface WsGitHubCreatePR {
   draft?: boolean;
 }
 
-// ---- AI PR description messages ----
-
-export interface WsGeneratePRDescription {
-  type: "generate_pr_description";
-}
-
 // ---- PR status & merge messages ----
 
 export interface WsMergePr {
@@ -98,13 +92,6 @@ export interface WsGitHubSearchResults {
     defaultBranch: string;
     cloneUrl: string;
   }>;
-}
-
-// ---- AI PR description server messages ----
-
-export interface WsGeneratedPRDescription {
-  type: "generated_pr_description";
-  description: string;
 }
 
 // ---- PR status & merge server messages ----

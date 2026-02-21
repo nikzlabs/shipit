@@ -32,13 +32,9 @@ import type { WsClientMessage, WsServerMessage, WsLogEntry } from "./types.js";
 import { getErrorMessage } from "./validation.js";
 import type { HandlerContext } from "./ws-handlers/types.js";
 import * as terminalHandlers from "./ws-handlers/terminal-handlers.js";
-import * as settingsHandlers from "./ws-handlers/settings-handlers.js";
 import * as miscHandlers from "./ws-handlers/misc-handlers.js";
 import * as deployHandlers from "./ws-handlers/deploy-handlers.js";
-import * as prHandlers from "./ws-handlers/pr-handlers.js";
 import * as sessionHandlers from "./ws-handlers/session-handlers.js";
-import * as worktreeHandlers from "./ws-handlers/worktree-handlers.js";
-import * as templateHandlers from "./ws-handlers/template-handlers.js";
 import * as threadHandlers from "./ws-handlers/thread-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
 import { registerApiRoutes } from "./api-routes.js";
@@ -617,6 +613,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     broadcastLog,
     getSharedRepoDir,
     createSessionDir,
+    generateText,
+    sessionsRoot,
   });
 
   // Serve the built client files from dist/client/
@@ -973,24 +971,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           ctx.setActiveAgentId(agentId);
           return;
         }
-        case "start_auth": return settingsHandlers.handleStartAuth(ctx);
-        case "paste_auth_code": return settingsHandlers.handlePasteAuthCode(ctx, msg);
-
         // ---- Session operations ----
-        case "list_sessions": return sessionHandlers.handleListSessions(ctx);
         case "new_session": return sessionHandlers.handleNewSession(ctx);
-        case "get_chat_history": return sessionHandlers.handleGetChatHistory(ctx, msg);
-
-        // ---- Worktree operations ----
-        case "fork_session": return worktreeHandlers.handleForkSession(ctx, msg);
-        case "merge_session": return worktreeHandlers.handleMergeSession(ctx, msg);
-
-        // ---- Template operations ----
-        case "list_templates": return templateHandlers.handleListTemplates(ctx);
-        case "home_create_repo_with_template": return templateHandlers.handleHomeCreateRepoWithTemplate(ctx, msg);
-
-        // ---- PR operations ----
-        case "generate_pr_description": return prHandlers.handleGeneratePrDescription(ctx);
+        case "activate_session": return sessionHandlers.handleActivateSession(ctx, msg);
 
         // ---- Deploy operations ----
         case "initiate_deploy": return deployHandlers.handleInitiateDeploy(ctx, msg);

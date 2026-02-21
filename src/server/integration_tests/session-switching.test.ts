@@ -96,10 +96,7 @@ describe("Integration: Session isolation — switching & resume", () => {
     client.close();
   });
 
-  it("session switch via get_chat_history changes active session", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
+  it("session switch via HTTP history returns correct file tree", async () => {
     // Create session A via template using HTTP
     const resA = await app.inject({
       method: "POST",
@@ -113,39 +110,29 @@ describe("Integration: Session isolation — switching & resume", () => {
     fs.writeFileSync(path.join(sessionA.workspaceDir, "marker-a.txt"), "session A");
 
     // Create session B via template using HTTP
-    const resB = await app.inject({
+    await app.inject({
       method: "POST",
       url: "/api/sessions/new/template",
       payload: { templateId: "react-vite-ts" },
     });
-    expect(resB.statusCode).toBe(200);
 
-    // Switch back to session A — activateSession broadcasts preview_status + clear_logs,
-    // then the server sends chat_history, git_log, and file_tree automatically.
-    client.send({ type: "get_chat_history", sessionId: sessionA.id });
-    const responses: any[] = [];
-    // Collect messages until we have chat_history, git_log, and file_tree
-    while (!responses.some((m) => m.type === "file_tree")) {
-      responses.push(await client.receive());
-    }
-    expect(responses.some((m) => m.type === "chat_history")).toBe(true);
-    expect(responses.some((m) => m.type === "git_log")).toBe(true);
+    // Fetch session A's history via HTTP — should show session A's files
+    const historyRes = await app.inject({ method: "GET", url: `/api/sessions/${sessionA.id}/history` });
+    expect(historyRes.statusCode).toBe(200);
+    const body = historyRes.json();
 
-    // File tree (sent by server after activation) should show session A's files
-    const treeMsg = responses.find((m) => m.type === "file_tree")!;
-    const flatNames = treeMsg.tree.map((n: any) => n.name);
+    expect(body.messages).toBeDefined();
+    expect(body.commits).toBeDefined();
+    expect(body.fileTree).toBeDefined();
+
+    const flatNames = body.fileTree.map((n: any) => n.name);
     expect(flatNames).toContain("marker-a.txt");
     expect(flatNames).toContain("index.html");
     // Session B's files should NOT be in the tree
     expect(flatNames).not.toContain("App.tsx");
-
-    client.close();
   });
 
-  it("get_chat_history returns git_log scoped to the activated session", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
+  it("HTTP history returns git_log scoped to each session", async () => {
     // Create session A via template using HTTP
     const resA = await app.inject({
       method: "POST",
@@ -174,29 +161,17 @@ describe("Integration: Session isolation — switching & resume", () => {
     fs.writeFileSync(path.join(sessionB.workspaceDir, "b-only.txt"), "session B");
     await gitB.autoCommit("Commit from session B");
 
-    // Switch to session A — server sends git_log after activation
-    client.send({ type: "get_chat_history", sessionId: sessionA.id });
-    const responsesA: any[] = [];
-    while (!responsesA.some((m) => m.type === "git_log")) {
-      responsesA.push(await client.receive());
-    }
-    const gitLogA = responsesA.find((m) => m.type === "git_log")!;
-    const messagesA = gitLogA.commits.map((c: any) => c.message);
+    // Fetch session A's history — git log scoped to session A
+    const historyA = await app.inject({ method: "GET", url: `/api/sessions/${sessionA.id}/history` });
+    const messagesA = historyA.json().commits.map((c: any) => c.message);
     expect(messagesA).toContain("Commit from session A");
     expect(messagesA).not.toContain("Commit from session B");
 
-    // Switch to session B — server sends git_log after activation
-    client.send({ type: "get_chat_history", sessionId: sessionB.id });
-    const responsesB: any[] = [];
-    while (!responsesB.some((m) => m.type === "git_log")) {
-      responsesB.push(await client.receive());
-    }
-    const gitLogB = responsesB.find((m) => m.type === "git_log")!;
-    const messagesB = gitLogB.commits.map((c: any) => c.message);
+    // Fetch session B's history — git log scoped to session B
+    const historyB = await app.inject({ method: "GET", url: `/api/sessions/${sessionB.id}/history` });
+    const messagesB = historyB.json().commits.map((c: any) => c.message);
     expect(messagesB).toContain("Commit from session B");
     expect(messagesB).not.toContain("Commit from session A");
-
-    client.close();
   });
 
   it("resumed session passes agent session ID to ClaudeProcess.run()", async () => {

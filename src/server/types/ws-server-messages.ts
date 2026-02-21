@@ -1,13 +1,12 @@
 import type { ClaudeEvent } from "./claude-types.js";
 import type { AgentId, AgentEvent } from "./agent-types.js";
-import type { GitCommitInfo, SessionInfo, FeatureInfo, ProjectTemplate, FileTreeNode, WsChatHistoryMessage, FileDiff } from "./domain-types.js";
+import type { GitCommitInfo, SessionInfo, FeatureInfo, FileTreeNode, WsChatHistoryMessage, FileDiff } from "./domain-types.js";
 import type {
   WsGitHubStatus,
   WsGitHubPushResult,
   WsGitHubRemotes,
   WsGitHubBranches,
   WsGitHubSearchResults,
-  WsGeneratedPRDescription,
   WsPrStatus,
 } from "./github-types.js";
 import type { WsTerminalOutput, WsTerminalExit, WsLogEntry, WsClearLogs } from "./terminal-types.js";
@@ -154,11 +153,6 @@ export interface WsGlobalSettings {
 
 // ---- Template messages ----
 
-export interface WsTemplateList {
-  type: "template_list";
-  templates: Array<Omit<ProjectTemplate, "files">>;
-}
-
 export interface WsTemplateApplied {
   type: "template_applied";
   templateId: string;
@@ -181,16 +175,6 @@ export interface WsModelInfo {
   contextWindowTokens: number;
 }
 
-// ---- Home screen server messages ----
-
-export interface WsHomeRepoReady {
-  type: "home_repo_ready";
-  success: boolean;
-  repoUrl?: string;
-  sessionId?: string;
-  message?: string;
-}
-
 // ---- Prompt queuing messages ----
 
 /** Server → Client: a message was queued because Claude is busy. */
@@ -206,30 +190,6 @@ export interface WsQueueUpdated {
   type: "queue_updated";
   /** Current queue contents after the change. */
   queue: Array<{ text: string; position: number }>;
-}
-
-// ---- Worktree session messages (server → client) ----
-
-export interface WsSessionForked {
-  type: "session_forked";
-  session: SessionInfo;
-  parentSessionId: string;
-}
-
-export interface WsWorktreeList {
-  type: "worktree_list";
-  worktrees: Array<{
-    sessionId: string;
-    branch: string;
-    path: string;
-  }>;
-}
-
-export interface WsMergeResult {
-  type: "merge_result";
-  success: boolean;
-  message: string;
-  conflicts?: string[];
 }
 
 // ---- Diff review messages (server → client) ----
@@ -329,7 +289,6 @@ export type WsServerMessage =
   | WsLogEntry
   | WsUsageStats
   | WsUsageUpdate
-  | WsTemplateList
   | WsTemplateApplied
   | WsFeatureList
   | WsGlobalSettings
@@ -350,17 +309,12 @@ export type WsServerMessage =
   | WsDeployError
   | WsDeployHistory
   | WsGitHubSearchResults
-  | WsGeneratedPRDescription
   | WsPrStatus
   | WsModelInfo
   | WsTerminalOutput
   | WsTerminalExit
-  | WsHomeRepoReady
   | WsMessageQueued
   | WsQueueUpdated
-  | WsSessionForked
-  | WsWorktreeList
-  | WsMergeResult
   | WsAgentListMessage
   | WsClaudeInterrupted
   | WsFullResetComplete

@@ -94,23 +94,29 @@ describe("Integration: PR description generation", () => {
     }
   }
 
-  it("generates a PR description with markdown content", async () => {
+  it("generates a PR description with markdown content via HTTP", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     await createSession(client);
-
-    client.send({ type: "generate_pr_description" });
-    const msg = await client.receiveSkipLogs();
-
-    expect(msg.type).toBe("generated_pr_description");
-    expect((msg as any).description).toContain("## Summary");
-    expect((msg as any).description).toContain("## Changes");
-
     client.close();
+
+    // Get session ID from bootstrap
+    const bootstrap = await app.inject({ method: "GET", url: "/api/bootstrap" });
+    const sessionId = bootstrap.json().sessions[0]?.id;
+    expect(sessionId).toBeTruthy();
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr/description`,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.description).toContain("## Summary");
+    expect(body.description).toContain("## Changes");
   });
 
-  it("returns empty description when no git history", async () => {
+  it("returns description when minimal git history via HTTP", async () => {
     // Build a separate app with an empty git repo (no commits beyond init)
     const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-pr-empty-"));
     const emptySessionsFile = path.join(emptyDir, "sessions.json");
@@ -160,36 +166,44 @@ describe("Integration: PR description generation", () => {
           break;
         }
       }
-
-      // The session has at least "Initial commit" + "Claude turn" commit.
-      // With generateText stubbed, it will get called. Just verify we get a response.
-      client.send({ type: "generate_pr_description" });
-      const msg = await client.receiveSkipLogs();
-      expect(msg.type).toBe("generated_pr_description");
-
       client.close();
+
+      // Get session ID and call HTTP endpoint
+      const bootstrap = await emptyApp.inject({ method: "GET", url: "/api/bootstrap" });
+      const sessionId = bootstrap.json().sessions[0]?.id;
+      expect(sessionId).toBeTruthy();
+
+      const res = await emptyApp.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/description`,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().description).toBeDefined();
     } finally {
       await emptyApp.close();
       fs.rmSync(emptyDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     }
   });
 
-  it("returns error when text generation fails", async () => {
+  it("returns 500 when text generation fails via HTTP", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     await createSession(client);
+    client.close();
+
+    // Get session ID
+    const bootstrap = await app.inject({ method: "GET", url: "/api/bootstrap" });
+    const sessionId = bootstrap.json().sessions[0]?.id;
 
     // Set up the generateText stub to fail
     generateTextError = new Error("Claude process crashed");
 
-    client.send({ type: "generate_pr_description" });
-    const msg = await client.receiveSkipLogs();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toContain("Failed to generate description");
-    expect((msg as any).message).toContain("Claude process crashed");
-
-    client.close();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr/description`,
+    });
+    expect(res.statusCode).toBe(500);
+    expect(res.json().error).toContain("Claude process crashed");
   });
 });

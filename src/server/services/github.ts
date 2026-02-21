@@ -141,6 +141,38 @@ export async function mergePullRequest(
   return { success: false, message: result.message };
 }
 
+/** Generate a PR description using the agent's generateText capability. */
+export async function generatePrDescription(
+  git: GitManager,
+  generateText: (prompt: string, cwd?: string) => Promise<string>,
+  sessionDir?: string,
+): Promise<{ description: string }> {
+  const log = await git.log(20);
+  const diff = await git.diffSummary();
+
+  if (log.length === 0) {
+    return { description: "" };
+  }
+
+  const prompt = [
+    "Write a pull request description summarizing these changes.",
+    "Format as markdown with ## Summary (1-2 sentences) and ## Changes (bullet points).",
+    "Keep it concise — 5-10 bullet points maximum.",
+    "Return ONLY the markdown description, no extra commentary.",
+    "",
+    "Recent commits:",
+    ...log.map((c) => `- ${c.message}`),
+    "",
+    "Files changed:",
+    ...(diff.length > 0
+      ? diff.map((f) => `- ${f.file} (+${f.insertions} -${f.deletions})`)
+      : ["(no file-level diff available)"]),
+  ].join("\n");
+
+  const description = await generateText(prompt, sessionDir);
+  return { description: description.trim() };
+}
+
 /** Set GitHub token. Returns status and repos. */
 export async function setGitHubToken(
   githubAuthManager: GitHubAuthManager,

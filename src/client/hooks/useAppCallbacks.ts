@@ -122,7 +122,7 @@ export function useAppCallbacks(params: {
 }) {
   const {
     send, navigate: nav, requestPermission,
-    permissionMode, pendingFiles, activeThreadId, templates, docFiles,
+    permissionMode, pendingFiles, activeThreadId, templates: _templates, docFiles,
     setMessages, setIsLoading, setActivity, setShowTemplates, setPendingFiles,
     setPermissionMode, setViewingFile, setViewingFileContent, setViewingFileBinary,
     setGitCommits, setFileTree, setCurrentSessionUsage, setModelInfo, setContextTokens, setTurnTokens,
@@ -166,13 +166,26 @@ export function useAppCallbacks(params: {
       setActiveThreadId("");
       setShellStarted(false);
       setTerminalMode("logs");
-      // Load persisted chat history for this session (also activates session on server).
-      // The server sends git_log and file_tree automatically after activation completes,
-      // so we must NOT send separate get_git_log / get_file_tree here — those would
-      // race with the async activateSession and return stale data from the previous session.
-      send({ type: "get_chat_history", sessionId });
+      // 1. Fetch session data via HTTP (messages, git log, file tree, threads)
+      apiGet<{
+        messages: Array<{ role: "user" | "assistant"; text: string; toolUse?: unknown[]; images?: unknown[]; files?: unknown[]; isError?: boolean }>;
+        commits: GitCommit[];
+        fileTree: FileTreeNode[];
+        threads: ThreadInfo[];
+        activeThreadId: string;
+      }>(`/api/sessions/${sessionId}/history`)
+        .then((data) => {
+          setMessages(data.messages.map((m) => ({ ...m, streaming: false } as ChatMessage)));
+          setGitCommits(data.commits);
+          setFileTree(data.fileTree);
+          setThreads(data.threads);
+          setActiveThreadId(data.activeThreadId);
+        })
+        .catch((err) => console.error("[api] Failed to load session history:", err));
+      // 2. Activate session over WS (attach runner, file watcher, preview)
+      send({ type: "activate_session", sessionId });
     },
-    [send, sessionIdRef, setMessages, setIsLoading, setShowTemplates, setQueuedMessages,
+    [send, apiGet, sessionIdRef, setMessages, setIsLoading, setShowTemplates, setQueuedMessages,
      setViewingFile, setViewingFileContent, setViewingFileBinary,
      setGitCommits, setFileTree, setCurrentSessionUsage, setModelInfo, setContextTokens, setTurnTokens,
      setThreads, setActiveThreadId, setShellStarted, setTerminalMode]
@@ -272,8 +285,10 @@ export function useAppCallbacks(params: {
   );
 
   const handleSessionRefresh = useCallback(() => {
-    send({ type: "list_sessions" });
-  }, [send]);
+    apiGet<{ sessions: SessionInfo[] }>("/api/bootstrap")
+      .then((d) => setSessions(d.sessions))
+      .catch((err) => console.error("[api] Failed to refresh sessions:", err));
+  }, [apiGet, setSessions]);
 
   const handleSessionNew = useCallback(() => {
     sessionIdRef.current = undefined;
@@ -297,11 +312,8 @@ export function useAppCallbacks(params: {
     setTerminalMode("logs");
     nav("/");
     send({ type: "new_session" });
-    // Request templates for the picker
-    if (templates.length === 0) {
-      send({ type: "list_templates" });
-    }
-  }, [send, templates.length, nav, sessionIdRef,
+    // Templates are loaded from bootstrap on page load — no separate fetch needed
+  }, [send, nav, sessionIdRef,
       setMessages, setIsLoading, setCurrentSessionUsage, setModelInfo, setContextTokens, setTurnTokens,
       setShowTemplates, setSelectedRepoUrl, setViewingFile, setViewingFileContent, setViewingFileBinary,
       setGitCommits, setFileTree, setThreads, setActiveThreadId, setShellStarted, setTerminalMode]);
@@ -443,11 +455,23 @@ export function useAppCallbacks(params: {
   }, [apiPost, setGithubStatus]);
 
   const handleHomeCreateRepo = useCallback(
-    (name: string, description: string, isPrivate: boolean, templateId: string) => {
+    async (name: string, description: string, isPrivate: boolean, templateId: string) => {
       setCreatingRepo(true);
-      send({ type: "home_create_repo_with_template", repoName: name, description, isPrivate, templateId });
+      try {
+        const result = await apiPost<{ success: boolean; repoUrl?: string; sessionId?: string; message?: string }>(
+          "/api/repos",
+          { repoName: name, templateId, description, isPrivate },
+        );
+        setCreatingRepo(false);
+        if (result.success && result.repoUrl) {
+          setSelectedRepoUrl(result.repoUrl);
+        }
+      } catch (err) {
+        setCreatingRepo(false);
+        console.error("[api] Create repo failed:", err);
+      }
     },
-    [send, setCreatingRepo],
+    [apiPost, setCreatingRepo, setSelectedRepoUrl],
   );
 
   const handleHomeSendWithRepo = useCallback(
@@ -518,13 +542,25 @@ export function useAppCallbacks(params: {
     setShowPRModal(true);
   }, [setPrResult, setPrCurrentBranch, setPrRemoteBranches, setPrDescGenerating, prDescGeneratingRef, setPrDescError, setPrGeneratedDesc, setShowPRModal]);
 
-  const handlePRGenerateDescription = useCallback(() => {
+  const handlePRGenerateDescription = useCallback(async () => {
+    if (!sessionIdRef.current) return;
     setPrDescGenerating(true);
     prDescGeneratingRef.current = true;
     setPrDescError(null);
     setPrGeneratedDesc(null);
-    send({ type: "generate_pr_description" });
-  }, [send, setPrDescGenerating, prDescGeneratingRef, setPrDescError, setPrGeneratedDesc]);
+    try {
+      const result = await apiPost<{ description: string }>(
+        `/api/sessions/${sessionIdRef.current}/pr/description`,
+      );
+      setPrDescGenerating(false);
+      prDescGeneratingRef.current = false;
+      setPrGeneratedDesc(result.description);
+    } catch (err) {
+      setPrDescGenerating(false);
+      prDescGeneratingRef.current = false;
+      setPrDescError(err instanceof Error ? err.message : String(err));
+    }
+  }, [apiPost, sessionIdRef, setPrDescGenerating, prDescGeneratingRef, setPrDescError, setPrGeneratedDesc]);
 
   const handlePRSubmit = useCallback(
     async (data: { title: string; body: string; base: string; draft: boolean }) => {

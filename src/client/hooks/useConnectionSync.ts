@@ -2,7 +2,10 @@ import { useEffect, useRef, type Dispatch, type SetStateAction, type MutableRefO
 import type { WsClientMessage, SessionInfo } from "../../server/types.js";
 import type { ChatMessage } from "../components/MessageList.js";
 import type { StreamingActivity } from "../components/StreamingIndicator.js";
+import type { GitCommit } from "../components/GitHistory.js";
+import type { FileTreeNode } from "../components/FileTree.js";
 import type { TemplateInfo } from "../components/TemplateSelector.js";
+import type { ThreadInfo } from "../components/ThreadIndicator.js";
 import type { AgentOption } from "../components/AgentPicker.js";
 import type { BootstrapData } from "../../server/services/index.js";
 import { getSavedAgentId } from "../utils/local-storage.js";
@@ -29,12 +32,17 @@ export function useConnectionSync(params: {
   setGitIdentity: Dispatch<SetStateAction<{ name: string; email: string }>>;
   setHasSystemPrompt: Dispatch<SetStateAction<boolean>>;
   setSystemPromptContent: Dispatch<SetStateAction<string>>;
+  setGitCommits: Dispatch<SetStateAction<GitCommit[]>>;
+  setFileTree: Dispatch<SetStateAction<FileTreeNode[]>>;
+  setThreads: Dispatch<SetStateAction<ThreadInfo[]>>;
+  setActiveThreadId: Dispatch<SetStateAction<string>>;
 }): void {
   const {
     status, send, apiGet, sessionIdRef, historyLoadedRef, isLoading,
     setIsLoading, setActivity, setMessages, prStatus, setPrStatus,
     setSessions, setAgentList, setTemplates, setGithubStatus,
     setImportSearchResults, setGitIdentity, setHasSystemPrompt, setSystemPromptContent,
+    setGitCommits, setFileTree, setThreads, setActiveThreadId,
   } = params;
 
   // Track whether bootstrap has been fetched for this page load
@@ -73,13 +81,29 @@ export function useConnectionSync(params: {
       });
   }, [setSessions, setAgentList, setTemplates, setGithubStatus, setImportSearchResults, setGitIdentity, setHasSystemPrompt, setSystemPromptContent]);
 
-  // On WebSocket connect, restore chat history for the saved session.
-  // Chat history must still go through WS because it activates the session
-  // (attaches runner, starts file watcher, etc.).
+  // On WebSocket connect, restore session: fetch data via HTTP, then activate via WS.
   useEffect(() => {
     if (status === "open" && !historyLoadedRef.current && sessionIdRef.current) {
       historyLoadedRef.current = true;
-      send({ type: "get_chat_history", sessionId: sessionIdRef.current });
+      const sessionId = sessionIdRef.current;
+      // 1. Fetch session data via HTTP (messages, git log, file tree, threads)
+      apiGet<{
+        messages: Array<{ role: "user" | "assistant"; text: string; toolUse?: unknown[]; images?: unknown[]; files?: unknown[]; isError?: boolean }>;
+        commits: GitCommit[];
+        fileTree: FileTreeNode[];
+        threads: ThreadInfo[];
+        activeThreadId: string;
+      }>(`/api/sessions/${sessionId}/history`)
+        .then((data) => {
+          setMessages(data.messages.map((m) => ({ ...m, streaming: false } as ChatMessage)));
+          setGitCommits(data.commits);
+          setFileTree(data.fileTree);
+          setThreads(data.threads);
+          setActiveThreadId(data.activeThreadId);
+        })
+        .catch((err) => console.error("[api] Failed to load session history:", err));
+      // 2. Activate session over WS (attach runner, file watcher, preview)
+      send({ type: "activate_session", sessionId });
     }
     if (status === "open") {
       // Restore saved agent preference on connect (per-connection WS state)
@@ -91,7 +115,8 @@ export function useConnectionSync(params: {
     if (status === "closed") {
       historyLoadedRef.current = false;
     }
-  }, [status, send, sessionIdRef, historyLoadedRef]);
+  }, [status, send, apiGet, sessionIdRef, historyLoadedRef,
+      setMessages, setGitCommits, setFileTree, setThreads, setActiveThreadId]);
 
   // Fetch PR status on session load via HTTP
   useEffect(() => {

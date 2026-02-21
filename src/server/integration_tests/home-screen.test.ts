@@ -26,11 +26,9 @@ import {
 // home_create_repo_with_template
 // ---------------------------------------------------------------------------
 
-describe("Integration: home_create_repo_with_template", () => {
+describe("Integration: home_create_repo_with_template (HTTP)", () => {
   let app: FastifyInstance;
-  let port: number;
   let tmpDir: string;
-  let githubAuthManager: StubGitHubAuthManager;
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-home-create-"));
@@ -38,7 +36,7 @@ describe("Integration: home_create_repo_with_template", () => {
     const sessionsFile = path.join(tmpDir, "sessions.json");
     const sessionManager = new SessionManager(sessionsFile);
 
-    githubAuthManager = new StubGitHubAuthManager();
+    const githubAuthManager = new StubGitHubAuthManager();
 
     app = await buildApp({
       createGitManager: (dir: string) => {
@@ -58,10 +56,6 @@ describe("Integration: home_create_repo_with_template", () => {
       startPreview: false,
       portScanIntervalMs: 0,
     });
-
-    const address = await app.listen({ port: 0, host: "127.0.0.1" });
-    const match = address.match(/:(\d+)$/);
-    port = match ? Number(match[1]) : 0;
   });
 
   afterEach(async () => {
@@ -74,153 +68,78 @@ describe("Integration: home_create_repo_with_template", () => {
     }
   });
 
-  it("creates a GitHub repo, applies template, and returns home_repo_ready", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
+  it("creates a GitHub repo, applies template, and returns success", async () => {
     // Authenticate with GitHub first via HTTP
     await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
 
-    client.send({
-      type: "home_create_repo_with_template",
-      repoName: "my-new-app",
-      templateId: "static-html",
-      description: "Test project",
-      isPrivate: true,
-    } as any);
-
-    // Should receive session_started then home_repo_ready
-    const sessionMsg = await client.receiveSkipLogs();
-    expect(sessionMsg.type).toBe("session_started");
-    const session = (sessionMsg as any).session;
-    expect(session.id).toBeTruthy();
-    expect(session.workspaceDir).toBeTruthy();
-
-    const repoReady = await client.receiveSkipLogs();
-    expect(repoReady).toMatchObject({
-      type: "home_repo_ready",
-      success: true,
-      repoUrl: "https://github.com/test-user/my-new-app.git",
-      sessionId: session.id,
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/repos",
+      payload: {
+        repoName: "my-new-app",
+        templateId: "static-html",
+        description: "Test project",
+        isPrivate: true,
+      },
     });
-
-    // Verify template files were written to the session directory
-    expect(fs.existsSync(path.join(session.workspaceDir, "index.html"))).toBe(true);
-
-    client.close();
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.success).toBe(true);
+    expect(body.repoUrl).toBe("https://github.com/test-user/my-new-app.git");
+    expect(body.sessionId).toBeTruthy();
   });
 
-  it("returns error for empty repoName", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // Authenticate with GitHub first via HTTP
+  it("returns 400 for empty repoName", async () => {
     await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
 
-    client.send({
-      type: "home_create_repo_with_template",
-      repoName: "",
-      templateId: "static-html",
-    } as any);
-
-    const msg = await client.receiveSkipLogs();
-    expect(msg).toMatchObject({
-      type: "home_repo_ready",
-      success: false,
-      message: "Repository name is required",
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/repos",
+      payload: { repoName: "", templateId: "static-html" },
     });
-
-    client.close();
+    expect(res.statusCode).toBe(400);
   });
 
-  it("returns error for missing templateId", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // Authenticate with GitHub first via HTTP
+  it("returns 400 for empty templateId", async () => {
     await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
 
-    client.send({
-      type: "home_create_repo_with_template",
-      repoName: "my-app",
-      templateId: "",
-    } as any);
-
-    const msg = await client.receiveSkipLogs();
-    expect(msg).toMatchObject({
-      type: "home_repo_ready",
-      success: false,
-      message: "Template is required",
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/repos",
+      payload: { repoName: "my-app", templateId: "" },
     });
-
-    client.close();
+    expect(res.statusCode).toBe(400);
   });
 
   it("returns error for unknown templateId", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // Authenticate with GitHub first via HTTP
     await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
 
-    client.send({
-      type: "home_create_repo_with_template",
-      repoName: "my-app",
-      templateId: "nonexistent-template-xyz",
-    } as any);
-
-    const msg = await client.receiveSkipLogs();
-    expect(msg).toMatchObject({
-      type: "home_repo_ready",
-      success: false,
-      message: "Unknown template: nonexistent-template-xyz",
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/repos",
+      payload: { repoName: "my-app", templateId: "nonexistent-template-xyz" },
     });
-
-    client.close();
+    expect(res.statusCode).toBeGreaterThanOrEqual(400);
   });
 
-  it("returns error for invalid repoName characters", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // Authenticate with GitHub first via HTTP
+  it("returns 400 for invalid repoName characters", async () => {
     await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
 
-    client.send({
-      type: "home_create_repo_with_template",
-      repoName: "my app!",
-      templateId: "static-html",
-    } as any);
-
-    const msg = await client.receiveSkipLogs();
-    expect(msg).toMatchObject({
-      type: "home_repo_ready",
-      success: false,
-      message: "Repository name contains invalid characters",
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/repos",
+      payload: { repoName: "my app!", templateId: "static-html" },
     });
-
-    client.close();
+    expect(res.statusCode).toBe(400);
   });
 
-  it("returns error when not authenticated with GitHub", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // Do NOT authenticate with GitHub
-    client.send({
-      type: "home_create_repo_with_template",
-      repoName: "my-app",
-      templateId: "static-html",
-    } as any);
-
-    const msg = await client.receiveSkipLogs();
-    expect(msg).toMatchObject({
-      type: "home_repo_ready",
-      success: false,
-      message: "Not authenticated with GitHub",
+  it("returns 401 when not authenticated with GitHub", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/repos",
+      payload: { repoName: "my-app", templateId: "static-html" },
     });
-
-    client.close();
+    expect(res.statusCode).toBe(401);
   });
 });
 

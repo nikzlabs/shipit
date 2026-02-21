@@ -69,6 +69,13 @@ import {
   applyTemplate,
   fullReset,
   validatePreviewError,
+  // Phase 3: borderline cases
+  generatePrDescription,
+  forkSession,
+  mergeSession,
+  startAuth,
+  submitAuthCode,
+  createRepoWithTemplate,
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
@@ -99,6 +106,9 @@ export interface ApiDeps {
   broadcastLog: (source: "stderr" | "stdout" | "server" | "preview" | "deploy" | "install", text: string) => void;
   getSharedRepoDir: (repoUrl: string) => string;
   createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string }>;
+  // Phase 3 additions
+  generateText: (prompt: string, cwd?: string) => Promise<string>;
+  sessionsRoot: string;
 }
 
 /**
@@ -322,14 +332,34 @@ export async function registerApiRoutes(
     }
   });
 
-  // GET /api/sessions/:id/history — read-only chat history (no session activation)
+  // GET /api/sessions/:id/history — read-only chat history + workspace data (no session activation)
   app.get<{ Params: { id: string } }>("/api/sessions/:id/history", async (request, reply) => {
     const session = sessionManager.get(request.params.id);
     if (!session) {
       reply.code(404).send({ error: "Session not found" });
       return;
     }
-    return { messages: getChatHistory(deps.chatHistoryManager, request.params.id) };
+    const messages = getChatHistory(deps.chatHistoryManager, request.params.id);
+    const { threads, activeThreadId } = listThreads(deps.threadManager, request.params.id);
+
+    // Also return git log and file tree for the session workspace (if it exists)
+    let commits: Awaited<ReturnType<typeof getGitLog>> = [];
+    let fileTree: Awaited<ReturnType<typeof getFileTree>> = [];
+    if (session.workspaceDir) {
+      try {
+        const git = createGitManager(session.workspaceDir);
+        commits = await getGitLog(git);
+      } catch {
+        // No git repo — empty log
+      }
+      try {
+        fileTree = await getFileTree(session.workspaceDir);
+      } catch {
+        // No workspace dir — empty tree
+      }
+    }
+
+    return { messages, commits, fileTree, threads, activeThreadId };
   });
 
   // GET /api/sessions/:id/usage — usage stats
@@ -826,6 +856,128 @@ export async function registerApiRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to report preview error: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // ===========================================================================
+  // Phase 3: Borderline cases — endpoints migrated from WS
+  // ===========================================================================
+
+  // POST /api/sessions/:id/pr/description — generate PR description via LLM
+  app.post<{ Params: { id: string } }>(
+    "/api/sessions/:id/pr/description",
+    { config: { rawBody: false } },
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      try {
+        const git = createGitManager(dir);
+        return await generatePrDescription(git, deps.generateText, dir);
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to generate description: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/fork — fork session into a new worktree branch
+  app.post<{ Params: { id: string }; Body: { branchName: string; startPoint?: string } }>(
+    "/api/sessions/:id/fork",
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      try {
+        const result = await forkSession(
+          sessionManager, createGitManager, deps.getSharedRepoDir, deps.sessionsRoot,
+          deps.credentialStore, deps.githubAuthManager, deps.threadManager,
+          request.params.id, dir,
+          request.body.branchName, request.body.startPoint,
+        );
+        // Broadcast updated session list to other connections
+        deps.broadcast({ type: "session_list", sessions: result.sessions });
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to fork session: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/git/merge — merge a worktree branch into this session
+  app.post<{ Params: { id: string }; Body: { sourceSessionId: string } }>(
+    "/api/sessions/:id/git/merge",
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      try {
+        return await mergeSession(
+          sessionManager, createGitManager, dir, request.body.sourceSessionId,
+        );
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to merge: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/repos — create a GitHub repo with a template
+  app.post<{ Body: { repoName: string; templateId: string; description?: string; isPrivate?: boolean } }>(
+    "/api/repos",
+    async (_request, reply) => {
+      try {
+        const result = await createRepoWithTemplate(
+          sessionManager, createGitManager, deps.createSessionDir,
+          deps.githubAuthManager,
+          _request.body.repoName, _request.body.templateId,
+          _request.body.description, _request.body.isPrivate,
+        );
+        if (!result.success) {
+          reply.code(400).send(result);
+          return;
+        }
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to create repo: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/auth/start — initiate OAuth flow
+  app.post(
+    "/api/auth/start",
+    async (_request, reply) => {
+      startAuth(deps.authManager);
+      reply.code(202).send({ success: true });
+    },
+  );
+
+  // POST /api/auth/code — submit OAuth authorization code
+  app.post<{ Body: { code: string } }>(
+    "/api/auth/code",
+    async (request, reply) => {
+      try {
+        submitAuthCode(deps.authManager, request.body.code);
+        return { success: true };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to submit auth code: ${getErrorMessage(err)}` });
       }
     },
   );

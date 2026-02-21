@@ -1,82 +1,207 @@
 ---
 status: done
 ---
-# WebSocket Protocol
+# Client-Server Protocol
 
-All client-server communication uses JSON over a single WebSocket connection at `/ws`. Types are defined in `src/server/types.ts`.
+ShipIt uses a dual-transport architecture: **HTTP REST API** (`/api/*`) for reads and mutations, and **WebSocket** (`/ws`) for streaming events, per-connection state, and real-time push.
 
-## Client → Server Messages
+Types are defined in `src/server/types/` (split across `ws-client-messages.ts`, `ws-server-messages.ts`, and domain-specific type files). HTTP route handlers live in `src/server/api-routes.ts`. Business logic lives in `src/server/services/` — pure functions consumed by both HTTP routes and WS handlers.
+
+## HTTP REST API
+
+All HTTP endpoints are prefixed with `/api`. Session-scoped routes use `:id` to reference a session by its UUID. The client calls these via the `useApi` hook (`src/client/hooks/useApi.ts`).
+
+### Bootstrap & global reads
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/bootstrap` | Initial data load — sessions, agents, templates, GitHub status, global settings |
+| GET | `/api/features` | List feature flags with status from docs frontmatter |
+| GET | `/api/github/repos?q=` | Search GitHub repositories |
+
+### Session-scoped reads
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/sessions/:id/history` | Chat messages, commits, file tree, threads, active thread |
+| GET | `/api/sessions/:id/files` | Workspace file tree |
+| GET | `/api/sessions/:id/files/*path` | File content (query `?tree=true` to include file tree) |
+| GET | `/api/sessions/:id/docs` | List markdown docs in workspace |
+| GET | `/api/sessions/:id/docs/*path` | Markdown doc content |
+| GET | `/api/sessions/:id/git/log` | Git commit history |
+| GET | `/api/sessions/:id/git/diff?from=&to=` | Turn diff between two commits |
+| GET | `/api/sessions/:id/git/remotes` | Git remotes |
+| GET | `/api/sessions/:id/git/branches` | Git branches (current + remote) |
+| GET | `/api/sessions/:id/status` | Session runtime status (running, queue length) |
+| GET | `/api/sessions/:id/usage` | Aggregated usage/cost stats |
+| GET | `/api/sessions/:id/pr/status` | Pull request status and checks |
+| GET | `/api/sessions/:id/threads` | Conversation threads and checkpoints |
+| GET | `/api/sessions/:id/worktrees` | Sibling worktree sessions |
+| GET | `/api/sessions/:id/deploy/setup` | Deploy targets + project settings (combined) |
+| GET | `/api/sessions/:id/deploy/history` | Deployment history |
+| GET | `/api/sessions/:id/workspace-state` | Git log + file tree (combined) |
+
+### Session mutations
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| PATCH | `/api/sessions/:id` | Rename session (`{ title }`) |
+| DELETE | `/api/sessions/:id` | Archive session |
+| POST | `/api/sessions/:id/fork` | Fork session into new worktree branch (`{ branchName, startPoint? }`) |
+| POST | `/api/sessions/:id/template` | Apply project template (`{ templateId }`) |
+| POST | `/api/sessions/:id/threads/checkpoint` | Create checkpoint on active thread (`{ label? }`) |
+| POST | `/api/sessions/:id/preview-errors` | Report preview iframe error |
+
+### Git operations
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/sessions/:id/git/rollback` | Rollback to commit (`{ commitHash }`) |
+| POST | `/api/sessions/:id/git/reject` | Reject (revert) changes |
+| POST | `/api/sessions/:id/git/remotes` | Set git remote (`{ name, url }`) |
+| POST | `/api/sessions/:id/git/push` | Git push (`{ remote?, branch? }`) |
+| POST | `/api/sessions/:id/git/pull` | Git pull (`{ remote?, branch? }`) |
+| POST | `/api/sessions/:id/git/merge` | Merge worktree branch (`{ sourceSessionId }`) |
+
+### PR operations
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/sessions/:id/pr` | Create pull request (`{ title, body, base, draft? }`) |
+| POST | `/api/sessions/:id/pr/merge` | Merge pull request (`{ method? }`) |
+| POST | `/api/sessions/:id/pr/description` | Generate PR description via LLM |
+
+### Deploy operations
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/sessions/:id/deploy/config` | Save deploy credentials (`{ targetId, config }`) |
+| DELETE | `/api/sessions/:id/deploy/config/:targetId` | Delete deploy credentials |
+
+### Settings & auth
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| PUT | `/api/settings` | Save global settings (`{ systemPrompt }`) |
+| POST | `/api/settings/git-identity` | Set git identity (`{ name, email }`) |
+| POST | `/api/settings/agent` | Set default agent (`{ agentId }`) |
+| POST | `/api/agents/:id/env` | Set agent env var (`{ key, value }`) |
+| POST | `/api/auth/api-key` | Set API key (`{ key }`) |
+| DELETE | `/api/auth/api-key` | Clear API key |
+| POST | `/api/auth/start` | Initiate OAuth flow (returns 202) |
+| POST | `/api/auth/code` | Submit OAuth authorization code (`{ code }`) |
+| POST | `/api/github/token` | Set GitHub token (`{ token }`) |
+| POST | `/api/github/logout` | Logout from GitHub |
+
+### Global mutations
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/repos` | Create GitHub repo with template (`{ repoName, templateId, description?, isPrivate? }`) |
+| POST | `/api/reset` | Full reset — delete all sessions, re-init workspace |
+
+## WebSocket Messages
+
+The WebSocket at `/ws` handles operations that require streaming, per-connection state, or real-time push. The client connects via the `useWebSocket` hook.
+
+### Client → Server
 
 | Type | Fields | Purpose |
 |------|--------|---------|
-| `send_message` | `text`, `sessionId?`, `images?` | Send a user message to Claude CLI |
-| `answer_question` | `answer`, `sessionId` | Reply to a Claude permission question |
-| `get_git_log` | — | Request git commit history |
-| `rollback` | `commitHash` | Roll back workspace to a specific commit |
-| `list_sessions` | — | List all saved sessions |
-| `new_session` | — | Clear current session, start fresh |
-| `archive_session` | `sessionId` | Archive a session (hide from list, preserve data) |
-| `rename_session` | `sessionId`, `title` | Rename a saved session |
-| `list_docs` | — | List `.md` files in /workspace |
-| `get_doc` | `path` | Request content of a markdown file |
-| `get_chat_history` | `sessionId` | Request persisted chat messages for a session |
-| `get_file_tree` | — | Request workspace directory tree |
-| `get_file_content` | `path` | Request contents of a file in /workspace |
-| `clear_logs` | — | Clear the server-side terminal log buffer |
-| `preview_error` | `message`, `stack?`, `source?`, `line?` | Report a preview iframe error to the terminal log buffer |
-| `get_usage_stats` | — | Request aggregated usage/cost data across all sessions |
-| `get_system_prompt` | — | Request current project-level system prompt |
-| `set_system_prompt` | `content` | Save or delete the project-level system prompt |
-| `list_threads` | — | Request all threads and checkpoints for the current session |
-| `create_checkpoint` | `label?` | Create a checkpoint on the active thread |
-| `fork_thread` | `checkpointId` | Create a new thread from a checkpoint (rolls back git, truncates history) |
-| `switch_thread` | `threadId` | Switch to an existing thread (rolls back git to thread's checkpoint) |
-| `apply_template` | `templateId` | Apply a project template to the session workspace |
-| `list_deploy_targets` | — | List available deployment targets |
-| `deploy_configure` | `targetId`, `config` | Save deployment credentials for a target |
+| `send_message` | `text`, `sessionId?`, `images?`, `files?`, `permissionMode?` | Send user message to Claude |
+| `answer_question` | `toolUseId`, `answers` | Reply to Claude permission/tool question |
+| `home_send_with_repo` | `repoUrl`, `text`, `images?`, `files?`, `permissionMode?` | Send message from home screen with repo URL |
+| `new_session` | — | Detach from current session, prepare for new one |
+| `activate_session` | `sessionId` | Attach runner, file watcher, preview to this connection |
+| `set_agent` | `agentId` | Set active agent for this connection |
+| `interrupt_claude` | — | Interrupt the running Claude process |
+| `fork_thread` | `checkpointId` | Fork a new thread from checkpoint (git reset + preview restart) |
+| `switch_thread` | `threadId` | Switch to existing thread (git reset + preview restart) |
 | `initiate_deploy` | `targetId`, `environment?` | Start a deployment |
-| `get_deploy_history` | — | Request deployment history for the session |
-| `get_deploy_config` | `targetId` | Request saved config status for a target |
-| `cancel_deploy` | — | Cancel an in-progress deployment |
-| `delete_deploy_config` | `targetId` | Delete saved credentials for a target |
+| `cancel_deploy` | — | Cancel in-progress deployment |
+| `cancel_queued_message` | `position` | Cancel a queued message (index or `"all"`) |
+| `init_preview_config` | — | Ask Claude to generate `shipit.yaml` |
+| `diff_comment` | `comments[]` | Submit inline comments on code diff |
+| `clear_logs` | — | Clear terminal log buffer |
+| `terminal_start` | `cols`, `rows` | Start a terminal session |
+| `terminal_input` | `data` | Send input to the terminal |
+| `terminal_resize` | `cols`, `rows` | Resize the terminal |
 
-## Server → Client Messages
+### Server → Client
 
 | Type | Fields | Purpose |
 |------|--------|---------|
-| `claude_event` | `event` | Relayed Claude CLI NDJSON event |
-| `error` | `message` | Error description |
-| `preview_status` | `running`, `port`, `url`, `source?`, `detectedPorts?` | Dev server status |
-| `git_log` | `commits[]` | Full git commit history |
-| `git_committed` | `hash`, `message` | New auto-commit after Claude turn |
-| `rollback_complete` | `commitHash` | Rollback succeeded |
-| `auth_required` | `url` | OAuth URL for user to authenticate |
-| `auth_complete` | — | OAuth flow finished |
-| `session_list` | `sessions[]` | List of saved sessions |
+| **Streaming** | | |
+| `claude_event` | `event` | Relayed Claude CLI NDJSON event (text, tool use, result) |
+| `agent_event` | `event` | Agent process event |
+| **Session lifecycle** | | |
+| `session_list` | `sessions[]` | Updated session list (after fork, new session, etc.) |
 | `session_started` | `session` | Session created or resumed |
-| `session_renamed` | `session` | Session renamed successfully |
-| `doc_list` | `files[]` | List of markdown file paths |
-| `doc_content` | `path`, `content` | Raw markdown file content |
-| `chat_history` | `sessionId`, `messages[]` | Persisted chat messages for a session |
-| `file_tree` | `tree[]` | Workspace directory tree (array of `FileTreeNode`) |
-| `file_content` | `path`, `content` | Raw file content for the file viewer |
-| `log_entry` | `source`, `text`, `timestamp` | Terminal log line (`source`: `stderr`, `stdout`, `server`, `preview`, `deploy`) |
-| `usage_stats` | `stats` | Aggregated usage data with per-session and total costs/turns |
-| `usage_update` | `sessionId`, `totalCostUsd`, `totalDurationMs`, `turnCount` | Pushed after each turn with cost |
-| `system_prompt` | `content` | Current system prompt text (empty string if not set) |
-| `system_prompt_saved` | `content` | Confirmation after saving/deleting the system prompt |
-| `thread_list` | `threads[]`, `activeThreadId` | All threads with checkpoints for the session |
-| `checkpoint_created` | `checkpoint`, `threads[]`, `activeThreadId` | Checkpoint created with updated thread data |
-| `thread_forked` | `thread`, `threads[]`, `activeThreadId` | New thread created from checkpoint |
-| `thread_switched` | `thread`, `threads[]`, `activeThreadId` | Switched to a different thread |
-| `files_changed` | `paths[]` | List of relative paths that changed in the workspace (debounced) |
-| `deploy_targets` | `targets[]` | Available deployment targets with config fields |
-| `deploy_configured` | `targetId` | Deployment credentials saved |
-| `deploy_started` | `targetId` | Deployment started |
-| `deploy_complete` | `targetId`, `url`, `environment` | Deployment succeeded |
-| `deploy_error` | `targetId`, `message` | Deployment failed |
-| `deploy_config_status` | `targetId`, `configured`, `hasRequiredFields` | Config status for a target |
-| `deploy_history` | `deployments[]` | Deployment history for the session |
+| `session_renamed` | `session` | Session title changed |
+| `session_status` | `sessionId`, `running`, `queueLength` | Runtime state of a session |
+| `session_agent_started` | `sessionId` | Agent started running (broadcast) |
+| `session_agent_finished` | `sessionId` | Agent finished (broadcast) |
+| `chat_history` | `sessionId`, `messages[]` | Persisted chat messages |
+| **Real-time workspace** | | |
+| `preview_status` | `running`, `port`, `url`, `source?`, `detectedPorts?` | Dev server status |
+| `files_changed` | `paths[]` | Workspace files changed (debounced) |
+| `file_tree` | `tree[]` | Workspace directory tree |
+| `file_content` | `path`, `content`, `isBinary?` | File content |
+| `git_log` | `commits[]` | Git commit history |
+| `git_committed` | `hash`, `message` | New auto-commit |
+| `turn_diff` | `fromCommit`, `toCommit`, `files[]`, `stats` | Code diff for a turn |
+| **Auth** | | |
+| `auth_required` | `url?` | OAuth URL for authentication |
+| `auth_complete` | — | OAuth flow finished |
+| `git_identity_required` | — | Git name/email must be set |
+| `git_identity_set` | `name`, `email` | Git identity configured |
+| `github_status` | `authenticated`, `username?`, `avatarUrl?` | GitHub auth status |
+| **GitHub results** | | |
+| `github_push_result` | `success`, `message`, `branch?` | Git push result |
+| `github_remotes` | `remotes[]` | Git remotes |
+| `github_branches` | `current`, `remote[]` | Git branches |
+| `github_search_results` | `repos[]` | GitHub repo search results |
+| `pr_status` | `pr` | PR status with checks |
+| **Settings & agents** | | |
+| `global_settings` | `gitIdentity`, `systemPrompt`, `agents[]`, `defaultAgentId` | All global settings |
+| `agent_list` | `agents[]`, `defaultAgentId` | Available agents |
+| `template_applied` | `templateId`, `name` | Template applied |
+| `feature_list` | `features[]` | Feature flags |
+| **Threads** | | |
+| `thread_list` | `threads[]`, `activeThreadId` | All threads with checkpoints |
+| `thread_switched` | `thread`, `threads[]`, `activeThreadId` | Switched to a thread |
+| `thread_forked` | `thread`, `threads[]`, `activeThreadId` | New thread forked |
+| **Deploy** | | |
+| `deploy_targets` | `targets[]` | Available deploy targets |
+| `project_settings` | `settings` | Project deploy settings |
+| `deploy_status` | `targetId`, `stage`, `message` | Deploy progress |
+| `deploy_complete` | `targetId`, `url`, `environment` | Deploy succeeded |
+| `deploy_error` | `targetId`, `message` | Deploy failed |
+| `deploy_history` | `deployments[]` | Deploy history |
+| **Usage** | | |
+| `usage_stats` | `stats` | Aggregated usage data |
+| `usage_update` | `sessionId`, `totalCostUsd`, `totalDurationMs`, `turnCount` | Per-turn cost update |
+| **Terminal** | | |
+| `log_entry` | `source`, `text`, `timestamp` | Terminal log line |
+| `terminal_output` | `data` | Terminal output |
+| `terminal_exit` | `code` | Terminal session ended |
+| `clear_logs` | — | Terminal logs cleared |
+| **Queue & interrupt** | | |
+| `message_queued` | `position`, `text` | Message queued while Claude busy |
+| `queue_updated` | `queue[]` | Queue contents changed |
+| `claude_interrupted` | — | Claude was interrupted |
+| **Preview config** | | |
+| `preview_config_missing` | `checked[]` | No shipit.yaml or package.json found |
+| `preview_config_error` | `message` | Malformed shipit.yaml |
+| `install_status` | `status`, `message?` | Dependency install progress |
+| **Model** | | |
+| `model_info` | `model`, `contextWindowTokens` | Claude model info |
+| **Docs** | | |
+| `doc_list` | `files[]` | Markdown file paths |
+| `doc_content` | `path`, `content` | Markdown file content |
+| **Error** | | |
+| `error` | `message` | Error description |
+| `full_reset_complete` | — | Full reset finished |
 
 ## Claude CLI Events (NDJSON)
 
@@ -102,7 +227,12 @@ Tool use blocks in `assistant` events relevant for rendering:
 
 ## Key files
 
-- `src/server/types.ts` — All message type definitions
-- `src/server/index.ts` — Server-side WebSocket handlers (inside `socket.on("message")`)
-- `src/client/App.tsx` — Client-side message handlers (in `useEffect` processing `lastMessage`)
+- `src/server/api-routes.ts` — HTTP REST API route handlers
+- `src/server/services/` — Business logic (pure functions shared by HTTP and WS)
+- `src/server/types/` — All message type definitions (split by domain)
+- `src/server/index.ts` — WebSocket dispatcher (`switch (msg.type)`)
+- `src/server/ws-handlers/` — WebSocket-only handlers (streaming, per-connection state)
+- `src/client/hooks/useApi.ts` — HTTP client hook (`apiGet`, `apiPost`, etc.)
 - `src/client/hooks/useWebSocket.ts` — WebSocket lifecycle, reconnection, send/receive
+- `src/client/hooks/useMessageHandler.ts` — Client-side WS message dispatch
+- `src/client/App.tsx` — Main orchestrator — state, layout
