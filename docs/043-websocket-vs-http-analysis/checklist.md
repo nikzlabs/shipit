@@ -129,13 +129,28 @@
 
 ## Phase 3: Tier 3 — Borderline cases
 
-- [ ] Split `get_chat_history` into read-only `GET /api/sessions/:id/history` (Phase 1) and WS `activate_session` message
-- [ ] Evaluate `fork_session` — HTTP POST for creation, WS for subsequent push events
-- [ ] Evaluate `fork_thread` / `switch_thread` — HTTP POST if push events can be deferred
-- [ ] Evaluate `merge_session` — straightforward HTTP POST candidate
-- [ ] Evaluate `generate_pr_description` — HTTP POST with longer timeout (LLM call)
-- [ ] Evaluate `home_create_repo_with_template` — HTTP POST with polling or WS notification on completion
-- [ ] Evaluate `start_auth` / `paste_auth_code` — HTTP POST for initiation, keep WS for `auth_complete` push
+Analysis complete — see `plan.md` Tier 3 section for detailed rationale on each verdict.
+
+### Migrate to HTTP (6 messages)
+
+- [ ] Split `get_chat_history` into:
+  - [ ] Read-only `GET /api/sessions/:id/history` — returns `{ messages, commits, fileTree }` (move to Phase 1 since it's a pure read)
+  - [ ] New WS `activate_session` message — extracted from `activateSession()` in `index.ts:739-796`, handles runner attach, file watcher, preview start, port scan, git identity check
+  - [ ] Update client to call HTTP for data, then send `activate_session` over WS
+- [ ] `POST /api/sessions/:id/fork` — extract from `fork_session` (body: `{ branchName, startPoint? }`, returns `{ session, parentSessionId, sessions }`)
+  - [ ] Add optional WS broadcast of `session_list` to other connections after success
+- [ ] `POST /api/sessions/:id/git/merge` — extract from `merge_session` (body: `{ sourceSessionId }`, returns `{ success, message, conflicts? }`)
+- [ ] `POST /api/repos` — extract from `home_create_repo_with_template` (body: `{ repoName, templateId, description?, isPrivate? }`, returns `{ success, repoUrl, sessionId }`)
+  - [ ] Client sends `activate_session` over WS after receiving HTTP response
+- [ ] `POST /api/sessions/:id/pr/description` — extract from `generate_pr_description` (returns `{ description }`, 30s timeout)
+- [ ] `POST /api/auth/start` — extract from `start_auth` (returns 202 Accepted)
+- [ ] `POST /api/auth/code` — extract from `paste_auth_code` (body: `{ code }`, returns 200 or 400)
+  - [ ] Keep `auth_complete` as WS broadcast (no change needed)
+
+### Keep on WS (2 messages)
+
+- [x] `fork_thread` — keep on WS (git reset + preview restart produce push events entangled with the connection's push channel; splitting trigger from effects adds coordination complexity)
+- [x] `switch_thread` — keep on WS (same reasoning as `fork_thread`)
 
 ## Phase 4: Cleanup
 
