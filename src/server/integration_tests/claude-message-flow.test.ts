@@ -91,11 +91,11 @@ describe("Integration: Claude message flow — basics", () => {
       tools: ["Write"],
     });
 
-    // Should receive claude_event + session_started (skip any log_entry messages)
-    const claudeEvent = await client.receiveSkipLogs();
-    expect(claudeEvent).toBeDefined();
-    expect(claudeEvent.type).toBe("claude_event");
-    expect((claudeEvent as any).event.type).toBe("system");
+    // Should receive agent_event (skip any log_entry messages)
+    const agentEvent = await client.receiveType("agent_event");
+    expect(agentEvent).toBeDefined();
+    expect(agentEvent.type).toBe("agent_event");
+    expect((agentEvent as any).event.type).toBe("agent_init");
 
     const sessionStarted = await client.receiveSkipLogs();
     expect(sessionStarted).toBeDefined();
@@ -139,8 +139,7 @@ describe("Integration: Claude message flow — basics", () => {
       session_id: "test-session",
     });
 
-    // Consume the claude_event for init and the session_started message
-    await client.receiveSkipLogs(); // claude_event (init)
+    // Consume the session_started message (agent_event is auto-skipped by receiveSkipLogs)
     const sessionMsg = await client.receiveSkipLogs(); // session_started
     expect(sessionMsg.type).toBe("session_started");
     const sessionDir = (sessionMsg as any).session.workspaceDir;
@@ -156,13 +155,11 @@ describe("Integration: Claude message flow — basics", () => {
       },
     });
 
-    // Consume the claude_event for the assistant message (skip log_entry messages)
-    await client.receiveSkipLogs();
+    // The agent_event for the assistant message is auto-skipped by receiveSkipLogs
 
     // Simulate Claude finishing — this triggers auto-commit
     lastClaude.emit("event", { type: "result", subtype: "success", session_id: "test-session" });
     lastClaude.emit("done", 0);
-    await client.receiveSkipLogs(); // consume the result claude_event
 
     // Wait for the async auto-commit (skip log_entry messages)
     const msg = await client.receiveSkipLogs();
@@ -299,8 +296,7 @@ describe("Integration: Claude message flow — basics", () => {
       subtype: "init",
       session_id: "track-session",
     });
-    // Consume claude_event + session_started (skip log_entry messages)
-    await client.receiveSkipLogs(); // claude_event
+    // Consume session_started (agent_event is auto-skipped by receiveSkipLogs)
     await client.receiveSkipLogs(); // session_started
 
     const sessionsBefore = sessionManager.list();
@@ -309,14 +305,12 @@ describe("Integration: Claude message flow — basics", () => {
     // Wait a tick so timestamp differs
     await new Promise((r) => setTimeout(r, 10));
 
-    // Result event should update lastUsedAt
+    // Result event should update lastUsedAt (agent_event is auto-skipped by receiveSkipLogs)
     lastClaude.emit("event", {
       type: "result",
       subtype: "success",
       session_id: "track-session",
     });
-    // Consume the claude_event (skip log_entry messages)
-    await client.receiveSkipLogs();
 
     const sessionsAfter = sessionManager.list();
     expect(sessionsAfter[0].lastUsedAt >= lastUsedBefore).toBe(true);

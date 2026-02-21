@@ -189,7 +189,7 @@ describe("Integration: persistent session runners", () => {
     });
 
     // Wait for client1 to receive the events
-    const assistantMsg = await drainUntil(client1, (m) => m.type === "claude_event" && m.event?.type === "assistant");
+    const assistantMsg = await drainUntil(client1, (m) => m.type === "agent_event" && m.event?.type === "agent_assistant");
     expect(assistantMsg).toBeTruthy();
 
     // Disconnect client1
@@ -203,9 +203,9 @@ describe("Integration: persistent session runners", () => {
     client2.send({ type: "activate_session", sessionId });
 
     // Client2 should receive replayed events from the turn buffer
-    // The buffer includes agent_event and claude_event from the assistant message
+    // The buffer includes agent_event from the assistant message
     const replayed = await drainUntil(client2, (m) =>
-      m.type === "claude_event" && m.event?.type === "assistant"
+      m.type === "agent_event" && m.event?.type === "agent_assistant"
     );
     expect(replayed).toBeTruthy();
 

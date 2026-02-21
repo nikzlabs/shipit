@@ -55,6 +55,12 @@ export class SessionRunner extends EventEmitter {
   private _accumulatedToolUse: ClaudeContentBlockToolUse[] = [];
   private _turnSummary = "";
 
+  // Per-turn message groups for chat history persistence.
+  // Each tool-result boundary starts a new group so messages are persisted
+  // as separate entries (matching the client-side split).
+  private _chatMessageGroups: Array<{ text: string; toolUse: ClaudeContentBlockToolUse[] }> = [];
+  private _needsNewMessageGroup = true;
+
   // Message queue
   private _messageQueue: QueuedMessage[] = [];
 
@@ -127,6 +133,12 @@ export class SessionRunner extends EventEmitter {
 
   get turnSummary(): string { return this._turnSummary; }
   set turnSummary(s: string) { this._turnSummary = s; }
+
+  get chatMessageGroups(): Array<{ text: string; toolUse: ClaudeContentBlockToolUse[] }> { return this._chatMessageGroups; }
+  set chatMessageGroups(groups: Array<{ text: string; toolUse: ClaudeContentBlockToolUse[] }>) { this._chatMessageGroups = groups; }
+
+  get needsNewMessageGroup(): boolean { return this._needsNewMessageGroup; }
+  set needsNewMessageGroup(v: boolean) { this._needsNewMessageGroup = v; }
 
   get agentId(): AgentId { return this._agentId; }
   set agentId(id: AgentId) { this._agentId = id; }

@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import type { WsClientMessage, ClaudeEvent, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment, FileAttachment, FileContextRef, PermissionMode } from "../types.js";
+import type { WsClientMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment, FileAttachment, FileContextRef, PermissionMode } from "../types.js";
 import type { AgentEvent, AgentProcess } from "../agents/agent-process.js";
 import type { HandlerContext } from "./types.js";
 import { getErrorMessage, validateImages, resolveFileAttachments, formatFileContext } from "../validation.js";
@@ -9,49 +9,6 @@ import { generateSessionName } from "../session-namer.js";
 type WsSendMessage = Extract<WsClientMessage, { type: "send_message" }>;
 type WsAnswerQuestion = Extract<WsClientMessage, { type: "answer_question" }>;
 type WsHomeSendWithRepo = Extract<WsClientMessage, { type: "home_send_with_repo" }>;
-
-/**
- * Convert a normalized AgentEvent back to the legacy ClaudeEvent format
- * for backward compatibility. Returns null for events that don't have
- * a ClaudeEvent equivalent.
- */
-function agentEventToClaudeEvent(event: AgentEvent): ClaudeEvent | null {
-  switch (event.type) {
-    case "agent_init":
-      return {
-        type: "system",
-        subtype: "init",
-        session_id: event.sessionId,
-        model: event.model,
-        tools: event.tools,
-      };
-    case "agent_assistant":
-      return {
-        type: "assistant",
-        message: { content: event.content },
-      };
-    case "agent_tool_result":
-      return {
-        type: "user",
-        message: { content: event.content },
-      };
-    case "agent_result":
-      return {
-        type: "result",
-        subtype: event.status,
-        session_id: event.sessionId,
-        total_cost_usd: event.cost?.totalUsd,
-        duration_ms: event.durationMs,
-        result: event.error,
-        input_tokens: event.tokens?.input,
-        output_tokens: event.tokens?.output,
-        cache_read_tokens: event.tokens?.cacheRead,
-        cache_write_tokens: event.tokens?.cacheWrite,
-      };
-    default:
-      return null;
-  }
-}
 
 /** Map model identifiers to context window sizes. */
 export function getContextWindowSize(model: string): number {
@@ -92,11 +49,6 @@ function wireAgentListeners(
 
   agent.on("event", (event: AgentEvent) => {
     emitToViewers({ type: "agent_event", event });
-
-    const legacyEvent = agentEventToClaudeEvent(event);
-    if (legacyEvent) {
-      emitToViewers({ type: "claude_event", event: legacyEvent });
-    }
 
     if (event.type === "agent_init") {
       // Use the session ID captured at turn start — immune to session switches
@@ -142,6 +94,26 @@ function wireAgentListeners(
       if (toolBlocks.length > 0) {
         ctx.setAccumulatedToolUse([...ctx.getAccumulatedToolUse(), ...toolBlocks]);
       }
+
+      // Track message groups for chat history (split at tool-result boundaries)
+      if (text || toolBlocks.length > 0) {
+        const groups = ctx.getChatMessageGroups();
+        if (ctx.getNeedsNewMessageGroup() || groups.length === 0) {
+          groups.push({ text: text, toolUse: [...toolBlocks] });
+          ctx.setNeedsNewMessageGroup(false);
+        } else {
+          const last = groups[groups.length - 1];
+          last.text += text;
+          last.toolUse.push(...toolBlocks);
+        }
+        ctx.setChatMessageGroups(groups);
+      }
+    }
+
+    // Mark a message-group boundary when tool results arrive so the
+    // next agent_assistant starts a new chat history entry.
+    if (event.type === "agent_tool_result") {
+      ctx.setNeedsNewMessageGroup(true);
     }
 
     if (event.type === "agent_result") {
@@ -176,14 +148,17 @@ function wireAgentListeners(
         }
       }
 
-      const accumulatedText = ctx.getAccumulatedText();
-      const accumulatedToolUse = ctx.getAccumulatedToolUse();
-      if (accumulatedText || accumulatedToolUse.length > 0) {
-        ctx.chatHistoryManager.append(usageSessionId, {
-          role: "assistant",
-          text: accumulatedText,
-          toolUse: accumulatedToolUse.length > 0 ? accumulatedToolUse : undefined,
-        });
+      // Persist each message group as a separate assistant entry so that
+      // reloaded chat history shows the same message boundaries as live streaming.
+      const groups = ctx.getChatMessageGroups();
+      for (const group of groups) {
+        if (group.text || group.toolUse.length > 0) {
+          ctx.chatHistoryManager.append(usageSessionId, {
+            role: "assistant",
+            text: group.text,
+            toolUse: group.toolUse.length > 0 ? group.toolUse : undefined,
+          });
+        }
       }
     }
   });
@@ -239,6 +214,8 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
   ctx.setTurnSummary("");
   ctx.setAccumulatedText("");
   ctx.setAccumulatedToolUse([]);
+  ctx.setChatMessageGroups([]);
+  ctx.setNeedsNewMessageGroup(true);
   let receivedResult = false;
   ctx.setWasInterrupted(false);
   const currentAgent = ctx.agentFactory(ctx.getActiveAgentId());
@@ -605,6 +582,8 @@ export async function handleAnswerQuestion(ctx: HandlerContext, msg: WsAnswerQue
   ctx.setTurnSummary("");
   ctx.setAccumulatedText("");
   ctx.setAccumulatedToolUse([]);
+  ctx.setChatMessageGroups([]);
+  ctx.setNeedsNewMessageGroup(true);
   const currentAgent = ctx.agentFactory(ctx.getActiveAgentId());
   ctx.setAgent(currentAgent);
 

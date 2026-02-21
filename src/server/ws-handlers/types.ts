@@ -65,6 +65,12 @@ export interface HandlerContext {
   getAccumulatedToolUse: () => ClaudeContentBlockToolUse[];
   setAccumulatedToolUse: (blocks: ClaudeContentBlockToolUse[]) => void;
 
+  // Per-turn message groups — each tool-result boundary starts a new group
+  getChatMessageGroups: () => Array<{ text: string; toolUse: ClaudeContentBlockToolUse[] }>;
+  setChatMessageGroups: (groups: Array<{ text: string; toolUse: ClaudeContentBlockToolUse[] }>) => void;
+  getNeedsNewMessageGroup: () => boolean;
+  setNeedsNewMessageGroup: (v: boolean) => void;
+
   // Message queue (delegates to attached runner)
   getMessageQueue: () => QueuedMessage[];
   clearMessageQueue: () => void;

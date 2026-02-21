@@ -17,7 +17,6 @@ import type { ToastData } from "../components/Toast.js";
 import type { TurnDiffData } from "../components/DiffPanel.js";
 import type {
   WsServerMessage, WsUsageUpdate, WsModelInfo,
-  ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse,
   WsChatHistoryMessage, DeployTargetInfo, DeploymentRecord, FeatureInfo,
   SessionInfo, AgentEvent, AgentContentBlock, WsClientMessage,
   WsMessageQueued, WsQueueUpdated,
@@ -203,7 +202,12 @@ export function useMessageHandler(params: {
         if (textBlocks || toolUseBlocks.length > 0) {
           setMessages((prev) => {
             const last = prev[prev.length - 1];
-            if (last && last.role === "assistant" && last.streaming) {
+            // Merge into the current streaming message UNLESS a tool cycle
+            // has completed (toolResults present). After tool results, the
+            // next assistant content belongs to a new message.
+            const canMerge = last && last.role === "assistant" && last.streaming
+              && !(last.toolResults && last.toolResults.length > 0);
+            if (canMerge) {
               return [
                 ...prev.slice(0, -1),
                 {
@@ -215,8 +219,12 @@ export function useMessageHandler(params: {
                 },
               ];
             }
+            // Close previous streaming message (if any) and start a new one
+            const closed = last && last.role === "assistant" && last.streaming
+              ? [...prev.slice(0, -1), { ...last, streaming: false }]
+              : prev;
             return [
-              ...prev,
+              ...closed,
               {
                 role: "assistant" as const,
                 text: textBlocks,
@@ -271,109 +279,6 @@ export function useMessageHandler(params: {
       }
 
       if (event.type === "agent_result") {
-        setIsLoading(false);
-        setActivity(undefined);
-        notify("The agent has finished responding.");
-        setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          if (last && last.role === "assistant") {
-            return [...prev.slice(0, -1), { ...last, streaming: false }];
-          }
-          return prev;
-        });
-      }
-    }
-
-    // ---- Legacy claude_event handler (backward compatibility) ----
-    if (data.type === "claude_event") {
-      const event = data.event;
-
-      if (event.type === "assistant") {
-        const textBlocks = (event.message?.content ?? [])
-          .filter((b: ClaudeContentBlock): b is ClaudeContentBlockText => b.type === "text")
-          .map((b) => b.text)
-          .join("");
-
-        const toolUseBlocks = (event.message?.content ?? [])
-          .filter((b: ClaudeContentBlock): b is ClaudeContentBlockToolUse => b.type === "tool_use");
-
-        if (toolUseBlocks.length > 0) {
-          const lastTool = toolUseBlocks[toolUseBlocks.length - 1];
-          setActivity(activityFromTool(lastTool.name, lastTool.input));
-        } else if (textBlocks) {
-          setActivity({ label: "Thinking..." });
-        }
-
-        if (textBlocks || toolUseBlocks.length > 0) {
-          setMessages((prev) => {
-            const last = prev[prev.length - 1];
-            if (last && last.role === "assistant" && last.streaming) {
-              return [
-                ...prev.slice(0, -1),
-                {
-                  role: "assistant" as const,
-                  text: last.text + textBlocks,
-                  toolUse: [...(last.toolUse ?? []), ...toolUseBlocks],
-                  toolResults: last.toolResults,
-                  streaming: true,
-                },
-              ];
-            }
-            return [
-              ...prev,
-              {
-                role: "assistant" as const,
-                text: textBlocks,
-                toolUse: toolUseBlocks,
-                streaming: true,
-              },
-            ];
-          });
-        }
-      }
-
-      if (event.type === "user") {
-        setActivity({ label: "Processing results..." });
-
-        const results: ToolResultBlock[] = [];
-        for (const block of (event.message?.content ?? []) as Record<string, unknown>[]) {
-          if (block.type === "tool_result" && block.tool_use_id) {
-            const rawContent = block.content;
-            let content: string;
-            if (typeof rawContent === "string") {
-              content = rawContent;
-            } else if (rawContent == null) {
-              content = "";
-            } else {
-              content = JSON.stringify(rawContent);
-            }
-            if (content.length > 1_000_000) {
-              content = content.slice(0, 1_000_000) + "\n... (output truncated — exceeded 1MB)";
-            }
-            results.push({
-              toolUseId: String(block.tool_use_id),
-              content,
-              isError: (block.is_error as boolean) ?? false,
-            });
-          }
-        }
-
-        if (results.length > 0) {
-          setMessages((prev) => {
-            const last = prev[prev.length - 1];
-            if (last?.role === "assistant") {
-              const existingResults = last.toolResults ?? [];
-              return [
-                ...prev.slice(0, -1),
-                { ...last, toolResults: [...existingResults, ...results] },
-              ];
-            }
-            return prev;
-          });
-        }
-      }
-
-      if (event.type === "result") {
         setIsLoading(false);
         setActivity(undefined);
         notify("The agent has finished responding.");

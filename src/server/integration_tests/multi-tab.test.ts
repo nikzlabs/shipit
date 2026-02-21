@@ -177,10 +177,10 @@ describe("Integration: multi-tab scenarios", () => {
 
     // Both tabs should see the assistant event
     const tab1Event = await drainUntil(tab1, (m) =>
-      m.type === "claude_event" && m.event?.type === "assistant"
+      m.type === "agent_event" && m.event?.type === "agent_assistant"
     );
     const tab2Event = await drainUntil(tab2, (m) =>
-      m.type === "claude_event" && m.event?.type === "assistant"
+      m.type === "agent_event" && m.event?.type === "agent_assistant"
     );
     expect(tab1Event).toBeTruthy();
     expect(tab2Event).toBeTruthy();
@@ -260,7 +260,7 @@ describe("Integration: multi-tab scenarios", () => {
       message: { content: [{ type: "text", text: "Still going" }] },
     });
     const tab1Event = await drainUntil(tab1, (m) =>
-      m.type === "claude_event" && m.event?.type === "assistant"
+      m.type === "agent_event" && m.event?.type === "agent_assistant"
     );
     expect(tab1Event).toBeTruthy();
 

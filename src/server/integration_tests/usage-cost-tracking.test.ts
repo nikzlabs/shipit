@@ -102,8 +102,7 @@ describe("Integration: Usage & cost tracking", () => {
       session_id: "usage-session-1",
     });
 
-    // Drain events (claude_event for system init, session_started)
-    await client.receiveSkipLogs(); // claude_event
+    // Drain events (session_started)
     const sessionStarted = await client.receiveSkipLogs(); // session_started
     const appSessionId = (sessionStarted as any).session.id;
 
@@ -112,7 +111,6 @@ describe("Integration: Usage & cost tracking", () => {
       type: "assistant",
       message: { content: [{ type: "text", text: "Hi there" }] },
     });
-    await client.receiveSkipLogs(); // claude_event for assistant
 
     // Simulate result with cost
     lastClaude.emit("event", {
@@ -123,10 +121,7 @@ describe("Integration: Usage & cost tracking", () => {
       duration_ms: 3200,
     });
 
-    // We should get the claude_event for result AND the usage_update
-    const resultEvent = await client.receiveSkipLogs();
-    expect(resultEvent.type).toBe("claude_event");
-
+    // The result agent_event is skipped by receiveSkipLogs(); grab usage_update
     const usageUpdate = await client.receiveSkipLogs();
     expect(usageUpdate).toMatchObject({
       type: "usage_update",
@@ -150,7 +145,6 @@ describe("Integration: Usage & cost tracking", () => {
     client.send({ type: "send_message", text: "turn 1" });
     await waitForClaude(() => lastClaude);
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "accum-session" });
-    await client.receiveSkipLogs(); // claude_event
     const sessionStarted = await client.receiveSkipLogs(); // session_started
     const appSessionId = (sessionStarted as any).session.id;
 
@@ -161,7 +155,6 @@ describe("Integration: Usage & cost tracking", () => {
       total_cost_usd: 0.10,
       duration_ms: 1000,
     });
-    await client.receiveSkipLogs(); // claude_event
     const update1 = await client.receiveSkipLogs();
     expect(update1).toMatchObject({
       type: "usage_update",
@@ -213,7 +206,6 @@ describe("Integration: Usage & cost tracking", () => {
     client.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "stats-session" });
-    await client.receiveSkipLogs(); // claude_event
     const sessionStarted = await client.receiveSkipLogs(); // session_started
     const appSessionId = (sessionStarted as any).session.id;
 
@@ -224,7 +216,6 @@ describe("Integration: Usage & cost tracking", () => {
       total_cost_usd: 0.55,
       duration_ms: 5000,
     });
-    await client.receiveSkipLogs(); // claude_event
     await client.receiveSkipLogs(); // usage_update
     lastClaude.emit("done", 0);
     await new Promise((r) => setTimeout(r, 100));
@@ -287,7 +278,6 @@ describe("Integration: Usage & cost tracking", () => {
     client.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "arc-usage-session" });
-    await client.receiveSkipLogs(); // claude_event
     const sessionStarted = await client.receiveSkipLogs(); // session_started
     const appSessionId = (sessionStarted as any).session.id;
 
@@ -298,7 +288,6 @@ describe("Integration: Usage & cost tracking", () => {
       total_cost_usd: 0.99,
       duration_ms: 7000,
     });
-    await client.receiveSkipLogs(); // claude_event
     await client.receiveSkipLogs(); // usage_update
     lastClaude.emit("done", 0);
     await new Promise((r) => setTimeout(r, 100));

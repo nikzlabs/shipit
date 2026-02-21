@@ -83,7 +83,6 @@ describe("Integration: Claude tool use accumulation", () => {
       subtype: "init",
       session_id: "tool-accum-session",
     });
-    await client.receiveSkipLogs(); // claude_event
     const sessionStarted = await client.receiveSkipLogs(); // session_started
     const appSessionId = (sessionStarted as any).session.id;
 
@@ -102,7 +101,6 @@ describe("Integration: Claude tool use accumulation", () => {
         ],
       },
     });
-    await client.receiveSkipLogs(); // claude_event
 
     // Second assistant event with another tool call (simulates a follow-up action)
     lastClaude.emit("event", {
@@ -119,7 +117,6 @@ describe("Integration: Claude tool use accumulation", () => {
         ],
       },
     });
-    await client.receiveSkipLogs(); // claude_event
 
     // Third assistant event with yet another tool call
     lastClaude.emit("event", {
@@ -135,11 +132,10 @@ describe("Integration: Claude tool use accumulation", () => {
         ],
       },
     });
-    await client.receiveSkipLogs(); // claude_event
 
-    // Complete the turn
+    // Complete the turn and wait for persistence to finish
     lastClaude.finish("tool-accum-session");
-    await client.receiveSkipLogs(); // result claude_event
+    await client.receiveType("session_agent_finished");
 
     // Verify persisted chat history has ALL tool calls, not just the last one
     const messages = chatHistoryManager.load(appSessionId);
@@ -171,7 +167,6 @@ describe("Integration: Claude tool use accumulation", () => {
       subtype: "init",
       session_id: "relay-session",
     });
-    await client.receiveSkipLogs(); // claude_event
     await client.receiveSkipLogs(); // session_started
 
     // First assistant event with a tool call
@@ -189,10 +184,10 @@ describe("Integration: Claude tool use accumulation", () => {
         ],
       },
     });
-    const event1 = await client.receiveSkipLogs();
-    expect(event1.type).toBe("claude_event");
-    expect((event1 as any).event.type).toBe("assistant");
-    const content1 = (event1 as any).event.message.content;
+    const event1 = await client.receiveType("agent_event");
+    expect(event1.type).toBe("agent_event");
+    expect((event1 as any).event.type).toBe("agent_assistant");
+    const content1 = (event1 as any).event.content;
     expect(content1).toHaveLength(2);
     expect(content1[0]).toMatchObject({ type: "text", text: "Reading file" });
     expect(content1[1]).toMatchObject({ type: "tool_use", id: "t1", name: "Read" });
@@ -211,10 +206,10 @@ describe("Integration: Claude tool use accumulation", () => {
         ],
       },
     });
-    const event2 = await client.receiveSkipLogs();
-    expect(event2.type).toBe("claude_event");
+    const event2 = await client.receiveType("agent_event");
+    expect(event2.type).toBe("agent_event");
     // The second event should also contain its tool_use block
-    const content2 = (event2 as any).event.message.content;
+    const content2 = (event2 as any).event.content;
     expect(content2).toHaveLength(1);
     expect(content2[0]).toMatchObject({ type: "tool_use", id: "t2", name: "Edit" });
 

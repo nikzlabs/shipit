@@ -83,8 +83,6 @@ describe("Integration: Model context & token tracking", () => {
       model: "claude-sonnet-4-20250514",
     });
 
-    // Drain claude_event for system init
-    await client.receiveSkipLogs(); // claude_event
     // session_started
     await client.receiveSkipLogs(); // session_started
 
@@ -154,8 +152,7 @@ describe("Integration: Model context & token tracking", () => {
       session_id: "token-session",
     });
 
-    // Drain events (claude_event for system init, session_started)
-    await client.receiveSkipLogs(); // claude_event
+    // Drain session_started
     await client.receiveSkipLogs(); // session_started
 
     // Simulate assistant text
@@ -163,8 +160,6 @@ describe("Integration: Model context & token tracking", () => {
       type: "assistant",
       message: { content: [{ type: "text", text: "Here is my response" }] },
     });
-    await client.receiveSkipLogs(); // claude_event for assistant
-
     // Simulate result with token data
     lastClaude.emit("event", {
       type: "result",
@@ -176,9 +171,9 @@ describe("Integration: Model context & token tracking", () => {
       output_tokens: 1200,
     });
 
-    // Drain the claude_event for result
-    const resultEvent = await client.receiveSkipLogs();
-    expect(resultEvent.type).toBe("claude_event");
+    // Drain the agent_event for result
+    const resultEvent = await client.receiveType("agent_event");
+    expect(resultEvent.type).toBe("agent_event");
 
     // Next should be usage_update with token data
     const usageUpdate = await client.receiveSkipLogs();
