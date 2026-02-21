@@ -12,7 +12,7 @@ import type { PreviewManager } from "../preview-manager.js";
 import type { AuthManager } from "../auth.js";
 import type { FileWatcher } from "../file-watcher.js";
 import type { AgentRegistry } from "../agents/agent-registry.js";
-import type { GitIdentityStore } from "../git-identity-store.js";
+import type { CredentialStore } from "../credential-store.js";
 import type { AgentId, AgentProcess } from "../agents/agent-process.js";
 import type { TerminalProcess } from "../terminal.js";
 import type { SessionRunner, SessionRunnerRegistry } from "../session-runner.js";
@@ -101,7 +101,7 @@ export interface HandlerContext {
   authManager: AuthManager;
   fileWatcher: FileWatcher;
   agentRegistry: AgentRegistry;
-  gitIdentityStore: GitIdentityStore;
+  credentialStore: CredentialStore;
 
   // === Factories ===
   createSessionDir: (title: string, opts?: { skipGitInit?: boolean }) => Promise<{ appSessionId: string; sessionDir: string }>;

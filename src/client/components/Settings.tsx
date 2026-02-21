@@ -177,6 +177,7 @@ export function Settings({
   const charCount = content.length;
   const isOverLimit = charCount > MAX_LENGTH;
 
+  const claudeAgent = agentList.find((a) => a.id === "claude");
   const codexAgent = agentList.find((a) => a.id === "codex");
 
   const generalTabs = ["agent", "github", "git", "instructions", "advanced"] as const;
@@ -263,12 +264,14 @@ export function Settings({
               {authUrl === null ? (
                 <div className="space-y-4">
                   <div className="flex items-center gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
-                    <span className="w-2.5 h-2.5 rounded-full bg-green-400 shrink-0" />
+                    <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${claudeAgent?.authConfigured !== false ? "bg-green-400" : "bg-yellow-400"}`} />
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
                         Claude CLI
                       </p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">Authenticated</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        {claudeAgent?.authConfigured !== false ? "Authenticated" : "Not authenticated"}
+                      </p>
                     </div>
                   </div>
 

@@ -3,14 +3,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { GitHubAuthManager, validateGitHubToken } from "./github-auth.js";
+import { CredentialStore } from "./credential-store.js";
 
 describe("GitHubAuthManager", () => {
   let tmpDir: string;
-  let tokenPath: string;
+  let credentialStore: CredentialStore;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-github-auth-"));
-    tokenPath = path.join(tmpDir, ".github-token");
+    credentialStore = new CredentialStore(tmpDir);
   });
 
   afterEach(() => {
@@ -18,36 +19,23 @@ describe("GitHubAuthManager", () => {
   });
 
   describe("checkCredentials", () => {
-    it("returns false when no token file exists", () => {
-      const mgr = new GitHubAuthManager(tmpDir, tokenPath);
+    it("returns false when no token stored", () => {
+      const mgr = new GitHubAuthManager(tmpDir, credentialStore);
       expect(mgr.checkCredentials()).toBe(false);
       expect(mgr.authenticated).toBe(false);
     });
 
-    it("returns true and loads token when file exists", () => {
-      fs.writeFileSync(tokenPath, "ghp_testtoken123");
-      const mgr = new GitHubAuthManager(tmpDir, tokenPath);
+    it("returns true and loads token when stored", () => {
+      credentialStore.setGithubToken("ghp_testtoken123");
+      const mgr = new GitHubAuthManager(tmpDir, credentialStore);
       expect(mgr.checkCredentials()).toBe(true);
       expect(mgr.authenticated).toBe(true);
-    });
-
-    it("returns false when token file is empty", () => {
-      fs.writeFileSync(tokenPath, "");
-      const mgr = new GitHubAuthManager(tmpDir, tokenPath);
-      expect(mgr.checkCredentials()).toBe(false);
-      expect(mgr.authenticated).toBe(false);
-    });
-
-    it("returns false when token file is whitespace only", () => {
-      fs.writeFileSync(tokenPath, "   \n  ");
-      const mgr = new GitHubAuthManager(tmpDir, tokenPath);
-      expect(mgr.checkCredentials()).toBe(false);
     });
   });
 
   describe("setToken", () => {
     it("rejects empty token", async () => {
-      const mgr = new GitHubAuthManager(tmpDir, tokenPath);
+      const mgr = new GitHubAuthManager(tmpDir, credentialStore);
       const failedHandler = vi.fn();
       mgr.on("auth_failed", failedHandler);
 
@@ -57,7 +45,7 @@ describe("GitHubAuthManager", () => {
     });
 
     it("rejects whitespace-only token", async () => {
-      const mgr = new GitHubAuthManager(tmpDir, tokenPath);
+      const mgr = new GitHubAuthManager(tmpDir, credentialStore);
       const failedHandler = vi.fn();
       mgr.on("auth_failed", failedHandler);
 
@@ -68,7 +56,7 @@ describe("GitHubAuthManager", () => {
 
   describe("getStatus", () => {
     it("returns unauthenticated status by default", () => {
-      const mgr = new GitHubAuthManager(tmpDir, tokenPath);
+      const mgr = new GitHubAuthManager(tmpDir, credentialStore);
       const status = mgr.getStatus();
       expect(status.authenticated).toBe(false);
       expect(status.username).toBeUndefined();
@@ -77,20 +65,20 @@ describe("GitHubAuthManager", () => {
   });
 
   describe("clearCredentials", () => {
-    it("removes token file and resets state", () => {
-      fs.writeFileSync(tokenPath, "ghp_testtoken");
-      const mgr = new GitHubAuthManager(tmpDir, tokenPath);
+    it("removes token and resets state", () => {
+      credentialStore.setGithubToken("ghp_testtoken");
+      const mgr = new GitHubAuthManager(tmpDir, credentialStore);
       mgr.checkCredentials();
       expect(mgr.authenticated).toBe(true);
 
       mgr.clearCredentials();
       expect(mgr.authenticated).toBe(false);
-      expect(fs.existsSync(tokenPath)).toBe(false);
+      expect(credentialStore.getGithubToken()).toBeNull();
       expect(mgr.getStatus().username).toBeUndefined();
     });
 
     it("is safe to call when no token exists", () => {
-      const mgr = new GitHubAuthManager(tmpDir, tokenPath);
+      const mgr = new GitHubAuthManager(tmpDir, credentialStore);
       expect(() => mgr.clearCredentials()).not.toThrow();
     });
   });

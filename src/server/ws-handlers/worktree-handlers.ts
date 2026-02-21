@@ -46,7 +46,7 @@ export async function handleForkSession(ctx: HandlerContext, msg: WsForkSession)
 
     // Apply identity & credentials to the worktree
     const worktreeGit = ctx.createGitManager(newSessionDir);
-    const stored = ctx.gitIdentityStore.get();
+    const stored = ctx.credentialStore.getGitIdentity();
     if (stored) await worktreeGit.setIdentity(stored.name, stored.email);
     if (ctx.githubAuthManager.authenticated) {
       ctx.githubAuthManager.configureGitCredentials(newSessionDir);
