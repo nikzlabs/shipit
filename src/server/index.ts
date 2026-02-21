@@ -1085,8 +1085,11 @@ if (!process.env.VITEST) {
 
   const app = await buildApp({ serveStatic: true, startPreview: true, baselinePorts });
 
-  const shutdown = () => {
-    app.close();
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    await app.close();
     process.exit(0);
   };
   process.on("SIGTERM", shutdown);
