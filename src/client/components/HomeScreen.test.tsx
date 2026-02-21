@@ -197,7 +197,7 @@ describe("HomeScreen", () => {
     expect(screen.queryByText("Create New Repository")).toBeNull();
   });
 
-  it("calls onNewRepo and closes dialog on submit", () => {
+  it("calls onNewRepo and keeps dialog open on submit", () => {
     const onNewRepo = vi.fn();
     render(
       <HomeScreen
@@ -221,8 +221,8 @@ describe("HomeScreen", () => {
     // Submit
     fireEvent.click(screen.getByText("Create & Setup"));
     expect(onNewRepo).toHaveBeenCalledWith("new-app", "", true, "react");
-    // Dialog should close
-    expect(screen.queryByText("Create New Repository")).toBeNull();
+    // Dialog stays open while creation is in progress (closes when redirect unmounts HomeScreen)
+    expect(screen.queryByText("Create New Repository")).not.toBeNull();
   });
 
   it("disables both RepoSelector and MessageInput when disabled prop is true", () => {

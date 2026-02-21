@@ -463,15 +463,16 @@ export function useAppCallbacks(params: {
           { repoName: name, templateId, description, isPrivate },
         );
         setCreatingRepo(false);
-        if (result.success && result.repoUrl) {
-          setSelectedRepoUrl(result.repoUrl);
+        if (result.success && result.sessionId) {
+          resumeSessionInternal(result.sessionId);
+          nav(`/session/${result.sessionId}`);
         }
       } catch (err) {
         setCreatingRepo(false);
         console.error("[api] Create repo failed:", err);
       }
     },
-    [apiPost, setCreatingRepo, setSelectedRepoUrl],
+    [apiPost, setCreatingRepo, resumeSessionInternal, nav],
   );
 
   const handleHomeSendWithRepo = useCallback(
