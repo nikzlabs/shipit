@@ -67,7 +67,8 @@ export function HomeScreen({
   const handleNewRepoSubmit = useCallback(
     (name: string, description: string, isPrivate: boolean, templateId: string) => {
       onNewRepo(name, description, isPrivate, templateId);
-      setShowNewRepoDialog(false);
+      // Dialog stays open showing "Creating..." while the API call runs.
+      // It closes naturally when the redirect unmounts HomeScreen.
     },
     [onNewRepo],
   );
