@@ -73,8 +73,9 @@ export function HomeScreen({
   );
 
   return (
-    <div className="flex flex-col items-center justify-center flex-1 min-h-0 px-4 py-8">
-      <div className="w-full max-w-xl space-y-4">
+    <div className="flex flex-col items-center flex-1 min-h-0 px-4 overflow-y-auto">
+      <div className="shrink-0 basis-[calc(50%-7rem)]" />
+      <div className="w-full max-w-xl space-y-4 shrink-0 pb-8">
         {/* Repo selector */}
         <RepoSelector
           sessions={sessions}
@@ -101,11 +102,9 @@ export function HomeScreen({
           fileTree={fileTree}
         />
 
-        {!selectedRepoUrl && (
-          <p className="text-xs text-gray-500 text-center">
-            Select a repository above or create a new one to get started.
-          </p>
-        )}
+        <p className={`text-xs text-gray-500 text-center ${selectedRepoUrl ? "invisible" : ""}`}>
+          Select a repository above or create a new one to get started.
+        </p>
       </div>
 
       {/* New repo dialog */}
