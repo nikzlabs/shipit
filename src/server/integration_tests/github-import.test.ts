@@ -10,6 +10,7 @@ import {
   StubDeploymentManager,
   StubDeploymentStore,
   FakeClaudeProcess,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
@@ -28,6 +29,7 @@ beforeEach(async () => {
   githubAuth = new StubGitHubAuthManager();
 
   app = await buildApp({
+    credentialStore: createTestCredentialStore(tmpDir),
     workspaceDir: tmpDir,
     claudeFactory: () => new FakeClaudeProcess() as any,
     previewManager: new StubPreviewManager() as any,

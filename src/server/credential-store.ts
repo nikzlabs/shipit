@@ -1,13 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-interface GitIdentity {
-  name: string;
-  email: string;
-}
-
 interface CredentialData {
-  gitIdentity?: GitIdentity;
   agentEnv?: Record<string, string>;
   githubToken?: string;
 }
@@ -53,21 +47,6 @@ export class CredentialStore {
         err instanceof Error ? err.message : String(err),
       );
     }
-  }
-
-  // ---- Git identity ----
-
-  getGitIdentity(): GitIdentity | null {
-    const id = this.data.gitIdentity;
-    if (id && typeof id.name === "string" && id.name.trim() && typeof id.email === "string" && id.email.trim()) {
-      return id;
-    }
-    return null;
-  }
-
-  setGitIdentity(name: string, email: string): void {
-    this.data.gitIdentity = { name, email };
-    this.save();
   }
 
   // ---- Agent environment variables ----

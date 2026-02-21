@@ -21,6 +21,7 @@ import {
   FakeClaudeProcess,
   StubFileWatcher,
   waitForClaude,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 
 describe("Integration: Threads — fork & switch", () => {
@@ -40,6 +41,7 @@ describe("Integration: Threads — fork & switch", () => {
     threadManager = new ThreadManager(path.join(tmpDir, "threads"));
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       chatHistoryManager,

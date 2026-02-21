@@ -20,6 +20,7 @@ import {
 } from "./test-helpers.js";
 import { GitHubAuthManager } from "../github-auth.js";
 import { CredentialStore } from "../credential-store.js";
+import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 
 describe("Integration: Phase 3 HTTP endpoints", () => {
   let app: FastifyInstance;
@@ -38,6 +39,8 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
     const sessionsFile = path.join(tmpDir, "sessions.json");
     sessionManager = new SessionManager(sessionsFile);
     githubAuthManager = new StubGitHubAuthManager();
+    initGlobalGitConfig(tmpDir);
+    setGitIdentity("Test User", "test@test.com");
     credentialStore = new CredentialStore(tmpDir);
     chatHistoryManager = new ChatHistoryManager(path.join(tmpDir, ".chat-history"));
     stubAuthManager = new StubAuthManager();

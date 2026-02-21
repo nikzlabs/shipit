@@ -87,7 +87,6 @@ export async function forkSession(
   createGitManager: (dir: string) => GitManager,
   getSharedRepoDir: (repoUrl: string) => string,
   sessionsRoot: string,
-  credentialStore: { getGitIdentity: () => { name: string; email: string } | null },
   githubAuthManager: { authenticated: boolean; configureGitCredentials: (dir: string) => void },
   threadManager: { init: (sessionId: string) => void },
   activeSessionId: string,
@@ -118,10 +117,8 @@ export async function forkSession(
   const repoGit = createGitManager(gitDir);
   await repoGit.createWorktree(newSessionDir, trimmed, startPoint);
 
-  // Apply identity & credentials to the worktree
-  const worktreeGit = createGitManager(newSessionDir);
-  const stored = credentialStore.getGitIdentity();
-  if (stored) await worktreeGit.setIdentity(stored.name, stored.email);
+  // Configure GitHub credentials in the worktree
+  // (identity is inherited from global git config automatically)
   if (githubAuthManager.authenticated) {
     githubAuthManager.configureGitCredentials(newSessionDir);
   }

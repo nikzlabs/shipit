@@ -19,6 +19,7 @@ import {
   FakeClaudeProcess,
   StubFileWatcher,
   waitForClaude,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 import { getContextWindowSize } from "../index.js";
 
@@ -33,6 +34,7 @@ describe("Integration: Model context & token tracking", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-model-context-"));
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
       previewManager: new StubPreviewManager() as unknown as PreviewManager,

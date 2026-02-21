@@ -7,6 +7,7 @@ import { GitManager } from "../git.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../auth.js";
+import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import { PreviewManager } from "../preview-manager.js";
 import { ClaudeProcess } from "../claude.js";
 import { FileWatcher } from "../file-watcher.js";
@@ -36,6 +37,10 @@ describe("Integration: Claude message flow — basics", () => {
     const sessionsFile = path.join(tmpDir, "sessions.json");
     sessionManager = new SessionManager(sessionsFile);
     chatHistoryManager = new ChatHistoryManager(path.join(tmpDir, "chat-history"));
+
+    // Set up global git config so sessions inherit identity automatically.
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@example.com");
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),

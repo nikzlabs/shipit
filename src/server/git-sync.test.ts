@@ -3,17 +3,24 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { GitManager } from "./git.js";
+import { initGlobalGitConfig, setGitIdentity } from "./git-config.js";
 
 describe("GitManager: push and pull", () => {
   let tmpDir: string;
   let bareDir: string;
+  let origGitConfigGlobal: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-sync-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test", "test@test.com");
     bareDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-bare-"));
   });
 
   afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
     fs.rmSync(tmpDir, { recursive: true, force: true });
     fs.rmSync(bareDir, { recursive: true, force: true });
   });
@@ -42,16 +49,12 @@ describe("GitManager: push and pull", () => {
     const { execSync } = await import("node:child_process");
     execSync("git init --bare -b main", { cwd: bareDir });
 
-    // Clone into two working copies
+    // Clone into two working copies (use separate dirs, not tmpDir which has git config files)
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-work-"));
     const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-clone-"));
     try {
-      execSync(`git clone ${bareDir} .`, { cwd: tmpDir, stdio: "pipe" });
+      execSync(`git clone ${bareDir} .`, { cwd: workDir, stdio: "pipe" });
       execSync(`git clone ${bareDir} .`, { cwd: cloneDir, stdio: "pipe" });
-
-      // Configure identity in clone and disable signing
-      execSync('git config user.email "test@test.com"', { cwd: cloneDir });
-      execSync('git config user.name "Tester"', { cwd: cloneDir });
-      execSync("git config commit.gpgsign false", { cwd: cloneDir });
 
       // Create a commit in the clone and push
       fs.writeFileSync(path.join(cloneDir, "from-clone.txt"), "from clone");
@@ -59,12 +62,13 @@ describe("GitManager: push and pull", () => {
       execSync("git push", { cwd: cloneDir, stdio: "pipe" });
 
       // Pull in the original
-      const git = new GitManager(tmpDir);
+      const git = new GitManager(workDir);
       const branch = await git.getCurrentBranch();
       const result = await git.pull("origin", branch);
       expect(result).toContain("Pulled from origin/");
-      expect(fs.existsSync(path.join(tmpDir, "from-clone.txt"))).toBe(true);
+      expect(fs.existsSync(path.join(workDir, "from-clone.txt"))).toBe(true);
     } finally {
+      fs.rmSync(workDir, { recursive: true, force: true });
       fs.rmSync(cloneDir, { recursive: true, force: true });
     }
   });

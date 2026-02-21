@@ -18,67 +18,6 @@ describe("CredentialStore", () => {
     return tmpDir;
   }
 
-  // ---- Git identity ----
-
-  describe("gitIdentity", () => {
-    it("returns null when no file exists", () => {
-      const store = new CredentialStore(createTmpDir());
-      expect(store.getGitIdentity()).toBeNull();
-    });
-
-    it("loads identity from existing file", () => {
-      const dir = createTmpDir();
-      fs.writeFileSync(
-        path.join(dir, "shipit-credentials.json"),
-        JSON.stringify({ gitIdentity: { name: "Jane", email: "jane@example.com" } }),
-      );
-
-      const store = new CredentialStore(dir);
-      expect(store.getGitIdentity()).toEqual({ name: "Jane", email: "jane@example.com" });
-    });
-
-    it("returns null for missing name", () => {
-      const dir = createTmpDir();
-      fs.writeFileSync(
-        path.join(dir, "shipit-credentials.json"),
-        JSON.stringify({ gitIdentity: { email: "jane@example.com" } }),
-      );
-
-      const store = new CredentialStore(dir);
-      expect(store.getGitIdentity()).toBeNull();
-    });
-
-    it("returns null for empty name", () => {
-      const dir = createTmpDir();
-      fs.writeFileSync(
-        path.join(dir, "shipit-credentials.json"),
-        JSON.stringify({ gitIdentity: { name: "  ", email: "jane@example.com" } }),
-      );
-
-      const store = new CredentialStore(dir);
-      expect(store.getGitIdentity()).toBeNull();
-    });
-
-    it("set persists to disk", () => {
-      const dir = createTmpDir();
-      const store = new CredentialStore(dir);
-      store.setGitIdentity("Alice", "alice@example.com");
-
-      expect(store.getGitIdentity()).toEqual({ name: "Alice", email: "alice@example.com" });
-
-      const raw = fs.readFileSync(path.join(dir, "shipit-credentials.json"), "utf-8");
-      expect(JSON.parse(raw).gitIdentity).toEqual({ name: "Alice", email: "alice@example.com" });
-    });
-
-    it("new instance reads back saved identity", () => {
-      const dir = createTmpDir();
-      new CredentialStore(dir).setGitIdentity("Carol", "carol@example.com");
-
-      const store2 = new CredentialStore(dir);
-      expect(store2.getGitIdentity()).toEqual({ name: "Carol", email: "carol@example.com" });
-    });
-  });
-
   // ---- Agent env ----
 
   describe("agentEnv", () => {
@@ -167,13 +106,11 @@ describe("CredentialStore", () => {
     it("all credential types coexist in one file", () => {
       const dir = createTmpDir();
       const store = new CredentialStore(dir);
-      store.setGitIdentity("Bob", "bob@example.com");
       store.setAgentEnv("OPENAI_API_KEY", "sk-abc");
       store.setGithubToken("ghp_xyz");
 
       const raw = JSON.parse(fs.readFileSync(path.join(dir, "shipit-credentials.json"), "utf-8"));
       expect(raw).toEqual({
-        gitIdentity: { name: "Bob", email: "bob@example.com" },
         agentEnv: { OPENAI_API_KEY: "sk-abc" },
         githubToken: "ghp_xyz",
       });
@@ -182,12 +119,10 @@ describe("CredentialStore", () => {
     it("clear removes everything", () => {
       const dir = createTmpDir();
       const store = new CredentialStore(dir);
-      store.setGitIdentity("Bob", "bob@example.com");
       store.setAgentEnv("OPENAI_API_KEY", "sk-abc");
       store.setGithubToken("ghp_xyz");
 
       store.clear();
-      expect(store.getGitIdentity()).toBeNull();
       expect(store.getAgentEnv("OPENAI_API_KEY")).toBeUndefined();
       expect(store.getGithubToken()).toBeNull();
     });
@@ -201,7 +136,6 @@ describe("CredentialStore", () => {
       fs.writeFileSync(path.join(dir, "shipit-credentials.json"), "not json{{{");
 
       const store = new CredentialStore(dir);
-      expect(store.getGitIdentity()).toBeNull();
       expect(store.getGithubToken()).toBeNull();
     });
 
@@ -209,7 +143,7 @@ describe("CredentialStore", () => {
       const dir = createTmpDir();
       const nested = path.join(dir, "sub", "dir");
       const store = new CredentialStore(nested);
-      store.setGitIdentity("Test", "test@example.com");
+      store.setAgentEnv("OPENAI_API_KEY", "sk-test");
 
       expect(fs.existsSync(path.join(nested, "shipit-credentials.json"))).toBe(true);
     });

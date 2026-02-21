@@ -19,6 +19,7 @@ import {
   FakeClaudeProcess,
   StubFileWatcher,
   waitForClaude,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 
 describe("Integration: PR description generation", () => {
@@ -39,6 +40,7 @@ describe("Integration: PR description generation", () => {
     const sessionManager = new SessionManager(sessionsFile);
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       previewManager: new StubPreviewManager() as unknown as PreviewManager,
@@ -123,6 +125,7 @@ describe("Integration: PR description generation", () => {
     let emptyLastClaude: FakeClaudeProcess | null = null;
 
     const emptyApp = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: new SessionManager(emptySessionsFile),
       previewManager: new StubPreviewManager() as unknown as PreviewManager,

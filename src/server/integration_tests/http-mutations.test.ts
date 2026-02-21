@@ -22,6 +22,7 @@ import {
 } from "./test-helpers.js";
 import { GitHubAuthManager } from "../github-auth.js";
 import { CredentialStore } from "../credential-store.js";
+import { initGlobalGitConfig, getGitIdentity, setGitIdentity } from "../git-config.js";
 import { DeploymentManager } from "../deployment-manager.js";
 import { DeploymentStore } from "../deployment-store.js";
 import { AgentRegistry } from "../agents/agent-registry.js";
@@ -40,6 +41,8 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     const sessionsFile = path.join(tmpDir, "sessions.json");
     sessionManager = new SessionManager(sessionsFile);
     githubAuthManager = new StubGitHubAuthManager();
+    initGlobalGitConfig(tmpDir);
+    setGitIdentity("Test User", "test@test.com");
     credentialStore = new CredentialStore(tmpDir);
     chatHistoryManager = new ChatHistoryManager(path.join(tmpDir, ".chat-history"));
 
@@ -242,14 +245,13 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect(body.email).toBe("test@example.com");
     });
 
-    it("persists identity to credential store", async () => {
+    it("persists identity to global git config", async () => {
       await app.inject({
         method: "POST",
         url: "/api/settings/git-identity",
         payload: { name: "Global User", email: "global@example.com" },
       });
-      const reloaded = new CredentialStore(tmpDir);
-      expect(reloaded.getGitIdentity()).toEqual({ name: "Global User", email: "global@example.com" });
+      expect(getGitIdentity()).toEqual({ name: "Global User", email: "global@example.com" });
     });
 
     it("returns 400 for empty name", async () => {
@@ -353,14 +355,13 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect(body.gitIdentity.email).toBe("new@test.com");
     });
 
-    it("persists git identity to credential store via settings", async () => {
+    it("persists git identity to global git config via settings", async () => {
       await app.inject({
         method: "PUT",
         url: "/api/settings",
         payload: { gitIdentity: { name: "Global User", email: "global@test.com" } },
       });
-      const reloaded = new CredentialStore(tmpDir);
-      expect(reloaded.getGitIdentity()).toEqual({ name: "Global User", email: "global@test.com" });
+      expect(getGitIdentity()).toEqual({ name: "Global User", email: "global@test.com" });
     });
 
     it("returns 400 for empty git name in settings", async () => {
@@ -760,6 +761,8 @@ describe("Integration: Phase 2 HTTP agent mutations", () => {
     delete process.env.OPENAI_API_KEY;
 
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-http-agents-"));
+    initGlobalGitConfig(tmpDir);
+    setGitIdentity("Test User", "test@test.com");
 
     const registry = new AgentRegistry({
       checkBinary: async (binary) => binary === "claude" || binary === "codex",
@@ -771,6 +774,7 @@ describe("Integration: Phase 2 HTTP agent mutations", () => {
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
       chatHistoryManager: new ChatHistoryManager(path.join(tmpDir, ".chat-history")),
+      credentialStore: new CredentialStore(path.join(tmpDir, "credentials")),
       previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentRegistry: registry,
@@ -859,6 +863,8 @@ describe("Integration: Phase 2 HTTP deploy config mutations", () => {
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-http-deploy-"));
+    initGlobalGitConfig(tmpDir);
+    setGitIdentity("Test User", "test@test.com");
 
     sessionManager = new SessionManager(path.join(tmpDir, "sessions.json"));
     stubDeployMgr = new StubDeploymentManager();

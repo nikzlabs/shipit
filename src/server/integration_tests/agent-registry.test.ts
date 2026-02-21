@@ -19,6 +19,7 @@ import {
   StubPreviewManager,
   StubAuthManager,
   StubFileWatcher,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 
 describe("Integration: Agent registry — list_agents", () => {
@@ -35,6 +36,7 @@ describe("Integration: Agent registry — list_agents", () => {
     await registry.detect();
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
       chatHistoryManager: new ChatHistoryManager(path.join(tmpDir, "chat-history")),

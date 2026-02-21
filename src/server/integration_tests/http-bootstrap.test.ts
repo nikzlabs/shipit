@@ -19,6 +19,7 @@ import {
 } from "./test-helpers.js";
 import { GitHubAuthManager } from "../github-auth.js";
 import { CredentialStore } from "../credential-store.js";
+import { initGlobalGitConfig, setGitIdentity as setGlobalGitIdentity } from "../git-config.js";
 
 describe("Integration: GET /api/bootstrap", () => {
   let app: FastifyInstance;
@@ -33,6 +34,7 @@ describe("Integration: GET /api/bootstrap", () => {
     const sessionsFile = path.join(tmpDir, "sessions.json");
     sessionManager = new SessionManager(sessionsFile);
     githubAuthManager = new StubGitHubAuthManager();
+    initGlobalGitConfig(tmpDir);
     credentialStore = new CredentialStore(tmpDir);
 
     app = await buildApp({
@@ -125,7 +127,7 @@ describe("Integration: GET /api/bootstrap", () => {
   });
 
   it("returns global settings with git identity", async () => {
-    credentialStore.setGitIdentity("Test User", "test@example.com");
+    setGlobalGitIdentity("Test User", "test@example.com");
 
     const res = await app.inject({
       method: "GET",

@@ -20,6 +20,7 @@ import {
   FakeClaudeProcess,
   StubFileWatcher,
   waitForClaude,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 
 describe("Integration: Worktree sessions", () => {
@@ -37,6 +38,7 @@ describe("Integration: Worktree sessions", () => {
     sessionManager = new SessionManager(sessionsFile);
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       previewManager: new StubPreviewManager() as unknown as PreviewManager,
@@ -329,6 +331,7 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     githubAuthManager = new StubGitHubAuthManager();
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => {
         const gm = new GitManager(dir);
         // Stub renameBranch to avoid race with async session naming

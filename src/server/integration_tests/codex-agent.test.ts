@@ -39,6 +39,7 @@ import {
   FakeClaudeProcess,
   StubFileWatcher,
   waitForClaude,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 
 /**
@@ -196,6 +197,7 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
     const registry = await makeRegistry();
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       chatHistoryManager,
@@ -416,6 +418,7 @@ describe("Integration: Codex agent — validation and default agent", () => {
 
     // Default agent is "claude" — tests that need the default behavior
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       chatHistoryManager,

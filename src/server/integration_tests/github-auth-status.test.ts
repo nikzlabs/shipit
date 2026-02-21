@@ -17,6 +17,7 @@ import {
   StubGitHubAuthManager,
   FakeClaudeProcess,
   StubFileWatcher,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 
 describe("Integration: GitHub auth status & tokens", () => {
@@ -32,6 +33,7 @@ describe("Integration: GitHub auth status & tokens", () => {
     const githubAuthManager = new StubGitHubAuthManager();
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       previewManager: new StubPreviewManager() as unknown as PreviewManager,
