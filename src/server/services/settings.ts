@@ -147,6 +147,23 @@ export function setAgentEnv(
   return { agentId, key, agents: listAgents(agentRegistry) };
 }
 
+/** Start the OAuth flow for Claude CLI authentication. */
+export function startAuth(
+  authManager: { startOAuthFlow: () => void },
+): void {
+  authManager.startOAuthFlow();
+}
+
+/** Submit an OAuth authorization code. */
+export function submitAuthCode(
+  authManager: { sendCode: (code: string) => void },
+  code: string,
+): void {
+  const trimmed = typeof code === "string" ? code.trim() : "";
+  if (!trimmed) throw new ServiceError(400, "Authorization code cannot be empty");
+  authManager.sendCode(trimmed);
+}
+
 /** Set API key. Returns true if valid. */
 export function setApiKey(
   key: string,

@@ -273,21 +273,12 @@ describe("Integration: File watcher", () => {
     lastClaude.emit("event", { type: "result", subtype: "success", session_id: "img-persist-test" });
     lastClaude.emit("done", 0);
 
-    // Now load the chat history using the app session UUID
+    // Now load the chat history via HTTP using the app session UUID
     // (chat persistence is synchronous so it's already on disk)
-    client.send({ type: "get_chat_history", sessionId: appSessionId! });
+    const historyRes = await app.inject({ method: "GET", url: `/api/sessions/${appSessionId}/history` });
+    expect(historyRes.statusCode).toBe(200);
+    const chatHistory = historyRes.json();
 
-    // Drain until we get chat_history
-    let chatHistory: any = null;
-    for (let i = 0; i < 20; i++) {
-      const m = await client.receive();
-      if (m.type === "chat_history") {
-        chatHistory = m;
-        break;
-      }
-    }
-
-    expect(chatHistory).not.toBeNull();
     expect(chatHistory.messages.length).toBeGreaterThanOrEqual(2);
     // Find the first user message with images
     const userMsg = chatHistory.messages.find((m: any) => m.role === "user" && m.images?.length > 0);

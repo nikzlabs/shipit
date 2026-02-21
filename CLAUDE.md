@@ -27,15 +27,18 @@ npx vitest run src/server/git.test.ts
 
 ```
 src/
-  server/          Fastify backend with WebSocket at /ws
-    index.ts       Entry point — buildApp(), DI setup, switch dispatcher
+  server/          Fastify backend with HTTP REST API + WebSocket at /ws
+    index.ts       Entry point — buildApp(), DI setup, WS switch dispatcher
+    api-routes.ts  HTTP REST API routes (registered via registerApiRoutes())
     validation.ts  Image/file validation (validateImages, resolveFileAttachments, formatFileContext, getErrorMessage)
-    ws-handlers/   Extracted WebSocket message handlers (one file per domain)
+    services/      Business logic layer — pure functions consumed by both HTTP routes and WS handlers
+      session.ts, git.ts, github.ts, deploy.ts, settings.ts, threads.ts, templates.ts,
+      files.ts, misc.ts, types.ts
+    ws-handlers/   WebSocket-only message handlers (streaming, per-connection state)
       types.ts     HandlerContext interface shared by all handlers
       send-message.ts  send_message, answer_question, home_send_with_repo + runClaudeWithMessage
-      git-handlers.ts, file-handlers.ts, terminal-handlers.ts, settings-handlers.ts,
-      misc-handlers.ts, deploy-handlers.ts, github-handlers.ts, pr-handlers.ts,
-      session-handlers.ts, worktree-handlers.ts, template-handlers.ts, thread-handlers.ts
+      session-handlers.ts, terminal-handlers.ts, misc-handlers.ts, deploy-handlers.ts,
+      thread-handlers.ts
     claude.ts      ClaudeProcess — spawns CLI, parses NDJSON, emits events
     git.ts         GitManager — init, autoCommit, log, rollback
     sessions.ts    SessionManager — persists session metadata to JSON
@@ -66,8 +69,8 @@ src/
 
 ## Architecture
 
-- **Server**: Fastify with a single WebSocket route (`/ws`). All client-server communication is over WebSocket using JSON messages. Message types defined in `src/server/types.ts`.
-- **Client**: React 19 SPA. State lives in `App.tsx`. WebSocket communication via `useWebSocket` hook.
+- **Server**: Fastify with HTTP REST API (`/api/*`) and WebSocket (`/ws`). Most operations use HTTP (reads, mutations). WebSocket is reserved for streaming events (Claude output, file changes, preview status), per-connection state (session activation, agent selection), and real-time push (agent events, notifications). Business logic lives in `src/server/services/` — pure functions consumed by both HTTP routes and WS handlers.
+- **Client**: React 19 SPA. State lives in `App.tsx`. HTTP via `useApi` hook (`src/client/hooks/useApi.ts`), WebSocket via `useWebSocket` hook.
 - **Dependency injection**: `buildApp()` accepts an `AppDeps` object so tests can inject stubs/fakes instead of real processes. All external dependencies (git, Claude CLI, Vite, port scanner, file watcher) are injectable.
 - **Process management**: Claude CLI, Vite, and git are managed via child processes. Claude and Vite managers extend `EventEmitter`.
 - **Session isolation**: Each session gets its own workspace directory (`/workspace/sessions/{uuid}/`) with independent git repo. Per-connection state tracks `activeSessionDir`.
@@ -100,45 +103,49 @@ Key patterns:
 - **Assertions** — `toMatchObject()` for partial WS message matching, `toEqual()` for exact structure, `@testing-library/jest-dom` matchers for DOM.
 - **Testability** — modules accept optional constructor parameters for isolation: `SessionManager(sessionsFile?)`, `GitManager(workspaceDir?)`, `UsageManager(usageFile?)`, `ThreadManager(threadsDir?)`, `DeploymentStore(baseDir?)`.
 
-## How to add a new WebSocket message type
+## When to use WebSocket vs HTTP
 
-1. Add the interface to `src/server/types.ts` (both `WsClientMessage` and/or `WsServerMessage` unions)
-2. Add the handler function in the appropriate `src/server/ws-handlers/*-handlers.ts` file (or create a new one if no domain matches). See "WebSocket handler pattern" below.
+ShipIt uses HTTP for most operations and reserves WebSocket for a narrow set of cases. When adding a new feature, use this decision framework:
+
+**Use HTTP** (default) when:
+- The operation is a simple read (GET) or mutation (POST/PATCH/DELETE) with a single request-response cycle
+- The client needs the result directly (e.g., to update UI state from the response)
+- The operation is stateless — any client tab could make the same request
+- Examples: fetching file content, renaming a session, creating a PR, saving settings
+
+**Use WebSocket** only when one of these applies:
+1. **Streaming output** — the server produces incremental data over time (Claude CLI events, deploy progress, terminal output). HTTP would require polling or SSE; WS gives us a natural push channel already connected.
+2. **Per-connection state** — the operation modifies state tied to *this specific browser tab*, not the user globally. Session activation (`activate_session`) attaches a runner and file watcher to the connection. Agent selection (`set_agent`) sets the agent for this tab only. These don't make sense as HTTP because they bind to the socket's lifecycle.
+3. **Bidirectional real-time interaction** — the client and server exchange messages in rapid succession as part of one logical flow: sending a prompt and receiving streamed tokens, answering permission questions mid-turn, interactive terminal I/O.
+4. **Server-initiated push** — the server needs to notify the client without a preceding request: file change events, preview status updates, session status broadcasts, queue notifications.
+
+**Gray area — lean HTTP:**
+- If an operation triggers server-side effects that push WS events (e.g., `fork_session` triggers a `session_list` broadcast), that's fine — the trigger is HTTP, the notification is WS. Don't put the trigger on WS just because it has side effects.
+- If you're unsure, start with HTTP. It's simpler to test (`app.inject()`), easier to debug (curl), and doesn't couple the operation to connection lifecycle. You can always add a WS broadcast for notifications on top.
+
+**Current WS message types** (18 client → server):
+`send_message`, `answer_question`, `home_send_with_repo`, `new_session`, `activate_session`, `set_agent`, `interrupt_claude`, `fork_thread`, `switch_thread`, `initiate_deploy`, `cancel_deploy`, `cancel_queued_message`, `init_preview_config`, `diff_comment`, `clear_logs`, `terminal_start`, `terminal_input`, `terminal_resize`
+
+See `docs/001-websocket-protocol/plan.md` for the full endpoint and message reference.
+
+## How to add a new server endpoint
+
+**Prefer HTTP** for new endpoints unless the operation requires per-connection state or real-time streaming (see decision framework above).
+
+### Adding an HTTP endpoint (most cases)
+
+1. Add the service function in the appropriate `src/server/services/*.ts` file — pure function that accepts explicit parameters (session ID, managers) and returns data or throws `ServiceError`
+2. Add the Fastify route in `src/server/api-routes.ts` — call the service function, handle errors, return JSON
+3. On the client, call the endpoint via `useApi` hook (`apiGet()` / `apiPost()` / etc.) from `src/client/hooks/useApi.ts`
+4. Add integration tests using `app.inject()` in `src/server/integration_tests/`
+
+### Adding a WebSocket message (streaming, per-connection state only)
+
+1. Add the interface to `src/server/types/ws-client-messages.ts` (and/or `ws-server-messages.ts` for server-to-client)
+2. Add the handler in the appropriate `src/server/ws-handlers/*-handlers.ts` file
 3. Add a `case` to the `switch (msg.type)` dispatcher in `src/server/index.ts`
-4. Add the client-side handler in the `useEffect` in `src/client/App.tsx` that processes `lastMessage`
-5. Wire up the UI component to call `send()` with the new message type
-6. Add integration tests in `src/server/integration_tests/` (happy path + error path)
-7. Update `docs/001-websocket-protocol/plan.md` with the new message
-
-## WebSocket handler pattern
-
-Server-side WebSocket handlers live in `src/server/ws-handlers/`. Each file groups handlers by domain (git, deploy, github, etc.). Every handler function receives a `HandlerContext` (defined in `ws-handlers/types.ts`) that provides access to per-connection state and app-level managers.
-
-**Adding a handler to an existing domain file:**
-
-```ts
-// src/server/ws-handlers/git-handlers.ts
-import type { WsClientMessage } from "../types.js";
-import type { HandlerContext } from "./types.js";
-import { getErrorMessage } from "../validation.js";
-
-type WsMyNewMessage = Extract<WsClientMessage, { type: "my_new_message" }>;
-
-export async function handleMyNewMessage(ctx: HandlerContext, msg: WsMyNewMessage): Promise<void> {
-  try {
-    // Use ctx.send() to reply, ctx.getActiveGitManager() for git, etc.
-    ctx.send({ type: "my_response", data: "..." });
-  } catch (err) {
-    ctx.send({ type: "error", message: `Failed: ${getErrorMessage(err)}` });
-  }
-}
-```
-
-Then wire it up in `src/server/index.ts`:
-
-```ts
-case "my_new_message": return gitHandlers.handleMyNewMessage(ctx, msg);
-```
+4. Add the client-side handler in `src/client/hooks/useMessageHandler.ts`
+5. Add integration tests in `src/server/integration_tests/`
 
 **Key conventions:**
 - Use `Extract<WsClientMessage, { type: "..." }>` to get the narrowed message type — don't import individual message interfaces.
@@ -166,7 +173,7 @@ Every new feature must satisfy these before it's considered complete:
 1. **Input validation at system boundaries** — WebSocket handlers must validate user-supplied strings (empty, whitespace-only, too long) and return `{ type: "error" }`. Never trust client input.
 2. **Component tests for new UI** — every new React component (or significant UI addition to an existing component) needs a `*.test.tsx` file with `@testing-library/react`. Cover the happy path, edge cases (empty input, escape/cancel), and callback wiring.
 3. **Blur/focus edge cases** — inline editors that save on blur must handle the case where blur is triggered by a parent element (e.g. backdrop dismiss) that *cancels* the edit. Use a ref guard to prevent double-fire.
-4. **Integration tests for new WS messages** — every new `WsClientMessage` type needs at least one happy-path and one error-path integration test in `src/server/integration_tests/`. Add to an existing file if the feature area matches, or create a new `<feature>.test.ts` file and import shared helpers from `./test-helpers.js`.
+4. **Integration tests for new endpoints** — every new HTTP endpoint or WS message type needs at least one happy-path and one error-path integration test in `src/server/integration_tests/`. HTTP tests use `app.inject()`. WS tests use the `TestClient` helper. Add to an existing file if the feature area matches, or create a new `<feature>.test.ts` file and import shared helpers from `./test-helpers.js`.
 5. **Split slow test files** — if a single test file takes more than ~10 seconds to run, split it into smaller files by feature area so Vitest can parallelize them.
 
 ## Docs structure

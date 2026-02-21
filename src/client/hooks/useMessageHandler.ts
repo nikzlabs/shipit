@@ -388,13 +388,6 @@ export function useMessageHandler(params: {
     }
 
     if (data.type === "error") {
-      // If we're generating a PR description, show the error in the modal
-      if (prDescGeneratingRef.current) {
-        setPrDescGenerating(false);
-        prDescGeneratingRef.current = false;
-        setPrDescError(data.message);
-        return;
-      }
       setIsLoading(false);
       setActivity(undefined);
       // Mark any in-flight streaming message as done, then append the error
@@ -548,10 +541,6 @@ export function useMessageHandler(params: {
       setMessages(loaded);
     }
 
-    if (data.type === "template_list") {
-      setTemplates(data.templates as TemplateInfo[]);
-    }
-
     if (data.type === "template_applied") {
       setShowTemplates(false);
       // Refresh file tree in case user is on that tab
@@ -562,25 +551,12 @@ export function useMessageHandler(params: {
       }
     }
 
-    if (data.type === "home_repo_ready") {
-      setCreatingRepo(false);
-      if (data.success && data.repoUrl) {
-        setSelectedRepoUrl(data.repoUrl);
-      }
-    }
-
     if (data.type === "github_status") {
       setGithubStatus({
         authenticated: data.authenticated,
         username: data.username,
         avatarUrl: data.avatarUrl,
       });
-    }
-
-    if (data.type === "generated_pr_description") {
-      setPrDescGenerating(false);
-      prDescGeneratingRef.current = false;
-      setPrGeneratedDesc(data.description);
     }
 
     if (data.type === "model_info") {

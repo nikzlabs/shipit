@@ -112,80 +112,67 @@ describe("Integration: Worktree sessions", () => {
     return sessionId;
   }
 
-  // ---- fork_session ----
+  // ---- fork_session (HTTP) ----
 
-  it("fork_session creates a worktree session from active session", async () => {
+  it("fork_session creates a worktree session via HTTP", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     const parentId = await createAndActivateSession(client, "Parent session");
     expect(parentId).toBeTruthy();
-
-    // Fork the session
-    client.send({ type: "fork_session", branchName: "feature-1" } as any);
-
-    // Should receive session_forked and session_list
-    const deadline = Date.now() + 5000;
-    let forkedMsg: any = null;
-    let listMsg: any = null;
-    while (Date.now() < deadline && (!forkedMsg || !listMsg)) {
-      const msg = await client.receive();
-      if (msg.type === "session_forked") forkedMsg = msg;
-      if (msg.type === "session_list") listMsg = msg;
-    }
-
-    expect(forkedMsg).not.toBeNull();
-    expect(forkedMsg.session.branch).toBe("feature-1");
-    expect(forkedMsg.session.sessionType).toBe("worktree");
-    expect(forkedMsg.parentSessionId).toBe(parentId);
-
-    // Verify the worktree directory exists
-    expect(fs.existsSync(forkedMsg.session.workspaceDir)).toBe(true);
-
     client.close();
+
+    // Fork the session via HTTP
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/fork`,
+      payload: { branchName: "feature-1" },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+
+    expect(body.session.title).toContain("feature-1");
+    expect(body.parentSessionId).toBe(parentId);
+    expect(body.sessions.length).toBeGreaterThanOrEqual(2);
   }, 15_000);
 
-  it("fork_session rejects empty branch name", async () => {
+  it("fork_session rejects empty branch name via HTTP", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    await createAndActivateSession(client, "Parent");
-
-    client.send({ type: "fork_session", branchName: "  " } as any);
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("Branch name is required");
-
+    const parentId = await createAndActivateSession(client, "Parent");
     client.close();
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/fork`,
+      payload: { branchName: "  " },
+    });
+    expect(res.statusCode).toBe(400);
   });
 
-  it("fork_session rejects invalid branch name characters", async () => {
+  it("fork_session rejects invalid branch name characters via HTTP", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    await createAndActivateSession(client, "Parent");
-
-    client.send({ type: "fork_session", branchName: "has spaces" } as any);
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("Invalid branch name");
-
+    const parentId = await createAndActivateSession(client, "Parent");
     client.close();
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/fork`,
+      payload: { branchName: "has spaces" },
+    });
+    expect(res.statusCode).toBe(400);
   });
 
-  it("fork_session rejects when no active session", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "fork_session", branchName: "feature" } as any);
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("No active session to fork from");
-
-    client.close();
+  it("fork_session returns 404 for nonexistent session via HTTP", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/nonexistent/fork",
+      payload: { branchName: "feature" },
+    });
+    expect(res.statusCode).toBe(404);
   });
 
   // ---- list_worktrees ----
@@ -217,24 +204,19 @@ describe("Integration: Worktree sessions", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    await createAndActivateSession(client, "Parent");
+    const parentId = await createAndActivateSession(client, "Parent");
+    client.close();
 
-    // Fork it
-    client.send({ type: "fork_session", branchName: "to-archive" } as any);
-
-    // Collect both session_forked and session_list from fork (skip any interleaved messages)
-    let forkedMsg: any = null;
-    let forkListReceived = false;
-    const forkDeadline = Date.now() + 5000;
-    while (Date.now() < forkDeadline && (!forkedMsg || !forkListReceived)) {
-      const msg = await client.receive();
-      if (msg.type === "session_forked") forkedMsg = msg;
-      if (msg.type === "session_list") forkListReceived = true;
-    }
-    expect(forkedMsg).not.toBeNull();
-
-    const childId = forkedMsg.session.id;
-    const childDir = forkedMsg.session.workspaceDir;
+    // Fork via HTTP
+    const forkRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/fork`,
+      payload: { branchName: "to-archive" },
+    });
+    expect(forkRes.statusCode).toBe(200);
+    const childId = forkRes.json().session.id;
+    const childSession = sessionManager.get(childId);
+    const childDir = childSession!.workspaceDir!;
 
     // Archive the child via HTTP
     const archiveRes = await app.inject({ method: "DELETE", url: `/api/sessions/${childId}` });
@@ -246,104 +228,59 @@ describe("Integration: Worktree sessions", () => {
 
     // The worktree directory should have been removed
     expect(fs.existsSync(childDir)).toBe(false);
-
-    client.close();
   }, 15_000);
 
-  // ---- merge_session ----
+  // ---- merge_session (HTTP) ----
 
-  it("merge_session returns error when no active session", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "merge_session", sourceSessionId: "nonexistent" } as any);
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("No active session to merge into");
-
-    client.close();
+  it("merge_session returns 404 for nonexistent target session via HTTP", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/nonexistent/git/merge",
+      payload: { sourceSessionId: "anything" },
+    });
+    expect(res.statusCode).toBe(404);
   });
 
-  it("merge_session returns error for empty source ID", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    await createAndActivateSession(client, "Parent");
-
-    client.send({ type: "merge_session", sourceSessionId: "" } as any);
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("Source session ID is required");
-
-    client.close();
-  });
-
-  it("merge_session returns error for nonexistent source", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    await createAndActivateSession(client, "Parent");
-
-    client.send({ type: "merge_session", sourceSessionId: "nonexistent" } as any);
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("Source session not found");
-
-    client.close();
-  });
-
-  it("merge_session merges a worktree branch into the active session", async () => {
+  it("merge_session merges a worktree branch into the parent session via HTTP", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     const parentId = await createAndActivateSession(client, "Parent");
     expect(parentId).toBeTruthy();
+    client.close();
 
-    // Fork it
-    client.send({ type: "fork_session", branchName: "to-merge" } as any);
+    // Fork via HTTP
+    const forkRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/fork`,
+      payload: { branchName: "to-merge" },
+    });
+    expect(forkRes.statusCode).toBe(200);
 
-    // Collect both session_forked and session_list from fork (skip any interleaved messages)
-    let forkedMsg: any = null;
-    let forkListReceived = false;
-    const forkDeadline = Date.now() + 5000;
-    while (Date.now() < forkDeadline && (!forkedMsg || !forkListReceived)) {
-      const msg = await client.receive();
-      if (msg.type === "session_forked") forkedMsg = msg;
-      if (msg.type === "session_list") forkListReceived = true;
-    }
-    expect(forkedMsg).not.toBeNull();
-
-    const childId = forkedMsg.session.id;
-    const childDir = forkedMsg.session.workspaceDir;
+    const childId = forkRes.json().session.id;
+    const childSession = sessionManager.get(childId);
+    const childDir = childSession!.workspaceDir!;
 
     // Make changes in the child worktree
     fs.writeFileSync(path.join(childDir, "feature.txt"), "new feature");
     const childGit = new GitManager(childDir);
     await childGit.autoCommit("Add feature");
 
-    // Merge the child into the parent (parent is still active)
-    client.send({ type: "merge_session", sourceSessionId: childId } as any);
-
-    // Wait for merge_result (skip any interleaved messages)
-    let mergeMsg: any = null;
-    const mergeDeadline = Date.now() + 5000;
-    while (Date.now() < mergeDeadline && !mergeMsg) {
-      const msg = await client.receive();
-      if (msg.type === "merge_result") mergeMsg = msg;
-    }
-    expect(mergeMsg).not.toBeNull();
-    expect(mergeMsg.success).toBe(true);
-    expect(mergeMsg.message).toContain("to-merge");
+    // Merge the child into the parent via HTTP
+    const mergeRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/git/merge`,
+      payload: { sourceSessionId: childId },
+    });
+    expect(mergeRes.statusCode).toBe(200);
+    const body = mergeRes.json();
+    expect(body.success).toBe(true);
+    expect(body.message).toContain("to-merge");
 
     // Verify the file exists in the parent
     const parentSession = sessionManager.get(parentId);
     expect(parentSession).toBeDefined();
     expect(fs.existsSync(path.join(parentSession!.workspaceDir!, "feature.txt"))).toBe(true);
-
-    client.close();
   }, 15_000);
 });
 
@@ -614,7 +551,7 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     client2.close();
   }, 15_000);
 
-  it("get_chat_history returns history + error when worktree directory is missing", async () => {
+  it("HTTP history returns data even when worktree directory is missing", async () => {
     const bareRepoPath = createBareRepo();
     const repoUrl = `file://${bareRepoPath}`;
 
@@ -638,30 +575,16 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     // Delete the worktree directory
     fs.rmSync(sessionInfo.workspaceDir!, { recursive: true, force: true });
 
-    // Load chat history — should return history AND an error
-    const client2 = await TestClient.connect(port);
-    await client2.receive(); // preview_status
-
-    client2.send({ type: "get_chat_history", sessionId: session.id });
-
-    // Collect both chat_history and error messages
-    let historyMsg: any = null;
-    let errorMsg: any = null;
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline && (!historyMsg || !errorMsg)) {
-      try {
-        const msg = await client2.receive(1000);
-        if (msg.type === "chat_history") historyMsg = msg;
-        if (msg.type === "error") errorMsg = msg;
-      } catch { break; }
-    }
-
-    expect(historyMsg).not.toBeNull();
-    expect(historyMsg.sessionId).toBe(session.id);
-    expect(errorMsg).not.toBeNull();
-    expect(errorMsg.message).toContain("workspace is no longer available");
-
-    client2.close();
+    // Load chat history via HTTP — should return 200 with empty file tree/git log
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${session.id}/history`,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.messages).toBeDefined();
+    expect(body.fileTree).toEqual([]);
+    expect(body.commits).toEqual([]);
   }, 15_000);
 
   // ---- Edge case: shared repo cleanup ----

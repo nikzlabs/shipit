@@ -122,11 +122,11 @@ describe("Integration: persistent session runners", () => {
     client1.close();
     await new Promise((r) => setTimeout(r, 50));
 
-    // Connect a new client and request chat history (which triggers activateSession)
+    // Connect a new client and activate the session (triggers activateSession)
     const client2 = await TestClient.connect(port);
     await client2.receive(); // preview_status
 
-    client2.send({ type: "get_chat_history", sessionId });
+    client2.send({ type: "activate_session", sessionId });
 
     // Should receive session_status showing running=true
     const statusMsg = await drainUntil(client2, (m) => m.type === "session_status");
@@ -198,7 +198,7 @@ describe("Integration: persistent session runners", () => {
     const client2 = await TestClient.connect(port);
     await client2.receive(); // preview_status
 
-    client2.send({ type: "get_chat_history", sessionId });
+    client2.send({ type: "activate_session", sessionId });
 
     // Client2 should receive replayed events from the turn buffer
     // The buffer includes agent_event and claude_event from the assistant message
@@ -264,9 +264,9 @@ describe("Integration: persistent session runners", () => {
     fs.mkdirSync(session2Dir, { recursive: true });
     sessionManager.track(session2Id, "Session 2", session2Dir);
 
-    // Switch to session 2 via get_chat_history
-    client.send({ type: "get_chat_history", sessionId: session2Id });
-    await drainUntil(client, (m) => m.type === "chat_history");
+    // Switch to session 2 via activate_session
+    client.send({ type: "activate_session", sessionId: session2Id });
+    await new Promise((r) => setTimeout(r, 100)); // Wait for activation
 
     // Claude in session 1 should still be alive
     expect(claude1.killed).toBe(false);
@@ -347,7 +347,7 @@ describe("Integration: persistent session runners", () => {
     await client2.receive(); // preview_status
 
     // Activate the same session
-    client2.send({ type: "get_chat_history", sessionId });
+    client2.send({ type: "activate_session", sessionId });
 
     // Should receive queue_updated showing the queued message
     const queueMsg = await drainUntil(client2, (m) => m.type === "queue_updated");
@@ -386,8 +386,8 @@ describe("Integration: persistent session runners", () => {
     const client2 = await TestClient.connect(port);
     await client2.receive(); // preview_status
 
-    client2.send({ type: "get_chat_history", sessionId: session2Id });
-    await drainUntil(client2, (m) => m.type === "chat_history");
+    client2.send({ type: "activate_session", sessionId: session2Id });
+    await new Promise((r) => setTimeout(r, 100)); // Wait for activation
 
     // Client 2 starts a second agent in session 2 (must specify sessionId)
     const prevClaude = lastClaude;

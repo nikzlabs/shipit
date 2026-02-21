@@ -251,6 +251,10 @@ export default function App() {
     setGitIdentity,
     setHasSystemPrompt,
     setSystemPromptContent,
+    setGitCommits,
+    setFileTree,
+    setThreads,
+    setActiveThreadId,
   });
 
   // ── Message handler hook ──
@@ -526,7 +530,7 @@ export default function App() {
           sessions={sessions}
           githubStatus={githubStatus}
           templates={templates}
-          onRequestTemplates={() => send({ type: "list_templates" })}
+          onRequestTemplates={() => { apiGet<{ templates: typeof templates }>("/api/bootstrap").then((d) => setTemplates(d.templates)).catch(() => {}); }}
           onSendWithRepo={callbacks.handleHomeSendWithRepo}
           onNewRepo={callbacks.handleHomeCreateRepo}
           onSearchRepos={callbacks.handleImportSearch}
@@ -615,7 +619,7 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
-      {authUrl !== null && <AuthOverlay url={authUrl} onPasteCode={(code) => send({ type: "paste_auth_code", code })} onApiKey={(key) => { apiPost("/api/auth/api-key", { key }).catch((err) => console.error("[api] Set API key failed:", err)); }} />}
+      {authUrl !== null && <AuthOverlay url={authUrl} onPasteCode={(code) => { apiPost("/api/auth/code", { code }).catch((err) => console.error("[api] Submit auth code failed:", err)); }} onApiKey={(key) => { apiPost("/api/auth/api-key", { key }).catch((err) => console.error("[api] Set API key failed:", err)); }} />}
       {gitIdentityNeeded && (
         <GitIdentityOverlay onSubmit={callbacks.handleGitIdentitySubmit} />
       )}
@@ -630,8 +634,8 @@ export default function App() {
           authUrl={authUrl}
           onApiKey={(key) => { apiPost("/api/auth/api-key", { key }).catch((err) => console.error("[api] Set API key failed:", err)); }}
           onClearApiKey={() => { apiDel("/api/auth/api-key").catch((err) => console.error("[api] Clear API key failed:", err)); }}
-          onStartAuth={() => send({ type: "start_auth" })}
-          onPasteCode={(code) => send({ type: "paste_auth_code", code })}
+          onStartAuth={() => { apiPost("/api/auth/start").catch((err) => console.error("[api] Start auth failed:", err)); }}
+          onPasteCode={(code) => { apiPost("/api/auth/code", { code }).catch((err) => console.error("[api] Submit auth code failed:", err)); }}
           agentList={agentList}
           onSetAgentEnv={(agentId, key, value) => { apiPost(`/api/agents/${agentId}/env`, { key, value }).catch((err) => console.error("[api] Set agent env failed:", err)); }}
           onFullReset={callbacks.handleFullReset}

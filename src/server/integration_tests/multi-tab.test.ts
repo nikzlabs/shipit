@@ -101,14 +101,14 @@ describe("Integration: multi-tab scenarios", () => {
     // Tab 1 connects and activates session 1
     const tab1 = await TestClient.connect(port);
     await tab1.receive(); // preview_status
-    tab1.send({ type: "get_chat_history", sessionId: session1.sessionId });
-    await drainUntil(tab1, (m) => m.type === "chat_history");
+    tab1.send({ type: "activate_session", sessionId: session1.sessionId });
+    await new Promise((r) => setTimeout(r, 100)); // Wait for activation
 
     // Tab 2 connects and activates session 2
     const tab2 = await TestClient.connect(port);
     await tab2.receive(); // preview_status
-    tab2.send({ type: "get_chat_history", sessionId: session2.sessionId });
-    await drainUntil(tab2, (m) => m.type === "chat_history");
+    tab2.send({ type: "activate_session", sessionId: session2.sessionId });
+    await new Promise((r) => setTimeout(r, 100)); // Wait for activation
 
     // Tab 1 starts agent in session 1
     tab1.send({ type: "send_message", text: "Hello from tab 1", sessionId: session1.sessionId });
@@ -146,8 +146,8 @@ describe("Integration: multi-tab scenarios", () => {
     // Tab 1 connects and activates the session
     const tab1 = await TestClient.connect(port);
     await tab1.receive(); // preview_status
-    tab1.send({ type: "get_chat_history", sessionId: session.sessionId });
-    await drainUntil(tab1, (m) => m.type === "chat_history");
+    tab1.send({ type: "activate_session", sessionId: session.sessionId });
+    await new Promise((r) => setTimeout(r, 100)); // Wait for activation
 
     // Tab 1 starts an agent
     tab1.send({ type: "send_message", text: "Hello", sessionId: session.sessionId });
@@ -160,7 +160,7 @@ describe("Integration: multi-tab scenarios", () => {
     // Tab 2 connects and views the same session — should get replayed events
     const tab2 = await TestClient.connect(port);
     await tab2.receive(); // preview_status
-    tab2.send({ type: "get_chat_history", sessionId: session.sessionId });
+    tab2.send({ type: "activate_session", sessionId: session.sessionId });
 
     // Tab 2 should receive session_status showing running=true
     const status = await drainUntil(tab2, (m) => m.type === "session_status");
@@ -205,7 +205,7 @@ describe("Integration: multi-tab scenarios", () => {
     // Tab 2 connects and views the same session
     const tab2 = await TestClient.connect(port);
     await tab2.receive(); // preview_status
-    tab2.send({ type: "get_chat_history", sessionId: session.sessionId });
+    tab2.send({ type: "activate_session", sessionId: session.sessionId });
     await drainUntil(tab2, (m) => m.type === "session_status");
 
     // Tab 2 sends interrupt — should affect the shared runner
@@ -241,12 +241,12 @@ describe("Integration: multi-tab scenarios", () => {
     // Tab 2 connects and views session 1
     const tab2 = await TestClient.connect(port);
     await tab2.receive(); // preview_status
-    tab2.send({ type: "get_chat_history", sessionId: session1.sessionId });
+    tab2.send({ type: "activate_session", sessionId: session1.sessionId });
     await drainUntil(tab2, (m) => m.type === "session_status");
 
     // Tab 2 switches to session 2
-    tab2.send({ type: "get_chat_history", sessionId: session2.sessionId });
-    await drainUntil(tab2, (m) => m.type === "chat_history");
+    tab2.send({ type: "activate_session", sessionId: session2.sessionId });
+    await new Promise((r) => setTimeout(r, 100)); // Wait for activation
 
     // Session 1's agent should still be running — tab2 switching didn't kill it
     expect(claude1.killed).toBe(false);
@@ -274,8 +274,8 @@ describe("Integration: multi-tab scenarios", () => {
     // Tab 1 activates a session
     const tab1 = await TestClient.connect(port);
     await tab1.receive(); // preview_status
-    tab1.send({ type: "get_chat_history", sessionId: session.sessionId });
-    await drainUntil(tab1, (m) => m.type === "chat_history");
+    tab1.send({ type: "activate_session", sessionId: session.sessionId });
+    await new Promise((r) => setTimeout(r, 100)); // Wait for activation
 
     // Tab 2 also connected
     const tab2 = await TestClient.connect(port);
@@ -306,14 +306,14 @@ describe("Integration: multi-tab scenarios", () => {
     // Tab 1 activates session 1
     const tab1 = await TestClient.connect(port);
     await tab1.receive(); // preview_status
-    tab1.send({ type: "get_chat_history", sessionId: session1.sessionId });
-    await drainUntil(tab1, (m) => m.type === "chat_history");
+    tab1.send({ type: "activate_session", sessionId: session1.sessionId });
+    await new Promise((r) => setTimeout(r, 100)); // Wait for activation
 
     // Tab 2 activates session 2
     const tab2 = await TestClient.connect(port);
     await tab2.receive(); // preview_status
-    tab2.send({ type: "get_chat_history", sessionId: session2.sessionId });
-    await drainUntil(tab2, (m) => m.type === "chat_history");
+    tab2.send({ type: "activate_session", sessionId: session2.sessionId });
+    await new Promise((r) => setTimeout(r, 100)); // Wait for activation
 
     // Tab 1 requests file tree — should see session 1's files
     const treeRes1 = await app.inject({ method: "GET", url: `/api/sessions/${session1.sessionId}/files` });

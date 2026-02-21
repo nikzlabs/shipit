@@ -58,17 +58,10 @@ describe("Integration: Session management", () => {
     }
   });
 
-  it("list_sessions returns empty list initially", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "list_sessions" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("session_list");
-    expect((msg as any).sessions).toEqual([]);
-
-    client.close();
+  it("bootstrap returns empty session list initially", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/bootstrap" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().sessions).toEqual([]);
   });
 
   it("new_session returns session list", async () => {
@@ -85,9 +78,8 @@ describe("Integration: Session management", () => {
 
 });
 
-describe("Integration: list_sessions remoteUrl caching", () => {
+describe("Integration: bootstrap sessions remoteUrl caching", () => {
   let app: FastifyInstance;
-  let port: number;
   let tmpDir: string;
   let sessionManager: SessionManager;
 
@@ -109,10 +101,6 @@ describe("Integration: list_sessions remoteUrl caching", () => {
       startPreview: false,
       portScanIntervalMs: 0,
     });
-
-    const address = await app.listen({ port: 0, host: "127.0.0.1" });
-    const match = address.match(/:(\d+)$/);
-    port = match ? Number(match[1]) : 0;
   });
 
   afterEach(async () => {
@@ -125,25 +113,18 @@ describe("Integration: list_sessions remoteUrl caching", () => {
     }
   });
 
-  it("list_sessions returns cached remoteUrl from session metadata", async () => {
+  it("bootstrap returns cached remoteUrl from session metadata", async () => {
     sessionManager.track("sess-remote", "My repo", path.join(tmpDir, "sess-remote"));
     sessionManager.setRemoteUrl("sess-remote", "https://github.com/owner/repo.git");
 
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "list_sessions" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("session_list");
-    const sessions = (msg as any).sessions as Array<{ id: string; remoteUrl?: string }>;
+    const res = await app.inject({ method: "GET", url: "/api/bootstrap" });
+    expect(res.statusCode).toBe(200);
+    const sessions = res.json().sessions as Array<{ id: string; remoteUrl?: string }>;
     const session = sessions.find((s) => s.id === "sess-remote");
     expect(session?.remoteUrl).toBe("https://github.com/owner/repo.git");
-
-    client.close();
   });
 
-  it("list_sessions lazy-populates remoteUrl from git config", async () => {
+  it("bootstrap lazy-populates remoteUrl from git config", async () => {
     // Create a real git repo with an origin remote
     const sessionDir = path.join(tmpDir, "sess-git");
     fs.mkdirSync(sessionDir, { recursive: true });
@@ -154,39 +135,25 @@ describe("Integration: list_sessions remoteUrl caching", () => {
     sessionManager.track("sess-git", "Lazy session", sessionDir);
     // No remoteUrl cached yet
 
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "list_sessions" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("session_list");
-    const sessions = (msg as any).sessions as Array<{ id: string; remoteUrl?: string }>;
+    const res = await app.inject({ method: "GET", url: "/api/bootstrap" });
+    expect(res.statusCode).toBe(200);
+    const sessions = res.json().sessions as Array<{ id: string; remoteUrl?: string }>;
     const session = sessions.find((s) => s.id === "sess-git");
     expect(session?.remoteUrl).toBe("https://github.com/lazy/populated.git");
 
     // Should also be persisted in the manager
     expect(sessionManager.get("sess-git")?.remoteUrl).toBe("https://github.com/lazy/populated.git");
-
-    client.close();
   });
 
-  it("list_sessions handles sessions with missing workspace dirs gracefully", async () => {
+  it("bootstrap handles sessions with missing workspace dirs gracefully", async () => {
     sessionManager.track("sess-missing", "Gone session", path.join(tmpDir, "does-not-exist"));
 
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "list_sessions" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("session_list");
-    const sessions = (msg as any).sessions as Array<{ id: string; remoteUrl?: string }>;
+    const res = await app.inject({ method: "GET", url: "/api/bootstrap" });
+    expect(res.statusCode).toBe(200);
+    const sessions = res.json().sessions as Array<{ id: string; remoteUrl?: string }>;
     const session = sessions.find((s) => s.id === "sess-missing");
     // Should not crash and remoteUrl stays undefined
     expect(session?.remoteUrl).toBeUndefined();
-
-    client.close();
   });
 
 });

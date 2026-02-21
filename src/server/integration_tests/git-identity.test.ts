@@ -103,9 +103,7 @@ describe("Integration: git identity flow", () => {
     await client.receive(); // preview_status
 
     // Activate the session — this triggers the per-session identity check
-    client.send({ type: "get_chat_history", sessionId });
-    const historyMsg = await client.receiveType("chat_history");
-    expect(historyMsg.type).toBe("chat_history");
+    client.send({ type: "activate_session", sessionId });
 
     const identityMsg = await client.receiveType("git_identity_required");
     expect(identityMsg.type).toBe("git_identity_required");
@@ -122,9 +120,7 @@ describe("Integration: git identity flow", () => {
     await client.receive(); // preview_status
 
     // Activate the session
-    client.send({ type: "get_chat_history", sessionId });
-    const historyMsg = await client.receiveType("chat_history");
-    expect(historyMsg.type).toBe("chat_history");
+    client.send({ type: "activate_session", sessionId });
 
     // Should not receive git_identity_required — wait briefly to confirm
     // (drain any remaining side-effect messages like preview_status first)
@@ -152,8 +148,7 @@ describe("Integration: git identity flow", () => {
     await client.receive(); // preview_status
 
     // Activate the session — should auto-apply, not prompt
-    client.send({ type: "get_chat_history", sessionId });
-    await client.receiveType("chat_history");
+    client.send({ type: "activate_session", sessionId });
 
     // Should receive git_identity_set (auto-applied), NOT git_identity_required
     const msg = await client.receiveType("git_identity_set");

@@ -1,6 +1,5 @@
 import type { ImageAttachment, FileContextRef, PermissionMode } from "./attachment-types.js";
 import type { AgentId } from "../agents/agent-process.js";
-import type { WsGeneratePRDescription } from "./github-types.js";
 import type { WsTerminalStart, WsTerminalInput, WsTerminalResize, WsClearLogs } from "./terminal-types.js";
 import type { WsForkThread, WsSwitchThread } from "./thread-types.js";
 import type {
@@ -17,17 +16,8 @@ export interface WsSendMessage {
   permissionMode?: PermissionMode;
 }
 
-export interface WsListSessions {
-  type: "list_sessions";
-}
-
 export interface WsNewSession {
   type: "new_session";
-}
-
-export interface WsGetChatHistory {
-  type: "get_chat_history";
-  sessionId: string;
 }
 
 export interface WsAnswerQuestion {
@@ -36,19 +26,7 @@ export interface WsAnswerQuestion {
   answers: Record<string, string>;
 }
 
-export interface WsListTemplates {
-  type: "list_templates";
-}
-
 // ---- Home screen messages ----
-
-export interface WsHomeCreateRepoWithTemplate {
-  type: "home_create_repo_with_template";
-  repoName: string;
-  description?: string;
-  isPrivate?: boolean;
-  templateId: string;
-}
 
 export interface WsHomeSendWithRepo {
   type: "home_send_with_repo";
@@ -59,13 +37,12 @@ export interface WsHomeSendWithRepo {
   permissionMode?: PermissionMode;
 }
 
-export interface WsPasteAuthCode {
-  type: "paste_auth_code";
-  code: string;
-}
+// ---- Session activation (per-connection state — attaches runner, starts watcher) ----
 
-export interface WsStartAuth {
-  type: "start_auth";
+/** Client → Server: activate a session (attach runner, file watcher, preview). */
+export interface WsActivateSession {
+  type: "activate_session";
+  sessionId: string;
 }
 
 // ---- Agent selection (per-connection state, must stay on WS) ----
@@ -110,46 +87,22 @@ export interface WsDiffComment {
   }>;
 }
 
-// ---- Worktree session messages (client → server) ----
-
-export interface WsForkSession {
-  type: "fork_session";
-  /** Branch name for the new worktree. */
-  branchName: string;
-  /** Optional commit to start from (defaults to HEAD). */
-  startPoint?: string;
-}
-
-export interface WsMergeSession {
-  type: "merge_session";
-  /** Session ID to merge from. */
-  sourceSessionId: string;
-}
-
 export type WsClientMessage =
   | WsSendMessage
-  | WsListSessions
   | WsNewSession
-  | WsGetChatHistory
   | WsClearLogs
   | WsAnswerQuestion
-  | WsListTemplates
+  | WsActivateSession
   | WsSetAgentMessage
   | WsForkThread
   | WsSwitchThread
-  | WsPasteAuthCode
-  | WsStartAuth
-  | WsGeneratePRDescription
   | WsInitiateDeploy
   | WsCancelDeploy
   | WsTerminalStart
   | WsTerminalInput
   | WsTerminalResize
-  | WsHomeCreateRepoWithTemplate
   | WsHomeSendWithRepo
   | WsCancelQueuedMessage
-  | WsForkSession
-  | WsMergeSession
   | WsInterruptClaude
   | WsInitPreviewConfig
   | WsDiffComment;

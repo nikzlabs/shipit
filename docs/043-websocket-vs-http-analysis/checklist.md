@@ -133,19 +133,24 @@ Analysis complete — see `plan.md` Tier 3 section for detailed rationale on eac
 
 ### Migrate to HTTP (6 messages)
 
-- [ ] Split `get_chat_history` into:
-  - [ ] Read-only `GET /api/sessions/:id/history` — returns `{ messages, commits, fileTree }` (move to Phase 1 since it's a pure read)
-  - [ ] New WS `activate_session` message — extracted from `activateSession()` in `index.ts:739-796`, handles runner attach, file watcher, preview start, port scan, git identity check
-  - [ ] Update client to call HTTP for data, then send `activate_session` over WS
-- [ ] `POST /api/sessions/:id/fork` — extract from `fork_session` (body: `{ branchName, startPoint? }`, returns `{ session, parentSessionId, sessions }`)
-  - [ ] Add optional WS broadcast of `session_list` to other connections after success
-- [ ] `POST /api/sessions/:id/git/merge` — extract from `merge_session` (body: `{ sourceSessionId }`, returns `{ success, message, conflicts? }`)
-- [ ] `POST /api/repos` — extract from `home_create_repo_with_template` (body: `{ repoName, templateId, description?, isPrivate? }`, returns `{ success, repoUrl, sessionId }`)
-  - [ ] Client sends `activate_session` over WS after receiving HTTP response
-- [ ] `POST /api/sessions/:id/pr/description` — extract from `generate_pr_description` (returns `{ description }`, 30s timeout)
-- [ ] `POST /api/auth/start` — extract from `start_auth` (returns 202 Accepted)
-- [ ] `POST /api/auth/code` — extract from `paste_auth_code` (body: `{ code }`, returns 200 or 400)
-  - [ ] Keep `auth_complete` as WS broadcast (no change needed)
+- [x] Split `get_chat_history` into:
+  - [x] Read-only `GET /api/sessions/:id/history` — returns `{ messages, commits, fileTree, threads, activeThreadId }` (enhanced from Phase 1 read endpoint)
+  - [x] New WS `activate_session` message — extracted from `activateSession()` in `index.ts`, handles runner attach, file watcher, preview start, port scan, git identity check
+  - [x] Update client (`useAppCallbacks.ts:resumeSessionInternal` + `useConnectionSync.ts`) to call HTTP for data, then send `activate_session` over WS
+- [x] `POST /api/sessions/:id/fork` — extract from `fork_session` (body: `{ branchName, startPoint? }`, returns `{ session, parentSessionId, sessions }`)
+  - [x] Add WS broadcast of `session_list` to other connections after success
+- [x] `POST /api/sessions/:id/git/merge` — extract from `merge_session` (body: `{ sourceSessionId }`, returns `{ success, message, conflicts? }`)
+- [x] `POST /api/repos` — extract from `home_create_repo_with_template` (body: `{ repoName, templateId, description?, isPrivate? }`, returns `{ success, repoUrl, sessionId }`)
+- [x] `POST /api/sessions/:id/pr/description` — extract from `generate_pr_description` (returns `{ description }`)
+- [x] `POST /api/auth/start` — extract from `start_auth` (returns 202 Accepted)
+- [x] `POST /api/auth/code` — extract from `paste_auth_code` (body: `{ code }`, returns 200 or 400)
+  - [x] `auth_complete` remains as WS broadcast (no change needed)
+
+### Phase 3 integration tests
+
+- [x] Add HTTP route tests for Phase 3 endpoints (19 tests) — `src/server/integration_tests/http-phase3.test.ts`
+- [x] All 1533 tests pass, lint clean, typecheck clean
+- [x] Migrate existing WS integration tests to use HTTP endpoints (completed in Phase 4)
 
 ### Keep on WS (2 messages)
 
@@ -154,9 +159,10 @@ Analysis complete — see `plan.md` Tier 3 section for detailed rationale on eac
 
 ## Phase 4: Cleanup
 
-- [ ] Remove all migrated message types from `WsClientMessage` / `WsServerMessage` unions
-- [ ] Remove empty handler files from `src/server/ws-handlers/` if all their messages migrated
-- [ ] Simplify switch dispatcher in `src/server/index.ts` to only handle streaming + push + connection-scoped messages
-- [ ] Update `docs/001-websocket-protocol/plan.md` to document the new HTTP + WS split
-- [ ] Update `CLAUDE.md` "How to add a new WebSocket message type" section to include HTTP endpoint guidance
-- [ ] Verify no dead code remains (unused imports, unreachable handlers)
+- [x] Remove all migrated message types from `WsClientMessage` / `WsServerMessage` unions — removed 9 client types (`WsListSessions`, `WsGetChatHistory`, `WsListTemplates`, `WsHomeCreateRepoWithTemplate`, `WsForkSession`, `WsMergeSession`, `WsGeneratePRDescription`, `WsPasteAuthCode`, `WsStartAuth`) and 6 server types (`WsSessionForked`, `WsWorktreeList`, `WsMergeResult`, `WsTemplateList`, `WsHomeRepoReady`, `WsGeneratedPRDescription`)
+- [x] Remove empty handler files from `src/server/ws-handlers/` — deleted `worktree-handlers.ts`, `template-handlers.ts`, `pr-handlers.ts`, `settings-handlers.ts`; removed `handleListSessions` and `handleGetChatHistory` from `session-handlers.ts`
+- [x] Simplify switch dispatcher in `src/server/index.ts` — removed 9 deprecated case entries; remaining cases are: `send_message`, `answer_question`, `home_send_with_repo`, `set_agent`, `new_session`, `activate_session`, `initiate_deploy`, `cancel_deploy`, `fork_thread`, `switch_thread`, `cancel_queued_message`, `interrupt_claude`, `init_preview_config`, `diff_comment`, `clear_logs`, `terminal_start`, `terminal_input`, `terminal_resize`
+- [x] Migrate existing WS integration tests to HTTP endpoints — migrated tests in `worktree-sessions.test.ts`, `multi-tab.test.ts`, `session-switching.test.ts`, `session-management.test.ts`, `home-screen.test.ts`, `claude-auth.test.ts`, `workspace-templates.test.ts`, `pr-description.test.ts`, `file-watcher.test.ts`, `git-identity.test.ts`, `persistent-runner.test.ts`
+- [x] Verify no dead code remains — all 1531 tests pass, lint clean, typecheck clean
+- [x] Update `docs/001-websocket-protocol/plan.md` to document the new HTTP + WS split — complete rewrite with HTTP REST API tables, remaining WS messages, and key files
+- [x] Update `CLAUDE.md` "How to add a new WebSocket message type" section to include HTTP endpoint guidance — added "When to use WebSocket vs HTTP" decision framework with 4 criteria (streaming, per-connection state, bidirectional interaction, server push), gray area guidance, and current WS message inventory

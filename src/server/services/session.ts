@@ -81,6 +81,103 @@ export function listWorktrees(
   return worktrees;
 }
 
+/** Fork a session into a new worktree branch. */
+export async function forkSession(
+  sessionManager: SessionManager,
+  createGitManager: (dir: string) => GitManager,
+  getSharedRepoDir: (repoUrl: string) => string,
+  sessionsRoot: string,
+  credentialStore: { getGitIdentity: () => { name: string; email: string } | null },
+  githubAuthManager: { authenticated: boolean; configureGitCredentials: (dir: string) => void },
+  threadManager: { init: (sessionId: string) => void },
+  activeSessionId: string,
+  activeSessionDir: string,
+  branchName: string,
+  startPoint?: string,
+): Promise<{ session: SessionInfo; parentSessionId: string; sessions: SessionInfo[] }> {
+  const trimmed = branchName.trim();
+  if (!trimmed) throw new ServiceError(400, "Branch name is required");
+  if (/[\s~^:?*[\\]/.test(trimmed) || trimmed.includes("..")) {
+    throw new ServiceError(400, "Invalid branch name");
+  }
+
+  const activeSession = sessionManager.get(activeSessionId);
+
+  // Determine which repo to create the worktree from
+  let gitDir: string;
+  if (activeSession?.remoteUrl) {
+    gitDir = getSharedRepoDir(activeSession.remoteUrl);
+  } else {
+    gitDir = activeSessionDir;
+  }
+
+  const crypto = await import("node:crypto");
+  const newSessionId = crypto.randomUUID();
+  const newSessionDir = path.join(sessionsRoot, newSessionId);
+
+  const repoGit = createGitManager(gitDir);
+  await repoGit.createWorktree(newSessionDir, trimmed, startPoint);
+
+  // Apply identity & credentials to the worktree
+  const worktreeGit = createGitManager(newSessionDir);
+  const stored = credentialStore.getGitIdentity();
+  if (stored) await worktreeGit.setIdentity(stored.name, stored.email);
+  if (githubAuthManager.authenticated) {
+    githubAuthManager.configureGitCredentials(newSessionDir);
+  }
+
+  // Track in session manager
+  const title = `${activeSession?.title ?? "Session"} (${trimmed})`;
+  sessionManager.track(newSessionId, title, newSessionDir);
+  sessionManager.setWorktreeInfo(newSessionId, {
+    branch: trimmed,
+    sessionType: "worktree",
+  });
+  if (activeSession?.remoteUrl) {
+    sessionManager.setRemoteUrl(newSessionId, activeSession.remoteUrl);
+  }
+
+  threadManager.init(newSessionId);
+
+  const newSession = sessionManager.get(newSessionId)!;
+  console.log("[server] Forked session:", newSessionId, "branch:", trimmed);
+  return {
+    session: newSession,
+    parentSessionId: activeSessionId,
+    sessions: sessionManager.list(),
+  };
+}
+
+/** Merge a worktree branch into the active session. */
+export async function mergeSession(
+  sessionManager: SessionManager,
+  createGitManager: (dir: string) => GitManager,
+  activeSessionDir: string,
+  sourceSessionId: string,
+): Promise<{ success: boolean; message: string; conflicts?: string[] }> {
+  const trimmedId = sourceSessionId.trim();
+  if (!trimmedId) throw new ServiceError(400, "Source session ID is required");
+
+  const sourceSession = sessionManager.get(trimmedId);
+  if (!sourceSession) throw new ServiceError(404, "Source session not found");
+  if (!sourceSession.branch) throw new ServiceError(400, "Source session has no branch (not a worktree)");
+
+  const git = createGitManager(activeSessionDir);
+  const result = await git.merge(sourceSession.branch);
+
+  if (result.success) {
+    return {
+      success: true,
+      message: `Merged branch '${sourceSession.branch}' successfully`,
+    };
+  }
+  return {
+    success: false,
+    message: `Merge conflict on branch '${sourceSession.branch}'`,
+    conflicts: result.conflicts,
+  };
+}
+
 // ---- Mutation operations ----
 
 /** Rename a session. Returns the updated session or throws ServiceError. */

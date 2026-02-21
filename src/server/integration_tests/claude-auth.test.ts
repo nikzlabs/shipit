@@ -21,7 +21,6 @@ import {
 
 describe("Integration: Claude auth (OAuth & API key)", () => {
   let app: FastifyInstance;
-  let port: number;
   let tmpDir: string;
 
   beforeEach(async () => {
@@ -42,10 +41,6 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
       startPreview: false,
       portScanIntervalMs: 0,
     });
-
-    const address = await app.listen({ port: 0, host: "127.0.0.1" });
-    const match = address.match(/:(\d+)$/);
-    port = match ? Number(match[1]) : 0;
   });
 
   afterEach(async () => {
@@ -183,28 +178,22 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     expect(res.json()).toMatchObject({ error: "API key cannot be empty" });
   });
 
-  it("paste_auth_code rejects empty code", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // connection_established
-
-    client.send({ type: "paste_auth_code", code: "" } as any);
-    const msg = await client.receive();
-
-    expect(msg).toMatchObject({ type: "error", message: "Authorization code cannot be empty" });
-
-    client.close();
+  it("paste_auth_code rejects empty code via HTTP", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/code",
+      payload: { code: "  " },
+    });
+    expect(res.statusCode).toBe(400);
   });
 
-  it("paste_auth_code sends code to auth manager", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // connection_established
-
-    // paste_auth_code calls authManager.sendCode() — no error expected
-    client.send({ type: "paste_auth_code", code: "test-auth-code-123" } as any);
-
-    // Give the server a moment to process (sendCode is fire-and-forget)
-    await new Promise((r) => setTimeout(r, 50));
-
-    client.close();
+  it("paste_auth_code sends code to auth manager via HTTP", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/code",
+      payload: { code: "test-auth-code-123" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ success: true });
   });
 });
