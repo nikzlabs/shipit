@@ -68,58 +68,6 @@ export async function handleGithubCreatePr(ctx: HandlerContext, msg: WsGithubCre
   }
 }
 
-export async function handleGetPrStatus(ctx: HandlerContext): Promise<void> {
-  if (!ctx.githubAuthManager.authenticated) {
-    ctx.send({ type: "pr_status", pr: null });
-    return;
-  }
-
-  try {
-    const git = ctx.getActiveGitManager();
-    const remotes = await git.getRemotes();
-    const origin = remotes.find((r) => r.name === "origin");
-    if (!origin) {
-      ctx.send({ type: "pr_status", pr: null });
-      return;
-    }
-
-    const parsed = GitManager.parseGitHubRemote(origin.url);
-    if (!parsed) {
-      ctx.send({ type: "pr_status", pr: null });
-      return;
-    }
-
-    const head = await git.getCurrentBranch();
-    const pr = await ctx.githubAuthManager.findPullRequest(parsed.owner, parsed.repo, head);
-
-    if (!pr) {
-      ctx.send({ type: "pr_status", pr: null });
-      return;
-    }
-
-    const stats = await git.diffStatVsBranch(pr.base);
-    const checks = await ctx.githubAuthManager.getCheckStatus(parsed.owner, parsed.repo, head);
-
-    ctx.send({
-      type: "pr_status",
-      pr: {
-        url: pr.url,
-        number: pr.number,
-        title: pr.title,
-        baseBranch: pr.base,
-        headBranch: head,
-        insertions: stats.insertions,
-        deletions: stats.deletions,
-        checks,
-        autoMergeEnabled: false,
-        mergeable: true,
-      },
-    });
-  } catch {
-    ctx.send({ type: "pr_status", pr: null });
-  }
-}
-
 export async function handleMergePr(ctx: HandlerContext, msg: WsMergePr): Promise<void> {
   if (!ctx.githubAuthManager.authenticated) {
     ctx.send({ type: "merge_pr_result", success: false, message: "Not authenticated with GitHub" });

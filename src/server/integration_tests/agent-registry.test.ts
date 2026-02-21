@@ -83,13 +83,9 @@ describe("Integration: Agent registry — list_agents", () => {
   });
 
   it("list_agents returns agent availability", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "list_agents" } as any);
-
-    const msg = await receiveByType(client, "agent_list");
-    const data = msg as any;
+    const res = await app.inject({ method: "GET", url: "/api/bootstrap" });
+    expect(res.statusCode).toBe(200);
+    const data = res.json();
 
     expect(data.defaultAgentId).toBe("claude");
     expect(data.agents).toHaveLength(2);
@@ -102,8 +98,6 @@ describe("Integration: Agent registry — list_agents", () => {
     expect(codex.installed).toBe(true);
     // Codex auth depends on OPENAI_API_KEY being set
     expect(codex.name).toBe("Codex");
-
-    client.close();
   });
 
   it("set_agent rejects unknown agent", async () => {
@@ -125,10 +119,10 @@ describe("Integration: Agent registry — list_agents", () => {
     // Claude is installed and auth-configured, should succeed (no error)
     client.send({ type: "set_agent", agentId: "claude" } as any);
 
-    // Send list_agents to verify no error was sent
-    client.send({ type: "list_agents" } as any);
-    const msg = await receiveByType(client, "agent_list");
-    expect(msg.type).toBe("agent_list");
+    // Verify via HTTP that agents are still accessible (no error from set_agent)
+    const res = await app.inject({ method: "GET", url: "/api/bootstrap" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().agents).toHaveLength(2);
 
     client.close();
   });
@@ -188,9 +182,8 @@ describe("Integration: Agent registry — set_agent_env", () => {
     await client.receive(); // preview_status
 
     // Initially Codex auth is not configured
-    client.send({ type: "list_agents" } as any);
-    const listBefore = await receiveByType(client, "agent_list") as any;
-    const codexBefore = listBefore.agents.find((a: any) => a.id === "codex");
+    const resBefore = await app.inject({ method: "GET", url: "/api/bootstrap" });
+    const codexBefore = resBefore.json().agents.find((a: any) => a.id === "codex");
     expect(codexBefore.authConfigured).toBe(false);
 
     // Set the env var

@@ -6,8 +6,6 @@ type WsGithubSetToken = Extract<WsClientMessage, { type: "github_set_token" }>;
 type WsGithubPush = Extract<WsClientMessage, { type: "github_push" }>;
 type WsGithubPull = Extract<WsClientMessage, { type: "github_pull" }>;
 type WsGithubSetRemote = Extract<WsClientMessage, { type: "github_set_remote" }>;
-type WsGithubSearchRepos = Extract<WsClientMessage, { type: "github_search_repos" }>;
-
 export async function handleGithubSetToken(ctx: HandlerContext, msg: WsGithubSetToken): Promise<void> {
   const token = typeof msg.token === "string" ? msg.token.trim() : "";
   if (!token) {
@@ -27,15 +25,6 @@ export async function handleGithubSetToken(ctx: HandlerContext, msg: WsGithubSet
     } else {
       ctx.send({ type: "error", message: "Invalid GitHub token" });
     }
-  }
-}
-
-export async function handleGithubGetStatus(ctx: HandlerContext): Promise<void> {
-  ctx.send({ type: "github_status", ...ctx.githubAuthManager.getStatus() });
-  // Auto-send user repos on connect so the RepoSelector is pre-populated
-  if (ctx.githubAuthManager.authenticated) {
-    const repos = await ctx.githubAuthManager.listUserRepos();
-    ctx.send({ type: "github_search_results", repos });
   }
 }
 
@@ -93,45 +82,9 @@ export async function handleGithubSetRemote(ctx: HandlerContext, msg: WsGithubSe
   }
 }
 
-export async function handleGithubGetRemotes(ctx: HandlerContext): Promise<void> {
-  try {
-    const git = ctx.getActiveGitManager();
-    const remotes = await git.getRemotes();
-    ctx.send({ type: "github_remotes", remotes });
-  } catch (err) {
-    ctx.send({ type: "error", message: `Failed to list remotes: ${getErrorMessage(err)}` });
-  }
-}
-
 export function handleGithubLogout(ctx: HandlerContext): void {
   ctx.githubAuthManager.clearCredentials();
   ctx.send({ type: "github_status", ...ctx.githubAuthManager.getStatus() });
   ctx.send({ type: "github_search_results", repos: [] });
 }
 
-export async function handleGithubSearchRepos(ctx: HandlerContext, msg: WsGithubSearchRepos): Promise<void> {
-  const query = typeof msg.query === "string" ? msg.query.trim() : "";
-  if (!query || query.length < 2) {
-    ctx.send({ type: "github_search_results", repos: [] });
-    return;
-  }
-
-  const repos = await ctx.githubAuthManager.searchRepos(query);
-  ctx.send({ type: "github_search_results", repos });
-}
-
-export async function handleGithubListBranches(ctx: HandlerContext): Promise<void> {
-  try {
-    const git = ctx.getActiveGitManager();
-    const current = await git.getCurrentBranch();
-    let remote: string[] = [];
-    try {
-      remote = await git.listRemoteBranches();
-    } catch {
-      // No remote branches (e.g., never pushed) — that's fine
-    }
-    ctx.send({ type: "github_branches", current, remote });
-  } catch (err) {
-    ctx.send({ type: "error", message: `Failed to list branches: ${getErrorMessage(err)}` });
-  }
-}

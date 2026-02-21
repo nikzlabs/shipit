@@ -7,10 +7,6 @@ type WsDeployConfigure = Extract<WsClientMessage, { type: "deploy_configure" }>;
 type WsInitiateDeploy = Extract<WsClientMessage, { type: "initiate_deploy" }>;
 type WsDeleteDeployConfig = Extract<WsClientMessage, { type: "delete_deploy_config" }>;
 
-export function handleListDeployTargets(ctx: HandlerContext): void {
-  ctx.send({ type: "deploy_targets", targets: ctx.deploymentManager.getTargets() });
-}
-
 export function handleDeployConfigure(ctx: HandlerContext, msg: WsDeployConfigure): void {
   const targetId = typeof msg.targetId === "string" ? msg.targetId.trim() : "";
   const target = ctx.deploymentManager.getTarget(targetId);
@@ -138,33 +134,8 @@ export async function handleInitiateDeploy(ctx: HandlerContext, msg: WsInitiateD
   }
 }
 
-export function handleGetDeployHistory(ctx: HandlerContext): void {
-  const activeAppSessionId = ctx.getActiveAppSessionId();
-  if (!activeAppSessionId) {
-    ctx.send({ type: "error", message: "No active session" });
-    return;
-  }
-  const history = ctx.deploymentStore.getHistory(activeAppSessionId);
-  ctx.send({ type: "deploy_history", deployments: history });
-}
-
 export function handleCancelDeploy(ctx: HandlerContext): void {
   ctx.deploymentManager.cancel();
-}
-
-export function handleGetProjectSettings(ctx: HandlerContext): void {
-  const targets = ctx.deploymentManager.getTargets();
-  const deployConfig: Record<string, { configured: boolean; projectName?: string }> = {};
-  const activeAppSessionId = ctx.getActiveAppSessionId();
-  if (activeAppSessionId) {
-    for (const t of targets) {
-      const config = ctx.deploymentStore.loadConfig(activeAppSessionId, t.id);
-      deployConfig[t.id] = config
-        ? { configured: true, projectName: config.projectName }
-        : { configured: false };
-    }
-  }
-  ctx.send({ type: "project_settings", deployConfig });
 }
 
 export function handleDeleteDeployConfig(ctx: HandlerContext, msg: WsDeleteDeployConfig): void {

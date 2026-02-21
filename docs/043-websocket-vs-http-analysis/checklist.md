@@ -15,7 +15,7 @@
 
 - [x] `GET /api/bootstrap` — (Phase 0) returns `{ sessions, agents, templates, githubStatus, settings }` — replaces `list_sessions` + `list_agents` + `list_templates` + `github_get_status` + `get_global_settings`
 - [x] `GET /api/sessions/:id/deploy/setup` — returns `{ targets, projectSettings }` — replaces `list_deploy_targets` + `get_project_settings` (called together from `handleDeployTabSelected` and `handleDeployOpen`)
-- [ ] `GET /api/sessions/:id/workspace-state` — returns `{ gitLog, fileTree }` — replaces `get_git_log` + `get_file_tree` (called together after `reject_changes_complete`)
+- [x] `GET /api/sessions/:id/workspace-state` — returns `{ gitLog, fileTree }` — replaces `get_git_log` + `get_file_tree` (called together after `reject_changes_complete`)
 
 ### Session-scoped reads
 
@@ -28,7 +28,7 @@
 - [x] `GET /api/sessions/:id/git/remotes` — extract from `github_get_remotes`
 - [x] `GET /api/sessions/:id/git/branches` — extract from `github_list_branches`
 - [x] `GET /api/sessions/:id/status` — extract from `get_session_status`
-- [ ] `GET /api/sessions/:id/history` — read-only portion of `get_chat_history` (messages + git log + file tree, without session activation side effect)
+- [x] `GET /api/sessions/:id/history` — read-only portion of `get_chat_history` (messages + git log + file tree, without session activation side effect)
 - [x] `GET /api/sessions/:id/deploy/history` — extract from `get_deploy_history`
 - [x] `GET /api/sessions/:id/usage` — extract from `get_usage_stats`
 - [x] `GET /api/sessions/:id/pr/status` — extract from `get_pr_status`
@@ -45,15 +45,15 @@
 - [x] Create `useApi` hook wrapping `fetch()` with JSON parsing, error handling, and base URL — `src/client/hooks/useApi.ts`
 - [x] Update `useConnectionSync` to call `GET /api/bootstrap` on mount (before WS connects) instead of sending 5 separate WS messages
 - [x] Update `useAppCallbacks` to call HTTP endpoints for all Tier 1 reads — `src/client/hooks/useAppCallbacks.ts`
-- [ ] Update `useMessageHandler` to stop handling response types that are now HTTP (e.g., `file_tree`, `file_content`, `doc_list`, etc.)
-- [ ] Remove corresponding `case` entries from `src/server/index.ts` switch dispatcher
-- [ ] Remove unused WS message types from `WsClientMessage` / `WsServerMessage` unions in `src/server/types.ts`
+- [x] Update `useMessageHandler` to stop handling response types that are now HTTP (e.g., `file_tree`, `file_content`, `doc_list`, etc.)
+- [x] Remove corresponding `case` entries from `src/server/index.ts` switch dispatcher
+- [x] Remove unused WS message types from `WsClientMessage` / `WsServerMessage` unions in `src/server/types.ts`
 
 ### Tests for Phase 1
 
 - [x] Add HTTP route tests using Fastify `app.inject()` for bootstrap endpoint (7 tests) — `src/server/integration_tests/http-bootstrap.test.ts`
 - [x] Add HTTP route tests for each new GET endpoint as they're migrated (23 tests) — `src/server/integration_tests/http-reads.test.ts`
-- [ ] Update or remove integration tests that tested the old WS message flow for migrated endpoints
+- [x] Update or remove integration tests that tested the old WS message flow for migrated endpoints
 - [x] Add client hook tests for `useApi` (7 tests) — `src/client/hooks/useApi.test.ts`
 
 ## Phase 2: Tier 2 — Mutations (POST/PATCH/DELETE endpoints)

@@ -58,17 +58,10 @@ describe("Integration: GitHub auth status & tokens", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
-  it("github_get_status returns unauthenticated by default", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "github_get_status" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("github_status");
-    expect((msg as any).authenticated).toBe(false);
-
-    client.close();
+  it("bootstrap returns unauthenticated GitHub status by default", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/bootstrap" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().githubStatus.authenticated).toBe(false);
   });
 
   it("github_set_token with valid token returns authenticated status and user repos", async () => {

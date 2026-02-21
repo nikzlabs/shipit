@@ -3,7 +3,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { buildApp } from "../index.js";
 import {
-  TestClient,
   StubPreviewManager,
   StubAuthManager,
   StubGitHubAuthManager,
@@ -17,10 +16,10 @@ import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
 import { ThreadManager } from "../threads.js";
 import { FeatureManager } from "../features.js";
+import type { FastifyInstance } from "fastify";
 
 let tmpDir: string;
-let app: Awaited<ReturnType<typeof buildApp>>;
-let client: TestClient;
+let app: FastifyInstance;
 let githubAuth: StubGitHubAuthManager;
 
 beforeEach(async () => {
@@ -46,39 +45,29 @@ beforeEach(async () => {
     deploymentStore: new StubDeploymentStore() as any,
     featureManager: new FeatureManager(tmpDir),
   });
-
-  await app.listen({ port: 0, host: "127.0.0.1" });
-  const addr = app.server.address();
-  const port = typeof addr === "object" && addr ? addr.port : 0;
-  client = await TestClient.connect(port);
-  // consume initial preview_status
-  await client.receive();
 });
 
 afterEach(async () => {
-  client.close();
   await app.close();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-describe("github_search_repos", () => {
+describe("GitHub repo search via HTTP", () => {
   it("returns empty array for short queries", async () => {
-    client.send({ type: "github_search_repos", query: "a" });
-    const msg = await client.receiveSkipLogs();
-    expect(msg).toMatchObject({ type: "github_search_results", repos: [] });
+    const res = await app.inject({ method: "GET", url: "/api/github/repos?q=a" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ repos: [] });
   });
 
   it("returns results when authenticated", async () => {
     await githubAuth.setToken("test-token");
-    client.send({ type: "github_search_repos", query: "test-repo" });
-    const msg = await client.receiveSkipLogs();
-    expect(msg).toMatchObject({ type: "github_search_results" });
-    if (msg.type === "github_search_results") {
-      expect(msg.repos.length).toBeGreaterThan(0);
-      expect(msg.repos[0]).toMatchObject({
-        fullName: "test-user/test-repo",
-        cloneUrl: "https://github.com/test-user/test-repo.git",
-      });
-    }
+    const res = await app.inject({ method: "GET", url: "/api/github/repos?q=test-repo" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.repos.length).toBeGreaterThan(0);
+    expect(body.repos[0]).toMatchObject({
+      fullName: "test-user/test-repo",
+      cloneUrl: "https://github.com/test-user/test-repo.git",
+    });
   });
 });

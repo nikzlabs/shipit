@@ -32,7 +32,6 @@ import type { WsClientMessage, WsServerMessage, WsLogEntry } from "./types.js";
 import { getErrorMessage } from "./validation.js";
 import type { HandlerContext } from "./ws-handlers/types.js";
 import * as gitHandlers from "./ws-handlers/git-handlers.js";
-import * as fileHandlers from "./ws-handlers/file-handlers.js";
 import * as terminalHandlers from "./ws-handlers/terminal-handlers.js";
 import * as settingsHandlers from "./ws-handlers/settings-handlers.js";
 import * as miscHandlers from "./ws-handlers/misc-handlers.js";
@@ -573,6 +572,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     featureManager,
     usageManager,
     runnerRegistry,
+    chatHistoryManager,
   });
 
   // Serve the built client files from dist/client/
@@ -939,11 +939,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
       switch (msg.type) {
         // ---- Git operations ----
-        case "get_git_log": return gitHandlers.handleGetGitLog(ctx);
         case "rollback": return gitHandlers.handleRollback(ctx, msg);
 
         // ---- Diff review operations ----
-        case "get_turn_diff": return diffHandlers.handleGetTurnDiff(ctx, msg);
         case "reject_changes": return diffHandlers.handleRejectChanges(ctx, msg);
         case "diff_comment": {
           // Format comments into a prompt and send to Claude (like init_preview_config)
@@ -954,12 +952,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           sendMessageHandlers.handleSendMessage(ctx, { type: "send_message", text: prompt });
           return;
         }
-
-        // ---- File operations ----
-        case "get_file_tree": return fileHandlers.handleGetFileTree(ctx);
-        case "get_file_content": return fileHandlers.handleGetFileContent(ctx, msg);
-        case "list_docs": return fileHandlers.handleListDocs(ctx);
-        case "get_doc": return fileHandlers.handleGetDoc(ctx, msg);
 
         // ---- Terminal operations ----
         case "terminal_start": return terminalHandlers.handleTerminalStart(ctx);
@@ -980,10 +972,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           if (result) ctx.setActiveAgentId(result.newAgentId as AgentId);
           break;
         }
-        case "list_agents": return settingsHandlers.handleListAgents(ctx);
         case "set_agent_env": return settingsHandlers.handleSetAgentEnv(ctx, msg);
-        case "list_features": return settingsHandlers.handleListFeatures(ctx);
-        case "get_usage_stats": return settingsHandlers.handleGetUsageStats(ctx);
 
         // ---- Session operations ----
         case "list_sessions": return sessionHandlers.handleListSessions(ctx);
@@ -991,11 +980,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         case "archive_session": return sessionHandlers.handleArchiveSession(ctx, msg);
         case "rename_session": return sessionHandlers.handleRenameSession(ctx, msg);
         case "get_chat_history": return sessionHandlers.handleGetChatHistory(ctx, msg);
-        case "get_session_status": return sessionHandlers.handleGetSessionStatus(ctx, msg);
 
         // ---- Worktree operations ----
         case "fork_session": return worktreeHandlers.handleForkSession(ctx, msg);
-        case "list_worktrees": return worktreeHandlers.handleListWorktrees(ctx);
         case "merge_session": return worktreeHandlers.handleMergeSession(ctx, msg);
 
         // ---- Template operations ----
@@ -1005,32 +992,23 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
         // ---- GitHub operations ----
         case "github_set_token": return githubHandlers.handleGithubSetToken(ctx, msg);
-        case "github_get_status": return githubHandlers.handleGithubGetStatus(ctx);
         case "github_push": return githubHandlers.handleGithubPush(ctx, msg);
         case "github_pull": return githubHandlers.handleGithubPull(ctx, msg);
         case "github_set_remote": return githubHandlers.handleGithubSetRemote(ctx, msg);
-        case "github_get_remotes": return githubHandlers.handleGithubGetRemotes(ctx);
         case "github_logout": return githubHandlers.handleGithubLogout(ctx);
-        case "github_search_repos": return githubHandlers.handleGithubSearchRepos(ctx, msg);
-        case "github_list_branches": return githubHandlers.handleGithubListBranches(ctx);
 
         // ---- PR operations ----
         case "github_create_pr": return prHandlers.handleGithubCreatePr(ctx, msg);
-        case "get_pr_status": return prHandlers.handleGetPrStatus(ctx);
         case "merge_pr": return prHandlers.handleMergePr(ctx, msg);
         case "generate_pr_description": return prHandlers.handleGeneratePrDescription(ctx);
 
         // ---- Deploy operations ----
-        case "list_deploy_targets": return deployHandlers.handleListDeployTargets(ctx);
         case "deploy_configure": return deployHandlers.handleDeployConfigure(ctx, msg);
         case "initiate_deploy": return deployHandlers.handleInitiateDeploy(ctx, msg);
-        case "get_deploy_history": return deployHandlers.handleGetDeployHistory(ctx);
         case "cancel_deploy": return deployHandlers.handleCancelDeploy(ctx);
-        case "get_project_settings": return deployHandlers.handleGetProjectSettings(ctx);
         case "delete_deploy_config": return deployHandlers.handleDeleteDeployConfig(ctx, msg);
 
         // ---- Thread operations ----
-        case "list_threads": return threadHandlers.handleListThreads(ctx);
         case "create_checkpoint": return threadHandlers.handleCreateCheckpoint(ctx, msg);
         case "fork_thread": return threadHandlers.handleForkThread(ctx, msg);
         case "switch_thread": return threadHandlers.handleSwitchThread(ctx, msg);

@@ -65,7 +65,7 @@ describe("Integration: PR creation — happy path", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
-  async function createSession(client: TestClient) {
+  async function createSession(client: TestClient): Promise<string> {
     client.send({ type: "send_message", text: "hello" });
     const claude = await waitForClaude(() => lastClaude);
     claude.emit("event", {
@@ -74,15 +74,18 @@ describe("Integration: PR creation — happy path", () => {
       session_id: "agent-1",
     });
     claude.finish("agent-1");
+    let sessionId = "";
     const deadline = Date.now() + 3000;
     while (Date.now() < deadline) {
       try {
         const msg = await client.receive(200);
+        if (msg.type === "session_started") sessionId = (msg as any).session.id;
         if (msg.type === "git_committed") break;
       } catch {
         break;
       }
     }
+    return sessionId;
   }
 
   async function setupSessionWithRemote(client: TestClient) {
@@ -123,18 +126,17 @@ describe("Integration: PR creation — happy path", () => {
     client.close();
   });
 
-  it("github_list_branches returns current branch and remote branches", async () => {
+  it("GET /api/sessions/:id/git/branches returns current branch and remote branches", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    await createSession(client);
+    const sessionId = await createSession(client);
 
-    client.send({ type: "github_list_branches" });
-    const msg = await client.receiveSkipLogs();
-
-    expect(msg.type).toBe("github_branches");
-    expect((msg as any).current).toBeDefined();
-    expect(Array.isArray((msg as any).remote)).toBe(true);
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/git/branches` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.current).toBeDefined();
+    expect(Array.isArray(body.remote)).toBe(true);
 
     client.close();
   });

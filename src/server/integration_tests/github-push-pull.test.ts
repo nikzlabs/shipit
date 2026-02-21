@@ -141,21 +141,10 @@ describe("Integration: GitHub push, pull & remotes", () => {
     client.close();
   });
 
-  it("github_get_remotes returns empty list initially", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // Activate session so git operations work
-    client.send({ type: "get_chat_history", sessionId });
-    await client.receiveType("file_tree"); // drain all activation messages
-
-    client.send({ type: "github_get_remotes" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("github_remotes");
-    expect((msg as any).remotes).toEqual([]);
-
-    client.close();
+  it("GET /api/sessions/:id/git/remotes returns empty list initially", async () => {
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/git/remotes` });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().remotes).toEqual([]);
   });
 
   it("github_push with auth but no remote returns error", async () => {

@@ -75,7 +75,7 @@ describe("Integration: Diff review", () => {
     await client.receiveType("file_tree"); // drain all activation messages
   }
 
-  it("get_turn_diff returns file changes between two commits", async () => {
+  it("GET /api/sessions/:id/git/diff returns file changes between two commits", async () => {
     // Create initial file and commit
     fs.writeFileSync(path.join(sessionDir, "hello.ts"), "const x = 1;\n");
     const hash1 = await git.autoCommit("Add hello.ts");
@@ -84,15 +84,9 @@ describe("Integration: Diff review", () => {
     fs.writeFileSync(path.join(sessionDir, "hello.ts"), "const x = 2;\nconst y = 3;\n");
     const hash2 = await git.autoCommit("Modify hello.ts");
 
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-    await activateSession(client);
-
-    client.send({ type: "get_turn_diff", fromCommit: hash1!, toCommit: hash2! });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("turn_diff");
-    const diff = msg as any;
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/git/diff?from=${hash1}&to=${hash2}` });
+    expect(res.statusCode).toBe(200);
+    const diff = res.json();
     expect(diff.fromCommit).toBe(hash1);
     expect(diff.toCommit).toBe(hash2);
     expect(diff.files.length).toBe(1);
@@ -100,11 +94,9 @@ describe("Integration: Diff review", () => {
     expect(diff.files[0].status).toBe("modified");
     expect(diff.files[0].oldContent).toContain("const x = 1;");
     expect(diff.files[0].newContent).toContain("const x = 2;");
-
-    client.close();
   });
 
-  it("get_turn_diff handles added files", async () => {
+  it("GET /api/sessions/:id/git/diff handles added files", async () => {
     const log = await git.log();
     const initialHash = log[0].hash;
 
@@ -112,24 +104,16 @@ describe("Integration: Diff review", () => {
     fs.writeFileSync(path.join(sessionDir, "new-file.ts"), "export const foo = 42;\n");
     const hash2 = await git.autoCommit("Add new-file.ts");
 
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-    await activateSession(client);
-
-    client.send({ type: "get_turn_diff", fromCommit: initialHash, toCommit: hash2! });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("turn_diff");
-    const diff = msg as any;
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/git/diff?from=${initialHash}&to=${hash2}` });
+    expect(res.statusCode).toBe(200);
+    const diff = res.json();
     expect(diff.files.length).toBe(1);
     expect(diff.files[0].status).toBe("added");
     expect(diff.files[0].oldContent).toBe("");
     expect(diff.files[0].newContent).toContain("export const foo = 42;");
-
-    client.close();
   });
 
-  it("get_turn_diff handles deleted files", async () => {
+  it("GET /api/sessions/:id/git/diff handles deleted files", async () => {
     // Create a file
     fs.writeFileSync(path.join(sessionDir, "to-delete.ts"), "delete me\n");
     const hash1 = await git.autoCommit("Add to-delete.ts");
@@ -138,55 +122,30 @@ describe("Integration: Diff review", () => {
     fs.unlinkSync(path.join(sessionDir, "to-delete.ts"));
     const hash2 = await git.autoCommit("Delete to-delete.ts");
 
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-    await activateSession(client);
-
-    client.send({ type: "get_turn_diff", fromCommit: hash1!, toCommit: hash2! });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("turn_diff");
-    const diff = msg as any;
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/git/diff?from=${hash1}&to=${hash2}` });
+    expect(res.statusCode).toBe(200);
+    const diff = res.json();
     expect(diff.files.length).toBe(1);
     expect(diff.files[0].status).toBe("deleted");
     expect(diff.files[0].oldContent).toContain("delete me");
     expect(diff.files[0].newContent).toBe("");
-
-    client.close();
   });
 
-  it("get_turn_diff returns empty for no changes", async () => {
+  it("GET /api/sessions/:id/git/diff returns empty for no changes", async () => {
     const log = await git.log();
     const hash = log[0].hash;
 
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-    await activateSession(client);
-
     // Same commit for from and to — no changes
-    client.send({ type: "get_turn_diff", fromCommit: hash, toCommit: hash });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("turn_diff");
-    const diff = msg as any;
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/git/diff?from=${hash}&to=${hash}` });
+    expect(res.statusCode).toBe(200);
+    const diff = res.json();
     expect(diff.files.length).toBe(0);
     expect(diff.stats.filesChanged).toBe(0);
-
-    client.close();
   });
 
-  it("get_turn_diff returns error for missing commit params", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-    await activateSession(client);
-
-    client.send({ type: "get_turn_diff", fromCommit: "", toCommit: "" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toContain("get_turn_diff requires");
-
-    client.close();
+  it("GET /api/sessions/:id/git/diff returns 400 for missing commit params", async () => {
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/git/diff` });
+    expect(res.statusCode).toBe(400);
   });
 
   it("reject_changes reverts specific files", async () => {
@@ -262,7 +221,7 @@ describe("Integration: Diff review", () => {
     client.close();
   });
 
-  it("get_turn_diff handles multiple file changes", async () => {
+  it("GET /api/sessions/:id/git/diff handles multiple file changes", async () => {
     const log = await git.log();
     const initialHash = log[0].hash;
 
@@ -272,20 +231,12 @@ describe("Integration: Diff review", () => {
     fs.writeFileSync(path.join(sessionDir, "c.ts"), "file c\n");
     const hash2 = await git.autoCommit("Add three files");
 
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-    await activateSession(client);
-
-    client.send({ type: "get_turn_diff", fromCommit: initialHash, toCommit: hash2! });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("turn_diff");
-    const diff = msg as any;
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/git/diff?from=${initialHash}&to=${hash2}` });
+    expect(res.statusCode).toBe(200);
+    const diff = res.json();
     expect(diff.files.length).toBe(3);
     expect(diff.stats.filesChanged).toBe(3);
     const paths = diff.files.map((f: any) => f.path).sort();
     expect(paths).toEqual(["a.ts", "b.ts", "c.ts"]);
-
-    client.close();
   });
 });

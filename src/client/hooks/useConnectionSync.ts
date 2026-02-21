@@ -10,6 +10,7 @@ import { getSavedAgentId } from "../utils/local-storage.js";
 export function useConnectionSync(params: {
   status: string;
   send: (msg: WsClientMessage) => void;
+  apiGet: <T>(path: string) => Promise<T>;
   sessionIdRef: MutableRefObject<string | undefined>;
   historyLoadedRef: MutableRefObject<boolean>;
   templates: TemplateInfo[];
@@ -18,6 +19,7 @@ export function useConnectionSync(params: {
   setActivity: Dispatch<SetStateAction<StreamingActivity | undefined>>;
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   prStatus: { checks: { state: string } } | null;
+  setPrStatus: Dispatch<SetStateAction<{ url: string; number: number; title: string; baseBranch: string; headBranch: string; insertions: number; deletions: number; checks: { state: "pending" | "success" | "failure" | "none"; total: number; passed: number; failed: number; pending: number }; autoMergeEnabled: boolean; mergeable: boolean } | null>>;
   // Bootstrap state setters
   setSessions: Dispatch<SetStateAction<SessionInfo[]>>;
   setAgentList: Dispatch<SetStateAction<AgentOption[]>>;
@@ -29,8 +31,8 @@ export function useConnectionSync(params: {
   setSystemPromptContent: Dispatch<SetStateAction<string>>;
 }): void {
   const {
-    status, send, sessionIdRef, historyLoadedRef, isLoading,
-    setIsLoading, setActivity, setMessages, prStatus,
+    status, send, apiGet, sessionIdRef, historyLoadedRef, isLoading,
+    setIsLoading, setActivity, setMessages, prStatus, setPrStatus,
     setSessions, setAgentList, setTemplates, setGithubStatus,
     setImportSearchResults, setGitIdentity, setHasSystemPrompt, setSystemPromptContent,
   } = params;
@@ -91,22 +93,28 @@ export function useConnectionSync(params: {
     }
   }, [status, send, sessionIdRef, historyLoadedRef]);
 
-  // Fetch PR status on session load
+  // Fetch PR status on session load via HTTP
   useEffect(() => {
     if (status === "open" && sessionIdRef.current) {
-      send({ type: "get_pr_status" });
+      const sid = sessionIdRef.current;
+      apiGet<{ pr: Parameters<typeof setPrStatus>[0] }>(`/api/sessions/${sid}/pr/status`)
+        .then((data) => setPrStatus(data.pr))
+        .catch(() => { /* session may not have a PR */ });
     }
-  }, [status, send, sessionIdRef]);
+  }, [status, sessionIdRef, apiGet, setPrStatus]);
 
   // Poll PR status while CI is pending
   useEffect(() => {
-    if (prStatus?.checks.state === "pending") {
+    if (prStatus?.checks.state === "pending" && sessionIdRef.current) {
+      const sid = sessionIdRef.current;
       const interval = setInterval(() => {
-        send({ type: "get_pr_status" });
+        apiGet<{ pr: Parameters<typeof setPrStatus>[0] }>(`/api/sessions/${sid}/pr/status`)
+          .then((data) => setPrStatus(data.pr))
+          .catch(() => { /* ignore polling errors */ });
       }, 30_000);
       return () => clearInterval(interval);
     }
-  }, [prStatus?.checks.state, send]);
+  }, [prStatus?.checks.state, sessionIdRef, apiGet, setPrStatus]);
 
   // Handle WebSocket disconnection during streaming
   const prevStatusRef = useRef(status);

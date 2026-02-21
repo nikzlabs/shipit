@@ -300,6 +300,18 @@ export function getDeploySetup(
   };
 }
 
+/** Get workspace state (git log + file tree) for a session. */
+export async function getWorkspaceState(
+  git: GitManager,
+  dir: string,
+): Promise<{ gitLog: Awaited<ReturnType<typeof getGitLog>>; fileTree: Awaited<ReturnType<typeof getFileTree>> }> {
+  const [gitLog, fileTree] = await Promise.all([
+    getGitLog(git),
+    getFileTree(dir),
+  ]);
+  return { gitLog, fileTree };
+}
+
 /** Get chat messages for a session (read-only, no activation side effects). */
 export function getChatHistory(
   chatHistoryManager: { load: (sessionId: string) => unknown[] },

@@ -6,7 +6,7 @@ import { scanFileTree } from "../file-tree.js";
 type WsArchiveSession = Extract<WsClientMessage, { type: "archive_session" }>;
 type WsRenameSession = Extract<WsClientMessage, { type: "rename_session" }>;
 type WsGetChatHistory = Extract<WsClientMessage, { type: "get_chat_history" }>;
-type WsGetSessionStatus = Extract<WsClientMessage, { type: "get_session_status" }>;
+
 
 export async function handleListSessions(ctx: HandlerContext): Promise<void> {
   const sessions = ctx.sessionManager.list();
@@ -171,13 +171,3 @@ export async function handleGetChatHistory(ctx: HandlerContext, msg: WsGetChatHi
   }
 }
 
-export function handleGetSessionStatus(ctx: HandlerContext, msg: WsGetSessionStatus): void {
-  const registry = ctx.getRunnerRegistry();
-  const runner = registry.get(msg.sessionId);
-  ctx.send({
-    type: "session_status",
-    sessionId: msg.sessionId,
-    running: runner?.running ?? false,
-    queueLength: runner?.queueLength ?? 0,
-  });
-}

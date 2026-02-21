@@ -202,11 +202,11 @@ describe("Integration: Threads — fork & switch", () => {
     const client = await TestClient.connect(port);
     await drainConnect(client);
 
-    await doMessageTurn(client, "Hello");
+    const sessionId = await doMessageTurn(client, "Hello");
 
-    // Get main thread ID
-    client.send({ type: "list_threads" } as any);
-    const listMsg = await waitForMessage(client, "thread_list");
+    // Get main thread ID via HTTP
+    const threadsRes = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/threads` });
+    const listMsg = threadsRes.json();
     const mainThreadId = listMsg.threads[0].id;
 
     // Create checkpoint and fork

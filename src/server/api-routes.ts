@@ -19,6 +19,7 @@ import type { DeploymentStore } from "./deployment-store.js";
 import type { FeatureManager } from "./features.js";
 import type { UsageManager } from "./usage.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
+import type { ChatHistoryManager } from "./chat-history.js";
 import {
   getBootstrapData,
   getFileTree,
@@ -38,6 +39,8 @@ import {
   listWorktrees,
   listFeatures,
   searchGitHubRepos,
+  getWorkspaceState,
+  getChatHistory,
   ServiceError,
 } from "./services.js";
 import { getErrorMessage } from "./validation.js";
@@ -60,6 +63,7 @@ export interface ApiDeps {
   featureManager: FeatureManager;
   usageManager: UsageManager;
   runnerRegistry: SessionRunnerRegistry;
+  chatHistoryManager: ChatHistoryManager;
 }
 
 /**
@@ -265,6 +269,28 @@ export async function registerApiRoutes(
       return;
     }
     return getDeploySetup(deps.deploymentManager, deps.deploymentStore, request.params.id);
+  });
+
+  // GET /api/sessions/:id/workspace-state — git log + file tree (combined)
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/workspace-state", async (request, reply) => {
+    const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+    if (!dir) return;
+    try {
+      const git = createGitManager(dir);
+      return await getWorkspaceState(git, dir);
+    } catch (err) {
+      reply.code(500).send({ error: `Failed to get workspace state: ${getErrorMessage(err)}` });
+    }
+  });
+
+  // GET /api/sessions/:id/history — read-only chat history (no session activation)
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/history", async (request, reply) => {
+    const session = sessionManager.get(request.params.id);
+    if (!session) {
+      reply.code(404).send({ error: "Session not found" });
+      return;
+    }
+    return { messages: getChatHistory(deps.chatHistoryManager, request.params.id) };
   });
 
   // GET /api/sessions/:id/usage — usage stats

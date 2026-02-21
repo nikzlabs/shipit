@@ -69,37 +69,17 @@ describe("Integration: Git operations", () => {
     }
   });
 
-  it("get_git_log returns commit history for active session", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // Activate the session so git operations target the session dir.
-    // get_chat_history now also sends git_log + file_tree after activation.
-    client.send({ type: "get_chat_history", sessionId });
-    await client.receiveType("file_tree"); // drain all activation messages
-
-    client.send({ type: "get_git_log" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("git_log");
-    const commits = (msg as any).commits;
+  it("GET /api/sessions/:id/git/log returns commit history", async () => {
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/git/log` });
+    expect(res.statusCode).toBe(200);
+    const commits = res.json().commits;
     expect(commits.length).toBeGreaterThanOrEqual(1);
     expect(commits[0].message).toBe("Initial commit");
-
-    client.close();
   });
 
-  it("get_git_log returns error when no session is active", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "get_git_log" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toContain("git");
-
-    client.close();
+  it("GET /api/sessions/:id/git/log returns 404 for missing session", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/sessions/nonexistent/git/log" });
+    expect(res.statusCode).toBe(404);
   });
 
   it("rollback resets to a previous commit within session", async () => {

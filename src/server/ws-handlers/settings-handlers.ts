@@ -156,17 +156,6 @@ export function handleSetAgent(ctx: HandlerContext, msg: WsSetAgent): { newAgent
   return { newAgentId: msg.agentId };
 }
 
-export function handleListAgents(ctx: HandlerContext): void {
-  const agents = ctx.agentRegistry.list().map((a) => ({
-    id: a.id,
-    name: a.name,
-    installed: a.installed,
-    authConfigured: a.authConfigured,
-    models: a.capabilities.models,
-  }));
-  ctx.send({ type: "agent_list", agents, defaultAgentId: ctx.defaultAgentId });
-}
-
 export function handleSetAgentEnv(ctx: HandlerContext, msg: WsSetAgentEnv): void {
   if (!msg.agentId || !msg.key || typeof msg.value !== "string") {
     ctx.send({ type: "error", message: "Invalid set_agent_env request" });
@@ -195,15 +184,3 @@ export function handleSetAgentEnv(ctx: HandlerContext, msg: WsSetAgentEnv): void
   ctx.send({ type: "agent_list", agents, defaultAgentId: ctx.defaultAgentId });
 }
 
-export async function handleListFeatures(ctx: HandlerContext): Promise<void> {
-  try {
-    const features = await ctx.featureManager.list();
-    ctx.send({ type: "feature_list", features });
-  } catch (err) {
-    ctx.send({ type: "error", message: `Failed to list features: ${getErrorMessage(err)}` });
-  }
-}
-
-export function handleGetUsageStats(ctx: HandlerContext): void {
-  ctx.send({ type: "usage_stats", stats: ctx.usageManager.getStats() });
-}

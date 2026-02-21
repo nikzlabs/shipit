@@ -6,16 +6,6 @@ type WsCreateCheckpoint = Extract<WsClientMessage, { type: "create_checkpoint" }
 type WsForkThread = Extract<WsClientMessage, { type: "fork_thread" }>;
 type WsSwitchThread = Extract<WsClientMessage, { type: "switch_thread" }>;
 
-export function handleListThreads(ctx: HandlerContext): void {
-  const activeAppSessionId = ctx.getActiveAppSessionId();
-  if (!activeAppSessionId) {
-    ctx.send({ type: "error", message: "No active session" });
-    return;
-  }
-  const data = ctx.threadManager.listThreads(activeAppSessionId);
-  ctx.send({ type: "thread_list", threads: data.threads, activeThreadId: data.activeThreadId });
-}
-
 export async function handleCreateCheckpoint(ctx: HandlerContext, msg: WsCreateCheckpoint): Promise<void> {
   const activeAppSessionId = ctx.getActiveAppSessionId();
   if (!activeAppSessionId) {

@@ -146,16 +146,17 @@ describe("Integration: Session isolation — creation", () => {
     client.send({ type: "apply_template", templateId: "static-html" });
     const sessionMsg = await client.receive();
     expect(sessionMsg.type).toBe("session_started");
-    const sessionDir = (sessionMsg as any).session.workspaceDir;
+    const session = (sessionMsg as any).session;
+    const sessionDir = session.workspaceDir;
     await client.receive(); // template_applied
 
-    // Request the file tree
-    client.send({ type: "get_file_tree" });
-    const treeMsg = await client.receive();
-    expect(treeMsg.type).toBe("file_tree");
+    // Request the file tree via HTTP
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/files` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
 
     // Should include files from the template in the session directory
-    const flatNames = (treeMsg as any).tree.map((n: any) => n.name);
+    const flatNames = body.tree.map((n: any) => n.name);
     expect(flatNames).toContain("index.html");
     expect(flatNames).toContain("style.css");
 

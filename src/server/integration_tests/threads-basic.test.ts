@@ -136,29 +136,20 @@ describe("Integration: Threads — list & checkpoints", () => {
 
   // ---- list_threads ----
 
-  it("list_threads returns error when no active session", async () => {
-    const client = await TestClient.connect(port);
-    await drainConnect(client);
-
-    client.send({ type: "list_threads" } as any);
-    const msg = await client.receiveSkipLogs();
-
-    expect(msg).toMatchObject({
-      type: "error",
-      message: "No active session",
-    });
-
-    client.close();
+  it("list_threads returns 404 for nonexistent session", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/sessions/nonexistent/threads" });
+    expect(res.statusCode).toBe(404);
   });
 
   it("list_threads returns threads after session established", async () => {
     const client = await TestClient.connect(port);
     await drainConnect(client);
 
-    await doMessageTurn(client, "Hello");
+    const sessionId = await doMessageTurn(client, "Hello");
 
-    client.send({ type: "list_threads" } as any);
-    const msg = await waitForMessage(client, "thread_list");
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/threads` });
+    expect(res.statusCode).toBe(200);
+    const msg = res.json();
 
     expect(msg.threads).toHaveLength(1);
     expect(msg.threads[0].name).toBe("main");

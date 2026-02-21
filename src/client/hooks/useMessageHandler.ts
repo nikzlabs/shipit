@@ -29,6 +29,7 @@ type RightTab = "preview" | "docs" | "files" | "terminal" | "features" | "change
 export function useMessageHandler(params: {
   lastMessage: MessageEvent | null;
   send: (msg: WsClientMessage) => void;
+  apiGet: <T>(path: string) => Promise<T>;
 
   // State setters
   setPreview: Dispatch<SetStateAction<PreviewStatus | null>>;
@@ -128,7 +129,7 @@ export function useMessageHandler(params: {
   } | null;
 }): void {
   const {
-    lastMessage, send,
+    lastMessage, send, apiGet,
     setPreview, setSelectedPort, setMessages, setIsLoading, setActivity,
     setGitCommits, setAuthUrl, setSessions, setDocFiles, setDocContent,
     setFileTree, setViewingFileContent, setViewingFileBinary,
@@ -428,18 +429,31 @@ export function useMessageHandler(params: {
         ...prev,
       ]);
       // Refresh file tree if the Files tab is active (files likely changed)
-      if (rightTab === "files") {
-        send({ type: "get_file_tree" });
-        // Re-fetch the viewed file's content so it stays up to date
+      if (rightTab === "files" && sessionIdRef.current) {
         if (viewingFile) {
-          send({ type: "get_file_content", path: viewingFile });
+          // Fetch file content with tree in one request
+          apiGet<{ content: string; isBinary?: boolean; tree: FileTreeNode[] }>(
+            `/api/sessions/${sessionIdRef.current}/files/${viewingFile}?tree=true`,
+          ).then((d) => {
+            setFileTree(d.tree);
+            setViewingFileContent(d.content);
+            setViewingFileBinary(d.isBinary ?? false);
+          }).catch(() => {});
+        } else {
+          apiGet<{ tree: FileTreeNode[] }>(`/api/sessions/${sessionIdRef.current}/files`)
+            .then((d) => setFileTree(d.tree))
+            .catch(() => {});
         }
       }
     }
 
     if (data.type === "rollback_complete") {
       // Refresh the git log after rollback
-      send({ type: "get_git_log" });
+      if (sessionIdRef.current) {
+        apiGet<{ commits: GitCommit[] }>(`/api/sessions/${sessionIdRef.current}/git/log`)
+          .then((d) => setGitCommits(d.commits))
+          .catch(() => {});
+      }
     }
 
     if (data.type === "auth_required") {
@@ -489,7 +503,9 @@ export function useMessageHandler(params: {
         return [data.session, ...prev];
       });
       // Load threads for this session
-      send({ type: "list_threads" });
+      apiGet<{ threads: ThreadInfo[]; activeThreadId: string }>(`/api/sessions/${data.session.id}/threads`)
+        .then((d) => { setThreads(d.threads); setActiveThreadId(d.activeThreadId); })
+        .catch(() => {});
     }
 
     if (data.type === "session_renamed") {
@@ -499,34 +515,40 @@ export function useMessageHandler(params: {
       );
     }
 
-    if (data.type === "doc_list") {
-      setDocFiles(data.files);
-    }
-
-    if (data.type === "doc_content") {
-      setDocContent(data.content);
-    }
-
     if (data.type === "file_tree") {
       setFileTree(data.tree);
     }
 
-    if (data.type === "file_content") {
-      setViewingFileContent(data.content);
-      setViewingFileBinary(data.isBinary ?? false);
-    }
-
     if (data.type === "files_changed") {
       const paths: string[] = data.paths;
+      const sid = sessionIdRef.current;
 
-      // Auto-refresh file tree if the Files tab is active
-      if (rightTab === "files") {
-        send({ type: "get_file_tree" });
-      }
+      // Auto-refresh file tree and/or viewed file
+      if (sid) {
+        const needsTree = rightTab === "files";
+        const needsFile = viewingFile && paths.some((p) => viewingFile.endsWith(p));
 
-      // Auto-refresh the viewed file if it was modified
-      if (viewingFile && paths.some((p) => viewingFile.endsWith(p))) {
-        send({ type: "get_file_content", path: viewingFile });
+        if (needsTree && needsFile) {
+          // Fetch file content with tree in one request
+          apiGet<{ content: string; isBinary?: boolean; tree: FileTreeNode[] }>(
+            `/api/sessions/${sid}/files/${viewingFile}?tree=true`,
+          ).then((d) => {
+            setFileTree(d.tree);
+            setViewingFileContent(d.content);
+            setViewingFileBinary(d.isBinary ?? false);
+          }).catch(() => {});
+        } else if (needsTree) {
+          apiGet<{ tree: FileTreeNode[] }>(`/api/sessions/${sid}/files`)
+            .then((d) => setFileTree(d.tree))
+            .catch(() => {});
+        } else if (needsFile) {
+          apiGet<{ content: string; isBinary?: boolean }>(`/api/sessions/${sid}/files/${viewingFile}`)
+            .then((d) => {
+              setViewingFileContent(d.content);
+              setViewingFileBinary(d.isBinary ?? false);
+            })
+            .catch(() => {});
+        }
       }
 
       // Show a badge on the Files tab when changes occur while not viewing it
@@ -556,7 +578,11 @@ export function useMessageHandler(params: {
     if (data.type === "template_applied") {
       setShowTemplates(false);
       // Refresh file tree in case user is on that tab
-      send({ type: "get_file_tree" });
+      if (sessionIdRef.current) {
+        apiGet<{ tree: FileTreeNode[] }>(`/api/sessions/${sessionIdRef.current}/files`)
+          .then((d) => setFileTree(d.tree))
+          .catch(() => {});
+      }
     }
 
     if (data.type === "home_repo_ready") {
@@ -585,8 +611,11 @@ export function useMessageHandler(params: {
         },
       ]);
       // Refresh PR status after push
-      if (data.type === "github_push_result" && data.success) {
-        send({ type: "get_pr_status" });
+      if (data.type === "github_push_result" && data.success && sessionIdRef.current) {
+        const sid = sessionIdRef.current;
+        apiGet<{ pr: typeof prStatus }>(`/api/sessions/${sid}/pr/status`)
+          .then((d) => setPrStatus(d.pr))
+          .catch(() => {});
         // Show toast with PR creation shortcut
         if (githubStatus.authenticated && !prStatus?.url) {
           setToast({
@@ -595,7 +624,9 @@ export function useMessageHandler(params: {
               label: "Create PR",
               onClick: () => {
                 setShowPRModal(true);
-                send({ type: "github_list_branches" });
+                apiGet<{ current: string; remote: string[] }>(`/api/sessions/${sid}/git/branches`)
+                  .then((d) => { setPrCurrentBranch(d.current); setPrRemoteBranches(d.remote); })
+                  .catch(() => {});
               },
             },
             duration: 8000,
@@ -613,31 +644,21 @@ export function useMessageHandler(params: {
         message: data.message,
       });
       // Refresh PR status after PR creation
-      if (data.success) {
-        send({ type: "get_pr_status" });
+      if (data.success && sessionIdRef.current) {
+        apiGet<{ pr: typeof prStatus }>(`/api/sessions/${sessionIdRef.current}/pr/status`)
+          .then((d) => setPrStatus(d.pr))
+          .catch(() => {});
       }
-    }
-
-    if (data.type === "github_search_results") {
-      setImportSearchResults(data.repos);
-    }
-
-
-    if (data.type === "pr_status") {
-      setPrStatus(data.pr);
     }
 
     if (data.type === "merge_pr_result") {
       if (data.success && !data.autoMergeEnabled) {
         setPrStatus(null);
-      } else if (data.autoMergeEnabled) {
-        send({ type: "get_pr_status" });
+      } else if (data.autoMergeEnabled && sessionIdRef.current) {
+        apiGet<{ pr: typeof prStatus }>(`/api/sessions/${sessionIdRef.current}/pr/status`)
+          .then((d) => setPrStatus(d.pr))
+          .catch(() => {});
       }
-    }
-
-    if (data.type === "github_branches") {
-      setPrCurrentBranch(data.current);
-      setPrRemoteBranches(data.remote);
     }
 
     if (data.type === "generated_pr_description") {
@@ -674,10 +695,6 @@ export function useMessageHandler(params: {
           },
         ]);
       }
-    }
-
-    if (data.type === "usage_stats") {
-      setAllUsageStats(data.stats);
     }
 
     if (data.type === "thread_list") {
@@ -730,17 +747,16 @@ export function useMessageHandler(params: {
       setMessages(loaded);
     }
 
-    if (data.type === "deploy_targets") {
-      setDeployTargets(data.targets);
-    }
-
     if (data.type === "deploy_config_saved") {
       // Refresh config status after save
-      send({ type: "get_project_settings" });
-    }
-
-    if (data.type === "project_settings") {
-      setDeployConfigStatus(data.deployConfig);
+      if (sessionIdRef.current) {
+        apiGet<{ targets: DeployTargetInfo[]; projectSettings: Record<string, { configured: boolean; projectName?: string }> }>(
+          `/api/sessions/${sessionIdRef.current}/deploy/setup`,
+        ).then((d) => {
+          setDeployTargets(d.targets);
+          setDeployConfigStatus(d.projectSettings);
+        }).catch(() => {});
+      }
     }
 
     if (data.type === "deploy_status") {
@@ -758,14 +774,6 @@ export function useMessageHandler(params: {
     if (data.type === "deploy_error") {
       setDeployStatus("error");
       setLastDeployError(data.message);
-    }
-
-    if (data.type === "deploy_history") {
-      setDeployHistory(data.deployments);
-    }
-
-    if (data.type === "feature_list") {
-      setFeatures(data.features);
     }
 
     if (data.type === "message_queued") {
@@ -890,12 +898,18 @@ export function useMessageHandler(params: {
     }
 
     if (data.type === "reject_changes_complete") {
-      // Clear the diff data and refresh git log
+      // Clear the diff data and refresh workspace state
       setTurnDiff(null);
       setLastCommitPair(null);
       setDiffBadgeCount(0);
-      send({ type: "get_git_log" });
-      send({ type: "get_file_tree" });
+      if (sessionIdRef.current) {
+        apiGet<{ gitLog: GitCommit[]; fileTree: FileTreeNode[] }>(
+          `/api/sessions/${sessionIdRef.current}/workspace-state`,
+        ).then((d) => {
+          setGitCommits(d.gitLog);
+          setFileTree(d.fileTree);
+        }).catch(() => {});
+      }
     }
 
     if (data.type === "terminal_output") {
@@ -939,7 +953,7 @@ export function useMessageHandler(params: {
         return next;
       });
     }
-  }, [lastMessage, send, rightTab, viewingFile, gitCommits, notify, handleSessionResume, navigate,
+  }, [lastMessage, send, apiGet, rightTab, viewingFile, gitCommits, notify, handleSessionResume, navigate,
       setPreview, setSelectedPort, setMessages, setIsLoading, setActivity,
       setGitCommits, setAuthUrl, setSessions, setDocFiles, setDocContent,
       setFileTree, setViewingFileContent, setViewingFileBinary,

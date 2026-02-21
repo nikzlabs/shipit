@@ -190,32 +190,22 @@ describe("Integration: Worktree sessions", () => {
 
   // ---- list_worktrees ----
 
-  it("list_worktrees returns empty when no active session", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "list_worktrees" } as any);
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("worktree_list");
-    expect((msg as any).worktrees).toEqual([]);
-
-    client.close();
+  it("list_worktrees returns 404 for nonexistent session", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/sessions/nonexistent/worktrees" });
+    expect(res.statusCode).toBe(404);
   });
 
   it("list_worktrees returns worktrees for active session (standalone)", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    await createAndActivateSession(client, "Parent");
+    const sessionId = await createAndActivateSession(client, "Parent");
 
     // For standalone sessions (no remoteUrl), list_worktrees returns only the active session
-    client.send({ type: "list_worktrees" } as any);
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("worktree_list");
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/worktrees` });
+    expect(res.statusCode).toBe(200);
     // Standalone session has no branch, so worktrees list is filtered to entries with branch
-    const worktrees = (msg as any).worktrees;
+    const worktrees = res.json().worktrees;
     expect(worktrees.length).toBe(0);
 
     client.close();

@@ -11,6 +11,7 @@ import { useConnectionSync } from "./hooks/useConnectionSync.js";
 import { useAutoFix } from "./hooks/useAutoFix.js";
 import { useMessageHandler } from "./hooks/useMessageHandler.js";
 import { useAppCallbacks } from "./hooks/useAppCallbacks.js";
+import { useApi } from "./hooks/useApi.js";
 import { getSavedPermissionMode, getSavedSidebarCollapsed, getSavedAgentId, saveSidebarCollapsed } from "./utils/local-storage.js";
 import { MessageInput } from "./components/MessageInput.js";
 import { MessageList, type ChatMessage, type CheckpointDivider } from "./components/MessageList.js";
@@ -62,6 +63,7 @@ export default function App() {
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
   const { send, lastMessage, status, reconnectAttempt, reconnect } = useWebSocket(getWsUrl());
+  const { get: apiGet } = useApi();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [preview, setPreview] = useState<PreviewStatus | null>(null);
@@ -229,6 +231,7 @@ export default function App() {
   useConnectionSync({
     status,
     send,
+    apiGet,
     sessionIdRef,
     historyLoadedRef,
     templates,
@@ -237,6 +240,7 @@ export default function App() {
     setActivity,
     setMessages,
     prStatus,
+    setPrStatus,
     // Bootstrap state setters
     setSessions,
     setAgentList,
@@ -252,6 +256,7 @@ export default function App() {
   useMessageHandler({
     lastMessage,
     send,
+    apiGet,
     setPreview, setSelectedPort, setMessages, setIsLoading, setActivity,
     setGitCommits, setAuthUrl, setSessions, setDocFiles, setDocContent,
     setFileTree, setViewingFileContent, setViewingFileBinary,

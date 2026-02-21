@@ -5,10 +5,6 @@ export interface WsGitHubSetToken {
   token: string;
 }
 
-export interface WsGitHubGetStatus {
-  type: "github_get_status";
-}
-
 export interface WsGitHubPush {
   type: "github_push";
   remote?: string;
@@ -27,10 +23,6 @@ export interface WsGitHubSetRemote {
   url: string;
 }
 
-export interface WsGitHubGetRemotes {
-  type: "github_get_remotes";
-}
-
 export interface WsGitHubLogout {
   type: "github_logout";
 }
@@ -43,15 +35,6 @@ export interface WsGitHubCreatePR {
   draft?: boolean;
 }
 
-export interface WsGitHubListBranches {
-  type: "github_list_branches";
-}
-
-export interface WsGitHubSearchRepos {
-  type: "github_search_repos";
-  query: string;
-}
-
 // ---- AI PR description messages ----
 
 export interface WsGeneratePRDescription {
@@ -59,10 +42,6 @@ export interface WsGeneratePRDescription {
 }
 
 // ---- PR status & merge messages ----
-
-export interface WsGetPrStatus {
-  type: "get_pr_status";
-}
 
 export interface WsMergePr {
   type: "merge_pr";

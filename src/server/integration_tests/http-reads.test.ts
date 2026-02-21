@@ -5,6 +5,7 @@ import path from "node:path";
 import { buildApp } from "../index.js";
 import { GitManager } from "../git.js";
 import { SessionManager } from "../sessions.js";
+import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../auth.js";
 import { PreviewManager } from "../preview-manager.js";
 import { ClaudeProcess } from "../claude.js";
@@ -26,6 +27,7 @@ describe("Integration: Phase 1 GET endpoints", () => {
   let sessionManager: SessionManager;
   let githubAuthManager: StubGitHubAuthManager;
   let credentialStore: CredentialStore;
+  let chatHistoryManager: ChatHistoryManager;
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-http-reads-"));
@@ -34,6 +36,7 @@ describe("Integration: Phase 1 GET endpoints", () => {
     sessionManager = new SessionManager(sessionsFile);
     githubAuthManager = new StubGitHubAuthManager();
     credentialStore = new CredentialStore(tmpDir);
+    chatHistoryManager = new ChatHistoryManager(path.join(tmpDir, ".chat-history"));
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
@@ -44,6 +47,7 @@ describe("Integration: Phase 1 GET endpoints", () => {
       claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
       fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       credentialStore,
+      chatHistoryManager,
       workspaceDir: tmpDir,
       serveStatic: false,
       startPreview: false,
@@ -354,5 +358,60 @@ describe("Integration: Phase 1 GET endpoints", () => {
     const body = res.json();
     expect(body).toHaveProperty("repos");
     expect(body.repos.length).toBeGreaterThan(0);
+  });
+
+  // ---- Workspace state (combined git log + file tree) ----
+
+  it("GET /api/sessions/:id/workspace-state returns gitLog and fileTree", async () => {
+    const dir = await createSession("s1", "Session 1");
+    const git = new GitManager(dir);
+    fs.writeFileSync(path.join(dir, "file.txt"), "data");
+    await git.autoCommit("Initial commit");
+
+    const res = await app.inject({ method: "GET", url: "/api/sessions/s1/workspace-state" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body).toHaveProperty("gitLog");
+    expect(body).toHaveProperty("fileTree");
+    expect(Array.isArray(body.gitLog)).toBe(true);
+    expect(body.gitLog.length).toBeGreaterThan(0);
+    expect(Array.isArray(body.fileTree)).toBe(true);
+    const names = body.fileTree.map((n: any) => n.name);
+    expect(names).toContain("file.txt");
+  });
+
+  it("GET /api/sessions/:id/workspace-state returns 404 for missing session", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/sessions/nonexistent/workspace-state" });
+    expect(res.statusCode).toBe(404);
+  });
+
+  // ---- Chat history (read-only) ----
+
+  it("GET /api/sessions/:id/history returns empty messages for new session", async () => {
+    await createSession("s1", "Session 1");
+
+    const res = await app.inject({ method: "GET", url: "/api/sessions/s1/history" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body).toHaveProperty("messages");
+    expect(body.messages).toEqual([]);
+  });
+
+  it("GET /api/sessions/:id/history returns persisted messages", async () => {
+    await createSession("s1", "Session 1");
+    chatHistoryManager.append("s1", { role: "user", text: "Hello" });
+    chatHistoryManager.append("s1", { role: "assistant", text: "Hi there!" });
+
+    const res = await app.inject({ method: "GET", url: "/api/sessions/s1/history" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.messages).toHaveLength(2);
+    expect(body.messages[0]).toMatchObject({ role: "user", text: "Hello" });
+    expect(body.messages[1]).toMatchObject({ role: "assistant", text: "Hi there!" });
+  });
+
+  it("GET /api/sessions/:id/history returns 404 for missing session", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/sessions/nonexistent/history" });
+    expect(res.statusCode).toBe(404);
   });
 });

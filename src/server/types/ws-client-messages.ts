@@ -2,31 +2,22 @@ import type { ImageAttachment, FileContextRef, PermissionMode } from "./attachme
 import type { AgentId } from "./agent-types.js";
 import type {
   WsGitHubSetToken,
-  WsGitHubGetStatus,
   WsGitHubPush,
   WsGitHubPull,
   WsGitHubSetRemote,
-  WsGitHubGetRemotes,
   WsGitHubLogout,
   WsGitHubCreatePR,
-  WsGitHubListBranches,
-  WsGitHubSearchRepos,
   WsGeneratePRDescription,
-  WsGetPrStatus,
   WsMergePr,
 } from "./github-types.js";
 import type { WsTerminalStart, WsTerminalInput, WsTerminalResize, WsClearLogs, WsPreviewError } from "./terminal-types.js";
-import type { WsCreateCheckpoint, WsForkThread, WsSwitchThread, WsListThreads } from "./thread-types.js";
+import type { WsCreateCheckpoint, WsForkThread, WsSwitchThread } from "./thread-types.js";
 import type {
-  WsListDeployTargets,
   WsDeployConfigure,
   WsInitiateDeploy,
-  WsGetDeployHistory,
-  WsGetProjectSettings,
   WsCancelDeploy,
   WsDeleteDeployConfig,
 } from "./deployment-types.js";
-import type { WsGetUsageStats } from "./usage-types.js";
 
 export interface WsSendMessage {
   type: "send_message";
@@ -35,10 +26,6 @@ export interface WsSendMessage {
   images?: ImageAttachment[];
   files?: FileContextRef[];
   permissionMode?: PermissionMode;
-}
-
-export interface WsGetGitLog {
-  type: "get_git_log";
 }
 
 export interface WsRollback {
@@ -65,27 +52,9 @@ export interface WsRenameSession {
   title: string;
 }
 
-export interface WsListDocs {
-  type: "list_docs";
-}
-
-export interface WsGetDoc {
-  type: "get_doc";
-  path: string;
-}
-
 export interface WsGetChatHistory {
   type: "get_chat_history";
   sessionId: string;
-}
-
-export interface WsGetFileTree {
-  type: "get_file_tree";
-}
-
-export interface WsGetFileContent {
-  type: "get_file_content";
-  path: string;
 }
 
 export interface WsAnswerQuestion {
@@ -144,12 +113,6 @@ export interface WsSaveGlobalSettings {
   systemPrompt?: string;
 }
 
-// ---- Feature client messages ----
-
-export interface WsListFeatures {
-  type: "list_features";
-}
-
 export interface WsSetApiKey {
   type: "set_api_key";
   key: string;
@@ -182,10 +145,6 @@ export interface WsFullReset {
 
 // ---- Agent registry messages ----
 
-export interface WsListAgentsMessage {
-  type: "list_agents";
-}
-
 export interface WsSetAgentEnvMessage {
   type: "set_agent_env";
   agentId: AgentId;
@@ -214,23 +173,7 @@ export interface WsCancelQueuedMessage {
   position: number | "all";
 }
 
-// ---- Session runner messages (client → server) ----
-
-/** Client → Server: request current runtime status for a session. */
-export interface WsGetSessionStatus {
-  type: "get_session_status";
-  sessionId: string;
-}
-
 // ---- Diff review messages (client → server) ----
-
-export interface WsGetTurnDiff {
-  type: "get_turn_diff";
-  /** Base commit hash (before the turn). */
-  fromCommit: string;
-  /** Target commit hash (after the turn). */
-  toCommit: string;
-}
 
 export interface WsRejectChanges {
   type: "reject_changes";
@@ -259,10 +202,6 @@ export interface WsForkSession {
   startPoint?: string;
 }
 
-export interface WsListWorktrees {
-  type: "list_worktrees";
-}
-
 export interface WsMergeSession {
   type: "merge_session";
   /** Session ID to merge from. */
@@ -271,53 +210,37 @@ export interface WsMergeSession {
 
 export type WsClientMessage =
   | WsSendMessage
-  | WsGetGitLog
   | WsRollback
   | WsListSessions
   | WsNewSession
   | WsArchiveSession
   | WsRenameSession
-  | WsListDocs
-  | WsGetDoc
   | WsGetChatHistory
-  | WsGetFileTree
-  | WsGetFileContent
   | WsClearLogs
   | WsPreviewError
-  | WsGetUsageStats
   | WsAnswerQuestion
   | WsListTemplates
   | WsApplyTemplate
   | WsGitHubSetToken
-  | WsGitHubGetStatus
   | WsGitHubPush
   | WsGitHubPull
   | WsGitHubSetRemote
-  | WsGitHubGetRemotes
   | WsGitHubLogout
   | WsGitHubCreatePR
-  | WsGitHubListBranches
   | WsSetGitIdentity
   | WsGetGlobalSettings
   | WsSaveGlobalSettings
   | WsCreateCheckpoint
   | WsForkThread
   | WsSwitchThread
-  | WsListThreads
   | WsSetApiKey
   | WsPasteAuthCode
   | WsClearApiKey
   | WsStartAuth
-  | WsListFeatures
-  | WsGitHubSearchRepos
   | WsGeneratePRDescription
-  | WsGetPrStatus
   | WsMergePr
-  | WsListDeployTargets
   | WsDeployConfigure
   | WsInitiateDeploy
-  | WsGetDeployHistory
-  | WsGetProjectSettings
   | WsCancelDeploy
   | WsDeleteDeployConfig
   | WsTerminalStart
@@ -328,14 +251,10 @@ export type WsClientMessage =
   | WsSetAgentMessage
   | WsCancelQueuedMessage
   | WsForkSession
-  | WsListWorktrees
   | WsMergeSession
   | WsInterruptClaude
-  | WsListAgentsMessage
   | WsSetAgentEnvMessage
   | WsFullReset
   | WsInitPreviewConfig
-  | WsGetTurnDiff
   | WsRejectChanges
-  | WsDiffComment
-  | WsGetSessionStatus;
+  | WsDiffComment;
