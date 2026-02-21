@@ -4,7 +4,7 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   test: {
-    reporters: ["vitest-llm-reporter"],
+    reporters: ["./vitest-llm-reporter.ts"],
     // Server tests run in Node, client tests in jsdom
     projects: [
       {
