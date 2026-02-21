@@ -11,7 +11,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 # Workspace for user projects — each session creates its own git repo
-RUN mkdir -p /workspace /credentials && ln -s /credentials/.claude /root/.claude
+RUN mkdir -p /workspace /credentials && ln -s /credentials/.claude /root/.claude && ln -sf /credentials/.claude.json /root/.claude.json
 VOLUME /workspace
 VOLUME /credentials
 
