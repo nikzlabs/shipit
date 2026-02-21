@@ -31,8 +31,9 @@ COPY . .
 COPY --from=build /app/dist/client ./dist/client
 
 # Workspace for user projects — each session creates its own git repo
-RUN mkdir -p /workspace
+RUN mkdir -p /workspace /credentials && ln -s /credentials/.claude /root/.claude
 VOLUME /workspace
+VOLUME /credentials
 
 ENV NODE_ENV=production
 

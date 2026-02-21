@@ -11,8 +11,9 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 # Workspace for user projects — each session creates its own git repo
-RUN mkdir -p /workspace
+RUN mkdir -p /workspace /credentials && ln -s /credentials/.claude /root/.claude
 VOLUME /workspace
+VOLUME /credentials
 
 COPY docker/docker-entrypoint.dev.sh /usr/local/bin/
 

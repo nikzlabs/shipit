@@ -73,21 +73,11 @@ export async function handleFullReset(ctx: HandlerContext): Promise<void> {
       ctx.setTerminal(null);
     }
 
-    // 2. Delete all persistent data
-    const deletePaths = [
-      path.join(ctx.workspaceDir, "sessions"),
-      path.join(ctx.workspaceDir, ".vibe-chat-history"),
-      path.join(ctx.workspaceDir, ".vibe-threads"),
-      path.join(ctx.workspaceDir, ".shipit-usage.json"),
-      path.join(ctx.workspaceDir, ".shipit"),
-      path.join(ctx.workspaceDir, ".github-token"),
-      path.join(ctx.workspaceDir, ".shipit-deploy"),
-      path.join(ctx.workspaceDir, ".vibe-sessions.json"),
-    ];
-
-    for (const p of deletePaths) {
+    // 2. Delete everything inside the workspace directory
+    const entries = await fs.readdir(ctx.workspaceDir);
+    for (const entry of entries) {
       try {
-        await fs.rm(p, { recursive: true, force: true });
+        await fs.rm(path.join(ctx.workspaceDir, entry), { recursive: true, force: true });
       } catch {
         // Best-effort — ignore individual failures
       }

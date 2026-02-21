@@ -96,15 +96,27 @@ describe("Integration: Full reset", () => {
 
     expect(msg).toMatchObject({ type: "full_reset_complete" });
 
-    // Verify all paths are deleted
-    expect(fs.existsSync(path.join(tmpDir, "sessions"))).toBe(false);
-    expect(fs.existsSync(path.join(tmpDir, ".vibe-chat-history"))).toBe(false);
-    expect(fs.existsSync(path.join(tmpDir, ".vibe-threads"))).toBe(false);
-    expect(fs.existsSync(path.join(tmpDir, ".shipit-usage.json"))).toBe(false);
-    expect(fs.existsSync(path.join(tmpDir, ".shipit"))).toBe(false);
-    expect(fs.existsSync(path.join(tmpDir, ".github-token"))).toBe(false);
-    expect(fs.existsSync(path.join(tmpDir, ".shipit-deploy"))).toBe(false);
-    expect(fs.existsSync(path.join(tmpDir, ".vibe-sessions.json"))).toBe(false);
+    // Verify workspace is completely empty
+    const remaining = fs.readdirSync(tmpDir);
+    expect(remaining).toEqual([]);
+
+    client.close();
+  });
+
+  it("full_reset removes root .git directory", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Simulate a root-level git repo (the bug: this survived the old reset)
+    const gitDir = path.join(tmpDir, ".git");
+    fs.mkdirSync(gitDir, { recursive: true });
+    fs.writeFileSync(path.join(gitDir, "HEAD"), "ref: refs/heads/main");
+
+    client.send({ type: "full_reset" } as any);
+    const msg = await client.receiveSkipLogs();
+
+    expect(msg).toMatchObject({ type: "full_reset_complete" });
+    expect(fs.existsSync(gitDir)).toBe(false);
 
     client.close();
   });
