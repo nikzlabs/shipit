@@ -2,7 +2,8 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import { execSync } from "node:child_process";
 
-const DEFAULT_TOKEN_PATH = "/workspace/.github-token";
+const DEFAULT_CREDENTIALS_DIR = "/credentials";
+const DEFAULT_TOKEN_PATH = `${DEFAULT_CREDENTIALS_DIR}/.github-token`;
 
 export interface GitHubAuthStatus {
   authenticated: boolean;

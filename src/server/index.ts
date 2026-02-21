@@ -84,6 +84,8 @@ export interface AppDeps {
   defaultAgentId?: AgentId;
   /** Root workspace directory. Defaults to `/workspace`. */
   workspaceDir?: string;
+  /** Directory for persistent credentials (survives full reset). Defaults to `/credentials`. */
+  credentialsDir?: string;
   /** Whether to serve static files from dist/client. Defaults to true. */
   serveStatic?: boolean;
   /** Whether to start the preview server. Defaults to true. */
@@ -179,6 +181,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     claudeFactory = () => new ClaudeProcess(),
     defaultAgentId = "claude" as AgentId,
     workspaceDir = WORKSPACE,
+    credentialsDir = "/credentials",
     serveStatic: shouldServeStatic = true,
     startPreview = true,
     detectPorts = (excludePorts: number[]) => scanPorts(DEFAULT_SCAN_PORTS, excludePorts),
@@ -240,7 +243,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   console.log(`[server] Agent auth status: ${authStr}`);
 
   // ---- GitHub auth manager ----
-  const githubAuthManager = deps.githubAuthManager ?? new GitHubAuthManager(workspaceDir);
+  const githubAuthManager = deps.githubAuthManager ?? new GitHubAuthManager(workspaceDir, path.join(credentialsDir, ".github-token"));
   const hasGitHubToken = githubAuthManager.checkCredentials();
   console.log("[server] GitHub credentials found:", hasGitHubToken);
   if (hasGitHubToken && !deps.githubAuthManager) {
