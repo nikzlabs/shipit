@@ -7,6 +7,7 @@
 - [ ] Add session ID resolution middleware (look up session dir from ID, return 404 if missing)
 - [ ] Decide on auth strategy for HTTP endpoints (session cookie, bearer token, or no auth for local-only)
 - [ ] Add `fetch`-based API client hook on the client (`useApi` or similar) with error handling
+- [ ] Add `GET /api/bootstrap` endpoint that returns all initial data in one response (sessions, agents, templates, GitHub status, global settings) — replaces the 5 sequential WS messages sent on connect
 
 ## Phase 1: Tier 1 — Pure data reads (GET endpoints)
 
@@ -43,7 +44,7 @@
 ### Client updates for Phase 1
 
 - [ ] Create `useApi` hook wrapping `fetch()` with JSON parsing, error handling, and base URL
-- [ ] Update `useConnectionSync` to use `Promise.all()` HTTP fetches for initial data load instead of WS messages
+- [ ] Update `useConnectionSync` to call `GET /api/bootstrap` on mount (before WS connects) instead of sending 5 separate WS messages
 - [ ] Update `useAppCallbacks` to call HTTP endpoints for all Tier 1 reads
 - [ ] Update `useMessageHandler` to stop handling response types that are now HTTP (e.g., `file_tree`, `file_content`, `doc_list`, etc.)
 - [ ] Remove corresponding `case` entries from `src/server/index.ts` switch dispatcher

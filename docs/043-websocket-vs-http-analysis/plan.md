@@ -132,7 +132,7 @@ These involve heavier state transitions or side effects that interact with WebSo
 
 ## Practical benefits of extracting HTTP endpoints
 
-### 1. Parallel initial data loading
+### 1. Single bootstrap request
 Currently on WS connect (`useConnectionSync.ts`), the client sends 4-5 messages sequentially:
 ```ts
 send({ type: "github_get_status" });
@@ -141,7 +141,7 @@ send({ type: "list_agents" });
 send({ type: "list_templates" });
 send({ type: "get_chat_history", sessionId });
 ```
-With HTTP, these could be `Promise.all()` fetched in parallel, and could even begin before the WebSocket connection is established.
+With HTTP, this becomes a single `GET /api/bootstrap` that returns all initial data (sessions, agents, templates, GitHub status, global settings) in one round trip. This can fire immediately on page load — before the WebSocket connection is even established.
 
 ### 2. Standard HTTP semantics
 - Proper status codes (404 for missing files, 409 for conflicts, 413 for oversized content)
