@@ -5,7 +5,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { buildApp } from "../index.js";
 import { GitManager } from "../git.js";
-import { GitIdentityStore } from "../git-identity-store.js";
+import { CredentialStore } from "../credential-store.js";
 import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../auth.js";
 import { GitHubAuthManager } from "../github-auth.js";
@@ -71,7 +71,7 @@ describe("Integration: git identity flow", () => {
     execSync("git config --unset user.email", { cwd: sessionDir, env });
   }
 
-  async function startApp(extraDeps?: { gitIdentityStore?: GitIdentityStore }): Promise<number> {
+  async function startApp(extraDeps?: { credentialStore?: CredentialStore }): Promise<number> {
     const sessionsFile = path.join(tmpDir, "sessions.json");
     sessionManager = new SessionManager(sessionsFile);
     sessionManager.track(sessionId, "Test session", sessionDir);
@@ -224,12 +224,12 @@ describe("Integration: git identity flow", () => {
     client.close();
   });
 
-  it("persists identity to global store when set_git_identity is called", async () => {
+  it("persists identity to credential store when set_git_identity is called", async () => {
     await initSessionRepoWithoutIdentity();
-    const store = new GitIdentityStore(tmpDir);
-    expect(store.hasIdentity()).toBe(false);
+    const store = new CredentialStore(tmpDir);
+    expect(store.getGitIdentity()).toBeNull();
 
-    port = await startApp({ gitIdentityStore: store });
+    port = await startApp({ credentialStore: store });
 
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
@@ -243,20 +243,20 @@ describe("Integration: git identity flow", () => {
     const resp = await client.receive();
     expect(resp).toMatchObject({ type: "git_identity_set", name: "Global User", email: "global@example.com" });
 
-    // Verify the global store now has the identity
-    const reloaded = new GitIdentityStore(tmpDir);
-    expect(reloaded.get()).toEqual({ name: "Global User", email: "global@example.com" });
+    // Verify the credential store now has the identity
+    const reloaded = new CredentialStore(tmpDir);
+    expect(reloaded.getGitIdentity()).toEqual({ name: "Global User", email: "global@example.com" });
 
     client.close();
   });
 
   it("auto-applies stored global identity instead of prompting", async () => {
     await initSessionRepoWithoutIdentity();
-    // Pre-populate global identity store
-    const store = new GitIdentityStore(tmpDir);
-    store.set("Stored User", "stored@example.com");
+    // Pre-populate credential store with identity
+    const store = new CredentialStore(tmpDir);
+    store.setGitIdentity("Stored User", "stored@example.com");
 
-    port = await startApp({ gitIdentityStore: store });
+    port = await startApp({ credentialStore: store });
 
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
@@ -281,12 +281,12 @@ describe("Integration: git identity flow", () => {
   });
 
   it("get_global_settings returns stored git identity", async () => {
-    const store = new GitIdentityStore(tmpDir);
-    store.set("Stored User", "stored@example.com");
+    const store = new CredentialStore(tmpDir);
+    store.setGitIdentity("Stored User", "stored@example.com");
 
     const git = new GitManager(sessionDir);
     await git.init();
-    port = await startApp({ gitIdentityStore: store });
+    port = await startApp({ credentialStore: store });
 
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
@@ -304,11 +304,11 @@ describe("Integration: git identity flow", () => {
   });
 
   it("get_global_settings returns empty git identity when none stored", async () => {
-    const store = new GitIdentityStore(tmpDir);
+    const store = new CredentialStore(tmpDir);
 
     const git = new GitManager(sessionDir);
     await git.init();
-    port = await startApp({ gitIdentityStore: store });
+    port = await startApp({ credentialStore: store });
 
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
@@ -324,11 +324,11 @@ describe("Integration: git identity flow", () => {
   });
 
   it("save_global_settings saves git identity without requiring active session", async () => {
-    const store = new GitIdentityStore(tmpDir);
+    const store = new CredentialStore(tmpDir);
 
     const git = new GitManager(sessionDir);
     await git.init();
-    port = await startApp({ gitIdentityStore: store });
+    port = await startApp({ credentialStore: store });
 
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
@@ -341,9 +341,9 @@ describe("Integration: git identity flow", () => {
       gitIdentity: { name: "Global User", email: "global@test.com" },
     });
 
-    // Verify it persisted to the global store
-    const reloaded = new GitIdentityStore(tmpDir);
-    expect(reloaded.get()).toEqual({ name: "Global User", email: "global@test.com" });
+    // Verify it persisted to the credential store
+    const reloaded = new CredentialStore(tmpDir);
+    expect(reloaded.getGitIdentity()).toEqual({ name: "Global User", email: "global@test.com" });
 
     client.close();
   });

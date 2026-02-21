@@ -59,7 +59,7 @@ export async function handleSetGitIdentity(ctx: HandlerContext, msg: WsSetGitIde
       const git = ctx.getActiveGitManager();
       await git.setIdentity(name, email);
       // Persist globally so future sessions auto-apply this identity
-      ctx.gitIdentityStore.set(name, email);
+      ctx.credentialStore.setGitIdentity(name, email);
       ctx.send({ type: "git_identity_set", name, email });
     } catch (err) {
       ctx.send({ type: "error", message: `Failed to set git identity: ${getErrorMessage(err)}` });
@@ -68,7 +68,7 @@ export async function handleSetGitIdentity(ctx: HandlerContext, msg: WsSetGitIde
 }
 
 export async function handleGetGlobalSettings(ctx: HandlerContext): Promise<void> {
-  const stored = ctx.gitIdentityStore.get();
+  const stored = ctx.credentialStore.getGitIdentity();
   const gitIdentity = stored ? { name: stored.name, email: stored.email } : { name: "", email: "" };
   let systemPrompt = "";
   try {
@@ -99,7 +99,7 @@ export async function handleSaveGlobalSettings(ctx: HandlerContext, msg: WsSaveG
       ctx.send({ type: "error", message: "Git email is too long (max 200 characters)" });
       return;
     }
-    ctx.gitIdentityStore.set(name, email);
+    ctx.credentialStore.setGitIdentity(name, email);
   }
 
   // Save system prompt if provided
@@ -121,7 +121,7 @@ export async function handleSaveGlobalSettings(ctx: HandlerContext, msg: WsSaveG
   }
 
   // Respond with full global settings
-  const stored = ctx.gitIdentityStore.get();
+  const stored = ctx.credentialStore.getGitIdentity();
   const gitIdentity = stored ? { name: stored.name, email: stored.email } : { name: "", email: "" };
   let systemPrompt = "";
   try {
@@ -177,6 +177,7 @@ export function handleSetAgentEnv(ctx: HandlerContext, msg: WsSetAgentEnv): void
     return;
   }
   process.env[msg.key] = msg.value;
+  ctx.credentialStore.setAgentEnv(msg.key, msg.value);
   ctx.agentRegistry.refreshAuth(msg.agentId);
   ctx.send({ type: "agent_env_set", agentId: msg.agentId, key: msg.key, success: true });
   // Send updated agent list so client can refresh UI

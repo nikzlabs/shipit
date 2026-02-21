@@ -19,12 +19,12 @@ import { FeatureManager } from "./features.js";
 import { ThreadManager } from "./threads.js";
 import { DeploymentManager } from "./deployment-manager.js";
 import { DeploymentStore } from "./deployment-store.js";
-import { GitIdentityStore } from "./git-identity-store.js";
+import { CredentialStore } from "./credential-store.js";
 import { VercelTarget } from "./deploy-targets/vercel.js";
 import { CloudflareTarget } from "./deploy-targets/cloudflare.js";
 import { ClaudeAdapter } from "./agents/claude-adapter.js";
 import { CodexAdapter } from "./agents/codex-adapter.js";
-import { AgentRegistry } from "./agents/agent-registry.js";
+import { AgentRegistry, ALLOWED_ENV_KEYS } from "./agents/agent-registry.js";
 import { SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionRunner } from "./session-runner.js";
 import type { AgentId, AgentEvent, AgentProcess } from "./agents/agent-process.js";
@@ -152,10 +152,10 @@ export interface AppDeps {
    */
   generateText?: (prompt: string, cwd?: string) => Promise<string>;
   /**
-   * Git identity store for global name/email persistence.
-   * Defaults to `new GitIdentityStore(workspaceDir)`.
+   * Unified credential store for git identity, GitHub token, agent API keys.
+   * Defaults to `new CredentialStore(credentialsDir)`.
    */
-  gitIdentityStore?: GitIdentityStore;
+  credentialStore?: CredentialStore;
   /**
    * Debounce delay in milliseconds for auto-push after commit.
    * Defaults to 5000 (5 seconds). Set lower in tests to avoid long waits.
@@ -231,6 +231,17 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const hasCredentials = authManager.checkCredentials();
   console.log("[server] Claude credentials found:", hasCredentials);
 
+  // ---- Credential store ----
+  const credentialStore = deps.credentialStore ?? new CredentialStore(credentialsDir);
+
+  // Load persisted agent env vars into process.env before agent detection
+  const storedEnv = credentialStore.getAllAgentEnv();
+  for (const [key, value] of Object.entries(storedEnv)) {
+    if (ALLOWED_ENV_KEYS.has(key) && !process.env[key]) {
+      process.env[key] = value;
+    }
+  }
+
   // ---- Agent registry ----
   const agentRegistry = deps.agentRegistry ?? new AgentRegistry({
     checkClaudeAuth: () => authManager.checkCredentials(),
@@ -243,7 +254,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   console.log(`[server] Agent auth status: ${authStr}`);
 
   // ---- GitHub auth manager ----
-  const githubAuthManager = deps.githubAuthManager ?? new GitHubAuthManager(workspaceDir, path.join(credentialsDir, ".github-token"));
+  const githubAuthManager = deps.githubAuthManager ?? new GitHubAuthManager(workspaceDir, credentialStore);
   const hasGitHubToken = githubAuthManager.checkCredentials();
   console.log("[server] GitHub credentials found:", hasGitHubToken);
   if (hasGitHubToken && !deps.githubAuthManager) {
@@ -271,9 +282,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Feature manager ----
   const featureManager = deps.featureManager ?? new FeatureManager(workspaceDir);
-
-  // ---- Git identity store ----
-  const gitIdentityStore = deps.gitIdentityStore ?? new GitIdentityStore(workspaceDir);
 
   // ---- Text generation (AI-powered features) ----
   const generateText = deps.generateText ?? ((prompt: string, cwd?: string): Promise<string> => {
@@ -576,7 +584,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       const git = createGitManager(sessionDir);
       await git.init();
       // Apply stored global identity so commits use the user's name/email
-      const stored = gitIdentityStore.get();
+      const stored = credentialStore.getGitIdentity();
       if (stored) await git.setIdentity(stored.name, stored.email);
     }
 
@@ -797,7 +805,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         if (await git.hasIdentity()) return;
 
         // Try to apply stored global identity
-        const stored = gitIdentityStore.get();
+        const stored = credentialStore.getGitIdentity();
         if (stored) {
           await git.setIdentity(stored.name, stored.email);
           send({ type: "git_identity_set", name: stored.name, email: stored.email });
@@ -880,7 +888,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       authManager,
       get fileWatcher() { return attachedRunner?.getFileWatcher() ?? fileWatcher; },
       agentRegistry,
-      gitIdentityStore,
+      credentialStore,
       createSessionDir,
       generateText,
       getSharedRepoDir,

@@ -1,9 +1,6 @@
 import { EventEmitter } from "node:events";
-import fs from "node:fs";
 import { execSync } from "node:child_process";
-
-const DEFAULT_CREDENTIALS_DIR = "/credentials";
-const DEFAULT_TOKEN_PATH = `${DEFAULT_CREDENTIALS_DIR}/.github-token`;
+import type { CredentialStore } from "./credential-store.js";
 
 export interface GitHubAuthStatus {
   authenticated: boolean;
@@ -47,13 +44,13 @@ export class GitHubAuthManager extends EventEmitter {
   private _token: string | null = null;
   private _username: string | null = null;
   private _avatarUrl: string | null = null;
-  private tokenPath: string;
+  private credentialStore: CredentialStore;
   private workspaceDir: string;
 
-  constructor(workspaceDir?: string, tokenPath?: string) {
+  constructor(workspaceDir: string, credentialStore: CredentialStore) {
     super();
-    this.workspaceDir = workspaceDir ?? "/workspace";
-    this.tokenPath = tokenPath ?? DEFAULT_TOKEN_PATH;
+    this.workspaceDir = workspaceDir;
+    this.credentialStore = credentialStore;
   }
 
   get authenticated(): boolean {
@@ -65,18 +62,12 @@ export class GitHubAuthManager extends EventEmitter {
    * Returns true if credentials were found.
    */
   checkCredentials(): boolean {
-    try {
-      if (fs.existsSync(this.tokenPath)) {
-        this._token = fs.readFileSync(this.tokenPath, "utf-8").trim();
-        if (!this._token) {
-          this._token = null;
-          return false;
-        }
-        return true;
-      }
-    } catch {
-      // ignore
+    const token = this.credentialStore.getGithubToken();
+    if (token) {
+      this._token = token;
+      return true;
     }
+    this._token = null;
     return false;
   }
 
@@ -101,12 +92,8 @@ export class GitHubAuthManager extends EventEmitter {
     this._username = userInfo.username;
     this._avatarUrl = userInfo.avatarUrl;
 
-    // Persist token to disk
-    try {
-      fs.writeFileSync(this.tokenPath, trimmed, { mode: 0o600 });
-    } catch (err) {
-      console.error("[github-auth] Failed to persist token:", err);
-    }
+    // Persist token
+    this.credentialStore.setGithubToken(trimmed);
 
     // Git credentials are configured per-session when sessions are created/switched.
     // No need to configure here — workspaceDir is not a git repo.
@@ -175,16 +162,7 @@ export class GitHubAuthManager extends EventEmitter {
     this._token = null;
     this._username = null;
     this._avatarUrl = null;
-
-    try {
-      if (fs.existsSync(this.tokenPath)) {
-        fs.unlinkSync(this.tokenPath);
-      }
-    } catch {
-      // ignore
-    }
-
-    // Per-session git credentials will stop being configured once _token is null.
+    this.credentialStore.clearGithubToken();
   }
 
   /**

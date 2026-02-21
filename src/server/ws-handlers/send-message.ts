@@ -785,7 +785,7 @@ export async function handleHomeSendWithRepo(ctx: HandlerContext, msg: WsHomeSen
     if (ctx.githubAuthManager.authenticated) {
       ctx.githubAuthManager.configureGitCredentials(sessionDir);
     }
-    const storedId = ctx.gitIdentityStore.get();
+    const storedId = ctx.credentialStore.getGitIdentity();
     if (storedId) {
       const git = ctx.createGitManager(sessionDir);
       await git.setIdentity(storedId.name, storedId.email);
