@@ -788,7 +788,6 @@ describe("Integration: Phase 2 HTTP agent mutations", () => {
       previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentRegistry: registry,
-      credentialStore: new CredentialStore(tmpDir),
       fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
