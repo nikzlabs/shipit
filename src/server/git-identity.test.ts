@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { GitManager, ensureGlobalGitIdentity } from "./git.js";
+import { GitManager } from "./git.js";
 
 describe("GitManager: getCurrentBranch, hasIdentity, setIdentity", () => {
   let tmpDir: string;
@@ -29,12 +29,11 @@ describe("GitManager: getCurrentBranch, hasIdentity, setIdentity", () => {
 
   // ---- hasIdentity ----
 
-  it("returns false after init() — no local identity, relies on global fallback", async () => {
-    ensureGlobalGitIdentity();
+  it("returns false after init() — bootstrap identity is removed", async () => {
     const git = new GitManager(tmpDir);
     await git.init();
 
-    // init() no longer sets local identity; hasIdentity checks local scope only
+    // init() uses a temporary identity for the bootstrap commit then removes it
     expect(await git.hasIdentity()).toBe(false);
   });
 

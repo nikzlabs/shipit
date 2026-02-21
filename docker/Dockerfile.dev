@@ -10,11 +10,6 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
-# Fallback git identity so commits always work; overridden per-repo when user sets identity
-RUN git config --global user.name "ShipIt" && \
-    git config --global user.email "shipit@local" && \
-    git config --global commit.gpgsign false
-
 # Workspace for user projects — each session creates its own git repo
 RUN mkdir -p /workspace /credentials && ln -s /credentials/.claude /root/.claude && ln -sf /credentials/.claude.json /root/.claude.json
 VOLUME /workspace

@@ -1,31 +1,7 @@
 import crypto from "node:crypto";
-import { execSync } from "node:child_process";
 import simpleGit, { type SimpleGit, type LogResult } from "simple-git";
 
 const DEFAULT_WORKSPACE_DIR = "/workspace";
-
-/**
- * Ensure ~/.gitconfig has a fallback identity so `git commit` always works.
- * Only writes if user.name is not already configured globally.
- * Call once at app startup — individual repos override via setIdentity().
- */
-export function ensureGlobalGitIdentity(): void {
-  try {
-    execSync("git config --global user.name", { stdio: "pipe" });
-    // Already configured — don't overwrite
-  } catch {
-    try {
-      execSync('git config --global user.name "ShipIt"');
-      execSync('git config --global user.email "shipit@local"');
-      execSync("git config --global commit.gpgsign false");
-      console.log(
-        "[git] Set global fallback identity: ShipIt <shipit@local>",
-      );
-    } catch (err) {
-      console.warn("[git] Could not set global git identity:", err);
-    }
-  }
-}
 
 /** Generate a short random alphanumeric prefix for branch names (5 chars). */
 export function generateBranchPrefix(): string {
@@ -62,9 +38,17 @@ export class GitManager {
       await this.git.init(["--initial-branch=main"]);
       // Disable commit signing — the workspace repo doesn't need GPG/SSH signatures
       await this.git.addConfig("commit.gpgsign", "false");
+      // Temporary identity just for the bootstrap commit — git requires one.
+      // Removed immediately after so hasIdentity() returns false and the UI
+      // prompts the user for their real name/email.
+      await this.git.addConfig("user.name", "ShipIt");
+      await this.git.addConfig("user.email", "shipit@local");
       // Create initial commit so rollback always has a base
       await this.git.add(".");
       await this.git.commit("Initial commit", { "--allow-empty": null });
+      // Remove temporary identity
+      await this.git.raw(["config", "--unset", "user.name"]);
+      await this.git.raw(["config", "--unset", "user.email"]);
       console.log("[git] Initialized repo");
     }
   }
