@@ -11,7 +11,7 @@ npm install
 ## Commands
 
 - `npm test` — run all tests (vitest). **Requires `npm install` first.** Output is compact (custom LLM reporter: one summary line when green, concise failure details when red), so running the full suite is the default and preferred approach.
-- `npx vitest run src/server/git.test.ts` — run a single test file.
+- `npx vitest run src/server/git-core.test.ts` — run a single test file.
 - `npx vitest run --changed` — run only tests whose transitive dependencies have changed (uncommitted changes). Useful when iterating on a specific feature and you want a faster feedback loop.
 - `npm run lint` — ESLint on `src/`
 - `npm run typecheck` — TypeScript type checking (`tsc --noEmit`)
