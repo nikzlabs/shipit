@@ -33,8 +33,12 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
   let githubAuthManager: StubGitHubAuthManager;
   let credentialStore: CredentialStore;
   let chatHistoryManager: ChatHistoryManager;
+  let savedOpenAIKey: string | undefined;
 
   beforeEach(async () => {
+    // Save and clear OPENAI_API_KEY so codex agent starts with authConfigured=false
+    savedOpenAIKey = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-http-mutations-"));
 
     const sessionsFile = path.join(tmpDir, "sessions.json");
@@ -67,6 +71,12 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     } catch {
       // Ignore cleanup errors
+    }
+    // Restore OPENAI_API_KEY
+    if (savedOpenAIKey !== undefined) {
+      process.env.OPENAI_API_KEY = savedOpenAIKey;
+    } else {
+      delete process.env.OPENAI_API_KEY;
     }
   });
 
@@ -774,6 +784,7 @@ describe("Integration: Phase 2 HTTP agent mutations", () => {
       previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentRegistry: registry,
+      credentialStore: new CredentialStore(tmpDir),
       fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
