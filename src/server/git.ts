@@ -52,15 +52,14 @@ export class GitManager {
    * if there was nothing to commit.
    */
   async autoCommit(summary: string): Promise<string | null> {
-    // Stage everything (new, modified, deleted)
-    await this.git.add("-A");
-
+    // Check for changes before staging — skip entirely if nothing changed
     const status = await this.git.status();
     if (status.isClean()) {
-      console.log("[git] Nothing to commit");
       return null;
     }
 
+    // Stage everything (new, modified, deleted) and commit
+    await this.git.add("-A");
     const message = summary || "Claude turn";
     const result = await this.git.commit(message);
     const hash = result.commit || "";
