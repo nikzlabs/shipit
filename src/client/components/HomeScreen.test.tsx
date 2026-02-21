@@ -129,8 +129,8 @@ describe("HomeScreen", () => {
       />,
     );
     expect(
-      screen.queryByText("Select a repository above or create a new one to get started."),
-    ).toBeNull();
+      screen.getByText("Select a repository above or create a new one to get started."),
+    ).toHaveClass("invisible");
   });
 
   it("opens NewRepoDialog when 'New repository' option is clicked in RepoSelector", () => {
