@@ -5,7 +5,7 @@
 - [ ] Create shared service layer that extracts business logic from `HandlerContext`-dependent WS handlers into plain functions that accept explicit parameters (session ID, managers)
 - [ ] Add Fastify route prefix (`/api`) and JSON schema validation plugin
 - [ ] Add session ID resolution middleware (look up session dir from ID, return 404 if missing)
-- [ ] Decide on auth strategy for HTTP endpoints (session cookie, bearer token, or no auth for local-only)
+- [ ] ~~Auth strategy~~ — **Decision: no auth.** Same as WebSocket today. ShipIt is single-user/container-per-user; security relies on container/network isolation. No tokens, cookies, or middleware needed.
 - [ ] Add `fetch`-based API client hook on the client (`useApi` or similar) with error handling
 - [ ] Add `GET /api/bootstrap` endpoint that returns all initial data in one response (sessions, agents, templates, GitHub status, global settings) — replaces the 5 sequential WS messages sent on connect
 
