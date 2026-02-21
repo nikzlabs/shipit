@@ -83,8 +83,7 @@ describe("Integration: Session isolation — creation", () => {
       session_id: "agent-session-1",
     });
 
-    // Receive claude_event + session_started
-    await client.receiveSkipLogs(); // claude_event
+    // Receive session_started (agent_event is auto-skipped by receiveSkipLogs)
     const sessionMsg = await client.receiveSkipLogs();
     expect(sessionMsg.type).toBe("session_started");
 

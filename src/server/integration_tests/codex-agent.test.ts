@@ -104,7 +104,7 @@ async function waitForCodex(
 /**
  * Receive the next message of a specific type, skipping others.
  * Useful when the server sends multiple message types (agent_event,
- * claude_event, log_entry, model_info, session_started, etc.).
+ * log_entry, model_info, session_started, etc.).
  */
 async function receiveByType(
   client: TestClient,
@@ -267,7 +267,7 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
       tools: ["shell", "file_write"],
     });
 
-    // Client should receive the agent_event (skip log_entry and claude_event)
+    // Client should receive the agent_event (skip log_entry etc.)
     const agentEventMsg = await receiveByType(client, "agent_event");
     expect((agentEventMsg as any).event.type).toBe("agent_init");
     expect((agentEventMsg as any).event.agentId).toBe("codex");
