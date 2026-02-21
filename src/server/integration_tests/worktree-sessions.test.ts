@@ -448,44 +448,32 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     await client1.receive(); // preview_status
     client1.send({ type: "home_send_with_repo", repoUrl, text: "First" } as any);
 
-    // Drain until session_started
-    let session1Id = "";
+    const s1Msg = await client1.receiveSkipLogs(10_000);
+    expect(s1Msg.type).toBe("session_started");
+    const session1Id = (s1Msg as any).session.id;
+
     const claude1 = await waitForClaude(() => lastClaude);
     claude1.finish();
-    try {
-      while (true) {
-        const msg = await client1.receive(500);
-        if (msg.type === "session_started") session1Id = (msg as any).session.id;
-      }
-    } catch { /* done */ }
+    // Wait for the done handler to fully complete (auto-commit, port scan, etc.)
+    // before starting the second session — prevents git lock contention on the
+    // shared repo between the first session's cleanup and the second worktree add.
+    await client1.receiveType("session_agent_finished", 5000);
+    try { while (true) { await client1.receive(500); } } catch { /* drain */ }
     client1.close();
-
-    // Fallback: get from session manager
-    if (!session1Id) {
-      const sessions = sessionManager.list();
-      if (sessions.length > 0) session1Id = sessions[0].id;
-    }
 
     // Second request: worktree
     const client2 = await TestClient.connect(port);
     await client2.receive(); // preview_status
     client2.send({ type: "home_send_with_repo", repoUrl, text: "Second" } as any);
 
-    let session2Id = "";
+    const s2Msg = await client2.receiveSkipLogs(10_000);
+    expect(s2Msg.type).toBe("session_started");
+    const session2Id = (s2Msg as any).session.id;
+
     const claude2 = await waitForClaude(() => lastClaude, claude1, 10_000);
     claude2.finish();
-    try {
-      while (true) {
-        const msg = await client2.receive(500);
-        if (msg.type === "session_started") session2Id = (msg as any).session.id;
-      }
-    } catch { /* done */ }
+    try { while (true) { await client2.receive(500); } } catch { /* drain */ }
     client2.close();
-
-    if (!session2Id) {
-      const sessions = sessionManager.list();
-      session2Id = sessions.find((s) => s.id !== session1Id)?.id ?? "";
-    }
 
     // Write a file in the worktree session
     const session2 = sessionManager.get(session2Id)!;
