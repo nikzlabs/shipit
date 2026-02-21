@@ -39,7 +39,7 @@ describe("GitManager: getCurrentBranch, hasIdentity, setIdentity", () => {
   it("returns false when repo has no identity configured", async () => {
     const { execSync } = await import("node:child_process");
     const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", HOME: tmpDir };
-    execSync("git init", { cwd: tmpDir, env });
+    execSync("git init -b main", { cwd: tmpDir, env });
     execSync("git config commit.gpgsign false", { cwd: tmpDir, env });
     // Set temporary identity, commit, then unset so the repo has no persistent identity
     execSync("git config user.name tmp", { cwd: tmpDir, env });
@@ -68,7 +68,7 @@ describe("GitManager: getCurrentBranch, hasIdentity, setIdentity", () => {
   it("configures git identity so hasIdentity returns true", async () => {
     const { execSync } = await import("node:child_process");
     const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", HOME: tmpDir };
-    execSync("git init", { cwd: tmpDir, env });
+    execSync("git init -b main", { cwd: tmpDir, env });
     execSync("git config commit.gpgsign false", { cwd: tmpDir, env });
     // Set temporary identity, commit, then unset so the repo has no persistent identity
     execSync("git config user.name tmp", { cwd: tmpDir, env });
@@ -98,7 +98,7 @@ describe("GitManager: getCurrentBranch, hasIdentity, setIdentity", () => {
   it("allows autoCommit to succeed on a repo with no prior identity", async () => {
     const { execSync } = await import("node:child_process");
     const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", HOME: tmpDir };
-    execSync("git init", { cwd: tmpDir, env });
+    execSync("git init -b main", { cwd: tmpDir, env });
     execSync("git config commit.gpgsign false", { cwd: tmpDir, env });
     // Set temporary identity, commit, then unset so the repo has no persistent identity
     execSync("git config user.name tmp", { cwd: tmpDir, env });

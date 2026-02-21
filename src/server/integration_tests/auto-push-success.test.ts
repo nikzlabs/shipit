@@ -103,7 +103,7 @@ async function createSession(): Promise<{ sessionId: string; sessionDir: string 
 function createBareRemote(sessionDir: string): string {
   const bareDir = path.join(tmpDir, "bare-remote.git");
   fs.mkdirSync(bareDir, { recursive: true });
-  execSync("git init --bare", { cwd: bareDir, env: { ...process.env, HOME: tmpDir } });
+  execSync("git init --bare -b main", { cwd: bareDir, env: { ...process.env, HOME: tmpDir } });
 
   // Add the bare repo as origin
   execSync(`git remote add origin ${bareDir}`, {

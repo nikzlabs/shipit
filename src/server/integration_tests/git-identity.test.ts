@@ -61,7 +61,7 @@ describe("Integration: git identity flow", () => {
     process.env.GIT_CONFIG_NOSYSTEM = "1";
     const { execSync } = await import("node:child_process");
     const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", HOME: tmpDir };
-    execSync("git init", { cwd: sessionDir, env });
+    execSync("git init -b main", { cwd: sessionDir, env });
     execSync("git config commit.gpgsign false", { cwd: sessionDir, env });
     // Set temporary identity, commit, then unset so the repo has no persistent identity
     execSync("git config user.name tmp", { cwd: sessionDir, env });

@@ -35,7 +35,7 @@ export class GitManager {
   async init(): Promise<void> {
     const isRepo = await this.git.checkIsRepo();
     if (!isRepo) {
-      await this.git.init();
+      await this.git.init(["--initial-branch=main"]);
       await this.git.addConfig("user.email", "shipit@local");
       await this.git.addConfig("user.name", "ShipIt");
       // Disable commit signing — the workspace repo doesn't need GPG/SSH signatures
