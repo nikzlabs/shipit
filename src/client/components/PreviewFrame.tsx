@@ -149,6 +149,20 @@ export function PreviewFrame({
   }
 
   if (!preview || !preview.running) {
+    // No status received yet but a session is active — the preview server is
+    // starting up.  Show a spinner instead of the static placeholder so the
+    // user doesn't think nothing is happening.
+    if (!preview && sessionId) {
+      return (
+        <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+          <div className="text-center space-y-3">
+            <div className="inline-block w-6 h-6 border-2 border-gray-400 border-t-blue-500 rounded-full animate-spin" />
+            <p>Starting dev server...</p>
+          </div>
+        </div>
+      );
+    }
+
     // Show config missing state with option to set up
     if (configMissing) {
       return (
