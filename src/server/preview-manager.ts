@@ -238,21 +238,7 @@ export class PreviewManager extends EventEmitter {
       }
     });
 
-    this.proc.on("close", (code) => {
-      console.log("[preview-manager] Vite exited with code", code);
-      this._running = false;
-      this._ports = [];
-      this.proc = null;
-      this.emit("stopped", code);
-    });
-
-    this.proc.on("error", (err) => {
-      console.error("[preview-manager] Vite spawn error:", err.message);
-      this._running = false;
-      this._ports = [];
-      this.proc = null;
-      this.emit("error", err);
-    });
+    this.wireProcessEvents(this.proc, "Vite");
   }
 
   /**
@@ -279,6 +265,20 @@ export class PreviewManager extends EventEmitter {
       const text = chunk.toString();
       console.log("[preview]", text.trim());
       this.emit("log", { source: "preview", text });
+
+      // Auto-detect the listening port from common dev server output patterns
+      // (e.g. "http://localhost:5173", "http://127.0.0.1:3000").
+      if (!this._running) {
+        const portMatch = text.match(/https?:\/\/(?:localhost|127\.0\.0\.1):(\d+)/);
+        if (portMatch) {
+          const port = Number(portMatch[1]);
+          if (port > 0 && port <= 65535) {
+            this._running = true;
+            this._ports = [port];
+            this.emit("ready", this._ports);
+          }
+        }
+      }
     });
 
     this.proc.stderr!.on("data", (chunk: Buffer) => {
@@ -289,28 +289,12 @@ export class PreviewManager extends EventEmitter {
       }
     });
 
-    this.proc.on("close", (code) => {
-      console.log("[preview-manager] command exited with code", code);
-      this._running = false;
-      this._ports = [];
-      this.proc = null;
-      this.emit("stopped", code);
-    });
+    this.wireProcessEvents(this.proc, "command");
 
-    this.proc.on("error", (err) => {
-      console.error("[preview-manager] command spawn error:", err.message);
-      this._running = false;
-      this._ports = [];
-      this.proc = null;
-      this.emit("error", err);
-    });
-
-    // Poll for ports
+    // Poll for explicit ports if configured; otherwise rely on stdout detection
+    // above (which catches the actual port even when Vite falls back to 5175+).
     if (mode.ports && mode.ports.length > 0) {
       this.pollPorts(mode.ports);
-    } else {
-      // Auto-detect: poll DEFAULT_SCAN_PORTS — handled externally by port scanner
-      // Mark as ready immediately (port scanner will find the port)
     }
   }
 
@@ -345,6 +329,32 @@ export class PreviewManager extends EventEmitter {
     };
 
     setTimeout(poll, PORT_POLL_INTERVAL);
+  }
+
+  /**
+   * Wire close/error handlers on a spawned process.
+   * Captures a reference to the process so that stale events from a
+   * previously killed process cannot clobber the state of a newer one
+   * (e.g. when stop() + start() run in quick succession).
+   */
+  private wireProcessEvents(proc: ChildProcess, label: string): void {
+    proc.on("close", (code) => {
+      if (this.proc !== proc) return; // stale event from a previous process
+      console.log(`[preview-manager] ${label} exited with code`, code);
+      this._running = false;
+      this._ports = [];
+      this.proc = null;
+      this.emit("stopped", code);
+    });
+
+    proc.on("error", (err) => {
+      if (this.proc !== proc) return;
+      console.error(`[preview-manager] ${label} spawn error:`, err.message);
+      this._running = false;
+      this._ports = [];
+      this.proc = null;
+      this.emit("error", err);
+    });
   }
 
   /**
