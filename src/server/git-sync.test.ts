@@ -24,7 +24,7 @@ describe("GitManager: push and pull", () => {
     execSync("git init --bare -b main", { cwd: bareDir });
 
     const git = new GitManager(tmpDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     // Add the bare repo as remote
     await git.addRemote("origin", bareDir);

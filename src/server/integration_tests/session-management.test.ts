@@ -16,6 +16,7 @@ import {
   StubAuthManager,
   FakeClaudeProcess,
   StubFileWatcher,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 
 describe("Integration: Session management", () => {
@@ -31,6 +32,7 @@ describe("Integration: Session management", () => {
     sessionManager = new SessionManager(sessionsFile);
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       previewManager: new StubPreviewManager() as unknown as PreviewManager,
@@ -90,6 +92,7 @@ describe("Integration: bootstrap sessions remoteUrl caching", () => {
     sessionManager = new SessionManager(sessionsFile);
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       previewManager: new StubPreviewManager() as unknown as PreviewManager,
@@ -129,7 +132,7 @@ describe("Integration: bootstrap sessions remoteUrl caching", () => {
     const sessionDir = path.join(tmpDir, "sess-git");
     fs.mkdirSync(sessionDir, { recursive: true });
     const git = new GitManager(sessionDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
     await git.addRemote("origin", "https://github.com/lazy/populated.git");
 
     sessionManager.track("sess-git", "Lazy session", sessionDir);

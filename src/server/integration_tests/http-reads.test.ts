@@ -73,7 +73,7 @@ describe("Integration: Phase 1 GET endpoints", () => {
 
     // Initialize git repo
     const git = new GitManager(sessionDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
     return sessionDir;
   }
 

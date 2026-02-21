@@ -12,6 +12,7 @@ import {
   StubDeploymentManager,
   StubDeploymentStore,
   FakeClaudeProcess,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
@@ -37,12 +38,13 @@ beforeEach(async () => {
   sessionDir = path.join(tmpDir, "sessions", sessionId);
   fs.mkdirSync(sessionDir, { recursive: true });
   const git = new GitManager(sessionDir);
-  await git.init();
+  await git.init({ name: "Test", email: "test@test.com" });
 
   sessionManager = new SessionManager(path.join(tmpDir, "sessions.json"));
   sessionManager.track(sessionId, "Test session", sessionDir);
 
   app = await buildApp({
+    credentialStore: createTestCredentialStore(tmpDir),
     workspaceDir: tmpDir,
     createGitManager: (dir: string) => new GitManager(dir),
     claudeFactory: () => new FakeClaudeProcess() as any,

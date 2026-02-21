@@ -13,6 +13,7 @@ import {
   StubDeploymentStore,
   FakeClaudeProcess,
   waitForClaude,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
@@ -34,6 +35,7 @@ beforeEach(async () => {
   githubAuth = new StubGitHubAuthManager();
 
   app = await buildApp({
+    credentialStore: createTestCredentialStore(tmpDir),
     workspaceDir: tmpDir,
     claudeFactory: () => {
       const c = new FakeClaudeProcess();

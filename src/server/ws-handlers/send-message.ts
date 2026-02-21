@@ -521,8 +521,13 @@ export async function handleSendMessage(ctx: HandlerContext, msg: WsSendMessage)
         }
         console.log("[server] Recreating missing session directory:", session.workspaceDir);
         await fs.mkdir(session.workspaceDir, { recursive: true });
+        const identity = ctx.credentialStore.getGitIdentity();
+        if (!identity) {
+          ctx.send({ type: "git_identity_required" });
+          return;
+        }
         const git = ctx.createGitManager(session.workspaceDir);
-        await git.init();
+        await git.init(identity);
       }
     }
   } else {
@@ -763,9 +768,14 @@ export async function handleHomeSendWithRepo(ctx: HandlerContext, msg: WsHomeSen
 
     if (isEmptyRepo) {
       // Empty repo: can't use worktrees. Init a fresh repo with remote configured.
+      const identity = ctx.credentialStore.getGitIdentity();
+      if (!identity) {
+        ctx.send({ type: "git_identity_required" });
+        return;
+      }
       await fs.mkdir(sessionDir, { recursive: true });
       const sessionGit = ctx.createGitManager(sessionDir);
-      await sessionGit.init();
+      await sessionGit.init(identity);
       const cloneUrl = ctx.githubAuthManager.getAuthenticatedCloneUrl(repoUrl);
       await sessionGit.addRemote("origin", cloneUrl);
     } else {

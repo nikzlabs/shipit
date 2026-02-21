@@ -563,12 +563,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     await fs.mkdir(sessionDir, { recursive: true });
 
     if (!opts?.skipGitInit) {
-      // Initialize a fresh git repo for this session
+      // Initialize a fresh git repo for this session.
+      // Identity must be stored by now — the UI blocks until it's set.
+      const identity = credentialStore.getGitIdentity();
+      if (!identity) throw new Error("Cannot create session: git identity not configured");
       const git = createGitManager(sessionDir);
-      await git.init();
-      // Apply stored global identity so commits use the user's name/email
-      const stored = credentialStore.getGitIdentity();
-      if (stored) await git.setIdentity(stored.name, stored.email);
+      await git.init(identity);
     }
 
     // Configure GitHub credentials in the new repo if available
@@ -839,14 +839,19 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       send(entry);
     }
 
-    // Check git identity when a session becomes active (deferred — no root git repo).
-    // If the session repo lacks identity, auto-apply from global store before prompting.
+    // Block the UI until the user has configured a git identity.
+    // This fires on every WS connect so new tabs see the overlay immediately.
+    if (!credentialStore.getGitIdentity()) {
+      send({ type: "git_identity_required" });
+    }
+
+    // Check git identity when a session becomes active.
+    // If the session repo lacks local identity, apply from the credential store.
     const checkGitIdentity = async (sessionDir: string) => {
       try {
         const git = createGitManager(sessionDir);
         if (await git.hasIdentity()) return;
 
-        // Try to apply stored global identity
         const stored = credentialStore.getGitIdentity();
         if (stored) {
           await git.setIdentity(stored.name, stored.email);

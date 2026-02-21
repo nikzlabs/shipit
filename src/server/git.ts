@@ -31,21 +31,21 @@ export class GitManager {
     this.git = simpleGit(workspaceDir ?? DEFAULT_WORKSPACE_DIR);
   }
 
-  /** Ensure the workspace is a git repo with at least one commit. */
-  async init(): Promise<void> {
+  /**
+   * Ensure the workspace is a git repo with at least one commit.
+   * @param identity — user's name/email for the initial commit and local config.
+   */
+  async init(identity: { name: string; email: string }): Promise<void> {
     const isRepo = await this.git.checkIsRepo();
     if (!isRepo) {
       await this.git.init(["--initial-branch=main"]);
       // Disable commit signing — the workspace repo doesn't need GPG/SSH signatures
       await this.git.addConfig("commit.gpgsign", "false");
-      // Create initial commit so rollback always has a base.
-      // Identity is passed inline — nothing is written to local config.
+      await this.git.addConfig("user.name", identity.name);
+      await this.git.addConfig("user.email", identity.email);
+      // Create initial commit so rollback always has a base
       await this.git.add(".");
-      await this.git.raw([
-        "-c", "user.name=ShipIt",
-        "-c", "user.email=shipit@local",
-        "commit", "--allow-empty", "-m", "Initial commit",
-      ]);
+      await this.git.commit("Initial commit", { "--allow-empty": null });
       console.log("[git] Initialized repo");
     }
   }

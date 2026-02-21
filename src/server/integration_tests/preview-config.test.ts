@@ -21,6 +21,7 @@ import {
   FakeClaudeProcess,
   waitForClaude,
   StubGitHubAuthManager,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 
 describe("Integration: Preview config and session-switch cleanup", () => {
@@ -35,6 +36,7 @@ describe("Integration: Preview config and session-switch cleanup", () => {
     lastClaude = null;
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       workspaceDir: tmpDir,
       serveStatic: false,
       startPreview: false,

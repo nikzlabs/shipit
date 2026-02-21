@@ -17,7 +17,7 @@ describe("GitManager: log", () => {
 
   it("returns commits in reverse chronological order", async () => {
     const git = new GitManager(tmpDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     fs.writeFileSync(path.join(tmpDir, "a.txt"), "a");
     await git.autoCommit("First");
@@ -32,7 +32,7 @@ describe("GitManager: log", () => {
 
   it("respects maxCount parameter", async () => {
     const git = new GitManager(tmpDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     fs.writeFileSync(path.join(tmpDir, "a.txt"), "a");
     await git.autoCommit("First");
@@ -47,7 +47,7 @@ describe("GitManager: log", () => {
 
   it("returns commit info with hash, message, date, and author", async () => {
     const git = new GitManager(tmpDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     fs.writeFileSync(path.join(tmpDir, "test.txt"), "test");
     await git.autoCommit("Test commit");

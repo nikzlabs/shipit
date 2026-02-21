@@ -22,7 +22,7 @@ describe("GitManager: worktree operations", () => {
 
   it("creates a worktree with a new branch", async () => {
     const git = new GitManager(parentDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     // Add a file so worktree has content
     fs.writeFileSync(path.join(parentDir, "file.txt"), "hello");
@@ -43,7 +43,7 @@ describe("GitManager: worktree operations", () => {
 
   it("creates a worktree from a specific start point", async () => {
     const git = new GitManager(parentDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     fs.writeFileSync(path.join(parentDir, "v1.txt"), "v1");
     await git.autoCommit("v1");
@@ -65,7 +65,7 @@ describe("GitManager: worktree operations", () => {
 
   it("lists all worktrees including the main working tree", async () => {
     const git = new GitManager(parentDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     fs.writeFileSync(path.join(parentDir, "file.txt"), "hello");
     await git.autoCommit("Add file");
@@ -93,7 +93,7 @@ describe("GitManager: worktree operations", () => {
 
   it("removes a worktree", async () => {
     const git = new GitManager(parentDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     fs.writeFileSync(path.join(parentDir, "file.txt"), "hello");
     await git.autoCommit("Add file");
@@ -118,7 +118,7 @@ describe("GitManager: worktree operations", () => {
 
   it("merges a branch successfully", async () => {
     const git = new GitManager(parentDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     fs.writeFileSync(path.join(parentDir, "base.txt"), "base");
     await git.autoCommit("Base commit");
@@ -142,7 +142,7 @@ describe("GitManager: worktree operations", () => {
 
   it("reports merge conflicts", async () => {
     const git = new GitManager(parentDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     fs.writeFileSync(path.join(parentDir, "shared.txt"), "original");
     await git.autoCommit("Base");
@@ -174,7 +174,7 @@ describe("GitManager: worktree operations", () => {
 
   it("deletes a branch", async () => {
     const git = new GitManager(parentDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     fs.writeFileSync(path.join(parentDir, "file.txt"), "hello");
     await git.autoCommit("Add file");
@@ -201,7 +201,7 @@ describe("GitManager: worktree operations", () => {
 
   it("changes in worktree do not affect parent until merge", async () => {
     const git = new GitManager(parentDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     fs.writeFileSync(path.join(parentDir, "base.txt"), "base");
     await git.autoCommit("Base");

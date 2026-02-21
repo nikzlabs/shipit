@@ -39,6 +39,7 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
     sessionManager = new SessionManager(sessionsFile);
     githubAuthManager = new StubGitHubAuthManager();
     credentialStore = new CredentialStore(tmpDir);
+    credentialStore.setGitIdentity("Test User", "test@test.com");
     chatHistoryManager = new ChatHistoryManager(path.join(tmpDir, ".chat-history"));
     stubAuthManager = new StubAuthManager();
 
@@ -81,7 +82,7 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
     fs.mkdirSync(sessionDir, { recursive: true });
     sessionManager.track(id, title, sessionDir);
     const git = new GitManager(sessionDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
     fs.writeFileSync(path.join(sessionDir, "init.txt"), "init");
     await git.autoCommit("initial commit");
     return sessionDir;

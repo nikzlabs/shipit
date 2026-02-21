@@ -7,8 +7,10 @@
  */
 
 import { EventEmitter } from "node:events";
+import path from "node:path";
 import WebSocket from "ws";
 import type { WsServerMessage, WsClientMessage } from "../types.js";
+import { CredentialStore } from "../credential-store.js";
 
 // ---------------------------------------------------------------------------
 // TestClient
@@ -515,4 +517,15 @@ export async function waitForClaude(
     if (Date.now() > deadline) throw new Error("Timed out waiting for ClaudeProcess.run()");
     await new Promise((r) => setTimeout(r, 10));
   }
+}
+
+/**
+ * Create a CredentialStore pre-populated with a test git identity.
+ * Use in integration tests so session creation doesn't fail due to
+ * missing identity.
+ */
+export function createTestCredentialStore(tmpDir: string): CredentialStore {
+  const store = new CredentialStore(path.join(tmpDir, "credentials"));
+  store.setGitIdentity("Test User", "test@test.com");
+  return store;
 }

@@ -19,7 +19,7 @@ describe("GitManager: branch operations", () => {
 
   it("creates and checks out a new branch", async () => {
     const git = new GitManager(tmpDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     await git.checkoutNewBranch("feature-branch");
     const branch = await git.getCurrentBranch();
@@ -28,7 +28,7 @@ describe("GitManager: branch operations", () => {
 
   it("preserves existing commits on new branch", async () => {
     const git = new GitManager(tmpDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     fs.writeFileSync(path.join(tmpDir, "file.txt"), "content");
     await git.autoCommit("Add file");
@@ -42,7 +42,7 @@ describe("GitManager: branch operations", () => {
 
   it("renames the current branch", async () => {
     const git = new GitManager(tmpDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     await git.checkoutNewBranch("old-name");
     expect(await git.getCurrentBranch()).toBe("old-name");

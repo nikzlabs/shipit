@@ -15,6 +15,7 @@ import {
   StubAuthManager,
   FakeClaudeProcess,
   StubFileWatcher,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 
 describe("Integration: Workspace project templates", () => {
@@ -28,6 +29,7 @@ describe("Integration: Workspace project templates", () => {
     const sessionManager = new SessionManager(sessionsFile);
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       previewManager: new StubPreviewManager() as unknown as PreviewManager,

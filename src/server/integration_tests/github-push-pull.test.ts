@@ -18,6 +18,7 @@ import {
   StubGitHubAuthManager,
   FakeClaudeProcess,
   StubFileWatcher,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 
 describe("Integration: GitHub push, pull & remotes", () => {
@@ -33,7 +34,7 @@ describe("Integration: GitHub push, pull & remotes", () => {
     const sessionDir = path.join(tmpDir, "sessions", sessionId);
     fs.mkdirSync(sessionDir, { recursive: true });
     const git = new GitManager(sessionDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     const sessionsFile = path.join(tmpDir, "sessions.json");
     const sessionManager = new SessionManager(sessionsFile);
@@ -42,6 +43,7 @@ describe("Integration: GitHub push, pull & remotes", () => {
     const githubAuthManager = new StubGitHubAuthManager();
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       previewManager: new StubPreviewManager() as unknown as PreviewManager,

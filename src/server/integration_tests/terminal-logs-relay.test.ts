@@ -18,6 +18,7 @@ import {
   FakeClaudeProcess,
   StubFileWatcher,
   waitForClaude,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 
 /** Skip session runner messages but NOT log_entry — the opposite of receiveSkipLogs. */
@@ -47,6 +48,7 @@ describe("Integration: Terminal/logs relay", () => {
     sessionManager = new SessionManager(sessionsFile);
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       previewManager: new StubPreviewManager() as unknown as PreviewManager,

@@ -16,6 +16,7 @@ import {
   StubAuthManager,
   FakeClaudeProcess,
   StubFileWatcher,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 
 describe("Integration: Docs", () => {
@@ -38,9 +39,10 @@ describe("Integration: Docs", () => {
     sessionManager.track(sessionId, "Test session", sessionDir);
 
     const git = new GitManager(sessionDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       previewManager: new StubPreviewManager() as unknown as PreviewManager,

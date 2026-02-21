@@ -17,6 +17,7 @@ import {
   StubGitHubAuthManager,
   FakeClaudeProcess,
   StubFileWatcher,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 
 describe("Integration: Claude auth (OAuth & API key)", () => {
@@ -30,6 +31,7 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     const sessionManager = new SessionManager(sessionsFile);
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       previewManager: new StubPreviewManager() as unknown as PreviewManager,
@@ -63,6 +65,7 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     const unauthSessions = new SessionManager(path.join(unauthTmpDir, "sessions.json"));
 
     const unauthApp = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: unauthSessions,
       previewManager: new StubPreviewManager() as unknown as PreviewManager,
@@ -114,6 +117,7 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     delete process.env.ANTHROPIC_API_KEY;
 
     const unauthApp = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: unauthSessions,
       previewManager: new StubPreviewManager() as unknown as PreviewManager,

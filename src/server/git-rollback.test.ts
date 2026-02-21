@@ -17,7 +17,7 @@ describe("GitManager: rollback", () => {
 
   it("resets workspace to a previous commit", async () => {
     const git = new GitManager(tmpDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     const filePath = path.join(tmpDir, "file.txt");
     fs.writeFileSync(filePath, "original");
@@ -39,7 +39,7 @@ describe("GitManager: rollback", () => {
 
   it("removes files added after the rollback target", async () => {
     const git = new GitManager(tmpDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     const log0 = await git.log();
     const initialHash = log0[0].hash;

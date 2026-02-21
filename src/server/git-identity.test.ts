@@ -19,7 +19,7 @@ describe("GitManager: getCurrentBranch, hasIdentity, setIdentity", () => {
 
   it("returns the current branch name", async () => {
     const git = new GitManager(tmpDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     const branch = await git.getCurrentBranch();
     // Default branch name could be "main" or "master" depending on git config
@@ -29,12 +29,12 @@ describe("GitManager: getCurrentBranch, hasIdentity, setIdentity", () => {
 
   // ---- hasIdentity ----
 
-  it("returns false after init() — bootstrap identity is removed", async () => {
+  it("returns true after init() with identity", async () => {
     const git = new GitManager(tmpDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
-    // init() uses a temporary identity for the bootstrap commit then removes it
-    expect(await git.hasIdentity()).toBe(false);
+    // init() sets the provided identity in local config
+    expect(await git.hasIdentity()).toBe(true);
   });
 
   it("returns false when repo has no identity configured", async () => {

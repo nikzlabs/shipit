@@ -20,6 +20,7 @@ import {
   FakeClaudeProcess,
   StubFileWatcher,
   waitForClaude,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 
 describe("Integration: File watcher", () => {
@@ -36,6 +37,7 @@ describe("Integration: File watcher", () => {
     lastClaude = undefined as unknown as FakeClaudeProcess;
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
       chatHistoryManager: new ChatHistoryManager(path.join(tmpDir, "chat-history")),

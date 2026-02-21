@@ -76,7 +76,7 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     fs.mkdirSync(sessionDir, { recursive: true });
     sessionManager.track(id, title, sessionDir);
     const git = new GitManager(sessionDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
     // Create an initial commit so git log works
     fs.writeFileSync(path.join(sessionDir, "init.txt"), "init");
     await git.autoCommit("initial commit");
@@ -904,7 +904,7 @@ describe("Integration: Phase 2 HTTP deploy config mutations", () => {
     fs.mkdirSync(sessionDir, { recursive: true });
     sessionManager.track(id, title, sessionDir);
     const git = new GitManager(sessionDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
     fs.writeFileSync(path.join(sessionDir, "init.txt"), "init");
     await git.autoCommit("initial commit");
     return sessionDir;

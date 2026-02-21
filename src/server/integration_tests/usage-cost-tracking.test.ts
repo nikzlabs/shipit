@@ -19,6 +19,7 @@ import {
   FakeClaudeProcess,
   StubFileWatcher,
   waitForClaude,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 
 describe("Integration: Usage & cost tracking", () => {
@@ -35,6 +36,7 @@ describe("Integration: Usage & cost tracking", () => {
     sessionManager = new SessionManager(path.join(tmpDir, "sessions.json"));
 
     app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       previewManager: new StubPreviewManager() as unknown as PreviewManager,

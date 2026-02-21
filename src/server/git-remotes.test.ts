@@ -17,7 +17,7 @@ describe("GitManager: remotes", () => {
 
   it("addRemote adds a new remote", async () => {
     const git = new GitManager(tmpDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     await git.addRemote("origin", "https://github.com/test/repo.git");
     const remotes = await git.getRemotes();
@@ -28,7 +28,7 @@ describe("GitManager: remotes", () => {
 
   it("addRemote updates an existing remote", async () => {
     const git = new GitManager(tmpDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     await git.addRemote("origin", "https://github.com/test/repo1.git");
     await git.addRemote("origin", "https://github.com/test/repo2.git");
@@ -40,7 +40,7 @@ describe("GitManager: remotes", () => {
 
   it("getRemotes returns empty array when no remotes", async () => {
     const git = new GitManager(tmpDir);
-    await git.init();
+    await git.init({ name: "Test", email: "test@test.com" });
 
     const remotes = await git.getRemotes();
     expect(remotes).toEqual([]);
