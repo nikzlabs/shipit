@@ -36,9 +36,14 @@ function makeError(overrides: Partial<PreviewError> = {}): PreviewError {
 }
 
 describe("PreviewFrame", () => {
-  it("shows placeholder when preview is null", () => {
+  it("shows placeholder when preview is null and no session", () => {
     render(<PreviewFrame preview={null} {...defaultProps} />);
     expect(screen.getByText(/Preview will appear here/)).toBeInTheDocument();
+  });
+
+  it("shows spinner when preview is null but session is active", () => {
+    render(<PreviewFrame preview={null} sessionId="abc-123" {...defaultProps} />);
+    expect(screen.getByText("Starting dev server...")).toBeInTheDocument();
   });
 
   it("shows placeholder when preview is not running", () => {

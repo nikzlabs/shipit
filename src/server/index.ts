@@ -706,8 +706,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         });
       }
 
-      // Send preview status from the runner's preview manager (if it has one)
-      if (runner.getPreview()) {
+      // Send preview status only if the preview is already running (e.g.
+      // reconnecting a second viewer tab).  When a preview manager was just
+      // created by attachViewer() above, it will emit "ready" / "config_missing"
+      // on its own once it finishes starting — sending a premature "running: false"
+      // here would flash the placeholder UI unnecessarily.
+      if (runner.getPreview()?.running) {
         send(runner.buildPreviewStatus());
       }
     };
@@ -789,8 +793,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           // 2. Clear detected ports
           detectedPorts = [];
 
-          // 3. Broadcast clean "not running" preview status immediately
-          broadcastPreviewStatus();
+          // 3. Send clean "not running" preview status to this connection only
+          //    (other connections have their own runners and shouldn't be affected).
+          //    When per-runner previews are in use, the runner will emit the real
+          //    status once it starts — skip the premature "not running" to avoid
+          //    flashing the placeholder UI.
+          if (!runnerCreatePreviewManager) {
+            send(getPreviewStatus());
+          }
 
           // 4. Clear terminal logs (old session's output is irrelevant)
           logBuffer = [];
@@ -817,8 +827,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       }
     };
 
-    // Send current preview status on connect
-    send(getPreviewStatus());
+    // Send current preview status on connect (only when per-runner previews
+    // are NOT in use — otherwise the runner will emit its own status once the
+    // session is activated and the preview starts).
+    if (!runnerCreatePreviewManager) {
+      send(getPreviewStatus());
+    }
 
     // Send buffered log entries so new clients see existing terminal output
     for (const entry of logBuffer) {
