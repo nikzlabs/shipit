@@ -565,7 +565,7 @@ export function Settings({
               <div className="space-y-4">
                 <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">Reset Container</h3>
                 <p className="text-sm text-gray-600 dark:text-gray-400">
-                  Delete all sessions, chat history, credentials, and settings. This cannot be undone.
+                  Delete all sessions, chat history, and settings. Credentials (GitHub, Claude) are preserved. This cannot be undone.
                 </p>
                 <button
                   onClick={() => {
