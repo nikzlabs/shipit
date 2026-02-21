@@ -135,7 +135,7 @@ describe("resolvePreviewConfig", () => {
       command: "npm run dev",
       ports: [5173],
     });
-    expect(config.install).toBeUndefined();
+    expect(config.install).toBe("npm install");
   });
 
   it("extracts port from --port= format", async () => {
@@ -150,6 +150,54 @@ describe("resolvePreviewConfig", () => {
       command: "npm run dev",
       ports: [3001],
     });
+  });
+
+  it("detects pnpm from packageManager field", async () => {
+    const dir = setup();
+    fs.writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ packageManager: "pnpm@9.1.0", scripts: { dev: "vite" } }),
+    );
+    const config = await resolvePreviewConfig(dir);
+    expect(config.source).toBe("package.json");
+    expect(config.install).toBe("pnpm install");
+    expect(config.mode).toMatchObject({ kind: "command", command: "pnpm run dev" });
+  });
+
+  it("detects yarn from yarn.lock", async () => {
+    const dir = setup();
+    fs.writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ scripts: { dev: "vite" } }),
+    );
+    fs.writeFileSync(path.join(dir, "yarn.lock"), "");
+    const config = await resolvePreviewConfig(dir);
+    expect(config.install).toBe("yarn install");
+    expect(config.mode).toMatchObject({ kind: "command", command: "yarn run dev" });
+  });
+
+  it("detects bun from bun.lockb", async () => {
+    const dir = setup();
+    fs.writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ scripts: { dev: "vite" } }),
+    );
+    fs.writeFileSync(path.join(dir, "bun.lockb"), "");
+    const config = await resolvePreviewConfig(dir);
+    expect(config.install).toBe("bun install");
+    expect(config.mode).toMatchObject({ kind: "command", command: "bun run dev" });
+  });
+
+  it("packageManager field takes priority over lock files", async () => {
+    const dir = setup();
+    fs.writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ packageManager: "pnpm@9.0.0", scripts: { dev: "vite" } }),
+    );
+    fs.writeFileSync(path.join(dir, "yarn.lock"), "");
+    const config = await resolvePreviewConfig(dir);
+    expect(config.install).toBe("pnpm install");
+    expect(config.mode).toMatchObject({ kind: "command", command: "pnpm run dev" });
   });
 
   it("handles package.json without scripts.dev", async () => {
