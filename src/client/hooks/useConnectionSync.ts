@@ -10,16 +10,14 @@ export function useConnectionSync(params: {
   send: (msg: WsClientMessage) => void;
   sessionIdRef: MutableRefObject<string | undefined>;
   historyLoadedRef: MutableRefObject<boolean>;
-  showTemplates: boolean;
   templates: TemplateInfo[];
-  setTemplates: Dispatch<SetStateAction<TemplateInfo[]>>;
   isLoading: boolean;
   setIsLoading: Dispatch<SetStateAction<boolean>>;
   setActivity: Dispatch<SetStateAction<StreamingActivity | undefined>>;
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   prStatus: { checks: { state: string } } | null;
 }): void {
-  const { status, send, sessionIdRef, historyLoadedRef, showTemplates, templates, isLoading, setIsLoading, setActivity, setMessages, prStatus } = params;
+  const { status, send, sessionIdRef, historyLoadedRef, templates, isLoading, setIsLoading, setActivity, setMessages, prStatus } = params;
 
   // On WebSocket connect, restore chat history for the saved session + check GitHub status
   useEffect(() => {
@@ -59,12 +57,12 @@ export function useConnectionSync(params: {
     }
   }, [prStatus?.checks.state, send]);
 
-  // Request templates when connected and the template picker is shown
+  // Request templates when connected (needed by both the template picker and NewRepoDialog)
   useEffect(() => {
-    if (status === "open" && showTemplates && templates.length === 0) {
+    if (status === "open" && templates.length === 0) {
       send({ type: "list_templates" });
     }
-  }, [status, showTemplates, templates.length, send]);
+  }, [status, templates.length, send]);
 
   // Handle WebSocket disconnection during streaming
   const prevStatusRef = useRef(status);
