@@ -179,8 +179,15 @@ export async function resolvePreviewConfig(workspaceDir: string): Promise<Previe
     if (scripts?.dev) {
       const port = extractPortFromScript(scripts.dev);
       const pm = detectPackageManager(workspaceDir, pkg);
+      // If the dev script is a plain Vite command, append --host 0.0.0.0 so
+      // the dev server binds to all interfaces (required in Docker where the
+      // browser connects through port mapping, not localhost).
+      const isVite = /^vite(\s|$)/.test(scripts.dev.trim());
+      const command = isVite
+        ? `${pm} run dev -- --host 0.0.0.0`
+        : `${pm} run dev`;
       return {
-        mode: { kind: "command", command: `${pm} run dev`, ports: port ? [port] : undefined },
+        mode: { kind: "command", command, ports: port ? [port] : undefined },
         source: "package.json",
         install: `${pm} install`,
       };

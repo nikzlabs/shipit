@@ -256,7 +256,10 @@ export class PreviewManager extends EventEmitter {
 
     this.proc = spawn("sh", ["-c", mode.command], {
       cwd,
-      env: { ...process.env },
+      // HOST=0.0.0.0 tells many frameworks (CRA, Angular, Flask) to bind to
+      // all interfaces — required in Docker where the browser connects through
+      // port mapping rather than localhost.
+      env: { ...process.env, HOST: "0.0.0.0" },
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
     });
