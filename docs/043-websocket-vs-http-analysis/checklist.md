@@ -11,10 +11,16 @@
 
 ## Phase 1: Tier 1 — Pure data reads (GET endpoints)
 
+### Combined endpoints (co-occurring requests)
+
+- [ ] `GET /api/bootstrap` — (Phase 0) returns `{ sessions, agents, templates, githubStatus, settings }` — replaces `list_sessions` + `list_agents` + `list_templates` + `github_get_status` + `get_global_settings`
+- [ ] `GET /api/sessions/:id/deploy/setup` — returns `{ targets, projectSettings }` — replaces `list_deploy_targets` + `get_project_settings` (called together from `handleDeployTabSelected` and `handleDeployOpen`)
+- [ ] `GET /api/sessions/:id/workspace-state` — returns `{ gitLog, fileTree }` — replaces `get_git_log` + `get_file_tree` (called together after `reject_changes_complete`)
+
 ### Session-scoped reads
 
 - [ ] `GET /api/sessions/:id/files` — extract from `get_file_tree`
-- [ ] `GET /api/sessions/:id/files/*path` — extract from `get_file_content`
+- [ ] `GET /api/sessions/:id/files/*path` — extract from `get_file_content` (optional query param `tree=true` to include file tree in response — for post-commit refresh when files tab is active)
 - [ ] `GET /api/sessions/:id/docs` — extract from `list_docs`
 - [ ] `GET /api/sessions/:id/docs/*path` — extract from `get_doc`
 - [ ] `GET /api/sessions/:id/git/log` — extract from `get_git_log`
@@ -24,7 +30,6 @@
 - [ ] `GET /api/sessions/:id/status` — extract from `get_session_status`
 - [ ] `GET /api/sessions/:id/history` — read-only portion of `get_chat_history` (messages + git log + file tree, without session activation side effect)
 - [ ] `GET /api/sessions/:id/deploy/history` — extract from `get_deploy_history`
-- [ ] `GET /api/sessions/:id/deploy/settings` — extract from `get_project_settings`
 - [ ] `GET /api/sessions/:id/usage` — extract from `get_usage_stats`
 - [ ] `GET /api/sessions/:id/pr/status` — extract from `get_pr_status`
 - [ ] `GET /api/sessions/:id/threads` — extract from `list_threads`
@@ -32,13 +37,7 @@
 
 ### Global reads (no session context needed)
 
-- [ ] `GET /api/sessions` — extract from `list_sessions`
-- [ ] `GET /api/templates` — extract from `list_templates`
-- [ ] `GET /api/deploy/targets` — extract from `list_deploy_targets`
-- [ ] `GET /api/settings` — extract from `get_global_settings`
-- [ ] `GET /api/agents` — extract from `list_agents`
 - [ ] `GET /api/features` — extract from `list_features`
-- [ ] `GET /api/github/status` — extract from `github_get_status`
 - [ ] `GET /api/github/repos` — extract from `github_search_repos` (query param: `q`)
 
 ### Client updates for Phase 1

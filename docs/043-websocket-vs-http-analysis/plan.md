@@ -54,34 +54,41 @@ These patterns require a persistent bidirectional channel and should remain on W
 
 These are stateless GET requests with a single JSON response. No streaming, no push, no connection state dependency beyond knowing which session is active (solvable with a session ID parameter or cookie).
 
+#### Combined endpoints
+
+Several WS messages are always sent together from the client. These should be single HTTP endpoints instead of separate requests:
+
+| Combined endpoint | Replaces | Trigger |
+|---|---|---|
+| `GET /api/bootstrap` | `list_sessions` + `list_agents` + `list_templates` + `github_get_status` + `get_global_settings` | Page load (before WS connects) |
+| `GET /api/sessions/:id/deploy/setup` | `list_deploy_targets` + `get_project_settings` | Opening deploy modal or deploy settings tab (2 call sites) |
+| `GET /api/sessions/:id/workspace-state` | `get_git_log` + `get_file_tree` | After rejecting changes in diff review |
+
+Additionally, `get_file_content` is often called right after `get_file_tree` (after commits and file-change events when the files tab is active). The file content endpoint can accept an optional `tree=true` query param to include the file tree in the response, avoiding a second round trip.
+
+#### Individual endpoints
+
 | Current WS message | Proposed HTTP endpoint | Notes |
 |---|---|---|
 | `get_file_tree` | `GET /api/sessions/:id/files` | Returns directory tree |
-| `get_file_content` | `GET /api/sessions/:id/files/*path` | Returns file content, already has 1MB guard |
+| `get_file_content` | `GET /api/sessions/:id/files/*path` | Returns file content; `?tree=true` to include file tree |
 | `list_docs` | `GET /api/sessions/:id/docs` | Markdown file list |
 | `get_doc` | `GET /api/sessions/:id/docs/*path` | Single doc content |
 | `get_git_log` | `GET /api/sessions/:id/git/log` | Commit list |
 | `get_turn_diff` | `GET /api/sessions/:id/git/diff?from=X&to=Y` | Diff between commits |
-| `list_sessions` | `GET /api/sessions` | All sessions |
 | `get_session_status` | `GET /api/sessions/:id/status` | Running state + queue length |
-| `get_chat_history` | `GET /api/sessions/:id/history` | Messages + git log + file tree (though this also activates the session — see caveats) |
-| `list_templates` | `GET /api/templates` | Available scaffolds |
-| `list_deploy_targets` | `GET /api/deploy/targets` | Target registry |
+| `get_chat_history` | `GET /api/sessions/:id/history` | Messages + git log + file tree (also activates session — see caveats) |
 | `get_deploy_history` | `GET /api/sessions/:id/deploy/history` | Past deployments |
-| `get_project_settings` | `GET /api/sessions/:id/deploy/settings` | Per-target config |
 | `get_usage_stats` | `GET /api/sessions/:id/usage` | Cost/duration totals |
-| `get_global_settings` | `GET /api/settings` | Git identity + system prompt |
-| `list_agents` | `GET /api/agents` | Available agents |
-| `list_features` | `GET /api/features` | Feature docs with status |
-| `github_get_status` | `GET /api/github/status` | Auth state + user info |
 | `github_get_remotes` | `GET /api/sessions/:id/git/remotes` | Remote list |
 | `github_list_branches` | `GET /api/sessions/:id/git/branches` | Local + remote branches |
 | `github_search_repos` | `GET /api/github/repos?q=...` | Repo search |
 | `get_pr_status` | `GET /api/sessions/:id/pr/status` | PR state + CI checks |
 | `list_threads` | `GET /api/sessions/:id/threads` | Thread list |
 | `list_worktrees` | `GET /api/sessions/:id/worktrees` | Sibling worktrees |
+| `list_features` | `GET /api/features` | Feature docs with status |
 
-**Count: 24 message types → HTTP GET**
+**Count: 24 WS message types → 3 combined + 17 individual = 20 HTTP GET endpoints**
 
 ### Tier 2: Mutations with simple responses (good candidates)
 
