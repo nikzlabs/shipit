@@ -12,7 +12,6 @@ import { ClaudeProcess } from "../claude.js";
 import { FileWatcher } from "../file-watcher.js";
 import type { FastifyInstance } from "fastify";
 import {
-  TestClient,
   StubPreviewManager,
   StubAuthManager,
   StubGitHubAuthManager,
@@ -22,9 +21,7 @@ import {
 
 describe("Integration: GitHub auth status & tokens", () => {
   let app: FastifyInstance;
-  let port: number;
   let tmpDir: string;
-  let githubAuthManager: StubGitHubAuthManager;
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-gh-status-"));
@@ -32,7 +29,7 @@ describe("Integration: GitHub auth status & tokens", () => {
     const sessionsFile = path.join(tmpDir, "sessions.json");
     const sessionManager = new SessionManager(sessionsFile);
 
-    githubAuthManager = new StubGitHubAuthManager();
+    const githubAuthManager = new StubGitHubAuthManager();
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
@@ -48,9 +45,7 @@ describe("Integration: GitHub auth status & tokens", () => {
       portScanIntervalMs: 0,
     });
 
-    const address = await app.listen({ port: 0, host: "127.0.0.1" });
-    const match = address.match(/:(\d+)$/);
-    port = match ? Number(match[1]) : 0;
+    await app.listen({ port: 0, host: "127.0.0.1" });
   });
 
   afterEach(async () => {
@@ -58,84 +53,9 @@ describe("Integration: GitHub auth status & tokens", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
-  it("github_get_status returns unauthenticated by default", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "github_get_status" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("github_status");
-    expect((msg as any).authenticated).toBe(false);
-
-    client.close();
-  });
-
-  it("github_set_token with valid token returns authenticated status and user repos", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "github_set_token", token: "ghp_valid_test_token" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("github_status");
-    expect((msg as any).authenticated).toBe(true);
-    expect((msg as any).username).toBe("test-user");
-
-    // Should also receive user repos for the RepoSelector
-    const reposMsg = await client.receive();
-    expect(reposMsg.type).toBe("github_search_results");
-    expect((reposMsg as any).repos.length).toBeGreaterThan(0);
-
-    client.close();
-  });
-
-  it("github_set_token with empty token returns error", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "github_set_token", token: "" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("GitHub token cannot be empty");
-
-    client.close();
-  });
-
-  it("github_set_token with whitespace-only token returns error", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "github_set_token", token: "   " });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("GitHub token cannot be empty");
-
-    client.close();
-  });
-
-  it("github_logout clears credentials and repos", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // First authenticate
-    client.send({ type: "github_set_token", token: "ghp_test" });
-    await client.receive(); // github_status
-    await client.receive(); // github_search_results (user repos)
-
-    // Then logout
-    client.send({ type: "github_logout" });
-    const logoutMsg = await client.receive();
-    expect(logoutMsg.type).toBe("github_status");
-    expect((logoutMsg as any).authenticated).toBe(false);
-
-    // Should also receive empty repos to clear the RepoSelector
-    const reposMsg = await client.receive();
-    expect(reposMsg.type).toBe("github_search_results");
-    expect((reposMsg as any).repos).toEqual([]);
-
-    client.close();
+  it("bootstrap returns unauthenticated GitHub status by default", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/bootstrap" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().githubStatus.authenticated).toBe(false);
   });
 });

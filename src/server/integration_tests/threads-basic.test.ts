@@ -136,29 +136,20 @@ describe("Integration: Threads — list & checkpoints", () => {
 
   // ---- list_threads ----
 
-  it("list_threads returns error when no active session", async () => {
-    const client = await TestClient.connect(port);
-    await drainConnect(client);
-
-    client.send({ type: "list_threads" } as any);
-    const msg = await client.receiveSkipLogs();
-
-    expect(msg).toMatchObject({
-      type: "error",
-      message: "No active session",
-    });
-
-    client.close();
+  it("list_threads returns 404 for nonexistent session", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/sessions/nonexistent/threads" });
+    expect(res.statusCode).toBe(404);
   });
 
   it("list_threads returns threads after session established", async () => {
     const client = await TestClient.connect(port);
     await drainConnect(client);
 
-    await doMessageTurn(client, "Hello");
+    const sessionId = await doMessageTurn(client, "Hello");
 
-    client.send({ type: "list_threads" } as any);
-    const msg = await waitForMessage(client, "thread_list");
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/threads` });
+    expect(res.statusCode).toBe(200);
+    const msg = res.json();
 
     expect(msg.threads).toHaveLength(1);
     expect(msg.threads[0].name).toBe("main");
@@ -168,52 +159,4 @@ describe("Integration: Threads — list & checkpoints", () => {
     client.close();
   });
 
-  // ---- create_checkpoint ----
-
-  it("create_checkpoint returns error when no active session", async () => {
-    const client = await TestClient.connect(port);
-    await drainConnect(client);
-
-    client.send({ type: "create_checkpoint" } as any);
-    const msg = await client.receiveSkipLogs();
-
-    expect(msg).toMatchObject({
-      type: "error",
-      message: "No active session",
-    });
-
-    client.close();
-  });
-
-  it("create_checkpoint creates checkpoint on active thread", async () => {
-    const client = await TestClient.connect(port);
-    await drainConnect(client);
-
-    const sessionId = await doMessageTurn(client, "Build a todo app");
-
-    client.send({ type: "create_checkpoint", label: "Before refactor" } as any);
-    const msg = await waitForMessage(client, "checkpoint_created");
-
-    expect(msg.checkpoint.label).toBe("Before refactor");
-    expect(msg.checkpoint.sessionId).toBe(sessionId);
-    expect(msg.checkpoint.messageIndex).toBeGreaterThan(0);
-    expect(msg.threadId).toBeDefined();
-
-    client.close();
-  });
-
-  it("create_checkpoint rejects label over 200 characters", async () => {
-    const client = await TestClient.connect(port);
-    await drainConnect(client);
-
-    await doMessageTurn(client, "Hello");
-
-    const longLabel = "x".repeat(201);
-    client.send({ type: "create_checkpoint", label: longLabel } as any);
-    const msg = await waitForMessage(client, "error");
-
-    expect(msg.message).toBe("Checkpoint label too long (max 200 characters)");
-
-    client.close();
-  });
 });

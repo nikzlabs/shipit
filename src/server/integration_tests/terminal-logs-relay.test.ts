@@ -238,10 +238,14 @@ describe("Integration: Terminal/logs relay", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    client.send({
-      type: "preview_error",
-      message: "TypeError: Cannot read properties of undefined",
-      stack: "TypeError: Cannot read properties of undefined\n  at App.tsx:42",
+    // Send preview error via HTTP — the server broadcasts a log_entry to all WS clients
+    await app.inject({
+      method: "POST",
+      url: "/api/sessions/any/preview-errors",
+      payload: {
+        message: "TypeError: Cannot read properties of undefined",
+        stack: "TypeError: Cannot read properties of undefined\n  at App.tsx:42",
+      },
     });
 
     const logEntry = await client.receive();
@@ -257,37 +261,36 @@ describe("Integration: Terminal/logs relay", () => {
   });
 
   it("rejects empty preview_error messages", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/any/preview-errors",
+      payload: { message: "   " },
+    });
 
-    client.send({ type: "preview_error", message: "   " });
-
-    const resp = await client.receive();
-    expect(resp).toMatchObject({ type: "error", message: "Preview error message cannot be empty" });
-
-    client.close();
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("Preview error message cannot be empty");
   });
 
   it("rejects overly long preview_error messages", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/any/preview-errors",
+      payload: { message: "x".repeat(11_000) },
+    });
 
-    client.send({ type: "preview_error", message: "x".repeat(11_000) });
-
-    const resp = await client.receive();
-    expect(resp).toMatchObject({ type: "error", message: "Preview error message too long (max 10,000 characters)" });
-
-    client.close();
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("Preview error message too long (max 10,000 characters)");
   });
 
   it("preview log entries are included in buffer for new clients", async () => {
     const client1 = await TestClient.connect(port);
     await client1.receive(); // preview_status
 
-    // Send a preview error to populate the log buffer
-    client1.send({
-      type: "preview_error",
-      message: "Runtime error in preview",
+    // Send a preview error via HTTP to populate the log buffer
+    await app.inject({
+      method: "POST",
+      url: "/api/sessions/any/preview-errors",
+      payload: { message: "Runtime error in preview" },
     });
     await client1.receive(); // log_entry
 

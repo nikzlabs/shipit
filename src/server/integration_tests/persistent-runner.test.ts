@@ -227,11 +227,10 @@ describe("Integration: persistent session runners", () => {
     const sessionStarted = await drainUntil(client, (m) => m.type === "session_started");
     const sessionId = sessionStarted!.session.id;
 
-    // Ask for status
-    client.send({ type: "get_session_status", sessionId } as any);
-    const status = await drainUntil(client, (m) => m.type === "session_status" && m.sessionId === sessionId);
-    expect(status).toBeTruthy();
-    expect(status!.running).toBe(true);
+    // Ask for status via HTTP
+    const statusRes = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/status` });
+    expect(statusRes.statusCode).toBe(200);
+    expect(statusRes.json().running).toBe(true);
 
     // Finish Claude
     claude.finish("test-session-id");
@@ -240,10 +239,9 @@ describe("Integration: persistent session runners", () => {
     await drainUntil(client, (m) => m.type === "session_agent_finished");
 
     // Ask again — should be not running
-    client.send({ type: "get_session_status", sessionId } as any);
-    const status2 = await drainUntil(client, (m) => m.type === "session_status" && m.sessionId === sessionId);
-    expect(status2).toBeTruthy();
-    expect(status2!.running).toBe(false);
+    const statusRes2 = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/status` });
+    expect(statusRes2.statusCode).toBe(200);
+    expect(statusRes2.json().running).toBe(false);
 
     client.close();
   });
@@ -312,9 +310,9 @@ describe("Integration: persistent session runners", () => {
     const sessionStarted = await drainUntil(client, (m) => m.type === "session_started");
     const sessionId = sessionStarted!.session.id;
 
-    // Archive the session
-    client.send({ type: "archive_session", sessionId } as any);
-    await drainUntil(client, (m) => m.type === "session_list");
+    // Archive the session via HTTP
+    const res = await app.inject({ method: "DELETE", url: `/api/sessions/${sessionId}` });
+    expect(res.statusCode).toBe(200);
 
     // Claude should be killed
     expect(claude.killed).toBe(true);
@@ -361,17 +359,9 @@ describe("Integration: persistent session runners", () => {
     client2.close();
   });
 
-  it("get_session_status returns not running for unknown sessions", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "get_session_status", sessionId: "nonexistent" } as any);
-    const status = await drainUntil(client, (m) => m.type === "session_status");
-    expect(status).toBeTruthy();
-    expect(status!.running).toBe(false);
-    expect(status!.queueLength).toBe(0);
-
-    client.close();
+  it("get_session_status returns 404 for unknown sessions", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/sessions/nonexistent/status" });
+    expect(res.statusCode).toBe(404);
   });
 
   it("multiple concurrent agents run across different sessions", async () => {
@@ -414,13 +404,11 @@ describe("Integration: persistent session runners", () => {
     expect(claude1).not.toBe(claude2);
 
     // Verify both sessions report running
-    client1.send({ type: "get_session_status", sessionId: session1Id } as any);
-    const status1 = await drainUntil(client1, (m) => m.type === "session_status" && m.sessionId === session1Id);
-    expect(status1!.running).toBe(true);
+    const statusRes1 = await app.inject({ method: "GET", url: `/api/sessions/${session1Id}/status` });
+    expect(statusRes1.json().running).toBe(true);
 
-    client2.send({ type: "get_session_status", sessionId: session2Id } as any);
-    const status2 = await drainUntil(client2, (m) => m.type === "session_status" && m.sessionId === session2Id);
-    expect(status2!.running).toBe(true);
+    const statusRes2 = await app.inject({ method: "GET", url: `/api/sessions/${session2Id}/status` });
+    expect(statusRes2.json().running).toBe(true);
 
     // Finish session 1 — session 2 should still be running
     claude1.finish("test-session-1");
@@ -430,13 +418,11 @@ describe("Integration: persistent session runners", () => {
     expect(claude2.interrupted).toBe(false);
 
     // Verify session 1 stopped and session 2 still running
-    client1.send({ type: "get_session_status", sessionId: session1Id } as any);
-    const status1After = await drainUntil(client1, (m) => m.type === "session_status" && m.sessionId === session1Id);
-    expect(status1After!.running).toBe(false);
+    const statusRes1After = await app.inject({ method: "GET", url: `/api/sessions/${session1Id}/status` });
+    expect(statusRes1After.json().running).toBe(false);
 
-    client2.send({ type: "get_session_status", sessionId: session2Id } as any);
-    const status2After = await drainUntil(client2, (m) => m.type === "session_status" && m.sessionId === session2Id);
-    expect(status2After!.running).toBe(true);
+    const statusRes2After = await app.inject({ method: "GET", url: `/api/sessions/${session2Id}/status` });
+    expect(statusRes2After.json().running).toBe(true);
 
     // Clean up
     claude2.finish("test-session-2");

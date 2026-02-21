@@ -34,10 +34,6 @@ export interface DeploymentRecord {
 
 // ---- Deployment client → server messages ----
 
-export interface WsListDeployTargets {
-  type: "list_deploy_targets";
-}
-
 export interface WsDeployConfigure {
   type: "deploy_configure";
   targetId: string;
@@ -49,14 +45,6 @@ export interface WsInitiateDeploy {
   type: "initiate_deploy";
   targetId: string;
   environment?: "production" | "preview";
-}
-
-export interface WsGetDeployHistory {
-  type: "get_deploy_history";
-}
-
-export interface WsGetProjectSettings {
-  type: "get_project_settings";
 }
 
 export interface WsCancelDeploy {

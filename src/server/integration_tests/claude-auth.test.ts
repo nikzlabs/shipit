@@ -138,9 +138,16 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
       const client = await TestClient.connect(unauthPort);
       await client.receive(); // connection_established
 
-      client.send({ type: "set_api_key", key: "sk-ant-test-key-123" } as any);
-      const msg = await client.receive();
+      // Use HTTP endpoint to set API key
+      const res = await unauthApp.inject({
+        method: "POST",
+        url: "/api/auth/api-key",
+        payload: { key: "sk-ant-test-key-123" },
+      });
+      expect(res.statusCode).toBe(200);
 
+      // The HTTP endpoint broadcasts auth_complete to all WS clients
+      const msg = await client.receive();
       expect(msg).toMatchObject({ type: "auth_complete" });
     } finally {
       // Restore env
@@ -155,27 +162,25 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
   });
 
   it("set_api_key rejects invalid format", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // connection_established
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/api-key",
+      payload: { key: "bad-key" },
+    });
 
-    client.send({ type: "set_api_key", key: "bad-key" } as any);
-    const msg = await client.receive();
-
-    expect(msg).toMatchObject({ type: "error", message: "Invalid API key format" });
-
-    client.close();
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: "Invalid API key format" });
   });
 
   it("set_api_key rejects empty key", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // connection_established
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/api-key",
+      payload: { key: "" },
+    });
 
-    client.send({ type: "set_api_key", key: "" } as any);
-    const msg = await client.receive();
-
-    expect(msg).toMatchObject({ type: "error", message: "API key cannot be empty" });
-
-    client.close();
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: "API key cannot be empty" });
   });
 
   it("paste_auth_code rejects empty code", async () => {

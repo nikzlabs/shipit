@@ -1,30 +1,7 @@
-import path from "node:path";
-import fs from "node:fs/promises";
 import type { WsClientMessage } from "../types.js";
 import type { HandlerContext } from "./types.js";
-import { getErrorMessage } from "../validation.js";
 
-type WsPreviewError = Extract<WsClientMessage, { type: "preview_error" }>;
 type WsCancelQueuedMessage = Extract<WsClientMessage, { type: "cancel_queued_message" }>;
-
-export function handlePreviewError(ctx: HandlerContext, msg: WsPreviewError): void {
-  // Validate the preview error message
-  const errorMsg = typeof msg.message === "string" ? msg.message : "";
-  if (!errorMsg.trim()) {
-    ctx.send({ type: "error", message: "Preview error message cannot be empty" });
-    return;
-  }
-  if (errorMsg.length > 10_000) {
-    ctx.send({ type: "error", message: "Preview error message too long (max 10,000 characters)" });
-    return;
-  }
-  // Format the error for the terminal log buffer
-  const parts = [errorMsg];
-  if (msg.stack && typeof msg.stack === "string") {
-    parts.push(msg.stack.slice(0, 5000));
-  }
-  ctx.broadcastLog("preview", parts.join("\n"));
-}
 
 export function handleCancelQueuedMessage(ctx: HandlerContext, msg: WsCancelQueuedMessage): void {
   const queue = ctx.getMessageQueue();
@@ -57,43 +34,5 @@ export function handleInterruptClaude(ctx: HandlerContext): void {
     }
   } else {
     ctx.send({ type: "error", message: "No active Claude process to interrupt" });
-  }
-}
-
-export async function handleFullReset(ctx: HandlerContext): Promise<void> {
-  try {
-    // 1. Dispose all runners (kills all agent processes + queues)
-    ctx.getRunnerRegistry().disposeAll();
-    ctx.detachFromRunner();
-    ctx.previewManager.stop();
-    ctx.fileWatcher.stop();
-    const terminal = ctx.getTerminal();
-    if (terminal) {
-      terminal.kill();
-      ctx.setTerminal(null);
-    }
-
-    // 2. Delete everything inside the workspace directory
-    const entries = await fs.readdir(ctx.workspaceDir);
-    for (const entry of entries) {
-      try {
-        await fs.rm(path.join(ctx.workspaceDir, entry), { recursive: true, force: true });
-      } catch {
-        // Best-effort — ignore individual failures
-      }
-    }
-
-    // 3. Clear in-memory state so managers don't serve stale data
-    ctx.sessionManager.clear();
-    ctx.usageManager.clear();
-
-    // 4. Reset connection state
-    ctx.setActiveAppSessionId(undefined);
-    ctx.setActiveSessionDir(null);
-
-    // Broadcast to all connected clients so all tabs see the reset
-    ctx.broadcast({ type: "full_reset_complete" });
-  } catch (err) {
-    ctx.send({ type: "error", message: `Full reset failed: ${getErrorMessage(err)}` });
   }
 }

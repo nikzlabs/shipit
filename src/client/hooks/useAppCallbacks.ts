@@ -14,10 +14,13 @@ import type { DeployPhase } from "../components/DeployModal.js";
 import type { ThreadInfo } from "../components/ThreadIndicator.js";
 import type { AgentOption } from "../components/AgentPicker.js";
 import type {
-  WsClientMessage, FeatureInfo,
-  PermissionMode, FileContextRef, AgentId,
+  WsClientMessage, FeatureInfo, DeployTargetInfo, DeploymentRecord,
+  PermissionMode, FileContextRef, AgentId, SessionInfo,
 } from "../../server/types.js";
+import type { UsageStats } from "../components/UsageModal.js";
+import type { ToastData } from "../components/Toast.js";
 import { savePermissionMode, saveAgentId } from "../utils/local-storage.js";
+import { useApi } from "./useApi.js";
 
 import type { TurnDiffData } from "../components/DiffPanel.js";
 
@@ -89,6 +92,20 @@ export function useAppCallbacks(params: {
   setTurnDiff: Dispatch<SetStateAction<TurnDiffData | null>>;
   setLastCommitPair: Dispatch<SetStateAction<{ from: string; to: string } | null>>;
   setDiffBadgeCount: Dispatch<SetStateAction<number>>;
+  setDocFiles: Dispatch<SetStateAction<string[]>>;
+  setImportSearchResults: Dispatch<SetStateAction<Array<{ fullName: string; description: string | null; private: boolean; defaultBranch: string; cloneUrl: string }>>>;
+  setAllUsageStats: Dispatch<SetStateAction<UsageStats | null>>;
+  setDeployHistory: Dispatch<SetStateAction<DeploymentRecord[]>>;
+  setDeployTargets: Dispatch<SetStateAction<DeployTargetInfo[]>>;
+  setDeployConfigStatus: Dispatch<SetStateAction<Record<string, { configured: boolean; projectName?: string }>>>;
+  setFeatures: Dispatch<SetStateAction<FeatureInfo[]>>;
+  setSessions: Dispatch<SetStateAction<SessionInfo[]>>;
+  setGitIdentityNeeded: Dispatch<SetStateAction<boolean>>;
+  setGitIdentity: Dispatch<SetStateAction<{ name: string; email: string }>>;
+  setGithubStatus: Dispatch<SetStateAction<{ authenticated: boolean; username?: string; avatarUrl?: string }>>;
+  setSystemPromptContent: Dispatch<SetStateAction<string>>;
+  setToast: Dispatch<SetStateAction<ToastData | null>>;
+  setAgentList: Dispatch<SetStateAction<AgentOption[]>>;
   lastCommitPair: { from: string; to: string } | null;
   turnDiff: TurnDiffData | null;
 
@@ -118,8 +135,14 @@ export function useAppCallbacks(params: {
     disableAutoFix,
     setSelectedPort, setPrCurrentBranch, setPrRemoteBranches,
     setTurnDiff, setLastCommitPair, setDiffBadgeCount,
+    setDocFiles, setImportSearchResults, setAllUsageStats,
+    setDeployHistory, setDeployTargets, setDeployConfigStatus, setFeatures,
     lastCommitPair, turnDiff,
+    setSessions, setGitIdentityNeeded, setGitIdentity, setGithubStatus, setSystemPromptContent, setToast, setAgentList,
+    setHasSystemPrompt, setAutoFixRetries: _setAutoFixRetries,
   } = params;
+
+  const { get: apiGet, post: apiPost, patch: apiPatch, del: apiDel, put: apiPut } = useApi();
 
   // Internal session resume (no navigation) — used by popstate/URL changes
   const resumeSessionInternal = useCallback(
@@ -208,7 +231,7 @@ export function useAppCallbacks(params: {
       requestPermission();
       // Auto-checkpoint before edit so the user can return to the pre-edit state
       if (sessionIdRef.current && activeThreadId) {
-        send({ type: "create_checkpoint", label: "Before edit" });
+        apiPost(`/api/sessions/${sessionIdRef.current}/threads/checkpoint`, { label: "Before edit" }).catch(() => {});
       }
       // Truncate messages from the edited index onward, then append the new user message
       setMessages((prev) => [
@@ -224,18 +247,28 @@ export function useAppCallbacks(params: {
         permissionMode: permissionMode !== "auto" ? permissionMode : undefined,
       });
     },
-    [send, requestPermission, activeThreadId, permissionMode, sessionIdRef, setMessages, setIsLoading, setActivity]
+    [send, requestPermission, activeThreadId, permissionMode, sessionIdRef, setMessages, setIsLoading, setActivity, apiPost]
   );
 
   const handleGitRefresh = useCallback(() => {
-    send({ type: "get_git_log" });
-  }, [send]);
+    if (!sessionIdRef.current) return;
+    apiGet<{ commits: GitCommit[] }>(`/api/sessions/${sessionIdRef.current}/git/log`)
+      .then((d) => setGitCommits(d.commits))
+      .catch((err) => console.error("[api] Failed to fetch git log:", err));
+  }, [apiGet, sessionIdRef, setGitCommits]);
 
   const handleRollback = useCallback(
-    (hash: string) => {
-      send({ type: "rollback", commitHash: hash });
+    async (hash: string) => {
+      if (!sessionIdRef.current) return;
+      try {
+        await apiPost(`/api/sessions/${sessionIdRef.current}/git/rollback`, { commitHash: hash });
+        const data = await apiGet<{ commits: GitCommit[] }>(`/api/sessions/${sessionIdRef.current}/git/log`);
+        setGitCommits(data.commits);
+      } catch (err) {
+        console.error("[api] Rollback failed:", err);
+      }
     },
-    [send]
+    [apiPost, apiGet, sessionIdRef, setGitCommits]
   );
 
   const handleSessionRefresh = useCallback(() => {
@@ -274,39 +307,65 @@ export function useAppCallbacks(params: {
       setGitCommits, setFileTree, setThreads, setActiveThreadId, setShellStarted, setTerminalMode]);
 
   const handleSessionArchive = useCallback(
-    (sessionId: string) => {
-      send({ type: "archive_session", sessionId });
+    async (sessionId: string) => {
+      try {
+        const result = await apiDel<{ sessions: SessionInfo[] }>(`/api/sessions/${sessionId}`);
+        setSessions(result.sessions);
+        if (sessionId === sessionIdRef.current) {
+          sessionIdRef.current = undefined;
+          nav("/");
+        }
+      } catch (err) {
+        console.error("[api] Archive session failed:", err);
+      }
     },
-    [send]
+    [apiDel, setSessions, sessionIdRef, nav]
   );
 
   const handleSessionRename = useCallback(
-    (sessionId: string, title: string) => {
-      send({ type: "rename_session", sessionId, title });
+    async (sessionId: string, title: string) => {
+      try {
+        const result = await apiPatch<{ session: SessionInfo }>(`/api/sessions/${sessionId}`, { title });
+        setSessions((prev) => prev.map((s) => (s.id === result.session.id ? result.session : s)));
+      } catch (err) {
+        console.error("[api] Rename session failed:", err);
+      }
     },
-    [send]
+    [apiPatch, setSessions]
   );
 
   const handleDocRefresh = useCallback(() => {
-    send({ type: "list_docs" });
-  }, [send]);
+    if (!sessionIdRef.current) return;
+    apiGet<{ files: string[] }>(`/api/sessions/${sessionIdRef.current}/docs`)
+      .then((d) => setDocFiles(d.files))
+      .catch((err) => console.error("[api] Failed to fetch docs:", err));
+  }, [apiGet, sessionIdRef, setDocFiles]);
 
   const handleSelectPort = useCallback((port: number) => {
     setSelectedPort(port);
   }, [setSelectedPort]);
 
   const handleFileTreeRefresh = useCallback(() => {
-    send({ type: "get_file_tree" });
-  }, [send]);
+    if (!sessionIdRef.current) return;
+    apiGet<{ tree: FileTreeNode[] }>(`/api/sessions/${sessionIdRef.current}/files`)
+      .then((d) => setFileTree(d.tree))
+      .catch((err) => console.error("[api] Failed to fetch file tree:", err));
+  }, [apiGet, sessionIdRef, setFileTree]);
 
   const handleFileClick = useCallback(
     (filePath: string) => {
       setViewingFile(filePath);
       setViewingFileContent(null);
       setViewingFileBinary(false);
-      send({ type: "get_file_content", path: filePath });
+      if (!sessionIdRef.current) return;
+      apiGet<{ content: string; isBinary?: boolean }>(`/api/sessions/${sessionIdRef.current}/files/${filePath}`)
+        .then((d) => {
+          setViewingFileContent(d.content);
+          setViewingFileBinary(d.isBinary ?? false);
+        })
+        .catch((err) => console.error("[api] Failed to fetch file content:", err));
     },
-    [send, setViewingFile, setViewingFileContent, setViewingFileBinary]
+    [apiGet, sessionIdRef, setViewingFile, setViewingFileContent, setViewingFileBinary]
   );
 
   const handleFileViewerClose = useCallback(() => {
@@ -319,9 +378,12 @@ export function useAppCallbacks(params: {
     (filePath: string) => {
       setSelectedDoc(filePath);
       setDocContent(null);
-      send({ type: "get_doc", path: filePath });
+      if (!sessionIdRef.current) return;
+      apiGet<{ content: string }>(`/api/sessions/${sessionIdRef.current}/docs/${filePath}`)
+        .then((d) => setDocContent(d.content))
+        .catch((err) => console.error("[api] Failed to fetch doc:", err));
     },
-    [send, setSelectedDoc, setDocContent]
+    [apiGet, sessionIdRef, setSelectedDoc, setDocContent]
   );
 
   const handleAnswerQuestion = useCallback(
@@ -343,22 +405,42 @@ export function useAppCallbacks(params: {
   );
 
   const handleGitIdentitySubmit = useCallback(
-    (name: string, email: string) => {
-      send({ type: "set_git_identity", name, email });
+    async (name: string, email: string) => {
+      try {
+        const result = await apiPost<{ name: string; email: string }>("/api/settings/git-identity", { name, email });
+        setGitIdentityNeeded(false);
+        setGitIdentity({ name: result.name, email: result.email });
+      } catch (err) {
+        console.error("[api] Set git identity failed:", err);
+      }
     },
-    [send],
+    [apiPost, setGitIdentityNeeded, setGitIdentity],
   );
 
   const handleGitHubTokenSubmit = useCallback(
-    (token: string) => {
-      send({ type: "github_set_token", token });
+    async (token: string) => {
+      try {
+        const result = await apiPost<{
+          status: { authenticated: boolean; username?: string; avatarUrl?: string };
+          repos: Array<{ fullName: string; description: string | null; private: boolean; defaultBranch: string; cloneUrl: string }>;
+        }>("/api/github/token", { token });
+        setGithubStatus(result.status);
+        setImportSearchResults(result.repos);
+      } catch (err) {
+        console.error("[api] Set GitHub token failed:", err);
+      }
     },
-    [send],
+    [apiPost, setGithubStatus, setImportSearchResults],
   );
 
-  const handleGitHubLogout = useCallback(() => {
-    send({ type: "github_logout" });
-  }, [send]);
+  const handleGitHubLogout = useCallback(async () => {
+    try {
+      const result = await apiPost<{ status: { authenticated: boolean; username?: string; avatarUrl?: string } }>("/api/github/logout");
+      setGithubStatus(result.status);
+    } catch (err) {
+      console.error("[api] GitHub logout failed:", err);
+    }
+  }, [apiPost, setGithubStatus]);
 
   const handleHomeCreateRepo = useCallback(
     (name: string, description: string, isPrivate: boolean, templateId: string) => {
@@ -445,45 +527,99 @@ export function useAppCallbacks(params: {
   }, [send, setPrDescGenerating, prDescGeneratingRef, setPrDescError, setPrGeneratedDesc]);
 
   const handlePRSubmit = useCallback(
-    (data: { title: string; body: string; base: string; draft: boolean }) => {
-      send({ type: "github_create_pr", title: data.title, body: data.body, base: data.base, draft: data.draft });
+    async (data: { title: string; body: string; base: string; draft: boolean }) => {
+      if (!sessionIdRef.current) return;
+      try {
+        const result = await apiPost<{ success: boolean; url?: string; number?: number; message?: string }>(
+          `/api/sessions/${sessionIdRef.current}/pr`,
+          { title: data.title, body: data.body, base: data.base, draft: data.draft },
+        );
+        setPrResult(result);
+      } catch (err) {
+        console.error("[api] Create PR failed:", err);
+      }
     },
-    [send],
+    [apiPost, sessionIdRef, setPrResult],
   );
 
   const handlePRRequestBranches = useCallback(() => {
-    send({ type: "github_list_branches" });
-  }, [send]);
+    if (!sessionIdRef.current) return;
+    apiGet<{ current: string; remote: string[] }>(`/api/sessions/${sessionIdRef.current}/git/branches`)
+      .then((d) => {
+        setPrCurrentBranch(d.current);
+        setPrRemoteBranches(d.remote);
+      })
+      .catch((err) => console.error("[api] Failed to fetch branches:", err));
+  }, [apiGet, sessionIdRef, setPrCurrentBranch, setPrRemoteBranches]);
 
   const handleUsageBadgeClick = useCallback(() => {
-    send({ type: "get_usage_stats" });
     setShowUsageModal(true);
-  }, [send, setShowUsageModal]);
+    if (!sessionIdRef.current) return;
+    apiGet<{ stats: UsageStats }>(`/api/sessions/${sessionIdRef.current}/usage`)
+      .then((d) => setAllUsageStats(d.stats))
+      .catch((err) => console.error("[api] Failed to fetch usage stats:", err));
+  }, [apiGet, sessionIdRef, setShowUsageModal, setAllUsageStats]);
 
-  const handleSettingsOpen = useCallback((tab?: "agent" | "github" | "git" | "instructions" | "advanced" | "deploy") => {
-    send({ type: "get_global_settings" });
+  const handleSettingsOpen = useCallback(async (tab?: "agent" | "github" | "git" | "instructions" | "advanced" | "deploy") => {
     setInitialSettingsTab(tab);
     setSettingsOpen(true);
-  }, [send, setInitialSettingsTab, setSettingsOpen]);
+    try {
+      const data = await apiGet<{ settings: { gitIdentity: { name: string; email: string }; systemPrompt: string; agents: AgentOption[]; defaultAgentId: AgentId } }>("/api/bootstrap");
+      setGitIdentity(data.settings.gitIdentity);
+      setSystemPromptContent(data.settings.systemPrompt);
+      setHasSystemPrompt(data.settings.systemPrompt.length > 0);
+      setAgentList(data.settings.agents);
+    } catch (err) {
+      console.error("[api] Failed to fetch settings:", err);
+    }
+  }, [apiGet, setInitialSettingsTab, setSettingsOpen, setGitIdentity, setSystemPromptContent, setHasSystemPrompt, setAgentList]);
 
   const handleDeployTabSelected = useCallback(() => {
-    send({ type: "list_deploy_targets" });
-    send({ type: "get_project_settings" });
-  }, [send]);
+    if (!sessionIdRef.current) return;
+    apiGet<{ targets: DeployTargetInfo[]; projectSettings: Record<string, { configured: boolean; projectName?: string }> }>(
+      `/api/sessions/${sessionIdRef.current}/deploy/setup`,
+    )
+      .then((d) => {
+        setDeployTargets(d.targets);
+        setDeployConfigStatus(d.projectSettings);
+      })
+      .catch((err) => console.error("[api] Failed to fetch deploy setup:", err));
+  }, [apiGet, sessionIdRef, setDeployTargets, setDeployConfigStatus]);
 
   const handleInstructionsSave = useCallback(
-    (content: string) => {
-      send({ type: "save_global_settings", systemPrompt: content });
+    async (content: string) => {
+      try {
+        const result = await apiPut<{ systemPrompt: string }>("/api/settings", { systemPrompt: content });
+        setSystemPromptContent(result.systemPrompt);
+        setHasSystemPrompt(result.systemPrompt.length > 0);
+      } catch (err) {
+        console.error("[api] Save settings failed:", err);
+      }
       setSettingsOpen(false);
     },
-    [send, setSettingsOpen],
+    [apiPut, setSettingsOpen, setSystemPromptContent, setHasSystemPrompt],
   );
 
   const handleCreateCheckpoint = useCallback(
-    (label?: string) => {
-      send({ type: "create_checkpoint", label });
+    async (label?: string) => {
+      if (!sessionIdRef.current) return;
+      try {
+        const result = await apiPost<{ checkpoint: ThreadInfo["checkpoints"][number]; threadId: string }>(
+          `/api/sessions/${sessionIdRef.current}/threads/checkpoint`,
+          { label },
+        );
+        setThreads((prev) =>
+          prev.map((t) =>
+            t.id === result.threadId
+              ? { ...t, checkpoints: [...t.checkpoints, result.checkpoint] }
+              : t,
+          ),
+        );
+      } catch (err) {
+        console.error("[api] Create checkpoint failed:", err);
+      }
     },
-    [send],
+    [apiPost, sessionIdRef, setThreads],
   );
 
   const handleForkThread = useCallback(
@@ -501,19 +637,37 @@ export function useAppCallbacks(params: {
   );
 
   const handleDeployOpen = useCallback(() => {
-    send({ type: "list_deploy_targets" });
-    send({ type: "get_project_settings" });
     setDeployStatus(null);
     setLastDeployUrl(null);
     setLastDeployError(null);
     setShowDeployModal(true);
-  }, [send, setDeployStatus, setLastDeployUrl, setLastDeployError, setShowDeployModal]);
+    if (!sessionIdRef.current) return;
+    apiGet<{ targets: DeployTargetInfo[]; projectSettings: Record<string, { configured: boolean; projectName?: string }> }>(
+      `/api/sessions/${sessionIdRef.current}/deploy/setup`,
+    )
+      .then((d) => {
+        setDeployTargets(d.targets);
+        setDeployConfigStatus(d.projectSettings);
+      })
+      .catch((err) => console.error("[api] Failed to fetch deploy setup:", err));
+  }, [apiGet, sessionIdRef, setDeployStatus, setLastDeployUrl, setLastDeployError, setShowDeployModal, setDeployTargets, setDeployConfigStatus]);
 
   const handleDeployConfigure = useCallback(
-    (targetId: string, credentials: Record<string, string>, projectName?: string) => {
-      send({ type: "deploy_configure", targetId, credentials, projectName });
+    async (targetId: string, credentials: Record<string, string>, projectName?: string) => {
+      if (!sessionIdRef.current) return;
+      try {
+        await apiPost(`/api/sessions/${sessionIdRef.current}/deploy/config`, { targetId, credentials, projectName });
+        // Refresh deploy setup
+        const setup = await apiGet<{ targets: DeployTargetInfo[]; projectSettings: Record<string, { configured: boolean; projectName?: string }> }>(
+          `/api/sessions/${sessionIdRef.current}/deploy/setup`,
+        );
+        setDeployTargets(setup.targets);
+        setDeployConfigStatus(setup.projectSettings);
+      } catch (err) {
+        console.error("[api] Deploy configure failed:", err);
+      }
     },
-    [send],
+    [apiPost, apiGet, sessionIdRef, setDeployTargets, setDeployConfigStatus],
   );
 
   const handleDeployInitiate = useCallback(
@@ -535,14 +689,28 @@ export function useAppCallbacks(params: {
   );
 
   const handleDeployGetHistory = useCallback(() => {
-    send({ type: "get_deploy_history" });
-  }, [send]);
+    if (!sessionIdRef.current) return;
+    apiGet<{ deployments: DeploymentRecord[] }>(`/api/sessions/${sessionIdRef.current}/deploy/history`)
+      .then((d) => setDeployHistory(d.deployments))
+      .catch((err) => console.error("[api] Failed to fetch deploy history:", err));
+  }, [apiGet, sessionIdRef, setDeployHistory]);
 
   const handleDeployDeleteConfig = useCallback(
-    (targetId: string) => {
-      send({ type: "delete_deploy_config", targetId });
+    async (targetId: string) => {
+      if (!sessionIdRef.current) return;
+      try {
+        await apiDel(`/api/sessions/${sessionIdRef.current}/deploy/config/${targetId}`);
+        // Refresh deploy setup
+        const setup = await apiGet<{ targets: DeployTargetInfo[]; projectSettings: Record<string, { configured: boolean; projectName?: string }> }>(
+          `/api/sessions/${sessionIdRef.current}/deploy/setup`,
+        );
+        setDeployTargets(setup.targets);
+        setDeployConfigStatus(setup.projectSettings);
+      } catch (err) {
+        console.error("[api] Deploy delete config failed:", err);
+      }
     },
-    [send],
+    [apiDel, apiGet, sessionIdRef, setDeployTargets, setDeployConfigStatus],
   );
 
   const handleDeploySendError = useCallback(
@@ -553,13 +721,20 @@ export function useAppCallbacks(params: {
     [handleSend, setShowDeployModal],
   );
 
-  const handleFullReset = useCallback(() => {
-    send({ type: "full_reset" });
-  }, [send]);
+  const handleFullReset = useCallback(async () => {
+    try {
+      await apiPost("/api/reset");
+      // Server broadcasts full_reset_complete via WS — client reloads on that message
+    } catch (err) {
+      console.error("[api] Full reset failed:", err);
+    }
+  }, [apiPost]);
 
   const handleFeatureRefresh = useCallback(() => {
-    send({ type: "list_features" });
-  }, [send]);
+    apiGet<{ features: FeatureInfo[] }>("/api/features")
+      .then((d) => setFeatures(d.features))
+      .catch((err) => console.error("[api] Failed to fetch features:", err));
+  }, [apiGet, setFeatures]);
 
   const handleFeatureStartSession = useCallback(
     (feature: FeatureInfo) => {
@@ -607,16 +782,32 @@ export function useAppCallbacks(params: {
 
   const handleImportSearch = useCallback(
     (query: string) => {
-      send({ type: "github_search_repos", query });
+      apiGet<{ repos: Array<{ fullName: string; description: string | null; private: boolean; defaultBranch: string; cloneUrl: string }> }>(
+        `/api/github/repos?q=${encodeURIComponent(query)}`,
+      )
+        .then((d) => setImportSearchResults(d.repos))
+        .catch((err) => console.error("[api] Failed to search repos:", err));
     },
-    [send],
+    [apiGet, setImportSearchResults],
   );
 
   const handleMergePr = useCallback(
-    (method: "merge" | "squash" | "rebase") => {
-      send({ type: "merge_pr", method });
+    async (method: "merge" | "squash" | "rebase") => {
+      if (!sessionIdRef.current) return;
+      try {
+        const result = await apiPost<{ success: boolean; message: string; autoMergeEnabled?: boolean }>(
+          `/api/sessions/${sessionIdRef.current}/pr/merge`,
+          { method },
+        );
+        if (result.success && !result.autoMergeEnabled) {
+          // Merge succeeded — show toast
+          setToast({ message: "Pull request merged" });
+        }
+      } catch (err) {
+        console.error("[api] Merge PR failed:", err);
+      }
     },
-    [send],
+    [apiPost, sessionIdRef, setToast],
   );
 
   const handlePermissionModeChange = useCallback((mode: PermissionMode) => {
@@ -627,6 +818,7 @@ export function useAppCallbacks(params: {
   const handleAgentChange = useCallback((agentId: AgentId) => {
     setActiveAgentId(agentId);
     saveAgentId(agentId);
+    // Per-connection state — must go through WS, not HTTP
     send({ type: "set_agent", agentId });
   }, [send, setActiveAgentId]);
 
@@ -662,28 +854,37 @@ export function useAppCallbacks(params: {
   const handleTabChange = useCallback(
     (tab: RightTab) => {
       setRightTab(tab);
-      if (tab === "docs" && docFiles.length === 0) {
-        send({ type: "list_docs" });
+      if (tab === "docs" && docFiles.length === 0 && sessionIdRef.current) {
+        apiGet<{ files: string[] }>(`/api/sessions/${sessionIdRef.current}/docs`)
+          .then((d) => setDocFiles(d.files))
+          .catch((err) => console.error("[api] Failed to fetch docs:", err));
       }
-      if (tab === "files") {
-        send({ type: "get_file_tree" });
+      if (tab === "files" && sessionIdRef.current) {
+        apiGet<{ tree: FileTreeNode[] }>(`/api/sessions/${sessionIdRef.current}/files`)
+          .then((d) => setFileTree(d.tree))
+          .catch((err) => console.error("[api] Failed to fetch file tree:", err));
         setFileChangeCount(0);
       }
       if (tab === "terminal") {
         setUnreadLogCount(0);
       }
       if (tab === "features") {
-        send({ type: "list_features" });
+        apiGet<{ features: FeatureInfo[] }>("/api/features")
+          .then((d) => setFeatures(d.features))
+          .catch((err) => console.error("[api] Failed to fetch features:", err));
       }
       if (tab === "changes") {
         setDiffBadgeCount(0);
         // Lazy-load the diff if we have a commit pair but haven't loaded it yet
-        if (lastCommitPair && !turnDiff) {
-          send({ type: "get_turn_diff", fromCommit: lastCommitPair.from, toCommit: lastCommitPair.to });
+        if (lastCommitPair && !turnDiff && sessionIdRef.current) {
+          apiGet<TurnDiffData>(`/api/sessions/${sessionIdRef.current}/git/diff?from=${encodeURIComponent(lastCommitPair.from)}&to=${encodeURIComponent(lastCommitPair.to)}`)
+            .then((d) => setTurnDiff(d))
+            .catch((err) => console.error("[api] Failed to fetch diff:", err));
         }
       }
     },
-    [send, docFiles.length, setRightTab, setFileChangeCount, setUnreadLogCount, setDiffBadgeCount, lastCommitPair, turnDiff]
+    [apiGet, sessionIdRef, docFiles.length, setRightTab, setFileChangeCount, setUnreadLogCount, setDiffBadgeCount,
+     setDocFiles, setFileTree, setFeatures, setTurnDiff, lastCommitPair, turnDiff]
   );
 
   const handleDiffAcceptAll = useCallback(() => {
@@ -695,12 +896,28 @@ export function useAppCallbacks(params: {
   }, [setTurnDiff, setLastCommitPair, setDiffBadgeCount, setRightTab]);
 
   const handleDiffRejectFiles = useCallback(
-    (files: string[]) => {
-      if (!lastCommitPair) return;
-      send({ type: "reject_changes", fromCommit: lastCommitPair.from, files });
-      setRightTab("preview");
+    async (files: string[]) => {
+      if (!lastCommitPair || !sessionIdRef.current) return;
+      try {
+        await apiPost(`/api/sessions/${sessionIdRef.current}/git/reject`, {
+          fromCommit: lastCommitPair.from,
+          files,
+        });
+        // Clear diff data and refresh workspace state
+        setTurnDiff(null);
+        setLastCommitPair(null);
+        setDiffBadgeCount(0);
+        setRightTab("preview");
+        const workspace = await apiGet<{ gitLog: GitCommit[]; fileTree: FileTreeNode[] }>(
+          `/api/sessions/${sessionIdRef.current}/workspace-state`,
+        );
+        setGitCommits(workspace.gitLog);
+        setFileTree(workspace.fileTree);
+      } catch (err) {
+        console.error("[api] Reject changes failed:", err);
+      }
     },
-    [send, lastCommitPair, setRightTab],
+    [apiPost, apiGet, lastCommitPair, sessionIdRef, setTurnDiff, setLastCommitPair, setDiffBadgeCount, setRightTab, setGitCommits, setFileTree],
   );
 
   const handleDiffClose = useCallback(() => {

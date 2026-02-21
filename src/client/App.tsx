@@ -11,6 +11,7 @@ import { useConnectionSync } from "./hooks/useConnectionSync.js";
 import { useAutoFix } from "./hooks/useAutoFix.js";
 import { useMessageHandler } from "./hooks/useMessageHandler.js";
 import { useAppCallbacks } from "./hooks/useAppCallbacks.js";
+import { useApi } from "./hooks/useApi.js";
 import { getSavedPermissionMode, getSavedSidebarCollapsed, getSavedAgentId, saveSidebarCollapsed } from "./utils/local-storage.js";
 import { MessageInput } from "./components/MessageInput.js";
 import { MessageList, type ChatMessage, type CheckpointDivider } from "./components/MessageList.js";
@@ -62,6 +63,7 @@ export default function App() {
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
   const { send, lastMessage, status, reconnectAttempt, reconnect } = useWebSocket(getWsUrl());
+  const { get: apiGet, post: apiPost, del: apiDel } = useApi();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [preview, setPreview] = useState<PreviewStatus | null>(null);
@@ -205,6 +207,9 @@ export default function App() {
     setHasSystemPrompt,
     setSelectedPort, setPrCurrentBranch, setPrRemoteBranches,
     setTurnDiff, setLastCommitPair, setDiffBadgeCount,
+    setDocFiles, setImportSearchResults, setAllUsageStats,
+    setDeployHistory, setDeployTargets, setDeployConfigStatus, setFeatures,
+    setSessions, setGitIdentityNeeded, setGitIdentity, setGithubStatus, setSystemPromptContent, setToast, setAgentList,
     lastCommitPair, turnDiff,
     sessionIdRef, prDescGeneratingRef, autoFixRetriesRef,
     disableAutoFix,
@@ -227,6 +232,7 @@ export default function App() {
   useConnectionSync({
     status,
     send,
+    apiGet,
     sessionIdRef,
     historyLoadedRef,
     templates,
@@ -235,12 +241,23 @@ export default function App() {
     setActivity,
     setMessages,
     prStatus,
+    setPrStatus,
+    // Bootstrap state setters
+    setSessions,
+    setAgentList,
+    setTemplates,
+    setGithubStatus,
+    setImportSearchResults,
+    setGitIdentity,
+    setHasSystemPrompt,
+    setSystemPromptContent,
   });
 
   // ── Message handler hook ──
   useMessageHandler({
     lastMessage,
     send,
+    apiGet,
     setPreview, setSelectedPort, setMessages, setIsLoading, setActivity,
     setGitCommits, setAuthUrl, setSessions, setDocFiles, setDocContent,
     setFileTree, setViewingFileContent, setViewingFileBinary,
@@ -598,7 +615,7 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
-      {authUrl !== null && <AuthOverlay url={authUrl} onPasteCode={(code) => send({ type: "paste_auth_code", code })} onApiKey={(key) => send({ type: "set_api_key", key })} />}
+      {authUrl !== null && <AuthOverlay url={authUrl} onPasteCode={(code) => send({ type: "paste_auth_code", code })} onApiKey={(key) => { apiPost("/api/auth/api-key", { key }).catch((err) => console.error("[api] Set API key failed:", err)); }} />}
       {gitIdentityNeeded && (
         <GitIdentityOverlay onSubmit={callbacks.handleGitIdentitySubmit} />
       )}
@@ -611,15 +628,15 @@ export default function App() {
           onGitHubTokenSubmit={callbacks.handleGitHubTokenSubmit}
           onGitHubLogout={callbacks.handleGitHubLogout}
           authUrl={authUrl}
-          onApiKey={(key) => send({ type: "set_api_key", key })}
-          onClearApiKey={() => send({ type: "clear_api_key" })}
+          onApiKey={(key) => { apiPost("/api/auth/api-key", { key }).catch((err) => console.error("[api] Set API key failed:", err)); }}
+          onClearApiKey={() => { apiDel("/api/auth/api-key").catch((err) => console.error("[api] Clear API key failed:", err)); }}
           onStartAuth={() => send({ type: "start_auth" })}
           onPasteCode={(code) => send({ type: "paste_auth_code", code })}
           agentList={agentList}
-          onSetAgentEnv={(agentId, key, value) => send({ type: "set_agent_env", agentId, key, value })}
+          onSetAgentEnv={(agentId, key, value) => { apiPost(`/api/agents/${agentId}/env`, { key, value }).catch((err) => console.error("[api] Set agent env failed:", err)); }}
           onFullReset={callbacks.handleFullReset}
           gitIdentity={gitIdentity}
-          onGitIdentitySave={(name, email) => send({ type: "save_global_settings", gitIdentity: { name, email } })}
+          onGitIdentitySave={callbacks.handleGitIdentitySubmit}
           deployTargets={deployTargets}
           deployConfigStatus={deployConfigStatus}
           onDeployConfigure={callbacks.handleDeployConfigure}

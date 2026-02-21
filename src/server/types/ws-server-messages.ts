@@ -4,20 +4,16 @@ import type { GitCommitInfo, SessionInfo, FeatureInfo, ProjectTemplate, FileTree
 import type {
   WsGitHubStatus,
   WsGitHubPushResult,
-  WsGitHubPullResult,
   WsGitHubRemotes,
-  WsGitHubPRCreated,
   WsGitHubBranches,
   WsGitHubSearchResults,
   WsGeneratedPRDescription,
   WsPrStatus,
-  WsMergePrResult,
 } from "./github-types.js";
 import type { WsTerminalOutput, WsTerminalExit, WsLogEntry, WsClearLogs } from "./terminal-types.js";
-import type { WsCheckpointCreated, WsThreadList, WsThreadSwitched, WsThreadForked } from "./thread-types.js";
+import type { WsThreadList, WsThreadSwitched, WsThreadForked } from "./thread-types.js";
 import type {
   WsDeployTargets,
-  WsDeployConfigSaved,
   WsProjectSettings,
   WsDeployStatus,
   WsDeployComplete,
@@ -61,11 +57,6 @@ export interface WsGitCommitted {
   type: "git_committed";
   hash: string;
   message: string;
-}
-
-export interface WsRollbackComplete {
-  type: "rollback_complete";
-  commitHash: string;
 }
 
 // ---- Auth types ----
@@ -251,12 +242,6 @@ export interface WsTurnDiff {
   stats: { totalInsertions: number; totalDeletions: number; filesChanged: number };
 }
 
-export interface WsRejectChangesComplete {
-  type: "reject_changes_complete";
-  revertedFiles: string[];
-  commitHash: string;
-}
-
 // ---- Agent registry server messages ----
 
 export interface WsAgentListMessage {
@@ -269,13 +254,6 @@ export interface WsAgentListMessage {
     models: string[];
   }>;
   defaultAgentId: AgentId;
-}
-
-export interface WsAgentEnvSetMessage {
-  type: "agent_env_set";
-  agentId: AgentId;
-  key: string;
-  success: boolean;
 }
 
 /** Server → Client: Claude was interrupted by user. */
@@ -338,7 +316,6 @@ export type WsServerMessage =
   | WsPreviewStatus
   | WsGitLog
   | WsGitCommitted
-  | WsRollbackComplete
   | WsAuthRequired
   | WsAuthComplete
   | WsSessionList
@@ -359,18 +336,14 @@ export type WsServerMessage =
   | WsFilesChanged
   | WsGitHubStatus
   | WsGitHubPushResult
-  | WsGitHubPullResult
   | WsGitHubRemotes
-  | WsGitHubPRCreated
   | WsGitHubBranches
   | WsGitIdentityRequired
   | WsGitIdentitySet
-  | WsCheckpointCreated
   | WsThreadList
   | WsThreadSwitched
   | WsThreadForked
   | WsDeployTargets
-  | WsDeployConfigSaved
   | WsProjectSettings
   | WsDeployStatus
   | WsDeployComplete
@@ -379,7 +352,6 @@ export type WsServerMessage =
   | WsGitHubSearchResults
   | WsGeneratedPRDescription
   | WsPrStatus
-  | WsMergePrResult
   | WsModelInfo
   | WsTerminalOutput
   | WsTerminalExit
@@ -390,7 +362,6 @@ export type WsServerMessage =
   | WsWorktreeList
   | WsMergeResult
   | WsAgentListMessage
-  | WsAgentEnvSetMessage
   | WsClaudeInterrupted
   | WsFullResetComplete
   | WsInstallStatus
@@ -398,7 +369,6 @@ export type WsServerMessage =
   | WsPreviewConfigError
   | WsClearLogs
   | WsTurnDiff
-  | WsRejectChangesComplete
   | WsSessionStatus
   | WsSessionAgentStarted
   | WsSessionAgentFinished;

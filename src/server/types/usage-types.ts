@@ -24,10 +24,6 @@ export interface UsageStats {
 
 // ---- Usage tracking messages ----
 
-export interface WsGetUsageStats {
-  type: "get_usage_stats";
-}
-
 export interface WsUsageStats {
   type: "usage_stats";
   stats: UsageStats;

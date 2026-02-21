@@ -65,7 +65,8 @@ describe("Integration: PR creation — validation errors", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
-  async function createSession(client: TestClient) {
+  /** Create a session via send_message + Claude events. Returns the app session ID. */
+  async function createSession(client: TestClient): Promise<string> {
     client.send({ type: "send_message", text: "hello" });
     const claude = await waitForClaude(() => lastClaude);
     claude.emit("event", {
@@ -74,48 +75,53 @@ describe("Integration: PR creation — validation errors", () => {
       session_id: "agent-1",
     });
     claude.finish("agent-1");
+
+    let sessionId = "";
     const deadline = Date.now() + 3000;
     while (Date.now() < deadline) {
       try {
         const msg = await client.receive(200);
+        if (msg.type === "session_started") {
+          sessionId = (msg as any).session.id;
+        }
         if (msg.type === "git_committed") break;
       } catch {
         break;
       }
     }
+    return sessionId;
   }
 
-  async function setupSessionWithRemote(client: TestClient) {
-    await createSession(client);
+  async function setupSessionWithRemote(client: TestClient): Promise<string> {
+    const sessionId = await createSession(client);
 
-    client.send({ type: "github_set_token", token: "ghp_test" });
-    await client.receive(); // github_status
-    await client.receive(); // github_search_results (user repos)
+    // Authenticate via HTTP
+    await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
 
-    client.send({
-      type: "github_set_remote",
-      name: "origin",
-      url: "https://github.com/test-user/my-project.git",
+    // Set remote via HTTP
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/git/remotes`,
+      payload: { name: "origin", url: "https://github.com/test-user/my-project.git" },
     });
-    await client.receive(); // github_remotes
+
+    return sessionId;
   }
 
   it("returns error when not authenticated with GitHub", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    await createSession(client);
+    const sessionId = await createSession(client);
 
-    client.send({
-      type: "github_create_pr",
-      title: "Some PR",
-      body: "",
-      base: "main",
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr`,
+      payload: { title: "Some PR", body: "", base: "main" },
     });
 
-    const msg = await client.receiveSkipLogs();
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("Not authenticated with GitHub");
+    expect(res.statusCode).toBe(401);
+    expect(res.json().error).toBe("Not authenticated with GitHub");
 
     client.close();
   });
@@ -124,23 +130,19 @@ describe("Integration: PR creation — validation errors", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    await createSession(client);
+    const sessionId = await createSession(client);
 
     // Authenticate but don't add a remote
-    client.send({ type: "github_set_token", token: "ghp_test" });
-    await client.receive(); // github_status
-    await client.receive(); // github_search_results (user repos)
+    await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
 
-    client.send({
-      type: "github_create_pr",
-      title: "Some PR",
-      body: "",
-      base: "main",
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr`,
+      payload: { title: "Some PR", body: "", base: "main" },
     });
 
-    const msg = await client.receiveSkipLogs();
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("No 'origin' remote configured");
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("No 'origin' remote configured");
 
     client.close();
   });
@@ -149,31 +151,26 @@ describe("Integration: PR creation — validation errors", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    await createSession(client);
+    const sessionId = await createSession(client);
 
     // Authenticate
-    client.send({ type: "github_set_token", token: "ghp_test" });
-    await client.receive(); // github_status
-    await client.receive(); // github_search_results (user repos)
+    await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
 
     // Add a non-GitHub remote
-    client.send({
-      type: "github_set_remote",
-      name: "origin",
-      url: "https://gitlab.com/user/repo.git",
-    });
-    await client.receive(); // github_remotes
-
-    client.send({
-      type: "github_create_pr",
-      title: "Some PR",
-      body: "",
-      base: "main",
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/git/remotes`,
+      payload: { name: "origin", url: "https://gitlab.com/user/repo.git" },
     });
 
-    const msg = await client.receiveSkipLogs();
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("Remote URL is not a GitHub repository");
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr`,
+      payload: { title: "Some PR", body: "", base: "main" },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("Remote URL is not a GitHub repository");
 
     client.close();
   });
@@ -182,18 +179,16 @@ describe("Integration: PR creation — validation errors", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    await setupSessionWithRemote(client);
+    const sessionId = await setupSessionWithRemote(client);
 
-    client.send({
-      type: "github_create_pr",
-      title: "",
-      body: "some body",
-      base: "main",
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr`,
+      payload: { title: "", body: "some body", base: "main" },
     });
 
-    const msg = await client.receiveSkipLogs();
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("PR title is required");
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("PR title is required");
 
     client.close();
   });
@@ -202,18 +197,16 @@ describe("Integration: PR creation — validation errors", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    await setupSessionWithRemote(client);
+    const sessionId = await setupSessionWithRemote(client);
 
-    client.send({
-      type: "github_create_pr",
-      title: "x".repeat(257),
-      body: "",
-      base: "main",
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr`,
+      payload: { title: "x".repeat(257), body: "", base: "main" },
     });
 
-    const msg = await client.receiveSkipLogs();
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("PR title too long (max 256 characters)");
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("PR title too long (max 256 characters)");
 
     client.close();
   });
@@ -222,18 +215,16 @@ describe("Integration: PR creation — validation errors", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    await setupSessionWithRemote(client);
+    const sessionId = await setupSessionWithRemote(client);
 
-    client.send({
-      type: "github_create_pr",
-      title: "Valid Title",
-      body: "",
-      base: "",
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr`,
+      payload: { title: "Valid Title", body: "", base: "" },
     });
 
-    const msg = await client.receiveSkipLogs();
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("Base branch is required");
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("Base branch is required");
 
     client.close();
   });
