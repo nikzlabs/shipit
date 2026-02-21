@@ -1,5 +1,6 @@
 /**
- * Settings mutation services — git identity, global settings, agents, API key.
+ * Settings services — reads (agents, global settings) and mutations
+ * (git identity, global settings, agents, API key).
  */
 
 import path from "node:path";
@@ -10,7 +11,49 @@ import { ALLOWED_ENV_KEYS } from "../agents/agent-registry.js";
 import type { AgentId } from "../agents/agent-process.js";
 import { ServiceError } from "./types.js";
 import type { AgentInfo, GlobalSettings } from "./types.js";
-import { listAgents, getGlobalSettings } from "./reads.js";
+
+// ---- Read operations ----
+
+/** Map agent registry entries to the client-facing agent info shape. */
+export function listAgents(agentRegistry: AgentRegistry): AgentInfo[] {
+  return agentRegistry.list().map((a) => ({
+    id: a.id,
+    name: a.name,
+    installed: a.installed,
+    authConfigured: a.authConfigured,
+    models: a.capabilities.models,
+  }));
+}
+
+/** Get global settings (git identity, system prompt, agents). */
+export async function getGlobalSettings(
+  credentialStore: CredentialStore,
+  agentRegistry: AgentRegistry,
+  defaultAgentId: AgentId,
+  workspaceDir: string,
+): Promise<GlobalSettings> {
+  const stored = credentialStore.getGitIdentity();
+  const gitIdentity = stored
+    ? { name: stored.name, email: stored.email }
+    : { name: "", email: "" };
+
+  let systemPrompt = "";
+  try {
+    systemPrompt = (
+      await fs.readFile(
+        path.join(workspaceDir, ".shipit", "system-prompt.md"),
+        "utf-8",
+      )
+    ).trim();
+  } catch {
+    /* no file */
+  }
+
+  const agents = listAgents(agentRegistry);
+  return { gitIdentity, systemPrompt, agents, defaultAgentId };
+}
+
+// ---- Mutation operations ----
 
 /** Set git identity (global). */
 export function setGitIdentity(

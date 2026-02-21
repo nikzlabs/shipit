@@ -1,13 +1,66 @@
 /**
- * Miscellaneous mutation services — full reset, preview errors.
+ * Miscellaneous services — reads (features, usage, bootstrap) and mutations
+ * (full reset, preview errors).
  */
 
 import path from "node:path";
 import fs from "node:fs/promises";
 import type { SessionManager } from "../sessions.js";
+import type { GitManager } from "../git.js";
+import type { CredentialStore } from "../credential-store.js";
+import type { AgentRegistry } from "../agents/agent-registry.js";
+import type { GitHubAuthManager } from "../github-auth.js";
+import type { AgentId } from "../agents/agent-process.js";
 import type { UsageManager } from "../usage.js";
+import type { FeatureManager } from "../features.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
+import { listTemplates } from "../templates.js";
 import { ServiceError } from "./types.js";
+import type { BootstrapData } from "./types.js";
+import { listSessions } from "./session.js";
+import { listAgents, getGlobalSettings } from "./settings.js";
+import { getGitHubStatus, getGitHubRepos } from "./github.js";
+
+// ---- Read operations ----
+
+/** Get usage stats. */
+export function getUsageStats(usageManager: UsageManager) {
+  return usageManager.getStats();
+}
+
+/** List features from the feature manager. */
+export async function listFeatures(featureManager: FeatureManager) {
+  return featureManager.list();
+}
+
+/** Get all data needed for the initial bootstrap. */
+export async function getBootstrapData(deps: {
+  sessionManager: SessionManager;
+  createGitManager: (dir: string) => GitManager;
+  agentRegistry: AgentRegistry;
+  githubAuthManager: GitHubAuthManager;
+  credentialStore: CredentialStore;
+  defaultAgentId: AgentId;
+  workspaceDir: string;
+}): Promise<BootstrapData> {
+  const [sessions, settings, githubRepos] = await Promise.all([
+    listSessions(deps.sessionManager, deps.createGitManager),
+    getGlobalSettings(deps.credentialStore, deps.agentRegistry, deps.defaultAgentId, deps.workspaceDir),
+    getGitHubRepos(deps.githubAuthManager),
+  ]);
+
+  return {
+    sessions,
+    agents: settings.agents,
+    defaultAgentId: deps.defaultAgentId,
+    templates: listTemplates(),
+    githubStatus: getGitHubStatus(deps.githubAuthManager),
+    githubRepos,
+    settings,
+  };
+}
+
+// ---- Mutation operations ----
 
 /** Full reset — destroys all workspace data. */
 export async function fullReset(

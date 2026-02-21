@@ -141,12 +141,17 @@ describe("Integration: Threads — replay & lifecycle", () => {
 
     const sessionId = await doMessageTurn(client, "Build a todo app");
 
-    // Create checkpoint
-    client.send({ type: "create_checkpoint", label: "v1" } as any);
-    const cpMsg = await waitForMessage(client, "checkpoint_created");
+    // Create checkpoint via HTTP
+    const cpRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/threads/checkpoint`,
+      payload: { label: "v1" },
+    });
+    expect(cpRes.statusCode).toBe(200);
+    const checkpointId = cpRes.json().checkpoint.id;
 
     // Fork from it
-    client.send({ type: "fork_thread", checkpointId: cpMsg.checkpoint.id } as any);
+    client.send({ type: "fork_thread", checkpointId } as any);
     const forkResp = await client.receiveSkipLogs(5000);
     expect(forkResp.type).toBe("thread_forked");
 
@@ -171,11 +176,16 @@ describe("Integration: Threads — replay & lifecycle", () => {
 
     const sessionId = await doMessageTurn(client, "Build a todo app");
 
-    // Create checkpoint and fork
-    client.send({ type: "create_checkpoint" } as any);
-    const cpMsg = await waitForMessage(client, "checkpoint_created");
+    // Create checkpoint via HTTP and fork
+    const cpRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/threads/checkpoint`,
+      payload: {},
+    });
+    expect(cpRes.statusCode).toBe(200);
+    const checkpointId = cpRes.json().checkpoint.id;
 
-    client.send({ type: "fork_thread", checkpointId: cpMsg.checkpoint.id } as any);
+    client.send({ type: "fork_thread", checkpointId } as any);
     const forkResp = await client.receiveSkipLogs(5000);
     expect(forkResp.type).toBe("thread_forked");
 
@@ -224,17 +234,21 @@ describe("Integration: Threads — replay & lifecycle", () => {
 
     const sessionId = await doMessageTurn(client, "Hello");
 
-    // Create a checkpoint
-    client.send({ type: "create_checkpoint" } as any);
-    await waitForMessage(client, "checkpoint_created");
+    // Create a checkpoint via HTTP
+    const cpRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/threads/checkpoint`,
+      payload: {},
+    });
+    expect(cpRes.statusCode).toBe(200);
 
     // Verify thread data exists
     const beforeArchive = threadManager.listThreads(sessionId);
     expect(beforeArchive.threads[0].checkpoints).toHaveLength(1);
 
-    // Archive the session
-    client.send({ type: "archive_session", sessionId });
-    await waitForMessage(client, "session_list");
+    // Archive the session via HTTP
+    const archiveRes = await app.inject({ method: "DELETE", url: `/api/sessions/${sessionId}` });
+    expect(archiveRes.statusCode).toBe(200);
 
     // Verify thread data is still present (archive preserves data)
     const afterArchive = threadManager.listThreads(sessionId);

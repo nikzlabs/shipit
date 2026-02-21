@@ -1,6 +1,5 @@
 /**
- * Integration tests for agent registry — list_agents, set_agent_env,
- * and enhanced set_agent validation.
+ * Integration tests for agent registry — list_agents via HTTP bootstrap.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -16,32 +15,14 @@ import { PreviewManager } from "../preview-manager.js";
 import { FileWatcher } from "../file-watcher.js";
 import { AgentRegistry } from "../agents/agent-registry.js";
 import type { FastifyInstance } from "fastify";
-import type { WsServerMessage } from "../types.js";
 import {
-  TestClient,
   StubPreviewManager,
   StubAuthManager,
   StubFileWatcher,
 } from "./test-helpers.js";
 
-/** Receive the next message of a specific type, skipping others. */
-async function receiveByType(
-  client: TestClient,
-  type: string,
-  timeoutMs = 3000,
-): Promise<WsServerMessage> {
-  const deadline = Date.now() + timeoutMs;
-  while (true) {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new Error(`receiveByType("${type}") timed out`);
-    const msg = await client.receive(remaining);
-    if (msg.type === type) return msg;
-  }
-}
-
 describe("Integration: Agent registry — list_agents", () => {
   let app: FastifyInstance;
-  let port: number;
   let tmpDir: string;
 
   beforeEach(async () => {
@@ -67,9 +48,7 @@ describe("Integration: Agent registry — list_agents", () => {
       portScanIntervalMs: 0,
     });
 
-    const address = await app.listen({ port: 0, host: "127.0.0.1" });
-    const match = address.match(/:(\d+)$/);
-    port = match ? Number(match[1]) : 0;
+    await app.listen({ port: 0, host: "127.0.0.1" });
   });
 
   afterEach(async () => {
@@ -98,145 +77,5 @@ describe("Integration: Agent registry — list_agents", () => {
     expect(codex.installed).toBe(true);
     // Codex auth depends on OPENAI_API_KEY being set
     expect(codex.name).toBe("Codex");
-  });
-
-  it("set_agent rejects unknown agent", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "set_agent", agentId: "unknown-agent" } as any);
-
-    const msg = await receiveByType(client, "error");
-    expect((msg as any).message).toContain("Unknown agent");
-
-    client.close();
-  });
-
-  it("set_agent accepts installed agent", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // Claude is installed and auth-configured, should succeed (no error)
-    client.send({ type: "set_agent", agentId: "claude" } as any);
-
-    // Verify via HTTP that agents are still accessible (no error from set_agent)
-    const res = await app.inject({ method: "GET", url: "/api/bootstrap" });
-    expect(res.statusCode).toBe(200);
-    expect(res.json().agents).toHaveLength(2);
-
-    client.close();
-  });
-});
-
-describe("Integration: Agent registry — set_agent_env", () => {
-  let app: FastifyInstance;
-  let port: number;
-  let tmpDir: string;
-  let savedOpenAIKey: string | undefined;
-
-  beforeEach(async () => {
-    savedOpenAIKey = process.env.OPENAI_API_KEY;
-    delete process.env.OPENAI_API_KEY;
-
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-agent-env-"));
-
-    const registry = new AgentRegistry({
-      checkBinary: async (binary) => binary === "claude" || binary === "codex",
-      checkClaudeAuth: () => true,
-    });
-    await registry.detect();
-
-    app = await buildApp({
-      createGitManager: (dir: string) => new GitManager(dir),
-      sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
-      chatHistoryManager: new ChatHistoryManager(path.join(tmpDir, "chat-history")),
-      previewManager: new StubPreviewManager() as unknown as PreviewManager,
-      authManager: new StubAuthManager() as unknown as AuthManager,
-      agentRegistry: registry,
-      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
-      workspaceDir: tmpDir,
-      serveStatic: false,
-      startPreview: false,
-      portScanIntervalMs: 0,
-    });
-
-    const address = await app.listen({ port: 0, host: "127.0.0.1" });
-    const match = address.match(/:(\d+)$/);
-    port = match ? Number(match[1]) : 0;
-  });
-
-  afterEach(async () => {
-    await app.close();
-    await new Promise((r) => setTimeout(r, 50));
-    if (savedOpenAIKey !== undefined) process.env.OPENAI_API_KEY = savedOpenAIKey;
-    else delete process.env.OPENAI_API_KEY;
-    try {
-      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-    } catch {
-      // Ignore cleanup errors
-    }
-  });
-
-  it("set_agent_env sets env var and updates auth status", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // Initially Codex auth is not configured
-    const resBefore = await app.inject({ method: "GET", url: "/api/bootstrap" });
-    const codexBefore = resBefore.json().agents.find((a: any) => a.id === "codex");
-    expect(codexBefore.authConfigured).toBe(false);
-
-    // Set the env var
-    client.send({
-      type: "set_agent_env",
-      agentId: "codex",
-      key: "OPENAI_API_KEY",
-      value: "sk-test-key-123",
-    } as any);
-
-    const envMsg = await receiveByType(client, "agent_env_set");
-    expect((envMsg as any).success).toBe(true);
-    expect((envMsg as any).key).toBe("OPENAI_API_KEY");
-
-    // Server should also send an updated agent_list
-    const listAfter = await receiveByType(client, "agent_list") as any;
-    const codexAfter = listAfter.agents.find((a: any) => a.id === "codex");
-    expect(codexAfter.authConfigured).toBe(true);
-
-    client.close();
-  });
-
-  it("set_agent_env rejects disallowed env keys", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({
-      type: "set_agent_env",
-      agentId: "codex",
-      key: "PATH",
-      value: "/usr/bin",
-    } as any);
-
-    const msg = await receiveByType(client, "error");
-    expect((msg as any).message).toContain("not in the allowlist");
-
-    client.close();
-  });
-
-  it("set_agent_env rejects empty value", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({
-      type: "set_agent_env",
-      agentId: "codex",
-      key: "OPENAI_API_KEY",
-      value: "   ",
-    } as any);
-
-    const msg = await receiveByType(client, "error");
-    expect((msg as any).message).toContain("empty");
-
-    client.close();
   });
 });

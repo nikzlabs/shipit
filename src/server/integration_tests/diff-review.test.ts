@@ -12,7 +12,6 @@ import { ClaudeProcess } from "../claude.js";
 import { FileWatcher } from "../file-watcher.js";
 import type { FastifyInstance } from "fastify";
 import {
-  TestClient,
   StubPreviewManager,
   StubAuthManager,
   FakeClaudeProcess,
@@ -21,7 +20,6 @@ import {
 
 describe("Integration: Diff review", () => {
   let app: FastifyInstance;
-  let port: number;
   let tmpDir: string;
   let sessionDir: string;
   let sessionManager: SessionManager;
@@ -54,9 +52,7 @@ describe("Integration: Diff review", () => {
       portScanIntervalMs: 0,
     });
 
-    const address = await app.listen({ port: 0, host: "127.0.0.1" });
-    const match = address.match(/:(\d+)$/);
-    port = match ? Number(match[1]) : 0;
+    await app.listen({ port: 0, host: "127.0.0.1" });
   });
 
   afterEach(async () => {
@@ -68,12 +64,6 @@ describe("Integration: Diff review", () => {
       // Ignore cleanup errors
     }
   });
-
-  /** Helper: activate session and consume initial messages (chat_history, git_log, file_tree). */
-  async function activateSession(client: TestClient) {
-    client.send({ type: "get_chat_history", sessionId });
-    await client.receiveType("file_tree"); // drain all activation messages
-  }
 
   it("GET /api/sessions/:id/git/diff returns file changes between two commits", async () => {
     // Create initial file and commit
@@ -146,79 +136,6 @@ describe("Integration: Diff review", () => {
   it("GET /api/sessions/:id/git/diff returns 400 for missing commit params", async () => {
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/git/diff` });
     expect(res.statusCode).toBe(400);
-  });
-
-  it("reject_changes reverts specific files", async () => {
-    // Create two files
-    fs.writeFileSync(path.join(sessionDir, "keep.ts"), "keep this\n");
-    fs.writeFileSync(path.join(sessionDir, "revert.ts"), "original\n");
-    const hash1 = await git.autoCommit("Add files");
-
-    // Modify both
-    fs.writeFileSync(path.join(sessionDir, "keep.ts"), "modified keep\n");
-    fs.writeFileSync(path.join(sessionDir, "revert.ts"), "modified revert\n");
-    await git.autoCommit("Modify files");
-
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-    await activateSession(client);
-
-    // Reject only revert.ts
-    client.send({ type: "reject_changes", fromCommit: hash1!, files: ["revert.ts"] });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("reject_changes_complete");
-    const result = msg as any;
-    expect(result.revertedFiles).toEqual(["revert.ts"]);
-
-    // Verify the file was reverted
-    const revertContent = fs.readFileSync(path.join(sessionDir, "revert.ts"), "utf-8");
-    expect(revertContent).toBe("original\n");
-
-    // Verify the other file was not reverted
-    const keepContent = fs.readFileSync(path.join(sessionDir, "keep.ts"), "utf-8");
-    expect(keepContent).toBe("modified keep\n");
-
-    client.close();
-  });
-
-  it("reject_changes with empty files array reverts all (rollback)", async () => {
-    const log = await git.log();
-    const initialHash = log[0].hash;
-
-    // Add a file
-    fs.writeFileSync(path.join(sessionDir, "new.ts"), "new content\n");
-    await git.autoCommit("Add new.ts");
-
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-    await activateSession(client);
-
-    // Reject all changes
-    client.send({ type: "reject_changes", fromCommit: initialHash, files: [] });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("reject_changes_complete");
-    expect((msg as any).commitHash).toBe(initialHash);
-
-    // File should be gone after full rollback
-    expect(fs.existsSync(path.join(sessionDir, "new.ts"))).toBe(false);
-
-    client.close();
-  });
-
-  it("reject_changes returns error for missing fromCommit", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-    await activateSession(client);
-
-    client.send({ type: "reject_changes", fromCommit: "", files: [] });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toContain("reject_changes requires");
-
-    client.close();
   });
 
   it("GET /api/sessions/:id/git/diff handles multiple file changes", async () => {

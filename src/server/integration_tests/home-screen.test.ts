@@ -78,10 +78,8 @@ describe("Integration: home_create_repo_with_template", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    // Authenticate with GitHub first
-    client.send({ type: "github_set_token", token: "ghp_test" });
-    await client.receiveSkipLogs(); // github_status
-    await client.receiveSkipLogs(); // github_search_results (user repos)
+    // Authenticate with GitHub first via HTTP
+    await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
 
     client.send({
       type: "home_create_repo_with_template",
@@ -116,10 +114,8 @@ describe("Integration: home_create_repo_with_template", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    // Authenticate with GitHub first
-    client.send({ type: "github_set_token", token: "ghp_test" });
-    await client.receiveSkipLogs(); // github_status
-    await client.receiveSkipLogs(); // github_search_results (user repos)
+    // Authenticate with GitHub first via HTTP
+    await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
 
     client.send({
       type: "home_create_repo_with_template",
@@ -141,10 +137,8 @@ describe("Integration: home_create_repo_with_template", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    // Authenticate with GitHub first
-    client.send({ type: "github_set_token", token: "ghp_test" });
-    await client.receiveSkipLogs(); // github_status
-    await client.receiveSkipLogs(); // github_search_results (user repos)
+    // Authenticate with GitHub first via HTTP
+    await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
 
     client.send({
       type: "home_create_repo_with_template",
@@ -166,10 +160,8 @@ describe("Integration: home_create_repo_with_template", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    // Authenticate with GitHub first
-    client.send({ type: "github_set_token", token: "ghp_test" });
-    await client.receiveSkipLogs(); // github_status
-    await client.receiveSkipLogs(); // github_search_results (user repos)
+    // Authenticate with GitHub first via HTTP
+    await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
 
     client.send({
       type: "home_create_repo_with_template",
@@ -191,10 +183,8 @@ describe("Integration: home_create_repo_with_template", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    // Authenticate with GitHub first
-    client.send({ type: "github_set_token", token: "ghp_test" });
-    await client.receiveSkipLogs(); // github_status
-    await client.receiveSkipLogs(); // github_search_results (user repos)
+    // Authenticate with GitHub first via HTTP
+    await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
 
     client.send({
       type: "home_create_repo_with_template",

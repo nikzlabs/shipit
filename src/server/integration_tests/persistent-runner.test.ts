@@ -310,9 +310,9 @@ describe("Integration: persistent session runners", () => {
     const sessionStarted = await drainUntil(client, (m) => m.type === "session_started");
     const sessionId = sessionStarted!.session.id;
 
-    // Archive the session
-    client.send({ type: "archive_session", sessionId } as any);
-    await drainUntil(client, (m) => m.type === "session_list");
+    // Archive the session via HTTP
+    const res = await app.inject({ method: "DELETE", url: `/api/sessions/${sessionId}` });
+    expect(res.statusCode).toBe(200);
 
     // Claude should be killed
     expect(claude.killed).toBe(true);

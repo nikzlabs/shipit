@@ -62,143 +62,17 @@ describe("Integration: System prompt", () => {
     }
   });
 
-  it("get_global_settings returns empty system prompt when no file exists", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "get_global_settings" } as any);
-    const msg = await client.receive();
-
-    expect(msg).toMatchObject({
-      type: "global_settings",
-      systemPrompt: "",
-    });
-
-    client.close();
-  });
-
-  it("save_global_settings persists system prompt and confirms", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "save_global_settings", systemPrompt: "Always use TypeScript." } as any);
-    const msg = await client.receive();
-
-    expect(msg).toMatchObject({
-      type: "global_settings",
-      systemPrompt: "Always use TypeScript.",
-    });
-
-    // Verify it was persisted to disk
-    const filePath = path.join(tmpDir, ".shipit", "system-prompt.md");
-    expect(fs.existsSync(filePath)).toBe(true);
-    expect(fs.readFileSync(filePath, "utf-8")).toBe("Always use TypeScript.\n");
-
-    client.close();
-  });
-
-  it("get_global_settings returns saved system prompt", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // Set a prompt first
-    client.send({ type: "save_global_settings", systemPrompt: "Use Tailwind CSS." } as any);
-    await client.receive(); // global_settings
-
-    // Now retrieve it
-    client.send({ type: "get_global_settings" } as any);
-    const msg = await client.receive();
-
-    expect(msg).toMatchObject({
-      type: "global_settings",
-      systemPrompt: "Use Tailwind CSS.",
-    });
-
-    client.close();
-  });
-
-  it("save_global_settings with empty system prompt deletes the file", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // First create a prompt
-    client.send({ type: "save_global_settings", systemPrompt: "Something" } as any);
-    await client.receive(); // global_settings
-
-    // Now clear it
-    client.send({ type: "save_global_settings", systemPrompt: "" } as any);
-    const msg = await client.receive();
-
-    expect(msg).toMatchObject({
-      type: "global_settings",
-      systemPrompt: "",
-    });
-
-    // File should be deleted
-    const filePath = path.join(tmpDir, ".shipit", "system-prompt.md");
-    expect(fs.existsSync(filePath)).toBe(false);
-
-    client.close();
-  });
-
-  it("save_global_settings with whitespace-only system prompt deletes the file", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // First create a prompt
-    client.send({ type: "save_global_settings", systemPrompt: "Something" } as any);
-    await client.receive(); // global_settings
-
-    // Now send whitespace-only
-    client.send({ type: "save_global_settings", systemPrompt: "   \n  \t  " } as any);
-    const msg = await client.receive();
-
-    expect(msg).toMatchObject({
-      type: "global_settings",
-      systemPrompt: "",
-    });
-
-    client.close();
-  });
-
-  it("save_global_settings trims whitespace from system prompt", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "save_global_settings", systemPrompt: "  Use strict mode.  \n" } as any);
-    const msg = await client.receive();
-
-    expect(msg).toMatchObject({
-      type: "global_settings",
-      systemPrompt: "Use strict mode.",
-    });
-
-    client.close();
-  });
-
-  it("save_global_settings rejects system prompt over 50KB", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    const hugeContent = "x".repeat(50_001);
-    client.send({ type: "save_global_settings", systemPrompt: hugeContent } as any);
-    const msg = await client.receive();
-
-    expect(msg).toMatchObject({
-      type: "error",
-      message: "System prompt too long (max 50,000 characters)",
-    });
-
-    client.close();
-  });
-
   it("system prompt is passed to ClaudeProcess.run() when set", async () => {
+    // Set a system prompt via HTTP
+    const settingsRes = await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { systemPrompt: "Be concise." },
+    });
+    expect(settingsRes.statusCode).toBe(200);
+
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
-
-    // Set a system prompt
-    client.send({ type: "save_global_settings", systemPrompt: "Be concise." } as any);
-    await client.receive(); // global_settings
 
     // Send a message to Claude
     client.send({ type: "send_message", text: "Hello" });

@@ -3,44 +3,7 @@ import path from "node:path";
 import type { WsClientMessage } from "../types.js";
 import type { HandlerContext } from "./types.js";
 
-type WsDeployConfigure = Extract<WsClientMessage, { type: "deploy_configure" }>;
 type WsInitiateDeploy = Extract<WsClientMessage, { type: "initiate_deploy" }>;
-type WsDeleteDeployConfig = Extract<WsClientMessage, { type: "delete_deploy_config" }>;
-
-export function handleDeployConfigure(ctx: HandlerContext, msg: WsDeployConfigure): void {
-  const targetId = typeof msg.targetId === "string" ? msg.targetId.trim() : "";
-  const target = ctx.deploymentManager.getTarget(targetId);
-  if (!target) {
-    ctx.send({ type: "error", message: `Unknown deploy target: "${targetId}"` });
-    return;
-  }
-
-  // Validate credentials against the target's configFields
-  const credentials: Record<string, string> = {};
-  for (const field of target.info.configFields) {
-    const value = typeof msg.credentials?.[field.key] === "string"
-      ? msg.credentials[field.key].trim() : "";
-    if (field.required && !value) {
-      ctx.send({ type: "error", message: `${field.label} is required` });
-      return;
-    }
-    if (value.length > 2000) {
-      ctx.send({ type: "error", message: `${field.label} is too long` });
-      return;
-    }
-    if (value) credentials[field.key] = value;
-  }
-
-  const activeAppSessionId = ctx.getActiveAppSessionId();
-  if (!activeAppSessionId) {
-    ctx.send({ type: "error", message: "No active session" });
-    return;
-  }
-
-  const projectName = typeof msg.projectName === "string" ? msg.projectName.trim() : undefined;
-  ctx.deploymentStore.saveConfig(activeAppSessionId, { targetId, credentials, projectName });
-  ctx.send({ type: "deploy_config_saved", targetId });
-}
 
 export async function handleInitiateDeploy(ctx: HandlerContext, msg: WsInitiateDeploy): Promise<void> {
   const activeSessionDir = ctx.getActiveSessionDir();
@@ -138,13 +101,3 @@ export function handleCancelDeploy(ctx: HandlerContext): void {
   ctx.deploymentManager.cancel();
 }
 
-export function handleDeleteDeployConfig(ctx: HandlerContext, msg: WsDeleteDeployConfig): void {
-  const activeAppSessionId = ctx.getActiveAppSessionId();
-  if (!activeAppSessionId) {
-    ctx.send({ type: "error", message: "No active session" });
-    return;
-  }
-  const targetId = typeof msg.targetId === "string" ? msg.targetId.trim() : "";
-  ctx.deploymentStore.deleteConfig(activeAppSessionId, targetId);
-  ctx.send({ type: "deploy_config_saved", targetId });
-}

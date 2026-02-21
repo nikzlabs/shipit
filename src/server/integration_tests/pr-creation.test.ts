@@ -88,44 +88,6 @@ describe("Integration: PR creation — happy path", () => {
     return sessionId;
   }
 
-  async function setupSessionWithRemote(client: TestClient) {
-    await createSession(client);
-
-    client.send({ type: "github_set_token", token: "ghp_test" });
-    await client.receiveSkipLogs(); // github_status (skip any runner messages)
-    await client.receiveSkipLogs(); // github_search_results (user repos)
-
-    client.send({
-      type: "github_set_remote",
-      name: "origin",
-      url: "https://github.com/test-user/my-project.git",
-    });
-    await client.receiveSkipLogs(); // github_remotes (skip any runner messages)
-  }
-
-  it("creates a PR successfully with auth + remote configured", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    await setupSessionWithRemote(client);
-
-    client.send({
-      type: "github_create_pr",
-      title: "Add JWT authentication",
-      body: "## Summary\n\nAdded JWT auth",
-      base: "main",
-      draft: false,
-    });
-
-    const msg = await client.receiveSkipLogs();
-    expect(msg.type).toBe("github_pr_created");
-    expect((msg as any).success).toBe(true);
-    expect((msg as any).url).toContain("github.com");
-    expect((msg as any).number).toBe(1);
-
-    client.close();
-  });
-
   it("GET /api/sessions/:id/git/branches returns current branch and remote branches", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status

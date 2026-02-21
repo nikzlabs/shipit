@@ -6,7 +6,7 @@
  */
 
 export * from "./types.js";
-export * from "./reads.js";
+export * from "./files.js";
 export * from "./session.js";
 export * from "./git.js";
 export * from "./github.js";

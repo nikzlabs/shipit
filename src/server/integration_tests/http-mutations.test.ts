@@ -17,9 +17,14 @@ import {
   StubGitHubAuthManager,
   FakeClaudeProcess,
   StubFileWatcher,
+  StubDeploymentManager,
+  StubDeploymentStore,
 } from "./test-helpers.js";
 import { GitHubAuthManager } from "../github-auth.js";
 import { CredentialStore } from "../credential-store.js";
+import { DeploymentManager } from "../deployment-manager.js";
+import { DeploymentStore } from "../deployment-store.js";
+import { AgentRegistry } from "../agents/agent-registry.js";
 
 describe("Integration: Phase 2 HTTP mutation endpoints", () => {
   let app: FastifyInstance;
@@ -192,6 +197,25 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect(content).toBe("original content");
     });
 
+    it("with empty files array reverts all (rollback)", async () => {
+      const dir = await createSession("s1", "Session 1");
+      const git = new GitManager(dir);
+      const beforeLog = await git.log(1);
+      const fromCommit = beforeLog[0].hash;
+
+      // Make a change
+      fs.writeFileSync(path.join(dir, "extra.txt"), "extra");
+      await git.autoCommit("add extra");
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/sessions/s1/git/reject",
+        payload: { fromCommit, files: [] },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().commitHash).toBe(fromCommit);
+    });
+
     it("returns 400 for missing fromCommit", async () => {
       await createSession("s1", "Session 1");
       const res = await app.inject({
@@ -218,6 +242,16 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect(body.email).toBe("test@example.com");
     });
 
+    it("persists identity to credential store", async () => {
+      await app.inject({
+        method: "POST",
+        url: "/api/settings/git-identity",
+        payload: { name: "Global User", email: "global@example.com" },
+      });
+      const reloaded = new CredentialStore(tmpDir);
+      expect(reloaded.getGitIdentity()).toEqual({ name: "Global User", email: "global@example.com" });
+    });
+
     it("returns 400 for empty name", async () => {
       const res = await app.inject({
         method: "POST",
@@ -235,6 +269,15 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       });
       expect(res.statusCode).toBe(400);
     });
+
+    it("returns 400 for whitespace-only name", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/settings/git-identity",
+        payload: { name: "   ", email: "test@example.com" },
+      });
+      expect(res.statusCode).toBe(400);
+    });
   });
 
   describe("PUT /api/settings", () => {
@@ -249,6 +292,55 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect(body.systemPrompt).toBe("Be helpful");
     });
 
+    it("persists system prompt to disk", async () => {
+      await app.inject({
+        method: "PUT",
+        url: "/api/settings",
+        payload: { systemPrompt: "Always use TypeScript." },
+      });
+      const filePath = path.join(tmpDir, ".shipit", "system-prompt.md");
+      expect(fs.existsSync(filePath)).toBe(true);
+      expect(fs.readFileSync(filePath, "utf-8")).toBe("Always use TypeScript.\n");
+    });
+
+    it("round-trips system prompt (save then read)", async () => {
+      await app.inject({
+        method: "PUT",
+        url: "/api/settings",
+        payload: { systemPrompt: "Use Tailwind CSS." },
+      });
+      const res = await app.inject({ method: "GET", url: "/api/bootstrap" });
+      expect(res.json().settings.systemPrompt).toBe("Use Tailwind CSS.");
+    });
+
+    it("empty system prompt deletes the file", async () => {
+      // Create a prompt first
+      await app.inject({
+        method: "PUT",
+        url: "/api/settings",
+        payload: { systemPrompt: "Something" },
+      });
+      // Now clear it
+      const res = await app.inject({
+        method: "PUT",
+        url: "/api/settings",
+        payload: { systemPrompt: "" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().systemPrompt).toBe("");
+      expect(fs.existsSync(path.join(tmpDir, ".shipit", "system-prompt.md"))).toBe(false);
+    });
+
+    it("trims whitespace from system prompt", async () => {
+      const res = await app.inject({
+        method: "PUT",
+        url: "/api/settings",
+        payload: { systemPrompt: "  Use strict mode.  \n" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().systemPrompt).toBe("Use strict mode.");
+    });
+
     it("saves git identity via settings", async () => {
       const res = await app.inject({
         method: "PUT",
@@ -259,6 +351,25 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       const body = res.json();
       expect(body.gitIdentity.name).toBe("New Name");
       expect(body.gitIdentity.email).toBe("new@test.com");
+    });
+
+    it("persists git identity to credential store via settings", async () => {
+      await app.inject({
+        method: "PUT",
+        url: "/api/settings",
+        payload: { gitIdentity: { name: "Global User", email: "global@test.com" } },
+      });
+      const reloaded = new CredentialStore(tmpDir);
+      expect(reloaded.getGitIdentity()).toEqual({ name: "Global User", email: "global@test.com" });
+    });
+
+    it("returns 400 for empty git name in settings", async () => {
+      const res = await app.inject({
+        method: "PUT",
+        url: "/api/settings",
+        payload: { gitIdentity: { name: "", email: "a@b.com" } },
+      });
+      expect(res.statusCode).toBe(400);
     });
 
     it("returns 400 for too-long system prompt", async () => {
@@ -411,6 +522,32 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
   // ---- Git remote mutations ----
 
   describe("POST /api/sessions/:id/git/remotes", () => {
+    it("adds a remote and returns remotes list", async () => {
+      await createSession("s1", "Session 1");
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/sessions/s1/git/remotes",
+        payload: { name: "origin", url: "https://github.com/user/repo.git" },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.remotes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: "origin", url: "https://github.com/user/repo.git" }),
+        ]),
+      );
+    });
+
+    it("caches remoteUrl in session metadata when setting origin", async () => {
+      await createSession("s1", "Session 1");
+      await app.inject({
+        method: "POST",
+        url: "/api/sessions/s1/git/remotes",
+        payload: { name: "origin", url: "https://github.com/cached/url.git" },
+      });
+      expect(sessionManager.get("s1")?.remoteUrl).toBe("https://github.com/cached/url.git");
+    });
+
     it("returns 400 for empty remote name", async () => {
       await createSession("s1", "Session 1");
       const res = await app.inject({
@@ -475,6 +612,29 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
   // ---- Thread mutations ----
 
   describe("POST /api/sessions/:id/threads/checkpoint", () => {
+    it("creates a checkpoint on active thread", async () => {
+      await createSession("s1", "Session 1");
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/sessions/s1/threads/checkpoint",
+        payload: { label: "before refactor" },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.checkpoint).toBeDefined();
+      expect(body.threadId).toBeTruthy();
+    });
+
+    it("returns 400 for label over 200 characters", async () => {
+      await createSession("s1", "Session 1");
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/sessions/s1/threads/checkpoint",
+        payload: { label: "x".repeat(201) },
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
     it("returns 404 for non-existent session", async () => {
       const res = await app.inject({
         method: "POST",
@@ -509,6 +669,46 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
   });
 
+  // ---- Template mutations ----
+
+  describe("POST /api/sessions/:id/template", () => {
+    it("scaffolds files for react-vite-ts template", async () => {
+      const dir = await createSession("s1", "Session 1");
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/sessions/s1/template",
+        payload: { templateId: "react-vite-ts" },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.templateId).toBe("react-vite-ts");
+      expect(body.name).toBe("React + Vite");
+      // Verify files were written
+      expect(fs.existsSync(path.join(dir, "package.json"))).toBe(true);
+      expect(fs.existsSync(path.join(dir, "src/App.tsx"))).toBe(true);
+    });
+
+    it("returns 400 for unknown template ID", async () => {
+      await createSession("s1", "Session 1");
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/sessions/s1/template",
+        payload: { templateId: "does-not-exist" },
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("returns 400 for empty template ID", async () => {
+      await createSession("s1", "Session 1");
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/sessions/s1/template",
+        payload: { templateId: "" },
+      });
+      expect(res.statusCode).toBe(400);
+    });
+  });
+
   // ---- Full reset ----
 
   describe("POST /api/reset", () => {
@@ -520,6 +720,235 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       });
       expect(res.statusCode).toBe(200);
       expect(res.json().success).toBe(true);
+    });
+
+    it("deletes all persistent data from workspace", async () => {
+      // Create some persistent state
+      const sessionsDir = path.join(tmpDir, "sessions", "test-session");
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      fs.writeFileSync(path.join(sessionsDir, "file.txt"), "hello");
+
+      const shipitDir = path.join(tmpDir, ".shipit");
+      fs.mkdirSync(shipitDir, { recursive: true });
+      fs.writeFileSync(path.join(shipitDir, "system-prompt.md"), "Be concise.");
+
+      const res = await app.inject({ method: "POST", url: "/api/reset" });
+      expect(res.statusCode).toBe(200);
+
+      // Verify workspace is empty
+      const remaining = fs.readdirSync(tmpDir);
+      expect(remaining).toEqual([]);
+    });
+
+    it("succeeds on already-clean workspace (idempotent)", async () => {
+      const res = await app.inject({ method: "POST", url: "/api/reset" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().success).toBe(true);
+    });
+  });
+});
+
+// ---- Separate describe for agent env tests (needs custom registry) ----
+
+describe("Integration: Phase 2 HTTP agent mutations", () => {
+  let app: FastifyInstance;
+  let tmpDir: string;
+  let savedOpenAIKey: string | undefined;
+
+  beforeEach(async () => {
+    savedOpenAIKey = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-http-agents-"));
+
+    const registry = new AgentRegistry({
+      checkBinary: async (binary) => binary === "claude" || binary === "codex",
+      checkClaudeAuth: () => true,
+    });
+    await registry.detect();
+
+    app = await buildApp({
+      createGitManager: (dir: string) => new GitManager(dir),
+      sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
+      chatHistoryManager: new ChatHistoryManager(path.join(tmpDir, ".chat-history")),
+      previewManager: new StubPreviewManager() as unknown as PreviewManager,
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      agentRegistry: registry,
+      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
+      workspaceDir: tmpDir,
+      serveStatic: false,
+      startPreview: false,
+      portScanIntervalMs: 0,
+    });
+  });
+
+  afterEach(async () => {
+    await app.close();
+    await new Promise((r) => setTimeout(r, 50));
+    if (savedOpenAIKey !== undefined) process.env.OPENAI_API_KEY = savedOpenAIKey;
+    else delete process.env.OPENAI_API_KEY;
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch {
+      // Ignore cleanup errors
+    }
+  });
+
+  describe("POST /api/settings/agent", () => {
+    it("accepts installed and auth-configured agent", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/settings/agent",
+        payload: { agentId: "claude" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().agentId).toBe("claude");
+    });
+  });
+
+  describe("POST /api/agents/:id/env", () => {
+    it("sets env var and updates auth status", async () => {
+      // Initially Codex auth is not configured
+      const beforeRes = await app.inject({ method: "GET", url: "/api/bootstrap" });
+      const codexBefore = beforeRes.json().agents.find((a: any) => a.id === "codex");
+      expect(codexBefore.authConfigured).toBe(false);
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/agents/codex/env",
+        payload: { key: "OPENAI_API_KEY", value: "sk-test-key-123" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().key).toBe("OPENAI_API_KEY");
+
+      // Verify auth status updated
+      const afterRes = await app.inject({ method: "GET", url: "/api/bootstrap" });
+      const codexAfter = afterRes.json().agents.find((a: any) => a.id === "codex");
+      expect(codexAfter.authConfigured).toBe(true);
+    });
+
+    it("returns 400 for disallowed env key", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/agents/codex/env",
+        payload: { key: "PATH", value: "/usr/bin" },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain("not in the allowlist");
+    });
+
+    it("returns 400 for empty value", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/agents/codex/env",
+        payload: { key: "OPENAI_API_KEY", value: "   " },
+      });
+      expect(res.statusCode).toBe(400);
+    });
+  });
+});
+
+// ---- Separate describe for deploy config tests (needs deployment manager) ----
+
+describe("Integration: Phase 2 HTTP deploy config mutations", () => {
+  let app: FastifyInstance;
+  let tmpDir: string;
+  let sessionManager: SessionManager;
+  let stubDeployMgr: StubDeploymentManager;
+  let stubDeployStore: StubDeploymentStore;
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-http-deploy-"));
+
+    sessionManager = new SessionManager(path.join(tmpDir, "sessions.json"));
+    stubDeployMgr = new StubDeploymentManager();
+    stubDeployMgr.register({
+      info: {
+        id: "test-target",
+        name: "Test Deploy",
+        description: "Test target",
+        configFields: [{ key: "token", label: "Token", required: true, sensitive: true }],
+        supportsPreview: true,
+      },
+    });
+    stubDeployStore = new StubDeploymentStore();
+
+    app = await buildApp({
+      createGitManager: (dir: string) => new GitManager(dir),
+      sessionManager,
+      previewManager: new StubPreviewManager() as unknown as PreviewManager,
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
+      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
+      deploymentManager: stubDeployMgr as unknown as DeploymentManager,
+      deploymentStore: stubDeployStore as unknown as DeploymentStore,
+      workspaceDir: tmpDir,
+      serveStatic: false,
+      startPreview: false,
+      portScanIntervalMs: 0,
+    });
+  });
+
+  afterEach(async () => {
+    await app.close();
+    await new Promise((r) => setTimeout(r, 50));
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch {
+      // Ignore cleanup errors
+    }
+  });
+
+  async function createSession(id: string, title: string): Promise<string> {
+    const sessionDir = path.join(tmpDir, "sessions", id);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    sessionManager.track(id, title, sessionDir);
+    const git = new GitManager(sessionDir);
+    await git.init();
+    fs.writeFileSync(path.join(sessionDir, "init.txt"), "init");
+    await git.autoCommit("initial commit");
+    return sessionDir;
+  }
+
+  describe("POST /api/sessions/:id/deploy/config", () => {
+    it("saves deploy config", async () => {
+      await createSession("s1", "Session 1");
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/sessions/s1/deploy/config",
+        payload: { targetId: "test-target", credentials: { token: "my-token" }, projectName: "test-proj" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().targetId).toBe("test-target");
+    });
+
+    it("returns 400 for empty required field", async () => {
+      await createSession("s1", "Session 1");
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/sessions/s1/deploy/config",
+        payload: { targetId: "test-target", credentials: { token: "" } },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain("Token is required");
+    });
+  });
+
+  describe("DELETE /api/sessions/:id/deploy/config/:targetId", () => {
+    it("deletes deploy config", async () => {
+      await createSession("s1", "Session 1");
+      // Save config first
+      await app.inject({
+        method: "POST",
+        url: "/api/sessions/s1/deploy/config",
+        payload: { targetId: "test-target", credentials: { token: "tok" } },
+      });
+      const res = await app.inject({
+        method: "DELETE",
+        url: "/api/sessions/s1/deploy/config/test-target",
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().targetId).toBe("test-target");
     });
   });
 });

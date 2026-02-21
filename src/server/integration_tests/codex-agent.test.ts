@@ -1,9 +1,13 @@
 /**
  * Integration tests for the Codex agent adapter.
  *
- * Tests the set_agent → send_message flow through the server, verifying
+ * Tests the agent selection and message flow through the server, verifying
  * that agent switching works correctly and agent_event messages are
  * properly relayed to clients.
+ *
+ * Agent selection now uses defaultAgentId in buildApp (was previously
+ * a per-connection WS set_agent message). Validation uses HTTP
+ * POST /api/settings/agent.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -115,12 +119,67 @@ async function receiveByType(
   }
 }
 
-describe("Integration: Codex agent — set_agent and message flow", () => {
+/** Shared agent factory builder for codex tests. */
+function makeAgentFactory(
+  getLastClaude: () => FakeClaudeProcess,
+  setLastClaude: (c: FakeClaudeProcess) => void,
+  getLastCodex: () => FakeCodexProcess,
+  setLastCodex: (c: FakeCodexProcess) => void,
+) {
+  return (agentId: AgentId) => {
+    if (agentId === "codex") {
+      const codex = new FakeCodexProcess();
+      setLastCodex(codex);
+      return codex;
+    }
+    // Default: Claude — wrap FakeClaudeProcess in AgentProcess shape
+    const claude = new FakeClaudeProcess();
+    setLastClaude(claude);
+    return {
+      ...claude,
+      agentId: "claude" as AgentId,
+      capabilities: {
+        supportsResume: true,
+        supportsImages: true,
+        supportsSystemPrompt: true,
+        supportsPermissionModes: true,
+        supportedPermissionModes: ["auto", "plan", "normal"],
+        toolNames: ["Write", "Read", "Edit", "Bash"],
+        models: ["claude-sonnet-4-20250514"],
+      },
+      run: (params: AgentRunParams) => {
+        claude.run(params.prompt, params.sessionId, params.systemPrompt, params.images, params.cwd, params.permissionMode);
+      },
+      writeStdin: (data: string) => claude.writeStdin(data),
+      kill: () => claude.kill(),
+      on: claude.on.bind(claude),
+      once: claude.once.bind(claude),
+      emit: claude.emit.bind(claude),
+      removeListener: claude.removeListener.bind(claude),
+      removeAllListeners: claude.removeAllListeners.bind(claude),
+      addListener: claude.addListener.bind(claude),
+      off: claude.off.bind(claude),
+      listeners: claude.listeners.bind(claude),
+    } as unknown as AgentProcess;
+  };
+}
+
+/** Build an agent registry with codex detected and auth-configured. */
+async function makeRegistry(): Promise<AgentRegistry> {
+  const registry = new AgentRegistry({
+    checkBinary: async (binary) => binary === "claude" || binary === "codex",
+    checkClaudeAuth: () => true,
+  });
+  await registry.detect();
+  process.env.OPENAI_API_KEY = "test-key-for-codex";
+  registry.refreshAuth("codex");
+  return registry;
+}
+
+describe("Integration: Codex agent — defaultAgentId=codex message flow", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
-  let sessionManager: SessionManager;
-  let chatHistoryManager: ChatHistoryManager;
   let lastClaude: FakeClaudeProcess = null as any;
   let lastCodex: FakeCodexProcess = null as any;
   let savedOpenAIKey: string | undefined;
@@ -132,18 +191,9 @@ describe("Integration: Codex agent — set_agent and message flow", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-codex-agent-"));
 
     const sessionsFile = path.join(tmpDir, "sessions.json");
-    sessionManager = new SessionManager(sessionsFile);
-    chatHistoryManager = new ChatHistoryManager(path.join(tmpDir, "chat-history"));
-
-    // Create registry that reports codex as installed and auth-configured
-    const registry = new AgentRegistry({
-      checkBinary: async (binary) => binary === "claude" || binary === "codex",
-      checkClaudeAuth: () => true,
-    });
-    await registry.detect();
-    // Set OPENAI_API_KEY so codex auth check passes
-    process.env.OPENAI_API_KEY = "test-key-for-codex";
-    registry.refreshAuth("codex");
+    const sessionManager = new SessionManager(sessionsFile);
+    const chatHistoryManager = new ChatHistoryManager(path.join(tmpDir, "chat-history"));
+    const registry = await makeRegistry();
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
@@ -152,41 +202,11 @@ describe("Integration: Codex agent — set_agent and message flow", () => {
       previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentRegistry: registry,
-      agentFactory: (agentId: AgentId) => {
-        if (agentId === "codex") {
-          lastCodex = new FakeCodexProcess();
-          return lastCodex;
-        }
-        // Default: Claude — wrap FakeClaudeProcess in AgentProcess shape
-        lastClaude = new FakeClaudeProcess();
-        const claude = lastClaude;
-        return {
-          ...claude,
-          agentId: "claude" as AgentId,
-          capabilities: {
-            supportsResume: true,
-            supportsImages: true,
-            supportsSystemPrompt: true,
-            supportsPermissionModes: true,
-            supportedPermissionModes: ["auto", "plan", "normal"],
-            toolNames: ["Write", "Read", "Edit", "Bash"],
-            models: ["claude-sonnet-4-20250514"],
-          },
-          run: (params: AgentRunParams) => {
-            claude.run(params.prompt, params.sessionId, params.systemPrompt, params.images, params.cwd, params.permissionMode);
-          },
-          writeStdin: (data: string) => claude.writeStdin(data),
-          kill: () => claude.kill(),
-          on: claude.on.bind(claude),
-          once: claude.once.bind(claude),
-          emit: claude.emit.bind(claude),
-          removeListener: claude.removeListener.bind(claude),
-          removeAllListeners: claude.removeAllListeners.bind(claude),
-          addListener: claude.addListener.bind(claude),
-          off: claude.off.bind(claude),
-          listeners: claude.listeners.bind(claude),
-        } as unknown as AgentProcess;
-      },
+      agentFactory: makeAgentFactory(
+        () => lastClaude, (c) => { lastClaude = c; },
+        () => lastCodex, (c) => { lastCodex = c; },
+      ),
+      defaultAgentId: "codex" as AgentId,
       fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
@@ -211,14 +231,11 @@ describe("Integration: Codex agent — set_agent and message flow", () => {
     }
   });
 
-  it("set_agent with valid agentId switches the active agent", async () => {
+  it("defaultAgentId=codex uses Codex adapter for send_message", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    // Switch to Codex
-    client.send({ type: "set_agent", agentId: "codex" } as any);
-
-    // Send a message — should use Codex adapter
+    // Send a message — should use Codex adapter (defaultAgentId is "codex")
     client.send({ type: "send_message", text: "Hello Codex" });
 
     const codex = await waitForCodex(() => lastCodex);
@@ -231,23 +248,10 @@ describe("Integration: Codex agent — set_agent and message flow", () => {
     client.close();
   });
 
-  it("set_agent with invalid agentId returns error", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "set_agent", agentId: "invalid-agent" } as any);
-
-    const msg = await receiveByType(client, "error");
-    expect((msg as any).message).toContain("Unknown agent");
-
-    client.close();
-  });
-
   it("Codex agent_event messages are relayed to the client", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    client.send({ type: "set_agent", agentId: "codex" } as any);
     client.send({ type: "send_message", text: "Write hello world" });
 
     const codex = await waitForCodex(() => lastCodex);
@@ -274,7 +278,6 @@ describe("Integration: Codex agent — set_agent and message flow", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    client.send({ type: "set_agent", agentId: "codex" } as any);
     client.send({ type: "send_message", text: "Hello" });
 
     const codex = await waitForCodex(() => lastCodex);
@@ -308,7 +311,6 @@ describe("Integration: Codex agent — set_agent and message flow", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    client.send({ type: "set_agent", agentId: "codex" } as any);
     client.send({ type: "send_message", text: "Run ls" });
 
     const codex = await waitForCodex(() => lastCodex);
@@ -346,7 +348,6 @@ describe("Integration: Codex agent — set_agent and message flow", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    client.send({ type: "set_agent", agentId: "codex" } as any);
     client.send({ type: "send_message", text: "Done?" });
 
     const codex = await waitForCodex(() => lastCodex);
@@ -376,72 +377,10 @@ describe("Integration: Codex agent — set_agent and message flow", () => {
     client.close();
   });
 
-  it("default agent is claude when no set_agent message sent", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // Send message without set_agent — should use Claude (default)
-    client.send({ type: "send_message", text: "Hello Claude" });
-
-    await waitForClaude(() => lastClaude);
-    expect(lastClaude.runCalled).toBe(true);
-    expect(lastClaude.lastPrompt).toBe("Hello Claude");
-    expect(lastCodex).toBeNull();
-
-    client.close();
-  });
-
-  it("switching from Codex back to Claude works", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // Switch to Codex
-    client.send({ type: "set_agent", agentId: "codex" } as any);
-    client.send({ type: "send_message", text: "Codex prompt" });
-
-    const codex = await waitForCodex(() => lastCodex);
-    expect(codex.lastParams?.prompt).toBe("Codex prompt");
-
-    // Complete the Codex turn
-    codex.emit("event", {
-      type: "agent_init",
-      agentId: "codex",
-      sessionId: "codex-thread-switch",
-    });
-    codex.emit("event", { type: "agent_result", status: "success", sessionId: "codex-thread-switch" });
-    codex.emit("done", 0);
-
-    // Drain messages
-    const deadline = Date.now() + 2000;
-    while (Date.now() < deadline) {
-      try {
-        await client.receive(200);
-      } catch { break; }
-    }
-
-    // Switch back to Claude
-    client.send({ type: "set_agent", agentId: "claude" } as any);
-    client.send({ type: "send_message", text: "Claude prompt" });
-
-    await waitForClaude(() => lastClaude);
-    expect(lastClaude.lastPrompt).toBe("Claude prompt");
-
-    client.close();
-  });
-
-  it("Codex capabilities report correct feature support", () => {
-    const codex = new FakeCodexProcess();
-    expect(codex.capabilities.supportsImages).toBe(false);
-    expect(codex.capabilities.supportsResume).toBe(true);
-    expect(codex.capabilities.supportsPermissionModes).toBe(false);
-    expect(codex.capabilities.models).toContain("codex-mini-latest");
-  });
-
   it("Codex error event is relayed to client", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    client.send({ type: "set_agent", agentId: "codex" } as any);
     client.send({ type: "send_message", text: "Fail" });
 
     const codex = await waitForCodex(() => lastCodex);
@@ -453,5 +392,104 @@ describe("Integration: Codex agent — set_agent and message flow", () => {
     expect((msg as any).message).toContain("codex app-server crashed");
 
     client.close();
+  });
+});
+
+describe("Integration: Codex agent — validation and default agent", () => {
+  let app: FastifyInstance;
+  let port: number;
+  let tmpDir: string;
+  let lastClaude: FakeClaudeProcess = null as any;
+  let lastCodex: FakeCodexProcess = null as any;
+  let savedOpenAIKey: string | undefined;
+
+  beforeEach(async () => {
+    lastClaude = null as any;
+    lastCodex = null as any;
+    savedOpenAIKey = process.env.OPENAI_API_KEY;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-codex-default-"));
+
+    const sessionsFile = path.join(tmpDir, "sessions.json");
+    const sessionManager = new SessionManager(sessionsFile);
+    const chatHistoryManager = new ChatHistoryManager(path.join(tmpDir, "chat-history"));
+    const registry = await makeRegistry();
+
+    // Default agent is "claude" — tests that need the default behavior
+    app = await buildApp({
+      createGitManager: (dir: string) => new GitManager(dir),
+      sessionManager,
+      chatHistoryManager,
+      previewManager: new StubPreviewManager() as unknown as PreviewManager,
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      agentRegistry: registry,
+      agentFactory: makeAgentFactory(
+        () => lastClaude, (c) => { lastClaude = c; },
+        () => lastCodex, (c) => { lastCodex = c; },
+      ),
+      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
+      workspaceDir: tmpDir,
+      serveStatic: false,
+      startPreview: false,
+      portScanIntervalMs: 0,
+    });
+
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+    const match = address.match(/:(\d+)$/);
+    port = match ? Number(match[1]) : 0;
+  });
+
+  afterEach(async () => {
+    await app.close();
+    await new Promise((r) => setTimeout(r, 50));
+    if (savedOpenAIKey !== undefined) process.env.OPENAI_API_KEY = savedOpenAIKey;
+    else delete process.env.OPENAI_API_KEY;
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch {
+      // Ignore cleanup errors
+    }
+  });
+
+  it("set_agent validates agent via HTTP and rejects invalid agentId", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/settings/agent",
+      payload: { agentId: "invalid-agent" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain("Unknown agent");
+  });
+
+  it("set_agent validates agent via HTTP and accepts valid agentId", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/settings/agent",
+      payload: { agentId: "codex" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().agentId).toBe("codex");
+  });
+
+  it("default agent is claude when defaultAgentId is not set", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Send message — should use Claude (default)
+    client.send({ type: "send_message", text: "Hello Claude" });
+
+    await waitForClaude(() => lastClaude);
+    expect(lastClaude.runCalled).toBe(true);
+    expect(lastClaude.lastPrompt).toBe("Hello Claude");
+    expect(lastCodex).toBeNull();
+
+    client.close();
+  });
+
+  it("Codex capabilities report correct feature support", () => {
+    const codex = new FakeCodexProcess();
+    expect(codex.capabilities.supportsImages).toBe(false);
+    expect(codex.capabilities.supportsResume).toBe(true);
+    expect(codex.capabilities.supportsPermissionModes).toBe(false);
+    expect(codex.capabilities.models).toContain("codex-mini-latest");
   });
 });

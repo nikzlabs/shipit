@@ -13,7 +13,6 @@ import { ClaudeProcess } from "../claude.js";
 import { FileWatcher } from "../file-watcher.js";
 import type { FastifyInstance } from "fastify";
 import {
-  TestClient,
   StubPreviewManager,
   StubAuthManager,
   StubGitHubAuthManager,
@@ -23,10 +22,8 @@ import {
 
 describe("Integration: GitHub push, pull & remotes", () => {
   let app: FastifyInstance;
-  let port: number;
   let tmpDir: string;
   let sessionId: string;
-  let githubAuthManager: StubGitHubAuthManager;
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-gh-pushpull-"));
@@ -42,7 +39,7 @@ describe("Integration: GitHub push, pull & remotes", () => {
     const sessionManager = new SessionManager(sessionsFile);
     sessionManager.track(sessionId, "Test session", sessionDir);
 
-    githubAuthManager = new StubGitHubAuthManager();
+    const githubAuthManager = new StubGitHubAuthManager();
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
@@ -58,9 +55,7 @@ describe("Integration: GitHub push, pull & remotes", () => {
       portScanIntervalMs: 0,
     });
 
-    const address = await app.listen({ port: 0, host: "127.0.0.1" });
-    const match = address.match(/:(\d+)$/);
-    port = match ? Number(match[1]) : 0;
+    await app.listen({ port: 0, host: "127.0.0.1" });
   });
 
   afterEach(async () => {
@@ -68,106 +63,9 @@ describe("Integration: GitHub push, pull & remotes", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
-  it("github_push without auth returns error", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "github_push" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("Not authenticated with GitHub");
-
-    client.close();
-  });
-
-  it("github_pull without auth returns error", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "github_pull" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("Not authenticated with GitHub");
-
-    client.close();
-  });
-
-  it("github_set_remote adds a remote and returns remotes list", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // Activate session so git operations work
-    client.send({ type: "get_chat_history", sessionId });
-    await client.receiveType("file_tree"); // drain all activation messages
-
-    client.send({ type: "github_set_remote", name: "origin", url: "https://github.com/test/repo.git" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("github_remotes");
-    expect((msg as any).remotes).toHaveLength(1);
-    expect((msg as any).remotes[0]).toMatchObject({
-      name: "origin",
-      url: "https://github.com/test/repo.git",
-    });
-
-    client.close();
-  });
-
-  it("github_set_remote rejects empty name", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "github_set_remote", name: "", url: "https://github.com/test/repo.git" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("Remote name and URL are required");
-
-    client.close();
-  });
-
-  it("github_set_remote rejects empty url", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "github_set_remote", name: "origin", url: "" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toBe("Remote name and URL are required");
-
-    client.close();
-  });
-
   it("GET /api/sessions/:id/git/remotes returns empty list initially", async () => {
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/git/remotes` });
     expect(res.statusCode).toBe(200);
     expect(res.json().remotes).toEqual([]);
-  });
-
-  it("github_push with auth but no remote returns error", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // Activate session so git operations work
-    client.send({ type: "get_chat_history", sessionId });
-    await client.receiveType("file_tree"); // drain all activation messages
-
-    // Authenticate first
-    client.send({ type: "github_set_token", token: "ghp_test" });
-    await client.receive(); // github_status
-    await client.receive(); // github_search_results (user repos)
-
-    // Try to push without a remote configured
-    client.send({ type: "github_push" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("github_push_result");
-    expect((msg as any).success).toBe(false);
-    expect((msg as any).message).toContain("Push failed");
-
-    client.close();
   });
 });

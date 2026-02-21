@@ -105,7 +105,7 @@
 ### Service layer split
 
 - [x] Split monolithic `services.ts` into domain-specific files under `src/server/services/` — types, reads, session, git, github, deploy, settings, threads, templates, misc
-- [ ] Split `reads.ts` (~330 lines, 27+ functions) into the existing domain-specific service files — merge read functions into `git.ts`, `github.ts`, `deploy.ts`, `session.ts`, `settings.ts`, `threads.ts`, `templates.ts`, `misc.ts` and add a new `files.ts` for file/doc reads
+- [x] Split `reads.ts` (~330 lines, 27+ functions) into the existing domain-specific service files — merge read functions into `git.ts`, `github.ts`, `deploy.ts`, `session.ts`, `settings.ts`, `threads.ts`, `templates.ts`, `misc.ts` and add a new `files.ts` for file/doc reads
 
 ### Client updates for Phase 2
 
@@ -114,16 +114,18 @@
 - [x] Update `useMessageHandler` to remove WS response handlers for migrated types
 - [x] Migrate `App.tsx` inline `send()` calls (`set_api_key`, `clear_api_key`, `set_agent_env`, `save_global_settings`) to HTTP
 - [x] Migrate `useAutoFix.ts` `preview_error` from WS to HTTP
-- [ ] Remove corresponding `case` entries from switch dispatcher (deferred — existing WS integration tests depend on them)
-- [ ] Remove unused WS message types from type unions (deferred — requires migrating WS integration tests first)
+- [x] Remove corresponding `case` entries from switch dispatcher — removed 23 Phase 2 cases from `src/server/index.ts`
+- [x] Remove unused WS message types from type unions — removed 24 client types and 8 server types
+- [x] Remove dead WS handler functions — deleted `git-handlers.ts`, `diff-handlers.ts`, `github-handlers.ts`, `file-handlers.ts`; cleaned dead functions from 7 other handler files
+- [x] Migrate `useConnectionSync.ts` `set_agent` WS send to HTTP `fetch()`
 
 ### Tests for Phase 2
 
 - [x] Add HTTP route tests for each new mutation endpoint (34 tests) — `src/server/integration_tests/http-mutations.test.ts`
-- [ ] Migrate existing WS integration tests to use HTTP endpoints — tests in `sessions.test.ts`, `settings.test.ts`, `deploy.test.ts`, `github.test.ts`, `pr.test.ts`, `thread.test.ts`, `template.test.ts`, `git.test.ts`, `misc.test.ts` still exercise migrated messages via WS
-- [ ] Remove WS switch cases for all 22 migrated Phase 2 message types from `src/server/index.ts` after WS tests are migrated: `rename_session`, `archive_session`, `set_git_identity`, `save_global_settings`, `set_api_key`, `clear_api_key`, `github_set_token`, `github_logout`, `github_set_remote`, `github_push`, `github_pull`, `github_create_pr`, `merge_pr`, `deploy_configure`, `delete_deploy_config`, `rollback`, `reject_changes`, `set_agent`, `set_agent_env`, `create_checkpoint`, `apply_template`, `full_reset`, `preview_error`
-- [ ] Remove unused `WsClientMessage` types after switch cases are removed: same 22 message type interfaces
-- [ ] Remove unused `WsServerMessage` types that are no longer sent: `session_renamed`, `git_identity_set`, `rollback_complete`, `reject_changes_complete`, `github_push_result`, `github_pull_result`, `github_pr_created`, `merge_pr_result`, `deploy_config_saved`, `checkpoint_created`, `agent_env_set`
+- [x] Migrate existing WS integration tests to use HTTP endpoints — all tests now use `app.inject()` for migrated message types
+- [x] Remove WS switch cases for all 23 migrated Phase 2 message types from `src/server/index.ts`
+- [x] Remove unused `WsClientMessage` types: 24 interfaces removed (rollback, archive_session, rename_session, set_git_identity, get_global_settings, save_global_settings, set_api_key, clear_api_key, apply_template, set_agent, set_agent_env, full_reset, reject_changes, preview_error, github_set_token, github_push, github_pull, github_set_remote, github_logout, github_create_pr, merge_pr, deploy_configure, delete_deploy_config, create_checkpoint)
+- [x] Remove unused `WsServerMessage` types: 8 interfaces removed (rollback_complete, reject_changes_complete, github_pull_result, github_pr_created, merge_pr_result, deploy_config_saved, checkpoint_created, agent_env_set) — kept types still used by active code (session_renamed, github_push_result, git_identity_set, agent_list, full_reset_complete, global_settings, template_applied)
 
 ## Phase 3: Tier 3 — Borderline cases
 

@@ -236,17 +236,9 @@ describe("Integration: Worktree sessions", () => {
     const childId = forkedMsg.session.id;
     const childDir = forkedMsg.session.workspaceDir;
 
-    // Archive the child
-    client.send({ type: "archive_session", sessionId: childId });
-
-    // Wait for session_list response from archive (skip any interleaved messages)
-    const archiveDeadline = Date.now() + 5000;
-    let listMsg: any = null;
-    while (Date.now() < archiveDeadline && !listMsg) {
-      const msg = await client.receive();
-      if (msg.type === "session_list") listMsg = msg;
-    }
-    expect(listMsg).not.toBeNull();
+    // Archive the child via HTTP
+    const archiveRes = await app.inject({ method: "DELETE", url: `/api/sessions/${childId}` });
+    expect(archiveRes.statusCode).toBe(200);
 
     // The child session should be archived
     const child = sessionManager.get(childId);
@@ -713,32 +705,17 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     expect(repoDirs.length).toBe(1);
     const sharedRepoDir = path.join(reposDir, repoDirs[0]);
 
-    // Archive first session — shared repo should still exist (one session remains)
-    const client3 = await TestClient.connect(port);
-    await client3.receive(); // preview_status
-
-    client3.send({ type: "archive_session", sessionId: session1Id });
-    let listMsg: any = null;
-    const deadline1 = Date.now() + 5000;
-    while (Date.now() < deadline1 && !listMsg) {
-      const msg = await client3.receive();
-      if (msg.type === "session_list") listMsg = msg;
-    }
+    // Archive first session via HTTP — shared repo should still exist (one session remains)
+    const archiveRes1 = await app.inject({ method: "DELETE", url: `/api/sessions/${session1Id}` });
+    expect(archiveRes1.statusCode).toBe(200);
 
     expect(fs.existsSync(sharedRepoDir)).toBe(true);
 
-    // Archive second session — now shared repo should be cleaned up
-    client3.send({ type: "archive_session", sessionId: session2Id });
-    listMsg = null;
-    const deadline2 = Date.now() + 5000;
-    while (Date.now() < deadline2 && !listMsg) {
-      const msg = await client3.receive();
-      if (msg.type === "session_list") listMsg = msg;
-    }
+    // Archive second session via HTTP — now shared repo should be cleaned up
+    const archiveRes2 = await app.inject({ method: "DELETE", url: `/api/sessions/${session2Id}` });
+    expect(archiveRes2.statusCode).toBe(200);
 
     expect(fs.existsSync(sharedRepoDir)).toBe(false);
-
-    client3.close();
   }, 20_000);
 
   it("shared repo is NOT cleaned up when other sessions still use it", async () => {
@@ -766,15 +743,9 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     try { while (true) { await client2.receive(500); } } catch { /* drain */ }
     client2.close();
 
-    // Archive only the first session
-    const client3 = await TestClient.connect(port);
-    await client3.receive(); // preview_status
-    client3.send({ type: "archive_session", sessionId: session1Id });
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline) {
-      const msg = await client3.receive();
-      if (msg.type === "session_list") break;
-    }
+    // Archive only the first session via HTTP
+    const archiveRes = await app.inject({ method: "DELETE", url: `/api/sessions/${session1Id}` });
+    expect(archiveRes.statusCode).toBe(200);
 
     // Shared repo should still exist
     const reposDir = path.join(tmpDir, "repos");
@@ -782,7 +753,5 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     expect(repoDirs.length).toBe(1);
     const sharedRepoDir = path.join(reposDir, repoDirs[0]);
     expect(fs.existsSync(sharedRepoDir)).toBe(true);
-
-    client3.close();
   }, 15_000);
 });

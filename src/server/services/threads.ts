@@ -1,10 +1,19 @@
 /**
- * Thread mutation services — checkpoint creation.
+ * Thread services — reads (list threads) and mutations (checkpoint creation).
  */
 
 import type { GitManager } from "../git.js";
 import type { ThreadManager } from "../threads.js";
 import { ServiceError } from "./types.js";
+
+// ---- Read operations ----
+
+/** List threads for a session. */
+export function listThreads(threadManager: ThreadManager, sessionId: string) {
+  return threadManager.listThreads(sessionId);
+}
+
+// ---- Mutation operations ----
 
 /** Create a checkpoint on the active thread. */
 export async function createCheckpoint(

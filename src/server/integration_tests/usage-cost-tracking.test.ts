@@ -301,19 +301,9 @@ describe("Integration: Usage & cost tracking", () => {
     lastClaude.emit("done", 0);
     await new Promise((r) => setTimeout(r, 100));
 
-    // Archive the session
-    client.send({ type: "archive_session", sessionId: appSessionId });
-
-    // Drain messages until we get session_list
-    let sessionList: any = null;
-    for (let i = 0; i < 10; i++) {
-      const msg = await client.receive();
-      if (msg.type === "session_list") {
-        sessionList = msg;
-        break;
-      }
-    }
-    expect(sessionList).toBeDefined();
+    // Archive the session via HTTP
+    const archiveRes = await app.inject({ method: "DELETE", url: `/api/sessions/${appSessionId}` });
+    expect(archiveRes.statusCode).toBe(200);
 
     // Verify usage is still present (archive preserves data) via HTTP
     const statsRes = await app.inject({ method: "GET", url: `/api/sessions/${appSessionId}/usage` });

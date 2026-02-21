@@ -1,5 +1,6 @@
 /**
- * Session mutation services — rename, archive.
+ * Session services — reads (list, status, history, worktrees) and mutations
+ * (rename, archive).
  */
 
 import path from "node:path";
@@ -9,6 +10,78 @@ import type { GitManager } from "../git.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { SessionInfo } from "../types.js";
 import { ServiceError } from "./types.js";
+
+// ---- Read operations ----
+
+/**
+ * List all sessions, lazily populating remote URLs for sessions that have
+ * a workspace but no cached URL.
+ */
+export async function listSessions(
+  sessionManager: SessionManager,
+  createGitManager: (dir: string) => GitManager,
+): Promise<SessionInfo[]> {
+  const sessions = sessionManager.list();
+  await Promise.all(
+    sessions.map(async (session) => {
+      if (session.workspaceDir && !session.remoteUrl) {
+        try {
+          const git = createGitManager(session.workspaceDir);
+          const remotes = await git.getRemotes();
+          const origin = remotes.find((r) => r.name === "origin");
+          if (origin?.url) {
+            sessionManager.setRemoteUrl(session.id, origin.url);
+            session.remoteUrl = origin.url;
+          }
+        } catch {
+          // Workspace may not exist or not be a git repo — skip
+        }
+      }
+    })
+  );
+  return sessions;
+}
+
+/** Get the session status (running, queue length) from the runner registry. */
+export function getSessionStatus(
+  runnerRegistry: SessionRunnerRegistry,
+  sessionId: string,
+): { running: boolean; queueLength: number } {
+  const runner = runnerRegistry.get(sessionId);
+  return {
+    running: runner?.running ?? false,
+    queueLength: runner?.queueLength ?? 0,
+  };
+}
+
+/** Get chat messages for a session (read-only, no activation side effects). */
+export function getChatHistory(
+  chatHistoryManager: { load: (sessionId: string) => unknown[] },
+  sessionId: string,
+) {
+  return chatHistoryManager.load(sessionId);
+}
+
+/** Get worktrees (sibling sessions sharing the same repo). */
+export function listWorktrees(
+  sessionManager: SessionManager,
+  sessionId: string,
+): Array<{ sessionId: string; branch: string; path: string }> {
+  const session = sessionManager.get(sessionId);
+  const siblings = session?.remoteUrl
+    ? sessionManager.findAllByRemoteUrl(session.remoteUrl)
+    : [session].filter(Boolean) as SessionInfo[];
+
+  const worktrees: Array<{ sessionId: string; branch: string; path: string }> = [];
+  for (const s of siblings) {
+    if (s.workspaceDir && s.branch) {
+      worktrees.push({ sessionId: s.id, branch: s.branch, path: s.workspaceDir });
+    }
+  }
+  return worktrees;
+}
+
+// ---- Mutation operations ----
 
 /** Rename a session. Returns the updated session or throws ServiceError. */
 export function renameSession(

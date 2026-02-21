@@ -1,5 +1,6 @@
 /**
- * GitHub mutation services — PR create/merge, token, logout.
+ * GitHub services — reads (status, repos, search, PR status) and mutations
+ * (PR create/merge, token, logout).
  */
 
 import type { GitManager } from "../git.js";
@@ -7,6 +8,67 @@ import type { GitHubAuthManager } from "../github-auth.js";
 import { GitManager as GitManagerClass } from "../git.js";
 import { ServiceError } from "./types.js";
 import type { GitHubStatus } from "./types.js";
+
+// ---- Read operations ----
+
+/** Get GitHub authentication status. */
+export function getGitHubStatus(githubAuthManager: GitHubAuthManager): GitHubStatus {
+  return githubAuthManager.getStatus();
+}
+
+/** Get user's GitHub repos (empty array if not authenticated). */
+export async function getGitHubRepos(
+  githubAuthManager: GitHubAuthManager,
+): Promise<Array<{ fullName: string; description: string | null; private: boolean; defaultBranch: string; cloneUrl: string }>> {
+  if (!githubAuthManager.authenticated) return [];
+  return githubAuthManager.listUserRepos();
+}
+
+/** Search GitHub repos. */
+export async function searchGitHubRepos(
+  githubAuthManager: GitHubAuthManager,
+  query: string,
+) {
+  if (!query || query.length < 2) return [];
+  return githubAuthManager.searchRepos(query);
+}
+
+/** Get PR status for a session (returns null if no PR or not authenticated). */
+export async function getPrStatus(
+  githubAuthManager: GitHubAuthManager,
+  git: GitManager,
+) {
+  if (!githubAuthManager.authenticated) return null;
+
+  const remotes = await git.getRemotes();
+  const origin = remotes.find((r) => r.name === "origin");
+  if (!origin) return null;
+
+  const parsed = GitManagerClass.parseGitHubRemote(origin.url);
+  if (!parsed) return null;
+
+  const head = await git.getCurrentBranch();
+  const pr = await githubAuthManager.findPullRequest(parsed.owner, parsed.repo, head);
+  if (!pr) return null;
+
+  const stats = await git.diffStatVsBranch(pr.base);
+  const checks = await githubAuthManager.getCheckStatus(parsed.owner, parsed.repo, head);
+
+  return {
+    url: pr.url,
+    number: pr.number,
+    title: pr.title,
+    baseBranch: pr.base,
+    headBranch: head,
+    insertions: stats.insertions,
+    deletions: stats.deletions,
+    checks,
+    autoMergeEnabled: false,
+    mergeable: true,
+  };
+}
+
+// ---- Mutation operations ----
 
 /** Create a pull request. */
 export async function createPullRequest(

@@ -139,12 +139,16 @@ describe("Integration: Threads — fork & switch", () => {
     const client = await TestClient.connect(port);
     await drainConnect(client);
 
-    await doMessageTurn(client, "Build an app");
+    const sessionId = await doMessageTurn(client, "Build an app");
 
-    // Create checkpoint
-    client.send({ type: "create_checkpoint", label: "v1" } as any);
-    const cpMsg = await waitForMessage(client, "checkpoint_created");
-    const checkpointId = cpMsg.checkpoint.id;
+    // Create checkpoint via HTTP
+    const cpRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/threads/checkpoint`,
+      payload: { label: "v1" },
+    });
+    expect(cpRes.statusCode).toBe(200);
+    const checkpointId = cpRes.json().checkpoint.id;
 
     // Fork from it
     client.send({ type: "fork_thread", checkpointId } as any);
@@ -209,11 +213,16 @@ describe("Integration: Threads — fork & switch", () => {
     const listMsg = threadsRes.json();
     const mainThreadId = listMsg.threads[0].id;
 
-    // Create checkpoint and fork
-    client.send({ type: "create_checkpoint" } as any);
-    const cpMsg = await waitForMessage(client, "checkpoint_created");
+    // Create checkpoint via HTTP and fork
+    const cpRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/threads/checkpoint`,
+      payload: {},
+    });
+    expect(cpRes.statusCode).toBe(200);
+    const checkpointId = cpRes.json().checkpoint.id;
 
-    client.send({ type: "fork_thread", checkpointId: cpMsg.checkpoint.id } as any);
+    client.send({ type: "fork_thread", checkpointId } as any);
     const forkResp = await client.receiveSkipLogs(5000);
     expect(forkResp.type).toBe("thread_forked");
 

@@ -3,55 +3,10 @@ import type { HandlerContext } from "./types.js";
 import { getErrorMessage } from "../validation.js";
 import { listTemplates, getTemplate, applyTemplate } from "../templates.js";
 
-type WsApplyTemplate = Extract<WsClientMessage, { type: "apply_template" }>;
 type WsHomeCreateRepoWithTemplate = Extract<WsClientMessage, { type: "home_create_repo_with_template" }>;
 
 export function handleListTemplates(ctx: HandlerContext): void {
   ctx.send({ type: "template_list", templates: listTemplates() });
-}
-
-export async function handleApplyTemplate(ctx: HandlerContext, msg: WsApplyTemplate): Promise<void> {
-  const templateId = msg.templateId;
-  if (!templateId || typeof templateId !== "string" || !templateId.trim()) {
-    ctx.send({ type: "error", message: "Template ID is required" });
-    return;
-  }
-  const template = getTemplate(templateId.trim());
-  if (!template) {
-    ctx.send({ type: "error", message: `Unknown template: ${templateId}` });
-    return;
-  }
-  try {
-    // If no active session, create one for the template
-    let activeAppSessionId = ctx.getActiveAppSessionId();
-    if (!activeAppSessionId) {
-      const { appSessionId, sessionDir } = await ctx.createSessionDir(template.name);
-      activeAppSessionId = appSessionId;
-      ctx.setActiveAppSessionId(appSessionId);
-      ctx.setActiveSessionDir(sessionDir);
-
-      // Restart file watcher to the new session directory
-      ctx.fileWatcher.stop();
-      ctx.fileWatcher.start(sessionDir);
-
-      const session = ctx.sessionManager.get(appSessionId);
-      if (session) {
-        ctx.send({ type: "session_started", session });
-      }
-    }
-
-    const dir = ctx.getActiveDir();
-    await applyTemplate(template, dir);
-    const git = ctx.getActiveGitManager();
-    await git.autoCommit(`Apply template: ${template.name}`);
-    // Restart Vite so it picks up the new project files
-    // Note: the install command from shipit.yaml is handled by PreviewManager
-    // when it starts the preview (see preview-manager.ts / install-runner.ts).
-    ctx.previewManager.restart(dir);
-    ctx.send({ type: "template_applied", templateId: template.id, name: template.name });
-  } catch (err) {
-    ctx.send({ type: "error", message: `Failed to apply template: ${getErrorMessage(err)}` });
-  }
 }
 
 export async function handleHomeCreateRepoWithTemplate(ctx: HandlerContext, msg: WsHomeCreateRepoWithTemplate): Promise<void> {

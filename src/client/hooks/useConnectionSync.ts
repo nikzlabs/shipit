@@ -85,7 +85,13 @@ export function useConnectionSync(params: {
       // Restore saved agent preference on connect (per-connection state)
       const savedAgent = getSavedAgentId();
       if (savedAgent !== "claude") {
-        send({ type: "set_agent", agentId: savedAgent });
+        fetch("/api/settings/agent", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agentId: savedAgent }),
+        }).catch((err) => {
+          console.error("[api] Failed to restore agent preference:", err);
+        });
       }
     }
     if (status === "closed") {

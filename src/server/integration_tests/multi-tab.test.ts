@@ -281,8 +281,9 @@ describe("Integration: multi-tab scenarios", () => {
     const tab2 = await TestClient.connect(port);
     await tab2.receive(); // preview_status
 
-    // Tab 1 sends full_reset
-    tab1.send({ type: "full_reset" } as any);
+    // Full reset via HTTP — broadcasts full_reset_complete to all WS clients
+    const res = await app.inject({ method: "POST", url: "/api/reset" });
+    expect(res.statusCode).toBe(200);
 
     // Both tabs should receive full_reset_complete (broadcast)
     const tab1Reset = await drainUntil(tab1, (m) => m.type === "full_reset_complete");

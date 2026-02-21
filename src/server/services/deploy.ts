@@ -1,10 +1,54 @@
 /**
- * Deploy mutation services — save/delete deploy configuration.
+ * Deploy services — reads (history, targets, setup) and mutations
+ * (save/delete deploy configuration).
  */
 
 import type { DeploymentManager } from "../deployment-manager.js";
 import type { DeploymentStore } from "../deployment-store.js";
 import { ServiceError } from "./types.js";
+
+// ---- Read operations ----
+
+/** Get deploy history for a session. */
+export function getDeployHistory(deploymentStore: DeploymentStore, sessionId: string) {
+  return deploymentStore.getHistory(sessionId);
+}
+
+/** Get deploy targets list. */
+export function getDeployTargets(deploymentManager: DeploymentManager) {
+  return deploymentManager.getTargets();
+}
+
+/** Get project deploy config for all targets. */
+export function getProjectSettings(
+  deploymentManager: DeploymentManager,
+  deploymentStore: DeploymentStore,
+  sessionId: string,
+) {
+  const targets = deploymentManager.getTargets();
+  const deployConfig: Record<string, { configured: boolean; projectName?: string }> = {};
+  for (const t of targets) {
+    const config = deploymentStore.loadConfig(sessionId, t.id);
+    deployConfig[t.id] = config
+      ? { configured: true, projectName: config.projectName }
+      : { configured: false };
+  }
+  return deployConfig;
+}
+
+/** Get deploy setup (targets + project settings combined). */
+export function getDeploySetup(
+  deploymentManager: DeploymentManager,
+  deploymentStore: DeploymentStore,
+  sessionId: string,
+) {
+  return {
+    targets: getDeployTargets(deploymentManager),
+    projectSettings: getProjectSettings(deploymentManager, deploymentStore, sessionId),
+  };
+}
+
+// ---- Mutation operations ----
 
 /** Save deploy configuration. */
 export function saveDeployConfig(

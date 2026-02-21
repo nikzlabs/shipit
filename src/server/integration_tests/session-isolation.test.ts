@@ -104,22 +104,23 @@ describe("Integration: Session isolation — creation", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    // --- Session A: create via template (simpler than send_message + system.init) ---
-    client.send({ type: "apply_template", templateId: "static-html" });
-    const sessionAMsg = await client.receive(); // session_started
-    expect(sessionAMsg.type).toBe("session_started");
-    const sessionA = (sessionAMsg as any).session;
-    await client.receive(); // template_applied
+    // --- Session A: create via template using HTTP ---
+    const resA = await app.inject({
+      method: "POST",
+      url: "/api/sessions/new/template",
+      payload: { templateId: "static-html" },
+    });
+    expect(resA.statusCode).toBe(200);
+    const sessionA = resA.json().session;
 
-    // --- Session B: start a new session ---
-    client.send({ type: "new_session" });
-    await client.receive(); // session_list
-
-    client.send({ type: "apply_template", templateId: "react-vite-ts" });
-    const sessionBMsg = await client.receive(); // session_started
-    expect(sessionBMsg.type).toBe("session_started");
-    const sessionB = (sessionBMsg as any).session;
-    await client.receive(); // template_applied
+    // --- Session B: create via template using HTTP ---
+    const resB = await app.inject({
+      method: "POST",
+      url: "/api/sessions/new/template",
+      payload: { templateId: "react-vite-ts" },
+    });
+    expect(resB.statusCode).toBe(200);
+    const sessionB = resB.json().session;
 
     // Sessions should have different IDs and directories
     expect(sessionA.id).not.toBe(sessionB.id);
@@ -142,13 +143,15 @@ describe("Integration: Session isolation — creation", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    // Create a session via apply_template
-    client.send({ type: "apply_template", templateId: "static-html" });
-    const sessionMsg = await client.receive();
-    expect(sessionMsg.type).toBe("session_started");
-    const session = (sessionMsg as any).session;
+    // Create a session via apply_template using HTTP
+    const templateRes = await app.inject({
+      method: "POST",
+      url: "/api/sessions/new/template",
+      payload: { templateId: "static-html" },
+    });
+    expect(templateRes.statusCode).toBe(200);
+    const session = templateRes.json().session;
     const sessionDir = session.workspaceDir;
-    await client.receive(); // template_applied
 
     // Request the file tree via HTTP
     const res = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/files` });

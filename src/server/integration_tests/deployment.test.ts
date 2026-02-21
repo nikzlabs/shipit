@@ -20,7 +20,6 @@ import {
   StubFileWatcher,
   StubDeploymentManager,
   StubDeploymentStore,
-  waitForClaude,
 } from "./test-helpers.js";
 
 describe("Integration: Deployment", () => {
@@ -31,11 +30,9 @@ describe("Integration: Deployment", () => {
   let testSessionId: string;
   let stubDeployMgr: StubDeploymentManager;
   let stubDeployStore: StubDeploymentStore;
-  let latestClaude: FakeClaudeProcess | null = null;
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-deploy-"));
-    latestClaude = null;
 
     const sessionsFile = path.join(tmpDir, "sessions.json");
     sessionManager = new SessionManager(sessionsFile);
@@ -64,11 +61,7 @@ describe("Integration: Deployment", () => {
       sessionManager,
       previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
-      claudeFactory: () => {
-        const p = new FakeClaudeProcess();
-        latestClaude = p;
-        return p as unknown as ClaudeProcess;
-      },
+      claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
       fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       deploymentManager: stubDeployMgr as unknown as DeploymentManager,
       deploymentStore: stubDeployStore as unknown as DeploymentStore,
@@ -99,101 +92,6 @@ describe("Integration: Deployment", () => {
     const data = res.json();
     expect(data.targets).toHaveLength(1);
     expect(data.targets[0].id).toBe("test-target");
-  });
-
-  it("rejects deploy_configure with invalid target", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({
-      type: "deploy_configure",
-      targetId: "nonexistent",
-      credentials: {},
-    } as any);
-    const msg = await client.receiveSkipLogs();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toMatch(/Unknown deploy target/);
-
-    client.close();
-  });
-
-  it("rejects deploy_configure without active session", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({
-      type: "deploy_configure",
-      targetId: "test-target",
-      credentials: { token: "tok123" },
-    } as any);
-    const msg = await client.receiveSkipLogs();
-
-    expect(msg.type).toBe("error");
-    expect((msg as any).message).toMatch(/No active session/);
-
-    client.close();
-  });
-
-  it("saves deploy config for active session", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // Start a session to get an active session
-    client.send({ type: "send_message", text: "hello" });
-    const claude = await waitForClaude(() => latestClaude);
-    claude.emit("event", { type: "system", subtype: "init", session_id: "cs1" });
-    claude.finish("cs1");
-
-    // Drain session messages
-    let msg;
-    do {
-      msg = await client.receiveSkipLogs();
-    } while (msg.type !== "claude_event" || (msg as any).event?.type !== "result");
-
-    // Configure deploy
-    client.send({
-      type: "deploy_configure",
-      targetId: "test-target",
-      credentials: { token: "my-token" },
-      projectName: "test-proj",
-    } as any);
-    const configMsg = await client.receiveSkipLogs();
-
-    expect(configMsg.type).toBe("deploy_config_saved");
-    expect((configMsg as any).targetId).toBe("test-target");
-
-    client.close();
-  });
-
-  it("rejects deploy_configure with empty required field", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // Create a session
-    client.send({ type: "send_message", text: "hi" });
-    const claude = await waitForClaude(() => latestClaude);
-    claude.emit("event", { type: "system", subtype: "init", session_id: "cs2" });
-    claude.finish("cs2");
-
-    // Drain messages
-    let msg;
-    do {
-      msg = await client.receiveSkipLogs();
-    } while (msg.type !== "claude_event" || (msg as any).event?.type !== "result");
-
-    // Try to configure with empty token
-    client.send({
-      type: "deploy_configure",
-      targetId: "test-target",
-      credentials: { token: "" },
-    } as any);
-    const errMsg = await client.receiveSkipLogs();
-
-    expect(errMsg.type).toBe("error");
-    expect((errMsg as any).message).toMatch(/Token is required/);
-
-    client.close();
   });
 
   it("returns deploy config status", async () => {
