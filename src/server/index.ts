@@ -536,7 +536,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   });
 
   authManager.on("auth_complete", () => {
+    agentRegistry.refreshAuth("claude");
     broadcast({ type: "auth_complete" });
+    const agents = agentRegistry.list().map((a) => ({
+      id: a.id, name: a.name, installed: a.installed,
+      authConfigured: a.authConfigured, models: a.capabilities.models,
+    }));
+    broadcast({ type: "agent_list", agents, defaultAgentId });
   });
 
   authManager.on("auth_failed", () => {

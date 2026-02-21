@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readlinkSync, writeFileSync, readFileSync } from "node:fs";
 import path from "node:path";
 import * as pty from "node-pty";
 import type { IPty } from "node-pty";
@@ -79,8 +79,66 @@ export function extractUrlFromBuffer(buffer: string): string | null {
 /** Path where Claude CLI stores credentials. */
 const CLAUDE_CONFIG_DIR = "/root/.claude";
 
+/** Path where Claude CLI stores user preferences (onboarding state, theme, etc.). */
+const CLAUDE_USER_CONFIG = "/root/.claude.json";
+
 /** Trigger phrases that indicate the code-paste URL has been printed. */
 const CODE_PASTE_TRIGGERS = ["Paste code here", "Pastecodehereifprompted"];
+
+/**
+ * Ensure the Claude CLI's onboarding wizard and workspace trust prompt
+ * are pre-configured so `claude /login` goes straight to the login flow.
+ *
+ * - `hasCompletedOnboarding` skips the first-run setup wizard.
+ * - `projects` entries with `hasTrustDialogAccepted` skip the "trust this folder?" prompt.
+ *
+ * See: https://github.com/anthropics/claude-code/issues/4714
+ */
+function ensureOnboardingComplete(): void {
+  try {
+    let config: Record<string, unknown> = {};
+    if (existsSync(CLAUDE_USER_CONFIG)) {
+      const raw = readFileSync(CLAUDE_USER_CONFIG, "utf-8");
+      config = JSON.parse(raw);
+    }
+
+    let changed = false;
+
+    if (!config.hasCompletedOnboarding) {
+      config.hasCompletedOnboarding = true;
+      changed = true;
+    }
+
+    // Pre-trust known directories so the CLI doesn't show the workspace trust prompt.
+    // /app is the container WORKDIR (where the server runs), /workspace is the data volume.
+    const projects = (config.projects ?? {}) as Record<string, Record<string, unknown>>;
+    for (const dir of ["/app", "/workspace"]) {
+      if (!projects[dir]?.hasTrustDialogAccepted) {
+        projects[dir] = { ...projects[dir], hasTrustDialogAccepted: true };
+        changed = true;
+      }
+    }
+    if (changed) config.projects = projects;
+
+    // Ensure the CLI's config directory exists. In Docker, /root/.claude is a
+    // symlink to /credentials/.claude — mkdirSync fails on a broken symlink, so
+    // resolve the target and create that instead.
+    let configDirToCreate = CLAUDE_CONFIG_DIR;
+    try {
+      configDirToCreate = readlinkSync(CLAUDE_CONFIG_DIR);
+    } catch {
+      // Not a symlink or doesn't exist — use the path directly
+    }
+    mkdirSync(configDirToCreate, { recursive: true });
+
+    if (changed) {
+      writeFileSync(CLAUDE_USER_CONFIG, JSON.stringify(config, null, 2));
+      console.log("[auth] Updated", CLAUDE_USER_CONFIG, "— onboarding + trust");
+    }
+  } catch (err) {
+    console.warn("[auth] Failed to pre-create Claude config:", err);
+  }
+}
 
 export class AuthManager extends EventEmitter {
   private proc: IPty | null = null;
@@ -131,6 +189,10 @@ export class AuthManager extends EventEmitter {
     console.log("[auth] Starting OAuth flow (node-pty)...");
     this.outputBuffer = "";
     this.authUrlEmitted = false;
+    this.wizardEnterCount = 0;
+
+    // Skip the first-run onboarding wizard by marking it complete
+    ensureOnboardingComplete();
 
     // Use a wide terminal to minimize URL wrapping
     this.proc = pty.spawn("claude", ["/login"], {
@@ -139,16 +201,31 @@ export class AuthManager extends EventEmitter {
       rows: 24,
       env: { ...process.env, HOME: "/root" } as Record<string, string>,
     });
+    console.log("[auth] Spawned claude /login (pid %d)", this.proc.pid);
+
+    // Watchdog: if no output after 15s, log diagnostic info
+    const watchdog = setTimeout(() => {
+      if (!this.authUrlEmitted && this.outputBuffer.length === 0 && this.proc) {
+        console.warn("[auth] Watchdog: no output received after 15s. Process pid:", this.proc.pid);
+        console.warn("[auth] Watchdog: sending Enter to probe");
+        this.proc.write("\r");
+      }
+    }, 15000);
+    this.proc.onExit(() => clearTimeout(watchdog));
 
     this.proc.onData((data: string) => {
       const cleaned = stripAnsi(data);
       this.outputBuffer += cleaned;
-      console.log("[auth output]", cleaned.trim());
+      if (cleaned.trim()) {
+        console.log("[auth output]", cleaned.trim());
+      } else if (data.length > 0) {
+        console.log("[auth] Received %d bytes of terminal control data", data.length);
+      }
 
-      // Wait for "Paste code here" trigger — this means the CLI has printed
-      // the code-paste URL. Extract the full URL from the buffer, joining
-      // lines that were wrapped. Truncate buffer at the trigger position so
-      // trigger text (which may be glued directly onto the URL) is excluded.
+      // Try to detect the auth URL in the accumulated output.
+      // Primary: look for "Paste code here" trigger and extract URL before it.
+      // Fallback: try extracting any auth URL from the full buffer (the trigger
+      // text may not be visible after ANSI stripping in some CLI versions).
       if (!this.authUrlEmitted) {
         const triggerPos = this.findTriggerPos();
         if (triggerPos !== -1) {
@@ -158,24 +235,20 @@ export class AuthManager extends EventEmitter {
             this.authUrlEmitted = true;
             this.emit("auth_url", url);
           }
+        } else {
+          // Fallback: check for auth URL patterns directly in the buffer
+          const url = extractAuthUrl(this.outputBuffer);
+          if (url) {
+            console.log("[auth] Detected auth URL (fallback):", url);
+            this.authUrlEmitted = true;
+            this.emit("auth_url", url);
+          }
         }
       }
 
-      // The CLI has a first-run setup wizard (theme, login method, etc.)
-      // that blocks before reaching the auth URL. Instead of detecting
-      // specific prompt characters (which may arrive in separate chunks),
-      // use a debounce: after output settles for 1s, send Enter to accept
-      // the default and proceed to the next screen.
-      if (!this.authUrlEmitted && this.wizardEnterCount < 5 && this.findTriggerPos() === -1) {
-        if (this.wizardTimer) clearTimeout(this.wizardTimer);
-        this.wizardTimer = setTimeout(() => {
-          if (!this.authUrlEmitted && this.proc && this.findTriggerPos() === -1) {
-            this.wizardEnterCount++;
-            console.log(`[auth] Wizard: output settled, sending Enter (${this.wizardEnterCount}/5)`);
-            this.proc.write("\r");
-          }
-        }, 1000);
-      }
+      // Send Enter to navigate past interactive prompts (trust, login method).
+      // Debounce: wait for output to settle before pressing Enter.
+      this.scheduleWizardEnter();
     });
 
     this.proc.onExit(({ exitCode }) => {
@@ -203,6 +276,36 @@ export class AuthManager extends EventEmitter {
         this.emit("auth_failed");
       }
     });
+  }
+
+  /**
+   * Schedule (or reschedule) the next wizard Enter keypress.
+   * Each incoming data chunk resets the debounce. After sending Enter,
+   * self-schedules the next one so we don't stall if the CLI produces
+   * no further output (common with cursor-based Ink menus).
+   */
+  private scheduleWizardEnter(): void {
+    if (this.authUrlEmitted || this.wizardEnterCount >= 10 || this.findTriggerPos() !== -1) {
+      if (this.wizardEnterCount >= 10 && !this.authUrlEmitted) {
+        console.log("[auth] Exhausted Enter attempts. Buffer (%d chars):", this.outputBuffer.length);
+        console.log("[auth] Buffer contents:", this.outputBuffer.substring(0, 500));
+      }
+      return;
+    }
+    if (this.wizardTimer) clearTimeout(this.wizardTimer);
+    // First Enter waits 2s for output to settle. Subsequent self-scheduled
+    // Enters use 3s to give the CLI time to render the next screen.
+    const delay = this.wizardEnterCount === 0 ? 2000 : 3000;
+    this.wizardTimer = setTimeout(() => {
+      if (!this.authUrlEmitted && this.proc && this.findTriggerPos() === -1 && this.wizardEnterCount < 10) {
+        this.wizardEnterCount++;
+        console.log(`[auth] Wizard: sending Enter (${this.wizardEnterCount}/10)`);
+        this.proc.write("\r");
+        // Self-schedule: if the CLI doesn't produce output after this
+        // Enter, we'll still send the next one after a longer delay.
+        this.scheduleWizardEnter();
+      }
+    }, delay);
   }
 
   /** Find the position of the first trigger phrase in the output buffer. */

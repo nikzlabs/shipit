@@ -15,6 +15,7 @@ const defaultProps: SettingsProps = {
   onApiKey: vi.fn(),
   onClearApiKey: vi.fn(),
   onStartAuth: vi.fn(),
+  onPasteCode: vi.fn(),
   gitIdentity: { name: "", email: "" },
   onGitIdentitySave: vi.fn(),
   deployTargets: [],
@@ -136,9 +137,12 @@ describe("Settings - Agent tab", () => {
     expect(screen.queryByTestId("settings-api-key-error")).not.toBeInTheDocument();
   });
 
-  it("shows Authenticate button when auth is required", () => {
+  it("shows Open Authentication Page link when auth URL is set", () => {
     render(<Settings {...defaultProps} authUrl="https://auth.example.com" />);
-    expect(screen.getByTestId("settings-api-key-submit")).toHaveTextContent("Authenticate");
+    const link = screen.getByTestId("settings-open-auth-url");
+    expect(link).toHaveTextContent("Open Authentication Page");
+    expect(link).toHaveAttribute("href", "https://auth.example.com");
+    expect(link).toHaveAttribute("target", "_blank");
   });
 
   it("shows Set API Key button when already authenticated", () => {
