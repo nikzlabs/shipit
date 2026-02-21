@@ -173,6 +173,70 @@ ShipIt uses environment variables for configuration:
 | `PORT` | `3000` | Server listening port |
 | `NODE_ENV` | — | Set to `production` in Docker |
 
+### `shipit.yaml`
+
+Each project can include a `shipit.yaml` at the workspace root to configure preview and dependency installation. All built-in templates ship with one pre-configured.
+
+```yaml
+install: npm install        # optional — shell command to install dependencies
+preview:                    # required — how to show the live preview
+  command: npm run dev      # either: shell command to start a dev server
+  # html: index.html        # or: path to an HTML file for static serving
+  ports: [5173]             # optional — ports to monitor for readiness
+  directory: packages/app   # optional — subdirectory to run from (monorepos)
+```
+
+**Fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `install` | string | No | Shell command run once before preview starts (e.g. `npm install`, `pip install -r requirements.txt`). Tracked via a marker file so it only runs once per session. |
+| `preview` | object | Yes | Preview configuration. Must contain exactly one of `command` or `html`. |
+| `preview.command` | string | One of `command`/`html` | Shell command that starts the dev server. |
+| `preview.html` | string | One of `command`/`html` | Path to an HTML file served via ShipIt's bundled Vite with HMR. |
+| `preview.ports` | integer array | No | Explicit ports to watch for server readiness. If omitted, ShipIt auto-detects from common ports. |
+| `preview.directory` | string | No | Subdirectory (relative to workspace root) where install and preview commands run. |
+
+**Resolution fallbacks** — when `shipit.yaml` is absent, ShipIt infers the config automatically:
+
+1. `package.json` with a `scripts.dev` field → runs `npm run dev` (port extracted from the script if present)
+2. `index.html` at the workspace root → static HTML mode
+3. Nothing found → no preview
+
+Only `shipit.yaml` can specify an `install` command; the fallbacks skip dependency installation.
+
+**Examples:**
+
+```yaml
+# Static site — no dependencies, just serve a file
+preview:
+  html: index.html
+```
+
+```yaml
+# React + Vite
+install: npm install
+preview:
+  command: npm run dev
+  ports: [5173]
+```
+
+```yaml
+# Next.js on a custom port
+install: npm install
+preview:
+  command: next dev --port 3001
+  ports: [3001]
+```
+
+```yaml
+# Python app
+install: pip install -r requirements.txt
+preview:
+  command: python -m http.server 8000
+  ports: [8000]
+```
+
 ## Testing
 
 Tests use [Vitest](https://vitest.dev/) with two project configurations:
