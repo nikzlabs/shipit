@@ -815,15 +815,12 @@ export function useAppCallbacks(params: {
     savePermissionMode(mode);
   }, [setPermissionMode]);
 
-  const handleAgentChange = useCallback(async (agentId: AgentId) => {
+  const handleAgentChange = useCallback((agentId: AgentId) => {
     setActiveAgentId(agentId);
     saveAgentId(agentId);
-    try {
-      await apiPost("/api/settings/agent", { agentId });
-    } catch (err) {
-      console.error("[api] Set agent failed:", err);
-    }
-  }, [apiPost, setActiveAgentId]);
+    // Per-connection state — must go through WS, not HTTP
+    send({ type: "set_agent", agentId });
+  }, [send, setActiveAgentId]);
 
   const handleClearLogs = useCallback(() => {
     setLogEntries([]);

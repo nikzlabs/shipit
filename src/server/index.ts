@@ -959,6 +959,20 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         case "clear_logs": return terminalHandlers.handleClearLogs(ctx);
 
         // ---- Settings operations ----
+        case "set_agent": {
+          // Per-connection state: must stay on WS (HTTP can't set WS connection state)
+          const agentId = msg.agentId;
+          const info = agentRegistry.get(agentId);
+          if (!info) { send({ type: "error", message: `Unknown agent: ${agentId}` }); return; }
+          if (!info.installed) { send({ type: "error", message: `${info.name} CLI is not installed` }); return; }
+          if (!info.authConfigured) {
+            const envKey = agentId === "codex" ? "OPENAI_API_KEY" : "";
+            send({ type: "error", message: `${envKey || "API key"} is not set. Add it in Settings → Agents.` });
+            return;
+          }
+          ctx.setActiveAgentId(agentId);
+          return;
+        }
         case "start_auth": return settingsHandlers.handleStartAuth(ctx);
         case "paste_auth_code": return settingsHandlers.handlePasteAuthCode(ctx, msg);
 

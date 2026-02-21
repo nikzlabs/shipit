@@ -82,16 +82,10 @@ export function useConnectionSync(params: {
       send({ type: "get_chat_history", sessionId: sessionIdRef.current });
     }
     if (status === "open") {
-      // Restore saved agent preference on connect (per-connection state)
+      // Restore saved agent preference on connect (per-connection WS state)
       const savedAgent = getSavedAgentId();
       if (savedAgent !== "claude") {
-        fetch("/api/settings/agent", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ agentId: savedAgent }),
-        }).catch((err) => {
-          console.error("[api] Failed to restore agent preference:", err);
-        });
+        send({ type: "set_agent", agentId: savedAgent });
       }
     }
     if (status === "closed") {

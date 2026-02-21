@@ -43,10 +43,27 @@ export async function getBootstrapData(deps: {
   defaultAgentId: AgentId;
   workspaceDir: string;
 }): Promise<BootstrapData> {
+  // Each call is wrapped individually so a failure in one (e.g. expired
+  // GitHub token causing listUserRepos to throw) doesn't kill the entire
+  // bootstrap — the other data still loads.
   const [sessions, settings, githubRepos] = await Promise.all([
-    listSessions(deps.sessionManager, deps.createGitManager),
-    getGlobalSettings(deps.credentialStore, deps.agentRegistry, deps.defaultAgentId, deps.workspaceDir),
-    getGitHubRepos(deps.githubAuthManager),
+    listSessions(deps.sessionManager, deps.createGitManager).catch((err) => {
+      console.error("[bootstrap] Failed to list sessions:", err);
+      return [] as Awaited<ReturnType<typeof listSessions>>;
+    }),
+    getGlobalSettings(deps.credentialStore, deps.agentRegistry, deps.defaultAgentId, deps.workspaceDir).catch((err) => {
+      console.error("[bootstrap] Failed to get global settings:", err);
+      return {
+        gitIdentity: { name: "", email: "" },
+        systemPrompt: "",
+        agents: listAgents(deps.agentRegistry),
+        defaultAgentId: deps.defaultAgentId,
+      } as Awaited<ReturnType<typeof getGlobalSettings>>;
+    }),
+    getGitHubRepos(deps.githubAuthManager).catch((err) => {
+      console.error("[bootstrap] Failed to fetch GitHub repos:", err);
+      return [] as Awaited<ReturnType<typeof getGitHubRepos>>;
+    }),
   ]);
 
   return {

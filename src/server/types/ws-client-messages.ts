@@ -1,4 +1,5 @@
 import type { ImageAttachment, FileContextRef, PermissionMode } from "./attachment-types.js";
+import type { AgentId } from "../agents/agent-process.js";
 import type { WsGeneratePRDescription } from "./github-types.js";
 import type { WsTerminalStart, WsTerminalInput, WsTerminalResize, WsClearLogs } from "./terminal-types.js";
 import type { WsForkThread, WsSwitchThread } from "./thread-types.js";
@@ -67,6 +68,14 @@ export interface WsStartAuth {
   type: "start_auth";
 }
 
+// ---- Agent selection (per-connection state, must stay on WS) ----
+
+/** Client → Server: set the active agent for this connection. */
+export interface WsSetAgentMessage {
+  type: "set_agent";
+  agentId: AgentId;
+}
+
 // ---- Interrupt messages ----
 
 /** Client → Server: interrupt the currently running Claude process. */
@@ -125,6 +134,7 @@ export type WsClientMessage =
   | WsClearLogs
   | WsAnswerQuestion
   | WsListTemplates
+  | WsSetAgentMessage
   | WsForkThread
   | WsSwitchThread
   | WsPasteAuthCode
