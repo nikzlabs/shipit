@@ -410,6 +410,7 @@ export default function App() {
         {rightTab === "preview" ? (
           <PreviewFrame
             preview={preview}
+            sessionId={sessionIdRef.current}
             detectedPorts={detectedPorts}
             selectedPort={selectedPort}
             onSelectPort={callbacks.handleSelectPort}
