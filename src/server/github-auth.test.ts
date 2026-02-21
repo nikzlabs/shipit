@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execSync } from "node:child_process";
 import { GitHubAuthManager, validateGitHubToken } from "./github-auth.js";
 
 describe("GitHubAuthManager", () => {
@@ -12,11 +11,6 @@ describe("GitHubAuthManager", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-github-auth-"));
     tokenPath = path.join(tmpDir, ".github-token");
-
-    // Initialize a git repo so configureGitCredentials works
-    execSync("git init", { cwd: tmpDir, stdio: "pipe" });
-    execSync('git config user.email "test@test.com"', { cwd: tmpDir, stdio: "pipe" });
-    execSync('git config user.name "Test"', { cwd: tmpDir, stdio: "pipe" });
   });
 
   afterEach(() => {

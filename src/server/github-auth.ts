@@ -108,8 +108,8 @@ export class GitHubAuthManager extends EventEmitter {
       console.error("[github-auth] Failed to persist token:", err);
     }
 
-    // Configure git to use the token
-    this.configureGitCredentials();
+    // Git credentials are configured per-session when sessions are created/switched.
+    // No need to configure here — workspaceDir is not a git repo.
 
     this.emit("auth_complete");
     return true;
@@ -184,14 +184,7 @@ export class GitHubAuthManager extends EventEmitter {
       // ignore
     }
 
-    try {
-      execSync("git config --unset credential.helper", {
-        cwd: this.workspaceDir,
-        stdio: "pipe",
-      });
-    } catch {
-      // ignore — may not be set
-    }
+    // Per-session git credentials will stop being configured once _token is null.
   }
 
   /**
@@ -593,7 +586,7 @@ export class GitHubAuthManager extends EventEmitter {
     if (info) {
       this._username = info.username;
       this._avatarUrl = info.avatarUrl;
-      this.configureGitCredentials();
+      // Git credentials are configured per-session when sessions are created/switched.
     } else {
       // Token is invalid — clear it
       this.clearCredentials();
