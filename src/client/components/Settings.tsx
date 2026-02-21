@@ -16,6 +16,7 @@ export interface SettingsProps {
   onApiKey: (key: string) => void;
   onClearApiKey: () => void;
   onStartAuth: () => void;
+  onPasteCode: (code: string) => void;
   agentList?: AgentOption[];
   onSetAgentEnv?: (agentId: string, key: string, value: string) => void;
   onFullReset?: () => void;
@@ -41,6 +42,7 @@ export function Settings({
   onApiKey,
   onClearApiKey,
   onStartAuth,
+  onPasteCode,
   agentList = [],
   onSetAgentEnv,
   onFullReset,
@@ -60,6 +62,7 @@ export function Settings({
   const [token, setToken] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [apiKeyError, setApiKeyError] = useState("");
+  const [authCode, setAuthCode] = useState("");
   const [authPending, setAuthPending] = useState(false);
   const [codexKey, setCodexKey] = useState("");
   const [confirmingLogout, setConfirmingLogout] = useState(false);
@@ -342,9 +345,46 @@ export function Settings({
                     </div>
                   </div>
 
-                  <div className="space-y-2">
+                  {authUrl && (
+                    <div className="space-y-3">
+                      <a
+                        href={authUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="block w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors text-center"
+                        data-testid="settings-open-auth-url"
+                      >
+                        Open Authentication Page
+                      </a>
+                      <div className="space-y-2">
+                        <label className="block text-sm text-gray-600 dark:text-gray-400">
+                          After signing in, paste the authorization code:
+                        </label>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={authCode}
+                            onChange={(e) => setAuthCode(e.target.value)}
+                            placeholder="Paste code here..."
+                            className="flex-1 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-4 py-2.5 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono"
+                            data-testid="settings-auth-code-input"
+                          />
+                          <button
+                            onClick={() => { if (authCode.trim()) onPasteCode(authCode.trim()); }}
+                            disabled={!authCode.trim()}
+                            className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                            data-testid="settings-auth-code-submit"
+                          >
+                            Submit
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="space-y-2 pt-2 border-t border-gray-200 dark:border-gray-700">
                     <p className="text-sm text-gray-600 dark:text-gray-400">
-                      Enter your Anthropic API key to authenticate:
+                      Or authenticate with an API key:
                     </p>
                     <input
                       ref={apiKeyInputRef}
@@ -363,7 +403,7 @@ export function Settings({
                       className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       data-testid="settings-api-key-submit"
                     >
-                      Authenticate
+                      Set API Key
                     </button>
                   </div>
                 </div>
