@@ -272,6 +272,7 @@ export class PreviewManager extends EventEmitter {
       cwd,
       env: { ...process.env },
       stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
     });
 
     this.proc.stdout!.on("data", (chunk: Buffer) => {
@@ -352,7 +353,21 @@ export class PreviewManager extends EventEmitter {
   stop(): void {
     if (this.proc) {
       console.log("[preview-manager] stopping preview process");
-      this.proc.kill("SIGTERM");
+      // Kill the entire process group (negative PID) so child processes
+      // spawned by the shell (npm → node → vite) are also terminated.
+      // Command-mode processes are spawned with detached: true to get their
+      // own process group.
+      const pid = this.proc.pid;
+      if (pid) {
+        try {
+          process.kill(-pid, "SIGTERM");
+        } catch {
+          // Process group may already be gone — fall back to direct kill
+          this.proc.kill("SIGTERM");
+        }
+      } else {
+        this.proc.kill("SIGTERM");
+      }
       this.proc = null;
       this._running = false;
       this._ports = [];
