@@ -122,7 +122,7 @@ describe("auto-push: skip conditions", () => {
     // Create bare remote so the only missing condition is auth
     const bareDir = path.join(tmpDir, "bare-remote.git");
     fs.mkdirSync(bareDir, { recursive: true });
-    execSync("git init --bare", { cwd: bareDir, env: { ...process.env, HOME: tmpDir } });
+    execSync("git init --bare -b main", { cwd: bareDir, env: { ...process.env, HOME: tmpDir } });
     execSync(`git remote add origin ${bareDir}`, {
       cwd: sessionDir,
       env: { ...process.env, HOME: tmpDir },

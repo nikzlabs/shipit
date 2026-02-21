@@ -242,12 +242,12 @@ describe("Integration: home_send_with_repo", () => {
   function createBareRepo(): string {
     const bareDir = path.join(tmpDir, "bare-remote.git");
     fs.mkdirSync(bareDir, { recursive: true });
-    execSync("git init --bare", { cwd: bareDir, stdio: "ignore" });
+    execSync("git init --bare -b main", { cwd: bareDir, stdio: "ignore" });
 
     // Create a temporary working tree, commit a file, and push to the bare repo
     const workTree = path.join(tmpDir, "bare-work");
     fs.mkdirSync(workTree, { recursive: true });
-    execSync("git init", { cwd: workTree, stdio: "ignore" });
+    execSync("git init -b main", { cwd: workTree, stdio: "ignore" });
     execSync("git config user.email 'test@test.com'", { cwd: workTree, stdio: "ignore" });
     execSync("git config user.name 'Test'", { cwd: workTree, stdio: "ignore" });
     execSync("git config commit.gpgsign false", { cwd: workTree, stdio: "ignore" });
