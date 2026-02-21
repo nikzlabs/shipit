@@ -14,10 +14,12 @@ import type { DeployPhase } from "../components/DeployModal.js";
 import type { ThreadInfo } from "../components/ThreadIndicator.js";
 import type { AgentOption } from "../components/AgentPicker.js";
 import type {
-  WsClientMessage, FeatureInfo,
+  WsClientMessage, FeatureInfo, DeployTargetInfo, DeploymentRecord,
   PermissionMode, FileContextRef, AgentId,
 } from "../../server/types.js";
+import type { UsageStats } from "../components/UsageModal.js";
 import { savePermissionMode, saveAgentId } from "../utils/local-storage.js";
+import { useApi } from "./useApi.js";
 
 import type { TurnDiffData } from "../components/DiffPanel.js";
 
@@ -89,6 +91,13 @@ export function useAppCallbacks(params: {
   setTurnDiff: Dispatch<SetStateAction<TurnDiffData | null>>;
   setLastCommitPair: Dispatch<SetStateAction<{ from: string; to: string } | null>>;
   setDiffBadgeCount: Dispatch<SetStateAction<number>>;
+  setDocFiles: Dispatch<SetStateAction<string[]>>;
+  setImportSearchResults: Dispatch<SetStateAction<Array<{ fullName: string; description: string | null; private: boolean; defaultBranch: string; cloneUrl: string }>>>;
+  setAllUsageStats: Dispatch<SetStateAction<UsageStats | null>>;
+  setDeployHistory: Dispatch<SetStateAction<DeploymentRecord[]>>;
+  setDeployTargets: Dispatch<SetStateAction<DeployTargetInfo[]>>;
+  setDeployConfigStatus: Dispatch<SetStateAction<Record<string, { configured: boolean; projectName?: string }>>>;
+  setFeatures: Dispatch<SetStateAction<FeatureInfo[]>>;
   lastCommitPair: { from: string; to: string } | null;
   turnDiff: TurnDiffData | null;
 
@@ -118,8 +127,12 @@ export function useAppCallbacks(params: {
     disableAutoFix,
     setSelectedPort, setPrCurrentBranch, setPrRemoteBranches,
     setTurnDiff, setLastCommitPair, setDiffBadgeCount,
+    setDocFiles, setImportSearchResults, setAllUsageStats,
+    setDeployHistory, setDeployTargets, setDeployConfigStatus, setFeatures,
     lastCommitPair, turnDiff,
   } = params;
+
+  const { get: apiGet } = useApi();
 
   // Internal session resume (no navigation) — used by popstate/URL changes
   const resumeSessionInternal = useCallback(
@@ -228,8 +241,11 @@ export function useAppCallbacks(params: {
   );
 
   const handleGitRefresh = useCallback(() => {
-    send({ type: "get_git_log" });
-  }, [send]);
+    if (!sessionIdRef.current) return;
+    apiGet<{ commits: GitCommit[] }>(`/api/sessions/${sessionIdRef.current}/git/log`)
+      .then((d) => setGitCommits(d.commits))
+      .catch((err) => console.error("[api] Failed to fetch git log:", err));
+  }, [apiGet, sessionIdRef, setGitCommits]);
 
   const handleRollback = useCallback(
     (hash: string) => {
@@ -288,25 +304,37 @@ export function useAppCallbacks(params: {
   );
 
   const handleDocRefresh = useCallback(() => {
-    send({ type: "list_docs" });
-  }, [send]);
+    if (!sessionIdRef.current) return;
+    apiGet<{ files: string[] }>(`/api/sessions/${sessionIdRef.current}/docs`)
+      .then((d) => setDocFiles(d.files))
+      .catch((err) => console.error("[api] Failed to fetch docs:", err));
+  }, [apiGet, sessionIdRef, setDocFiles]);
 
   const handleSelectPort = useCallback((port: number) => {
     setSelectedPort(port);
   }, [setSelectedPort]);
 
   const handleFileTreeRefresh = useCallback(() => {
-    send({ type: "get_file_tree" });
-  }, [send]);
+    if (!sessionIdRef.current) return;
+    apiGet<{ tree: FileTreeNode[] }>(`/api/sessions/${sessionIdRef.current}/files`)
+      .then((d) => setFileTree(d.tree))
+      .catch((err) => console.error("[api] Failed to fetch file tree:", err));
+  }, [apiGet, sessionIdRef, setFileTree]);
 
   const handleFileClick = useCallback(
     (filePath: string) => {
       setViewingFile(filePath);
       setViewingFileContent(null);
       setViewingFileBinary(false);
-      send({ type: "get_file_content", path: filePath });
+      if (!sessionIdRef.current) return;
+      apiGet<{ content: string; isBinary?: boolean }>(`/api/sessions/${sessionIdRef.current}/files/${filePath}`)
+        .then((d) => {
+          setViewingFileContent(d.content);
+          setViewingFileBinary(d.isBinary ?? false);
+        })
+        .catch((err) => console.error("[api] Failed to fetch file content:", err));
     },
-    [send, setViewingFile, setViewingFileContent, setViewingFileBinary]
+    [apiGet, sessionIdRef, setViewingFile, setViewingFileContent, setViewingFileBinary]
   );
 
   const handleFileViewerClose = useCallback(() => {
@@ -319,9 +347,12 @@ export function useAppCallbacks(params: {
     (filePath: string) => {
       setSelectedDoc(filePath);
       setDocContent(null);
-      send({ type: "get_doc", path: filePath });
+      if (!sessionIdRef.current) return;
+      apiGet<{ content: string }>(`/api/sessions/${sessionIdRef.current}/docs/${filePath}`)
+        .then((d) => setDocContent(d.content))
+        .catch((err) => console.error("[api] Failed to fetch doc:", err));
     },
-    [send, setSelectedDoc, setDocContent]
+    [apiGet, sessionIdRef, setSelectedDoc, setDocContent]
   );
 
   const handleAnswerQuestion = useCallback(
@@ -452,13 +483,22 @@ export function useAppCallbacks(params: {
   );
 
   const handlePRRequestBranches = useCallback(() => {
-    send({ type: "github_list_branches" });
-  }, [send]);
+    if (!sessionIdRef.current) return;
+    apiGet<{ current: string; remote: string[] }>(`/api/sessions/${sessionIdRef.current}/git/branches`)
+      .then((d) => {
+        setPrCurrentBranch(d.current);
+        setPrRemoteBranches(d.remote);
+      })
+      .catch((err) => console.error("[api] Failed to fetch branches:", err));
+  }, [apiGet, sessionIdRef, setPrCurrentBranch, setPrRemoteBranches]);
 
   const handleUsageBadgeClick = useCallback(() => {
-    send({ type: "get_usage_stats" });
     setShowUsageModal(true);
-  }, [send, setShowUsageModal]);
+    if (!sessionIdRef.current) return;
+    apiGet<{ stats: UsageStats }>(`/api/sessions/${sessionIdRef.current}/usage`)
+      .then((d) => setAllUsageStats(d.stats))
+      .catch((err) => console.error("[api] Failed to fetch usage stats:", err));
+  }, [apiGet, sessionIdRef, setShowUsageModal, setAllUsageStats]);
 
   const handleSettingsOpen = useCallback((tab?: "agent" | "github" | "git" | "instructions" | "advanced" | "deploy") => {
     send({ type: "get_global_settings" });
@@ -467,9 +507,16 @@ export function useAppCallbacks(params: {
   }, [send, setInitialSettingsTab, setSettingsOpen]);
 
   const handleDeployTabSelected = useCallback(() => {
-    send({ type: "list_deploy_targets" });
-    send({ type: "get_project_settings" });
-  }, [send]);
+    if (!sessionIdRef.current) return;
+    apiGet<{ targets: DeployTargetInfo[]; projectSettings: Record<string, { configured: boolean; projectName?: string }> }>(
+      `/api/sessions/${sessionIdRef.current}/deploy/setup`,
+    )
+      .then((d) => {
+        setDeployTargets(d.targets);
+        setDeployConfigStatus(d.projectSettings);
+      })
+      .catch((err) => console.error("[api] Failed to fetch deploy setup:", err));
+  }, [apiGet, sessionIdRef, setDeployTargets, setDeployConfigStatus]);
 
   const handleInstructionsSave = useCallback(
     (content: string) => {
@@ -501,13 +548,20 @@ export function useAppCallbacks(params: {
   );
 
   const handleDeployOpen = useCallback(() => {
-    send({ type: "list_deploy_targets" });
-    send({ type: "get_project_settings" });
     setDeployStatus(null);
     setLastDeployUrl(null);
     setLastDeployError(null);
     setShowDeployModal(true);
-  }, [send, setDeployStatus, setLastDeployUrl, setLastDeployError, setShowDeployModal]);
+    if (!sessionIdRef.current) return;
+    apiGet<{ targets: DeployTargetInfo[]; projectSettings: Record<string, { configured: boolean; projectName?: string }> }>(
+      `/api/sessions/${sessionIdRef.current}/deploy/setup`,
+    )
+      .then((d) => {
+        setDeployTargets(d.targets);
+        setDeployConfigStatus(d.projectSettings);
+      })
+      .catch((err) => console.error("[api] Failed to fetch deploy setup:", err));
+  }, [apiGet, sessionIdRef, setDeployStatus, setLastDeployUrl, setLastDeployError, setShowDeployModal, setDeployTargets, setDeployConfigStatus]);
 
   const handleDeployConfigure = useCallback(
     (targetId: string, credentials: Record<string, string>, projectName?: string) => {
@@ -535,8 +589,11 @@ export function useAppCallbacks(params: {
   );
 
   const handleDeployGetHistory = useCallback(() => {
-    send({ type: "get_deploy_history" });
-  }, [send]);
+    if (!sessionIdRef.current) return;
+    apiGet<{ deployments: DeploymentRecord[] }>(`/api/sessions/${sessionIdRef.current}/deploy/history`)
+      .then((d) => setDeployHistory(d.deployments))
+      .catch((err) => console.error("[api] Failed to fetch deploy history:", err));
+  }, [apiGet, sessionIdRef, setDeployHistory]);
 
   const handleDeployDeleteConfig = useCallback(
     (targetId: string) => {
@@ -558,8 +615,10 @@ export function useAppCallbacks(params: {
   }, [send]);
 
   const handleFeatureRefresh = useCallback(() => {
-    send({ type: "list_features" });
-  }, [send]);
+    apiGet<{ features: FeatureInfo[] }>("/api/features")
+      .then((d) => setFeatures(d.features))
+      .catch((err) => console.error("[api] Failed to fetch features:", err));
+  }, [apiGet, setFeatures]);
 
   const handleFeatureStartSession = useCallback(
     (feature: FeatureInfo) => {
@@ -607,9 +666,13 @@ export function useAppCallbacks(params: {
 
   const handleImportSearch = useCallback(
     (query: string) => {
-      send({ type: "github_search_repos", query });
+      apiGet<{ repos: Array<{ fullName: string; description: string | null; private: boolean; defaultBranch: string; cloneUrl: string }> }>(
+        `/api/github/repos?q=${encodeURIComponent(query)}`,
+      )
+        .then((d) => setImportSearchResults(d.repos))
+        .catch((err) => console.error("[api] Failed to search repos:", err));
     },
-    [send],
+    [apiGet, setImportSearchResults],
   );
 
   const handleMergePr = useCallback(
@@ -662,28 +725,37 @@ export function useAppCallbacks(params: {
   const handleTabChange = useCallback(
     (tab: RightTab) => {
       setRightTab(tab);
-      if (tab === "docs" && docFiles.length === 0) {
-        send({ type: "list_docs" });
+      if (tab === "docs" && docFiles.length === 0 && sessionIdRef.current) {
+        apiGet<{ files: string[] }>(`/api/sessions/${sessionIdRef.current}/docs`)
+          .then((d) => setDocFiles(d.files))
+          .catch((err) => console.error("[api] Failed to fetch docs:", err));
       }
-      if (tab === "files") {
-        send({ type: "get_file_tree" });
+      if (tab === "files" && sessionIdRef.current) {
+        apiGet<{ tree: FileTreeNode[] }>(`/api/sessions/${sessionIdRef.current}/files`)
+          .then((d) => setFileTree(d.tree))
+          .catch((err) => console.error("[api] Failed to fetch file tree:", err));
         setFileChangeCount(0);
       }
       if (tab === "terminal") {
         setUnreadLogCount(0);
       }
       if (tab === "features") {
-        send({ type: "list_features" });
+        apiGet<{ features: FeatureInfo[] }>("/api/features")
+          .then((d) => setFeatures(d.features))
+          .catch((err) => console.error("[api] Failed to fetch features:", err));
       }
       if (tab === "changes") {
         setDiffBadgeCount(0);
         // Lazy-load the diff if we have a commit pair but haven't loaded it yet
-        if (lastCommitPair && !turnDiff) {
-          send({ type: "get_turn_diff", fromCommit: lastCommitPair.from, toCommit: lastCommitPair.to });
+        if (lastCommitPair && !turnDiff && sessionIdRef.current) {
+          apiGet<TurnDiffData>(`/api/sessions/${sessionIdRef.current}/git/diff?from=${encodeURIComponent(lastCommitPair.from)}&to=${encodeURIComponent(lastCommitPair.to)}`)
+            .then((d) => setTurnDiff(d))
+            .catch((err) => console.error("[api] Failed to fetch diff:", err));
         }
       }
     },
-    [send, docFiles.length, setRightTab, setFileChangeCount, setUnreadLogCount, setDiffBadgeCount, lastCommitPair, turnDiff]
+    [apiGet, sessionIdRef, docFiles.length, setRightTab, setFileChangeCount, setUnreadLogCount, setDiffBadgeCount,
+     setDocFiles, setFileTree, setFeatures, setTurnDiff, lastCommitPair, turnDiff]
   );
 
   const handleDiffAcceptAll = useCallback(() => {

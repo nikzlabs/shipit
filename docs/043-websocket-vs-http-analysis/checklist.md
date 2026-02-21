@@ -2,58 +2,59 @@
 
 ## Phase 0: Infrastructure
 
-- [ ] Create shared service layer that extracts business logic from `HandlerContext`-dependent WS handlers into plain functions that accept explicit parameters (session ID, managers)
-- [ ] Add Fastify route prefix (`/api`) and JSON schema validation plugin
-- [ ] Add session ID resolution middleware (look up session dir from ID, return 404 if missing)
-- [ ] ~~Auth strategy~~ — **Decision: no auth.** Same as WebSocket today. ShipIt is single-user/container-per-user; security relies on container/network isolation. No tokens, cookies, or middleware needed.
-- [ ] Add `fetch`-based API client hook on the client (`useApi` or similar) with error handling
-- [ ] Add `GET /api/bootstrap` endpoint that returns all initial data in one response (sessions, agents, templates, GitHub status, global settings) — replaces the 5 sequential WS messages sent on connect
+- [x] Create shared service layer that extracts business logic from `HandlerContext`-dependent WS handlers into plain functions that accept explicit parameters (session ID, managers) — `src/server/services.ts`
+- [x] Add Fastify route prefix (`/api`) and JSON schema validation plugin — `src/server/api-routes.ts` with `registerApiRoutes()` + `resolveSessionDir()` middleware
+- [x] Add session ID resolution middleware (look up session dir from ID, return 404 if missing) — `resolveSessionDir()` in `src/server/api-routes.ts`
+- [x] ~~Auth strategy~~ — **Decision: no auth.** Same as WebSocket today. ShipIt is single-user/container-per-user; security relies on container/network isolation. No tokens, cookies, or middleware needed.
+- [x] Add `fetch`-based API client hook on the client (`useApi` or similar) with error handling — `src/client/hooks/useApi.ts`
+- [x] Add `GET /api/bootstrap` endpoint that returns all initial data in one response (sessions, agents, templates, GitHub status, global settings) — replaces the 5 sequential WS messages sent on connect
 
 ## Phase 1: Tier 1 — Pure data reads (GET endpoints)
 
 ### Combined endpoints (co-occurring requests)
 
-- [ ] `GET /api/bootstrap` — (Phase 0) returns `{ sessions, agents, templates, githubStatus, settings }` — replaces `list_sessions` + `list_agents` + `list_templates` + `github_get_status` + `get_global_settings`
-- [ ] `GET /api/sessions/:id/deploy/setup` — returns `{ targets, projectSettings }` — replaces `list_deploy_targets` + `get_project_settings` (called together from `handleDeployTabSelected` and `handleDeployOpen`)
+- [x] `GET /api/bootstrap` — (Phase 0) returns `{ sessions, agents, templates, githubStatus, settings }` — replaces `list_sessions` + `list_agents` + `list_templates` + `github_get_status` + `get_global_settings`
+- [x] `GET /api/sessions/:id/deploy/setup` — returns `{ targets, projectSettings }` — replaces `list_deploy_targets` + `get_project_settings` (called together from `handleDeployTabSelected` and `handleDeployOpen`)
 - [ ] `GET /api/sessions/:id/workspace-state` — returns `{ gitLog, fileTree }` — replaces `get_git_log` + `get_file_tree` (called together after `reject_changes_complete`)
 
 ### Session-scoped reads
 
-- [ ] `GET /api/sessions/:id/files` — extract from `get_file_tree`
-- [ ] `GET /api/sessions/:id/files/*path` — extract from `get_file_content` (optional query param `tree=true` to include file tree in response — for post-commit refresh when files tab is active)
-- [ ] `GET /api/sessions/:id/docs` — extract from `list_docs`
-- [ ] `GET /api/sessions/:id/docs/*path` — extract from `get_doc`
-- [ ] `GET /api/sessions/:id/git/log` — extract from `get_git_log`
-- [ ] `GET /api/sessions/:id/git/diff` — extract from `get_turn_diff` (query params: `from`, `to`)
-- [ ] `GET /api/sessions/:id/git/remotes` — extract from `github_get_remotes`
-- [ ] `GET /api/sessions/:id/git/branches` — extract from `github_list_branches`
-- [ ] `GET /api/sessions/:id/status` — extract from `get_session_status`
+- [x] `GET /api/sessions/:id/files` — extract from `get_file_tree`
+- [x] `GET /api/sessions/:id/files/*path` — extract from `get_file_content` (optional query param `tree=true` to include file tree in response — for post-commit refresh when files tab is active)
+- [x] `GET /api/sessions/:id/docs` — extract from `list_docs`
+- [x] `GET /api/sessions/:id/docs/*path` — extract from `get_doc`
+- [x] `GET /api/sessions/:id/git/log` — extract from `get_git_log`
+- [x] `GET /api/sessions/:id/git/diff` — extract from `get_turn_diff` (query params: `from`, `to`)
+- [x] `GET /api/sessions/:id/git/remotes` — extract from `github_get_remotes`
+- [x] `GET /api/sessions/:id/git/branches` — extract from `github_list_branches`
+- [x] `GET /api/sessions/:id/status` — extract from `get_session_status`
 - [ ] `GET /api/sessions/:id/history` — read-only portion of `get_chat_history` (messages + git log + file tree, without session activation side effect)
-- [ ] `GET /api/sessions/:id/deploy/history` — extract from `get_deploy_history`
-- [ ] `GET /api/sessions/:id/usage` — extract from `get_usage_stats`
-- [ ] `GET /api/sessions/:id/pr/status` — extract from `get_pr_status`
-- [ ] `GET /api/sessions/:id/threads` — extract from `list_threads`
-- [ ] `GET /api/sessions/:id/worktrees` — extract from `list_worktrees`
+- [x] `GET /api/sessions/:id/deploy/history` — extract from `get_deploy_history`
+- [x] `GET /api/sessions/:id/usage` — extract from `get_usage_stats`
+- [x] `GET /api/sessions/:id/pr/status` — extract from `get_pr_status`
+- [x] `GET /api/sessions/:id/threads` — extract from `list_threads`
+- [x] `GET /api/sessions/:id/worktrees` — extract from `list_worktrees`
 
 ### Global reads (no session context needed)
 
-- [ ] `GET /api/features` — extract from `list_features`
-- [ ] `GET /api/github/repos` — extract from `github_search_repos` (query param: `q`)
+- [x] `GET /api/features` — extract from `list_features`
+- [x] `GET /api/github/repos` — extract from `github_search_repos` (query param: `q`)
 
 ### Client updates for Phase 1
 
-- [ ] Create `useApi` hook wrapping `fetch()` with JSON parsing, error handling, and base URL
-- [ ] Update `useConnectionSync` to call `GET /api/bootstrap` on mount (before WS connects) instead of sending 5 separate WS messages
-- [ ] Update `useAppCallbacks` to call HTTP endpoints for all Tier 1 reads
+- [x] Create `useApi` hook wrapping `fetch()` with JSON parsing, error handling, and base URL — `src/client/hooks/useApi.ts`
+- [x] Update `useConnectionSync` to call `GET /api/bootstrap` on mount (before WS connects) instead of sending 5 separate WS messages
+- [x] Update `useAppCallbacks` to call HTTP endpoints for all Tier 1 reads — `src/client/hooks/useAppCallbacks.ts`
 - [ ] Update `useMessageHandler` to stop handling response types that are now HTTP (e.g., `file_tree`, `file_content`, `doc_list`, etc.)
 - [ ] Remove corresponding `case` entries from `src/server/index.ts` switch dispatcher
 - [ ] Remove unused WS message types from `WsClientMessage` / `WsServerMessage` unions in `src/server/types.ts`
 
 ### Tests for Phase 1
 
-- [ ] Add HTTP route tests using Fastify `app.inject()` for each new GET endpoint (happy path + 404/error)
+- [x] Add HTTP route tests using Fastify `app.inject()` for bootstrap endpoint (7 tests) — `src/server/integration_tests/http-bootstrap.test.ts`
+- [x] Add HTTP route tests for each new GET endpoint as they're migrated (23 tests) — `src/server/integration_tests/http-reads.test.ts`
 - [ ] Update or remove integration tests that tested the old WS message flow for migrated endpoints
-- [ ] Add client hook tests for `useApi`
+- [x] Add client hook tests for `useApi` (7 tests) — `src/client/hooks/useApi.test.ts`
 
 ## Phase 2: Tier 2 — Mutations (POST/PATCH/DELETE endpoints)
 

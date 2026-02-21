@@ -45,6 +45,7 @@ import * as templateHandlers from "./ws-handlers/template-handlers.js";
 import * as threadHandlers from "./ws-handlers/thread-handlers.js";
 import * as diffHandlers from "./ws-handlers/diff-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
+import { registerApiRoutes } from "./api-routes.js";
 export { getContextWindowSize } from "./ws-handlers/send-message.js";
 
 const WORKSPACE = "/workspace";
@@ -556,6 +557,23 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   if (startPreview) {
     previewManager.start(workspaceDir);
   }
+
+  // ---- HTTP API routes ----
+  await registerApiRoutes(app, {
+    sessionManager,
+    createGitManager,
+    agentRegistry,
+    githubAuthManager,
+    credentialStore,
+    defaultAgentId,
+    workspaceDir,
+    threadManager,
+    deploymentManager,
+    deploymentStore,
+    featureManager,
+    usageManager,
+    runnerRegistry,
+  });
 
   // Serve the built client files from dist/client/
   if (shouldServeStatic) {

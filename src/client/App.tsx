@@ -205,6 +205,8 @@ export default function App() {
     setHasSystemPrompt,
     setSelectedPort, setPrCurrentBranch, setPrRemoteBranches,
     setTurnDiff, setLastCommitPair, setDiffBadgeCount,
+    setDocFiles, setImportSearchResults, setAllUsageStats,
+    setDeployHistory, setDeployTargets, setDeployConfigStatus, setFeatures,
     lastCommitPair, turnDiff,
     sessionIdRef, prDescGeneratingRef, autoFixRetriesRef,
     disableAutoFix,
@@ -235,6 +237,15 @@ export default function App() {
     setActivity,
     setMessages,
     prStatus,
+    // Bootstrap state setters
+    setSessions,
+    setAgentList,
+    setTemplates,
+    setGithubStatus,
+    setImportSearchResults,
+    setGitIdentity,
+    setHasSystemPrompt,
+    setSystemPromptContent,
   });
 
   // ── Message handler hook ──
