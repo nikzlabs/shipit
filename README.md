@@ -199,11 +199,9 @@ preview:                    # required — how to show the live preview
 
 **Resolution fallbacks** — when `shipit.yaml` is absent, ShipIt infers the config automatically:
 
-1. `package.json` with a `scripts.dev` field → runs `npm run dev` (port extracted from the script if present)
+1. `package.json` with a `scripts.dev` field → runs `<pm> run dev` and `<pm> install` (package manager detected from `packageManager` field, then lock files, defaulting to `npm`)
 2. `index.html` at the workspace root → static HTML mode
 3. Nothing found → no preview
-
-Only `shipit.yaml` can specify an `install` command; the fallbacks skip dependency installation.
 
 **Examples:**
 

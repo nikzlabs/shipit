@@ -13,7 +13,7 @@ export type PreviewMode =
 export interface PreviewConfig {
   mode: PreviewMode;
   source: "shipit.yaml" | "package.json" | "index.html" | "none";
-  /** Shell command to install dependencies. From shipit.yaml `install` field. */
+  /** Shell command to install dependencies. From shipit.yaml `install` field or inferred from package.json. */
   install?: string;
 }
 
@@ -39,6 +39,33 @@ function extractPortFromScript(script: string): number | undefined {
     if (Number.isInteger(port) && port > 0 && port <= 65535) return port;
   }
   return undefined;
+}
+
+/**
+ * Detect the package manager for a workspace by checking (in order):
+ * 1. The `packageManager` field in the parsed package.json
+ * 2. Lock file presence (pnpm-lock.yaml, yarn.lock, bun.lockb, bun.lock)
+ * 3. Default: "npm"
+ */
+function detectPackageManager(workspaceDir: string, pkg: Record<string, unknown>): string {
+  // 1. packageManager field (e.g. "pnpm@9.1.0")
+  if (typeof pkg.packageManager === "string") {
+    const name = pkg.packageManager.split("@")[0];
+    if (name === "pnpm" || name === "yarn" || name === "bun") return name;
+  }
+
+  // 2. Lock files
+  const lockFiles: [string, string][] = [
+    ["pnpm-lock.yaml", "pnpm"],
+    ["yarn.lock", "yarn"],
+    ["bun.lockb", "bun"],
+    ["bun.lock", "bun"],
+  ];
+  for (const [file, pm] of lockFiles) {
+    if (fs.existsSync(path.join(workspaceDir, file))) return pm;
+  }
+
+  return "npm";
 }
 
 /**
@@ -151,9 +178,11 @@ export async function resolvePreviewConfig(workspaceDir: string): Promise<Previe
     const scripts = pkg.scripts as Record<string, string> | undefined;
     if (scripts?.dev) {
       const port = extractPortFromScript(scripts.dev);
+      const pm = detectPackageManager(workspaceDir, pkg);
       return {
-        mode: { kind: "command", command: "npm run dev", ports: port ? [port] : undefined },
+        mode: { kind: "command", command: `${pm} run dev`, ports: port ? [port] : undefined },
         source: "package.json",
+        install: `${pm} install`,
       };
     }
   } catch {
