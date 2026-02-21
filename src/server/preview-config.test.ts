@@ -132,7 +132,7 @@ describe("resolvePreviewConfig", () => {
     expect(config.source).toBe("package.json");
     expect(config.mode).toEqual({
       kind: "command",
-      command: "npm run dev",
+      command: "npm run dev -- --host 0.0.0.0",
       ports: [5173],
     });
     expect(config.install).toBe("npm install");
@@ -161,7 +161,7 @@ describe("resolvePreviewConfig", () => {
     const config = await resolvePreviewConfig(dir);
     expect(config.source).toBe("package.json");
     expect(config.install).toBe("pnpm install");
-    expect(config.mode).toMatchObject({ kind: "command", command: "pnpm run dev" });
+    expect(config.mode).toMatchObject({ kind: "command", command: "pnpm run dev -- --host 0.0.0.0" });
   });
 
   it("detects yarn from yarn.lock", async () => {
@@ -173,7 +173,7 @@ describe("resolvePreviewConfig", () => {
     fs.writeFileSync(path.join(dir, "yarn.lock"), "");
     const config = await resolvePreviewConfig(dir);
     expect(config.install).toBe("yarn install");
-    expect(config.mode).toMatchObject({ kind: "command", command: "yarn run dev" });
+    expect(config.mode).toMatchObject({ kind: "command", command: "yarn run dev -- --host 0.0.0.0" });
   });
 
   it("detects bun from bun.lockb", async () => {
@@ -185,7 +185,7 @@ describe("resolvePreviewConfig", () => {
     fs.writeFileSync(path.join(dir, "bun.lockb"), "");
     const config = await resolvePreviewConfig(dir);
     expect(config.install).toBe("bun install");
-    expect(config.mode).toMatchObject({ kind: "command", command: "bun run dev" });
+    expect(config.mode).toMatchObject({ kind: "command", command: "bun run dev -- --host 0.0.0.0" });
   });
 
   it("packageManager field takes priority over lock files", async () => {
@@ -197,7 +197,17 @@ describe("resolvePreviewConfig", () => {
     fs.writeFileSync(path.join(dir, "yarn.lock"), "");
     const config = await resolvePreviewConfig(dir);
     expect(config.install).toBe("pnpm install");
-    expect(config.mode).toMatchObject({ kind: "command", command: "pnpm run dev" });
+    expect(config.mode).toMatchObject({ kind: "command", command: "pnpm run dev -- --host 0.0.0.0" });
+  });
+
+  it("does not append --host for non-vite dev scripts", async () => {
+    const dir = setup();
+    fs.writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ scripts: { dev: "node server.js" } }),
+    );
+    const config = await resolvePreviewConfig(dir);
+    expect(config.mode).toMatchObject({ kind: "command", command: "npm run dev" });
   });
 
   it("handles package.json without scripts.dev", async () => {
