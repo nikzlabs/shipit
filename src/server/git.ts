@@ -38,17 +38,14 @@ export class GitManager {
       await this.git.init(["--initial-branch=main"]);
       // Disable commit signing — the workspace repo doesn't need GPG/SSH signatures
       await this.git.addConfig("commit.gpgsign", "false");
-      // Temporary identity just for the bootstrap commit — git requires one.
-      // Removed immediately after so hasIdentity() returns false and the UI
-      // prompts the user for their real name/email.
-      await this.git.addConfig("user.name", "ShipIt");
-      await this.git.addConfig("user.email", "shipit@local");
-      // Create initial commit so rollback always has a base
+      // Create initial commit so rollback always has a base.
+      // Identity is passed inline — nothing is written to local config.
       await this.git.add(".");
-      await this.git.commit("Initial commit", { "--allow-empty": null });
-      // Remove temporary identity
-      await this.git.raw(["config", "--unset", "user.name"]);
-      await this.git.raw(["config", "--unset", "user.email"]);
+      await this.git.raw([
+        "-c", "user.name=ShipIt",
+        "-c", "user.email=shipit@local",
+        "commit", "--allow-empty", "-m", "Initial commit",
+      ]);
       console.log("[git] Initialized repo");
     }
   }
