@@ -33,15 +33,16 @@ describe("Integration: Diff review", () => {
     sessionId = crypto.randomUUID();
     sessionDir = path.join(tmpDir, "sessions", sessionId);
     fs.mkdirSync(sessionDir, { recursive: true });
+    const credentialStore = createTestCredentialStore(tmpDir);
     git = new GitManager(sessionDir);
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
 
     const sessionsFile = path.join(tmpDir, "sessions.json");
     sessionManager = new SessionManager(sessionsFile);
     sessionManager.track(sessionId, "Test session", sessionDir);
 
     app = await buildApp({
-      credentialStore: createTestCredentialStore(tmpDir),
+      credentialStore,
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       previewManager: new StubPreviewManager() as unknown as PreviewManager,

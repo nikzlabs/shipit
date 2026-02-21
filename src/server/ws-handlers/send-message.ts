@@ -521,13 +521,8 @@ export async function handleSendMessage(ctx: HandlerContext, msg: WsSendMessage)
         }
         console.log("[server] Recreating missing session directory:", session.workspaceDir);
         await fs.mkdir(session.workspaceDir, { recursive: true });
-        const identity = ctx.credentialStore.getGitIdentity();
-        if (!identity) {
-          ctx.send({ type: "git_identity_required" });
-          return;
-        }
         const git = ctx.createGitManager(session.workspaceDir);
-        await git.init(identity);
+        await git.init();
       }
     }
   } else {
@@ -768,14 +763,10 @@ export async function handleHomeSendWithRepo(ctx: HandlerContext, msg: WsHomeSen
 
     if (isEmptyRepo) {
       // Empty repo: can't use worktrees. Init a fresh repo with remote configured.
-      const identity = ctx.credentialStore.getGitIdentity();
-      if (!identity) {
-        ctx.send({ type: "git_identity_required" });
-        return;
-      }
+      // Identity is inherited from global git config (GIT_CONFIG_GLOBAL).
       await fs.mkdir(sessionDir, { recursive: true });
       const sessionGit = ctx.createGitManager(sessionDir);
-      await sessionGit.init(identity);
+      await sessionGit.init();
       const cloneUrl = ctx.githubAuthManager.getAuthenticatedCloneUrl(repoUrl);
       await sessionGit.addRemote("origin", cloneUrl);
     } else {
@@ -791,14 +782,10 @@ export async function handleHomeSendWithRepo(ctx: HandlerContext, msg: WsHomeSen
       await repoGit.createWorktree(sessionDir, branchPrefix, startPoint);
     }
 
-    // Configure credentials and identity in the worktree
+    // Configure GitHub credentials in the worktree
+    // (identity is inherited from global git config automatically)
     if (ctx.githubAuthManager.authenticated) {
       ctx.githubAuthManager.configureGitCredentials(sessionDir);
-    }
-    const storedId = ctx.credentialStore.getGitIdentity();
-    if (storedId) {
-      const git = ctx.createGitManager(sessionDir);
-      await git.setIdentity(storedId.name, storedId.email);
     }
 
     // Store metadata and activate session

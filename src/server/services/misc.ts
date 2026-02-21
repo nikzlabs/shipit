@@ -7,7 +7,6 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import type { SessionManager } from "../sessions.js";
 import type { GitManager } from "../git.js";
-import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../agents/agent-registry.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { AgentId } from "../agents/agent-process.js";
@@ -39,7 +38,6 @@ export async function getBootstrapData(deps: {
   createGitManager: (dir: string) => GitManager;
   agentRegistry: AgentRegistry;
   githubAuthManager: GitHubAuthManager;
-  credentialStore: CredentialStore;
   defaultAgentId: AgentId;
   workspaceDir: string;
 }): Promise<BootstrapData> {
@@ -51,7 +49,7 @@ export async function getBootstrapData(deps: {
       console.error("[bootstrap] Failed to list sessions:", err);
       return [] as Awaited<ReturnType<typeof listSessions>>;
     }),
-    getGlobalSettings(deps.credentialStore, deps.agentRegistry, deps.defaultAgentId, deps.workspaceDir).catch((err) => {
+    getGlobalSettings(deps.agentRegistry, deps.defaultAgentId, deps.workspaceDir).catch((err) => {
       console.error("[bootstrap] Failed to get global settings:", err);
       return {
         gitIdentity: { name: "", email: "" },

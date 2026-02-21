@@ -20,6 +20,7 @@ import { ThreadManager } from "./threads.js";
 import { DeploymentManager } from "./deployment-manager.js";
 import { DeploymentStore } from "./deployment-store.js";
 import { CredentialStore } from "./credential-store.js";
+import { initGlobalGitConfig, getGitIdentity } from "./git-config.js";
 import { VercelTarget } from "./deploy-targets/vercel.js";
 import { CloudflareTarget } from "./deploy-targets/cloudflare.js";
 import { ClaudeAdapter } from "./agents/claude-adapter.js";
@@ -229,6 +230,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Credential store ----
   const credentialStore = deps.credentialStore ?? new CredentialStore(credentialsDir);
+
+  // ---- Global git config (single source of truth for identity) ----
+  // Only initialize if not already configured (tests set this up via createTestCredentialStore).
+  if (!process.env.GIT_CONFIG_GLOBAL) {
+    initGlobalGitConfig(credentialsDir);
+  }
 
   // Load persisted agent env vars into process.env before agent detection
   const storedEnv = credentialStore.getAllAgentEnv();
@@ -564,11 +571,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
     if (!opts?.skipGitInit) {
       // Initialize a fresh git repo for this session.
-      // Identity must be stored by now — the UI blocks until it's set.
-      const identity = credentialStore.getGitIdentity();
-      if (!identity) throw new Error("Cannot create session: git identity not configured");
+      // Identity is inherited from global git config (GIT_CONFIG_GLOBAL).
+      // The UI blocks until the user sets their identity, so it must exist by now.
+      if (!getGitIdentity()) throw new Error("Cannot create session: git identity not configured");
       const git = createGitManager(sessionDir);
-      await git.init(identity);
+      await git.init();
     }
 
     // Configure GitHub credentials in the new repo if available
@@ -841,28 +848,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
     // Block the UI until the user has configured a git identity.
     // This fires on every WS connect so new tabs see the overlay immediately.
-    if (!credentialStore.getGitIdentity()) {
+    if (!getGitIdentity()) {
       send({ type: "git_identity_required" });
     }
 
     // Check git identity when a session becomes active.
-    // If the session repo lacks local identity, apply from the credential store.
-    const checkGitIdentity = async (sessionDir: string) => {
-      try {
-        const git = createGitManager(sessionDir);
-        if (await git.hasIdentity()) return;
-
-        const stored = credentialStore.getGitIdentity();
-        if (stored) {
-          await git.setIdentity(stored.name, stored.email);
-          send({ type: "git_identity_set", name: stored.name, email: stored.email });
-          return;
-        }
-
-        send({ type: "git_identity_required" });
-      } catch {
-        // Session dir may not exist yet; identity will be checked after creation
-      }
+    // Identity lives in the global git config — all repos inherit it automatically.
+    const checkGitIdentity = async (_sessionDir: string) => {
+      if (getGitIdentity()) return;
+      send({ type: "git_identity_required" });
     };
 
     /** Read the system prompt file if it exists. Returns undefined when absent or empty. */
@@ -935,7 +929,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       authManager,
       get fileWatcher() { return attachedRunner?.getFileWatcher() ?? fileWatcher; },
       agentRegistry,
-      credentialStore,
       createSessionDir,
       generateText,
       getSharedRepoDir,

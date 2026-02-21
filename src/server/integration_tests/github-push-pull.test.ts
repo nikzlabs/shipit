@@ -33,8 +33,9 @@ describe("Integration: GitHub push, pull & remotes", () => {
     sessionId = crypto.randomUUID();
     const sessionDir = path.join(tmpDir, "sessions", sessionId);
     fs.mkdirSync(sessionDir, { recursive: true });
+    const credentialStore = createTestCredentialStore(tmpDir);
     const git = new GitManager(sessionDir);
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
 
     const sessionsFile = path.join(tmpDir, "sessions.json");
     const sessionManager = new SessionManager(sessionsFile);
@@ -43,7 +44,7 @@ describe("Integration: GitHub push, pull & remotes", () => {
     const githubAuthManager = new StubGitHubAuthManager();
 
     app = await buildApp({
-      credentialStore: createTestCredentialStore(tmpDir),
+      credentialStore,
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       previewManager: new StubPreviewManager() as unknown as PreviewManager,

@@ -9,6 +9,7 @@ import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../agents/agent-registry.js";
 import { ALLOWED_ENV_KEYS } from "../agents/agent-registry.js";
 import type { AgentId } from "../agents/agent-process.js";
+import { getGitIdentity, setGitIdentity as writeGitIdentity } from "../git-config.js";
 import { ServiceError } from "./types.js";
 import type { AgentInfo, GlobalSettings } from "./types.js";
 
@@ -27,12 +28,11 @@ export function listAgents(agentRegistry: AgentRegistry): AgentInfo[] {
 
 /** Get global settings (git identity, system prompt, agents). */
 export async function getGlobalSettings(
-  credentialStore: CredentialStore,
   agentRegistry: AgentRegistry,
   defaultAgentId: AgentId,
   workspaceDir: string,
 ): Promise<GlobalSettings> {
-  const stored = credentialStore.getGitIdentity();
+  const stored = getGitIdentity();
   const gitIdentity = stored
     ? { name: stored.name, email: stored.email }
     : { name: "", email: "" };
@@ -55,9 +55,8 @@ export async function getGlobalSettings(
 
 // ---- Mutation operations ----
 
-/** Set git identity (global). */
-export function setGitIdentity(
-  credentialStore: CredentialStore,
+/** Set git identity (global git config). */
+export function setGitIdentityService(
   name: string,
   email: string,
 ): { name: string; email: string } {
@@ -67,13 +66,12 @@ export function setGitIdentity(
   if (!trimmedEmail) throw new ServiceError(400, "Git email cannot be empty");
   if (trimmedName.length > 200) throw new ServiceError(400, "Git user name is too long (max 200 characters)");
   if (trimmedEmail.length > 200) throw new ServiceError(400, "Git email is too long (max 200 characters)");
-  credentialStore.setGitIdentity(trimmedName, trimmedEmail);
+  writeGitIdentity(trimmedName, trimmedEmail);
   return { name: trimmedName, email: trimmedEmail };
 }
 
 /** Save global settings (git identity and/or system prompt). */
 export async function saveGlobalSettings(
-  credentialStore: CredentialStore,
   agentRegistry: AgentRegistry,
   defaultAgentId: AgentId,
   workspaceDir: string,
@@ -88,7 +86,7 @@ export async function saveGlobalSettings(
     if (!email) throw new ServiceError(400, "Git email cannot be empty");
     if (name.length > 200) throw new ServiceError(400, "Git user name is too long (max 200 characters)");
     if (email.length > 200) throw new ServiceError(400, "Git email is too long (max 200 characters)");
-    credentialStore.setGitIdentity(name, email);
+    writeGitIdentity(name, email);
   }
 
   // Save system prompt if provided
@@ -106,7 +104,7 @@ export async function saveGlobalSettings(
     }
   }
 
-  return getGlobalSettings(credentialStore, agentRegistry, defaultAgentId, workspaceDir);
+  return getGlobalSettings(agentRegistry, defaultAgentId, workspaceDir);
 }
 
 /** Validate and set the active agent. Returns the agent ID or throws. */

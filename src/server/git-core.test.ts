@@ -3,15 +3,22 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { GitManager } from "./git.js";
+import { initGlobalGitConfig, setGitIdentity } from "./git-config.js";
 
 describe("GitManager: init & autoCommit", () => {
   let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-core-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    initGlobalGitConfig(tmpDir);
+    setGitIdentity("Test", "test@test.com");
   });
 
   afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -19,7 +26,7 @@ describe("GitManager: init & autoCommit", () => {
 
   it("initializes a new git repo with an initial commit", async () => {
     const git = new GitManager(tmpDir);
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
 
     // Should have created a .git directory
     expect(fs.existsSync(path.join(tmpDir, ".git"))).toBe(true);
@@ -32,11 +39,11 @@ describe("GitManager: init & autoCommit", () => {
 
   it("is a no-op if repo already exists", async () => {
     const git = new GitManager(tmpDir);
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
     const log1 = await git.log();
 
     // Re-init should not create another commit
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
     const log2 = await git.log();
     expect(log2).toHaveLength(log1.length);
   });
@@ -45,7 +52,7 @@ describe("GitManager: init & autoCommit", () => {
 
   it("commits new files with the given summary", async () => {
     const git = new GitManager(tmpDir);
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
 
     fs.writeFileSync(path.join(tmpDir, "hello.txt"), "hello world");
     const hash = await git.autoCommit("Add hello.txt");
@@ -59,7 +66,7 @@ describe("GitManager: init & autoCommit", () => {
 
   it("returns null when there is nothing to commit", async () => {
     const git = new GitManager(tmpDir);
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
 
     const hash = await git.autoCommit("Nothing here");
     expect(hash).toBeNull();
@@ -67,7 +74,7 @@ describe("GitManager: init & autoCommit", () => {
 
   it("commits modified files", async () => {
     const git = new GitManager(tmpDir);
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
 
     const filePath = path.join(tmpDir, "file.txt");
     fs.writeFileSync(filePath, "v1");
@@ -83,7 +90,7 @@ describe("GitManager: init & autoCommit", () => {
 
   it("commits deleted files", async () => {
     const git = new GitManager(tmpDir);
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
 
     const filePath = path.join(tmpDir, "to-delete.txt");
     fs.writeFileSync(filePath, "delete me");
@@ -97,7 +104,7 @@ describe("GitManager: init & autoCommit", () => {
 
   it("uses default message when summary is empty", async () => {
     const git = new GitManager(tmpDir);
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
 
     fs.writeFileSync(path.join(tmpDir, "file.txt"), "content");
     await git.autoCommit("");

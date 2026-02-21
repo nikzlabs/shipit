@@ -5,13 +5,13 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { buildApp } from "../index.js";
 import { GitManager } from "../git.js";
-import { CredentialStore } from "../credential-store.js";
 import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../auth.js";
 import { GitHubAuthManager } from "../github-auth.js";
 import { PreviewManager } from "../preview-manager.js";
 import { ClaudeProcess } from "../claude.js";
 import { FileWatcher } from "../file-watcher.js";
+import { setGitIdentity } from "../git-config.js";
 import type { FastifyInstance } from "fastify";
 import {
   TestClient,
@@ -29,49 +29,40 @@ describe("Integration: git identity flow", () => {
   let sessionDir: string;
   let sessionId: string;
   let sessionManager: SessionManager;
-  let origHome: string | undefined;
-  let origNoSystem: string | undefined;
+  let origGitConfigGlobal: string | undefined;
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-gitid-"));
     sessionId = crypto.randomUUID();
     sessionDir = path.join(tmpDir, "sessions", sessionId);
     fs.mkdirSync(sessionDir, { recursive: true });
+
+    // Save original GIT_CONFIG_GLOBAL so we can restore it
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
   });
 
   afterEach(async () => {
-    // Restore process.env (in case test set it)
-    if (origHome !== undefined) process.env.HOME = origHome;
-    else delete process.env.HOME;
-    if (origNoSystem !== undefined) process.env.GIT_CONFIG_NOSYSTEM = origNoSystem;
-    else delete process.env.GIT_CONFIG_NOSYSTEM;
+    // Restore GIT_CONFIG_GLOBAL
+    if (origGitConfigGlobal !== undefined) {
+      process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    } else {
+      delete process.env.GIT_CONFIG_GLOBAL;
+    }
 
     if (app) await app.close();
     fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
   /**
-   * Create a git repo in the session directory with NO identity configured.
-   * Overrides process.env so simple-git child processes ignore global config.
+   * Create a git repo in the session directory.
+   * Identity comes from the global git config (GIT_CONFIG_GLOBAL).
    */
-  async function initSessionRepoWithoutIdentity(): Promise<void> {
-    origHome = process.env.HOME;
-    origNoSystem = process.env.GIT_CONFIG_NOSYSTEM;
-    process.env.HOME = tmpDir;
-    process.env.GIT_CONFIG_NOSYSTEM = "1";
-    const { execSync } = await import("node:child_process");
-    const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", HOME: tmpDir };
-    execSync("git init -b main", { cwd: sessionDir, env });
-    execSync("git config commit.gpgsign false", { cwd: sessionDir, env });
-    // Set temporary identity, commit, then unset so the repo has no persistent identity
-    execSync("git config user.name tmp", { cwd: sessionDir, env });
-    execSync("git config user.email tmp@tmp", { cwd: sessionDir, env });
-    execSync('git commit --allow-empty -m "init"', { cwd: sessionDir, env });
-    execSync("git config --unset user.name", { cwd: sessionDir, env });
-    execSync("git config --unset user.email", { cwd: sessionDir, env });
+  async function initSessionRepo(): Promise<void> {
+    const git = new GitManager(sessionDir);
+    await git.init();
   }
 
-  async function startApp(extraDeps?: { credentialStore?: CredentialStore }): Promise<number> {
+  async function startApp(): Promise<number> {
     const sessionsFile = path.join(tmpDir, "sessions.json");
     sessionManager = new SessionManager(sessionsFile);
     sessionManager.track(sessionId, "Test session", sessionDir);
@@ -85,46 +76,50 @@ describe("Integration: git identity flow", () => {
       claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
       fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
+      credentialsDir: path.join(tmpDir, "credentials"),
       serveStatic: false,
       startPreview: false,
       portScanIntervalMs: 0,
-      ...extraDeps,
     });
     const address = await app.listen({ port: 0, host: "127.0.0.1" });
     const match = address.match(/:(\d+)$/);
     return match ? Number(match[1]) : 0;
   }
 
-  it("sends git_identity_required when activating session with missing identity", async () => {
-    await initSessionRepoWithoutIdentity();
+  it("sends git_identity_required when no global identity is set", async () => {
+    // buildApp will call initGlobalGitConfig(credentialsDir) which sets
+    // GIT_CONFIG_GLOBAL to an empty config — no identity
     port = await startApp();
 
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
 
-    // Activate the session — this triggers the per-session identity check
-    client.send({ type: "activate_session", sessionId });
-
+    // Should receive git_identity_required on connect (no global identity set)
     const identityMsg = await client.receiveType("git_identity_required");
     expect(identityMsg.type).toBe("git_identity_required");
 
     client.close();
   });
 
-  it("does not send git_identity_required when session has identity", async () => {
-    const git = new GitManager(sessionDir);
-    await git.init({ name: "Test", email: "test@test.com" });
-    await git.setIdentity("Test User", "test@example.com");
+  it("does not send git_identity_required when global identity is set", async () => {
+    // Pre-populate global git config with identity before starting the app
+    // Note: buildApp will call initGlobalGitConfig which sets GIT_CONFIG_GLOBAL.
+    // We need to set identity AFTER buildApp sets GIT_CONFIG_GLOBAL, but
+    // the check happens on WS connect. So we start the app first, set identity,
+    // then connect.
     port = await startApp();
 
+    // Now set the identity in the global config (GIT_CONFIG_GLOBAL is already set by buildApp)
+    setGitIdentity("Test User", "test@example.com");
+
+    // Also init the session repo so activate_session works
+    await initSessionRepo();
+
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
 
     // Activate the session
     client.send({ type: "activate_session", sessionId });
 
     // Should not receive git_identity_required — wait briefly to confirm
-    // (drain any remaining side-effect messages like preview_status first)
     try {
       while (true) {
         const msg = await client.receive(500);
@@ -137,31 +132,34 @@ describe("Integration: git identity flow", () => {
     client.close();
   });
 
-  it("auto-applies stored global identity instead of prompting", async () => {
-    await initSessionRepoWithoutIdentity();
-    // Pre-populate credential store with identity
-    const store = new CredentialStore(tmpDir);
-    store.setGitIdentity("Stored User", "stored@example.com");
+  it("session repos inherit identity from global git config", async () => {
+    port = await startApp();
 
-    port = await startApp({ credentialStore: store });
+    // Set identity in the global config
+    setGitIdentity("Global User", "global@example.com");
+
+    // Init a repo — it should inherit the global identity
+    await initSessionRepo();
+
+    // Verify commits use the global identity
+    const git = new GitManager(sessionDir);
+    const log = await git.log(1);
+    expect(log).toHaveLength(1);
+    expect(log[0].author).toBe("Global User");
 
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
 
-    // Activate the session — should auto-apply, not prompt
+    // Activate session — should NOT prompt for identity
     client.send({ type: "activate_session", sessionId });
 
-    // Should receive git_identity_set (auto-applied), NOT git_identity_required
-    const msg = await client.receiveType("git_identity_set");
-    expect(msg).toMatchObject({
-      type: "git_identity_set",
-      name: "Stored User",
-      email: "stored@example.com",
-    });
-
-    // Verify identity is actually configured in the session's git repo
-    const git = new GitManager(sessionDir);
-    expect(await git.hasIdentity()).toBe(true);
+    try {
+      while (true) {
+        const msg = await client.receive(500);
+        expect(msg.type).not.toBe("git_identity_required");
+      }
+    } catch {
+      // Timeout — expected
+    }
 
     client.close();
   });

@@ -58,7 +58,7 @@ import {
   saveDeployConfig,
   deleteDeployConfig,
   createCheckpoint,
-  setGitIdentity,
+  setGitIdentityService,
   saveGlobalSettings,
   setAgent,
   setAgentEnv,
@@ -672,7 +672,7 @@ export async function registerApiRoutes(
     "/api/settings/git-identity",
     async (request, reply) => {
       try {
-        return setGitIdentity(deps.credentialStore, request.body.name, request.body.email);
+        return setGitIdentityService(request.body.name, request.body.email);
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
@@ -689,7 +689,7 @@ export async function registerApiRoutes(
     async (request, reply) => {
       try {
         return await saveGlobalSettings(
-          deps.credentialStore, deps.agentRegistry, deps.defaultAgentId, deps.workspaceDir,
+          deps.agentRegistry, deps.defaultAgentId, deps.workspaceDir,
           request.body.gitIdentity, request.body.systemPrompt,
         );
       } catch (err) {
@@ -893,7 +893,7 @@ export async function registerApiRoutes(
       try {
         const result = await forkSession(
           sessionManager, createGitManager, deps.getSharedRepoDir, deps.sessionsRoot,
-          deps.credentialStore, deps.githubAuthManager, deps.threadManager,
+          deps.githubAuthManager, deps.threadManager,
           request.params.id, dir,
           request.body.branchName, request.body.startPoint,
         );

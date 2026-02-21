@@ -3,15 +3,22 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { GitManager, generateBranchPrefix } from "./git.js";
+import { initGlobalGitConfig, setGitIdentity } from "./git-config.js";
 
 describe("GitManager: branch operations", () => {
   let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-branch-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    initGlobalGitConfig(tmpDir);
+    setGitIdentity("Test", "test@test.com");
   });
 
   afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -19,7 +26,7 @@ describe("GitManager: branch operations", () => {
 
   it("creates and checks out a new branch", async () => {
     const git = new GitManager(tmpDir);
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
 
     await git.checkoutNewBranch("feature-branch");
     const branch = await git.getCurrentBranch();
@@ -28,7 +35,7 @@ describe("GitManager: branch operations", () => {
 
   it("preserves existing commits on new branch", async () => {
     const git = new GitManager(tmpDir);
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
 
     fs.writeFileSync(path.join(tmpDir, "file.txt"), "content");
     await git.autoCommit("Add file");
@@ -42,7 +49,7 @@ describe("GitManager: branch operations", () => {
 
   it("renames the current branch", async () => {
     const git = new GitManager(tmpDir);
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
 
     await git.checkoutNewBranch("old-name");
     expect(await git.getCurrentBranch()).toBe("old-name");

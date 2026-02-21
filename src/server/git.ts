@@ -33,16 +33,13 @@ export class GitManager {
 
   /**
    * Ensure the workspace is a git repo with at least one commit.
-   * @param identity — user's name/email for the initial commit and local config.
+   * Identity and commit.gpgsign are inherited from the global git config
+   * (set via GIT_CONFIG_GLOBAL).
    */
-  async init(identity: { name: string; email: string }): Promise<void> {
+  async init(): Promise<void> {
     const isRepo = await this.git.checkIsRepo();
     if (!isRepo) {
       await this.git.init(["--initial-branch=main"]);
-      // Disable commit signing — the workspace repo doesn't need GPG/SSH signatures
-      await this.git.addConfig("commit.gpgsign", "false");
-      await this.git.addConfig("user.name", identity.name);
-      await this.git.addConfig("user.email", identity.email);
       // Create initial commit so rollback always has a base
       await this.git.add(".");
       await this.git.commit("Initial commit", { "--allow-empty": null });
@@ -227,25 +224,6 @@ export class GitManager {
     } catch {
       return [];
     }
-  }
-
-  /** Check whether this repo has a local user.name and user.email configured. */
-  async hasIdentity(): Promise<boolean> {
-    try {
-      const name = await this.git.getConfig("user.name", "local");
-      const email = await this.git.getConfig("user.email", "local");
-      return Boolean(name.value?.trim()) && Boolean(email.value?.trim());
-    } catch {
-      return false;
-    }
-  }
-
-  /** Set local git identity so commits work. */
-  async setIdentity(name: string, email: string): Promise<void> {
-    await this.git.addConfig("user.name", name);
-    await this.git.addConfig("user.email", email);
-    await this.git.addConfig("commit.gpgsign", "false");
-    console.log("[git] Set identity:", name, "<" + email + ">");
   }
 
   // ---- Worktree operations ----

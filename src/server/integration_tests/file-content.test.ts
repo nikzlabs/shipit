@@ -36,11 +36,12 @@ describe("Integration: File content viewer", () => {
     const sessionManager = new SessionManager(sessionsFile);
     sessionManager.track(sessionId, "Test session", sessionDir);
 
+    const credentialStore = createTestCredentialStore(tmpDir);
     const git = new GitManager(sessionDir);
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
 
     app = await buildApp({
-      credentialStore: createTestCredentialStore(tmpDir),
+      credentialStore,
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       previewManager: new StubPreviewManager() as unknown as PreviewManager,

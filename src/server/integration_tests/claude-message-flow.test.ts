@@ -6,8 +6,8 @@ import { buildApp } from "../index.js";
 import { GitManager } from "../git.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
-import { CredentialStore } from "../credential-store.js";
 import { AuthManager } from "../auth.js";
+import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import { PreviewManager } from "../preview-manager.js";
 import { ClaudeProcess } from "../claude.js";
 import { FileWatcher } from "../file-watcher.js";
@@ -38,16 +38,14 @@ describe("Integration: Claude message flow — basics", () => {
     sessionManager = new SessionManager(sessionsFile);
     chatHistoryManager = new ChatHistoryManager(path.join(tmpDir, "chat-history"));
 
-    // Pre-populate credential store with a default identity so sessions
-    // don't trigger git_identity_required prompts during unrelated tests.
-    const credentialStore = new CredentialStore(path.join(tmpDir, "credentials"));
-    credentialStore.setGitIdentity("Test User", "test@example.com");
+    // Set up global git config so sessions inherit identity automatically.
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@example.com");
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       chatHistoryManager,
-      credentialStore,
       previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       claudeFactory: () => {

@@ -132,7 +132,7 @@ describe("Integration: bootstrap sessions remoteUrl caching", () => {
     const sessionDir = path.join(tmpDir, "sess-git");
     fs.mkdirSync(sessionDir, { recursive: true });
     const git = new GitManager(sessionDir);
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
     await git.addRemote("origin", "https://github.com/lazy/populated.git");
 
     sessionManager.track("sess-git", "Lazy session", sessionDir);

@@ -37,14 +37,15 @@ beforeEach(async () => {
   sessionId = crypto.randomUUID();
   sessionDir = path.join(tmpDir, "sessions", sessionId);
   fs.mkdirSync(sessionDir, { recursive: true });
+  const credentialStore = createTestCredentialStore(tmpDir);
   const git = new GitManager(sessionDir);
-  await git.init({ name: "Test", email: "test@test.com" });
+  await git.init();
 
   sessionManager = new SessionManager(path.join(tmpDir, "sessions.json"));
   sessionManager.track(sessionId, "Test session", sessionDir);
 
   app = await buildApp({
-    credentialStore: createTestCredentialStore(tmpDir),
+    credentialStore,
     workspaceDir: tmpDir,
     createGitManager: (dir: string) => new GitManager(dir),
     claudeFactory: () => new FakeClaudeProcess() as any,

@@ -11,6 +11,7 @@ import path from "node:path";
 import WebSocket from "ws";
 import type { WsServerMessage, WsClientMessage } from "../types.js";
 import { CredentialStore } from "../credential-store.js";
+import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 
 // ---------------------------------------------------------------------------
 // TestClient
@@ -520,12 +521,13 @@ export async function waitForClaude(
 }
 
 /**
- * Create a CredentialStore pre-populated with a test git identity.
- * Use in integration tests so session creation doesn't fail due to
- * missing identity.
+ * Create a CredentialStore for tests and configure global git identity.
+ * Sets GIT_CONFIG_GLOBAL to a temp-dir-scoped file so tests don't
+ * interfere with each other or with real config.
  */
 export function createTestCredentialStore(tmpDir: string): CredentialStore {
-  const store = new CredentialStore(path.join(tmpDir, "credentials"));
-  store.setGitIdentity("Test User", "test@test.com");
-  return store;
+  const credDir = path.join(tmpDir, "credentials");
+  initGlobalGitConfig(credDir);
+  setGitIdentity("Test User", "test@test.com");
+  return new CredentialStore(credDir);
 }

@@ -17,6 +17,7 @@ import {
   StubGitHubAuthManager,
   FakeClaudeProcess,
   StubFileWatcher,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 import { GitHubAuthManager } from "../github-auth.js";
 import { CredentialStore } from "../credential-store.js";
@@ -35,7 +36,7 @@ describe("Integration: Phase 1 GET endpoints", () => {
     const sessionsFile = path.join(tmpDir, "sessions.json");
     sessionManager = new SessionManager(sessionsFile);
     githubAuthManager = new StubGitHubAuthManager();
-    credentialStore = new CredentialStore(tmpDir);
+    credentialStore = createTestCredentialStore(tmpDir);
     chatHistoryManager = new ChatHistoryManager(path.join(tmpDir, ".chat-history"));
 
     app = await buildApp({
@@ -73,7 +74,7 @@ describe("Integration: Phase 1 GET endpoints", () => {
 
     // Initialize git repo
     const git = new GitManager(sessionDir);
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
     return sessionDir;
   }
 

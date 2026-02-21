@@ -3,15 +3,26 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { GitManager } from "./git.js";
+import { initGlobalGitConfig, getGitIdentity, setGitIdentity } from "./git-config.js";
 
-describe("GitManager: getCurrentBranch, hasIdentity, setIdentity", () => {
+describe("GitManager: getCurrentBranch + global git config", () => {
   let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-identity-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    // Point global git config at a temp file so tests don't interfere
+    initGlobalGitConfig(tmpDir);
+    setGitIdentity("Test User", "test@test.com");
   });
 
   afterEach(() => {
+    if (origGitConfigGlobal !== undefined) {
+      process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    } else {
+      delete process.env.GIT_CONFIG_GLOBAL;
+    }
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -19,7 +30,7 @@ describe("GitManager: getCurrentBranch, hasIdentity, setIdentity", () => {
 
   it("returns the current branch name", async () => {
     const git = new GitManager(tmpDir);
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
 
     const branch = await git.getCurrentBranch();
     // Default branch name could be "main" or "master" depending on git config
@@ -27,89 +38,27 @@ describe("GitManager: getCurrentBranch, hasIdentity, setIdentity", () => {
     expect(branch.length).toBeGreaterThan(0);
   });
 
-  // ---- hasIdentity ----
+  // ---- global git config identity ----
 
-  it("returns true after init() with identity", async () => {
-    const git = new GitManager(tmpDir);
-    await git.init({ name: "Test", email: "test@test.com" });
-
-    // init() sets the provided identity in local config
-    expect(await git.hasIdentity()).toBe(true);
+  it("getGitIdentity returns the stored identity", () => {
+    const identity = getGitIdentity();
+    expect(identity).toEqual({ name: "Test User", email: "test@test.com" });
   });
 
-  it("returns false when repo has no identity configured", async () => {
-    const { execSync } = await import("node:child_process");
-    const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", HOME: tmpDir };
-    execSync("git init -b main", { cwd: tmpDir, env });
-    execSync("git config commit.gpgsign false", { cwd: tmpDir, env });
-    // Set temporary identity, commit, then unset so the repo has no persistent identity
-    execSync("git config user.name tmp", { cwd: tmpDir, env });
-    execSync("git config user.email tmp@tmp", { cwd: tmpDir, env });
-    execSync('git commit --allow-empty -m "init"', { cwd: tmpDir, env });
-    execSync("git config --unset user.name", { cwd: tmpDir, env });
-    execSync("git config --unset user.email", { cwd: tmpDir, env });
-
-    // Override process.env so simple-git child processes also ignore global config
-    const origHome = process.env.HOME;
-    const origNoSystem = process.env.GIT_CONFIG_NOSYSTEM;
-    process.env.HOME = tmpDir;
-    process.env.GIT_CONFIG_NOSYSTEM = "1";
+  it("getGitIdentity returns null when no identity is set", () => {
+    // Point at an empty dir with no .gitconfig
+    const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-empty-"));
+    process.env.GIT_CONFIG_GLOBAL = path.join(emptyDir, ".gitconfig");
     try {
-      const git = new GitManager(tmpDir);
-      expect(await git.hasIdentity()).toBe(false);
+      expect(getGitIdentity()).toBeNull();
     } finally {
-      process.env.HOME = origHome;
-      if (origNoSystem === undefined) delete process.env.GIT_CONFIG_NOSYSTEM;
-      else process.env.GIT_CONFIG_NOSYSTEM = origNoSystem;
+      fs.rmSync(emptyDir, { recursive: true, force: true });
     }
   });
 
-  // ---- setIdentity ----
-
-  it("configures git identity so hasIdentity returns true", async () => {
-    const { execSync } = await import("node:child_process");
-    const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", HOME: tmpDir };
-    execSync("git init -b main", { cwd: tmpDir, env });
-    execSync("git config commit.gpgsign false", { cwd: tmpDir, env });
-    // Set temporary identity, commit, then unset so the repo has no persistent identity
-    execSync("git config user.name tmp", { cwd: tmpDir, env });
-    execSync("git config user.email tmp@tmp", { cwd: tmpDir, env });
-    execSync('git commit --allow-empty -m "init"', { cwd: tmpDir, env });
-    execSync("git config --unset user.name", { cwd: tmpDir, env });
-    execSync("git config --unset user.email", { cwd: tmpDir, env });
-
-    // Override process.env so simple-git child processes also ignore global config
-    const origHome = process.env.HOME;
-    const origNoSystem = process.env.GIT_CONFIG_NOSYSTEM;
-    process.env.HOME = tmpDir;
-    process.env.GIT_CONFIG_NOSYSTEM = "1";
-    try {
-      const git = new GitManager(tmpDir);
-      expect(await git.hasIdentity()).toBe(false);
-
-      await git.setIdentity("Test User", "test@example.com");
-      expect(await git.hasIdentity()).toBe(true);
-    } finally {
-      process.env.HOME = origHome;
-      if (origNoSystem === undefined) delete process.env.GIT_CONFIG_NOSYSTEM;
-      else process.env.GIT_CONFIG_NOSYSTEM = origNoSystem;
-    }
-  });
-
-  it("allows autoCommit to succeed on a repo with no prior identity", async () => {
-    const { execSync } = await import("node:child_process");
-    const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", HOME: tmpDir };
-    execSync("git init -b main", { cwd: tmpDir, env });
-    execSync("git config commit.gpgsign false", { cwd: tmpDir, env });
-    // Set temporary identity, commit, then unset so the repo has no persistent identity
-    execSync("git config user.name tmp", { cwd: tmpDir, env });
-    execSync("git config user.email tmp@tmp", { cwd: tmpDir, env });
-    execSync('git commit --allow-empty -m "init"', { cwd: tmpDir, env });
-    execSync("git config --unset user.name", { cwd: tmpDir, env });
-    execSync("git config --unset user.email", { cwd: tmpDir, env });
-
+  it("autoCommit succeeds with global identity", async () => {
     const git = new GitManager(tmpDir);
-    await git.setIdentity("Test User", "test@example.com");
+    await git.init();
 
     fs.writeFileSync(path.join(tmpDir, "file.txt"), "content");
     const hash = await git.autoCommit("Test commit");

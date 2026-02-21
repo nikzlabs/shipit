@@ -3,21 +3,28 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { GitManager } from "./git.js";
+import { initGlobalGitConfig, setGitIdentity } from "./git-config.js";
 
 describe("GitManager: log", () => {
   let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-log-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    initGlobalGitConfig(tmpDir);
+    setGitIdentity("Test", "test@test.com");
   });
 
   afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it("returns commits in reverse chronological order", async () => {
     const git = new GitManager(tmpDir);
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
 
     fs.writeFileSync(path.join(tmpDir, "a.txt"), "a");
     await git.autoCommit("First");
@@ -32,7 +39,7 @@ describe("GitManager: log", () => {
 
   it("respects maxCount parameter", async () => {
     const git = new GitManager(tmpDir);
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
 
     fs.writeFileSync(path.join(tmpDir, "a.txt"), "a");
     await git.autoCommit("First");
@@ -47,7 +54,7 @@ describe("GitManager: log", () => {
 
   it("returns commit info with hash, message, date, and author", async () => {
     const git = new GitManager(tmpDir);
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
 
     fs.writeFileSync(path.join(tmpDir, "test.txt"), "test");
     await git.autoCommit("Test commit");

@@ -3,21 +3,28 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { GitManager } from "./git.js";
+import { initGlobalGitConfig, setGitIdentity } from "./git-config.js";
 
 describe("GitManager: rollback", () => {
   let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-rollback-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    initGlobalGitConfig(tmpDir);
+    setGitIdentity("Test", "test@test.com");
   });
 
   afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it("resets workspace to a previous commit", async () => {
     const git = new GitManager(tmpDir);
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
 
     const filePath = path.join(tmpDir, "file.txt");
     fs.writeFileSync(filePath, "original");
@@ -39,7 +46,7 @@ describe("GitManager: rollback", () => {
 
   it("removes files added after the rollback target", async () => {
     const git = new GitManager(tmpDir);
-    await git.init({ name: "Test", email: "test@test.com" });
+    await git.init();
 
     const log0 = await git.log();
     const initialHash = log0[0].hash;
