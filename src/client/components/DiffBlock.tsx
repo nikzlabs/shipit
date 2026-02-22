@@ -6,6 +6,8 @@
  * - Write: shows the written content as all-green additions
  */
 
+import { sessionRelativePath } from "../path-utils.js";
+
 export interface DiffBlockProps {
   filePath: string;
   oldString?: string;
@@ -29,7 +31,7 @@ export function DiffBlock({ filePath, oldString, newString, isWrite }: DiffBlock
       {/* File header */}
       <div className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-b border-gray-300 dark:border-gray-700">
         <span className="text-gray-500">{isWrite ? "write" : "edit"}</span>
-        <span className="font-semibold text-gray-800 dark:text-gray-200 truncate">{filePath}</span>
+        <span className="font-semibold text-gray-800 dark:text-gray-200 truncate">{sessionRelativePath(filePath)}</span>
       </div>
 
       {/* Diff body */}
