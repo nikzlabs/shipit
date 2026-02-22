@@ -12,6 +12,8 @@
  * - Between tool executions → "Thinking..."
  */
 
+import { sessionRelativePath } from "../path-utils.js";
+
 export interface StreamingActivity {
   /** Human-readable label for current activity (e.g., "Editing src/app.ts") */
   label: string;
@@ -124,10 +126,10 @@ export function activityFromTool(toolName: string, input: Record<string, unknown
   }
 }
 
-/** Shorten a file path for display: keep the last 2 segments. */
+/** Shorten a file path for display: strip session prefix, keep last 2 segments. */
 function shortPath(filePath: unknown): string {
-  if (typeof filePath !== "string") return "file";
-  const parts = filePath.split("/").filter(Boolean);
-  if (parts.length <= 2) return filePath;
+  const relative = sessionRelativePath(filePath);
+  const parts = relative.split("/").filter(Boolean);
+  if (parts.length <= 2) return relative;
   return ".../" + parts.slice(-2).join("/");
 }

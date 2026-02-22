@@ -11,6 +11,7 @@ import {
 } from "./StreamingIndicator.js";
 import { AskUserQuestion, type AskQuestionItem } from "./AskUserQuestion.js";
 import { ToolResult } from "./ToolResult.js";
+import { sessionRelativePath } from "../path-utils.js";
 import type { SearchMatch } from "../hooks/useSearch.js";
 
 export interface ToolUseBlock {
@@ -113,7 +114,7 @@ function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQu
         ) : null}
         {"file_path" in tool.input && tool.input.file_path ? (
           <span className="ml-1 text-gray-500 truncate max-w-xs">
-            {String(tool.input.file_path)}
+            {sessionRelativePath(tool.input.file_path)}
           </span>
         ) : null}
         {"pattern" in tool.input && tool.input.pattern ? (
