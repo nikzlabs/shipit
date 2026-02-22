@@ -22,7 +22,8 @@ type RightTab =
   | "files"
   | "terminal"
   | "features"
-  | "changes";
+  | "changes"
+  | "history";
 
 type MobilePanel = "chat" | "preview";
 
