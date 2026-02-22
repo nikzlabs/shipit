@@ -78,11 +78,9 @@ function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQu
   if (tool.name === "Write") {
     const filePath = String(tool.input.file_path ?? "unknown");
     const content = tool.input.content != null ? String(tool.input.content) : "";
-    // For Write, show a truncated preview — full files can be very long
-    const preview = content.length > 2000 ? content.slice(0, 2000) + "\n... (truncated)" : content;
     return (
       <div>
-        <DiffBlock filePath={filePath} newString={preview} isWrite />
+        <DiffBlock filePath={filePath} newString={content} isWrite />
         {inProgress && <ToolProgressBar tool={tool.name} />}
       </div>
     );

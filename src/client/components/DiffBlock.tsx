@@ -1,9 +1,8 @@
 /**
- * DiffBlock — renders inline file change diffs in the chat.
+ * DiffBlock — renders a compact inline file change summary in the chat.
  *
- * Supports two modes:
- * - Edit: shows old_string (red, prefixed with -) vs new_string (green, prefixed with +)
- * - Write: shows the written content as all-green additions
+ * Shows a one-line summary with the file path and a colored diff stat
+ * like "+40 -12" (green for additions, red for removals).
  */
 
 import { sessionRelativePath } from "../path-utils.js";
@@ -16,53 +15,24 @@ export interface DiffBlockProps {
   isWrite?: boolean;
 }
 
-function splitLines(text: string): string[] {
-  if (!text) return [];
-  // Split but preserve trailing empty line awareness
-  return text.split("\n");
+function countLines(text: string): number {
+  if (!text) return 0;
+  return text.split("\n").length;
 }
 
 export function DiffBlock({ filePath, oldString, newString, isWrite }: DiffBlockProps) {
-  const removedLines = splitLines(oldString ?? "");
-  const addedLines = splitLines(newString ?? "");
+  const removed = countLines(oldString ?? "");
+  const added = countLines(newString ?? "");
 
   return (
-    <div className="mt-2 rounded-md overflow-hidden border border-gray-300 dark:border-gray-700 text-xs font-mono">
-      {/* File header */}
-      <div className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-b border-gray-300 dark:border-gray-700">
-        <span className="text-gray-500">{isWrite ? "write" : "edit"}</span>
-        <span className="font-semibold text-gray-800 dark:text-gray-200 truncate">{sessionRelativePath(filePath)}</span>
-      </div>
-
-      {/* Diff body */}
-      <div className="bg-white dark:bg-gray-950 overflow-x-auto max-h-64 overflow-y-auto">
-        {/* Removed lines (only for edits) */}
-        {!isWrite &&
-          removedLines.map((line, i) => (
-            <div key={`r-${i}`} className="flex">
-              <span className="select-none w-6 text-right pr-1 text-red-500 dark:text-red-700 bg-red-100 dark:bg-red-950/40 shrink-0">-</span>
-              <pre className="px-2 text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/20 flex-1 whitespace-pre-wrap break-all">{line}</pre>
-            </div>
-          ))}
-
-        {/* Separator between removed and added */}
-        {!isWrite && removedLines.length > 0 && addedLines.length > 0 && (
-          <div className="border-t border-gray-200 dark:border-gray-800" />
-        )}
-
-        {/* Added lines */}
-        {addedLines.map((line, i) => (
-          <div key={`a-${i}`} className="flex">
-            <span className="select-none w-6 text-right pr-1 text-green-500 dark:text-green-700 bg-green-100 dark:bg-green-950/40 shrink-0">+</span>
-            <pre className="px-2 text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-950/20 flex-1 whitespace-pre-wrap break-all">{line}</pre>
-          </div>
-        ))}
-
-        {/* Fallback for empty diffs */}
-        {removedLines.length === 0 && addedLines.length === 0 && (
-          <div className="px-3 py-2 text-gray-500 italic">No content changes</div>
-        )}
-      </div>
+    <div className="mt-1 flex items-center gap-2 text-xs font-mono text-gray-400">
+      <span className="text-gray-500">{isWrite ? "write" : "edit"}</span>
+      <span className="text-gray-300 truncate">{sessionRelativePath(filePath)}</span>
+      <span className="flex items-center gap-1.5 ml-auto shrink-0">
+        {added > 0 && <span className="text-green-400">+{added}</span>}
+        {removed > 0 && <span className="text-red-400">-{removed}</span>}
+        {added === 0 && removed === 0 && <span className="text-gray-500 italic">no changes</span>}
+      </span>
     </div>
   );
 }
