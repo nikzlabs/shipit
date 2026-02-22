@@ -1,56 +1,26 @@
-import { useEffect, useRef, type Dispatch, type SetStateAction, type MutableRefObject } from "react";
-import type { WsClientMessage, SessionInfo } from "../../server/types.js";
+import { useEffect, useRef } from "react";
+import type { WsClientMessage } from "../../server/types.js";
 import type { ChatMessage } from "../components/MessageList.js";
-import type { StreamingActivity } from "../components/StreamingIndicator.js";
-import type { GitCommit } from "../components/GitHistory.js";
-import type { FileTreeNode } from "../components/FileTree.js";
-import type { TemplateInfo } from "../components/TemplateSelector.js";
-import type { ThreadInfo } from "../components/ThreadIndicator.js";
-import type { AgentOption } from "../components/AgentPicker.js";
 import type { BootstrapData } from "../../server/services/index.js";
 import { getSavedAgentId } from "../utils/local-storage.js";
+import { useSessionStore } from "../stores/session-store.js";
+import { useGitStore } from "../stores/git-store.js";
+import { useFileStore } from "../stores/file-store.js";
+import { useThreadStore } from "../stores/thread-store.js";
+import { useUiStore } from "../stores/ui-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
+import { usePrStore } from "../stores/pr-store.js";
 
 export function useConnectionSync(params: {
   status: string;
   send: (msg: WsClientMessage) => void;
-  apiGet: <T>(path: string) => Promise<T>;
-  sessionIdRef: MutableRefObject<string | undefined>;
-  historyLoadedRef: MutableRefObject<boolean>;
-  templates: TemplateInfo[];
-  isLoading: boolean;
-  setIsLoading: Dispatch<SetStateAction<boolean>>;
-  setActivity: Dispatch<SetStateAction<StreamingActivity | undefined>>;
-  setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
-  prStatus: { checks: { state: string } } | null;
-  setPrStatus: Dispatch<SetStateAction<{ url: string; number: number; title: string; baseBranch: string; headBranch: string; insertions: number; deletions: number; checks: { state: "pending" | "success" | "failure" | "none"; total: number; passed: number; failed: number; pending: number }; autoMergeEnabled: boolean; mergeable: boolean } | null>>;
-  // Bootstrap state setters
-  setSessions: Dispatch<SetStateAction<SessionInfo[]>>;
-  setAgentList: Dispatch<SetStateAction<AgentOption[]>>;
-  setTemplates: Dispatch<SetStateAction<TemplateInfo[]>>;
-  setGithubStatus: Dispatch<SetStateAction<{ authenticated: boolean; username?: string; avatarUrl?: string }>>;
-  setImportSearchResults: Dispatch<SetStateAction<Array<{ fullName: string; description: string | null; private: boolean; defaultBranch: string; cloneUrl: string }>>>;
-  setGitIdentity: Dispatch<SetStateAction<{ name: string; email: string }>>;
-  setHasSystemPrompt: Dispatch<SetStateAction<boolean>>;
-  setSystemPromptContent: Dispatch<SetStateAction<string>>;
-  setGitCommits: Dispatch<SetStateAction<GitCommit[]>>;
-  setFileTree: Dispatch<SetStateAction<FileTreeNode[]>>;
-  setThreads: Dispatch<SetStateAction<ThreadInfo[]>>;
-  setActiveThreadId: Dispatch<SetStateAction<string>>;
 }): void {
-  const {
-    status, send, apiGet, sessionIdRef, historyLoadedRef, isLoading,
-    setIsLoading, setActivity, setMessages, prStatus, setPrStatus,
-    setSessions, setAgentList, setTemplates, setGithubStatus,
-    setImportSearchResults, setGitIdentity, setHasSystemPrompt, setSystemPromptContent,
-    setGitCommits, setFileTree, setThreads, setActiveThreadId,
-  } = params;
+  const { status, send } = params;
 
-  // Track whether bootstrap has been fetched for this page load
+  const historyLoadedRef = useRef(false);
   const bootstrapFetchedRef = useRef(false);
 
-  // Fetch bootstrap data via HTTP — fires once on mount, before WS connects.
-  // Replaces the sequential WS messages: list_sessions, list_agents,
-  // list_templates, github_get_status (plus get_global_settings).
+  // Fetch bootstrap data via HTTP — fires once on mount
   useEffect(() => {
     if (bootstrapFetchedRef.current) return;
     bootstrapFetchedRef.current = true;
@@ -61,52 +31,46 @@ export function useConnectionSync(params: {
         return res.json() as Promise<BootstrapData>;
       })
       .then((data) => {
-        setSessions(data.sessions);
-        setAgentList(data.agents);
-        setTemplates(data.templates as TemplateInfo[]);
-        setGithubStatus({
+        useSessionStore.getState().setSessions(data.sessions);
+        useUiStore.getState().setAgentList(data.agents);
+        useUiStore.getState().setTemplates(data.templates);
+        useSettingsStore.getState().setGithubStatus({
           authenticated: data.githubStatus.authenticated,
           username: data.githubStatus.username,
           avatarUrl: data.githubStatus.avatarUrl,
         });
         if (data.githubRepos.length > 0) {
-          setImportSearchResults(data.githubRepos);
+          usePrStore.getState().setImportSearchResults(data.githubRepos);
         }
-        setGitIdentity(data.settings.gitIdentity);
-        setHasSystemPrompt(data.settings.systemPrompt.length > 0);
-        setSystemPromptContent(data.settings.systemPrompt);
+        useGitStore.getState().setIdentity(data.settings.gitIdentity);
+        useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
+        useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
       })
       .catch((err) => {
         console.error("[bootstrap] Failed to fetch initial data:", err);
       });
-  }, [setSessions, setAgentList, setTemplates, setGithubStatus, setImportSearchResults, setGitIdentity, setHasSystemPrompt, setSystemPromptContent]);
+  }, []);
 
-  // On WebSocket connect, restore session: fetch data via HTTP, then activate via WS.
+  // On WebSocket connect, restore session
   useEffect(() => {
-    if (status === "open" && !historyLoadedRef.current && sessionIdRef.current) {
+    if (status === "open" && !historyLoadedRef.current && useSessionStore.getState().sessionId) {
       historyLoadedRef.current = true;
-      const sessionId = sessionIdRef.current;
-      // 1. Fetch session data via HTTP (messages, git log, file tree, threads)
-      apiGet<{
-        messages: Array<{ role: "user" | "assistant"; text: string; toolUse?: unknown[]; images?: unknown[]; files?: unknown[]; isError?: boolean }>;
-        commits: GitCommit[];
-        fileTree: FileTreeNode[];
-        threads: ThreadInfo[];
-        activeThreadId: string;
-      }>(`/api/sessions/${sessionId}/history`)
+      const sessionId = useSessionStore.getState().sessionId!;
+      fetch(`/api/sessions/${sessionId}/history`)
+        .then((res) => res.json())
         .then((data) => {
-          setMessages(data.messages.map((m) => ({ ...m, streaming: false } as ChatMessage)));
-          setGitCommits(data.commits);
-          setFileTree(data.fileTree);
-          setThreads(data.threads);
-          setActiveThreadId(data.activeThreadId);
+          useSessionStore.getState().setMessages(
+            data.messages.map((m: { role: string; text: string; toolUse?: unknown[]; images?: unknown[]; files?: unknown[]; isError?: boolean }) => ({ ...m, streaming: false } as ChatMessage)),
+          );
+          useGitStore.getState().setCommits(data.commits);
+          useFileStore.getState().setTree(data.fileTree);
+          useThreadStore.getState().setThreads(data.threads);
+          useThreadStore.getState().setActiveThreadId(data.activeThreadId);
         })
         .catch((err) => console.error("[api] Failed to load session history:", err));
-      // 2. Activate session over WS (attach runner, file watcher, preview)
       send({ type: "activate_session", sessionId });
     }
     if (status === "open") {
-      // Restore saved agent preference on connect (per-connection WS state)
       const savedAgent = getSavedAgentId();
       if (savedAgent !== "claude") {
         send({ type: "set_agent", agentId: savedAgent });
@@ -115,31 +79,33 @@ export function useConnectionSync(params: {
     if (status === "closed") {
       historyLoadedRef.current = false;
     }
-  }, [status, send, apiGet, sessionIdRef, historyLoadedRef,
-      setMessages, setGitCommits, setFileTree, setThreads, setActiveThreadId]);
+  }, [status, send]);
 
-  // Fetch PR status on session load via HTTP
+  // Fetch PR status on session load
+  const prStatusFetchedRef = useRef(false);
   useEffect(() => {
-    if (status === "open" && sessionIdRef.current) {
-      const sid = sessionIdRef.current;
-      apiGet<{ pr: Parameters<typeof setPrStatus>[0] }>(`/api/sessions/${sid}/pr/status`)
-        .then((data) => setPrStatus(data.pr))
-        .catch(() => { /* session may not have a PR */ });
+    if (status === "open" && useSessionStore.getState().sessionId) {
+      if (prStatusFetchedRef.current) return;
+      prStatusFetchedRef.current = true;
+      const sid = useSessionStore.getState().sessionId!;
+      usePrStore.getState().fetchStatus(sid).catch(() => { /* session may not have a PR */ });
     }
-  }, [status, sessionIdRef, apiGet, setPrStatus]);
+    if (status === "closed") {
+      prStatusFetchedRef.current = false;
+    }
+  }, [status]);
 
   // Poll PR status while CI is pending
+  const prChecksState = usePrStore((s) => s.status?.checks.state);
   useEffect(() => {
-    if (prStatus?.checks.state === "pending" && sessionIdRef.current) {
-      const sid = sessionIdRef.current;
+    if (prChecksState === "pending" && useSessionStore.getState().sessionId) {
+      const sid = useSessionStore.getState().sessionId!;
       const interval = setInterval(() => {
-        apiGet<{ pr: Parameters<typeof setPrStatus>[0] }>(`/api/sessions/${sid}/pr/status`)
-          .then((data) => setPrStatus(data.pr))
-          .catch(() => { /* ignore polling errors */ });
+        usePrStore.getState().fetchStatus(sid).catch(() => {});
       }, 30_000);
       return () => clearInterval(interval);
     }
-  }, [prStatus?.checks.state, sessionIdRef, apiGet, setPrStatus]);
+  }, [prChecksState]);
 
   // Handle WebSocket disconnection during streaming
   const prevStatusRef = useRef(status);
@@ -147,11 +113,11 @@ export function useConnectionSync(params: {
     const wasOpen = prevStatusRef.current === "open";
     prevStatusRef.current = status;
 
-    if (wasOpen && status === "closed" && isLoading) {
-      setIsLoading(false);
-      setActivity(undefined);
-      setMessages((prev) => {
-        // Mark any streaming assistant message as no longer streaming
+    if (wasOpen && status === "closed" && useSessionStore.getState().isLoading) {
+      const session = useSessionStore.getState();
+      session.setIsLoading(false);
+      session.setActivity(undefined);
+      session.setMessages((prev) => {
         const last = prev[prev.length - 1];
         const updated =
           last && last.role === "assistant" && last.streaming
@@ -168,5 +134,5 @@ export function useConnectionSync(params: {
         ];
       });
     }
-  }, [status, isLoading, setIsLoading, setActivity, setMessages]);
+  }, [status]);
 }

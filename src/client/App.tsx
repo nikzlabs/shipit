@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, lazy, Suspense } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useWebSocket } from "./hooks/useWebSocket.js";
 import { useResizablePanel } from "./hooks/useResizablePanel.js";
@@ -10,48 +10,54 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts.js";
 import { useConnectionSync } from "./hooks/useConnectionSync.js";
 import { useAutoFix } from "./hooks/useAutoFix.js";
 import { useMessageHandler } from "./hooks/useMessageHandler.js";
-import { useAppCallbacks } from "./hooks/useAppCallbacks.js";
 import { useApi } from "./hooks/useApi.js";
-import { getSavedPermissionMode, getSavedSidebarCollapsed, getSavedAgentId, saveSidebarCollapsed } from "./utils/local-storage.js";
+import { formatErrorForMessage } from "./components/PreviewFrame.js";
 import { MessageInput } from "./components/MessageInput.js";
-import { MessageList, type ChatMessage, type CheckpointDivider } from "./components/MessageList.js";
-import { PreviewFrame, type PreviewStatus } from "./components/PreviewFrame.js";
-import { usePreviewErrors } from "./hooks/usePreviewErrors.js";
-import { GitHistory, type GitCommit } from "./components/GitHistory.js";
+import { MessageList, type CheckpointDivider } from "./components/MessageList.js";
+import { PreviewFrame } from "./components/PreviewFrame.js";
+import { usePreviewErrors, type PreviewError } from "./hooks/usePreviewErrors.js";
+import { GitHistory } from "./components/GitHistory.js";
 import { AuthOverlay } from "./components/AuthOverlay.js";
 import { Settings } from "./components/Settings.js";
 import { SessionSidebar } from "./components/SessionSidebar.js";
 import { DocsViewer } from "./components/DocsViewer.js";
-import { FileTree, type FileTreeNode } from "./components/FileTree.js";
+import { FileTree } from "./components/FileTree.js";
 import { FileContentViewer } from "./components/FileContentViewer.js";
-import { TerminalPanel, type LogEntry, type TerminalMode } from "./components/TerminalPanel.js";
+import { TerminalPanel } from "./components/TerminalPanel.js";
 import { InteractiveTerminal, type InteractiveTerminalHandle } from "./components/InteractiveTerminal.js";
 import { ResizeHandle } from "./components/ResizeHandle.js";
 import { SearchBar } from "./components/SearchBar.js";
-import { type StreamingActivity } from "./components/StreamingIndicator.js";
 import { ConnectionBanner } from "./components/ConnectionBanner.js";
-import { MobileTabBar, type MobilePanel } from "./components/MobileTabBar.js";
+import { MobileTabBar } from "./components/MobileTabBar.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
-import { type TemplateInfo } from "./components/TemplateSelector.js";
 import { HomeScreen } from "./components/HomeScreen.js";
-import { UsageModal, type SessionUsage, type UsageStats, type TurnTokenData } from "./components/UsageModal.js";
-import { StatusBar, type ModelInfo } from "./components/StatusBar.js";
+import { UsageModal } from "./components/UsageModal.js";
+import { StatusBar } from "./components/StatusBar.js";
 import { GitIdentityOverlay } from "./components/GitIdentityOverlay.js";
-import { ThreadIndicator, type ThreadInfo } from "./components/ThreadIndicator.js";
+import { ThreadIndicator } from "./components/ThreadIndicator.js";
 import { ThreadTimeline } from "./components/ThreadTimeline.js";
-import { DeployModal, type DeployPhase } from "./components/DeployModal.js";
+import { DeployModal } from "./components/DeployModal.js";
 import { FeaturesPanel } from "./components/FeaturesPanel.js";
-import type { TurnDiffData } from "./components/DiffPanel.js";
 
 const DiffPanel = lazy(() => import("./components/DiffPanel.js").then(m => ({ default: m.DiffPanel })));
 import { PullRequestModal } from "./components/PullRequestModal.js";
 import { PrStatusBar } from "./components/PrStatusBar.js";
-import { Toast, type ToastData } from "./components/Toast.js";
+import { Toast } from "./components/Toast.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentPicker, type AgentOption } from "./components/AgentPicker.js";
-import type { DeployTargetInfo, DeploymentRecord, FeatureInfo, PermissionMode, FileContextRef, SessionInfo, AgentId } from "../server/types.js";
+import type { AgentId } from "../server/types.js";
 
-type RightTab = "preview" | "docs" | "files" | "terminal" | "features" | "changes";
+import { useSessionStore } from "./stores/session-store.js";
+import { useGitStore } from "./stores/git-store.js";
+import { useFileStore } from "./stores/file-store.js";
+import { usePreviewStore } from "./stores/preview-store.js";
+import { useTerminalStore } from "./stores/terminal-store.js";
+import { useThreadStore } from "./stores/thread-store.js";
+import { useDeployStore } from "./stores/deploy-store.js";
+import { usePrStore } from "./stores/pr-store.js";
+import { useSettingsStore } from "./stores/settings-store.js";
+import { useUiStore } from "./stores/ui-store.js";
+import { resumeSessionInternal, newSession, resetSessionState } from "./stores/actions/session-actions.js";
 
 function getWsUrl(): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -64,159 +70,112 @@ export default function App() {
   const navigate = useNavigate();
   const { send, lastMessage, status, reconnectAttempt, reconnect } = useWebSocket(getWsUrl());
   const { get: apiGet, post: apiPost, del: apiDel } = useApi();
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [preview, setPreview] = useState<PreviewStatus | null>(null);
-  const [selectedPort, setSelectedPort] = useState<number | null>(null);
-  const [configMissing, setConfigMissing] = useState(false);
-  const [installStatus, setInstallStatus] = useState<{ status: "running" | "complete" | "error"; message?: string } | null>(null);
-  const detectedPorts = preview?.detectedPorts ?? [];
-  const [gitCommits, setGitCommits] = useState<GitCommit[]>([]);
-  const [authUrl, setAuthUrl] = useState<string | null>(null);
-  const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  const [rightTab, setRightTab] = useState<RightTab>("preview");
-  const [docFiles, setDocFiles] = useState<string[]>([]);
-  const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
-  const [docContent, setDocContent] = useState<string | null>(null);
-  const [fileTree, setFileTree] = useState<FileTreeNode[]>([]);
-  const [viewingFile, setViewingFile] = useState<string | null>(null);
-  const [viewingFileContent, setViewingFileContent] = useState<string | null>(null);
-  const [viewingFileBinary, setViewingFileBinary] = useState(false);
-  const [activity, setActivity] = useState<StreamingActivity | undefined>(undefined);
-  const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
-  const [unreadLogCount, setUnreadLogCount] = useState(0);
-  const [terminalMode, setTerminalMode] = useState<TerminalMode>("logs");
-  const [shellStarted, setShellStarted] = useState(false);
   const terminalRef = useRef<InteractiveTerminalHandle>(null);
-  const [templates, setTemplates] = useState<TemplateInfo[]>([]);
-  const [showTemplates, setShowTemplates] = useState(!urlSessionId);
-  const [selectedRepoUrl, setSelectedRepoUrl] = useState<string | null>(null);
-  const [creatingRepo, setCreatingRepo] = useState(false);
-  const [githubStatus, setGithubStatus] = useState<{ authenticated: boolean; username?: string; avatarUrl?: string }>({ authenticated: false });
-  const [currentSessionUsage, setCurrentSessionUsage] = useState<SessionUsage | null>(null);
-  const [allUsageStats, setAllUsageStats] = useState<UsageStats | null>(null);
-  const [showUsageModal, setShowUsageModal] = useState(false);
-  const [modelInfo, setModelInfo] = useState<ModelInfo | null>(null);
-  const [contextTokens, setContextTokens] = useState(0);
-  const [turnTokens, setTurnTokens] = useState<TurnTokenData[]>([]);
-  const [fileChangeCount, setFileChangeCount] = useState(0);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [hasSystemPrompt, setHasSystemPrompt] = useState(false);
-  const [systemPromptContent, setSystemPromptContent] = useState("");
-  const [gitIdentityNeeded, setGitIdentityNeeded] = useState(false);
-  const [gitIdentity, setGitIdentity] = useState<{ name: string; email: string }>({ name: "", email: "" });
-  const [threads, setThreads] = useState<ThreadInfo[]>([]);
-  const [activeThreadId, setActiveThreadId] = useState<string>("");
-  const [initialSettingsTab, setInitialSettingsTab] = useState<"agent" | "github" | "git" | "instructions" | "advanced" | "deploy" | undefined>(undefined);
-  const [showDeployModal, setShowDeployModal] = useState(false);
-  const [deployTargets, setDeployTargets] = useState<DeployTargetInfo[]>([]);
-  const [deployConfigStatus, setDeployConfigStatus] = useState<Record<string, { configured: boolean; projectName?: string }>>({});
-  const [deployStatus, setDeployStatus] = useState<DeployPhase | null>(null);
-  const [lastDeployUrl, setLastDeployUrl] = useState<string | null>(null);
-  const [lastDeployError, setLastDeployError] = useState<string | null>(null);
-  const [deployHistory, setDeployHistory] = useState<DeploymentRecord[]>([]);
-  const [features, setFeatures] = useState<FeatureInfo[]>([]);
-  const [agentList, setAgentList] = useState<AgentOption[]>([]);
-  const [activeAgentId, setActiveAgentId] = useState<AgentId>(getSavedAgentId());
-  const [showPRModal, setShowPRModal] = useState(false);
-  const [prCurrentBranch, setPrCurrentBranch] = useState("");
-  const [prRemoteBranches, setPrRemoteBranches] = useState<string[]>([]);
-  const [prResult, setPrResult] = useState<{ success: boolean; url?: string; number?: number; message?: string } | null>(null);
-  const [prDescGenerating, setPrDescGenerating] = useState(false);
-  const prDescGeneratingRef = useRef(false);
-  const [prDescError, setPrDescError] = useState<string | null>(null);
-  const [prGeneratedDesc, setPrGeneratedDesc] = useState<string | null>(null);
-  const [importSearchResults, setImportSearchResults] = useState<Array<{ fullName: string; description: string | null; private: boolean; defaultBranch: string; cloneUrl: string }>>([]);
-  const [prStatus, setPrStatus] = useState<{
-    url: string;
-    number: number;
-    title: string;
-    baseBranch: string;
-    headBranch: string;
-    insertions: number;
-    deletions: number;
-    checks: { state: "pending" | "success" | "failure" | "none"; total: number; passed: number; failed: number; pending: number };
-    autoMergeEnabled: boolean;
-    mergeable: boolean;
-  } | null>(null);
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>(getSavedPermissionMode());
-  const [pendingFiles, setPendingFiles] = useState<FileContextRef[]>([]);
-  const [queuedMessages, setQueuedMessages] = useState<Array<{ text: string; position: number }>>([]);
-  const [toast, setToast] = useState<ToastData | null>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(getSavedSidebarCollapsed());
-  const [turnDiff, setTurnDiff] = useState<TurnDiffData | null>(null);
-  const [lastCommitPair, setLastCommitPair] = useState<{ from: string; to: string } | null>(null);
-  const [diffBadgeCount, setDiffBadgeCount] = useState(0);
-  // Track sessions with active agent runners (for sidebar activity indicators)
-  const [activeRunnerSessions, setActiveRunnerSessions] = useState<Set<string>>(new Set());
-  const sessionIdRef = useRef<string | undefined>(urlSessionId);
-  // Track whether we've already requested history for the current connection
-  const historyLoadedRef = useRef(false);
 
+  // ── Store selectors ──
+  const sessionId = useSessionStore((s) => s.sessionId);
+  const messages = useSessionStore((s) => s.messages);
+  const isLoading = useSessionStore((s) => s.isLoading);
+  const activity = useSessionStore((s) => s.activity);
+  const sessions = useSessionStore((s) => s.sessions);
+  const authUrl = useSessionStore((s) => s.authUrl);
+  const selectedRepoUrl = useSessionStore((s) => s.selectedRepoUrl);
+  const creatingRepo = useSessionStore((s) => s.creatingRepo);
+  const activeRunnerSessions = useSessionStore((s) => s.activeRunnerSessions);
+  const queuedMessages = useSessionStore((s) => s.queuedMessages);
+
+  const gitCommits = useGitStore((s) => s.commits);
+  const gitIdentityNeeded = useGitStore((s) => s.identityNeeded);
+  const gitIdentity = useGitStore((s) => s.identity);
+  const lastCommitPair = useGitStore((s) => s.lastCommitPair);
+  const turnDiff = useGitStore((s) => s.turnDiff);
+
+  const fileTree = useFileStore((s) => s.tree);
+  const viewingFile = useFileStore((s) => s.viewingFile);
+  const viewingFileContent = useFileStore((s) => s.viewingFileContent);
+  const viewingFileBinary = useFileStore((s) => s.viewingFileBinary);
+  const docFiles = useFileStore((s) => s.docFiles);
+  const selectedDoc = useFileStore((s) => s.selectedDoc);
+  const docContent = useFileStore((s) => s.docContent);
+  const fileChangeCount = useFileStore((s) => s.changeCount);
+
+  const previewStatus = usePreviewStore((s) => s.status);
+  const selectedPort = usePreviewStore((s) => s.selectedPort);
+  const configMissing = usePreviewStore((s) => s.configMissing);
+  const installStatus = usePreviewStore((s) => s.installStatus);
+
+  const logEntries = useTerminalStore((s) => s.entries);
+  const unreadLogCount = useTerminalStore((s) => s.unreadCount);
+  const terminalMode = useTerminalStore((s) => s.mode);
+  const shellStarted = useTerminalStore((s) => s.shellStarted);
+
+  const threads = useThreadStore((s) => s.threads);
+  const activeThreadId = useThreadStore((s) => s.activeThreadId);
+
+  const showDeployModal = useDeployStore((s) => s.showModal);
+  const deployTargets = useDeployStore((s) => s.targets);
+  const deployConfigStatus = useDeployStore((s) => s.configStatus);
+  const deployStatus = useDeployStore((s) => s.status);
+  const lastDeployUrl = useDeployStore((s) => s.lastUrl);
+  const lastDeployError = useDeployStore((s) => s.lastError);
+  const deployHistory = useDeployStore((s) => s.history);
+
+  const showPRModal = usePrStore((s) => s.showModal);
+  const prCurrentBranch = usePrStore((s) => s.currentBranch);
+  const prRemoteBranches = usePrStore((s) => s.remoteBranches);
+  const prResult = usePrStore((s) => s.result);
+  const prDescGenerating = usePrStore((s) => s.descGenerating);
+  const prDescError = usePrStore((s) => s.descError);
+  const prGeneratedDesc = usePrStore((s) => s.generatedDesc);
+  const importSearchResults = usePrStore((s) => s.importSearchResults);
+  const prStatus = usePrStore((s) => s.status);
+
+  const permissionMode = useSettingsStore((s) => s.permissionMode);
+  const pendingFiles = useSettingsStore((s) => s.pendingFiles);
+  const githubStatus = useSettingsStore((s) => s.githubStatus);
+  const hasSystemPrompt = useSettingsStore((s) => s.hasSystemPrompt);
+  const systemPromptContent = useSettingsStore((s) => s.systemPromptContent);
+
+  const rightTab = useUiStore((s) => s.rightTab);
+  const mobilePanel = useUiStore((s) => s.mobilePanel);
+  const showTemplates = useUiStore((s) => s.showTemplates);
+  const templates = useUiStore((s) => s.templates);
+  const agentList = useUiStore((s) => s.agentList);
+  const activeAgentId = useUiStore((s) => s.activeAgentId);
+  const showUsageModal = useUiStore((s) => s.showUsageModal);
+  const currentSessionUsage = useUiStore((s) => s.currentSessionUsage);
+  const allUsageStats = useUiStore((s) => s.allUsageStats);
+  const modelInfo = useUiStore((s) => s.modelInfo);
+  const contextTokens = useUiStore((s) => s.contextTokens);
+  const turnTokens = useUiStore((s) => s.turnTokens);
+  const settingsOpen = useUiStore((s) => s.settingsOpen);
+  const initialSettingsTab = useUiStore((s) => s.initialSettingsTab);
+  const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
+  const toast = useUiStore((s) => s.toast);
+  const diffBadgeCount = useUiStore((s) => s.diffBadgeCount);
+  const features = useUiStore((s) => s.features);
+
+  // ── Non-store hooks ──
   const { fraction, isDragging, onMouseDown, onTouchStart, containerRef } = useResizablePanel({
     initialFraction: 0.5,
     minFraction: 0.25,
     storageKey: "vibe-panel-split",
   });
-
   const isMobile = useIsMobile();
-  const [mobilePanel, setMobilePanel] = useState<MobilePanel>("chat");
-
   const [searchOpen, setSearchOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const search = useSearch(messages);
-
   const { notify, requestPermission } = useNotification();
   const { theme, toggle: toggleTheme } = useTheme();
   const { errors: previewErrors, clearErrors: clearPreviewErrors, hasErrors: hasPreviewErrors, errorCount: previewErrorCount } = usePreviewErrors();
 
-  // ── Auto-fix hook ──
-  const { autoFixEnabled, autoFixRetries, autoFixRetriesRef, handleToggleAutoFix, disableAutoFix } = useAutoFix({
+  const { autoFixEnabled, autoFixRetries, handleToggleAutoFix, disableAutoFix } = useAutoFix({
     previewErrors,
     isLoading,
     status,
     send,
-    sessionIdRef,
-    setMessages,
-    setIsLoading,
-    setActivity,
   });
 
-  // ── App callbacks hook ──
-  const callbacks = useAppCallbacks({
-    send,
-    navigate,
-    requestPermission,
-    permissionMode,
-    pendingFiles,
-    activeThreadId,
-    templates,
-    docFiles,
-    agentList,
-    activeAgentId,
-    githubStatus,
-    setMessages, setIsLoading, setActivity, setShowTemplates, setPendingFiles,
-    setPermissionMode, setViewingFile, setViewingFileContent, setViewingFileBinary,
-    setGitCommits, setFileTree, setCurrentSessionUsage, setModelInfo, setContextTokens, setTurnTokens,
-    setSelectedRepoUrl, setCreatingRepo, setThreads, setActiveThreadId, setShellStarted, setTerminalMode,
-    setSelectedDoc, setDocContent, setRightTab, setFileChangeCount, setUnreadLogCount,
-    setSettingsOpen, setInitialSettingsTab, setShowDeployModal, setDeployStatus, setLastDeployUrl, setLastDeployError,
-    setShowPRModal, setPrResult, setPrDescGenerating, setPrDescError, setPrGeneratedDesc,
-    setShowUsageModal, setLogEntries, setActiveAgentId, setQueuedMessages, setMobilePanel,
-    setAutoFixEnabled: () => {}, // not used — disableAutoFix is used instead
-    setHasSystemPrompt,
-    setSelectedPort, setPrCurrentBranch, setPrRemoteBranches,
-    setTurnDiff, setLastCommitPair, setDiffBadgeCount,
-    setDocFiles, setImportSearchResults, setAllUsageStats,
-    setDeployHistory, setDeployTargets, setDeployConfigStatus, setFeatures,
-    setSessions, setGitIdentityNeeded, setGitIdentity, setGithubStatus, setSystemPromptContent, setToast, setAgentList,
-    lastCommitPair, turnDiff,
-    sessionIdRef, prDescGeneratingRef, autoFixRetriesRef,
-    disableAutoFix,
-    setAutoFixRetries: () => {}, // not used — disableAutoFix handles this
-  });
-
-  // ── Keyboard shortcuts hook ──
   useKeyboardShortcuts({
     search,
     searchOpen,
@@ -225,561 +184,432 @@ export default function App() {
     setShortcutsOpen: (updater) => setShortcutsOpen(updater),
     isLoading,
     settingsOpen,
-    handleInterrupt: callbacks.handleInterrupt,
+    handleInterrupt: () => send({ type: "interrupt_claude" }),
   });
 
-  // ── Connection sync hook ──
-  useConnectionSync({
-    status,
-    send,
-    apiGet,
-    sessionIdRef,
-    historyLoadedRef,
-    templates,
-    isLoading,
-    setIsLoading,
-    setActivity,
-    setMessages,
-    prStatus,
-    setPrStatus,
-    // Bootstrap state setters
-    setSessions,
-    setAgentList,
-    setTemplates,
-    setGithubStatus,
-    setImportSearchResults,
-    setGitIdentity,
-    setHasSystemPrompt,
-    setSystemPromptContent,
-    setGitCommits,
-    setFileTree,
-    setThreads,
-    setActiveThreadId,
-  });
+  useConnectionSync({ status, send });
 
-  // ── Message handler hook ──
   useMessageHandler({
     lastMessage,
     send,
-    apiGet,
-    setPreview, setSelectedPort, setMessages, setIsLoading, setActivity,
-    setGitCommits, setAuthUrl, setSessions, setDocFiles, setDocContent,
-    setFileTree, setViewingFileContent, setViewingFileBinary,
-    setLogEntries, setUnreadLogCount, setTemplates, setShowTemplates,
-    setCreatingRepo, setSelectedRepoUrl, setGithubStatus,
-    setCurrentSessionUsage, setAllUsageStats, setModelInfo, setContextTokens, setTurnTokens,
-    setFileChangeCount, setHasSystemPrompt, setSystemPromptContent,
-    setGitIdentityNeeded, setGitIdentity, setThreads, setActiveThreadId,
-    setDeployTargets, setDeployConfigStatus, setDeployStatus, setLastDeployUrl, setLastDeployError,
-    setDeployHistory, setFeatures, setAgentList, setShowPRModal,
-    setPrCurrentBranch, setPrRemoteBranches, setPrResult, setPrDescGenerating,
-    setPrDescError, setPrGeneratedDesc, setImportSearchResults, setPrStatus,
-    setQueuedMessages, setShellStarted, setToast,
-    setConfigMissing, setInstallStatus,
-    setTurnDiff, setLastCommitPair, setDiffBadgeCount,
-    setActiveRunnerSessions,
-    prDescGeneratingRef, sessionIdRef, terminalRef,
-    rightTab, viewingFile, gitCommits, notify,
+    terminalRef,
+    notify,
     navigate,
-    handleSessionResume: callbacks.handleSessionResume,
-    githubStatus, prStatus,
   });
 
-  // Sync session state when the URL changes (back/forward navigation)
+  // Initialize sessionId from URL on mount
   useEffect(() => {
-    if (urlSessionId && urlSessionId !== sessionIdRef.current) {
-      callbacks.resumeSessionInternal(urlSessionId);
-    } else if (!urlSessionId && sessionIdRef.current) {
-      // Navigated back to "/" — reset to new session state
-      sessionIdRef.current = undefined;
-      setMessages([]);
-      setIsLoading(false);
-      setShowTemplates(true);
-      setSelectedRepoUrl(null);
-      setViewingFile(null);
-      setViewingFileContent(null);
-      setViewingFileBinary(false);
-      setGitCommits([]);
-      setFileTree([]);
-      setCurrentSessionUsage(null);
-      setModelInfo(null);
-      setContextTokens(0);
-      setTurnTokens([]);
-      setThreads([]);
-      setActiveThreadId("");
-      setShellStarted(false);
-      setTerminalMode("logs");
-      setQueuedMessages([]);
-      setTurnDiff(null);
-      setLastCommitPair(null);
-      setDiffBadgeCount(0);
+    if (urlSessionId) {
+      useSessionStore.getState().setSessionId(urlSessionId);
     }
-  }, [urlSessionId, callbacks.resumeSessionInternal]);
+    if (!urlSessionId) {
+      useUiStore.getState().setShowTemplates(true);
+    }
+  }, []);
 
-  // Shared right-panel content (Preview / Docs / Files with tab bar)
+  // Sync session state when URL changes (back/forward navigation)
+  useEffect(() => {
+    if (urlSessionId && urlSessionId !== useSessionStore.getState().sessionId) {
+      resumeSessionInternal(urlSessionId, send);
+    } else if (!urlSessionId && useSessionStore.getState().sessionId) {
+      useSessionStore.getState().setSessionId(undefined);
+      resetSessionState();
+      useUiStore.getState().setShowTemplates(true);
+    }
+  }, [urlSessionId, send]);
+
+  // ── Callback helpers ──
+  const handleSend = useCallback(
+    (text: string, images?: Array<{ data: string; mediaType: string; filename: string }>) => {
+      requestPermission();
+      disableAutoFix();
+      const session = useSessionStore.getState();
+      const settings = useSettingsStore.getState();
+      useUiStore.getState().setShowTemplates(false);
+      const messageImages = images?.map((img) => ({ data: img.data, mediaType: img.mediaType }));
+      const filesForMessage = settings.pendingFiles.length > 0
+        ? settings.pendingFiles.map((f) => ({ path: f.path, contentPreview: "" }))
+        : undefined;
+      session.setMessages((prev) => [...prev, { role: "user", text, images: messageImages, files: filesForMessage }]);
+      session.setIsLoading(true);
+      session.setActivity({ label: "Thinking..." });
+      send({
+        type: "send_message",
+        text,
+        sessionId: useSessionStore.getState().sessionId,
+        images,
+        files: settings.pendingFiles.length > 0 ? settings.pendingFiles : undefined,
+        permissionMode: settings.permissionMode !== "auto" ? settings.permissionMode : undefined,
+      });
+      settings.clearPendingFiles();
+    },
+    [send, requestPermission, disableAutoFix],
+  );
+
+  const handleEditMessage = useCallback(
+    (messageIndex: number, newText: string) => {
+      requestPermission();
+      const sid = useSessionStore.getState().sessionId;
+      const tid = useThreadStore.getState().activeThreadId;
+      if (sid && tid) {
+        apiPost(`/api/sessions/${sid}/threads/checkpoint`, { label: "Before edit" }).catch(() => {});
+      }
+      const session = useSessionStore.getState();
+      session.setMessages((prev) => [...prev.slice(0, messageIndex), { role: "user" as const, text: newText }]);
+      session.setIsLoading(true);
+      session.setActivity({ label: "Thinking..." });
+      const pm = useSettingsStore.getState().permissionMode;
+      send({ type: "send_message", text: newText, sessionId: sid, permissionMode: pm !== "auto" ? pm : undefined });
+    },
+    [send, requestPermission, apiPost],
+  );
+
+  const handleHomeSendWithRepo = useCallback(
+    (repoUrl: string, text: string, images?: Array<{ data: string; mediaType: string; filename: string }>) => {
+      requestPermission();
+      const session = useSessionStore.getState();
+      const settings = useSettingsStore.getState();
+      useUiStore.getState().setShowTemplates(false);
+      session.setMessages((prev) => [...prev, { role: "user", text }]);
+      session.setIsLoading(true);
+      session.setActivity({ label: "Setting up repository..." });
+      send({
+        type: "home_send_with_repo", repoUrl, text,
+        images: images?.map((img) => ({ data: img.data, mediaType: img.mediaType })),
+        files: settings.pendingFiles.length > 0 ? settings.pendingFiles : undefined,
+        permissionMode: settings.permissionMode !== "auto" ? settings.permissionMode : undefined,
+      });
+      settings.clearPendingFiles();
+    },
+    [send, requestPermission],
+  );
+
+  const handleSendErrors = useCallback(
+    (errors: PreviewError[]) => {
+      const text = formatErrorForMessage(errors);
+      requestPermission();
+      useUiStore.getState().setShowTemplates(false);
+      const session = useSessionStore.getState();
+      session.setMessages((prev) => [...prev, { role: "user", text }]);
+      session.setIsLoading(true);
+      session.setActivity({ label: "Thinking..." });
+      const pm = useSettingsStore.getState().permissionMode;
+      send({ type: "send_message", text, sessionId: useSessionStore.getState().sessionId, permissionMode: pm !== "auto" ? pm : undefined });
+    },
+    [send, requestPermission],
+  );
+
+  const handleAnswerQuestion = useCallback(
+    (toolUseId: string, answers: Record<string, string>) => {
+      send({ type: "answer_question", toolUseId, answers });
+      const session = useSessionStore.getState();
+      session.setMessages((prev) => [...prev, { role: "user", text: Object.values(answers).join(", ") }]);
+      session.setIsLoading(true);
+      session.setActivity({ label: "Thinking..." });
+    },
+    [send],
+  );
+
+  const handleHomeCreateRepo = useCallback(
+    async (name: string, description: string, isPrivate: boolean, templateId: string) => {
+      useSessionStore.getState().setCreatingRepo(true);
+      try {
+        const result = await apiPost<{ success: boolean; sessionId?: string }>("/api/repos", { repoName: name, templateId, description, isPrivate });
+        useSessionStore.getState().setCreatingRepo(false);
+        if (result.success && result.sessionId) {
+          resumeSessionInternal(result.sessionId, send);
+          navigate(`/session/${result.sessionId}`);
+        }
+      } catch { useSessionStore.getState().setCreatingRepo(false); }
+    },
+    [apiPost, send, navigate],
+  );
+
+  const handleTabChange = useCallback(
+    (tab: "preview" | "docs" | "files" | "terminal" | "features" | "changes") => {
+      useUiStore.getState().setRightTab(tab);
+      const sid = useSessionStore.getState().sessionId;
+      if (tab === "docs" && useFileStore.getState().docFiles.length === 0 && sid) useFileStore.getState().fetchDocs(sid).catch(() => {});
+      if (tab === "files" && sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); useFileStore.getState().resetChangeCount(); }
+      if (tab === "terminal") useTerminalStore.getState().resetUnread();
+      if (tab === "features") useUiStore.getState().fetchFeatures().catch(() => {});
+      if (tab === "changes") {
+        useUiStore.getState().setDiffBadgeCount(0);
+        const pair = useGitStore.getState().lastCommitPair;
+        const diff = useGitStore.getState().turnDiff;
+        if (pair && !diff && sid) {
+          fetch(`/api/sessions/${sid}/git/diff?from=${encodeURIComponent(pair.from)}&to=${encodeURIComponent(pair.to)}`)
+            .then((r) => r.json()).then((d) => useGitStore.getState().setTurnDiff(d)).catch(() => {});
+        }
+      }
+    },
+    [],
+  );
+
+  const handleSettingsOpen = useCallback(async (tab?: "agent" | "github" | "git" | "instructions" | "advanced" | "deploy") => {
+    useUiStore.getState().setInitialSettingsTab(tab);
+    useUiStore.getState().setSettingsOpen(true);
+    try {
+      const data = await apiGet<{ settings: { gitIdentity: { name: string; email: string }; systemPrompt: string; agents: AgentOption[]; defaultAgentId: string } }>("/api/bootstrap");
+      useGitStore.getState().setIdentity(data.settings.gitIdentity);
+      useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
+      useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
+      useUiStore.getState().setAgentList(data.settings.agents);
+    } catch { /* ignore */ }
+  }, [apiGet]);
+
+  const handleDeployOpen = useCallback(() => {
+    useDeployStore.getState().openModal();
+    const sid = useSessionStore.getState().sessionId;
+    if (sid) useDeployStore.getState().fetchSetup(sid).catch(() => {});
+  }, []);
+
+  const handleDeploySendError = useCallback((errorMessage: string) => {
+    useDeployStore.getState().closeModal();
+    handleSend(`The deployment failed with this error:\n\n${errorMessage}\n\nPlease fix the issue and explain what went wrong.`);
+  }, [handleSend]);
+
+  const handleDiffAcceptAll = useCallback(() => {
+    useGitStore.getState().setTurnDiff(null);
+    useGitStore.getState().setLastCommitPair(null);
+    useUiStore.getState().setDiffBadgeCount(0);
+    useUiStore.getState().setRightTab("preview");
+  }, []);
+
+  const handleDiffRejectFiles = useCallback(async (files: string[]) => {
+    const sid = useSessionStore.getState().sessionId;
+    if (!sid) return;
+    const result = await useGitStore.getState().rejectFiles(sid, files);
+    useUiStore.getState().setRightTab("preview");
+    if (result) {
+      if (result.gitLog) useGitStore.getState().setCommits(result.gitLog);
+      if (result.fileTree) useFileStore.getState().setTree(result.fileTree);
+    }
+  }, []);
+
+  const handleFeatureStartSession = useCallback(
+    (feature: { name: string; planPath: string; checklistPath?: string }) => {
+      useSessionStore.getState().setSessionId(undefined);
+      resetSessionState();
+      useUiStore.getState().setShowTemplates(false);
+      send({ type: "new_session" });
+      let text = `Work on feature: ${feature.name}\n\nPlease read the feature plan at ${feature.planPath}`;
+      if (feature.checklistPath) text += ` and the remaining work checklist at ${feature.checklistPath}`;
+      text += `, then proceed with the implementation.`;
+      requestPermission();
+      useSessionStore.getState().setMessages([{ role: "user", text }]);
+      useSessionStore.getState().setIsLoading(true);
+      useSessionStore.getState().setActivity({ label: "Thinking..." });
+      send({ type: "send_message", text });
+      useUiStore.getState().setMobilePanel("chat");
+    },
+    [send, requestPermission],
+  );
+
+  const handleUsageBadgeClick = useCallback(() => {
+    useUiStore.getState().setShowUsageModal(true);
+    const sid = useSessionStore.getState().sessionId;
+    if (sid) useUiStore.getState().fetchUsageStats(sid).catch(() => {});
+  }, []);
+
+  const handleAgentChange = useCallback((agentId: AgentId) => {
+    useUiStore.getState().setActiveAgentId(agentId);
+    send({ type: "set_agent", agentId });
+  }, [send]);
+
+  const handleMergePr = useCallback(async (method: "merge" | "squash" | "rebase") => {
+    const sid = useSessionStore.getState().sessionId;
+    if (!sid) return;
+    const result = await usePrStore.getState().mergePr(sid, method);
+    if (result?.success && !result.autoMergeEnabled) {
+      useUiStore.getState().setToast({ message: "Pull request merged" });
+    }
+  }, []);
+
+  const handleInstructionsSave = useCallback(async (content: string) => {
+    await useSettingsStore.getState().saveInstructions(content).catch(() => {});
+    useUiStore.getState().setSettingsOpen(false);
+  }, []);
+
+  // ── Computed values ──
+  const detectedPorts = previewStatus?.detectedPorts ?? [];
+  const checkpointDividers: CheckpointDivider[] = useMemo(() => {
+    const dividers: CheckpointDivider[] = [];
+    for (const thread of threads) {
+      for (const cp of thread.checkpoints) {
+        dividers.push({ id: cp.id, messageIndex: cp.messageIndex, label: cp.label });
+      }
+    }
+    return dividers;
+  }, [threads]);
+  const showHomeScreen = showTemplates && messages.length === 0 && !isLoading;
+
+  // ── Right panel ──
   const rightPanel = (
     <>
-      {/* Tab bar */}
       <div className="flex border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
-        <button
-          onClick={() => callbacks.handleTabChange("preview")}
-          className={`px-4 py-2 text-sm font-medium transition-colors relative ${
-            rightTab === "preview"
-              ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500"
-              : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-          }`}
-        >
+        <button onClick={() => handleTabChange("preview")} className={`px-4 py-2 text-sm font-medium transition-colors relative ${rightTab === "preview" ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"}`}>
           Preview
-          {hasPreviewErrors && rightTab !== "preview" && (
-            <span className="ml-1.5 inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-red-600 text-white">
-              {previewErrorCount > 99 ? "99+" : previewErrorCount}
-            </span>
-          )}
+          {hasPreviewErrors && rightTab !== "preview" && <span className="ml-1.5 inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-red-600 text-white">{previewErrorCount > 99 ? "99+" : previewErrorCount}</span>}
         </button>
-        <button
-          onClick={() => callbacks.handleTabChange("docs")}
-          className={`px-4 py-2 text-sm font-medium transition-colors ${
-            rightTab === "docs"
-              ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500"
-              : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-          }`}
-        >
-          Docs
-        </button>
-        <button
-          onClick={() => callbacks.handleTabChange("files")}
-          className={`px-4 py-2 text-sm font-medium transition-colors relative ${
-            rightTab === "files"
-              ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500"
-              : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-          }`}
-        >
+        <button onClick={() => handleTabChange("docs")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "docs" ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"}`}>Docs</button>
+        <button onClick={() => handleTabChange("files")} className={`px-4 py-2 text-sm font-medium transition-colors relative ${rightTab === "files" ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"}`}>
           Files
-          {fileChangeCount > 0 && rightTab !== "files" && (
-            <span className="ml-1.5 inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-blue-600 text-white">
-              {fileChangeCount > 99 ? "99+" : fileChangeCount}
-            </span>
-          )}
+          {fileChangeCount > 0 && rightTab !== "files" && <span className="ml-1.5 inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-blue-600 text-white">{fileChangeCount > 99 ? "99+" : fileChangeCount}</span>}
         </button>
-        <button
-          onClick={() => callbacks.handleTabChange("terminal")}
-          className={`px-4 py-2 text-sm font-medium transition-colors relative ${
-            rightTab === "terminal"
-              ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500"
-              : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-          }`}
-        >
+        <button onClick={() => handleTabChange("terminal")} className={`px-4 py-2 text-sm font-medium transition-colors relative ${rightTab === "terminal" ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"}`}>
           Terminal
-          {unreadLogCount > 0 && rightTab !== "terminal" && (
-            <span className="ml-1.5 inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-blue-600 text-white">
-              {unreadLogCount > 99 ? "99+" : unreadLogCount}
-            </span>
-          )}
+          {unreadLogCount > 0 && rightTab !== "terminal" && <span className="ml-1.5 inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-blue-600 text-white">{unreadLogCount > 99 ? "99+" : unreadLogCount}</span>}
         </button>
         {lastCommitPair && (
-          <button
-            onClick={() => callbacks.handleTabChange("changes")}
-            className={`px-4 py-2 text-sm font-medium transition-colors relative ${
-              rightTab === "changes"
-                ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500"
-                : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-            }`}
-          >
+          <button onClick={() => handleTabChange("changes")} className={`px-4 py-2 text-sm font-medium transition-colors relative ${rightTab === "changes" ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"}`}>
             Changes
-            {diffBadgeCount > 0 && rightTab !== "changes" && (
-              <span className="ml-1.5 inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-orange-600 text-white">
-                {diffBadgeCount > 99 ? "99+" : diffBadgeCount}
-              </span>
-            )}
+            {diffBadgeCount > 0 && rightTab !== "changes" && <span className="ml-1.5 inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-orange-600 text-white">{diffBadgeCount > 99 ? "99+" : diffBadgeCount}</span>}
           </button>
         )}
-        <button
-          onClick={() => callbacks.handleTabChange("features")}
-          className={`px-4 py-2 text-sm font-medium transition-colors ${
-            rightTab === "features"
-              ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500"
-              : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-          }`}
-        >
-          Features
-        </button>
+        <button onClick={() => handleTabChange("features")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "features" ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"}`}>Features</button>
       </div>
-
-      {/* Tab content */}
       <div className="flex-1 min-h-0">
         {rightTab === "preview" ? (
-          <PreviewFrame
-            preview={preview}
-            sessionId={sessionIdRef.current}
-            detectedPorts={detectedPorts}
-            selectedPort={selectedPort}
-            onSelectPort={callbacks.handleSelectPort}
-            errors={previewErrors}
-            onSendErrors={callbacks.handleSendErrors}
-            onClearErrors={clearPreviewErrors}
-            autoFixEnabled={autoFixEnabled}
-            onToggleAutoFix={handleToggleAutoFix}
-            autoFixRetries={autoFixRetries}
-            configMissing={configMissing}
-            installStatus={installStatus}
-            onInitPreviewConfig={() => send({ type: "init_preview_config" })}
-          />
+          <PreviewFrame preview={previewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} autoFixEnabled={autoFixEnabled} onToggleAutoFix={handleToggleAutoFix} autoFixRetries={autoFixRetries} configMissing={configMissing} installStatus={installStatus} onInitPreviewConfig={() => send({ type: "init_preview_config" })} />
         ) : rightTab === "docs" ? (
-          <DocsViewer
-            files={docFiles}
-            selectedFile={selectedDoc}
-            content={docContent}
-            onSelectFile={callbacks.handleDocSelect}
-            onRefresh={callbacks.handleDocRefresh}
-          />
+          <DocsViewer files={docFiles} selectedFile={selectedDoc} content={docContent} onSelectFile={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDoc(sid, f).catch(() => {}); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} />
         ) : rightTab === "terminal" ? (
-          <TerminalPanel
-            entries={logEntries}
-            onClear={callbacks.handleClearLogs}
-            terminalMode={terminalMode}
-            onTerminalModeChange={callbacks.handleTerminalModeChange}
-            shellContent={
-              (shellStarted || terminalMode === "shell") ? (
-                <InteractiveTerminal
-                  ref={terminalRef}
-                  onInput={callbacks.handleTerminalInput}
-                  onResize={callbacks.handleTerminalResize}
-                  onStart={callbacks.handleTerminalStart}
-                />
-              ) : null
-            }
-          />
+          <TerminalPanel entries={logEntries} onClear={() => { useTerminalStore.getState().clearEntries(); send({ type: "clear_logs" }); }} terminalMode={terminalMode} onTerminalModeChange={(m) => useTerminalStore.getState().setMode(m)} shellContent={
+            (shellStarted || terminalMode === "shell") ? (
+              <InteractiveTerminal ref={terminalRef} onInput={(d) => send({ type: "terminal_input", data: d })} onResize={(cols, rows) => send({ type: "terminal_resize", cols, rows })} onStart={() => { send({ type: "terminal_start" }); useTerminalStore.getState().setShellStarted(true); }} />
+            ) : null
+          } />
         ) : rightTab === "changes" ? (
           turnDiff ? (
             <Suspense fallback={<div className="flex items-center justify-center h-full text-gray-500 text-sm">Loading diff viewer...</div>}>
-              <DiffPanel
-                diff={turnDiff}
-                onAcceptAll={callbacks.handleDiffAcceptAll}
-                onRejectFiles={callbacks.handleDiffRejectFiles}
-                onClose={callbacks.handleDiffClose}
-              />
+              <DiffPanel diff={turnDiff} onAcceptAll={handleDiffAcceptAll} onRejectFiles={handleDiffRejectFiles} onClose={() => useUiStore.getState().setRightTab("preview")} />
             </Suspense>
-          ) : (
-            <div className="flex items-center justify-center h-full text-gray-500 text-sm">
-              Loading diff...
-            </div>
-          )
+          ) : <div className="flex items-center justify-center h-full text-gray-500 text-sm">Loading diff...</div>
         ) : rightTab === "features" ? (
-          <FeaturesPanel
-            features={features}
-            onStartSession={callbacks.handleFeatureStartSession}
-            onRefresh={callbacks.handleFeatureRefresh}
-          />
+          <FeaturesPanel features={features} onStartSession={handleFeatureStartSession} onRefresh={() => useUiStore.getState().fetchFeatures().catch(() => {})} />
         ) : viewingFile ? (
-          <FileContentViewer
-            filePath={viewingFile}
-            content={viewingFileContent}
-            isBinary={viewingFileBinary}
-            onClose={callbacks.handleFileViewerClose}
-          />
+          <FileContentViewer filePath={viewingFile} content={viewingFileContent} isBinary={viewingFileBinary} onClose={() => useFileStore.getState().closeViewer()} />
         ) : (
-          <FileTree
-            tree={fileTree}
-            onRefresh={callbacks.handleFileTreeRefresh}
-            onFileClick={callbacks.handleFileClick}
-            selectedFile={viewingFile}
-            onAddToChat={callbacks.handleAddFile}
-          />
+          <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchTree(sid).catch(() => {}); }} onFileClick={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchFile(sid, f).catch(() => {}); }} selectedFile={viewingFile} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} />
         )}
       </div>
     </>
   );
 
-  // Compute checkpoint dividers from all threads for the MessageList
-  const checkpointDividers: CheckpointDivider[] = useMemo(() => {
-    const dividers: CheckpointDivider[] = [];
-    for (const thread of threads) {
-      for (const cp of thread.checkpoints) {
-        dividers.push({
-          id: cp.id,
-          messageIndex: cp.messageIndex,
-          label: cp.label,
-        });
-      }
-    }
-    return dividers;
-  }, [threads]);
-
-  // Show template picker for new sessions with no messages
-  const showTemplatePicker = showTemplates && messages.length === 0 && !isLoading;
-  const showHomeScreen = showTemplatePicker;
-
-  // Shared chat panel content
+  // ── Chat panel ──
   const chatPanel = (
     <>
-      {searchOpen && (
-        <SearchBar
-          query={search.query}
-          onQueryChange={search.setQuery}
-          matches={search.matches}
-          currentMatchIndex={search.currentMatchIndex}
-          onNext={search.goToNext}
-          onPrev={search.goToPrev}
-          onClose={() => {
-            setSearchOpen(false);
-            search.clear();
-          }}
-        />
-      )}
+      {searchOpen && <SearchBar query={search.query} onQueryChange={search.setQuery} matches={search.matches} currentMatchIndex={search.currentMatchIndex} onNext={search.goToNext} onPrev={search.goToPrev} onClose={() => { setSearchOpen(false); search.clear(); }} />}
       {showHomeScreen ? (
         <HomeScreen
-          sessions={sessions}
-          githubStatus={githubStatus}
-          templates={templates}
-          onRequestTemplates={() => { apiGet<{ templates: typeof templates }>("/api/bootstrap").then((d) => setTemplates(d.templates)).catch(() => {}); }}
-          onSendWithRepo={callbacks.handleHomeSendWithRepo}
-          onNewRepo={callbacks.handleHomeCreateRepo}
-          onSearchRepos={callbacks.handleImportSearch}
-          searchResults={importSearchResults}
-          disabled={isLoading || status !== "open"}
-          permissionMode={permissionMode}
-          onPermissionModeChange={callbacks.handlePermissionModeChange}
-          pendingFiles={pendingFiles}
-          onRemoveFile={callbacks.handleRemoveFile}
-          onAddFile={callbacks.handleAddFile}
-          fileTree={fileTree}
-          creatingRepo={creatingRepo}
-          selectedRepoUrl={selectedRepoUrl}
-          onSelectRepo={setSelectedRepoUrl}
+          sessions={sessions} githubStatus={githubStatus} templates={templates}
+          onRequestTemplates={() => { apiGet<{ templates: typeof templates }>("/api/bootstrap").then((d) => useUiStore.getState().setTemplates(d.templates)).catch(() => {}); }}
+          onSendWithRepo={handleHomeSendWithRepo} onNewRepo={handleHomeCreateRepo}
+          onSearchRepos={(q) => usePrStore.getState().searchRepos(q).catch(() => {})}
+          searchResults={importSearchResults} disabled={isLoading || status !== "open"}
+          permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(m)}
+          pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)}
+          onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree}
+          creatingRepo={creatingRepo} selectedRepoUrl={selectedRepoUrl}
+          onSelectRepo={(url) => useSessionStore.getState().setSelectedRepoUrl(url)}
         />
       ) : (
-        <MessageList
-          messages={messages}
-          isLoading={isLoading}
-          activity={activity}
-          searchMatches={search.matches}
-          currentMatch={search.currentMatch}
-          onEditMessage={callbacks.handleEditMessage}
-          onAnswerQuestion={callbacks.handleAnswerQuestion}
-          checkpoints={checkpointDividers}
-        />
+        <MessageList messages={messages} isLoading={isLoading} activity={activity} searchMatches={search.matches} currentMatch={search.currentMatch} onEditMessage={handleEditMessage} onAnswerQuestion={handleAnswerQuestion} checkpoints={checkpointDividers} />
       )}
       {!showHomeScreen && (
         <div className="border-t border-gray-200 dark:border-gray-800 px-4 py-1.5 flex items-center gap-2">
-          <ThreadIndicator
-            threads={threads}
-            activeThreadId={activeThreadId}
-            onCreateCheckpoint={callbacks.handleCreateCheckpoint}
-            onForkThread={callbacks.handleForkThread}
-            onSwitchThread={callbacks.handleSwitchThread}
-            disabled={isLoading || status !== "open"}
-          />
-          <AgentPicker
-            agents={agentList}
-            activeAgentId={activeAgentId}
-            onAgentChange={callbacks.handleAgentChange}
-            disabled={isLoading || status !== "open"}
-          />
+          <ThreadIndicator threads={threads} activeThreadId={activeThreadId} onCreateCheckpoint={(label) => { const sid = useSessionStore.getState().sessionId; if (sid) useThreadStore.getState().createCheckpoint(sid, label).catch(() => {}); }} onForkThread={(id) => send({ type: "fork_thread", checkpointId: id })} onSwitchThread={(id) => send({ type: "switch_thread", threadId: id })} disabled={isLoading || status !== "open"} />
+          <AgentPicker agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} disabled={isLoading || status !== "open"} />
         </div>
       )}
-      {!showHomeScreen && threads.length > 0 && (
-        <ThreadTimeline
-          threads={threads}
-          activeThreadId={activeThreadId}
-          onForkThread={callbacks.handleForkThread}
-          onSwitchThread={callbacks.handleSwitchThread}
-        />
-      )}
-      {!showHomeScreen && (
-        <GitHistory
-          commits={gitCommits}
-          onRollback={callbacks.handleRollback}
-          onRefresh={callbacks.handleGitRefresh}
-        />
-      )}
-      {!showHomeScreen && (
-        <StatusBar modelInfo={modelInfo} contextTokens={contextTokens} agentName={agentList.find((a) => a.id === activeAgentId)?.name} />
-      )}
-      {!showHomeScreen && queuedMessages.length > 0 && (
-        <QueueIndicator
-          queue={queuedMessages}
-          onCancel={callbacks.handleCancelQueued}
-        />
-      )}
-      {!showHomeScreen && (
-        <MessageInput
-          onSend={callbacks.handleSend}
-          disabled={status !== "open"}
-          isLoading={isLoading}
-          onInterrupt={callbacks.handleInterrupt}
-          permissionMode={permissionMode}
-          onPermissionModeChange={callbacks.handlePermissionModeChange}
-          pendingFiles={pendingFiles}
-          onRemoveFile={callbacks.handleRemoveFile}
-          onAddFile={callbacks.handleAddFile}
-          fileTree={fileTree}
-        />
-      )}
+      {!showHomeScreen && threads.length > 0 && <ThreadTimeline threads={threads} activeThreadId={activeThreadId} onForkThread={(id) => send({ type: "fork_thread", checkpointId: id })} onSwitchThread={(id) => send({ type: "switch_thread", threadId: id })} />}
+      {!showHomeScreen && <GitHistory commits={gitCommits} onRollback={(hash) => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().rollback(sid, hash).catch(() => {}); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().fetchLog(sid).catch(() => {}); }} />}
+      {!showHomeScreen && <StatusBar modelInfo={modelInfo} contextTokens={contextTokens} agentName={agentList.find((a) => a.id === activeAgentId)?.name} />}
+      {!showHomeScreen && queuedMessages.length > 0 && <QueueIndicator queue={queuedMessages} onCancel={(pos) => send({ type: "cancel_queued_message", position: pos })} />}
+      {!showHomeScreen && <MessageInput onSend={handleSend} disabled={status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_claude" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} />}
     </>
   );
 
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
-      {authUrl !== null && <AuthOverlay url={authUrl} onPasteCode={(code) => { apiPost("/api/auth/code", { code }).catch((err) => console.error("[api] Submit auth code failed:", err)); }} onApiKey={(key) => { apiPost("/api/auth/api-key", { key }).catch((err) => console.error("[api] Set API key failed:", err)); }} />}
-      {gitIdentityNeeded && (
-        <GitIdentityOverlay onSubmit={callbacks.handleGitIdentitySubmit} />
-      )}
+      {authUrl !== null && <AuthOverlay url={authUrl} onPasteCode={(code) => { apiPost("/api/auth/code", { code }).catch(() => {}); }} onApiKey={(key) => { apiPost("/api/auth/api-key", { key }).catch(() => {}); }} />}
+      {gitIdentityNeeded && <GitIdentityOverlay onSubmit={(name, email) => useGitStore.getState().submitGitIdentity(name, email).catch(() => {})} />}
       {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
       {settingsOpen && (
         <Settings
-          initialContent={systemPromptContent}
-          onSaveInstructions={callbacks.handleInstructionsSave}
+          initialContent={systemPromptContent} onSaveInstructions={handleInstructionsSave}
           githubStatus={githubStatus}
-          onGitHubTokenSubmit={callbacks.handleGitHubTokenSubmit}
-          onGitHubLogout={callbacks.handleGitHubLogout}
+          onGitHubTokenSubmit={async (token) => { const result = await useSettingsStore.getState().submitGitHubToken(token); if (result) usePrStore.getState().setImportSearchResults(result.repos); }}
+          onGitHubLogout={() => useSettingsStore.getState().gitHubLogout().catch(() => {})}
           authUrl={authUrl}
-          onApiKey={(key) => { apiPost("/api/auth/api-key", { key }).catch((err) => console.error("[api] Set API key failed:", err)); }}
-          onClearApiKey={() => { apiDel("/api/auth/api-key").catch((err) => console.error("[api] Clear API key failed:", err)); }}
-          onStartAuth={() => { apiPost("/api/auth/start").catch((err) => console.error("[api] Start auth failed:", err)); }}
-          onPasteCode={(code) => { apiPost("/api/auth/code", { code }).catch((err) => console.error("[api] Submit auth code failed:", err)); }}
+          onApiKey={(key) => { apiPost("/api/auth/api-key", { key }).catch(() => {}); }}
+          onClearApiKey={() => { apiDel("/api/auth/api-key").catch(() => {}); }}
+          onStartAuth={() => { apiPost("/api/auth/start").catch(() => {}); }}
+          onPasteCode={(code) => { apiPost("/api/auth/code", { code }).catch(() => {}); }}
           agentList={agentList}
-          onSetAgentEnv={(agentId, key, value) => { apiPost(`/api/agents/${agentId}/env`, { key, value }).catch((err) => console.error("[api] Set agent env failed:", err)); }}
-          onFullReset={callbacks.handleFullReset}
+          onSetAgentEnv={(agentId, key, value) => { apiPost(`/api/agents/${agentId}/env`, { key, value }).catch(() => {}); }}
+          onFullReset={async () => { try { await apiPost("/api/reset"); } catch { /* ignore */ } }}
           gitIdentity={gitIdentity}
-          onGitIdentitySave={callbacks.handleGitIdentitySubmit}
-          deployTargets={deployTargets}
-          deployConfigStatus={deployConfigStatus}
-          onDeployConfigure={callbacks.handleDeployConfigure}
-          onDeployDeleteConfig={callbacks.handleDeployDeleteConfig}
-          hasActiveSession={!!sessionIdRef.current}
-          initialTab={initialSettingsTab}
-          onDeployTabSelected={callbacks.handleDeployTabSelected}
-          onClose={() => { setSettingsOpen(false); setInitialSettingsTab(undefined); }}
+          onGitIdentitySave={(name, email) => useGitStore.getState().submitGitIdentity(name, email).catch(() => {})}
+          deployTargets={deployTargets} deployConfigStatus={deployConfigStatus}
+          onDeployConfigure={(targetId, creds, projectName) => { const sid = useSessionStore.getState().sessionId; if (sid) useDeployStore.getState().configure(sid, targetId, creds, projectName).catch(() => {}); }}
+          onDeployDeleteConfig={(targetId) => { const sid = useSessionStore.getState().sessionId; if (sid) useDeployStore.getState().deleteConfig(sid, targetId).catch(() => {}); }}
+          hasActiveSession={!!sessionId} initialTab={initialSettingsTab}
+          onDeployTabSelected={() => { const sid = useSessionStore.getState().sessionId; if (sid) useDeployStore.getState().fetchSetup(sid).catch(() => {}); }}
+          onClose={() => { useUiStore.getState().setSettingsOpen(false); useUiStore.getState().setInitialSettingsTab(undefined); }}
         />
       )}
       {showDeployModal && (
-        <DeployModal
-          targets={deployTargets}
-          configStatus={deployConfigStatus}
-          deployStatus={deployStatus}
-          lastDeployUrl={lastDeployUrl}
-          lastDeployError={lastDeployError}
-          deployHistory={deployHistory}
-          onDeploy={callbacks.handleDeployInitiate}
-          onCancel={callbacks.handleDeployCancel}
-          onGetHistory={callbacks.handleDeployGetHistory}
-          onSendErrorToChat={callbacks.handleDeploySendError}
-          onOpenDeploySettings={() => callbacks.handleSettingsOpen("deploy")}
-          onClose={() => setShowDeployModal(false)}
+        <DeployModal targets={deployTargets} configStatus={deployConfigStatus} deployStatus={deployStatus} lastDeployUrl={lastDeployUrl} lastDeployError={lastDeployError} deployHistory={deployHistory}
+          onDeploy={(targetId, env) => send({ type: "initiate_deploy", targetId, environment: env })} onCancel={() => send({ type: "cancel_deploy" })}
+          onGetHistory={() => { const sid = useSessionStore.getState().sessionId; if (sid) useDeployStore.getState().fetchHistory(sid).catch(() => {}); }}
+          onSendErrorToChat={handleDeploySendError} onOpenDeploySettings={() => handleSettingsOpen("deploy")}
+          onClose={() => useDeployStore.getState().closeModal()}
         />
       )}
       {showPRModal && (
-        <PullRequestModal
-          currentBranch={prCurrentBranch}
-          remoteBranches={prRemoteBranches}
-          onSubmit={callbacks.handlePRSubmit}
-          onRequestBranches={callbacks.handlePRRequestBranches}
-          onGenerateDescription={callbacks.handlePRGenerateDescription}
-          onClose={() => setShowPRModal(false)}
-          result={prResult}
-          isGeneratingDescription={prDescGenerating}
-          generateDescriptionError={prDescError}
-          generatedDescription={prGeneratedDesc}
+        <PullRequestModal currentBranch={prCurrentBranch} remoteBranches={prRemoteBranches}
+          onSubmit={(data) => { const sid = useSessionStore.getState().sessionId; if (sid) usePrStore.getState().submit(sid, data).catch(() => {}); }}
+          onRequestBranches={() => { const sid = useSessionStore.getState().sessionId; if (sid) usePrStore.getState().requestBranches(sid).catch(() => {}); }}
+          onGenerateDescription={() => { const sid = useSessionStore.getState().sessionId; if (sid) usePrStore.getState().generateDescription(sid).catch(() => {}); }}
+          onClose={() => usePrStore.getState().closeModal()} result={prResult}
+          isGeneratingDescription={prDescGenerating} generateDescriptionError={prDescError} generatedDescription={prGeneratedDesc}
         />
       )}
-      {showUsageModal && (
-        <UsageModal
-          currentSessionUsage={currentSessionUsage}
-          allUsage={allUsageStats}
-          sessions={sessions}
-          onClose={() => setShowUsageModal(false)}
-          modelInfo={modelInfo}
-          contextTokens={contextTokens}
-          turnTokens={turnTokens}
-        />
-      )}
+      {showUsageModal && <UsageModal currentSessionUsage={currentSessionUsage} allUsage={allUsageStats} sessions={sessions} onClose={() => useUiStore.getState().setShowUsageModal(false)} modelInfo={modelInfo} contextTokens={contextTokens} turnTokens={turnTokens} />}
 
-      {/* Header */}
       <header className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-gray-200 dark:border-gray-800">
         <div className="flex items-center gap-3 sm:gap-4 min-w-0">
-          <h1
-            className="text-lg font-semibold tracking-tight shrink-0 flex items-center gap-1.5 cursor-pointer hover:opacity-80 transition-opacity"
-            onClick={() => navigate("/")}
-            role="link"
-          >
+          <h1 className="text-lg font-semibold tracking-tight shrink-0 flex items-center gap-1.5 cursor-pointer hover:opacity-80 transition-opacity" onClick={() => navigate("/")} role="link">
             <img src={theme === "dark" ? "/favicon.svg" : "/favicon-light.svg"} alt="" className="w-5 h-5" />
             ShipIt
           </h1>
         </div>
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
           {githubStatus.authenticated && (
-            <button
-              onClick={callbacks.handlePROpen}
-              className="hidden sm:inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800 transition-colors font-medium"
-              title="Create pull request"
-              aria-label="Create PR"
-            >
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
-              </svg>
+            <button onClick={() => usePrStore.getState().openModal()} className="hidden sm:inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800 transition-colors font-medium" title="Create pull request" aria-label="Create PR">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" /></svg>
               PR
             </button>
           )}
-          <button
-            onClick={callbacks.handleDeployOpen}
-            className="hidden sm:inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-cyan-100 dark:bg-cyan-900 text-cyan-700 dark:text-cyan-300 hover:bg-cyan-200 dark:hover:bg-cyan-800 transition-colors font-medium"
-            title="Deploy to production"
-            aria-label="Deploy"
-          >
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 10.5L12 3m0 0l7.5 7.5M12 3v18" />
-            </svg>
+          <button onClick={handleDeployOpen} className="hidden sm:inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-cyan-100 dark:bg-cyan-900 text-cyan-700 dark:text-cyan-300 hover:bg-cyan-200 dark:hover:bg-cyan-800 transition-colors font-medium" title="Deploy to production" aria-label="Deploy">
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 10.5L12 3m0 0l7.5 7.5M12 3v18" /></svg>
             Deploy
           </button>
-          <button
-            onClick={() => callbacks.handleSettingsOpen()}
-            className={`hidden sm:inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${
-              hasSystemPrompt || githubStatus.authenticated
-                ? "text-blue-400 hover:text-blue-300 hover:bg-gray-100 dark:hover:bg-gray-800"
-                : "text-gray-500 hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
-            }`}
-            title="Settings"
-            aria-label="Settings"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 20 20"
-              fill="currentColor"
-              className="w-4 h-4"
-            >
-              <path
-                fillRule="evenodd"
-                d="M7.84 1.804A1 1 0 0 1 8.82 1h2.36a1 1 0 0 1 .98.804l.331 1.652a6.993 6.993 0 0 1 1.929 1.115l1.598-.54a1 1 0 0 1 1.186.447l1.18 2.044a1 1 0 0 1-.205 1.251l-1.267 1.113a7.047 7.047 0 0 1 0 2.228l1.267 1.113a1 1 0 0 1 .206 1.25l-1.18 2.045a1 1 0 0 1-1.187.447l-1.598-.54a6.993 6.993 0 0 1-1.929 1.115l-.33 1.652a1 1 0 0 1-.98.804H8.82a1 1 0 0 1-.98-.804l-.331-1.652a6.993 6.993 0 0 1-1.929-1.115l-1.598.54a1 1 0 0 1-1.186-.447l-1.18-2.044a1 1 0 0 1 .205-1.251l1.267-1.114a7.05 7.05 0 0 1 0-2.227L1.821 7.773a1 1 0 0 1-.206-1.25l1.18-2.045a1 1 0 0 1 1.187-.447l1.598.54A6.992 6.992 0 0 1 7.51 3.456l.33-1.652ZM10 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"
-                clipRule="evenodd"
-              />
-            </svg>
+          <button onClick={() => handleSettingsOpen()} className={`hidden sm:inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${hasSystemPrompt || githubStatus.authenticated ? "text-blue-400 hover:text-blue-300 hover:bg-gray-100 dark:hover:bg-gray-800" : "text-gray-500 hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"}`} title="Settings" aria-label="Settings">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4"><path fillRule="evenodd" d="M7.84 1.804A1 1 0 0 1 8.82 1h2.36a1 1 0 0 1 .98.804l.331 1.652a6.993 6.993 0 0 1 1.929 1.115l1.598-.54a1 1 0 0 1 1.186.447l1.18 2.044a1 1 0 0 1-.205 1.251l-1.267 1.113a7.047 7.047 0 0 1 0 2.228l1.267 1.113a1 1 0 0 1 .206 1.25l-1.18 2.045a1 1 0 0 1-1.187.447l-1.598-.54a6.993 6.993 0 0 1-1.929 1.115l-.33 1.652a1 1 0 0 1-.98.804H8.82a1 1 0 0 1-.98-.804l-.331-1.652a6.993 6.993 0 0 1-1.929-1.115l-1.598.54a1 1 0 0 1-1.186-.447l-1.18-2.044a1 1 0 0 1 .205-1.251l1.267-1.114a7.05 7.05 0 0 1 0-2.227L1.821 7.773a1 1 0 0 1-.206-1.25l1.18-2.045a1 1 0 0 1 1.187-.447l1.598.54A6.992 6.992 0 0 1 7.51 3.456l.33-1.652ZM10 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" clipRule="evenodd" /></svg>
           </button>
           {currentSessionUsage && currentSessionUsage.totalCostUsd > 0 && (
-            <button
-              onClick={callbacks.handleUsageBadgeClick}
-              className="hidden sm:inline text-xs px-2 py-0.5 rounded-full bg-purple-900 text-purple-300 hover:bg-purple-800 transition-colors cursor-pointer"
-              title="View usage details"
-            >
-              {currentSessionUsage.totalCostUsd < 0.01
-                ? `$${currentSessionUsage.totalCostUsd.toFixed(3)}`
-                : `$${currentSessionUsage.totalCostUsd.toFixed(2)}`}
+            <button onClick={handleUsageBadgeClick} className="hidden sm:inline text-xs px-2 py-0.5 rounded-full bg-purple-900 text-purple-300 hover:bg-purple-800 transition-colors cursor-pointer" title="View usage details">
+              {currentSessionUsage.totalCostUsd < 0.01 ? `$${currentSessionUsage.totalCostUsd.toFixed(3)}` : `$${currentSessionUsage.totalCostUsd.toFixed(2)}`}
             </button>
           )}
-          {/* Theme toggle */}
-          <button
-            onClick={toggleTheme}
-            className="p-1.5 rounded-md text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-            title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-            aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-          >
+          <button onClick={toggleTheme} className="p-1.5 rounded-md text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"} aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}>
             {theme === "dark" ? (
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-              </svg>
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
             ) : (
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-              </svg>
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" /></svg>
             )}
           </button>
         </div>
@@ -787,83 +617,42 @@ export default function App() {
 
       <ConnectionBanner status={status} reconnectAttempt={reconnectAttempt} onReconnect={reconnect} />
 
-      {prStatus && (
-        <PrStatusBar
-          baseBranch={prStatus.baseBranch}
-          headBranch={prStatus.headBranch}
-          insertions={prStatus.insertions}
-          deletions={prStatus.deletions}
-          prUrl={prStatus.url}
-          prNumber={prStatus.number}
-          checks={prStatus.checks}
-          autoMergeEnabled={prStatus.autoMergeEnabled}
-          mergeable={prStatus.mergeable}
-          onMerge={callbacks.handleMergePr}
-        />
-      )}
+      {prStatus && <PrStatusBar baseBranch={prStatus.baseBranch} headBranch={prStatus.headBranch} insertions={prStatus.insertions} deletions={prStatus.deletions} prUrl={prStatus.url} prNumber={prStatus.number} checks={prStatus.checks} autoMergeEnabled={prStatus.autoMergeEnabled} mergeable={prStatus.mergeable} onMerge={handleMergePr} />}
 
       {isMobile ? (
-        /* ── Mobile: single panel with bottom tab bar ── */
         <>
           <div className="flex flex-col flex-1 min-h-0">
-            {showHomeScreen || mobilePanel === "chat" ? (
-              <div className="flex flex-col flex-1 min-h-0">{chatPanel}</div>
-            ) : (
-              <div className="flex flex-col flex-1 min-h-0 bg-gray-50 dark:bg-gray-900">{rightPanel}</div>
-            )}
+            {showHomeScreen || mobilePanel === "chat" ? <div className="flex flex-col flex-1 min-h-0">{chatPanel}</div> : <div className="flex flex-col flex-1 min-h-0 bg-gray-50 dark:bg-gray-900">{rightPanel}</div>}
           </div>
-          {!showHomeScreen && (
-            <MobileTabBar activePanel={mobilePanel} onChangePanel={setMobilePanel} />
-          )}
+          {!showHomeScreen && <MobileTabBar activePanel={mobilePanel} onChangePanel={(p) => useUiStore.getState().setMobilePanel(p)} />}
         </>
       ) : (
-        /* ── Desktop: sidebar + resizable chat/right layout ── */
         <div className="flex flex-1 min-h-0">
           <SessionSidebar
-            sessions={sessions}
-            currentSessionId={sessionIdRef.current}
-            activeRunnerSessions={activeRunnerSessions}
-            onResume={callbacks.handleSessionResume}
-            onNew={callbacks.handleSessionNew}
-            onArchive={callbacks.handleSessionArchive}
-            onRename={callbacks.handleSessionRename}
-            onRefresh={callbacks.handleSessionRefresh}
+            sessions={sessions} currentSessionId={sessionId} activeRunnerSessions={activeRunnerSessions}
+            onResume={(sid) => { resumeSessionInternal(sid, send); navigate(`/session/${sid}`); }}
+            onNew={() => newSession(send, navigate)}
+            onArchive={async (sid) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId) { useSessionStore.getState().setSessionId(undefined); navigate("/"); } }}
+            onRename={(sid, title) => useSessionStore.getState().renameSession(sid, title)}
+            onRefresh={() => useSessionStore.getState().refreshSessions()}
             collapsed={sidebarCollapsed}
-            onToggleCollapse={() => {
-              setSidebarCollapsed((v) => {
-                saveSidebarCollapsed(!v);
-                return !v;
-              });
-            }}
+            onToggleCollapse={() => useUiStore.getState().setSidebarCollapsed(!sidebarCollapsed)}
           />
           <div ref={containerRef} className="flex flex-1 min-h-0">
-            {/* Left column — Chat */}
-            <div
-              className={`flex flex-col min-w-0 ${showHomeScreen ? "" : "border-r border-gray-200 dark:border-gray-800"}`}
-              style={{ width: showHomeScreen ? "100%" : `${fraction * 100}%` }}
-            >
+            <div className={`flex flex-col min-w-0 ${showHomeScreen ? "" : "border-r border-gray-200 dark:border-gray-800"}`} style={{ width: showHomeScreen ? "100%" : `${fraction * 100}%` }}>
               {chatPanel}
             </div>
-
             {!showHomeScreen && (
               <>
-                {/* Drag handle */}
                 <ResizeHandle isDragging={isDragging} onMouseDown={onMouseDown} onTouchStart={onTouchStart} />
-
-                {/* Right column — Tabbed (Preview / Docs) */}
-                <div
-                  className="min-w-0 flex flex-col bg-gray-50 dark:bg-gray-900"
-                  style={{ width: `${(1 - fraction) * 100}%` }}
-                >
-                  {rightPanel}
-                </div>
+                <div className="min-w-0 flex flex-col bg-gray-50 dark:bg-gray-900" style={{ width: `${(1 - fraction) * 100}%` }}>{rightPanel}</div>
               </>
             )}
           </div>
         </div>
       )}
 
-      {toast && <Toast toast={toast} onDismiss={() => setToast(null)} />}
+      {toast && <Toast toast={toast} onDismiss={() => useUiStore.getState().setToast(null)} />}
     </div>
   );
 }
