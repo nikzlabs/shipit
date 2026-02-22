@@ -11,6 +11,7 @@ import {
 } from "./StreamingIndicator.js";
 import { AskUserQuestion, type AskQuestionItem } from "./AskUserQuestion.js";
 import { ToolResult } from "./ToolResult.js";
+import { TodoPanel, type TodoItem } from "./TodoPanel.js";
 import { sessionRelativePath } from "../path-utils.js";
 import type { SearchMatch } from "../hooks/useSearch.js";
 
@@ -55,7 +56,7 @@ export interface ChatMessage {
   queuePosition?: number;
 }
 
-function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQuestionDisabled }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void; isQuestionDisabled: boolean }) {
+function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQuestionDisabled, lastTodoWriteId }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void; isQuestionDisabled: boolean; lastTodoWriteId?: string | null }) {
   // Show a spinner on the last tool when the message is still streaming
   const inProgress = isLast && isStreaming;
   const [collapsed, setCollapsed] = useState(true);
@@ -97,6 +98,10 @@ function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQu
         disabled={isQuestionDisabled || isStreaming}
       />
     );
+  }
+
+  if (tool.name === "TodoWrite") {
+    return null; // latest is rendered outside the bubble; older ones are hidden
   }
 
   // Fallback: compact one-liner for non-file tools, with optional tool result
@@ -550,6 +555,18 @@ export function MessageList({
   const currentMatchRef = useRef<HTMLElement | null>(null);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
 
+  const lastTodoWriteId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const tools = messages[i].toolUse;
+      if (tools) {
+        for (let j = tools.length - 1; j >= 0; j--) {
+          if (tools[j].name === "TodoWrite") return tools[j].id;
+        }
+      }
+    }
+    return null;
+  }, [messages]);
+
   const handleEditSave = useCallback(
     (index: number, newText: string) => {
       setEditingIndex(null);
@@ -613,6 +630,11 @@ export function MessageList({
         const useMarkdown = msg.role === "assistant" && !msg.isError;
         const isEditing = editingIndex === i;
         const showEditActions = canEdit && msg.role === "user" && !msg.isError && !isEditing && !msg.queued;
+        const latestTodoTool = msg.toolUse?.find((t) => t.name === "TodoWrite" && t.id === lastTodoWriteId);
+        // Hide the bubble when it would be empty (no text/images/files
+        // and every tool is a TodoWrite, which renders as null inside the bubble)
+        const hasVisibleTools = msg.toolUse?.some((t) => t.name !== "TodoWrite");
+        const hideBubble = !msg.text && !msg.images?.length && !msg.files?.length && !hasVisibleTools && !!msg.toolUse?.length;
 
         return (
           <div key={i}>
@@ -633,6 +655,7 @@ export function MessageList({
                 <div className="flex-1 h-px bg-amber-500/30" />
               </div>
             ))}
+            {!hideBubble && (
             <div className={`group flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
             {/* Edit/Retry buttons — shown on hover for user messages */}
             {showEditActions && (
@@ -751,6 +774,7 @@ export function MessageList({
                         isStreaming={!!msg.streaming}
                         onAnswerQuestion={onAnswerQuestion}
                         isQuestionDisabled={questionDisabled}
+                        lastTodoWriteId={lastTodoWriteId}
                       />
                     );
                   })}
@@ -765,6 +789,14 @@ export function MessageList({
             </div>
             )}
             </div>
+            )}
+            {latestTodoTool && Array.isArray(latestTodoTool.input.todos) && (
+              <div className="flex justify-start mt-1">
+                <div className="max-w-2xl">
+                  <TodoPanel todos={latestTodoTool.input.todos as TodoItem[]} />
+                </div>
+              </div>
+            )}
           </div>
         );
       })}
