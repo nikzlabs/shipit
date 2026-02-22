@@ -92,7 +92,7 @@ function ToolCallGroup({ items, isStreaming }: {
   );
 }
 
-export { buildVisualElements, STANDALONE_TOOLS, type VisualElement } from "./visual-elements.js";
+export { buildVisualElements, STANDALONE_TOOLS, SUBAGENT_TOOLS, type VisualElement } from "./visual-elements.js";
 
 function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQuestionDisabled, grouped }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void; isQuestionDisabled: boolean; grouped?: boolean }) {
   // Show a spinner on the last tool when the message is still streaming
@@ -283,6 +283,28 @@ function MarkdownContent({ text }: { text: string }) {
       data-testid="markdown-content"
       dangerouslySetInnerHTML={{ __html: html }}
     />
+  );
+}
+
+/** Hover tooltip that renders its content as markdown. Scrollable. */
+function MarkdownTooltip({ content, children }: { content: string; children: React.ReactNode }) {
+  const [visible, setVisible] = useState(false);
+  const html = useMemo(() => chatMarked.parse(content, { async: false }) as string, [content]);
+
+  return (
+    <div className="relative" onMouseEnter={() => setVisible(true)} onMouseLeave={() => setVisible(false)}>
+      {children}
+      {visible && (
+        <div className="absolute left-0 top-full z-50 pt-1">
+          <div className="max-w-lg max-h-80 overflow-auto rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-xl p-3">
+            <div
+              className="prose dark:prose-invert prose-sm max-w-none text-xs"
+              dangerouslySetInnerHTML={{ __html: html }}
+            />
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -684,6 +706,40 @@ export function MessageList({
                 )) : [];
               })}
               <ToolCallGroup items={el.items} isStreaming={el.streaming} />
+            </div>
+          );
+        }
+
+        // ── Subagent: standalone Task/Skill element with left border ──
+        if (el.kind === "subagent") {
+          const tool = el.tool;
+          if (tool.name === "Task") {
+            const description = String(tool.input.description ?? "Running task...");
+            const prompt = typeof tool.input.prompt === "string" ? tool.input.prompt : "";
+            return (
+              <div key={tool.id} data-testid="subagent-task" className="border-l-2 border-green-600/40 pl-3 space-y-1">
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="font-semibold text-green-700 dark:text-green-400">Subagent:</span>
+                  <span className="text-gray-900 dark:text-gray-100">{description}</span>
+                </div>
+                {prompt && (
+                  <MarkdownTooltip content={prompt}>
+                    <div className="text-xs text-gray-500 dark:text-gray-400 font-mono whitespace-pre-wrap overflow-hidden max-h-15 leading-5">{prompt}</div>
+                  </MarkdownTooltip>
+                )}
+              </div>
+            );
+          }
+          // Skill
+          const skillName = String(tool.input.skill ?? "unknown");
+          const args = tool.input.args ? String(tool.input.args) : "";
+          return (
+            <div key={tool.id} data-testid="subagent-skill" className="border-l-2 border-green-600/40 pl-3">
+              <div className="flex items-center gap-2 text-sm">
+                <span className="font-semibold text-green-700 dark:text-green-400">Skill:</span>
+                <span className="text-gray-900 dark:text-gray-100">{skillName}</span>
+                {args && <span className="text-gray-500 dark:text-gray-400 truncate max-w-xs">{args}</span>}
+              </div>
             </div>
           );
         }
