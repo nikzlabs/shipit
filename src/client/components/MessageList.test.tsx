@@ -1286,4 +1286,60 @@ describe("MessageList", () => {
       expect(onClose).not.toHaveBeenCalled();
     });
   });
+
+  describe("TodoWrite rendering", () => {
+    const todoTools = (id: string): ToolUseBlock[] => [
+      {
+        type: "tool_use",
+        id,
+        name: "TodoWrite",
+        input: {
+          todos: [
+            { content: "Fix bug", status: "completed", activeForm: "Fixing bug" },
+            { content: "Add tests", status: "in_progress", activeForm: "Adding tests" },
+          ],
+        },
+      },
+    ];
+
+    it("renders full TodoPanel for the latest TodoWrite call", () => {
+      const { container } = render(
+        <MessageList
+          messages={[msg("assistant", "Working on it", { toolUse: todoTools("tw-1") })]}
+          isLoading={false}
+        />
+      );
+      expect(container.querySelector('[data-testid="todo-panel"]')).toBeInTheDocument();
+      expect(screen.getByText("Tasks")).toBeInTheDocument();
+      expect(screen.getByText("1/2 completed")).toBeInTheDocument();
+    });
+
+    it("hides older TodoWrite calls entirely", () => {
+      const messages: ChatMessage[] = [
+        { role: "assistant", text: "First update", toolUse: todoTools("tw-1") },
+        { role: "assistant", text: "Second update", toolUse: todoTools("tw-2") },
+      ];
+      const { container } = render(
+        <MessageList messages={messages} isLoading={false} />
+      );
+      // Only one full panel (the latest)
+      const panels = container.querySelectorAll('[data-testid="todo-panel"]');
+      expect(panels).toHaveLength(1);
+      // Older TodoWrite is hidden, not shown as a one-liner
+      expect(screen.queryByText("Updated task list")).not.toBeInTheDocument();
+    });
+
+    it("shows only one full panel when multiple TodoWrite calls exist", () => {
+      const messages: ChatMessage[] = [
+        { role: "assistant", text: "Step 1", toolUse: todoTools("tw-1") },
+        { role: "assistant", text: "Step 2", toolUse: todoTools("tw-2") },
+        { role: "assistant", text: "Step 3", toolUse: todoTools("tw-3") },
+      ];
+      const { container } = render(
+        <MessageList messages={messages} isLoading={false} />
+      );
+      const panels = container.querySelectorAll('[data-testid="todo-panel"]');
+      expect(panels).toHaveLength(1);
+    });
+  });
 });

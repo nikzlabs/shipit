@@ -118,6 +118,11 @@ export function activityFromTool(toolName: string, input: Record<string, unknown
         label: "Waiting for your answer...",
         tool: toolName,
       };
+    case "TodoWrite":
+      return {
+        label: "Updating tasks...",
+        tool: toolName,
+      };
     default:
       return {
         label: `Using ${toolName}...`,
