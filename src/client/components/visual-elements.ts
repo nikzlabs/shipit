@@ -3,9 +3,13 @@ import type { ChatMessage, ToolUseBlock, ToolResultBlock } from "./MessageList.j
 // Tools that render as standalone items outside the grouped container
 export const STANDALONE_TOOLS = new Set(["AskUserQuestion", "TodoWrite"]);
 
+// Tools extracted into their own top-level visual elements (not grouped, not inside message bubbles)
+export const SUBAGENT_TOOLS = new Set(["Task", "Skill"]);
+
 export type VisualElement =
   | { kind: "message"; index: number; hideTools: boolean }
-  | { kind: "tool-group"; items: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean }[]; streaming: boolean; messageIndices: number[] };
+  | { kind: "tool-group"; items: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean }[]; streaming: boolean; messageIndices: number[] }
+  | { kind: "subagent"; tool: ToolUseBlock; streaming: boolean };
 
 /**
  * Build a flat list of visual elements from messages.
@@ -33,8 +37,11 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
-    const groupableTools = msg.toolUse?.filter((t) => !STANDALONE_TOOLS.has(t.name)) ?? [];
-    const hasStandaloneTools = msg.toolUse?.some((t) => STANDALONE_TOOLS.has(t.name)) ?? false;
+    // Separate subagent tools (Task/Skill) — they get their own top-level elements
+    const subagentTools = msg.toolUse?.filter((t) => SUBAGENT_TOOLS.has(t.name)) ?? [];
+    const nonSubagentTools = msg.toolUse?.filter((t) => !SUBAGENT_TOOLS.has(t.name)) ?? [];
+    const groupableTools = nonSubagentTools.filter((t) => !STANDALONE_TOOLS.has(t.name));
+    const hasStandaloneTools = nonSubagentTools.some((t) => STANDALONE_TOOLS.has(t.name));
     const canGroupTools = msg.role === "assistant" && groupableTools.length > 0 && !hasStandaloneTools;
 
     if (canGroupTools) {
@@ -53,9 +60,19 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
       }
       toolMsgIndices.push(i);
       lastToolMsgStreaming = !!msg.streaming;
-    } else {
+    } else if (nonSubagentTools.length > 0 || msg.text.trim() || msg.images?.length || msg.files?.length || msg.role === "user") {
       flushTools();
-      elements.push({ kind: "message", index: i, hideTools: false });
+      // Hide tools in the bubble when the only tools are subagent tools (rendered separately)
+      const hideSubagentOnly = subagentTools.length > 0 && nonSubagentTools.length === 0;
+      elements.push({ kind: "message", index: i, hideTools: hideSubagentOnly });
+    } else {
+      // Message has only subagent tools and no other content — no bubble needed
+      flushTools();
+    }
+
+    // Emit subagent tools as their own top-level elements
+    for (const tool of subagentTools) {
+      elements.push({ kind: "subagent", tool, streaming: !!msg.streaming });
     }
   }
 

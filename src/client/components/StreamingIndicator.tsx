@@ -123,6 +123,20 @@ export function activityFromTool(toolName: string, input: Record<string, unknown
         label: "Updating tasks...",
         tool: toolName,
       };
+    case "Task": {
+      const desc = typeof input.description === "string" ? input.description : "";
+      return {
+        label: desc ? `Task: ${desc}` : "Running task...",
+        tool: toolName,
+      };
+    }
+    case "Skill": {
+      const skill = typeof input.skill === "string" ? input.skill : "unknown";
+      return {
+        label: `Running skill: ${skill}...`,
+        tool: toolName,
+      };
+    }
     default:
       return {
         label: `Using ${toolName}...`,
