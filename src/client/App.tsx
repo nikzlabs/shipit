@@ -402,6 +402,18 @@ export default function App() {
     } catch { /* ignore */ }
   }, []);
 
+  const handleDownloadChat = useCallback(() => {
+    const msgs = useSessionStore.getState().messages;
+    if (msgs.length === 0) return;
+    const blob = new Blob([JSON.stringify(msgs, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `chat-${useSessionStore.getState().sessionId ?? "unknown"}-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, []);
+
   const handleHistoryDiffClose = useCallback(() => {
     useGitStore.getState().setTurnDiff(null);
     useGitStore.getState().setHistoryDiffMode(false);
@@ -533,6 +545,9 @@ export default function App() {
         <div className="border-t border-gray-200 dark:border-gray-800 px-4 py-1.5 flex items-center gap-2">
           <ThreadIndicator threads={threads} activeThreadId={activeThreadId} onCreateCheckpoint={(label) => { const sid = useSessionStore.getState().sessionId; if (sid) useThreadStore.getState().createCheckpoint(sid, label).catch(() => {}); }} onForkThread={(id) => send({ type: "fork_thread", checkpointId: id })} onSwitchThread={(id) => send({ type: "switch_thread", threadId: id })} disabled={isLoading || status !== "open"} />
           <AgentPicker agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} disabled={isLoading || status !== "open"} />
+          <button onClick={handleDownloadChat} className="ml-auto p-1 rounded text-gray-500 hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" title="Download chat history" aria-label="Download chat history">
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>
+          </button>
         </div>
       )}
       {!showHomeScreen && threads.length > 0 && <ThreadTimeline threads={threads} activeThreadId={activeThreadId} onForkThread={(id) => send({ type: "fork_thread", checkpointId: id })} onSwitchThread={(id) => send({ type: "switch_thread", threadId: id })} />}
