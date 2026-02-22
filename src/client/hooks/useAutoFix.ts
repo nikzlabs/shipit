@@ -2,22 +2,16 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { formatErrorForMessage } from "../components/PreviewFrame.js";
 import type { PreviewError } from "./usePreviewErrors.js";
 import type { WsClientMessage } from "../../server/types.js";
-import type { ChatMessage } from "../components/MessageList.js";
-import type { StreamingActivity } from "../components/StreamingIndicator.js";
-import type { Dispatch, SetStateAction, MutableRefObject } from "react";
 import { useApi } from "./useApi.js";
+import { useSessionStore } from "../stores/session-store.js";
 
 export function useAutoFix(params: {
   previewErrors: PreviewError[];
   isLoading: boolean;
   status: string;
   send: (msg: WsClientMessage) => void;
-  sessionIdRef: MutableRefObject<string | undefined>;
-  setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
-  setIsLoading: Dispatch<SetStateAction<boolean>>;
-  setActivity: Dispatch<SetStateAction<StreamingActivity | undefined>>;
 }) {
-  const { previewErrors, isLoading, status, send, sessionIdRef, setMessages, setIsLoading, setActivity } = params;
+  const { previewErrors, isLoading, status, send } = params;
   const { post: apiPost } = useApi();
 
   const [autoFixEnabled, setAutoFixEnabled] = useState(false);
@@ -28,44 +22,42 @@ export function useAutoFix(params: {
 
   // Forward preview errors to the server for terminal log relay
   useEffect(() => {
-    if (previewErrors.length === 0 || status !== "open" || !sessionIdRef.current) return;
-    // Send the latest error to the server
+    const sessionId = useSessionStore.getState().sessionId;
+    if (previewErrors.length === 0 || status !== "open" || !sessionId) return;
     const latest = previewErrors[previewErrors.length - 1];
-    apiPost(`/api/sessions/${sessionIdRef.current}/preview-errors`, {
+    apiPost(`/api/sessions/${sessionId}/preview-errors`, {
       message: latest.message,
       stack: latest.stack,
     }).catch(() => {});
-  }, [previewErrors.length, status, apiPost, sessionIdRef, previewErrors]);
+  }, [previewErrors.length, status, apiPost, previewErrors]);
 
   const handleSendAutoFix = useCallback(
     (text: string) => {
-      setMessages((prev) => [...prev, { role: "user", text }]);
-      setIsLoading(true);
-      setActivity({ label: "Auto-fixing errors..." });
+      const session = useSessionStore.getState();
+      session.setMessages((prev) => [...prev, { role: "user", text }]);
+      session.setIsLoading(true);
+      session.setActivity({ label: "Auto-fixing errors..." });
       send({
         type: "send_message",
         text,
-        sessionId: sessionIdRef.current,
+        sessionId: useSessionStore.getState().sessionId,
       });
     },
-    [send, sessionIdRef, setMessages, setIsLoading, setActivity],
+    [send],
   );
 
-  // Auto-fix: when new errors arrive while auto-fix is enabled and Claude is idle,
-  // automatically send errors to Claude for fixing (with safety guardrails).
+  // Auto-fix logic
   const prevErrorCountRef = useRef(0);
   useEffect(() => {
     if (!autoFixEnabled || isLoading || previewErrors.length === 0) {
       prevErrorCountRef.current = previewErrors.length;
       return;
     }
-    // Only trigger on new errors (count increased)
     if (previewErrors.length <= prevErrorCountRef.current) {
       return;
     }
     prevErrorCountRef.current = previewErrors.length;
 
-    // Check retry limit
     if (autoFixRetriesRef.current >= 3) {
       setAutoFixEnabled(false);
       autoFixRetriesRef.current = 0;
@@ -73,10 +65,8 @@ export function useAutoFix(params: {
       return;
     }
 
-    // Check cooldown
     if (autoFixCooldownRef.current) return;
 
-    // Build the error signature to detect same-error loops
     const sig = previewErrors.map((e) => e.message).join("|");
     if (sig === autoFixErrorSignatureRef.current) {
       autoFixRetriesRef.current += 1;
@@ -87,13 +77,11 @@ export function useAutoFix(params: {
       autoFixErrorSignatureRef.current = sig;
     }
 
-    // Apply 5s cooldown
     autoFixCooldownRef.current = true;
     const timer = setTimeout(() => {
       autoFixCooldownRef.current = false;
     }, 5000);
 
-    // Send errors to Claude
     const text = formatErrorForMessage(previewErrors);
     handleSendAutoFix(text);
 
@@ -103,7 +91,6 @@ export function useAutoFix(params: {
   const handleToggleAutoFix = useCallback(() => {
     setAutoFixEnabled((prev) => {
       if (!prev) {
-        // Enabling auto-fix: reset retry counter
         autoFixRetriesRef.current = 0;
         setAutoFixRetries(0);
         autoFixErrorSignatureRef.current = null;
@@ -122,7 +109,6 @@ export function useAutoFix(params: {
   return {
     autoFixEnabled,
     autoFixRetries,
-    autoFixRetriesRef,
     handleToggleAutoFix,
     disableAutoFix,
   };
