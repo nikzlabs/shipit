@@ -24,82 +24,59 @@ describe("DiffBlock", () => {
     });
   });
 
-  describe("edit mode (old + new)", () => {
-    it("renders removed lines with minus prefix", () => {
+  describe("edit mode — compact diff stat", () => {
+    it("shows added and removed line counts", () => {
       render(
         <DiffBlock filePath="f.ts" oldString="removed line" newString="added line" />
       );
-      const minusSigns = screen.getAllByText("-");
-      expect(minusSigns.length).toBeGreaterThanOrEqual(1);
-      expect(screen.getByText("removed line")).toBeInTheDocument();
+      expect(screen.getByText("+1")).toBeInTheDocument();
+      expect(screen.getByText("-1")).toBeInTheDocument();
     });
 
-    it("renders added lines with plus prefix", () => {
-      render(
-        <DiffBlock filePath="f.ts" oldString="before" newString="after" />
-      );
-      const plusSigns = screen.getAllByText("+");
-      expect(plusSigns.length).toBeGreaterThanOrEqual(1);
-      expect(screen.getByText("after")).toBeInTheDocument();
-    });
-
-    it("renders multi-line old and new strings", () => {
+    it("counts multi-line changes", () => {
       render(
         <DiffBlock
           filePath="f.ts"
-          oldString={"line1\nline2"}
-          newString={"line3\nline4"}
+          oldString={"line1\nline2\nline3"}
+          newString={"a\nb"}
         />
       );
-      expect(screen.getByText("line1")).toBeInTheDocument();
-      expect(screen.getByText("line2")).toBeInTheDocument();
-      expect(screen.getByText("line3")).toBeInTheDocument();
-      expect(screen.getByText("line4")).toBeInTheDocument();
+      expect(screen.getByText("+2")).toBeInTheDocument();
+      expect(screen.getByText("-3")).toBeInTheDocument();
     });
 
-    it("renders separator between removed and added lines", () => {
-      const { container } = render(
-        <DiffBlock filePath="f.ts" oldString="before" newString="after" />
-      );
-      const separator = container.querySelector(".border-t.border-gray-200");
-      expect(separator).toBeInTheDocument();
-    });
-
-    it("does not render separator when only added lines", () => {
-      const { container } = render(
-        <DiffBlock filePath="f.ts" newString="only-added" />
-      );
-      const separator = container.querySelector(".border-t.border-gray-200");
-      expect(separator).not.toBeInTheDocument();
+    it("shows only added count when no old content", () => {
+      render(<DiffBlock filePath="f.ts" newString={"a\nb\nc"} />);
+      expect(screen.getByText("+3")).toBeInTheDocument();
+      expect(screen.queryByText(/-\d+/)).not.toBeInTheDocument();
     });
   });
 
-  describe("write mode", () => {
-    it("renders all lines as additions (green)", () => {
+  describe("write mode — compact diff stat", () => {
+    it("shows added line count", () => {
       render(
         <DiffBlock filePath="f.ts" newString={"a\nb\nc"} isWrite />
       );
-      const plusSigns = screen.getAllByText("+");
-      expect(plusSigns).toHaveLength(3);
+      expect(screen.getByText("+3")).toBeInTheDocument();
     });
 
-    it("does not render minus signs in write mode", () => {
+    it("does not show removed count in write mode", () => {
       render(
         <DiffBlock filePath="f.ts" newString="content" isWrite />
       );
-      expect(screen.queryAllByText("-")).toHaveLength(0);
+      expect(screen.queryByText(/-\d+/)).not.toBeInTheDocument();
     });
   });
 
   describe("empty content", () => {
     it("shows fallback message when both old and new are empty", () => {
       render(<DiffBlock filePath="f.ts" />);
-      expect(screen.getByText("No content changes")).toBeInTheDocument();
+      expect(screen.getByText("no changes")).toBeInTheDocument();
     });
 
     it("shows fallback when old and new are undefined", () => {
       render(<DiffBlock filePath="f.ts" oldString={undefined} newString={undefined} />);
-      expect(screen.getByText("No content changes")).toBeInTheDocument();
+      expect(screen.getByText("no changes")).toBeInTheDocument();
     });
   });
 });
