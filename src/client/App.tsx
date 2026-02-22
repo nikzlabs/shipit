@@ -89,6 +89,7 @@ export default function App() {
   const gitIdentity = useGitStore((s) => s.identity);
   const lastCommitPair = useGitStore((s) => s.lastCommitPair);
   const turnDiff = useGitStore((s) => s.turnDiff);
+  const historyDiffMode = useGitStore((s) => s.historyDiffMode);
 
   const fileTree = useFileStore((s) => s.tree);
   const viewingFile = useFileStore((s) => s.viewingFile);
@@ -388,6 +389,28 @@ export default function App() {
     }
   }, []);
 
+  const GIT_EMPTY_TREE = "4b825dc642cb6404f32168ace2c04d9f6e8f59b6";
+
+  const handleViewDiff = useCallback(async (commitHash: string, parentHash: string | null) => {
+    const sid = useSessionStore.getState().sessionId;
+    if (!sid) return;
+    const from = parentHash ?? GIT_EMPTY_TREE;
+    try {
+      const res = await fetch(`/api/sessions/${sid}/git/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(commitHash)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      useGitStore.getState().setTurnDiff(data);
+      useGitStore.getState().setHistoryDiffMode(true);
+      useUiStore.getState().setRightTab("changes");
+    } catch { /* ignore */ }
+  }, []);
+
+  const handleHistoryDiffClose = useCallback(() => {
+    useGitStore.getState().setTurnDiff(null);
+    useGitStore.getState().setHistoryDiffMode(false);
+    useUiStore.getState().setRightTab("history");
+  }, []);
+
   const handleFeatureStartSession = useCallback(
     (feature: { name: string; planPath: string; checklistPath?: string }) => {
       useSessionStore.getState().setSessionId(undefined);
@@ -462,7 +485,7 @@ export default function App() {
           Terminal
           {unreadLogCount > 0 && rightTab !== "terminal" && <span className="ml-1.5 inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-blue-600 text-white">{unreadLogCount > 99 ? "99+" : unreadLogCount}</span>}
         </button>
-        {lastCommitPair && (
+        {(lastCommitPair || historyDiffMode) && (
           <button onClick={() => handleTabChange("changes")} className={`px-4 py-2 text-sm font-medium transition-colors relative ${rightTab === "changes" ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"}`}>
             Changes
             {diffBadgeCount > 0 && rightTab !== "changes" && <span className="ml-1.5 inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-orange-600 text-white">{diffBadgeCount > 99 ? "99+" : diffBadgeCount}</span>}
@@ -485,13 +508,13 @@ export default function App() {
         ) : rightTab === "changes" ? (
           turnDiff ? (
             <Suspense fallback={<div className="flex items-center justify-center h-full text-gray-500 text-sm">Loading diff viewer...</div>}>
-              <DiffPanel diff={turnDiff} onAcceptAll={handleDiffAcceptAll} onRejectFiles={handleDiffRejectFiles} onClose={() => useUiStore.getState().setRightTab("preview")} />
+              <DiffPanel diff={turnDiff} onAcceptAll={handleDiffAcceptAll} onRejectFiles={handleDiffRejectFiles} onClose={historyDiffMode ? handleHistoryDiffClose : () => useUiStore.getState().setRightTab("preview")} readOnly={historyDiffMode} commitMessage={historyDiffMode ? gitCommits.find((c) => c.hash === turnDiff.toCommit)?.message : undefined} />
             </Suspense>
           ) : <div className="flex items-center justify-center h-full text-gray-500 text-sm">Loading diff...</div>
         ) : rightTab === "features" ? (
           <FeaturesPanel features={features} onStartSession={handleFeatureStartSession} onRefresh={() => useUiStore.getState().fetchFeatures().catch(() => {})} />
         ) : rightTab === "history" ? (
-          <GitHistory commits={gitCommits} onRollback={(hash) => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().rollback(sid, hash).catch(() => {}); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().fetchLog(sid).catch(() => {}); }} />
+          <GitHistory commits={gitCommits} onRollback={(hash) => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().rollback(sid, hash).catch(() => {}); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().fetchLog(sid).catch(() => {}); }} onViewDiff={handleViewDiff} />
         ) : viewingFile ? (
           <FileContentViewer filePath={viewingFile} content={viewingFileContent} isBinary={viewingFileBinary} onClose={() => useFileStore.getState().closeViewer()} />
         ) : (

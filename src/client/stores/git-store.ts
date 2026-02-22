@@ -9,6 +9,7 @@ interface GitState {
   identity: { name: string; email: string };
   lastCommitPair: { from: string; to: string } | null;
   turnDiff: TurnDiffData | null;
+  historyDiffMode: boolean;
 
   setCommits: (commits: GitCommit[]) => void;
   prependCommit: (commit: GitCommit) => void;
@@ -16,6 +17,7 @@ interface GitState {
   setIdentity: (identity: { name: string; email: string }) => void;
   setLastCommitPair: (pair: { from: string; to: string } | null) => void;
   setTurnDiff: (diff: TurnDiffData | null) => void;
+  setHistoryDiffMode: (mode: boolean) => void;
   reset: () => void;
 
   fetchLog: (sessionId: string) => Promise<void>;
@@ -33,6 +35,7 @@ const initialState = {
   identity: { name: "", email: "" },
   lastCommitPair: null as { from: string; to: string } | null,
   turnDiff: null as TurnDiffData | null,
+  historyDiffMode: false,
 };
 
 export const useGitStore = create<GitState>((set, get) => ({
@@ -50,6 +53,8 @@ export const useGitStore = create<GitState>((set, get) => ({
   setLastCommitPair: (pair) => set({ lastCommitPair: pair }),
 
   setTurnDiff: (diff) => set({ turnDiff: diff }),
+
+  setHistoryDiffMode: (mode) => set({ historyDiffMode: mode }),
 
   reset: () => set(initialState),
 
