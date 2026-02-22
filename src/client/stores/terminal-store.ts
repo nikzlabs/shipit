@@ -5,7 +5,6 @@ export type TerminalMode = "logs" | "shell";
 
 export interface TerminalState {
   entries: LogEntry[];
-  unreadCount: number;
   mode: TerminalMode;
   shellStarted: boolean;
 
@@ -13,14 +12,11 @@ export interface TerminalState {
   clearEntries: () => void;
   setMode: (mode: TerminalMode) => void;
   setShellStarted: (started: boolean) => void;
-  incrementUnread: () => void;
-  resetUnread: () => void;
   reset: () => void;
 }
 
 const initialState = {
   entries: [] as LogEntry[],
-  unreadCount: 0,
   mode: "logs" as TerminalMode,
   shellStarted: false,
 };
@@ -36,19 +32,11 @@ export const useTerminalStore = create<TerminalState>((set) => ({
   clearEntries: () =>
     set({
       entries: [],
-      unreadCount: 0,
     }),
 
   setMode: (mode) => set({ mode }),
 
   setShellStarted: (started) => set({ shellStarted: started }),
-
-  incrementUnread: () =>
-    set((state) => ({
-      unreadCount: state.unreadCount + 1,
-    })),
-
-  resetUnread: () => set({ unreadCount: 0 }),
 
   reset: () => set({ ...initialState }),
 }));

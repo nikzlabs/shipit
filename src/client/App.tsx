@@ -98,7 +98,7 @@ export default function App() {
   const docFiles = useFileStore((s) => s.docFiles);
   const selectedDoc = useFileStore((s) => s.selectedDoc);
   const docContent = useFileStore((s) => s.docContent);
-  const fileChangeCount = useFileStore((s) => s.changeCount);
+
 
   const previewStatus = usePreviewStore((s) => s.status);
   const selectedPort = usePreviewStore((s) => s.selectedPort);
@@ -106,7 +106,7 @@ export default function App() {
   const installStatus = usePreviewStore((s) => s.installStatus);
 
   const logEntries = useTerminalStore((s) => s.entries);
-  const unreadLogCount = useTerminalStore((s) => s.unreadCount);
+
   const terminalMode = useTerminalStore((s) => s.mode);
   const shellStarted = useTerminalStore((s) => s.shellStarted);
 
@@ -153,7 +153,7 @@ export default function App() {
   const initialSettingsTab = useUiStore((s) => s.initialSettingsTab);
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
   const toast = useUiStore((s) => s.toast);
-  const diffBadgeCount = useUiStore((s) => s.diffBadgeCount);
+
   const features = useUiStore((s) => s.features);
 
   // ── Non-store hooks ──
@@ -168,7 +168,7 @@ export default function App() {
   const search = useSearch(messages);
   const { notify, requestPermission } = useNotification();
   const { theme, toggle: toggleTheme } = useTheme();
-  const { errors: previewErrors, clearErrors: clearPreviewErrors, hasErrors: hasPreviewErrors, errorCount: previewErrorCount } = usePreviewErrors();
+  const { errors: previewErrors, clearErrors: clearPreviewErrors } = usePreviewErrors();
 
   const { autoFixEnabled, autoFixRetries, handleToggleAutoFix, disableAutoFix } = useAutoFix({
     previewErrors,
@@ -331,12 +331,10 @@ export default function App() {
       useUiStore.getState().setRightTab(tab);
       const sid = useSessionStore.getState().sessionId;
       if (tab === "docs" && useFileStore.getState().docFiles.length === 0 && sid) useFileStore.getState().fetchDocs(sid).catch(() => {});
-      if (tab === "files" && sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); useFileStore.getState().resetChangeCount(); }
-      if (tab === "terminal") useTerminalStore.getState().resetUnread();
+      if (tab === "files" && sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); }
       if (tab === "features") useUiStore.getState().fetchFeatures().catch(() => {});
       if (tab === "history" && sid) useGitStore.getState().fetchLog(sid).catch(() => {});
       if (tab === "changes") {
-        useUiStore.getState().setDiffBadgeCount(0);
         const pair = useGitStore.getState().lastCommitPair;
         const diff = useGitStore.getState().turnDiff;
         if (pair && !diff && sid) {
@@ -374,7 +372,6 @@ export default function App() {
   const handleDiffAcceptAll = useCallback(() => {
     useGitStore.getState().setTurnDiff(null);
     useGitStore.getState().setLastCommitPair(null);
-    useUiStore.getState().setDiffBadgeCount(0);
     useUiStore.getState().setRightTab("preview");
   }, []);
 
@@ -472,24 +469,12 @@ export default function App() {
   const rightPanel = (
     <>
       <div className="flex border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
-        <button onClick={() => handleTabChange("preview")} className={`px-4 py-2 text-sm font-medium transition-colors relative ${rightTab === "preview" ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"}`}>
-          Preview
-          {hasPreviewErrors && rightTab !== "preview" && <span className="ml-1.5 inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-red-600 text-white">{previewErrorCount > 99 ? "99+" : previewErrorCount}</span>}
-        </button>
+        <button onClick={() => handleTabChange("preview")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "preview" ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"}`}>Preview</button>
         <button onClick={() => handleTabChange("docs")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "docs" ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"}`}>Docs</button>
-        <button onClick={() => handleTabChange("files")} className={`px-4 py-2 text-sm font-medium transition-colors relative ${rightTab === "files" ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"}`}>
-          Files
-          {fileChangeCount > 0 && rightTab !== "files" && <span className="ml-1.5 inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-blue-600 text-white">{fileChangeCount > 99 ? "99+" : fileChangeCount}</span>}
-        </button>
-        <button onClick={() => handleTabChange("terminal")} className={`px-4 py-2 text-sm font-medium transition-colors relative ${rightTab === "terminal" ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"}`}>
-          Terminal
-          {unreadLogCount > 0 && rightTab !== "terminal" && <span className="ml-1.5 inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-blue-600 text-white">{unreadLogCount > 99 ? "99+" : unreadLogCount}</span>}
-        </button>
+        <button onClick={() => handleTabChange("files")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "files" ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"}`}>Files</button>
+        <button onClick={() => handleTabChange("terminal")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "terminal" ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"}`}>Terminal</button>
         {(lastCommitPair || historyDiffMode) && (
-          <button onClick={() => handleTabChange("changes")} className={`px-4 py-2 text-sm font-medium transition-colors relative ${rightTab === "changes" ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"}`}>
-            Changes
-            {diffBadgeCount > 0 && rightTab !== "changes" && <span className="ml-1.5 inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-orange-600 text-white">{diffBadgeCount > 99 ? "99+" : diffBadgeCount}</span>}
-          </button>
+          <button onClick={() => handleTabChange("changes")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "changes" ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"}`}>Changes</button>
         )}
         <button onClick={() => handleTabChange("features")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "features" ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"}`}>Features</button>
         <button onClick={() => handleTabChange("history")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "history" ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"}`}>History</button>

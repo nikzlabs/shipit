@@ -9,7 +9,6 @@ interface FileState {
   docFiles: string[];
   selectedDoc: string | null;
   docContent: string | null;
-  changeCount: number;
 
   setTree: (tree: FileTreeNode[]) => void;
   setViewingFile: (path: string | null) => void;
@@ -17,8 +16,6 @@ interface FileState {
   setDocFiles: (files: string[]) => void;
   selectDoc: (file: string | null) => void;
   setDocContent: (content: string | null) => void;
-  incrementChangeCount: (count?: number) => void;
-  resetChangeCount: () => void;
   setViewingFileContent: (content: string | null) => void;
   setViewingFileBinary: (binary: boolean) => void;
   reset: () => void;
@@ -37,7 +34,6 @@ const initialState = {
   docFiles: [] as string[],
   selectedDoc: null as string | null,
   docContent: null as string | null,
-  changeCount: 0,
 };
 
 export const useFileStore = create<FileState>((set) => ({
@@ -55,11 +51,6 @@ export const useFileStore = create<FileState>((set) => ({
   selectDoc: (file) => set({ selectedDoc: file }),
 
   setDocContent: (content) => set({ docContent: content }),
-
-  incrementChangeCount: (count = 1) =>
-    set((state) => ({ changeCount: state.changeCount + count })),
-
-  resetChangeCount: () => set({ changeCount: 0 }),
 
   setViewingFileContent: (content) => set({ viewingFileContent: content }),
 

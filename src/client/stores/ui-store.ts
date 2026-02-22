@@ -54,7 +54,6 @@ interface UiState {
   initialSettingsTab: SettingsTab;
   sidebarCollapsed: boolean;
   toast: ToastData | null;
-  diffBadgeCount: number;
   features: FeatureInfo[];
 
   // Actions
@@ -77,7 +76,6 @@ interface UiState {
   setInitialSettingsTab: (tab: SettingsTab) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setToast: (toast: ToastData | null) => void;
-  setDiffBadgeCount: (count: number) => void;
   setFeatures: (features: FeatureInfo[]) => void;
   reset: () => void;
 
@@ -103,7 +101,6 @@ const initialState = {
   initialSettingsTab: undefined as SettingsTab,
   sidebarCollapsed: getSavedSidebarCollapsed(),
   toast: null as ToastData | null,
-  diffBadgeCount: 0,
   features: [] as FeatureInfo[],
 };
 
@@ -158,8 +155,6 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   setToast: (toast) => set({ toast }),
 
-  setDiffBadgeCount: (diffBadgeCount) => set({ diffBadgeCount }),
-
   setFeatures: (features) => set({ features }),
 
   reset: () =>
@@ -169,7 +164,6 @@ export const useUiStore = create<UiState>((set, get) => ({
       modelInfo: null,
       contextTokens: 0,
       turnTokens: [],
-      diffBadgeCount: 0,
       rightTab: "preview",
     }),
 

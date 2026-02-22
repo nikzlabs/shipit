@@ -198,7 +198,6 @@ export function useMessageHandler(params: {
       if (prevHash) {
         git.setLastCommitPair({ from: prevHash, to: data.hash });
         git.setTurnDiff(null);
-        ui.setDiffBadgeCount(useUiStore.getState().diffBadgeCount + 1);
       }
       git.prependCommit({ hash: data.hash, message: data.message, date: new Date().toISOString(), author: "ShipIt" });
       const currentRightTab = useUiStore.getState().rightTab;
@@ -308,9 +307,6 @@ export function useMessageHandler(params: {
         }
       }
 
-      if (currentRightTab !== "files") {
-        file.incrementChangeCount(paths.length);
-      }
     }
 
     if (data.type === "chat_history") {
@@ -463,9 +459,6 @@ export function useMessageHandler(params: {
 
     if (data.type === "log_entry") {
       terminal.addEntry({ source: data.source, text: data.text, timestamp: data.timestamp });
-      if (useUiStore.getState().rightTab !== "terminal") {
-        terminal.incrementUnread();
-      }
     }
 
     if (data.type === "clear_logs") {
