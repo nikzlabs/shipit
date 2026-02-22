@@ -56,7 +56,7 @@ export interface ChatMessage {
   queuePosition?: number;
 }
 
-function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQuestionDisabled, lastTodoWriteId }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void; isQuestionDisabled: boolean; lastTodoWriteId?: string | null }) {
+function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQuestionDisabled }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void; isQuestionDisabled: boolean }) {
   // Show a spinner on the last tool when the message is still streaming
   const inProgress = isLast && isStreaming;
   const [collapsed, setCollapsed] = useState(true);
@@ -772,7 +772,6 @@ export function MessageList({
                         isStreaming={!!msg.streaming}
                         onAnswerQuestion={onAnswerQuestion}
                         isQuestionDisabled={questionDisabled}
-                        lastTodoWriteId={lastTodoWriteId}
                       />
                     );
                   })}
