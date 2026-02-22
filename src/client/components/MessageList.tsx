@@ -14,6 +14,7 @@ import { ToolResult } from "./ToolResult.js";
 import { TodoPanel, type TodoItem } from "./TodoPanel.js";
 import { sessionRelativePath } from "../path-utils.js";
 import type { SearchMatch } from "../hooks/useSearch.js";
+import { buildVisualElements } from "./visual-elements.js";
 
 export interface ToolUseBlock {
   type: "tool_use";
@@ -56,7 +57,44 @@ export interface ChatMessage {
   queuePosition?: number;
 }
 
-function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQuestionDisabled }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void; isQuestionDisabled: boolean }) {
+/** Scrollable container for consecutive tool calls. Max 5 lines, auto-scrolls during streaming. */
+function ToolCallGroup({ items, isStreaming }: {
+  items: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean }[];
+  isStreaming: boolean;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom when new tools are added during streaming
+  useEffect(() => {
+    if (isStreaming && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [items.length, isStreaming]);
+
+  return (
+    <div
+      ref={scrollRef}
+      className="bg-gray-50 dark:bg-gray-900 rounded max-h-30 overflow-y-auto"
+      data-testid="tool-call-group"
+    >
+      {items.map(({ tool, result, isLast }) => (
+        <ToolUseItem
+          key={tool.id}
+          tool={tool}
+          result={result}
+          isLast={isLast}
+          isStreaming={isStreaming}
+          isQuestionDisabled
+          grouped
+        />
+      ))}
+    </div>
+  );
+}
+
+export { buildVisualElements, STANDALONE_TOOLS, type VisualElement } from "./visual-elements.js";
+
+function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQuestionDisabled, grouped }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void; isQuestionDisabled: boolean; grouped?: boolean }) {
   // Show a spinner on the last tool when the message is still streaming
   const inProgress = isLast && isStreaming;
   const [collapsed, setCollapsed] = useState(true);
@@ -105,7 +143,7 @@ function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQu
   // Fallback: compact one-liner for non-file tools, with optional tool result
   return (
     <div>
-      <div className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 rounded px-2 py-1 font-mono flex items-center gap-2">
+      <div className={`text-xs text-gray-500 dark:text-gray-400 px-2 py-1 font-mono flex items-center gap-2${grouped ? "" : " bg-gray-50 dark:bg-gray-900 rounded"}`}>
         {inProgress && <ToolSpinner />}
         <span className={inProgress ? "text-blue-400" : ""}>
           {tool.name}
@@ -620,7 +658,40 @@ export function MessageList({
         </div>
       )}
 
-      {messages.map((msg, i) => {
+      {buildVisualElements(messages).map((el) => {
+        // ── Tool-group: grouped tool calls from consecutive assistant messages ──
+        if (el.kind === "tool-group") {
+          return (
+            <div key={`tg-${el.messageIndices[0]}`}>
+              {/* Checkpoint dividers for messages in this group */}
+              {el.messageIndices.flatMap((idx) => {
+                const cps = checkpointsByIndex.get(idx);
+                return cps ? cps.map((cp) => (
+                  <div
+                    key={cp.id}
+                    className="flex items-center gap-3 py-1.5 my-1"
+                    data-testid="checkpoint-divider"
+                  >
+                    <div className="flex-1 h-px bg-amber-500/30" />
+                    <span className="flex items-center gap-1.5 text-[11px] text-amber-600 dark:text-amber-400 font-medium shrink-0">
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6h-8.5l-1-1H5a2 2 0 00-2 2z" />
+                      </svg>
+                      {cp.label || "Checkpoint"}
+                    </span>
+                    <div className="flex-1 h-px bg-amber-500/30" />
+                  </div>
+                )) : [];
+              })}
+              <ToolCallGroup items={el.items} isStreaming={el.streaming} />
+            </div>
+          );
+        }
+
+        // ── Message bubble ──
+        const i = el.index;
+        const hideTools = el.hideTools;
+        const msg = messages[i];
         const cpDividers = checkpointsByIndex.get(i);
         const msgMatches = matchesByMessage.get(i) ?? [];
         const segments = parseMessageSegments(msg.text);
@@ -631,7 +702,7 @@ export function MessageList({
         const latestTodoTool = msg.toolUse?.find((t) => t.name === "TodoWrite" && t.id === lastTodoWriteId);
         // Hide the bubble when it would be empty (no text/images/files
         // and every tool is a TodoWrite, which renders as null inside the bubble)
-        const hasVisibleTools = msg.toolUse?.some((t) => t.name !== "TodoWrite");
+        const hasVisibleTools = !hideTools && msg.toolUse?.some((t) => t.name !== "TodoWrite");
         const hideBubble = !msg.text && !msg.images?.length && !msg.files?.length && !hasVisibleTools && !!msg.toolUse?.length;
 
         return (
@@ -755,28 +826,28 @@ export function MessageList({
                 <MessageFileAttachments files={msg.files} />
               )}
 
-              {msg.toolUse && msg.toolUse.length > 0 && (
-                <div className="mt-2 space-y-1">
-                  {msg.toolUse.map((tool, toolIdx) => {
-                    // Questions are interactive only on the last assistant message, when not loading/streaming
-                    const isLastMessage = i === messages.length - 1;
-                    const questionDisabled = !isLastMessage || isLoading || !!msg.streaming;
-                    // Match tool result by tool_use_id
-                    const toolResult = msg.toolResults?.find((r) => r.toolUseId === tool.id);
-                    return (
-                      <ToolUseItem
-                        key={tool.id}
-                        tool={tool}
-                        result={toolResult}
-                        isLast={toolIdx === msg.toolUse!.length - 1}
-                        isStreaming={!!msg.streaming}
-                        onAnswerQuestion={onAnswerQuestion}
-                        isQuestionDisabled={questionDisabled}
-                      />
-                    );
-                  })}
-                </div>
-              )}
+              {!hideTools && msg.toolUse && msg.toolUse.length > 0 && (() => {
+                const isLastMessage = i === messages.length - 1;
+                const questionDisabled = !isLastMessage || isLoading || !!msg.streaming;
+                return (
+                  <div className="mt-2 space-y-1">
+                    {msg.toolUse.map((tool, toolIdx) => {
+                      const toolResult = msg.toolResults?.find((r) => r.toolUseId === tool.id);
+                      return (
+                        <ToolUseItem
+                          key={tool.id}
+                          tool={tool}
+                          result={toolResult}
+                          isLast={toolIdx === msg.toolUse!.length - 1}
+                          isStreaming={!!msg.streaming}
+                          onAnswerQuestion={onAnswerQuestion}
+                          isQuestionDisabled={questionDisabled}
+                        />
+                      );
+                    })}
+                  </div>
+                );
+              })()}
 
               {msg.streaming && (
                 <span className="inline-flex items-center ml-1 align-middle">

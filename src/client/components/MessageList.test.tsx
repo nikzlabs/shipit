@@ -164,6 +164,79 @@ describe("MessageList", () => {
     });
   });
 
+  describe("tool call grouping (render)", () => {
+    it("renders tools from a single message inside a group container", () => {
+      const tools: ToolUseBlock[] = [
+        { type: "tool_use", id: "t1", name: "Bash", input: { command: "npm test" } },
+        { type: "tool_use", id: "t2", name: "Read", input: { file_path: "app.ts" } },
+        { type: "tool_use", id: "t3", name: "Grep", input: { pattern: "TODO" } },
+      ];
+      render(
+        <MessageList
+          messages={[msg("assistant", "Working...", { toolUse: tools })]}
+          isLoading={false}
+        />
+      );
+      const groups = screen.getAllByTestId("tool-call-group");
+      expect(groups).toHaveLength(1);
+      expect(groups[0].className).toContain("max-h-30");
+      expect(groups[0].className).toContain("overflow-y-auto");
+      // All tools render inside the group
+      expect(screen.getByText("Bash")).toBeInTheDocument();
+      expect(screen.getByText("app.ts")).toBeInTheDocument();
+      expect(screen.getByText("TODO")).toBeInTheDocument();
+    });
+
+    it("includes Edit and Write tools inside the group container", () => {
+      const tools: ToolUseBlock[] = [
+        { type: "tool_use", id: "t1", name: "Read", input: { file_path: "a.ts" } },
+        { type: "tool_use", id: "t2", name: "Edit", input: { file_path: "a.ts", old_string: "old", new_string: "new" } },
+        { type: "tool_use", id: "t3", name: "Write", input: { file_path: "b.ts", content: "hello" } },
+      ];
+      render(
+        <MessageList
+          messages={[msg("assistant", "Editing", { toolUse: tools })]}
+          isLoading={false}
+        />
+      );
+      const groups = screen.getAllByTestId("tool-call-group");
+      expect(groups).toHaveLength(1);
+      // DiffBlock labels are inside the group
+      expect(screen.getByText("edit")).toBeInTheDocument();
+      expect(screen.getByText("write")).toBeInTheDocument();
+    });
+
+    it("renders consecutive tool-only messages in a single container", () => {
+      const messages: ChatMessage[] = [
+        msg("user", "Explore the codebase"),
+        { role: "assistant", text: "", toolUse: [{ type: "tool_use", id: "t1", name: "Glob", input: { pattern: "**/*" } }] },
+        { role: "assistant", text: "", toolUse: [{ type: "tool_use", id: "t2", name: "Read", input: { file_path: "a.ts" } }] },
+        { role: "assistant", text: "", toolUse: [{ type: "tool_use", id: "t3", name: "Read", input: { file_path: "b.ts" } }] },
+      ];
+      render(<MessageList messages={messages} isLoading={false} />);
+      const groups = screen.getAllByTestId("tool-call-group");
+      expect(groups).toHaveLength(1);
+      // All three tools are inside the single group
+      expect(groups[0].textContent).toContain("Glob");
+      expect(groups[0].textContent).toContain("a.ts");
+      expect(groups[0].textContent).toContain("b.ts");
+    });
+
+    it("preserves order: text then tools for each message with both", () => {
+      const messages: ChatMessage[] = [
+        { role: "assistant", text: "Let me check", toolUse: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "a.ts" } }] },
+        { role: "assistant", text: "Now editing", toolUse: [{ type: "tool_use", id: "t2", name: "Edit", input: { file_path: "a.ts", old_string: "a", new_string: "b" } }] },
+      ];
+      render(<MessageList messages={messages} isLoading={false} />);
+      // Text bubbles should be visible
+      expect(screen.getByText(/Let me check/)).toBeInTheDocument();
+      expect(screen.getByText(/Now editing/)).toBeInTheDocument();
+      // Each message's tools form a separate group (order preserved)
+      const groups = screen.getAllByTestId("tool-call-group");
+      expect(groups).toHaveLength(2);
+    });
+  });
+
   describe("thinking indicator", () => {
     it("shows thinking indicator when loading and last message is from user", () => {
       render(
