@@ -169,4 +169,64 @@ describe("GitHistory", () => {
       expect(screen.getByText("rollback")).toBeInTheDocument();
     });
   });
+
+  describe("diff button", () => {
+    it("shows diff button on every commit when onViewDiff is provided", () => {
+      const onViewDiff = vi.fn();
+      render(
+        <GitHistory
+          commits={[makeCommit({ hash: "latest" }), makeCommit({ hash: "older" })]}
+          onRollback={onRollback}
+          onRefresh={onRefresh}
+          onViewDiff={onViewDiff}
+        />
+      );
+      expect(screen.getAllByText("diff")).toHaveLength(2);
+    });
+
+    it("does not show diff button when onViewDiff is not provided", () => {
+      render(
+        <GitHistory
+          commits={[makeCommit({ hash: "latest" }), makeCommit({ hash: "older" })]}
+          onRollback={onRollback}
+          onRefresh={onRefresh}
+        />
+      );
+      expect(screen.queryByText("diff")).not.toBeInTheDocument();
+    });
+
+    it("calls onViewDiff with commit hash and parent hash", () => {
+      const onViewDiff = vi.fn();
+      render(
+        <GitHistory
+          commits={[
+            makeCommit({ hash: "commit2" }),
+            makeCommit({ hash: "commit1" }),
+          ]}
+          onRollback={onRollback}
+          onRefresh={onRefresh}
+          onViewDiff={onViewDiff}
+        />
+      );
+
+      // Click diff on the first (latest) commit — parent is commit1
+      fireEvent.click(screen.getAllByText("diff")[0]);
+      expect(onViewDiff).toHaveBeenCalledWith("commit2", "commit1");
+    });
+
+    it("passes null as parent hash for the last commit (no parent)", () => {
+      const onViewDiff = vi.fn();
+      render(
+        <GitHistory
+          commits={[makeCommit({ hash: "only-commit" })]}
+          onRollback={onRollback}
+          onRefresh={onRefresh}
+          onViewDiff={onViewDiff}
+        />
+      );
+
+      fireEvent.click(screen.getByText("diff"));
+      expect(onViewDiff).toHaveBeenCalledWith("only-commit", null);
+    });
+  });
 });
