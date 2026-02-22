@@ -23,36 +23,32 @@ describe("GitHistory", () => {
 
   afterEach(cleanup);
 
-  describe("collapsed state", () => {
-    it("shows commit count in the toggle button", () => {
+  describe("commit count", () => {
+    it("shows commit count in the header", () => {
       const commits = [makeCommit(), makeCommit({ hash: "def456" })];
       render(
         <GitHistory commits={commits} onRollback={onRollback} onRefresh={onRefresh} />
       );
-      expect(screen.getByText("Git History (2)")).toBeInTheDocument();
+      expect(screen.getByText("2 commits")).toBeInTheDocument();
     });
 
-    it("does not show commit details when collapsed", () => {
+    it("shows singular for one commit", () => {
       render(
-        <GitHistory
-          commits={[makeCommit({ message: "hidden commit" })]}
-          onRollback={onRollback}
-          onRefresh={onRefresh}
-        />
+        <GitHistory commits={[makeCommit()]} onRollback={onRollback} onRefresh={onRefresh} />
       );
-      expect(screen.queryByText("hidden commit")).not.toBeInTheDocument();
+      expect(screen.getByText("1 commit")).toBeInTheDocument();
     });
 
-    it("shows zero count when no commits", () => {
+    it("shows empty state message when no commits", () => {
       render(
         <GitHistory commits={[]} onRollback={onRollback} onRefresh={onRefresh} />
       );
-      expect(screen.getByText("Git History (0)")).toBeInTheDocument();
+      expect(screen.getByText("No commits yet.")).toBeInTheDocument();
     });
   });
 
-  describe("expanding", () => {
-    it("shows commit details when expanded", () => {
+  describe("commit display", () => {
+    it("shows commit details immediately", () => {
       render(
         <GitHistory
           commits={[makeCommit({ message: "visible commit" })]}
@@ -60,44 +56,9 @@ describe("GitHistory", () => {
           onRefresh={onRefresh}
         />
       );
-      fireEvent.click(screen.getByText(/Git History/));
       expect(screen.getByText("visible commit")).toBeInTheDocument();
     });
 
-    it("calls onRefresh when expanding", () => {
-      render(
-        <GitHistory commits={[]} onRollback={onRollback} onRefresh={onRefresh} />
-      );
-      fireEvent.click(screen.getByText(/Git History/));
-      expect(onRefresh).toHaveBeenCalledOnce();
-    });
-
-    it("shows empty state message when expanded with no commits", () => {
-      render(
-        <GitHistory commits={[]} onRollback={onRollback} onRefresh={onRefresh} />
-      );
-      fireEvent.click(screen.getByText(/Git History/));
-      expect(screen.getByText("No commits yet.")).toBeInTheDocument();
-    });
-
-    it("collapses on second click", () => {
-      render(
-        <GitHistory
-          commits={[makeCommit({ message: "toggled commit" })]}
-          onRollback={onRollback}
-          onRefresh={onRefresh}
-        />
-      );
-      const toggle = screen.getByText(/Git History/);
-      fireEvent.click(toggle);
-      expect(screen.getByText("toggled commit")).toBeInTheDocument();
-
-      fireEvent.click(toggle);
-      expect(screen.queryByText("toggled commit")).not.toBeInTheDocument();
-    });
-  });
-
-  describe("commit display", () => {
     it("shows abbreviated hash", () => {
       render(
         <GitHistory
@@ -106,7 +67,6 @@ describe("GitHistory", () => {
           onRefresh={onRefresh}
         />
       );
-      fireEvent.click(screen.getByText(/Git History/));
       expect(screen.getByText(/abcdef1/)).toBeInTheDocument();
     });
 
@@ -119,7 +79,6 @@ describe("GitHistory", () => {
           onRefresh={onRefresh}
         />
       );
-      fireEvent.click(screen.getByText(/Git History/));
       expect(screen.getByText(/5m ago/)).toBeInTheDocument();
     });
 
@@ -132,8 +91,17 @@ describe("GitHistory", () => {
           onRefresh={onRefresh}
         />
       );
-      fireEvent.click(screen.getByText(/Git History/));
       expect(screen.getByText(/just now/)).toBeInTheDocument();
+    });
+  });
+
+  describe("refresh", () => {
+    it("calls onRefresh when refresh button is clicked", () => {
+      render(
+        <GitHistory commits={[]} onRollback={onRollback} onRefresh={onRefresh} />
+      );
+      fireEvent.click(screen.getByLabelText("Refresh"));
+      expect(onRefresh).toHaveBeenCalledOnce();
     });
   });
 
@@ -146,7 +114,6 @@ describe("GitHistory", () => {
           onRefresh={onRefresh}
         />
       );
-      fireEvent.click(screen.getByText(/Git History/));
       expect(screen.queryByText("rollback")).not.toBeInTheDocument();
     });
 
@@ -158,7 +125,6 @@ describe("GitHistory", () => {
           onRefresh={onRefresh}
         />
       );
-      fireEvent.click(screen.getByText(/Git History/));
       expect(screen.getByText("rollback")).toBeInTheDocument();
     });
 
@@ -173,7 +139,6 @@ describe("GitHistory", () => {
           onRefresh={onRefresh}
         />
       );
-      fireEvent.click(screen.getByText(/Git History/));
 
       // First click shows "confirm?"
       fireEvent.click(screen.getByText("rollback"));
@@ -196,7 +161,6 @@ describe("GitHistory", () => {
           onRefresh={onRefresh}
         />
       );
-      fireEvent.click(screen.getByText(/Git History/));
 
       fireEvent.click(screen.getByText("rollback"));
       expect(screen.getByText("confirm?")).toBeInTheDocument();

@@ -326,13 +326,14 @@ export default function App() {
   );
 
   const handleTabChange = useCallback(
-    (tab: "preview" | "docs" | "files" | "terminal" | "features" | "changes") => {
+    (tab: "preview" | "docs" | "files" | "terminal" | "features" | "changes" | "history") => {
       useUiStore.getState().setRightTab(tab);
       const sid = useSessionStore.getState().sessionId;
       if (tab === "docs" && useFileStore.getState().docFiles.length === 0 && sid) useFileStore.getState().fetchDocs(sid).catch(() => {});
       if (tab === "files" && sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); useFileStore.getState().resetChangeCount(); }
       if (tab === "terminal") useTerminalStore.getState().resetUnread();
       if (tab === "features") useUiStore.getState().fetchFeatures().catch(() => {});
+      if (tab === "history" && sid) useGitStore.getState().fetchLog(sid).catch(() => {});
       if (tab === "changes") {
         useUiStore.getState().setDiffBadgeCount(0);
         const pair = useGitStore.getState().lastCommitPair;
@@ -468,6 +469,7 @@ export default function App() {
           </button>
         )}
         <button onClick={() => handleTabChange("features")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "features" ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"}`}>Features</button>
+        <button onClick={() => handleTabChange("history")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "history" ? "text-gray-900 dark:text-gray-100 border-b-2 border-blue-500" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"}`}>History</button>
       </div>
       <div className="flex-1 min-h-0">
         {rightTab === "preview" ? (
@@ -488,6 +490,8 @@ export default function App() {
           ) : <div className="flex items-center justify-center h-full text-gray-500 text-sm">Loading diff...</div>
         ) : rightTab === "features" ? (
           <FeaturesPanel features={features} onStartSession={handleFeatureStartSession} onRefresh={() => useUiStore.getState().fetchFeatures().catch(() => {})} />
+        ) : rightTab === "history" ? (
+          <GitHistory commits={gitCommits} onRollback={(hash) => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().rollback(sid, hash).catch(() => {}); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().fetchLog(sid).catch(() => {}); }} />
         ) : viewingFile ? (
           <FileContentViewer filePath={viewingFile} content={viewingFileContent} isBinary={viewingFileBinary} onClose={() => useFileStore.getState().closeViewer()} />
         ) : (
@@ -524,7 +528,6 @@ export default function App() {
         </div>
       )}
       {!showHomeScreen && threads.length > 0 && <ThreadTimeline threads={threads} activeThreadId={activeThreadId} onForkThread={(id) => send({ type: "fork_thread", checkpointId: id })} onSwitchThread={(id) => send({ type: "switch_thread", threadId: id })} />}
-      {!showHomeScreen && <GitHistory commits={gitCommits} onRollback={(hash) => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().rollback(sid, hash).catch(() => {}); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().fetchLog(sid).catch(() => {}); }} />}
       {!showHomeScreen && <StatusBar modelInfo={modelInfo} contextTokens={contextTokens} agentName={agentList.find((a) => a.id === activeAgentId)?.name} />}
       {!showHomeScreen && queuedMessages.length > 0 && <QueueIndicator queue={queuedMessages} onCancel={(pos) => send({ type: "cancel_queued_message", position: pos })} />}
       {!showHomeScreen && <MessageInput onSend={handleSend} disabled={status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_claude" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} />}
