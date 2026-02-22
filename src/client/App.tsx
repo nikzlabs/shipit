@@ -331,12 +331,10 @@ export default function App() {
       useUiStore.getState().setRightTab(tab);
       const sid = useSessionStore.getState().sessionId;
       if (tab === "docs" && useFileStore.getState().docFiles.length === 0 && sid) useFileStore.getState().fetchDocs(sid).catch(() => {});
-      if (tab === "files" && sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); useFileStore.getState().resetChangeCount(); }
-      if (tab === "terminal") useTerminalStore.getState().resetUnread();
+      if (tab === "files" && sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); }
       if (tab === "features") useUiStore.getState().fetchFeatures().catch(() => {});
       if (tab === "history" && sid) useGitStore.getState().fetchLog(sid).catch(() => {});
       if (tab === "changes") {
-        useUiStore.getState().setDiffBadgeCount(0);
         const pair = useGitStore.getState().lastCommitPair;
         const diff = useGitStore.getState().turnDiff;
         if (pair && !diff && sid) {
@@ -374,7 +372,6 @@ export default function App() {
   const handleDiffAcceptAll = useCallback(() => {
     useGitStore.getState().setTurnDiff(null);
     useGitStore.getState().setLastCommitPair(null);
-    useUiStore.getState().setDiffBadgeCount(0);
     useUiStore.getState().setRightTab("preview");
   }, []);
 
