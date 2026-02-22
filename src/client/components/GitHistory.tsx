@@ -11,10 +11,12 @@ export function GitHistory({
   commits,
   onRollback,
   onRefresh,
+  onViewDiff,
 }: {
   commits: GitCommit[];
   onRollback: (hash: string) => void;
   onRefresh: () => void;
+  onViewDiff?: (commitHash: string, parentHash: string | null) => void;
 }) {
   const [confirming, setConfirming] = useState<string | null>(null);
 
@@ -62,19 +64,29 @@ export function GitHistory({
                     </span>
                   </p>
                 </div>
-                {i > 0 && (
-                  <button
-                    onClick={() => handleRollback(commit.hash)}
-                    onBlur={() => setConfirming(null)}
-                    className={`shrink-0 px-2 py-0.5 rounded text-xs transition-colors ${
-                      confirming === commit.hash
-                        ? "bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300"
-                        : "bg-gray-100 dark:bg-gray-800 text-gray-500 opacity-0 group-hover:opacity-100 hover:text-gray-700 dark:hover:text-gray-300"
-                    }`}
-                  >
-                    {confirming === commit.hash ? "confirm?" : "rollback"}
-                  </button>
-                )}
+                <div className="flex items-center gap-1 shrink-0">
+                  {onViewDiff && (
+                    <button
+                      onClick={() => onViewDiff(commit.hash, commits[i + 1]?.hash ?? null)}
+                      className="shrink-0 px-2 py-0.5 rounded text-xs transition-colors bg-gray-100 dark:bg-gray-800 text-gray-500 opacity-0 group-hover:opacity-100 hover:text-gray-700 dark:hover:text-gray-300"
+                    >
+                      diff
+                    </button>
+                  )}
+                  {i > 0 && (
+                    <button
+                      onClick={() => handleRollback(commit.hash)}
+                      onBlur={() => setConfirming(null)}
+                      className={`shrink-0 px-2 py-0.5 rounded text-xs transition-colors ${
+                        confirming === commit.hash
+                          ? "bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300"
+                          : "bg-gray-100 dark:bg-gray-800 text-gray-500 opacity-0 group-hover:opacity-100 hover:text-gray-700 dark:hover:text-gray-300"
+                      }`}
+                    >
+                      {confirming === commit.hash ? "confirm?" : "rollback"}
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
           </div>

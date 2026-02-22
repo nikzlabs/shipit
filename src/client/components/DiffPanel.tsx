@@ -64,9 +64,11 @@ interface DiffPanelProps {
   onAcceptAll: () => void;
   onRejectFiles: (files: string[]) => void;
   onClose: () => void;
+  readOnly?: boolean;
+  commitMessage?: string;
 }
 
-export function DiffPanel({ diff, onAcceptAll, onRejectFiles, onClose }: DiffPanelProps) {
+export function DiffPanel({ diff, onAcceptAll, onRejectFiles, onClose, readOnly, commitMessage }: DiffPanelProps) {
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
   const [checkedFiles, setCheckedFiles] = useState<Set<string>>(new Set());
 
@@ -120,11 +122,11 @@ export function DiffPanel({ diff, onAcceptAll, onRejectFiles, onClose }: DiffPan
     <div className="flex flex-col h-full bg-gray-950">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-gray-700 bg-gray-900 shrink-0">
-        <div className="flex items-center gap-2 text-sm">
-          <span className="text-gray-300 font-medium">Changes</span>
-          <span className="text-green-400">+{diff.stats.totalInsertions}</span>
-          <span className="text-red-400">-{diff.stats.totalDeletions}</span>
-          <span className="text-gray-500">({diff.stats.filesChanged} file{diff.stats.filesChanged !== 1 ? "s" : ""})</span>
+        <div className="flex items-center gap-2 text-sm min-w-0">
+          <span className="text-gray-300 font-medium shrink-0">{readOnly && commitMessage ? commitMessage : "Changes"}</span>
+          <span className="text-green-400 shrink-0">+{diff.stats.totalInsertions}</span>
+          <span className="text-red-400 shrink-0">-{diff.stats.totalDeletions}</span>
+          <span className="text-gray-500 shrink-0">({diff.stats.filesChanged} file{diff.stats.filesChanged !== 1 ? "s" : ""})</span>
         </div>
         <button
           onClick={onClose}
@@ -151,16 +153,18 @@ export function DiffPanel({ diff, onAcceptAll, onRejectFiles, onClose }: DiffPan
               }`}
               onClick={() => setSelectedFileIndex(idx)}
             >
-              <input
-                type="checkbox"
-                checked={checkedFiles.has(file.path)}
-                onChange={(e) => {
-                  e.stopPropagation();
-                  toggleFile(file.path);
-                }}
-                onClick={(e) => e.stopPropagation()}
-                className="shrink-0 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-0 focus:ring-offset-0 w-3 h-3"
-              />
+              {!readOnly && (
+                <input
+                  type="checkbox"
+                  checked={checkedFiles.has(file.path)}
+                  onChange={(e) => {
+                    e.stopPropagation();
+                    toggleFile(file.path);
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  className="shrink-0 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-0 focus:ring-offset-0 w-3 h-3"
+                />
+              )}
               <span className={`shrink-0 font-mono text-[10px] font-bold ${statusColor(file.status)}`}>
                 {statusIcon(file.status)}
               </span>
@@ -223,19 +227,30 @@ export function DiffPanel({ diff, onAcceptAll, onRejectFiles, onClose }: DiffPan
 
       {/* Action bar */}
       <div className="flex items-center gap-2 px-3 py-1.5 border-t border-gray-700 bg-gray-900 shrink-0">
-        <button
-          onClick={onAcceptAll}
-          className="px-3 py-1 text-xs font-medium rounded bg-green-700 hover:bg-green-600 text-white transition-colors"
-        >
-          Accept All
-        </button>
-        {checkedFiles.size > 0 && (
+        {readOnly ? (
           <button
-            onClick={handleRejectSelected}
-            className="px-3 py-1 text-xs font-medium rounded bg-red-700 hover:bg-red-600 text-white transition-colors"
+            onClick={onClose}
+            className="px-3 py-1 text-xs font-medium rounded bg-gray-700 hover:bg-gray-600 text-white transition-colors"
           >
-            Reject Selected ({checkedFiles.size})
+            Close
           </button>
+        ) : (
+          <>
+            <button
+              onClick={onAcceptAll}
+              className="px-3 py-1 text-xs font-medium rounded bg-green-700 hover:bg-green-600 text-white transition-colors"
+            >
+              Accept All
+            </button>
+            {checkedFiles.size > 0 && (
+              <button
+                onClick={handleRejectSelected}
+                className="px-3 py-1 text-xs font-medium rounded bg-red-700 hover:bg-red-600 text-white transition-colors"
+              >
+                Reject Selected ({checkedFiles.size})
+              </button>
+            )}
+          </>
         )}
         <span className="ml-auto text-[10px] text-gray-600 font-mono">
           {diff.fromCommit.slice(0, 7)}..{diff.toCommit.slice(0, 7)}

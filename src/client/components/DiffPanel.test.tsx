@@ -249,4 +249,48 @@ describe("DiffPanel", () => {
       expect(screen.getByText("old-name.ts → new-name.ts")).toBeInTheDocument();
     });
   });
+
+  describe("read-only mode", () => {
+    it("hides checkboxes when readOnly is true", () => {
+      const props = defaultProps();
+      props.diff = makeDiff({
+        files: [makeFile({ path: "src/foo.ts" }), makeFile({ path: "src/bar.ts" })],
+        stats: { totalInsertions: 10, totalDeletions: 4, filesChanged: 2 },
+      });
+      render(<DiffPanel {...props} readOnly />);
+      expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    });
+
+    it("hides Accept All and shows Close button when readOnly is true", () => {
+      const props = defaultProps();
+      render(<DiffPanel {...props} readOnly />);
+      expect(screen.queryByText("Accept All")).not.toBeInTheDocument();
+      expect(screen.getByText("Close")).toBeInTheDocument();
+    });
+
+    it("calls onClose when Close button is clicked in read-only mode", () => {
+      const props = defaultProps();
+      render(<DiffPanel {...props} readOnly />);
+      fireEvent.click(screen.getByText("Close"));
+      expect(props.onClose).toHaveBeenCalledOnce();
+    });
+
+    it("shows commit message in header when provided", () => {
+      const props = defaultProps();
+      render(<DiffPanel {...props} readOnly commitMessage="feat: add new feature" />);
+      expect(screen.getByText("feat: add new feature")).toBeInTheDocument();
+    });
+
+    it("shows 'Changes' in header when no commit message provided", () => {
+      const props = defaultProps();
+      render(<DiffPanel {...props} readOnly />);
+      expect(screen.getByText("Changes")).toBeInTheDocument();
+    });
+
+    it("still shows the close X button in header in read-only mode", () => {
+      const props = defaultProps();
+      render(<DiffPanel {...props} readOnly />);
+      expect(screen.getByLabelText("Close diff panel")).toBeInTheDocument();
+    });
+  });
 });
