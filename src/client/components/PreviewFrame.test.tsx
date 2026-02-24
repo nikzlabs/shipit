@@ -47,34 +47,34 @@ describe("PreviewFrame", () => {
   });
 
   it("shows placeholder when preview is not running", () => {
-    const preview: PreviewStatus = { running: false, port: 5173, url: "http://localhost:5173" };
+    const preview: PreviewStatus = { running: false, port: 5173, url: "/preview/5173/" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     expect(screen.getByText(/Preview will appear here/)).toBeInTheDocument();
   });
 
   it("renders iframe when preview is running", async () => {
-    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const preview: PreviewStatus = { running: true, port: 5173, url: "/preview/5173/", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     const iframe = await screen.findByTitle("Live Preview");
     expect(iframe).toBeInTheDocument();
-    expect(iframe).toHaveAttribute("src", "http://localhost:5173");
+    expect(iframe).toHaveAttribute("src", "/preview/5173/");
   });
 
   it("shows (auto-detected) label for detected source with single port", () => {
-    const preview: PreviewStatus = { running: true, port: 3001, url: "http://localhost:3001", source: "detected" };
+    const preview: PreviewStatus = { running: true, port: 3001, url: "/preview/3001/", source: "detected" };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001]} selectedPort={null} onSelectPort={vi.fn()} />);
     expect(screen.getByText("(auto-detected)")).toBeInTheDocument();
   });
 
   it("shows port text without selector when only one detected port", () => {
-    const preview: PreviewStatus = { running: true, port: 3001, url: "http://localhost:3001", source: "detected" };
+    const preview: PreviewStatus = { running: true, port: 3001, url: "/preview/3001/", source: "detected" };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001]} selectedPort={null} onSelectPort={vi.fn()} />);
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     expect(screen.getByText(/localhost:3001/)).toBeInTheDocument();
   });
 
   it("shows dropdown selector when multiple detected ports exist", () => {
-    const preview: PreviewStatus = { running: true, port: 3001, url: "http://localhost:3001", source: "detected", detectedPorts: [3001, 8080] };
+    const preview: PreviewStatus = { running: true, port: 3001, url: "/preview/3001/", source: "detected", detectedPorts: [3001, 8080] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001, 8080]} selectedPort={null} onSelectPort={vi.fn()} />);
     const select = screen.getByLabelText("Select preview port");
     expect(select).toBeInTheDocument();
@@ -82,14 +82,14 @@ describe("PreviewFrame", () => {
   });
 
   it("shows dropdown when Vite is running and detected ports also exist", () => {
-    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite", detectedPorts: [3001] };
+    const preview: PreviewStatus = { running: true, port: 5173, url: "/preview/5173/", source: "vite", detectedPorts: [3001] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001]} selectedPort={null} onSelectPort={vi.fn()} />);
     const select = screen.getByLabelText("Select preview port");
     expect(select).toBeInTheDocument();
   });
 
   it("lists Vite port and detected ports in the selector", () => {
-    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite", detectedPorts: [3001, 8080] };
+    const preview: PreviewStatus = { running: true, port: 5173, url: "/preview/5173/", source: "vite", detectedPorts: [3001, 8080] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001, 8080]} selectedPort={null} onSelectPort={vi.fn()} />);
     const options = screen.getAllByRole("option");
     expect(options).toHaveLength(3);
@@ -100,7 +100,7 @@ describe("PreviewFrame", () => {
 
   it("calls onSelectPort when user changes the dropdown", () => {
     const onSelectPort = vi.fn();
-    const preview: PreviewStatus = { running: true, port: 3001, url: "http://localhost:3001", source: "detected", detectedPorts: [3001, 8080] };
+    const preview: PreviewStatus = { running: true, port: 3001, url: "/preview/3001/", source: "detected", detectedPorts: [3001, 8080] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001, 8080]} selectedPort={null} onSelectPort={onSelectPort} />);
     const select = screen.getByLabelText("Select preview port");
     fireEvent.change(select, { target: { value: "8080" } });
@@ -108,21 +108,21 @@ describe("PreviewFrame", () => {
   });
 
   it("uses selectedPort for the iframe when provided", async () => {
-    const preview: PreviewStatus = { running: true, port: 3001, url: "http://localhost:3001", source: "detected", detectedPorts: [3001, 8080] };
+    const preview: PreviewStatus = { running: true, port: 3001, url: "/preview/3001/", source: "detected", detectedPorts: [3001, 8080] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001, 8080]} selectedPort={8080} onSelectPort={vi.fn()} />);
     const iframe = await screen.findByTitle("Live Preview");
-    expect(iframe).toHaveAttribute("src", "http://localhost:8080");
+    expect(iframe).toHaveAttribute("src", "/preview/8080/");
   });
 
   it("falls back to preview.port when selectedPort is null", async () => {
-    const preview: PreviewStatus = { running: true, port: 3001, url: "http://localhost:3001", source: "detected" };
+    const preview: PreviewStatus = { running: true, port: 3001, url: "/preview/3001/", source: "detected" };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001]} selectedPort={null} onSelectPort={vi.fn()} />);
     const iframe = await screen.findByTitle("Live Preview");
-    expect(iframe).toHaveAttribute("src", "http://localhost:3001");
+    expect(iframe).toHaveAttribute("src", "/preview/3001/");
   });
 
   it("increments refresh key when Reload is clicked", async () => {
-    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const preview: PreviewStatus = { running: true, port: 5173, url: "/preview/5173/", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     await screen.findByTitle("Live Preview");
 
@@ -132,7 +132,7 @@ describe("PreviewFrame", () => {
   });
 
   it("selector value matches selectedPort", () => {
-    const preview: PreviewStatus = { running: true, port: 3001, url: "http://localhost:3001", source: "detected", detectedPorts: [3001, 8080] };
+    const preview: PreviewStatus = { running: true, port: 3001, url: "/preview/3001/", source: "detected", detectedPorts: [3001, 8080] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001, 8080]} selectedPort={8080} onSelectPort={vi.fn()} />);
     const select = screen.getByLabelText("Select preview port") as HTMLSelectElement;
     expect(select.value).toBe("8080");
@@ -141,7 +141,7 @@ describe("PreviewFrame", () => {
   // ---- Error badge & panel tests ----
 
   it("shows error badge when there are errors", () => {
-    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const preview: PreviewStatus = { running: true, port: 5173, url: "/preview/5173/", source: "vite" };
     const errors = [makeError()];
     render(<PreviewFrame preview={preview} {...defaultProps} errors={errors} />);
     expect(screen.getByLabelText("Toggle error panel")).toBeInTheDocument();
@@ -149,13 +149,13 @@ describe("PreviewFrame", () => {
   });
 
   it("does not show error badge when there are no errors", () => {
-    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const preview: PreviewStatus = { running: true, port: 5173, url: "/preview/5173/", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     expect(screen.queryByLabelText("Toggle error panel")).not.toBeInTheDocument();
   });
 
   it("toggles error panel when badge is clicked", () => {
-    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const preview: PreviewStatus = { running: true, port: 5173, url: "/preview/5173/", source: "vite" };
     const errors = [makeError()];
     render(<PreviewFrame preview={preview} {...defaultProps} errors={errors} />);
 
@@ -174,7 +174,7 @@ describe("PreviewFrame", () => {
 
   it("calls onSendErrors when 'Send to Agent' is clicked", () => {
     const onSendErrors = vi.fn();
-    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const preview: PreviewStatus = { running: true, port: 5173, url: "/preview/5173/", source: "vite" };
     const errors = [makeError()];
     render(<PreviewFrame preview={preview} {...defaultProps} errors={errors} onSendErrors={onSendErrors} />);
 
@@ -185,7 +185,7 @@ describe("PreviewFrame", () => {
 
   it("calls onSendErrors for a single error when Fix button is clicked", () => {
     const onSendErrors = vi.fn();
-    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const preview: PreviewStatus = { running: true, port: 5173, url: "/preview/5173/", source: "vite" };
     const errors = [makeError({ id: "pe-1" }), makeError({ id: "pe-2", message: "Second error" })];
     render(<PreviewFrame preview={preview} {...defaultProps} errors={errors} onSendErrors={onSendErrors} />);
 
@@ -197,7 +197,7 @@ describe("PreviewFrame", () => {
 
   it("calls onClearErrors when Clear button in error panel is clicked", () => {
     const onClearErrors = vi.fn();
-    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const preview: PreviewStatus = { running: true, port: 5173, url: "/preview/5173/", source: "vite" };
     const errors = [makeError()];
     render(<PreviewFrame preview={preview} {...defaultProps} errors={errors} onClearErrors={onClearErrors} />);
 
@@ -207,34 +207,34 @@ describe("PreviewFrame", () => {
   });
 
   it("shows auto-fix toggle", () => {
-    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const preview: PreviewStatus = { running: true, port: 5173, url: "/preview/5173/", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     expect(screen.getByText("Auto-fix")).toBeInTheDocument();
   });
 
   it("calls onToggleAutoFix when toggle is clicked", () => {
     const onToggleAutoFix = vi.fn();
-    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const preview: PreviewStatus = { running: true, port: 5173, url: "/preview/5173/", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} onToggleAutoFix={onToggleAutoFix} />);
     fireEvent.click(screen.getByText("Auto-fix"));
     expect(onToggleAutoFix).toHaveBeenCalled();
   });
 
   it("shows retry count when auto-fix is active with retries", () => {
-    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const preview: PreviewStatus = { running: true, port: 5173, url: "/preview/5173/", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} autoFixEnabled={true} autoFixRetries={2} />);
     expect(screen.getByText("Auto-fix (2/3)")).toBeInTheDocument();
   });
 
   it("shows error count badge capped at 99+", () => {
-    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const preview: PreviewStatus = { running: true, port: 5173, url: "/preview/5173/", source: "vite" };
     const errors = Array.from({ length: 100 }, (_, i) => makeError({ id: `pe-${i}`, message: `Error ${i}` }));
     render(<PreviewFrame preview={preview} {...defaultProps} errors={errors} />);
     expect(screen.getByText("99+")).toBeInTheDocument();
   });
 
   it("shows stack trace in error details", () => {
-    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const preview: PreviewStatus = { running: true, port: 5173, url: "/preview/5173/", source: "vite" };
     const errors = [makeError({ stack: "Error: x\n  at foo.js:10\n  at bar.js:20" })];
     render(<PreviewFrame preview={preview} {...defaultProps} errors={errors} />);
 
@@ -243,7 +243,7 @@ describe("PreviewFrame", () => {
   });
 
   it("shows console warn errors with [warn] prefix", () => {
-    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const preview: PreviewStatus = { running: true, port: 5173, url: "/preview/5173/", source: "vite" };
     const errors = [makeError({ type: "console", level: "warn", message: "Deprecation warning" })];
     render(<PreviewFrame preview={preview} {...defaultProps} errors={errors} />);
 
@@ -307,14 +307,14 @@ describe("PreviewFrame", () => {
   // ---- Managed source tests ----
 
   it("renders iframe for managed source preview", async () => {
-    const preview: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "managed" };
+    const preview: PreviewStatus = { running: true, port: 3000, url: "/preview/3000/", source: "managed" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     const iframe = await screen.findByTitle("Live Preview");
-    expect(iframe).toHaveAttribute("src", "http://localhost:3000");
+    expect(iframe).toHaveAttribute("src", "/preview/3000/");
   });
 
   it("shows Preview label in port selector for managed source", () => {
-    const preview: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "managed", detectedPorts: [8080] };
+    const preview: PreviewStatus = { running: true, port: 3000, url: "/preview/3000/", source: "managed", detectedPorts: [8080] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[8080]} selectedPort={null} onSelectPort={vi.fn()} />);
     const options = screen.getAllByRole("option");
     expect(options[0]).toHaveTextContent("3000 (Preview)");

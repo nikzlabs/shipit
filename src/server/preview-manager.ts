@@ -62,7 +62,17 @@ try {
   if (r) base = r.config;
 } catch {}
 
-export default mergeConfig(base, defineConfig({ plugins: [shipitPlugin] }));
+export default mergeConfig(base, defineConfig({
+  plugins: [shipitPlugin],
+  server: {
+    hmr: {
+      // Tell Vite's HMR client to connect directly to port ${VITE_PORT}
+      // (published in Docker) so HMR WebSocket bypasses the preview proxy
+      // and connects to the Vite server's native WS endpoint.
+      clientPort: ${VITE_PORT},
+    },
+  },
+}));
 `.trimStart();
 }
 

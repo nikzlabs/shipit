@@ -101,7 +101,7 @@ describe("Integration: Port auto-detection", () => {
       source: "detected",
       detectedPorts: [3001],
     });
-    expect(previewMsg.url).toBe("http://localhost:3001");
+    expect(previewMsg.url).toBe("/preview/3001/");
 
     client.close();
   });

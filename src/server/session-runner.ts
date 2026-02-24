@@ -346,7 +346,7 @@ export class SessionRunner extends EventEmitter {
         type: "preview_status",
         running: true,
         port: this._preview.port,
-        url: `http://localhost:${this._preview.port}`,
+        url: `/preview/${this._preview.port}/`,
         source: this._preview.config?.mode.kind === "html" ? "vite" : "managed",
         detectedPorts: allDetected.length > 0 ? allDetected : undefined,
       };
@@ -356,7 +356,7 @@ export class SessionRunner extends EventEmitter {
         type: "preview_status",
         running: true,
         port: this._detectedPorts[0],
-        url: `http://localhost:${this._detectedPorts[0]}`,
+        url: `/preview/${this._detectedPorts[0]}/`,
         source: "detected",
         detectedPorts: this._detectedPorts,
       };
@@ -365,7 +365,7 @@ export class SessionRunner extends EventEmitter {
       type: "preview_status",
       running: false,
       port: 5173,
-      url: "http://localhost:5173",
+      url: "/preview/5173/",
     };
   }
 

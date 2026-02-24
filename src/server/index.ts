@@ -39,6 +39,7 @@ import * as sessionHandlers from "./ws-handlers/session-handlers.js";
 import * as threadHandlers from "./ws-handlers/thread-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
 import { registerApiRoutes } from "./api-routes.js";
+import { registerPreviewProxy, registerPreviewWsProxy } from "./preview-proxy.js";
 export { getContextWindowSize } from "./ws-handlers/send-message.js";
 
 const WORKSPACE = "/workspace";
@@ -475,7 +476,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         type: "preview_status",
         running: true,
         port: previewManager.port,
-        url: `http://localhost:${previewManager.port}`,
+        url: `/preview/${previewManager.port}/`,
         source: previewManager.config?.mode.kind === "html" ? "vite" : "managed",
         detectedPorts: allDetected.length > 0 ? allDetected : undefined,
       };
@@ -485,7 +486,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         type: "preview_status",
         running: true,
         port: detectedPorts[0],
-        url: `http://localhost:${detectedPorts[0]}`,
+        url: `/preview/${detectedPorts[0]}/`,
         source: "detected",
         detectedPorts,
       };
@@ -494,7 +495,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       type: "preview_status",
       running: false,
       port: 5173,
-      url: "http://localhost:5173",
+      url: "/preview/5173/",
     };
   };
 
@@ -623,6 +624,28 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     generateText,
     sessionsRoot,
   });
+
+  // ---- Preview proxy ----
+  // Proxies /preview/:port/* to 127.0.0.1:{port}, allowing all preview
+  // traffic to flow through the single published Fastify port. Only ports
+  // known to ShipIt (managed preview ports + detected ports) are allowed.
+  const isPortAllowed = (port: number): boolean => {
+    // Global preview manager port
+    if (previewManager.port === port) return true;
+    // Global detected ports (fallback when no session is active)
+    if (detectedPorts.includes(port)) return true;
+    // Per-runner managed preview ports and detected ports
+    for (const sessionId of runnerRegistry.listActive()) {
+      const runner = runnerRegistry.get(sessionId);
+      if (!runner) continue;
+      const preview = runner.getPreview();
+      if (preview && preview.ports.includes(port)) return true;
+      if (runner.detectedPorts.includes(port)) return true;
+    }
+    return false;
+  };
+  registerPreviewProxy(app, { isPortAllowed });
+  // WS proxy is registered after app.ready() — see below
 
   // Serve the built client files from dist/client/
   if (shouldServeStatic) {
@@ -1056,6 +1079,14 @@ to determine the correct install command, preview mode, command, and ports.`;
         stopPortScanInterval();
       }
     });
+  });
+
+  // Register WebSocket preview proxy on the raw HTTP server after all
+  // plugins (including @fastify/websocket) have installed their upgrade
+  // handlers. This lets us intercept /preview/:port/* WS upgrades and
+  // forward everything else to the existing @fastify/websocket handler.
+  app.addHook("onReady", async () => {
+    registerPreviewWsProxy(app.server, { isPortAllowed });
   });
 
   // Graceful shutdown — register once via app hook rather than per-call

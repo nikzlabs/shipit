@@ -170,6 +170,11 @@ export class StubPreviewManager extends EventEmitter {
   async start() { /* no-op */ }
   stop() { /* no-op */ }
   async restart() { /* no-op */ }
+  /** Test helper: mark as running on the given port(s). */
+  setRunning(port: number, ...extraPorts: number[]) {
+    this._running = true;
+    this._ports = [port, ...extraPorts];
+  }
 }
 
 /**

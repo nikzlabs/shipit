@@ -99,7 +99,7 @@ export function PreviewFrame({
     const poll = async () => {
       for (let i = 0; i < 20 && !cancelled; i++) {
         try {
-          await fetch(`http://localhost:${activePort}`, { mode: "no-cors" });
+          await fetch(`/preview/${activePort}/`, { mode: "no-cors" });
           if (!cancelled) setIframeReady(true);
           return;
         } catch {
@@ -200,7 +200,7 @@ export function PreviewFrame({
   }
 
   // activePort already computed above (before hooks)
-  const activeUrl = `http://localhost:${activePort}`;
+  const activeUrl = `/preview/${activePort}/`;
   const isManaged = (preview.source === "vite" || preview.source === "managed") && activePort === preview.port;
   const showSelector = detectedPorts.length > 1 || ((preview.source === "vite" || preview.source === "managed") && detectedPorts.length > 0);
 
