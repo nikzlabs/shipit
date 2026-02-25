@@ -2,25 +2,18 @@
 
 ## Phase 1: Session Worker + IPC (foundation)
 
-- [x] Extract shared `SessionRunnerInterface` from `SessionRunner` (start/stop agent, terminal, preview, file watcher methods)
-- [x] Create `src/server/session-worker.ts` — lightweight Fastify server on port 9100
-  - [x] `POST /agent/start` — spawn agent via factory
-  - [x] `POST /agent/interrupt` — send interrupt to agent
-  - [x] `POST /agent/kill` — kill agent
-  - [x] `POST /agent/stdin` — write to agent stdin
-  - [x] `GET /agent/status` — check if agent is running
-  - [x] `GET /events` — SSE stream for agent output (events, done, error, auth_required, log)
-  - [x] `GET /health` — health check
-- [x] Create `src/server/container-session-runner.ts` — `ContainerSessionRunner` class
-  - [x] Delegates `startAgentOnWorker()` / `interruptAgentOnWorker()` / `killAgentOnWorker()` to worker HTTP endpoints
-  - [x] `writeAgentStdin()` — write to agent stdin on worker
-  - [x] Connects SSE event stream and forwards events to proxy AgentProcess
-  - [x] SSE reconnection with exponential backoff (1s, 2s, 4s, max 10s)
-  - [x] Full `SessionRunnerInterface` compliance (state, queue, terminal buffer, turn buffer, viewer management)
-- [x] `SessionRunnerRegistry` accepts `runnerFactory` to create either direct or container runners
-- [x] `AppDeps.runnerFactory` wiring in `buildApp()` for custom runner creation
-- [x] Test worker as in-process Fastify server — validate agent start/stop/interrupt/stdin/output round-trips (16 tests)
-- [x] Verify existing integration tests pass with `useContainers: false` (fallback mode, all 1604 tests pass)
+- [ ] Extract shared `SessionRunnerInterface` from `SessionRunner` (start/stop agent, terminal, preview, file watcher methods)
+- [ ] Create `src/server/session-worker.ts` — lightweight Fastify server on port 9100
+  - [ ] `POST /agent/start` — spawn Claude CLI with PTY
+  - [ ] `POST /agent/interrupt` — send SIGINT to agent
+  - [ ] `POST /agent/kill` — send SIGTERM to agent
+  - [ ] `GET /events` — SSE stream for agent output, terminal output, file changes, preview status
+- [ ] Create `src/server/container-session-runner.ts` — `ContainerSessionRunner` class
+  - [ ] Delegates `startAgent()` / `interrupt()` / `kill()` to worker HTTP endpoints
+  - [ ] Connects SSE event stream and re-emits events via `emitMessage()`
+  - [ ] SSE reconnection with exponential backoff (1s, 2s, 4s, max 10s)
+- [ ] Test worker as a subprocess (no Docker) — validate agent start/stop/output round-trips
+- [ ] Verify existing integration tests pass with `useContainers: false` (fallback mode)
 
 ## Phase 2: Docker Integration
 
