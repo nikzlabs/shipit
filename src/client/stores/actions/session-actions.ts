@@ -49,6 +49,7 @@ export function resumeSessionInternal(
   useThreadStore.getState().reset();
   useTerminalStore.getState().reset();
   useUiStore.getState().reset();
+  usePreviewStore.getState().reset();
 
   // 1. Fetch session data via HTTP
   fetch(`/api/sessions/${sessionId}/history`)

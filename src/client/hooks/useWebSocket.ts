@@ -5,6 +5,14 @@ export type WsStatus = "connecting" | "open" | "closed";
 export interface UseWebSocketReturn {
   send: (data: unknown) => void;
   lastMessage: MessageEvent | null;
+  /**
+   * Queue of unprocessed messages.  When the server sends multiple WS frames
+   * in the same tick (e.g. session_status + preview_status + clear_logs),
+   * React may batch the setLastMessage calls and only render with the final
+   * value.  Consumers should drain this queue (via splice(0)) instead of
+   * reading lastMessage directly to ensure every message is processed.
+   */
+  pendingMessages: MessageEvent[];
   status: WsStatus;
   /** Number of consecutive reconnect attempts since last successful connection. */
   reconnectAttempt: number;
@@ -28,6 +36,7 @@ export function useWebSocket(url: string): UseWebSocketReturn {
   const reconnectAttemptRef = useRef(0);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const messageQueueRef = useRef<MessageEvent[]>([]);
 
   useEffect(() => {
     // Guard against React StrictMode double-mount: when cleanup closes the WS,
@@ -59,7 +68,10 @@ export function useWebSocket(url: string): UseWebSocketReturn {
       );
     };
 
-    ws.onmessage = (event) => setLastMessage(event);
+    ws.onmessage = (event) => {
+      messageQueueRef.current.push(event);
+      setLastMessage(event);
+    };
 
     return () => {
       intentionalClose = true;
@@ -89,5 +101,5 @@ export function useWebSocket(url: string): UseWebSocketReturn {
     setConnectAttempt((n) => n + 1);
   }, []);
 
-  return { send, lastMessage, status, reconnectAttempt, reconnect };
+  return { send, lastMessage, pendingMessages: messageQueueRef.current, status, reconnectAttempt, reconnect };
 }

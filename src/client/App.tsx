@@ -68,7 +68,7 @@ function getWsUrl(): string {
 export default function App() {
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
-  const { send, lastMessage, status, reconnectAttempt, reconnect } = useWebSocket(getWsUrl());
+  const { send, lastMessage, pendingMessages, status, reconnectAttempt, reconnect } = useWebSocket(getWsUrl());
   const { get: apiGet, post: apiPost, del: apiDel } = useApi();
   const terminalRef = useRef<InteractiveTerminalHandle>(null);
 
@@ -192,6 +192,7 @@ export default function App() {
 
   useMessageHandler({
     lastMessage,
+    pendingMessages,
     send,
     terminalRef,
     notify,

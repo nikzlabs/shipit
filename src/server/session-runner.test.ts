@@ -213,10 +213,13 @@ describe("SessionRunner", () => {
     expect(runner.getPreview()).toBe(mockPreview);
 
     runner.detachViewer();
-    expect(mockPreview.stop).toHaveBeenCalled();
-    expect(runner.getPreview()).toBeNull();
+    // Preview stays alive after detach (accessible via proxy); only stopped on dispose
+    expect(mockPreview.stop).not.toHaveBeenCalled();
+    expect(runner.getPreview()).toBe(mockPreview);
 
     runner.dispose();
+    expect(mockPreview.stop).toHaveBeenCalled();
+    expect(runner.getPreview()).toBeNull();
   });
 
   it("does not create preview/file-watcher without factories", () => {

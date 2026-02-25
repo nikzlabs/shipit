@@ -1,4 +1,5 @@
 import http from "node:http";
+import type { Socket } from "node:net";
 import type { FastifyInstance } from "fastify";
 
 /**
@@ -31,79 +32,89 @@ export function stripPreviewPrefix(url: string, port: number): string {
  * to flow through the single published Fastify port (3000), solving Docker
  * networking issues where internal container ports are not published to the host.
  */
+const PROXY_TIMEOUT_MS = 30_000;
+
 export function registerPreviewProxy(
   app: FastifyInstance,
   opts: { isPortAllowed: (port: number) => boolean },
 ): void {
-  // Disable Fastify's default body parsing for proxy routes —
-  // we forward the raw body stream directly to the upstream.
-  app.addContentTypeParser("*", (_request, _payload, done) => {
-    done(null);
-  });
-
-  // Match /preview/:port with a trailing path
-  app.all("/preview/:port/*", async (request, reply) => {
-    const port = validatePort(request.params as { port: string }, opts.isPortAllowed);
-    if (port === null) {
-      return reply.code(403).send({ error: "Port not allowed" });
-    }
-
-    const target = stripPreviewPrefix(request.url, port);
-
-    // Collect the request body chunks if present
-    const bodyChunks: Buffer[] = [];
-    for await (const chunk of request.raw) {
-      bodyChunks.push(chunk as Buffer);
-    }
-    const body = Buffer.concat(bodyChunks);
-
-    const headers: Record<string, string | string[] | undefined> = { ...request.headers };
-    headers.host = `localhost:${port}`;
-    delete headers["transfer-encoding"];
-    // Set correct content-length for the forwarded body
-    if (body.length > 0) {
-      headers["content-length"] = String(body.length);
-    }
-
-    return new Promise<void>((resolve) => {
-      const proxyReq = http.request(
-        {
-          hostname: "127.0.0.1",
-          port,
-          path: target,
-          method: request.method,
-          headers,
-        },
-        (proxyRes) => {
-          // Forward status and headers from upstream
-          reply.hijack();
-          reply.raw.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
-          proxyRes.pipe(reply.raw);
-          proxyRes.on("end", resolve);
-        },
-      );
-
-      proxyReq.on("error", () => {
-        if (!reply.sent) {
-          reply.code(502).send({ error: "Upstream unreachable" });
-        }
-        resolve();
-      });
-
-      if (body.length > 0) {
-        proxyReq.write(body);
-      }
-      proxyReq.end();
+  // Encapsulate so the wildcard content-type parser only applies to proxy routes
+  app.register(async (scope) => {
+    // Disable Fastify's default body parsing for proxy routes —
+    // we forward the raw body stream directly to the upstream.
+    scope.addContentTypeParser("*", (_request, _payload, done) => {
+      done(null);
     });
-  });
 
-  // Handle bare /preview/:port (no trailing slash) — redirect to /preview/:port/
-  app.all("/preview/:port", async (request, reply) => {
-    const port = validatePort(request.params as { port: string }, opts.isPortAllowed);
-    if (port === null) {
-      return reply.code(403).send({ error: "Port not allowed" });
-    }
-    return reply.redirect(`/preview/${port}/`);
+    // Match /preview/:port with a trailing path
+    scope.all("/preview/:port/*", async (request, reply) => {
+      const port = validatePort(request.params as { port: string }, opts.isPortAllowed);
+      if (port === null) {
+        return reply.code(403).send({ error: "Port not allowed" });
+      }
+
+      const target = stripPreviewPrefix(request.url, port);
+
+      // Collect the request body chunks if present
+      const bodyChunks: Buffer[] = [];
+      for await (const chunk of request.raw) {
+        bodyChunks.push(chunk as Buffer);
+      }
+      const body = Buffer.concat(bodyChunks);
+
+      const headers: Record<string, string | string[] | undefined> = { ...request.headers };
+      headers.host = `localhost:${port}`;
+      delete headers["transfer-encoding"];
+      // Set correct content-length for the forwarded body
+      if (body.length > 0) {
+        headers["content-length"] = String(body.length);
+      }
+
+      return new Promise<void>((resolve) => {
+        const proxyReq = http.request(
+          {
+            hostname: "127.0.0.1",
+            port,
+            path: target,
+            method: request.method,
+            headers,
+            timeout: PROXY_TIMEOUT_MS,
+          },
+          (proxyRes) => {
+            // Forward status and headers from upstream
+            reply.hijack();
+            reply.raw.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
+            proxyRes.pipe(reply.raw);
+            proxyRes.on("end", resolve);
+          },
+        );
+
+        proxyReq.on("timeout", () => {
+          proxyReq.destroy();
+        });
+
+        proxyReq.on("error", () => {
+          if (!reply.sent) {
+            reply.code(502).send({ error: "Upstream unreachable" });
+          }
+          resolve();
+        });
+
+        if (body.length > 0) {
+          proxyReq.write(body);
+        }
+        proxyReq.end();
+      });
+    });
+
+    // Handle bare /preview/:port (no trailing slash) — redirect to /preview/:port/
+    scope.all("/preview/:port", async (request, reply) => {
+      const port = validatePort(request.params as { port: string }, opts.isPortAllowed);
+      if (port === null) {
+        return reply.code(403).send({ error: "Port not allowed" });
+      }
+      return reply.redirect(`/preview/${port}/`);
+    });
   });
 }
 
@@ -127,12 +138,12 @@ export function registerPreviewWsProxy(
   const existingListeners = server.listeners("upgrade") as ((...args: unknown[]) => void)[];
   server.removeAllListeners("upgrade");
 
-  const previewUpgradeHandler = (req: http.IncomingMessage, socket: import("node:net").Socket, head: Buffer) => {
+  const previewUpgradeHandler = (req: http.IncomingMessage, socket: Socket, head: Buffer) => {
     const match = req.url?.match(/^\/preview\/(\d+)(\/.*)?$/);
     if (!match) return false; // Not a preview proxy request
 
     const port = Number(match[1]);
-    if (!opts.isPortAllowed(port)) {
+    if (!Number.isInteger(port) || port < 1 || port > 65535 || !opts.isPortAllowed(port)) {
       socket.destroy();
       return true;
     }
@@ -185,7 +196,7 @@ export function registerPreviewWsProxy(
   };
 
   // Install a combined handler: try preview first, then fall through to existing
-  server.on("upgrade", (req: http.IncomingMessage, socket: import("node:net").Socket, head: Buffer) => {
+  server.on("upgrade", (req: http.IncomingMessage, socket: Socket, head: Buffer) => {
     if (previewUpgradeHandler(req, socket, head)) return;
     // Not a preview request — forward to existing listeners
     for (const listener of existingListeners) {

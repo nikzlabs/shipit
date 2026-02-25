@@ -64,14 +64,6 @@ try {
 
 export default mergeConfig(base, defineConfig({
   plugins: [shipitPlugin],
-  server: {
-    hmr: {
-      // Tell Vite's HMR client to connect directly to port ${VITE_PORT}
-      // (published in Docker) so HMR WebSocket bypasses the preview proxy
-      // and connects to the Vite server's native WS endpoint.
-      clientPort: ${VITE_PORT},
-    },
-  },
 }));
 `.trimStart();
 }
@@ -231,11 +223,17 @@ export class PreviewManager extends EventEmitter {
       console.log("[vite]", text.trim());
       this.emit("log", { source: "preview", text });
 
-      if (text.includes("Local:") || text.includes("ready in")) {
-        if (!this._running) {
-          this._running = true;
-          this._ports = [VITE_PORT];
-          this.emit("ready", this._ports);
+      // Detect the actual port from Vite's output — Vite may fall back to a
+      // different port if VITE_PORT is already in use by another session.
+      if (!this._running) {
+        const portMatch = text.match(/https?:\/\/(?:localhost|127\.0\.0\.1):(\d+)/);
+        if (portMatch) {
+          const port = Number(portMatch[1]);
+          if (port > 0 && port <= 65535) {
+            this._running = true;
+            this._ports = [port];
+            this.emit("ready", this._ports);
+          }
         }
       }
     });

@@ -21,21 +21,30 @@ import { useUiStore } from "../stores/ui-store.js";
 
 export function useMessageHandler(params: {
   lastMessage: MessageEvent | null;
+  /** Shared queue populated by useWebSocket — drained here to avoid message loss from React batching. */
+  pendingMessages: MessageEvent[];
   send: (msg: WsClientMessage) => void;
   terminalRef: MutableRefObject<InteractiveTerminalHandle | null>;
   notify: (msg: string) => void;
   navigate: (path: string, opts?: { replace?: boolean }) => void;
 }): void {
-  const { lastMessage, send, terminalRef, notify, navigate } = params;
+  const { lastMessage, pendingMessages, send, terminalRef, notify, navigate } = params;
 
   useEffect(() => {
-    if (!lastMessage) return;
+    // Drain the queue to process ALL received messages, not just the last one.
+    // When the server sends multiple WS frames in the same tick, React may
+    // batch the setLastMessage calls and skip intermediate values.  The queue
+    // guarantees every message is processed exactly once.
+    const messages = pendingMessages.splice(0);
+    if (messages.length === 0) return;
+
+    for (const event of messages) {
 
     let data: WsServerMessage;
     try {
-      data = JSON.parse(lastMessage.data) as WsServerMessage;
+      data = JSON.parse(event.data) as WsServerMessage;
     } catch {
-      return;
+      continue;
     }
 
     const session = useSessionStore.getState();
@@ -516,5 +525,7 @@ export function useMessageHandler(params: {
     if (data.type === "session_agent_finished") {
       session.setActiveRunnerSessions((prev) => { const next = new Set(prev); next.delete(data.sessionId); return next; });
     }
-  }, [lastMessage, send, terminalRef, notify, navigate]);
+
+    } // end for (const event of messages)
+  }, [lastMessage, pendingMessages, send, terminalRef, notify, navigate]);
 }

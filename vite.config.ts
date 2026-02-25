@@ -19,6 +19,10 @@ export default defineConfig({
       "/api": {
         target: `http://localhost:${process.env.API_PORT || "3000"}`,
       },
+      "/preview": {
+        target: `http://localhost:${process.env.API_PORT || "3000"}`,
+        ws: true,
+      },
     },
   },
 });

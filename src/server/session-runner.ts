@@ -260,13 +260,16 @@ export class SessionRunner extends EventEmitter {
   detachViewer(): void {
     this._viewerCount = Math.max(0, this._viewerCount - 1);
     if (this._viewerCount === 0) {
-      this.stopSessionResources();
+      // Stop the file watcher (cheap to restart), but keep the preview
+      // alive so it doesn't need a slow restart when re-attaching.
+      // The preview is stopped when the runner is disposed (idle timeout).
+      this.stopFileWatcher();
     }
   }
 
   /** Start preview server and file watcher for this session (first viewer attached). */
   private startSessionResources(): void {
-    if (this._createFileWatcher) {
+    if (this._createFileWatcher && !this._fileWatcher) {
       this._fileWatcher = this._createFileWatcher();
       this._fileWatcher.start(this.sessionDir);
       this._fileWatcher.on("changes", (paths: string[]) => {
@@ -278,25 +281,35 @@ export class SessionRunner extends EventEmitter {
       });
     }
 
-    if (this._createPreviewManager) {
+    // Preview survives viewer detach/re-attach — only create if not already existing.
+    // If the preview exists but the process exited (crashed or stopped), restart it.
+    // PreviewManager.start() is a no-op if the process is already running/starting.
+    if (this._createPreviewManager && !this._preview) {
       this._preview = this._createPreviewManager();
       this.wirePreviewEvents();
+      this._preview.start(this.sessionDir);
+    } else if (this._preview && !this._preview.running) {
       this._preview.start(this.sessionDir);
     }
   }
 
-  /** Stop preview server and file watcher (last viewer detached). */
+  /** Stop file watcher only (preview stays alive for proxy access). */
+  private stopFileWatcher(): void {
+    if (this._fileWatcher) {
+      this._fileWatcher.stop();
+      this._fileWatcher.removeAllListeners();
+      this._fileWatcher = null;
+    }
+  }
+
+  /** Stop preview server and file watcher (runner disposal). */
   private stopSessionResources(): void {
     if (this._preview) {
       this._preview.stop();
       this._preview.removeAllListeners();
       this._preview = null;
     }
-    if (this._fileWatcher) {
-      this._fileWatcher.stop();
-      this._fileWatcher.removeAllListeners();
-      this._fileWatcher = null;
-    }
+    this.stopFileWatcher();
   }
 
   /** Wire preview manager events to emit messages to attached viewers. */
@@ -487,6 +500,13 @@ export class SessionRunnerRegistry {
   listActive(): string[] {
     return [...this.runners.entries()]
       .filter(([, r]) => r.running && !r.disposed)
+      .map(([id]) => id);
+  }
+
+  /** List all non-disposed runner session IDs (regardless of agent status). */
+  listAll(): string[] {
+    return [...this.runners.entries()]
+      .filter(([, r]) => !r.disposed)
       .map(([id]) => id);
   }
 

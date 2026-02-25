@@ -399,13 +399,17 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
    */
   const runPortScan = async () => {
     try {
-      // Collect managed ports from global preview and all active runners
+      // Collect managed ports from global preview and ALL runners (not just
+      // active ones — previews survive viewer detach so their ports must be
+      // excluded to avoid showing another session's Vite as a "detected" port).
       const managedPorts: number[] = [];
       if (previewManager.port) managedPorts.push(previewManager.port);
-      for (const sessionId of runnerRegistry.listActive()) {
+      for (const sessionId of runnerRegistry.listAll()) {
         const runner = runnerRegistry.get(sessionId);
-        const rp = runner?.getPreview()?.port;
-        if (rp) managedPorts.push(rp);
+        const preview = runner?.getPreview();
+        if (preview) {
+          for (const p of preview.ports) managedPorts.push(p);
+        }
       }
       const excludeList = [...serverPorts, ...managedPorts, ...baselinePorts];
       const ports = await detectPorts(excludeList);
@@ -420,7 +424,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
       // Update each active runner's detected ports and notify their viewers
       let anyRunnerUpdated = false;
-      for (const sessionId of runnerRegistry.listActive()) {
+      for (const sessionId of runnerRegistry.listAll()) {
         const runner = runnerRegistry.get(sessionId);
         if (!runner) continue;
         const oldPorts = runner.detectedPorts;
@@ -635,7 +639,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     // Global detected ports (fallback when no session is active)
     if (detectedPorts.includes(port)) return true;
     // Per-runner managed preview ports and detected ports
-    for (const sessionId of runnerRegistry.listActive()) {
+    for (const sessionId of runnerRegistry.listAll()) {
       const runner = runnerRegistry.get(sessionId);
       if (!runner) continue;
       const preview = runner.getPreview();
@@ -646,6 +650,32 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   };
   registerPreviewProxy(app, { isPortAllowed });
   // WS proxy is registered after app.ready() — see below
+
+  // ---- Preview asset redirect ----
+  // Vite generates absolute asset paths (/@vite/client, /src/main.tsx, etc.)
+  // that the browser resolves against the origin, bypassing the /preview/{port}/
+  // proxy prefix. Detect these requests via the Referer header (which carries
+  // the preview iframe URL) and redirect them through the proxy.
+  app.addHook("onRequest", async (request, reply) => {
+    // Already a proxy, API, or WS request — handle normally
+    if (request.url.startsWith("/preview/") ||
+        request.url.startsWith("/api/") ||
+        request.url === "/ws") {
+      return;
+    }
+
+    const referer = request.headers.referer;
+    if (!referer) return;
+
+    const match = referer.match(/\/preview\/(\d+)\//);
+    if (!match) return;
+
+    const port = Number(match[1]);
+    if (!isPortAllowed(port)) return;
+
+    // Redirect through the preview proxy so the upstream Vite serves the asset
+    return reply.redirect(`/preview/${port}${request.url}`);
+  });
 
   // Serve the built client files from dist/client/
   if (shouldServeStatic) {
@@ -736,12 +766,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         });
       }
 
-      // Send preview status only if the preview is already running (e.g.
-      // reconnecting a second viewer tab).  When a preview manager was just
-      // created by attachViewer() above, it will emit "ready" / "config_missing"
-      // on its own once it finishes starting — sending a premature "running: false"
-      // here would flash the placeholder UI unnecessarily.
-      if (runner.getPreview()?.running) {
+      // Always send current preview status when per-runner previews are in use
+      // so the client never stays stuck with a null preview store (which shows
+      // an eternal "Starting dev server..." spinner). If the preview isn't ready
+      // yet, this sends running: false so the client shows the placeholder.
+      // The "ready" event will update it later.
+      if (runnerCreatePreviewManager) {
         send(runner.buildPreviewStatus());
       }
     };
