@@ -27,7 +27,7 @@ import { ClaudeAdapter } from "./agents/claude-adapter.js";
 import { CodexAdapter } from "./agents/codex-adapter.js";
 import { AgentRegistry, ALLOWED_ENV_KEYS } from "./agents/agent-registry.js";
 import { SessionRunnerRegistry } from "./session-runner.js";
-import type { SessionRunner } from "./session-runner.js";
+import type { SessionRunnerInterface } from "./session-runner.js";
 import type { AgentId, AgentEvent, AgentProcess } from "./agents/agent-process.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry } from "./types.js";
 import { getErrorMessage } from "./validation.js";
@@ -114,12 +114,12 @@ export interface AppDeps {
    */
   fileWatcher?: FileWatcher;
   /**
-   * Factory for creating per-session PreviewManager instances (inside SessionRunner).
+   * Factory for creating per-session PreviewManager instances (inside SessionRunnerInterface).
    * Defaults to `() => new PreviewManager()`. Inject a stub factory in tests.
    */
   createPreviewManager?: () => PreviewManager;
   /**
-   * Factory for creating per-session FileWatcher instances (inside SessionRunner).
+   * Factory for creating per-session FileWatcher instances (inside SessionRunnerInterface).
    * Defaults to `() => new FileWatcher()`. Inject a stub factory in tests.
    */
   createFileWatcher?: () => FileWatcher;
@@ -163,6 +163,12 @@ export interface AppDeps {
    * auto-detection at startup.
    */
   agentRegistry?: AgentRegistry;
+  /**
+   * Custom runner factory for the session runner registry. When provided,
+   * the registry uses this to create runners instead of the default
+   * SessionRunner. Used to inject ContainerSessionRunner for Docker mode.
+   */
+  runnerFactory?: import("./session-runner.js").SessionRunnerFactory;
 }
 
 /**
@@ -324,6 +330,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const runnerRegistry = new SessionRunnerRegistry({
     createPreviewManager: runnerCreatePreviewManager,
     createFileWatcher: runnerCreateFileWatcher,
+    runnerFactory: deps.runnerFactory,
   });
 
   // Track connected WebSocket clients so we can broadcast
@@ -368,7 +375,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   });
 
   // ---- File watcher event handler (global fallback) ----
-  // Per-session file watcher events are handled inside SessionRunner.
+  // Per-session file watcher events are handled inside SessionRunnerInterface.
   // This global handler fires only when no runner is managing a session's file watcher
   // (e.g., pre-session state, or in tests that don't use per-runner factories).
   fileWatcher.on("changes", (changedFiles: string[]) => {
@@ -464,7 +471,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   /**
    * Build the current preview status message. Checks the global preview manager
    * (used before any session is active) as a fallback. Per-session preview status
-   * is handled by SessionRunner.buildPreviewStatus() and emitted to viewers.
+   * is handled by SessionRunnerInterface.buildPreviewStatus() and emitted to viewers.
    */
   const getPreviewStatus = (): WsServerMessage => {
     if (previewManager.running && previewManager.port) {
@@ -506,7 +513,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   };
 
   // Preview events for the global (pre-session) preview manager.
-  // Per-session preview events are wired inside SessionRunner.wirePreviewEvents().
+  // Per-session preview events are wired inside SessionRunnerInterface.wirePreviewEvents().
   // In production, the global preview is stopped when a runner takes over.
   previewManager.on("ready", () => {
     console.log("[server] Preview server is ready");
@@ -662,7 +669,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     let terminal: TerminalProcess | null = null;
 
     // Per-connection runner attachment
-    let attachedRunner: SessionRunner | null = null;
+    let attachedRunner: SessionRunnerInterface | null = null;
     let runnerMessageListener: ((msg: WsServerMessage) => void) | null = null;
 
     const send = (msg: WsServerMessage) => {
@@ -673,7 +680,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
     // ---- Runner attach/detach helpers ----
 
-    const attachToRunner = (runner: SessionRunner) => {
+    const attachToRunner = (runner: SessionRunnerInterface) => {
       // Already attached to this runner — nothing to do
       if (attachedRunner === runner) return;
 
@@ -873,7 +880,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     };
 
     // ---- Handler context for extracted WebSocket handlers ----
-    // Agent state getters/setters delegate to the attached SessionRunner.
+    // Agent state getters/setters delegate to the attached SessionRunnerInterface.
     // If no runner is attached, they use safe defaults (null, false, etc.).
     const ctx: HandlerContext = {
       send,

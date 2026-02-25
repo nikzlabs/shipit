@@ -29,6 +29,84 @@ export interface QueuedMessage {
 }
 
 // ---------------------------------------------------------------------------
+// SessionRunnerInterface — shared contract for direct and container runners
+// ---------------------------------------------------------------------------
+
+/**
+ * Event map for SessionRunner implementations. Used with typed EventEmitter.
+ */
+export interface SessionRunnerEvents {
+  message: [WsServerMessage];
+  idle: [];
+  disposed: [];
+}
+
+/**
+ * Shared interface that both SessionRunner (direct process spawning) and
+ * ContainerSessionRunner (Docker-proxied) implement. All external consumers
+ * (HandlerContext, SessionRunnerRegistry, WebSocket handlers) program against
+ * this interface rather than a concrete class.
+ */
+export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents> {
+  readonly sessionId: string;
+  readonly sessionDir: string;
+
+  // Agent state
+  running: boolean;
+  wasInterrupted: boolean;
+  accumulatedText: string;
+  accumulatedToolUse: ClaudeContentBlockToolUse[];
+  turnSummary: string;
+  chatMessageGroups: Array<{ text: string; toolUse: ClaudeContentBlockToolUse[] }>;
+  needsNewMessageGroup: boolean;
+  agentId: AgentId;
+
+  getAgent(): AgentProcess | null;
+  setAgent(a: AgentProcess | null): void;
+
+  // Message queue
+  readonly messageQueue: QueuedMessage[];
+  readonly queueLength: number;
+  enqueue(msg: QueuedMessage): number;
+  dequeue(): QueuedMessage | undefined;
+  clearQueue(): void;
+  getQueueSnapshot(): Array<{ text: string; position: number }>;
+
+  // Terminal
+  getTerminal(): TerminalProcess | null;
+  setTerminal(t: TerminalProcess | null): void;
+  appendTerminalOutput(data: string): void;
+  getTerminalOutputBuffer(): string;
+  clearTerminalOutputBuffer(): void;
+
+  // Auto-push timer
+  getPushTimer(): ReturnType<typeof setTimeout> | null;
+  setPushTimer(t: ReturnType<typeof setTimeout> | null): void;
+  clearPushTimer(): void;
+
+  // Turn event buffer
+  getTurnEventBuffer(): WsServerMessage[];
+  clearTurnEventBuffer(): void;
+  emitMessage(msg: WsServerMessage): void;
+
+  // Detected ports (per-session)
+  detectedPorts: number[];
+
+  // Viewer management
+  readonly viewerCount: number;
+  getPreview(): PreviewManager | null;
+  getFileWatcher(): FileWatcher | null;
+  attachViewer(): void;
+  detachViewer(): void;
+  buildPreviewStatus(): WsServerMessage;
+
+  // Lifecycle
+  onAgentFinished(): void;
+  readonly disposed: boolean;
+  dispose(): void;
+}
+
+// ---------------------------------------------------------------------------
 // SessionRunner
 // ---------------------------------------------------------------------------
 
@@ -42,7 +120,7 @@ export interface QueuedMessage {
  * - "idle" — agent finished and no queued messages remain
  * - "disposed" — runner has been cleaned up
  */
-export class SessionRunner extends EventEmitter {
+export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements SessionRunnerInterface {
   readonly sessionId: string;
   readonly sessionDir: string;
 
@@ -417,27 +495,44 @@ export class SessionRunner extends EventEmitter {
  * App-level registry of active SessionRunners. One runner per session.
  * Manages lifecycle (create, get, dispose) and enforces resource limits.
  */
+/**
+ * Factory function type for creating runners. The registry calls this to
+ * instantiate the appropriate runner implementation (direct vs container).
+ */
+export type SessionRunnerFactory = (opts: {
+  sessionId: string;
+  sessionDir: string;
+  defaultAgentId: AgentId;
+  idleTimeoutMs: number;
+  createPreviewManager?: () => PreviewManager;
+  createFileWatcher?: () => FileWatcher;
+}) => SessionRunnerInterface;
+
 export class SessionRunnerRegistry {
-  private runners = new Map<string, SessionRunner>();
+  private runners = new Map<string, SessionRunnerInterface>();
   private _maxConcurrentRunners: number;
   private _defaultIdleTimeoutMs: number;
   private _createPreviewManager: (() => PreviewManager) | undefined;
   private _createFileWatcher: (() => FileWatcher) | undefined;
+  private _runnerFactory: SessionRunnerFactory;
 
   constructor(opts?: {
     maxConcurrentRunners?: number;
     defaultIdleTimeoutMs?: number;
     createPreviewManager?: () => PreviewManager;
     createFileWatcher?: () => FileWatcher;
+    /** Custom runner factory. Defaults to creating direct SessionRunner instances. */
+    runnerFactory?: SessionRunnerFactory;
   }) {
     this._maxConcurrentRunners = opts?.maxConcurrentRunners ?? 10;
     this._defaultIdleTimeoutMs = opts?.defaultIdleTimeoutMs ?? 10 * 60 * 1000;
     this._createPreviewManager = opts?.createPreviewManager;
     this._createFileWatcher = opts?.createFileWatcher;
+    this._runnerFactory = opts?.runnerFactory ?? ((o) => new SessionRunner(o));
   }
 
   /** Get or create a runner for the given session. */
-  getOrCreate(sessionId: string, sessionDir: string, defaultAgentId: AgentId): SessionRunner {
+  getOrCreate(sessionId: string, sessionDir: string, defaultAgentId: AgentId): SessionRunnerInterface {
     let runner = this.runners.get(sessionId);
     if (runner && !runner.disposed) {
       return runner;
@@ -460,7 +555,7 @@ export class SessionRunnerRegistry {
       }
     }
 
-    runner = new SessionRunner({
+    runner = this._runnerFactory({
       sessionId,
       sessionDir,
       defaultAgentId,
@@ -474,7 +569,7 @@ export class SessionRunnerRegistry {
   }
 
   /** Get existing runner (if any). */
-  get(sessionId: string): SessionRunner | undefined {
+  get(sessionId: string): SessionRunnerInterface | undefined {
     const runner = this.runners.get(sessionId);
     if (runner?.disposed) {
       this.runners.delete(sessionId);

@@ -14,7 +14,7 @@ import type { FileWatcher } from "../file-watcher.js";
 import type { AgentRegistry } from "../agents/agent-registry.js";
 import type { AgentId, AgentProcess } from "../agents/agent-process.js";
 import type { TerminalProcess } from "../terminal.js";
-import type { SessionRunner, SessionRunnerRegistry } from "../session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
 
 /** Queued message waiting for the current Claude turn to finish. */
 export interface QueuedMessage {
@@ -84,11 +84,11 @@ export interface HandlerContext {
 
   // === Session runner ===
   /** Get the runner attached to this connection (if any). */
-  getRunner: () => SessionRunner | null;
+  getRunner: () => SessionRunnerInterface | null;
   /** Get the app-level runner registry. */
   getRunnerRegistry: () => SessionRunnerRegistry;
   /** Attach this connection to a runner (detaches previous). */
-  attachToRunner: (runner: SessionRunner) => void;
+  attachToRunner: (runner: SessionRunnerInterface) => void;
   /** Detach this connection from its current runner. */
   detachFromRunner: () => void;
 
