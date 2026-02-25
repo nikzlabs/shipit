@@ -29,6 +29,7 @@ The orchestrator (Fastify server) remains on the host, managing session metadata
 - **Multi-host orchestration.** This design targets a single Docker host. Kubernetes/Swarm is a future concern.
 - **Custom base images per session.** All sessions share one image. Per-session package installs happen inside the container at runtime.
 - **Live migration.** Containers are ephemeral — tied to the session runner lifecycle, not persisted across server restarts.
+- **Pre-warmed container pool.** Considered and deferred. A pool of idle containers could eliminate the ~1-2s cold start, but Docker bind mounts are immutable after creation — a pre-warmed container can't have a session's `/workspace` added later. Workarounds (NFS/FUSE mounts, shared parent directory) add complexity and weaken isolation. The cold start only happens once per session and can be optimized below 1s by keeping the image small, lazy-initializing the worker (defer file watcher, port scanner until first use), and parallelizing container start with SSE connection setup. Revisit if cold start becomes a measurable UX problem.
 
 ---
 
