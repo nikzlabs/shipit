@@ -90,7 +90,7 @@ type ReviewCommentSource = "human" | "ai";
 interface ReviewComment {
   id: string;              // crypto.randomUUID()
   sectionHeading: string;  // "## Architecture" — heading this comment is anchored to
-  sectionIndex: number;    // 0-based index of the section in the doc
+  sectionIndex: number;    // 0-based index of the section in the doc (at time of creation)
   text: string;            // The comment text
   source: ReviewCommentSource;
 }
@@ -103,6 +103,8 @@ interface DocReview {
   planPath: string;        // "docs/012-deployment/plan.md"
   status: ReviewStatus;
   comments: ReviewComment[];
+  docSnapshotHash: string; // SHA-256 of the plan.md content when the review was created
+  sectionHeadings: string[]; // Ordered list of ## headings at snapshot time
   createdAt: string;       // ISO 8601 timestamp
   updatedAt: string;       // ISO 8601 timestamp
   sentAt?: string;         // Set when status transitions to "sent"
@@ -307,10 +309,27 @@ const [reviewContent, setReviewContent] = useState<string | null>(null);
 Handled server-side in the `sendReview()` service function. This ensures prompt format is consistent regardless of client version and allows the server to read the latest doc content.
 
 ```typescript
-function buildReviewPrompt(planPath: string, comments: ReviewComment[]): string {
-  // Group comments by section
+function buildReviewPrompt(
+  planPath: string,
+  comments: ReviewComment[],
+  currentHeadings: string[],
+): string {
+  const currentSet = new Set(currentHeadings);
+
+  // Separate anchored vs orphaned
+  const anchored: ReviewComment[] = [];
+  const orphaned: ReviewComment[] = [];
+  for (const c of comments) {
+    if (c.sectionHeading === "" || currentSet.has(c.sectionHeading)) {
+      anchored.push(c);
+    } else {
+      orphaned.push(c);
+    }
+  }
+
+  // Group anchored comments by section
   const grouped = new Map<string, ReviewComment[]>();
-  for (const comment of comments) {
+  for (const comment of anchored) {
     const key = comment.sectionHeading || "(Introduction)";
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key)!.push(comment);
@@ -322,6 +341,17 @@ function buildReviewPrompt(planPath: string, comments: ReviewComment[]): string 
     prompt += `### ${heading}\n\n`;
     for (const c of sectionComments) {
       prompt += `- ${c.text}\n`;
+    }
+    prompt += "\n";
+  }
+
+  // Orphaned comments — section was removed/renamed, but feedback may still be relevant
+  if (orphaned.length > 0) {
+    prompt += `### Comments on removed/renamed sections\n\n`;
+    prompt += `The following comments reference sections that no longer exist in the document. `;
+    prompt += `The feedback may still be relevant — consider whether it applies elsewhere.\n\n`;
+    for (const c of orphaned) {
+      prompt += `- (was: ${c.sectionHeading}) ${c.text}\n`;
     }
     prompt += "\n";
   }
@@ -390,14 +420,120 @@ When the user clicks "AI Review":
 3. On error (timeout, parse failure), a toast/inline error message appears. The user can retry.
 4. AI comments are visually distinct (purple accent) but fully editable/deletable.
 
+### Document Drift
+
+A persistent review creates a time gap: the user writes comments against version A of the doc, but by the time they reopen the draft, the doc may be at version B. Sections could be renamed, reordered, deleted, or rewritten. This section defines how comments survive doc changes.
+
+#### Snapshot at draft creation
+
+When a draft is created, the `DocReview` records:
+- `docSnapshotHash` — SHA-256 of the `plan.md` content at that moment.
+- `sectionHeadings` — ordered list of `## ` headings extracted from the doc at that moment.
+
+These are stored once and never updated (they represent "what the reviewer saw").
+
+#### Re-anchoring on load
+
+When the review panel opens an existing draft, it compares the current doc to the snapshot:
+
+1. **Hash match** — doc hasn't changed. Load comments as-is, no drift.
+2. **Hash mismatch** — doc has changed. Run the re-anchoring algorithm:
+
+```typescript
+function reanchorComments(
+  comments: ReviewComment[],
+  snapshotHeadings: string[],    // headings when review was created
+  currentHeadings: string[],     // headings in the current doc
+): { anchored: ReviewComment[]; orphaned: ReviewComment[] } {
+  // Build a map from old heading → new index
+  const currentSet = new Map(currentHeadings.map((h, i) => [h, i]));
+
+  const anchored: ReviewComment[] = [];
+  const orphaned: ReviewComment[] = [];
+
+  for (const comment of comments) {
+    if (comment.sectionHeading === "") {
+      // Preamble comment — always anchored (preamble always exists)
+      anchored.push({ ...comment, sectionIndex: 0 });
+    } else if (currentSet.has(comment.sectionHeading)) {
+      // Exact heading match — re-anchor to new index
+      anchored.push({ ...comment, sectionIndex: currentSet.get(comment.sectionHeading)! });
+    } else {
+      // Heading no longer exists — orphaned
+      orphaned.push(comment);
+    }
+  }
+
+  return { anchored, orphaned };
+}
+```
+
+The primary anchor is **heading text**, not index. This handles reordering and insertion of new sections gracefully. The `sectionIndex` stored on the comment is updated to reflect the current doc structure.
+
+#### Orphaned comments
+
+Comments whose section heading no longer exists in the doc are **orphaned**. The UI handles these:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  ⚠ Document changed since this review was started               │
+│  2 comments could not be matched to current sections.           │
+│                                                                 │
+│  ┌─ Orphaned (was: "## Caching Strategy") ─────────────┐       │
+│  │ Redis should be optional, not required.        [Del] │       │
+│  │                            [Move to section ▾]       │       │
+│  └──────────────────────────────────────────────────────┘       │
+│─────────────────────────────────────────────────────────────────│
+│                                                                 │
+│  ## Summary                                              [+]    │
+│  ...                                                            │
+```
+
+Orphaned comments appear in a yellow warning block at the top of the review panel. Each has:
+- The original heading it was anchored to (for context)
+- A "Move to section" dropdown to re-anchor it to a current section
+- A delete button
+
+Orphaned comments are **included in the prompt** when sent — they're grouped under their original heading with a note like `(section removed from doc)`. Claude gets the full context regardless.
+
+#### Drift banner
+
+When the doc has changed, a persistent banner appears at the top of the review panel:
+
+> **Document updated** — The plan has changed since you started this review. Comments have been re-anchored to matching sections. N comments could not be matched.
+
+The banner includes a "Refresh snapshot" button that updates `docSnapshotHash` and `sectionHeadings` to the current doc, effectively acknowledging the drift. This doesn't change the comments — it just updates the baseline so the banner goes away.
+
+#### Sent reviews and drift
+
+Sent reviews are read-only snapshots. When viewing a past review in the history section, the comments are shown against the *current* doc (with re-anchoring), but a note indicates they were written against an older version. No editing is possible.
+
+#### Edge cases
+
+| Scenario | Behavior |
+|---|---|
+| Section renamed ("## Arch" → "## System Design") | Comment orphaned. User re-anchors via dropdown. |
+| Section deleted | Comment orphaned. User can delete or re-anchor. |
+| Section reordered | Heading text still matches → auto re-anchored to new position. |
+| Content changed within section | Heading matches → comment stays anchored. May be stale, but that's the user's judgment call. |
+| Whole doc rewritten | All comments orphaned. Banner warns. User decides: re-anchor, delete, or send as-is. |
+| New sections added | No impact on existing comments. New `[+]` buttons appear. |
+| Doc deleted | Review panel shows error: "Document not found." Draft preserved (doc may return). |
+
 ### Review Lifecycle
 
 ```
 [User clicks "Review"] → draft created (or existing draft loaded)
                              │
+                     ┌───────┴────────┐
+                     │ doc changed?   │
+                     │ re-anchor      │
+                     │ show drift UI  │
+                     └───────┬────────┘
+                             │
           ┌──────────────────┼──────────────────┐
           ▼                  ▼                   ▼
-   Add human comments   AI Review         Edit/delete comments
+   Add human comments   AI Review         Edit/delete/re-anchor
           │                  │                   │
           └──────────────────┼──────────────────┘
                              │
@@ -407,6 +543,7 @@ When the user clicks "AI Review":
               Review marked "sent"
               New session created
               Prompt includes all comments
+              (orphaned ones noted in prompt)
 ```
 
 **Draft persistence**: Only one draft per feature at a time. If the user closes the review panel and reopens it later, the draft with its comments is still there. The draft is only deleted if the user explicitly cancels (and confirms) or sends it.
@@ -423,7 +560,7 @@ When the user clicks "AI Review":
 
 ### Unit Tests — `ReviewStore` (`src/server/review-store.test.ts`)
 
-1. **Create draft**: Creates a draft, returns it with correct fields
+1. **Create draft**: Creates a draft with correct fields including `docSnapshotHash` and `sectionHeadings`
 2. **One draft per feature**: Creating a second draft for the same feature returns the existing one
 3. **Add comment**: Adds a comment with correct ID, source, section info
 4. **Update comment**: Updates text, preserves other fields
@@ -433,6 +570,16 @@ When the user clicks "AI Review":
 8. **List reviews**: Returns all reviews for a feature, newest first
 9. **Persistence**: Create draft → restart store (new instance, same dir) → draft is still there
 10. **Isolation**: Reviews for feature A don't appear in feature B
+
+### Unit Tests — Re-anchoring (`src/server/services/reviews.test.ts`)
+
+1. **No drift**: Same headings → all comments anchored, none orphaned
+2. **Section reordered**: Heading text matches → comment re-anchored to new index
+3. **Section deleted**: Heading gone → comment orphaned
+4. **Section renamed**: Old heading gone → orphaned (no fuzzy matching)
+5. **New section added**: Existing comments unaffected, indices updated
+6. **Preamble comment**: Always anchored regardless of changes
+7. **All sections deleted**: All non-preamble comments orphaned
 
 ### Integration Tests — HTTP endpoints (`src/server/integration_tests/doc-reviews.test.ts`)
 
@@ -459,17 +606,22 @@ When the user clicks "AI Review":
 8. **AI vs human styling**: AI comments have purple accent, human comments have blue accent
 9. **Edit comment**: Click edit → textarea with existing text → modify → save → updated
 10. **Past reviews**: Sent reviews appear in history section
+11. **Drift banner**: When doc hash differs from snapshot, drift banner shown
+12. **Orphaned comments**: Orphaned comments appear in warning block at top with "Move to section" dropdown
+13. **Re-anchor via dropdown**: Selecting a section from dropdown moves the comment there
 
 ### Component Tests — `FeaturesPanel` update
 
 1. **Review button visible**: Each feature row shows a "Review" button on hover
 2. **Review button callback**: Clicking "Review" calls `onReviewFeature` with the feature
 
-### Prompt Construction Tests (unit, in `review-store.test.ts` or `services/reviews.test.ts`)
+### Prompt Construction Tests (unit, in `services/reviews.test.ts`)
 
 1. `buildReviewPrompt` with comments across 3 sections → correctly grouped prompt
 2. `buildReviewPrompt` with feature that has a checklist → includes checklist reference
 3. `buildReviewPrompt` with mixed human/AI comments → both included (no source distinction in prompt)
+4. `buildReviewPrompt` with orphaned comments → included under "removed/renamed sections" heading with original heading noted
+5. `buildReviewPrompt` with all comments orphaned → all under orphaned heading, still valid prompt
 
 ## Key Files
 
