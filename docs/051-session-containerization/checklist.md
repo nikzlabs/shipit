@@ -80,10 +80,38 @@
   - [ ] File watcher events flow through SSE to orchestrator to client
   - [ ] Worktree git commit routed through orchestrator
 
+## Phase 4: Speculative Container Pre-warming
+
+- [ ] Track last active repo per user (by GitHub remote URL or local repo hash)
+- [ ] `SessionContainerManager.createStandby()` — speculatively create container for predicted next session
+  - [ ] Create new session directory (worktree from shared repo or shallow clone)
+  - [ ] Bind-mount and boot session worker in background
+  - [ ] Label with `shipit-standby=true` for cleanup identification
+- [ ] `SessionContainerManager.claimStandby(repoId, sessionId)` — claim standby container when user creates matching session
+  - [ ] Reassign session ID, update labels
+  - [ ] Return claimed container (skip cold start)
+- [ ] `SessionContainerManager.reclaimStandby()` — tear down unclaimed standby container
+  - [ ] Auto-reclaim after 5-minute timeout
+  - [ ] Auto-reclaim when user creates session on a different repo
+  - [ ] Clean up speculative session directory
+- [ ] `SessionRunnerRegistry.getOrCreate()` — check for claimable standby before creating new container
+- [ ] Respect max container cap — don't pre-warm if all 10 slots are occupied by real sessions
+- [ ] Integration tests
+  - [ ] Standby container claimed successfully → zero cold start
+  - [ ] Standby container reclaimed on timeout
+  - [ ] Standby container reclaimed on repo mismatch
+  - [ ] No pre-warm when at container cap
+
 ## Post-launch
 
 - [ ] Credential mounts: switch `/credentials` to read-only once Claude CLI `--resume` write path is isolated
 - [ ] Run worker process as non-root user (uid 1000)
 - [ ] Network egress restriction — allowlist `api.anthropic.com`, `github.com`, `registry.npmjs.org`
+- [ ] `--dangerously-skip-permissions` support
+  - [ ] Add `skipPermissions` flag to `ContainerConfig` (gated on `useContainers: true`)
+  - [ ] Pass `SKIP_PERMISSIONS` env var to container
+  - [ ] Session worker reads env var and adds `--dangerously-skip-permissions` to Claude CLI args
+  - [ ] **Prerequisite:** credential read-only mount + network egress allowlist must be done first
+  - [ ] Default to opt-in initially, flip to default-on after egress restrictions are validated
 - [ ] `GIT_OBJECT_DIRECTORY` optimization — allow in-container commits for worktree sessions (skip orchestrator round-trip)
 - [ ] Update doc 048 status to superseded by 051 session-ID routing
