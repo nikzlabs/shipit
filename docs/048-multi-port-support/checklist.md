@@ -16,7 +16,7 @@
 - [x] Integration tests: `preview-proxy.test.ts` (HTTP proxy via buildApp, WS bidirectional relay, port allowlist)
 - [x] Update `PreviewFrame.test.tsx` — all URL assertions use `/preview/{port}/` format
 - [x] Update `port-auto-detection.test.ts` — URL assertion updated
-- [ ] Update `src/server/types/ws-server-messages.ts` — document that `url` field now uses proxy path format
+- [x] Update `src/server/types/ws-server-messages.ts` — document that `url` field now uses proxy path format
 - [ ] Verify end-to-end in Docker (manual: start a user app on port 8080, confirm iframe loads via proxy)
 
 ## Phase 2 — Enhancements (future, optional)
