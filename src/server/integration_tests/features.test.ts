@@ -21,12 +21,13 @@ import {
 describe("Integration: Features", () => {
   let app: FastifyInstance;
   let tmpDir: string;
+  let sessionManager: SessionManager;
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-features-"));
 
     const sessionsFile = path.join(tmpDir, "sessions.json");
-    const sessionManager = new SessionManager(sessionsFile);
+    sessionManager = new SessionManager(sessionsFile);
 
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
@@ -53,21 +54,31 @@ describe("Integration: Features", () => {
     }
   });
 
+  /** Helper: create a session with a workspace directory. */
+  function createSession(id: string, title: string): string {
+    const sessionDir = path.join(tmpDir, "sessions", id);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    sessionManager.track(id, title, sessionDir);
+    return sessionDir;
+  }
+
   it("returns empty array when no docs/ directory", async () => {
-    const res = await app.inject({ method: "GET", url: "/api/features" });
+    createSession("s1", "Test");
+    const res = await app.inject({ method: "GET", url: "/api/sessions/s1/features" });
     expect(res.statusCode).toBe(200);
     expect(res.json().features).toEqual([]);
   });
 
   it("returns features from docs/ directory", async () => {
-    const featureDir = path.join(tmpDir, "docs", "001-my-feature");
+    const sessionDir = createSession("s1", "Test");
+    const featureDir = path.join(sessionDir, "docs", "001-my-feature");
     fs.mkdirSync(featureDir, { recursive: true });
     fs.writeFileSync(
       path.join(featureDir, "plan.md"),
       "---\nstatus: in-progress\n---\n# My Feature\n\nDescription.",
     );
 
-    const res = await app.inject({ method: "GET", url: "/api/features" });
+    const res = await app.inject({ method: "GET", url: "/api/sessions/s1/features" });
     expect(res.statusCode).toBe(200);
     const features = res.json().features;
     expect(features).toHaveLength(1);
@@ -81,12 +92,13 @@ describe("Integration: Features", () => {
   });
 
   it("includes checklistPath when checklist.md exists", async () => {
-    const featureDir = path.join(tmpDir, "docs", "002-another");
+    const sessionDir = createSession("s1", "Test");
+    const featureDir = path.join(sessionDir, "docs", "002-another");
     fs.mkdirSync(featureDir, { recursive: true });
     fs.writeFileSync(path.join(featureDir, "plan.md"), "# Another Feature");
     fs.writeFileSync(path.join(featureDir, "checklist.md"), "- [ ] Do something");
 
-    const res = await app.inject({ method: "GET", url: "/api/features" });
+    const res = await app.inject({ method: "GET", url: "/api/sessions/s1/features" });
     expect(res.statusCode).toBe(200);
     const features = res.json().features;
     expect(features[0]).toMatchObject({
@@ -96,25 +108,32 @@ describe("Integration: Features", () => {
   });
 
   it("sorts by feature number", async () => {
+    const sessionDir = createSession("s1", "Test");
     for (const name of ["010-deploy", "002-git", "005-ux"]) {
-      const dir = path.join(tmpDir, "docs", name);
+      const dir = path.join(sessionDir, "docs", name);
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, "plan.md"), `# ${name}`);
     }
 
-    const res = await app.inject({ method: "GET", url: "/api/features" });
+    const res = await app.inject({ method: "GET", url: "/api/sessions/s1/features" });
     expect(res.statusCode).toBe(200);
     const numbers = res.json().features.map((f: any) => f.number);
     expect(numbers).toEqual([2, 5, 10]);
   });
 
   it("defaults to 'planned' when no frontmatter", async () => {
-    const featureDir = path.join(tmpDir, "docs", "001-basic");
+    const sessionDir = createSession("s1", "Test");
+    const featureDir = path.join(sessionDir, "docs", "001-basic");
     fs.mkdirSync(featureDir, { recursive: true });
     fs.writeFileSync(path.join(featureDir, "plan.md"), "# Basic Feature\n\nNo frontmatter.");
 
-    const res = await app.inject({ method: "GET", url: "/api/features" });
+    const res = await app.inject({ method: "GET", url: "/api/sessions/s1/features" });
     expect(res.statusCode).toBe(200);
     expect(res.json().features[0].status).toBe("planned");
+  });
+
+  it("returns 404 for missing session", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/sessions/nonexistent/features" });
+    expect(res.statusCode).toBe(404);
   });
 });
