@@ -2,7 +2,7 @@
 status: planned
 ---
 
-# 051 — Superpowers Plugin Integration
+# 052 — Superpowers Plugin Integration
 
 ## Problem
 
