@@ -49,7 +49,7 @@ This also fills a gap: the `diff_comment` WebSocket message type already exists 
 
 ### Comment Data Model
 
-Comments are **transient** — stored in client-side Zustand state, cleared after send. No server persistence, no draft management. This is a scratchpad, not a review system.
+Comments are stored in a **persisted Zustand store** (`localStorage`) keyed by session ID. They survive page refresh and server restart, but are scoped to the session they were created in. Cleared after send.
 
 ```typescript
 interface FileComment {
@@ -58,13 +58,17 @@ interface FileComment {
   line: number;        // 1-based line number
   text: string;        // The comment text
 }
-```
 
-All pending comments live in a flat array in the file store.
+// Store shape (persisted to localStorage per session)
+interface FileCommentState {
+  // sessionId → FileComment[]
+  commentsBySession: Record<string, FileComment[]>;
+}
+```
 
 ### Prompt Construction
 
-When the user clicks "Send," the client builds a prompt on the client side:
+When the user clicks "Send," the client builds a prompt with inline snippets for each comment and attaches the full files via the existing `FileContextRef` mechanism. This gives Claude both the precise line-level context (snippets) and the full file contents (attachments) for broader understanding.
 
 ```typescript
 function buildFileCommentsPrompt(comments: FileComment[], fileContents: Map<string, string>): string {
@@ -102,9 +106,15 @@ function buildFileCommentsPrompt(comments: FileComment[], fileContents: Map<stri
   prompt += "Please address each comment.";
   return prompt;
 }
+
+/** Collect FileContextRef[] for all files that have comments. */
+function getCommentedFileRefs(comments: FileComment[]): FileContextRef[] {
+  const paths = new Set(comments.map((c) => c.filePath));
+  return [...paths].map((path) => ({ path }));
+}
 ```
 
-Example output:
+Example prompt:
 ```
 I have the following comments on the code:
 
@@ -121,16 +131,17 @@ Comment: SQL injection risk — use parameterized query
 Please address each comment.
 ```
 
-The surrounding snippet gives Claude enough context to find the code without needing to read the whole file.
+The snippets give Claude precise line-level context. The attached full files (via `FileContextRef`) let it understand the broader structure without us bloating the prompt with entire file contents inline.
 
 ### Send Flow
 
-The send uses the existing `send_message` WebSocket message — no new server endpoints or message types needed. The client:
+The send uses the existing `send_message` WebSocket message — no new server endpoints or message types needed. `send_message` already supports `files?: FileContextRef[]` for attaching file context. The client:
 
 1. Reads file contents for each commented file (already in memory from `FileContentViewer`, or fetched via `GET /api/sessions/:id/files/*`)
-2. Calls `buildFileCommentsPrompt()` to assemble the prompt
-3. Sends `{ type: "send_message", text: prompt }`
-4. Clears all pending comments
+2. Calls `buildFileCommentsPrompt()` to assemble the prompt text
+3. Calls `getCommentedFileRefs()` to build the file attachment list
+4. Sends `{ type: "send_message", text: prompt, files: fileRefs }`
+5. Clears all pending comments for the current session
 
 This works in the current session — no new session created. The user is annotating files they're already looking at in an active session. If they want a new session, they can start one first.
 
@@ -163,22 +174,37 @@ interface FileContentViewerProps {
 }
 ```
 
-#### File store addition
+#### Comment store (new)
 
-**File**: `src/client/stores/file-store.ts`
+**File**: `src/client/stores/comment-store.ts`
 
-Add to the existing file store:
+A dedicated Zustand store with `persist` middleware (`localStorage`). Separate from the file store because it has a different lifecycle (persisted, session-scoped) and different concerns.
 
 ```typescript
-// New state
-pendingComments: FileComment[];
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
 
-// New actions
-addComment: (filePath: string, line: number, text: string) => void;
-deleteComment: (commentId: string) => void;
-clearComments: () => void;
-getCommentsForFile: (filePath: string) => FileComment[];
+interface FileCommentStore {
+  // sessionId → FileComment[]
+  commentsBySession: Record<string, FileComment[]>;
+
+  addComment: (sessionId: string, filePath: string, line: number, text: string) => void;
+  deleteComment: (sessionId: string, commentId: string) => void;
+  clearComments: (sessionId: string) => void;
+  getCommentsForFile: (sessionId: string, filePath: string) => FileComment[];
+  getAllComments: (sessionId: string) => FileComment[];
+  getCommentCount: (sessionId: string) => number;
+}
+
+const useCommentStore = create<FileCommentStore>()(
+  persist(
+    (set, get) => ({ /* ... */ }),
+    { name: "shipit-file-comments" },
+  ),
+);
 ```
+
+Keying by session ID ensures comments from one session don't leak into another. When a session is archived/deleted, its comments can be cleaned up (or left to expire — localStorage is bounded).
 
 #### Send UI
 
@@ -218,12 +244,14 @@ The "Send N comments" affordance appears in two places:
 5. **Comment near end of file**: Context doesn't exceed file length
 6. **Empty file content fallback**: Graceful when file content unavailable
 
-### Store Tests — File Comments
+### Store Tests — Comment Store
 
-1. **Add comment**: Adds to `pendingComments` array
-2. **Delete comment**: Removes by ID
-3. **Clear comments**: Empties array
-4. **Get comments for file**: Filters by filePath
+1. **Add comment**: Adds to correct session's array
+2. **Delete comment**: Removes by ID within session
+3. **Clear comments**: Empties session's array, other sessions unaffected
+4. **Get comments for file**: Filters by filePath within session
+5. **Session isolation**: Comments from session A not visible in session B
+6. **Persistence**: Uses Zustand persist middleware (localStorage)
 
 ## Key Files
 
@@ -231,24 +259,24 @@ The "Send N comments" affordance appears in two places:
 |---|---|
 | `src/client/components/FileContentViewer.tsx` | Add line numbers, comment gutter, inline comment cards |
 | `src/client/components/FileContentViewer.test.tsx` | New/updated — component tests |
-| `src/client/stores/file-store.ts` | Add `pendingComments` state and actions |
+| `src/client/stores/comment-store.ts` | New — persisted Zustand store for file comments |
 | `src/client/App.tsx` | Wire comments to FileContentViewer, add send handler |
 
 ## Scope & Non-Goals
 
 **In scope**:
 - Inline comments on any file, anchored to line numbers
-- Client-side transient storage (Zustand, cleared on send)
-- Prompt construction with file/line/snippet context
+- Client-side persisted storage (Zustand + localStorage, keyed by session, cleared on send)
+- Prompt construction with inline snippets + full file attachments via `FileContextRef`
 - Send via existing `send_message`
 
 **Not in scope**:
-- Server-side persistence (comments don't survive page refresh — send them or lose them)
+- Server-side persistence (localStorage is sufficient for a single-user tool)
 - AI-generated comments (future: Claude reviews files and produces comments)
 - Comments on rendered markdown (this is line-based, for source files)
 - Diff-specific commenting (the existing `diff_comment` flow is separate)
-- Comment editing (delete and re-add is fine for transient comments)
-- Multi-session comments (comments are scoped to the active session's files)
+- Comment editing (delete and re-add is fine at this scope)
+- Cross-session comments (comments are scoped to the session they were created in)
 
 ## Complexity
 
