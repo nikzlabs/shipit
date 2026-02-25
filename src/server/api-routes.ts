@@ -17,7 +17,6 @@ import type { AgentId } from "./agents/agent-process.js";
 import type { ThreadManager } from "./threads.js";
 import type { DeploymentManager } from "./deployment-manager.js";
 import type { DeploymentStore } from "./deployment-store.js";
-import type { FeatureManager } from "./features.js";
 import type { UsageManager } from "./usage.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { ChatHistoryManager } from "./chat-history.js";
@@ -95,7 +94,6 @@ export interface ApiDeps {
   threadManager: ThreadManager;
   deploymentManager: DeploymentManager;
   deploymentStore: DeploymentStore;
-  featureManager: FeatureManager;
   usageManager: UsageManager;
   runnerRegistry: SessionRunnerRegistry;
   chatHistoryManager: ChatHistoryManager;
@@ -404,12 +402,14 @@ export async function registerApiRoutes(
     return { worktrees: listWorktrees(sessionManager, request.params.id) };
   });
 
-  // ---- Global reads (no session context needed) ----
-
-  // GET /api/features — feature list
-  app.get("/api/features", async () => {
-    return { features: await listFeatures(deps.featureManager) };
+  // GET /api/sessions/:id/features — feature list (session-scoped)
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/features", async (request, reply) => {
+    const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+    if (!dir) return;
+    return { features: await listFeatures(dir) };
   });
+
+  // ---- Global reads (no session context needed) ----
 
   // GET /api/github/repos — search GitHub repos
   app.get<{ Querystring: { q?: string } }>("/api/github/repos", async (request) => {

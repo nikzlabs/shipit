@@ -320,20 +320,22 @@ describe("Integration: Phase 1 GET endpoints", () => {
 
   // ---- Features ----
 
-  it("GET /api/features returns feature list", async () => {
-    const res = await app.inject({ method: "GET", url: "/api/features" });
+  it("GET /api/sessions/:id/features returns feature list", async () => {
+    await createSession("s-feat", "Feature Session");
+    const res = await app.inject({ method: "GET", url: "/api/sessions/s-feat/features" });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body).toHaveProperty("features");
     expect(Array.isArray(body.features)).toBe(true);
   });
 
-  it("GET /api/features includes features from docs/ directory", async () => {
-    const featureDir = path.join(tmpDir, "docs", "001-test-feature");
+  it("GET /api/sessions/:id/features includes features from docs/ directory", async () => {
+    const dir = await createSession("s-feat2", "Feature Session 2");
+    const featureDir = path.join(dir, "docs", "001-test-feature");
     fs.mkdirSync(featureDir, { recursive: true });
     fs.writeFileSync(path.join(featureDir, "plan.md"), "---\nstatus: in-progress\n---\n# Test Feature");
 
-    const res = await app.inject({ method: "GET", url: "/api/features" });
+    const res = await app.inject({ method: "GET", url: "/api/sessions/s-feat2/features" });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.features.length).toBeGreaterThan(0);

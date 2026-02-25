@@ -332,7 +332,7 @@ export default function App() {
       const sid = useSessionStore.getState().sessionId;
       if (tab === "docs" && useFileStore.getState().docFiles.length === 0 && sid) useFileStore.getState().fetchDocs(sid).catch(() => {});
       if (tab === "files" && sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); }
-      if (tab === "features") useUiStore.getState().fetchFeatures().catch(() => {});
+      if (tab === "features" && sid) useUiStore.getState().fetchFeatures(sid).catch(() => {});
       if (tab === "history" && sid) useGitStore.getState().fetchLog(sid).catch(() => {});
       if (tab === "changes") {
         const pair = useGitStore.getState().lastCommitPair;
@@ -509,7 +509,7 @@ export default function App() {
             </Suspense>
           ) : <div className="flex items-center justify-center h-full text-gray-500 text-sm">Loading diff...</div>
         ) : rightTab === "features" ? (
-          <FeaturesPanel features={features} onStartSession={handleFeatureStartSession} onRefresh={() => useUiStore.getState().fetchFeatures().catch(() => {})} />
+          <FeaturesPanel features={features} onStartSession={handleFeatureStartSession} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useUiStore.getState().fetchFeatures(sid).catch(() => {}); }} />
         ) : rightTab === "history" ? (
           <GitHistory commits={gitCommits} onRollback={(hash) => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().rollback(sid, hash).catch(() => {}); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().fetchLog(sid).catch(() => {}); }} onViewDiff={handleViewDiff} />
         ) : viewingFile ? (

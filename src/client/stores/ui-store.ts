@@ -80,7 +80,7 @@ interface UiState {
   reset: () => void;
 
   // Async actions
-  fetchFeatures: () => Promise<void>;
+  fetchFeatures: (sessionId: string) => Promise<void>;
   fetchUsageStats: (sessionId: string) => Promise<void>;
 }
 
@@ -167,8 +167,8 @@ export const useUiStore = create<UiState>((set, get) => ({
       rightTab: "preview",
     }),
 
-  fetchFeatures: async () => {
-    const res = await fetch("/api/features", {
+  fetchFeatures: async (sessionId) => {
+    const res = await fetch(`/api/sessions/${sessionId}/features`, {
       method: "GET",
       headers: { Accept: "application/json" },
     });
