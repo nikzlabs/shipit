@@ -1,19 +1,19 @@
 # 051 — Docker-Per-Session Containerization Checklist
 
-## Phase 1: Session Worker + IPC (foundation)
+## Phase 1: Session Worker + IPC (foundation) ✓
 
-- [ ] Extract shared `SessionRunnerInterface` from `SessionRunner` (start/stop agent, terminal, preview, file watcher methods)
-- [ ] Create `src/server/session-worker.ts` — lightweight Fastify server on port 9100
-  - [ ] `POST /agent/start` — spawn Claude CLI with PTY
-  - [ ] `POST /agent/interrupt` — send SIGINT to agent
-  - [ ] `POST /agent/kill` — send SIGTERM to agent
-  - [ ] `GET /events` — SSE stream for agent output, terminal output, file changes, preview status
-- [ ] Create `src/server/container-session-runner.ts` — `ContainerSessionRunner` class
-  - [ ] Delegates `startAgent()` / `interrupt()` / `kill()` to worker HTTP endpoints
-  - [ ] Connects SSE event stream and re-emits events via `emitMessage()`
-  - [ ] SSE reconnection with exponential backoff (1s, 2s, 4s, max 10s)
-- [ ] Test worker as a subprocess (no Docker) — validate agent start/stop/output round-trips
-- [ ] Verify existing integration tests pass with `useContainers: false` (fallback mode)
+- [x] Extract shared `SessionRunnerInterface` from `SessionRunner` (start/stop agent, terminal, preview, file watcher methods)
+- [x] Create `src/server/session-worker.ts` — lightweight Fastify server on port 9100
+  - [x] `POST /agent/start` — spawn Claude CLI with PTY
+  - [x] `POST /agent/interrupt` — send SIGINT to agent
+  - [x] `POST /agent/kill` — send SIGTERM to agent
+  - [x] `GET /events` — SSE stream for agent output, terminal output, file changes, preview status
+- [x] Create `src/server/container-session-runner.ts` — `ContainerSessionRunner` class
+  - [x] Delegates `startAgent()` / `interrupt()` / `kill()` to worker HTTP endpoints
+  - [x] Connects SSE event stream and re-emits events via `emitMessage()`
+  - [x] SSE reconnection with exponential backoff (1s, 2s, 4s, max 10s)
+- [x] Test worker as a subprocess (no Docker) — validate agent start/stop/output round-trips
+- [x] Verify existing integration tests pass with `useContainers: false` (fallback mode)
 
 ## Phase 2: Docker Integration
 
