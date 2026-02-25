@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
 import type { CredentialStore } from "./credential-store.js";
+import { setGitIdentity } from "./git-config.js";
 
 export interface GitHubAuthStatus {
   authenticated: boolean;
@@ -23,7 +24,7 @@ export interface GitHubRepoResult {
  */
 export async function validateGitHubToken(
   token: string,
-): Promise<{ username: string; avatarUrl: string } | null> {
+): Promise<{ username: string; avatarUrl: string; id: number; displayName: string | null } | null> {
   try {
     const res = await fetch("https://api.github.com/user", {
       headers: {
@@ -33,8 +34,8 @@ export async function validateGitHubToken(
       },
     });
     if (!res.ok) return null;
-    const data = (await res.json()) as { login: string; avatar_url: string };
-    return { username: data.login, avatarUrl: data.avatar_url };
+    const data = (await res.json()) as { login: string; avatar_url: string; id: number; name: string | null };
+    return { username: data.login, avatarUrl: data.avatar_url, id: data.id, displayName: data.name };
   } catch {
     return null;
   }
@@ -95,11 +96,18 @@ export class GitHubAuthManager extends EventEmitter {
     // Persist token
     this.credentialStore.setGithubToken(trimmed);
 
-    // Git credentials are configured per-session when sessions are created/switched.
-    // No need to configure here — workspaceDir is not a git repo.
+    // Set global git identity from GitHub profile
+    this.setGitIdentityFromGitHub(userInfo);
 
     this.emit("auth_complete");
     return true;
+  }
+
+  /** Set global git identity from GitHub user info. */
+  private setGitIdentityFromGitHub(info: { username: string; displayName: string | null; id: number }): void {
+    const gitName = info.displayName ?? info.username;
+    const gitEmail = `${info.id}+${info.username}@users.noreply.github.com`;
+    setGitIdentity(gitName, gitEmail);
   }
 
   /** Get current authentication status. */
@@ -128,11 +136,7 @@ export class GitHubAuthManager extends EventEmitter {
         `git config credential.helper '!f() { echo "password=${this._token}"; echo "username=x-access-token"; }; f'`,
         opts,
       );
-
-      // Set user identity from GitHub if available
-      if (this._username) {
-        execSync(`git config user.name "${this._username}"`, opts);
-      }
+      // User identity is inherited from global git config (set by setToken/loadUserInfo).
     } catch (err) {
       console.error("[github-auth] Failed to configure git credentials:", err);
     }
@@ -564,7 +568,8 @@ export class GitHubAuthManager extends EventEmitter {
     if (info) {
       this._username = info.username;
       this._avatarUrl = info.avatarUrl;
-      // Git credentials are configured per-session when sessions are created/switched.
+      // Restore global git identity from GitHub profile
+      this.setGitIdentityFromGitHub(info);
     } else {
       // Token is invalid — clear it
       this.clearCredentials();
