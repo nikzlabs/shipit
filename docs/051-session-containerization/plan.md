@@ -959,14 +959,17 @@ ShipIt does not install Docker — it expects Docker to be available. The auto-d
 
 | File | Role |
 |---|---|
-| `src/server/session-worker.ts` | **NEW** — worker process running inside container |
-| `src/server/session-container.ts` | **NEW** — Docker container lifecycle manager |
-| `src/server/container-session-runner.ts` | **NEW** — SessionRunner proxy to container |
-| `src/server/preview-proxy.ts` | **NEW** — session-ID-based reverse proxy for preview traffic |
-| `Dockerfile.session-worker` | **NEW** — container image for session workers |
-| `src/server/session-runner.ts` | Extract interface, registry delegates to container or direct |
-| `src/server/index.ts` | Wire container manager, bridge network, auto-detect Docker |
-| `src/client/path-utils.ts` | Handle `/workspace/` prefix (containerized) alongside existing format |
+| `src/server/session-worker.ts` | Worker process running inside container (Phase 1) |
+| `src/server/session-container.ts` | Docker container lifecycle manager (Phase 2) |
+| `src/server/session-container.test.ts` | Unit tests for SessionContainerManager (27 tests) |
+| `src/server/container-session-runner.ts` | SessionRunner proxy to container (Phase 1) |
+| `src/server/preview-proxy.ts` | **Phase 3** — session-ID-based reverse proxy for preview traffic |
+| `Dockerfile.session-worker` | Container image for session workers (Phase 2) |
+| `src/server/session-runner.ts` | SessionRunnerInterface + registry with factory delegation |
+| `src/server/index.ts` | AppDeps wiring: useContainers, containerManager, runner factory |
+| `src/server/types/ws-server-messages.ts` | WsSessionStatus — added optional `error` field |
+| `src/server/integration_tests/container-lifecycle.test.ts` | Integration tests for container lifecycle (5 tests) |
+| `src/client/path-utils.ts` | **Phase 3** — handle `/workspace/` prefix (containerized) alongside existing format |
 | `src/server/ws-handlers/types.ts` | No changes (HandlerContext unchanged) |
 | `src/server/ws-handlers/send-message.ts` | No changes (delegates to runner) |
 | `docs/041-persistent-session-runners/plan.md` | Prior art — SessionRunner design |

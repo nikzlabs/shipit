@@ -28,6 +28,8 @@ import { CodexAdapter } from "./agents/codex-adapter.js";
 import { AgentRegistry, ALLOWED_ENV_KEYS } from "./agents/agent-registry.js";
 import { SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
+import { SessionContainerManager } from "./session-container.js";
+import { ContainerSessionRunner } from "./container-session-runner.js";
 import type { AgentId, AgentEvent, AgentProcess } from "./agents/agent-process.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry } from "./types.js";
 import { getErrorMessage } from "./validation.js";
@@ -169,6 +171,17 @@ export interface AppDeps {
    * SessionRunner. Used to inject ContainerSessionRunner for Docker mode.
    */
   runnerFactory?: import("./session-runner.js").SessionRunnerFactory;
+  /**
+   * Whether to run session workers inside Docker containers.
+   * When true (and Docker is available), each session gets an isolated container.
+   * Defaults to false. Auto-detected at startup in production mode.
+   */
+  useContainers?: boolean;
+  /**
+   * Pre-configured SessionContainerManager instance. When provided, skips
+   * Docker auto-detection and network setup. Useful for testing.
+   */
+  sessionContainerManager?: import("./session-container.js").SessionContainerManager;
 }
 
 /**
@@ -319,6 +332,26 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // ---- File watcher (global instance — used as fallback before any session is active) ----
   const fileWatcher = deps.fileWatcher ?? new FileWatcher();
 
+  // ---- Container manager (Docker isolation, Phase 2) ----
+  let containerManager: SessionContainerManager | null = null;
+  if (deps.sessionContainerManager) {
+    containerManager = deps.sessionContainerManager;
+  } else if (deps.useContainers) {
+    containerManager = new SessionContainerManager();
+    const dockerAvailable = await containerManager.isAvailable();
+    if (dockerAvailable) {
+      await containerManager.ensureNetwork();
+      const activeIds = new Set(sessionManager.list().map((s) => s.id));
+      const orphans = await containerManager.cleanupOrphans(activeIds);
+      if (orphans > 0) console.log(`[server] Cleaned up ${orphans} orphan container(s)`);
+      await containerManager.startHealthMonitor();
+      console.log("[server] Docker container mode enabled");
+    } else {
+      console.log("[server] Docker not available — falling back to direct mode");
+      containerManager = null;
+    }
+  }
+
   // ---- Session runner registry (app-level, shared across connections) ----
   // Runners create per-session preview and file watcher instances, ref-counted by viewers.
   // When deps provides a singleton (test stubs), we don't create per-runner instances
@@ -327,10 +360,53 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     ?? (deps.previewManager ? undefined : () => new PreviewManager());
   const runnerCreateFileWatcher = deps.createFileWatcher
     ?? (deps.fileWatcher ? undefined : () => new FileWatcher());
+
+  // Build runner factory: use container runners when Docker is available,
+  // otherwise fall back to direct process spawning.
+  const effectiveRunnerFactory = deps.runnerFactory ?? (containerManager
+    ? ((o: Parameters<import("./session-runner.js").SessionRunnerFactory>[0]) => {
+        // Create a container for this session and return a ContainerSessionRunner
+        // that talks to the worker inside it. The container is created lazily —
+        // getOrCreate() calls this factory, so the container starts here.
+        const mgr = containerManager!;
+        const config = mgr.buildConfig({
+          sessionId: o.sessionId,
+          sessionDir: o.sessionDir,
+          credentialsDir,
+        });
+        // Container creation is async but the factory is sync. We start with a
+        // placeholder workerUrl and update it once the container is ready.
+        // The ContainerSessionRunner handles the case where the worker isn't
+        // reachable yet (SSE reconnection with backoff).
+        const runner = new ContainerSessionRunner({
+          sessionId: o.sessionId,
+          sessionDir: o.sessionDir,
+          defaultAgentId: o.defaultAgentId,
+          workerUrl: "http://0.0.0.0:0", // placeholder — updated after container starts
+          idleTimeoutMs: o.idleTimeoutMs,
+          createPreviewManager: o.createPreviewManager,
+          createFileWatcher: o.createFileWatcher,
+        });
+
+        // Start the container in the background and update the worker URL
+        mgr.create(config).then((sc) => {
+          // Update the runner's worker URL now that we have the container IP.
+          // ContainerSessionRunner exposes workerUrl as a private field set in
+          // the constructor — we use Object.assign to update it.
+          Object.assign(runner, { workerUrl: sc.workerUrl });
+        }).catch((err) => {
+          console.error(`[container] Failed to start container for ${o.sessionId}:`, getErrorMessage(err));
+          runner.dispose();
+        });
+
+        return runner;
+      })
+    : undefined);
+
   const runnerRegistry = new SessionRunnerRegistry({
     createPreviewManager: runnerCreatePreviewManager,
     createFileWatcher: runnerCreateFileWatcher,
-    runnerFactory: deps.runnerFactory,
+    runnerFactory: effectiveRunnerFactory,
   });
 
   // Track connected WebSocket clients so we can broadcast
@@ -1064,6 +1140,24 @@ to determine the correct install command, preview mode, command, and ports.`;
     });
   });
 
+  // ---- Container health monitoring ----
+  // When a container dies unexpectedly (OOM, crash), notify viewers and clean up.
+  if (containerManager) {
+    containerManager.on("container_exited", (sessionId, _exitCode, error) => {
+      console.error(`[container] Session ${sessionId} container exited: ${error ?? "unknown"}`);
+      const runner = runnerRegistry.get(sessionId);
+      if (runner) {
+        runner.emitMessage({
+          type: "session_status",
+          sessionId,
+          running: false,
+          error: `Session container exited unexpectedly${error ? `: ${error}` : ""}`,
+        });
+        runner.dispose();
+      }
+    });
+  }
+
   // Graceful shutdown — register once via app hook rather than per-call
   // process.on() to avoid MaxListeners warnings when buildApp() is called
   // repeatedly in tests.
@@ -1073,6 +1167,9 @@ to determine the correct install command, preview mode, command, and ports.`;
     previewManager.stop();
     authManager.kill();
     runnerRegistry.disposeAll();
+    if (containerManager) {
+      await containerManager.dispose();
+    }
   });
 
   return app;

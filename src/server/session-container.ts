@@ -1,0 +1,427 @@
+/**
+ * SessionContainerManager — manages Docker containers for session isolation.
+ *
+ * Each session runs inside a dedicated Docker container with its own network
+ * namespace, filesystem mount, and resource limits. The orchestrator (Fastify
+ * server on the host) communicates with containers over a Docker bridge network.
+ *
+ * Containers run the session-worker process (src/server/session-worker.ts) which
+ * exposes an HTTP + SSE interface on port 9100 inside the container. The
+ * orchestrator reaches containers via their bridge IP — no host port mappings needed.
+ */
+
+import Docker from "dockerode";
+import { EventEmitter } from "node:events";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface ContainerConfig {
+  sessionId: string;
+  /** Host path: /workspace/sessions/{uuid} */
+  sessionDir: string;
+  /** Host path: /workspace/repos/{hash} (for worktree sessions) */
+  sharedRepoDir?: string;
+  /** Host path: /credentials (Claude CLI auth, GitHub token) */
+  credentialsDir: string;
+  /** Container image name. */
+  imageName: string;
+  /** Memory limit in bytes. */
+  memoryLimit: number;
+  /** CPU quota in microseconds per 100ms period. */
+  cpuQuota: number;
+  /** Maximum number of PIDs. */
+  pidsLimit: number;
+  /** Environment variables to pass to the container. */
+  env?: Record<string, string>;
+}
+
+export interface SessionContainer {
+  /** Docker container ID. */
+  id: string;
+  /** ShipIt session ID. */
+  sessionId: string;
+  /** Bridge network IP (e.g. 172.18.0.3). */
+  containerIp: string;
+  /** Worker IPC URL (e.g. http://172.18.0.3:9100). */
+  workerUrl: string;
+  /** Container lifecycle status. */
+  status: "starting" | "running" | "stopping" | "stopped";
+}
+
+export interface SessionContainerManagerEvents {
+  /** Emitted when a container exits unexpectedly (OOM, crash). */
+  container_exited: [sessionId: string, exitCode: number, error?: string];
+  /** Emitted when a container is successfully started. */
+  container_started: [sessionId: string];
+  /** Emitted when a container is destroyed. */
+  container_destroyed: [sessionId: string];
+}
+
+export interface SessionContainerManagerOpts {
+  /** Docker socket path. Defaults to /var/run/docker.sock. */
+  socketPath?: string;
+  /** Docker instance (for testing). Overrides socketPath. */
+  docker?: Docker;
+  /** Container image name. Defaults to "shipit-session-worker:latest". */
+  imageName?: string;
+  /** Docker bridge network name. Defaults to "shipit". */
+  networkName?: string;
+  /** Default memory limit in bytes. Defaults to 512MB. */
+  memoryLimit?: number;
+  /** Default CPU quota (microseconds per 100ms period). Defaults to 50000 (0.5 CPU). */
+  cpuQuota?: number;
+  /** Default PID limit. Defaults to 256. */
+  pidsLimit?: number;
+  /** Worker IPC port inside containers. Defaults to 9100. */
+  workerPort?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const DEFAULT_IMAGE = "shipit-session-worker:latest";
+const DEFAULT_NETWORK = "shipit";
+const DEFAULT_MEMORY_LIMIT = 512 * 1024 * 1024; // 512 MB
+const DEFAULT_CPU_QUOTA = 50_000; // 0.5 CPU (50000 µs per 100ms period)
+const DEFAULT_CPU_PERIOD = 100_000; // 100ms
+const DEFAULT_PIDS_LIMIT = 256;
+const DEFAULT_WORKER_PORT = 9100;
+
+export const CONTAINER_LABEL_KEY = "shipit-session";
+export const CONTAINER_LABEL_VALUE = "true";
+export const CONTAINER_SESSION_ID_LABEL = "shipit-session-id";
+
+// ---------------------------------------------------------------------------
+// SessionContainerManager
+// ---------------------------------------------------------------------------
+
+export class SessionContainerManager extends EventEmitter<SessionContainerManagerEvents> {
+  private docker: Docker;
+  private containers = new Map<string, SessionContainer>();
+  private imageName: string;
+  private networkName: string;
+  private defaultMemoryLimit: number;
+  private defaultCpuQuota: number;
+  private defaultPidsLimit: number;
+  private workerPort: number;
+  private eventStream: (NodeJS.ReadableStream & { destroy?: () => void }) | null = null;
+  private _disposed = false;
+
+  constructor(opts: SessionContainerManagerOpts = {}) {
+    super();
+    this.docker = opts.docker ?? new Docker({ socketPath: opts.socketPath ?? "/var/run/docker.sock" });
+    this.imageName = opts.imageName ?? DEFAULT_IMAGE;
+    this.networkName = opts.networkName ?? DEFAULT_NETWORK;
+    this.defaultMemoryLimit = opts.memoryLimit ?? DEFAULT_MEMORY_LIMIT;
+    this.defaultCpuQuota = opts.cpuQuota ?? DEFAULT_CPU_QUOTA;
+    this.defaultPidsLimit = opts.pidsLimit ?? DEFAULT_PIDS_LIMIT;
+    this.workerPort = opts.workerPort ?? DEFAULT_WORKER_PORT;
+  }
+
+  // --- Docker availability ---
+
+  /** Check if Docker is available by pinging the daemon. */
+  async isAvailable(): Promise<boolean> {
+    try {
+      await this.docker.ping();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // --- Network setup ---
+
+  /**
+   * Ensure the Docker bridge network exists. Creates it if missing.
+   * Should be called once at startup.
+   */
+  async ensureNetwork(): Promise<void> {
+    try {
+      const network = this.docker.getNetwork(this.networkName);
+      await network.inspect();
+    } catch {
+      // Network doesn't exist — create it
+      await this.docker.createNetwork({
+        Name: this.networkName,
+        Driver: "bridge",
+        Labels: { [CONTAINER_LABEL_KEY]: CONTAINER_LABEL_VALUE },
+      });
+    }
+  }
+
+  // --- Container lifecycle ---
+
+  /**
+   * Create and start a container for the given session.
+   * Returns the SessionContainer with its bridge IP and worker URL.
+   */
+  async create(config: ContainerConfig): Promise<SessionContainer> {
+    if (this.containers.has(config.sessionId)) {
+      throw new Error(`Container already exists for session ${config.sessionId}`);
+    }
+
+    // Build bind mounts
+    const binds: string[] = [
+      `${config.sessionDir}:/workspace:rw`,
+      `${config.credentialsDir}:/credentials:rw`,
+    ];
+    if (config.sharedRepoDir) {
+      binds.push(`${config.sharedRepoDir}:/repo:ro`);
+    }
+
+    // Build environment variables
+    const env: string[] = [
+      `SESSION_ID=${config.sessionId}`,
+      `WORKSPACE_DIR=/workspace`,
+      `WORKER_PORT=${this.workerPort}`,
+      "HOME=/root",
+    ];
+    if (config.env) {
+      for (const [key, value] of Object.entries(config.env)) {
+        env.push(`${key}=${value}`);
+      }
+    }
+
+    const sc: SessionContainer = {
+      id: "",
+      sessionId: config.sessionId,
+      containerIp: "",
+      workerUrl: "",
+      status: "starting",
+    };
+    this.containers.set(config.sessionId, sc);
+
+    try {
+      const container = await this.docker.createContainer({
+        Image: config.imageName,
+        Cmd: ["node", "/app/session-worker.js"],
+        Labels: {
+          [CONTAINER_LABEL_KEY]: CONTAINER_LABEL_VALUE,
+          [CONTAINER_SESSION_ID_LABEL]: config.sessionId,
+        },
+        HostConfig: {
+          Binds: binds,
+          Memory: config.memoryLimit,
+          CpuQuota: config.cpuQuota,
+          CpuPeriod: DEFAULT_CPU_PERIOD,
+          PidsLimit: config.pidsLimit,
+          NetworkMode: this.networkName,
+          SecurityOpt: ["no-new-privileges"],
+          ReadonlyRootfs: false,
+        },
+        Env: env,
+      });
+
+      await container.start();
+
+      // Get the container's IP on the bridge network
+      const info = await container.inspect();
+      const networks = info.NetworkSettings.Networks;
+      const networkInfo = networks[this.networkName];
+      if (!networkInfo?.IPAddress) {
+        throw new Error(`Container has no IP on network ${this.networkName}`);
+      }
+
+      sc.id = container.id;
+      sc.containerIp = networkInfo.IPAddress;
+      sc.workerUrl = `http://${sc.containerIp}:${this.workerPort}`;
+      sc.status = "running";
+
+      this.emit("container_started", config.sessionId);
+      return sc;
+    } catch (err) {
+      // Clean up on failure
+      this.containers.delete(config.sessionId);
+      throw err;
+    }
+  }
+
+  /**
+   * Stop and remove a container for the given session.
+   * Gracefully stops with a 5-second timeout before force-killing.
+   */
+  async destroy(sessionId: string): Promise<void> {
+    const sc = this.containers.get(sessionId);
+    if (!sc) return;
+
+    sc.status = "stopping";
+
+    try {
+      const container = this.docker.getContainer(sc.id);
+      try {
+        await container.stop({ t: 5 });
+      } catch {
+        // Already stopped or doesn't exist
+      }
+      try {
+        await container.remove({ force: true });
+      } catch {
+        // Already removed
+      }
+    } catch {
+      // Container may already be gone
+    }
+
+    sc.status = "stopped";
+    this.containers.delete(sessionId);
+    this.emit("container_destroyed", sessionId);
+  }
+
+  /** Stop and remove all session containers. Used for full_reset and shutdown. */
+  async destroyAll(): Promise<void> {
+    const sessionIds = [...this.containers.keys()];
+    await Promise.allSettled(sessionIds.map((id) => this.destroy(id)));
+  }
+
+  /** Get the container info for a session. */
+  get(sessionId: string): SessionContainer | undefined {
+    return this.containers.get(sessionId);
+  }
+
+  /** Get all active containers. */
+  getAll(): SessionContainer[] {
+    return [...this.containers.values()];
+  }
+
+  /** Number of active containers. */
+  get size(): number {
+    return this.containers.size;
+  }
+
+  // --- Orphan cleanup ---
+
+  /**
+   * Remove containers left over from a previous orchestrator run.
+   * Scans for containers with the shipit-session label that don't match
+   * any currently tracked session.
+   */
+  async cleanupOrphans(activeSessionIds: Set<string>): Promise<number> {
+    let removed = 0;
+    try {
+      const containers = await this.docker.listContainers({
+        all: true,
+        filters: {
+          label: [`${CONTAINER_LABEL_KEY}=${CONTAINER_LABEL_VALUE}`],
+        },
+      });
+
+      for (const containerInfo of containers) {
+        const sessionId = containerInfo.Labels?.[CONTAINER_SESSION_ID_LABEL];
+        if (sessionId && !activeSessionIds.has(sessionId)) {
+          try {
+            const container = this.docker.getContainer(containerInfo.Id);
+            if (containerInfo.State === "running") {
+              await container.stop({ t: 5 });
+            }
+            await container.remove({ force: true });
+            removed++;
+          } catch {
+            // Container may already be gone
+          }
+        }
+      }
+    } catch {
+      // Docker may not be available
+    }
+    return removed;
+  }
+
+  // --- Health monitoring via Docker event stream ---
+
+  /**
+   * Start listening for Docker events to detect container crashes (OOM, exit).
+   * Emits "container_exited" when a session container dies unexpectedly.
+   */
+  async startHealthMonitor(): Promise<void> {
+    if (this.eventStream) return;
+
+    try {
+      this.eventStream = await this.docker.getEvents({
+        filters: {
+          type: ["container"],
+          event: ["die", "oom"],
+          label: [`${CONTAINER_LABEL_KEY}=${CONTAINER_LABEL_VALUE}`],
+        },
+      });
+
+      this.eventStream.on("data", (chunk: Buffer) => {
+        try {
+          const event = JSON.parse(chunk.toString());
+          const sessionId = event.Actor?.Attributes?.[CONTAINER_SESSION_ID_LABEL];
+          if (!sessionId) return;
+
+          const sc = this.containers.get(sessionId);
+          if (!sc) return;
+
+          if (event.Action === "die" || event.Action === "oom") {
+            const exitCode = Number(event.Actor?.Attributes?.exitCode ?? 1);
+            const error = event.Action === "oom" ? "Out of memory" : undefined;
+            sc.status = "stopped";
+            this.containers.delete(sessionId);
+            this.emit("container_exited", sessionId, exitCode, error);
+          }
+        } catch {
+          // Malformed event — ignore
+        }
+      });
+
+      this.eventStream.on("error", () => {
+        // Event stream disconnected — will be restarted on next call
+        this.eventStream = null;
+      });
+    } catch {
+      // Docker events not available
+    }
+  }
+
+  /** Stop the Docker event stream. */
+  stopHealthMonitor(): void {
+    if (this.eventStream) {
+      this.eventStream.destroy?.();
+      this.eventStream = null;
+    }
+  }
+
+  // --- Build container config ---
+
+  /**
+   * Build a ContainerConfig with defaults applied. Convenience method
+   * for callers that don't want to specify every field.
+   */
+  buildConfig(opts: {
+    sessionId: string;
+    sessionDir: string;
+    credentialsDir: string;
+    sharedRepoDir?: string;
+    env?: Record<string, string>;
+    memoryLimit?: number;
+    cpuQuota?: number;
+    pidsLimit?: number;
+  }): ContainerConfig {
+    return {
+      sessionId: opts.sessionId,
+      sessionDir: opts.sessionDir,
+      credentialsDir: opts.credentialsDir,
+      sharedRepoDir: opts.sharedRepoDir,
+      imageName: this.imageName,
+      memoryLimit: opts.memoryLimit ?? this.defaultMemoryLimit,
+      cpuQuota: opts.cpuQuota ?? this.defaultCpuQuota,
+      pidsLimit: opts.pidsLimit ?? this.defaultPidsLimit,
+      env: opts.env,
+    };
+  }
+
+  // --- Dispose ---
+
+  async dispose(): Promise<void> {
+    if (this._disposed) return;
+    this._disposed = true;
+    this.stopHealthMonitor();
+    await this.destroyAll();
+    this.removeAllListeners();
+  }
+}

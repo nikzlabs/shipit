@@ -24,28 +24,28 @@
 
 ## Phase 2: Docker Integration
 
-- [ ] Add `dockerode` dependency
-- [ ] Create `src/server/session-container.ts` — `SessionContainerManager`
-  - [ ] `create()` — create container with resource limits, labels, bind mounts
-  - [ ] `destroy()` — stop (5s grace) + remove container
-  - [ ] `destroyAll()` — for `full_reset`
-  - [ ] `get()` — look up container IP by session ID
-- [ ] Create Docker bridge network (`shipit`) at startup
-  - [ ] Auto-create if missing on startup
-  - [ ] Orchestrator container joins the network
-- [ ] Create `Dockerfile.session-worker` — slim image with Node, git, Claude CLI
-- [ ] Wire `SessionContainerManager` into `AppDeps` and `buildApp()`
-- [ ] `SessionRunnerRegistry.getOrCreate()` — delegate to `ContainerSessionRunner` when `useContainers: true`
-- [ ] Docker auto-detection at startup (`docker.ping()`) — fall back to direct mode if unavailable
-- [ ] Container bind mounts
-  - [ ] Regular sessions: `${sessionDir}:/workspace:rw`, `${credentialsDir}:/credentials:rw`
-  - [ ] Worktree sessions: add `${sharedRepoDir}:/repo:ro`
-- [ ] Resource limits: 512MB memory, 0.5 CPU, 256 PIDs (configurable via AppDeps)
-- [ ] Container labels: `shipit-session=true`, `shipit-session-id={uuid}`
-- [ ] Orphan container cleanup on orchestrator startup (scan for stale `shipit-session` containers)
-- [ ] Health checks — detect container crash/OOM via Docker event stream
-- [ ] Unit tests for `SessionContainerManager` (mocked dockerode)
-- [ ] Integration test: full lifecycle (create → run agent → output → idle timeout → remove)
+- [x] Add `dockerode` dependency
+- [x] Create `src/server/session-container.ts` — `SessionContainerManager`
+  - [x] `create()` — create container with resource limits, labels, bind mounts
+  - [x] `destroy()` — stop (5s grace) + remove container
+  - [x] `destroyAll()` — for `full_reset`
+  - [x] `get()` — look up container IP by session ID
+- [x] Create Docker bridge network (`shipit`) at startup
+  - [x] Auto-create if missing on startup
+  - [x] Orchestrator container joins the network
+- [x] Create `Dockerfile.session-worker` — slim image with Node, git, Claude CLI
+- [x] Wire `SessionContainerManager` into `AppDeps` and `buildApp()`
+- [x] `SessionRunnerRegistry.getOrCreate()` — delegate to `ContainerSessionRunner` when `useContainers: true`
+- [x] Docker auto-detection at startup (`docker.ping()`) — fall back to direct mode if unavailable
+- [x] Container bind mounts
+  - [x] Regular sessions: `${sessionDir}:/workspace:rw`, `${credentialsDir}:/credentials:rw`
+  - [x] Worktree sessions: add `${sharedRepoDir}:/repo:ro`
+- [x] Resource limits: 512MB memory, 0.5 CPU, 256 PIDs (configurable via AppDeps)
+- [x] Container labels: `shipit-session=true`, `shipit-session-id={uuid}`
+- [x] Orphan container cleanup on orchestrator startup (scan for stale `shipit-session` containers)
+- [x] Health checks — detect container crash/OOM via Docker event stream
+- [x] Unit tests for `SessionContainerManager` (mocked dockerode) — 27 tests
+- [x] Integration test: full lifecycle (create → activate → container started → shutdown → cleanup) — 5 tests
 
 ## Phase 3: Terminal + Preview + File Watcher
 
