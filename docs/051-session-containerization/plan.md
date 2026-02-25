@@ -107,11 +107,12 @@ import Docker from "dockerode";
 
 interface ContainerConfig {
   sessionId: string;
-  sessionDir: string;      // host path: /workspace/sessions/{uuid}
-  credentialsDir: string;  // host path: /credentials (read-only)
-  imageName: string;       // e.g. "shipit-session-worker:latest"
-  memoryLimit: number;     // bytes, default 512MB
-  cpuQuota: number;        // microseconds per 100ms period, default 50000 (0.5 CPU)
+  sessionDir: string;       // host path: /workspace/sessions/{uuid}
+  sharedRepoDir?: string;   // host path: /workspace/repos/{hash} (for worktree sessions)
+  credentialsDir: string;   // host path: /credentials (read-only)
+  imageName: string;        // e.g. "shipit-session-worker:latest"
+  memoryLimit: number;      // bytes, default 512MB
+  cpuQuota: number;         // microseconds per 100ms period, default 50000 (0.5 CPU)
 }
 
 interface SessionContainer {
@@ -146,6 +147,9 @@ export class SessionContainerManager {
         Binds: [
           `${config.sessionDir}:/workspace:rw`,
           `${config.credentialsDir}:/credentials:ro`,
+          // For worktree sessions: mount shared repo read-only so git can
+          // resolve objects without allowing writes to shared state
+          ...(config.sharedRepoDir ? [`${config.sharedRepoDir}:/repo:ro`] : []),
         ],
         PortBindings: {
           "9100/tcp": [{ HostPort: String(ipcPort) }],    // IPC
@@ -368,7 +372,138 @@ Containers need access to credentials for Claude CLI and GitHub operations:
 
 The orchestrator reads credentials from `CredentialStore` and passes them at container creation time. Containers never see the Docker socket or other sessions' credentials.
 
-### 9. Container Image
+### 9. Filesystem Mounts and Worktree Isolation
+
+#### Current layout (single volume)
+
+```
+/workspace/                           ← Docker VOLUME on host
+├── sessions/
+│   ├── {uuid-A}/                     ← session A's project files + .git
+│   └── {uuid-B}/                     ← session B's project files + .git
+├── repos/                            ← shared bare repos for worktree sessions
+│   └── {sha256-of-remote-url}/       ← one per GitHub repo, shared by worktrees
+├── .vibe-sessions.json               ← session metadata
+├── .vibe-chat-history/               ← per-session chat JSON
+├── .vibe-threads/                    ← thread/checkpoint data
+├── .shipit-usage.json                ← cost tracking
+└── .shipit-deploy/                   ← deploy configs and history
+
+/credentials/                         ← separate volume
+├── .claude/                          ← Claude CLI auth (symlinked to /root/.claude)
+└── .claude.json
+```
+
+#### The worktree problem
+
+Git worktrees share a parent repo. When a user forks session A into a worktree branch, the structure becomes:
+
+```
+/workspace/repos/{hash}/              ← shared bare-ish repo (primary checkout)
+  └── .git/worktrees/{uuid-B}/        ← worktree metadata for session B
+
+/workspace/sessions/{uuid-B}/         ← worktree checkout
+  └── .git                            ← file (not dir), points to ../../repos/{hash}/.git/worktrees/{uuid-B}
+```
+
+Session B's `.git` is a pointer back to the shared repo. Git operations inside session B (commit, log, diff, status) need **read-write access to both** the session directory and the shared repo's `.git/worktrees/` directory. Mounting two containers to the same shared repo with write access risks git index corruption.
+
+#### Solution: Split git operations by scope
+
+Git operations fall into two categories:
+
+**Session-local** (run inside the container) — these only touch the session's own working tree and its worktree-specific git state:
+- `git status`, `git diff`, `git log`
+- `git add`, `git commit` (writes to worktree-specific index)
+- `git stash`, `git checkout` (file-level)
+- File reads/writes by Claude CLI
+
+These work correctly inside the container because git worktree operations use the per-worktree `index`, `HEAD`, and `refs` in `.git/worktrees/{id}/`, which are scoped to the session dir. The container mounts the session dir read-write and the shared repo read-only:
+
+```
+Container for session B (worktree):
+  /workspace         ← bind: /workspace/sessions/{uuid-B}  (rw)
+  /repo              ← bind: /workspace/repos/{hash}        (ro)
+```
+
+The read-only shared repo mount is sufficient for commits and local operations — git reads the object store from the shared repo but writes new objects to the worktree's own `.git/worktrees/` directory.
+
+**Cross-session** (run on the orchestrator) — these modify the shared repo and affect other sessions:
+- `git worktree add` / `git worktree remove` (creates/deletes worktree entries in shared repo)
+- `git branch -d` (deletes branch from shared repo)
+- `git push` / `git fetch` (touches shared remote state)
+- `git merge` across worktree branches
+- `forkSession()`, `archiveSession()` (create/destroy worktree dirs + metadata)
+
+These operations stay on the **orchestrator**, which has full read-write access to `/workspace`. They are already orchestrator-scoped today — `forkSession()` and `archiveSession()` live in `src/server/services/session.ts` and are called from HTTP routes, not from the session worker.
+
+#### Container mount configuration
+
+**Regular session** (standalone git repo):
+```typescript
+Binds: [
+  `${sessionDir}:/workspace:rw`,          // session's project files
+  `${credentialsDir}:/credentials:ro`,     // Claude CLI auth, GitHub token
+]
+```
+
+**Worktree session** (references shared repo):
+```typescript
+Binds: [
+  `${sessionDir}:/workspace:rw`,          // worktree checkout
+  `${sharedRepoDir}:/repo:ro`,            // shared git object store (read-only)
+  `${credentialsDir}:/credentials:ro`,
+]
+```
+
+The read-only shared repo mount ensures the container can resolve git objects (commits, trees, blobs) but cannot corrupt the shared index or refs. The orchestrator is the only writer to the shared repo.
+
+#### Git operations routing summary
+
+| Operation | Where it runs | Why |
+|---|---|---|
+| `git status/diff/log` | Container | Reads worktree state only |
+| `git add/commit` | Container | Writes to per-worktree index |
+| `git push/pull/fetch` | Orchestrator | Touches shared remote refs |
+| `git worktree add/remove` | Orchestrator | Modifies shared repo structure |
+| `git branch -d` | Orchestrator | Modifies shared refs |
+| `git merge` (cross-branch) | Orchestrator | May touch shared repo objects |
+| `forkSession` | Orchestrator | Creates worktree + session metadata |
+| `archiveSession` | Orchestrator | Removes worktree + cleans shared repo |
+
+#### What stays on the orchestrator only (never in containers)
+
+These files/directories are orchestrator-owned and never mounted into session containers:
+
+- `.vibe-sessions.json` — session metadata (SessionManager)
+- `.vibe-chat-history/` — chat persistence (ChatHistoryManager)
+- `.vibe-threads/` — thread/checkpoint data (ThreadManager)
+- `.shipit-usage.json` — cost tracking (UsageManager)
+- `.shipit-deploy/` — deployment configs (DeploymentStore)
+- `/workspace/repos/` — shared git repos (except individual repos mounted read-only for worktree sessions)
+
+### 10. Worker Git Proxy
+
+The session worker needs a way to request cross-session git operations from the orchestrator. The worker exposes these as "please do this on my behalf" requests over the IPC channel:
+
+```typescript
+// In session-worker.ts — when Claude CLI runs `git push`:
+// The worker intercepts git operations that need shared repo access
+// and proxies them to the orchestrator.
+
+// Worker → Orchestrator (reverse IPC call)
+app.post("/git-proxy/push", async (req) => {
+  // Worker cannot push directly (shared repo is read-only mount).
+  // Forward to orchestrator, which has rw access.
+  return { proxy: true, operation: "push", args: req.body };
+});
+```
+
+The orchestrator's IPC client watches for proxy requests and executes them with the real `GitManager` that has write access to the shared repo. This keeps the container's git operations fast (local commits are direct) while funneling shared-state operations through a single writer.
+
+Alternatively, rather than intercepting at the git level, Claude CLI's `Bash` tool calls could be wrapped: if the worker detects a `git push`, `git fetch`, or similar command, it returns an error asking Claude to use the dedicated push/pull UI instead. This is simpler and avoids the complexity of a transparent git proxy.
+
+### 11. Container Image
 
 A `Dockerfile.session-worker` builds the session worker image:
 
@@ -393,7 +528,7 @@ CMD ["node", "/app/session-worker.js"]
 
 This image is built once and reused for all sessions. Per-session dependencies (npm install for user's project) happen at runtime inside the container, isolated from other sessions.
 
-### 10. Lifecycle Mapping
+### 12. Lifecycle Mapping
 
 | Current (SessionRunner) | Containerized |
 |---|---|
@@ -409,7 +544,7 @@ Container startup adds ~1-2s latency vs the current ~10ms process spawn. This is
 - Subsequent messages reuse the running container
 - The container stays alive through session switches and tab closes (same as current runner persistence)
 
-### 11. Fallback Mode
+### 13. Fallback Mode
 
 For development and environments without Docker:
 
