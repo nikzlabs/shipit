@@ -758,7 +758,26 @@ export async function handleHomeSendWithRepo(ctx: HandlerContext, msg: WsHomeSen
       } catch {
         // Fallback: let git use HEAD
       }
-      await repoGit.createWorktree(sessionDir, branchPrefix, startPoint);
+      // Retry worktree creation — another session's done handler may briefly
+      // hold a git lock on the shared repo (auto-commit, ref update, etc.).
+      let worktreeCreated = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await repoGit.createWorktree(sessionDir, branchPrefix, startPoint);
+          worktreeCreated = true;
+          break;
+        } catch (wtErr) {
+          if (attempt < 2) {
+            console.warn(`[home] Worktree creation attempt ${attempt + 1} failed, retrying:`, getErrorMessage(wtErr));
+            await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+          } else {
+            throw wtErr;
+          }
+        }
+      }
+      if (!worktreeCreated) {
+        throw new Error("Worktree creation failed after retries");
+      }
     }
 
     // Configure GitHub credentials in the worktree
