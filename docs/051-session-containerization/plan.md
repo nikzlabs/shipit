@@ -138,10 +138,14 @@ export class SessionContainerManager {
     const container = await this.docker.createContainer({
       Image: config.imageName,
       Cmd: ["node", "dist/session-worker.js"],
+      Labels: {
+        "shipit-session": "true",
+        "shipit-session-id": config.sessionId,
+      },
       HostConfig: {
         Binds: [
           `${config.sessionDir}:/workspace:rw`,
-          `${config.credentialsDir}:/credentials:ro`,
+          `${config.credentialsDir}:/credentials:rw`,  // rw: Claude CLI writes conversation cache on --resume
           // For worktree sessions: mount shared repo read-only so git can
           // resolve objects without allowing writes to shared state
           ...(config.sharedRepoDir ? [`${config.sharedRepoDir}:/repo:ro`] : []),
@@ -152,6 +156,7 @@ export class SessionContainerManager {
         Memory: config.memoryLimit,
         CpuQuota: config.cpuQuota,
         CpuPeriod: 100_000,
+        PidsLimit: 256,
         NetworkMode: "shipit",  // custom bridge network for orchestrator ↔ container
         SecurityOpt: ["no-new-privileges"],
         ReadonlyRootfs: false,  // needs write for node_modules, tmp
@@ -169,7 +174,9 @@ export class SessionContainerManager {
     const info = await container.inspect();
     const containerIp = info.NetworkSettings.Networks["shipit"].IPAddress;
 
-    return { id: container.id, sessionId: config.sessionId, containerIp, status: "running" };
+    const sc: SessionContainer = { id: container.id, sessionId: config.sessionId, containerIp, status: "running" };
+    this.containers.set(config.sessionId, sc);
+    return sc;
   }
 
   async destroy(sessionId: string): Promise<void> {
@@ -203,6 +210,8 @@ docker network create shipit
 The orchestrator container itself must also be on this network. With 10 max containers, the default `/16` bridge subnet provides more than enough IPs.
 
 **No `PortPool` needed.** The previous design allocated host ports for IPC and preview. With bridge networking, all traffic flows over internal IPs on fixed container ports (9100 for IPC, any port for preview). This eliminates port exhaustion as a failure mode entirely.
+
+**Internet egress:** The custom bridge network provides outbound internet access by default (Docker's NAT masquerade). This is required for `npm install`, `git clone`, and Claude CLI API calls inside session containers. `git push`/`git fetch` are routed through the orchestrator (see section 10) for worktree coordination, but standalone sessions could push directly — the network allows it. Restricting egress to specific hosts (e.g., only `api.anthropic.com`, `github.com`, `registry.npmjs.org`) is a future hardening step, not a launch blocker.
 
 ### 4. Session Worker Process
 
@@ -290,14 +299,14 @@ Orchestrator (172.18.0.2)             Container Worker (172.18.0.3)
 `SessionRunner` becomes a **proxy** that delegates to the container worker instead of spawning processes directly. The public API stays identical — `HandlerContext` and WebSocket handlers don't change.
 
 ```typescript
-// Changes to SessionRunner (conceptual)
+// src/server/container-session-runner.ts
+// Implements the same interface as SessionRunner but delegates to a container worker.
 
-export class SessionRunner extends EventEmitter {
+export class ContainerSessionRunner extends EventEmitter {
   private container: SessionContainer | null = null;
   private eventSource: EventSource | null = null;  // SSE connection to worker
 
-  // Instead of: this.agent = new ClaudeAdapter(...)
-  // Now:        POST container:9100/agent/start
+  // Instead of spawning a local ClaudeAdapter, POST to the container worker
   async startAgent(opts: AgentStartOpts): Promise<void> {
     if (!this.container) {
       this.container = await containerManager.create({ ... });
@@ -311,7 +320,7 @@ export class SessionRunner extends EventEmitter {
 
   private connectEventStream(): void {
     // Connect to container's SSE endpoint
-    // Parse events and emit via this.emitMessage() — same as today
+    // Parse events and emit via this.emitMessage() — same as SessionRunner
     // Handles reconnection if connection drops
   }
 
@@ -320,7 +329,7 @@ export class SessionRunner extends EventEmitter {
 }
 ```
 
-**Key insight:** From the perspective of `HandlerContext`, `send-message.ts`, and all WebSocket handlers, nothing changes. They call `runner.startAgent()`, `runner.getAgent()`, etc. The runner internally routes to the container instead of local processes.
+**Key insight:** `ContainerSessionRunner` and `SessionRunner` (direct mode) implement the same interface. From the perspective of `HandlerContext`, `send-message.ts`, and all WebSocket handlers, nothing changes. They call `runner.startAgent()`, `runner.getAgent()`, etc. The registry decides which implementation to create (see section 13).
 
 ### 7. Preview Proxy Integration
 
@@ -390,6 +399,27 @@ WebSocket upgrade follows the same pattern — intercept `/preview/{sessionId}/{
 
 The proxy only forwards to ports the session worker reports as active (via the SSE event stream). The worker runs its own port scanner scoped to the container's localhost and reports detected ports to the orchestrator. Unknown ports get `403 Forbidden`.
 
+#### Preview status URL format
+
+The current `SessionRunner.buildPreviewStatus()` returns `url: "http://localhost:${port}"`. With containerization, the `ContainerSessionRunner` constructs the proxy URL instead:
+
+```typescript
+buildPreviewStatus(): WsServerMessage {
+  // Worker reports: { running: true, ports: [5173, 8080] }
+  // Orchestrator constructs proxy URL for the client:
+  return {
+    type: "preview_status",
+    running: true,
+    port: workerPorts[0],
+    url: `/preview/${this.sessionId}/${workerPorts[0]}/`,
+    source: "managed",
+    detectedPorts: workerPorts.slice(1),
+  };
+}
+```
+
+The client receives a relative URL and iframes it directly — same-origin, no CORS issues.
+
 #### Path simplification
 
 With containers, Claude CLI runs with `cwd: /workspace` (the container's mount point). File paths in tool calls become `/workspace/src/App.tsx` instead of `/workspace/sessions/{uuid}/src/App.tsx`. The client-side `sessionRelativePath()` utility (`src/client/path-utils.ts`) simplifies from stripping a UUID-containing prefix to just stripping `/workspace/`:
@@ -410,7 +440,7 @@ Containers need access to credentials for Claude CLI and GitHub operations:
 
 | Credential | Mount | Access |
 |---|---|---|
-| Claude CLI auth (`~/.claude/`) | Bind mount from host `/credentials/.claude/` | Read-only |
+| Claude CLI auth (`~/.claude/`) | Bind mount from host `/credentials/.claude/` | **Read-write** (CLI writes conversation cache on `--resume`) |
 | GitHub token | Passed via env var `GITHUB_TOKEN` | Set at container create |
 | Git identity | Passed via env vars `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL` | Set at container create |
 | Deploy credentials | Bind mount from host per-session deploy dir | Read-only |
@@ -463,15 +493,24 @@ Git operations fall into two categories:
 - `git stash`, `git checkout` (file-level)
 - File reads/writes by Claude CLI
 
-These work correctly inside the container because git worktree operations use the per-worktree `index`, `HEAD`, and `refs` in `.git/worktrees/{id}/`, which are scoped to the session dir. The container mounts the session dir read-write and the shared repo read-only:
+However, `git commit` also writes new objects (blobs, trees, commit) to the **shared object store** at `.git/objects/` in the parent repo — not to the per-worktree directory. This means a read-only shared repo mount would break commits.
+
+**Workaround: per-worktree object directory.** Git supports `GIT_OBJECT_DIRECTORY` to redirect new object writes to a separate location. The container sets this to a writable path inside the session dir:
 
 ```
 Container for session B (worktree):
   /workspace         ← bind: /workspace/sessions/{uuid-B}  (rw)
   /repo              ← bind: /workspace/repos/{hash}        (ro)
+
+  GIT_OBJECT_DIRECTORY=/workspace/.git-objects        (writable, inside session dir)
+  GIT_ALTERNATE_OBJECTS_DIRECTORIES=/repo/.git/objects (read-only, shared store)
 ```
 
-The read-only shared repo mount is sufficient for commits and local operations — git reads the object store from the shared repo but writes new objects to the worktree's own `.git/worktrees/` directory.
+New objects from commits go to the writable session-local directory. Git reads existing objects from the shared store via alternates. On the orchestrator side, after a worktree session's container is stopped, a maintenance step (`git repack` or object transfer) can fold session-local objects back into the shared repo if needed.
+
+**Trade-off:** This adds complexity. A simpler alternative is to run **all git operations for worktree sessions through the orchestrator** via IPC, avoiding the split entirely. The orchestrator has read-write access to both the session dir and shared repo. The cost is latency for every `git commit` (HTTP round-trip instead of local), but commits are infrequent relative to file edits.
+
+**Recommended approach:** For phase 1, route all worktree git operations through the orchestrator. Revisit `GIT_OBJECT_DIRECTORY` in a later phase if the latency proves problematic.
 
 **Cross-session** (run on the orchestrator) — these modify the shared repo and affect other sessions:
 - `git worktree add` / `git worktree remove` (creates/deletes worktree entries in shared repo)
@@ -479,8 +518,9 @@ The read-only shared repo mount is sufficient for commits and local operations �
 - `git push` / `git fetch` (touches shared remote state)
 - `git merge` across worktree branches
 - `forkSession()`, `archiveSession()` (create/destroy worktree dirs + metadata)
+- **For worktree sessions:** `git add`, `git commit` (need write access to shared object store)
 
-These operations stay on the **orchestrator**, which has full read-write access to `/workspace`. They are already orchestrator-scoped today — `forkSession()` and `archiveSession()` live in `src/server/services/session.ts` and are called from HTTP routes, not from the session worker.
+These operations stay on the **orchestrator**, which has full read-write access to `/workspace`. Most are already orchestrator-scoped today — `forkSession()` and `archiveSession()` live in `src/server/services/session.ts` and are called from HTTP routes, not from the session worker. For worktree sessions, `git commit` is additionally routed through the orchestrator.
 
 #### Container mount configuration
 
@@ -501,20 +541,20 @@ Binds: [
 ]
 ```
 
-The read-only shared repo mount ensures the container can resolve git objects (commits, trees, blobs) but cannot corrupt the shared index or refs. The orchestrator is the only writer to the shared repo.
+The shared repo is mounted read-only. The container can read git objects (for `git log`, `git diff`, file reads) but cannot write new objects. All git write operations for worktree sessions (commit, add) are routed through the orchestrator via IPC. See section 10 for details.
 
 #### Git operations routing summary
 
-| Operation | Where it runs | Why |
-|---|---|---|
-| `git status/diff/log` | Container | Reads worktree state only |
-| `git add/commit` | Container | Writes to per-worktree index |
-| `git push/pull/fetch` | Orchestrator | Touches shared remote refs |
-| `git worktree add/remove` | Orchestrator | Modifies shared repo structure |
-| `git branch -d` | Orchestrator | Modifies shared refs |
-| `git merge` (cross-branch) | Orchestrator | May touch shared repo objects |
-| `forkSession` | Orchestrator | Creates worktree + session metadata |
-| `archiveSession` | Orchestrator | Removes worktree + cleans shared repo |
+| Operation | Standalone session | Worktree session | Why |
+|---|---|---|---|
+| `git status/diff/log` | Container | Container | Reads working tree + objects (read-only shared repo sufficient) |
+| `git add/commit` | Container | **Orchestrator** | Standalone writes to local `.git/objects/`; worktree writes to shared object store |
+| `git push/pull/fetch` | Orchestrator | Orchestrator | Needs network egress + shared remote refs |
+| `git worktree add/remove` | — | Orchestrator | Modifies shared repo structure |
+| `git branch -d` | Orchestrator | Orchestrator | Modifies shared refs |
+| `git merge` (cross-branch) | Orchestrator | Orchestrator | May touch shared repo objects |
+| `forkSession` | Orchestrator | Orchestrator | Creates worktree + session metadata |
+| `archiveSession` | Orchestrator | Orchestrator | Removes worktree + cleans shared repo |
 
 #### What stays on the orchestrator only (never in containers)
 
@@ -566,7 +606,9 @@ COPY dist/session-worker.js /app/
 COPY node_modules /app/node_modules/
 
 WORKDIR /workspace
-EXPOSE 9100 5173
+# IPC server port — no EXPOSE needed since we use bridge networking,
+# but documented here for clarity. Preview ports are dynamic.
+EXPOSE 9100
 
 CMD ["node", "/app/session-worker.js"]
 ```
@@ -581,7 +623,7 @@ This image is built once and reused for all sessions. Per-session dependencies (
 | `runner.attachViewer()` | Connect SSE event stream from worker |
 | `runner.detachViewer()` (last viewer) | Disconnect SSE (container keeps running) |
 | `runner.startAgent()` | `POST container/agent/start` |
-| `runner.dispose()` (idle timeout) | `docker stop` + `docker rm` + release ports |
+| `runner.dispose()` (idle timeout) | `docker stop` + `docker rm` |
 | `registry.disposeAll()` (full_reset) | Stop and remove all session containers |
 
 Container startup adds ~1-2s latency vs the current ~10ms process spawn. This is acceptable because:
@@ -712,11 +754,11 @@ Auto-detect at startup: `docker.ping()`. If it fails, fall back to direct proces
 
 ### 2. Container fails to start
 
-Return error to client: `{ type: "error", message: "Failed to start session container" }`. Clean up allocated ports. Retry once with a fresh container before giving up.
+Return error to client: `{ type: "error", message: "Failed to start session container" }`. Clean up registry entry. Retry once with a fresh container before giving up.
 
 ### 3. Container exits unexpectedly (OOM, crash)
 
-Orchestrator detects via Docker event stream (`docker.getEvents()`). Notifies attached viewers: `{ type: "session_status", running: false, error: "Session container exited unexpectedly" }`. Cleans up ports and registry entry. Next interaction with the session creates a fresh container.
+Orchestrator detects via Docker event stream (`docker.getEvents()`). Notifies attached viewers: `{ type: "session_status", running: false, error: "Session container exited unexpectedly" }`. Cleans up registry entry. Next interaction with the session creates a fresh container.
 
 ### 4. Network partition between orchestrator and container
 
