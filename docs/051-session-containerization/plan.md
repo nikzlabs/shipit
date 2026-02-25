@@ -804,6 +804,39 @@ Session containers run with:
 - Non-root user (future improvement: run worker as uid 1000)
 - No access to host network, PID namespace, or IPC namespace
 
+### `--dangerously-skip-permissions` in containers
+
+Containerization unlocks the ability to run Claude CLI with `--dangerously-skip-permissions`, which auto-approves all tool calls (file writes, bash commands) without human confirmation. Today this flag is too risky because Claude runs on the shared host. With containers, the OS enforces the permission boundary instead of Claude's built-in approval system.
+
+**What the container guards against:**
+- Filesystem damage is scoped to `/workspace` (the session's own directory)
+- Port conflicts are impossible (isolated network namespace)
+- Resource abuse is capped (512MB / 0.5 CPU / 256 PIDs)
+- No Docker socket access, no host filesystem access, no other sessions reachable
+
+**Remaining risks even with containers:**
+- **Credential access.** `/credentials` is mounted into the container. Claude could read auth tokens and exfiltrate them via network requests. Mitigations: (1) switch credentials to read-only mount (post-launch item), (2) restrict network egress to an allowlist (post-launch item), (3) pass tokens via env vars that Claude CLI consumes internally rather than as files readable by arbitrary commands.
+- **Network egress.** Without the egress allowlist, Claude could make arbitrary outbound HTTP requests (data exfiltration, abuse external APIs). This is bounded by the post-launch egress restriction item.
+- **API cost.** Auto-approved tool use could cause Claude CLI to loop and burn API credits. Bounded by the existing `UsageManager` per-turn cost tracking on the orchestrator side.
+
+**Implementation:** Add `--dangerously-skip-permissions` as a per-session option, gated on `useContainers: true`. When the orchestrator creates a container, it passes a `skipPermissions` flag in the `ContainerConfig`. The session worker includes the flag when spawning Claude CLI. In fallback mode (`useContainers: false`), the flag is never set — Claude's built-in permission system remains active.
+
+```typescript
+// In ContainerConfig:
+interface ContainerConfig {
+  // ... existing fields ...
+  skipPermissions?: boolean;  // default: true when useContainers is true
+}
+
+// In session-worker.ts, when spawning Claude CLI:
+const args = ["--output-format", "stream-json"];
+if (process.env.SKIP_PERMISSIONS === "true") {
+  args.push("--dangerously-skip-permissions");
+}
+```
+
+**Prerequisite:** The credential read-only mount and network egress allowlist (both post-launch items) should be completed before enabling `--dangerously-skip-permissions` by default. Until then, the flag can be opt-in for testing.
+
 ### Container labels for management
 
 All session containers are labeled `shipit-session=true` and `shipit-session-id={uuid}` for reliable cleanup and identification.

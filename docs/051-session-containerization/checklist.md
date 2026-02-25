@@ -78,5 +78,11 @@
 - [ ] Credential mounts: switch `/credentials` to read-only once Claude CLI `--resume` write path is isolated
 - [ ] Run worker process as non-root user (uid 1000)
 - [ ] Network egress restriction — allowlist `api.anthropic.com`, `github.com`, `registry.npmjs.org`
+- [ ] `--dangerously-skip-permissions` support
+  - [ ] Add `skipPermissions` flag to `ContainerConfig` (gated on `useContainers: true`)
+  - [ ] Pass `SKIP_PERMISSIONS` env var to container
+  - [ ] Session worker reads env var and adds `--dangerously-skip-permissions` to Claude CLI args
+  - [ ] **Prerequisite:** credential read-only mount + network egress allowlist must be done first
+  - [ ] Default to opt-in initially, flip to default-on after egress restrictions are validated
 - [ ] `GIT_OBJECT_DIRECTORY` optimization — allow in-container commits for worktree sessions (skip orchestrator round-trip)
 - [ ] Update doc 048 status to superseded by 051 session-ID routing
