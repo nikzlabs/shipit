@@ -73,6 +73,28 @@
   - [ ] File watcher events flow through SSE to orchestrator to client
   - [ ] Worktree git commit routed through orchestrator
 
+## Phase 4: Speculative Container Pre-warming
+
+- [ ] Track last active repo per user (by GitHub remote URL or local repo hash)
+- [ ] `SessionContainerManager.createStandby()` — speculatively create container for predicted next session
+  - [ ] Create new session directory (worktree from shared repo or shallow clone)
+  - [ ] Bind-mount and boot session worker in background
+  - [ ] Label with `shipit-standby=true` for cleanup identification
+- [ ] `SessionContainerManager.claimStandby(repoId, sessionId)` — claim standby container when user creates matching session
+  - [ ] Reassign session ID, update labels
+  - [ ] Return claimed container (skip cold start)
+- [ ] `SessionContainerManager.reclaimStandby()` — tear down unclaimed standby container
+  - [ ] Auto-reclaim after 5-minute timeout
+  - [ ] Auto-reclaim when user creates session on a different repo
+  - [ ] Clean up speculative session directory
+- [ ] `SessionRunnerRegistry.getOrCreate()` — check for claimable standby before creating new container
+- [ ] Respect max container cap — don't pre-warm if all 10 slots are occupied by real sessions
+- [ ] Integration tests
+  - [ ] Standby container claimed successfully → zero cold start
+  - [ ] Standby container reclaimed on timeout
+  - [ ] Standby container reclaimed on repo mismatch
+  - [ ] No pre-warm when at container cap
+
 ## Post-launch
 
 - [ ] Credential mounts: switch `/credentials` to read-only once Claude CLI `--resume` write path is isolated

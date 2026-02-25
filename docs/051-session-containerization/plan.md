@@ -29,7 +29,7 @@ The orchestrator (Fastify server) remains on the host, managing session metadata
 - **Multi-host orchestration.** This design targets a single Docker host. Kubernetes/Swarm is a future concern.
 - **Custom base images per session.** All sessions share one image. Per-session package installs happen inside the container at runtime.
 - **Live migration.** Containers are ephemeral — tied to the session runner lifecycle, not persisted across server restarts.
-- **Pre-warmed container pool.** Considered and deferred. A pool of idle containers could eliminate the ~1-2s cold start, but Docker bind mounts are immutable after creation — a pre-warmed container can't have a session's `/workspace` added later. Workarounds (NFS/FUSE mounts, shared parent directory) add complexity and weaken isolation. The cold start only happens once per session and can be optimized below 1s by keeping the image small, lazy-initializing the worker (defer file watcher, port scanner until first use), and parallelizing container start with SSE connection setup. Revisit if cold start becomes a measurable UX problem.
+- **Generic pre-warmed container pool.** A pool of idle containers without workspaces won't work because Docker bind mounts are immutable after creation. However, *speculative* pre-warming for the most recently used repo is viable — see Phase 4.
 
 ---
 
@@ -717,6 +717,34 @@ Both `SessionRunner` (direct) and `ContainerSessionRunner` (Docker proxy) implem
 | `src/server/container-session-runner.ts` | Add terminal, preview, file watcher proxy methods |
 | `src/server/preview-proxy.ts` | **NEW** — session-ID-based reverse proxy |
 | `src/client/path-utils.ts` | Handle both containerized and direct path formats |
+
+### Phase 4: Speculative Container Pre-warming
+
+**Goal:** Eliminate cold-start latency for the most common flow — creating a new session on the same repo.
+
+**Insight:** Generic container pools don't work because bind mounts are immutable after creation. But we can predict the *next* session: when a user is working on repo X, the most likely next action is "new session on repo X." We speculatively create a container with that repo's workspace already mounted.
+
+**Scope:**
+- Track the user's most recently active repo (by GitHub remote URL or local repo hash)
+- After a session is activated, speculatively create a standby container in the background:
+  1. Create a new session directory (worktree from the shared repo, or shallow clone)
+  2. Create a container with that directory bind-mounted as `/workspace`
+  3. Boot the session worker — container is idle but ready
+- When the user creates a new session on the same repo → claim the standby container, assign the real session ID, ready instantly (~0ms cold start)
+- Reclaim logic:
+  - If unclaimed after 5 minutes → tear down container and delete speculative session dir
+  - If user creates a session on a *different* repo → tear down standby, create new container normally
+  - If container cap (10) is reached → don't pre-warm, reserve all slots for real sessions
+- The standby container counts toward the max container limit but uses only ~50 MB idle
+
+**Heuristic refinement:** Track the last N repos used (e.g., 3). Pre-warm for the most recently used one. If the user alternates between two repos, the heuristic adapts after one miss.
+
+**Files:**
+| File | Change |
+|---|---|
+| `src/server/session-container.ts` | Add `createStandby()`, `claimStandby()`, `reclaimStandby()` methods |
+| `src/server/session-runner.ts` | Registry checks for standby container before creating new one |
+| `src/server/services/session.ts` | Track last active repo per user for pre-warm heuristic |
 
 ---
 
