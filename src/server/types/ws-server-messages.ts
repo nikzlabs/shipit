@@ -40,6 +40,7 @@ export interface WsPreviewStatus {
   type: "preview_status";
   running: boolean;
   port: number;
+  /** Preview URL — uses the reverse proxy path format: `/preview/{port}/`. */
   url: string;
   /** How the preview server was identified: "vite" (bundled), "managed" (command mode), "detected" (port scan), or omitted. */
   source?: "vite" | "managed" | "detected";
