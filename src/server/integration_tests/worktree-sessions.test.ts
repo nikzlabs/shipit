@@ -393,8 +393,11 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     const claude1 = await waitForClaude(() => lastClaude);
     claude1.finish();
 
-    // Drain remaining messages
-    try { while (true) { await client1.receive(500); } } catch { /* done */ }
+    // Wait for the done handler to fully complete (auto-commit, port scan, etc.)
+    // before starting the second session — prevents git lock contention on the
+    // shared repo between the first session's cleanup and the second worktree add.
+    await client1.receiveType("session_agent_finished", 5000);
+    try { while (true) { await client1.receive(500); } } catch { /* drain */ }
     client1.close();
 
     // All sessions are worktrees from the shared repo clone
@@ -587,6 +590,8 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
 
     const claude1 = await waitForClaude(() => lastClaude);
     claude1.finish();
+    // Wait for the done handler to fully complete before starting the second session
+    await client1.receiveType("session_agent_finished", 5000);
     try { while (true) { await client1.receive(500); } } catch { /* drain */ }
     client1.close();
 
@@ -636,6 +641,8 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     const session1Id = (s1Msg as any).session.id;
     const claude1 = await waitForClaude(() => lastClaude);
     claude1.finish();
+    // Wait for the done handler to fully complete before starting the second session
+    await client1.receiveType("session_agent_finished", 5000);
     try { while (true) { await client1.receive(500); } } catch { /* drain */ }
     client1.close();
 
