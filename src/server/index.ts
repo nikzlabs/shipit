@@ -610,7 +610,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     threadManager,
     deploymentManager,
     deploymentStore,
-    featureManager,
     usageManager,
     runnerRegistry,
     chatHistoryManager,
