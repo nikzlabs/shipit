@@ -486,16 +486,6 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
 
   // ---- Edge case: missing worktree on session resume ----
 
-  /** Wait for a session_started message, skipping other messages. */
-  async function waitForSessionStarted(client: TestClient, timeoutMs = 5000): Promise<any> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const msg = await client.receive(deadline - Date.now());
-      if (msg.type === "session_started") return msg;
-    }
-    throw new Error("Timed out waiting for session_started");
-  }
-
   it("send_message returns error when worktree directory is missing", async () => {
     const bareRepoPath = createBareRepo();
     const repoUrl = `file://${bareRepoPath}`;
@@ -506,8 +496,9 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
 
     client.send({ type: "home_send_with_repo", repoUrl, text: "My session" } as any);
 
-    const sessionMsg = await waitForSessionStarted(client);
-    const session = sessionMsg.session;
+    const sessionMsg = await client.receiveSkipLogs(10_000);
+    expect(sessionMsg.type).toBe("session_started");
+    const session = (sessionMsg as any).session;
 
     const claude1 = await waitForClaude(() => lastClaude);
     claude1.finish();
@@ -552,8 +543,9 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
 
     client.send({ type: "home_send_with_repo", repoUrl, text: "My session" } as any);
 
-    const sessionMsg = await waitForSessionStarted(client);
-    const session = sessionMsg.session;
+    const sessionMsg = await client.receiveSkipLogs(10_000);
+    expect(sessionMsg.type).toBe("session_started");
+    const session = (sessionMsg as any).session;
 
     const claude1 = await waitForClaude(() => lastClaude);
     claude1.finish();
