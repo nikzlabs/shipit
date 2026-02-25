@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: planned
 ---
 
 # 051 — Docker-Per-Session Containerization
@@ -107,58 +107,54 @@ import Docker from "dockerode";
 
 interface ContainerConfig {
   sessionId: string;
-  sessionDir: string;       // host path: /workspace/sessions/{uuid}
-  sharedRepoDir?: string;   // host path: /workspace/repos/{hash} (for worktree sessions)
-  credentialsDir: string;   // host path: /credentials (read-only)
-  imageName: string;        // e.g. "shipit-session-worker:latest"
-  memoryLimit: number;      // bytes, default 512MB
-  cpuQuota: number;         // microseconds per 100ms period, default 50000 (0.5 CPU)
+  sessionDir: string;      // host path: /workspace/sessions/{uuid}
+  credentialsDir: string;  // host path: /credentials (read-only)
+  imageName: string;       // e.g. "shipit-session-worker:latest"
+  memoryLimit: number;     // bytes, default 512MB
+  cpuQuota: number;        // microseconds per 100ms period, default 50000 (0.5 CPU)
 }
 
 interface SessionContainer {
   id: string;              // Docker container ID
   sessionId: string;
-  containerIp: string;     // bridge network IP (e.g. 172.17.0.3)
+  ipcPort: number;         // host port mapped to container's IPC server
+  previewPort: number;     // host port mapped to container's 5173
   status: "starting" | "running" | "stopping" | "stopped";
 }
 
 export class SessionContainerManager {
   private docker: Docker;
   private containers = new Map<string, SessionContainer>();
-  private networkName: string;
+  private portPool: PortPool;
 
   constructor(opts: {
     socketPath?: string;           // default: /var/run/docker.sock
     imageName?: string;            // default: shipit-session-worker:latest
-    networkName?: string;          // default: "shipit"
+    portRange?: [number, number];  // default: [10000, 10999]
     memoryLimit?: number;          // default: 512MB
     cpuQuota?: number;             // default: 50000
   }) { /* ... */ }
 
   async create(config: ContainerConfig): Promise<SessionContainer> {
+    const ipcPort = this.portPool.allocate();
+    const previewPort = this.portPool.allocate();
+
     const container = await this.docker.createContainer({
       Image: config.imageName,
       Cmd: ["node", "dist/session-worker.js"],
-      Labels: {
-        "shipit-session": "true",
-        "shipit-session-id": config.sessionId,
-      },
       HostConfig: {
         Binds: [
           `${config.sessionDir}:/workspace:rw`,
-          `${config.credentialsDir}:/credentials:rw`,  // rw: Claude CLI writes conversation cache on --resume
-          // For worktree sessions: mount shared repo read-only so git can
-          // resolve objects without allowing writes to shared state
-          ...(config.sharedRepoDir ? [`${config.sharedRepoDir}:/repo:ro`] : []),
+          `${config.credentialsDir}:/credentials:ro`,
         ],
-        // No PortBindings — orchestrator reaches containers directly via
-        // bridge network IP. Preview traffic is proxied through Fastify
-        // using /preview/{sessionId}/{port}/ routes.
+        PortBindings: {
+          "9100/tcp": [{ HostPort: String(ipcPort) }],    // IPC
+          "5173/tcp": [{ HostPort: String(previewPort) }], // preview
+        },
         Memory: config.memoryLimit,
         CpuQuota: config.cpuQuota,
         CpuPeriod: 100_000,
-        PidsLimit: 256,
-        NetworkMode: "shipit",  // custom bridge network for orchestrator ↔ container
+        NetworkMode: "bridge",  // isolated network per container
         SecurityOpt: ["no-new-privileges"],
         ReadonlyRootfs: false,  // needs write for node_modules, tmp
       },
@@ -170,14 +166,7 @@ export class SessionContainerManager {
     });
 
     await container.start();
-
-    // Get the container's IP on the bridge network
-    const info = await container.inspect();
-    const containerIp = info.NetworkSettings.Networks["shipit"].IPAddress;
-
-    const sc: SessionContainer = { id: container.id, sessionId: config.sessionId, containerIp, status: "running" };
-    this.containers.set(config.sessionId, sc);
-    return sc;
+    // ... health check, return SessionContainer
   }
 
   async destroy(sessionId: string): Promise<void> {
@@ -188,6 +177,8 @@ export class SessionContainerManager {
       await container.stop({ t: 5 });  // 5s grace period
       await container.remove();
     } catch { /* already stopped */ }
+    this.portPool.release(sc.ipcPort);
+    this.portPool.release(sc.previewPort);
     this.containers.delete(sessionId);
   }
 
@@ -199,20 +190,40 @@ export class SessionContainerManager {
 }
 ```
 
-### 3. Docker Network
+### 3. Port Pool
 
-All session containers and the orchestrator join a custom bridge network (`shipit`). The orchestrator reaches containers by their bridge IP (e.g. `172.18.0.3`) — no host port mappings needed for either IPC or preview traffic.
+Simple port allocator from a reserved range, replacing the global port scanner for managed ports.
 
-```bash
-# Created once at startup (or via docker-compose)
-docker network create shipit
+```typescript
+// src/server/port-pool.ts
+
+export class PortPool {
+  private available: number[];
+  private allocated = new Set<number>();
+
+  constructor(rangeStart: number, rangeEnd: number) {
+    this.available = [];
+    for (let p = rangeStart; p <= rangeEnd; p++) {
+      this.available.push(p);
+    }
+  }
+
+  allocate(): number {
+    const port = this.available.pop();
+    if (port === undefined) throw new Error("Port pool exhausted");
+    this.allocated.add(port);
+    return port;
+  }
+
+  release(port: number): void {
+    if (this.allocated.delete(port)) {
+      this.available.push(port);
+    }
+  }
+}
 ```
 
-The orchestrator container itself must also be on this network. With 10 max containers, the default `/16` bridge subnet provides more than enough IPs.
-
-**No `PortPool` needed.** The previous design allocated host ports for IPC and preview. With bridge networking, all traffic flows over internal IPs on fixed container ports (9100 for IPC, any port for preview). This eliminates port exhaustion as a failure mode entirely.
-
-**Internet egress:** The custom bridge network provides outbound internet access by default (Docker's NAT masquerade). This is required for `npm install`, `git clone`, and Claude CLI API calls inside session containers. `git push`/`git fetch` are routed through the orchestrator (see section 10) for worktree coordination, but standalone sessions could push directly — the network allows it. Restricting egress to specific hosts (e.g., only `api.anthropic.com`, `github.com`, `registry.npmjs.org`) is a future hardening step, not a launch blocker.
+Each container needs 2 host ports (IPC + preview primary). With 10 max containers, that's 20 ports from a 1000-port range — plenty of headroom for additional preview ports if needed.
 
 ### 4. Session Worker Process
 
@@ -271,48 +282,46 @@ await app.listen({ port: 9100, host: "0.0.0.0" });
 
 ### 5. IPC: Orchestrator ↔ Container Communication
 
-The orchestrator communicates with each container's worker over the Docker bridge network. The worker listens on port 9100 inside the container. The orchestrator connects via the container's bridge IP (e.g. `http://172.18.0.3:9100/`). No host port mappings needed.
-
-For streaming (agent events, terminal output), the orchestrator opens an SSE connection to the worker.
+The orchestrator communicates with each container's worker via HTTP on the allocated IPC port. For streaming (agent events, terminal output), it uses an SSE connection.
 
 ```
-Orchestrator (172.18.0.2)             Container Worker (172.18.0.3)
-─────────────────────────             ──────────────────────────────
+Orchestrator                          Container Worker
+────────────                          ────────────────
 
- POST :9100/agent/start  ──────────▶  spawn Claude CLI
+ POST /agent/start  ───────────────▶  spawn Claude CLI
 
- GET  :9100/events       ◀── SSE ──  agent_event, terminal_output,
+ GET  /events       ◀─── SSE ──────  agent_event, terminal_output,
                                       file_changes, preview_status
 
- POST :9100/terminal/input ────────▶  write to PTY
+ POST /terminal/input ─────────────▶  write to PTY
 
- GET  :9100/preview/status ────────▶  return { running, ports }
+ GET  /preview/status ─────────────▶  return { running, port }
 ```
 
 **Why HTTP+SSE instead of raw WebSocket or gRPC:**
 - Fastify is already a dependency — no new libraries needed in the worker
 - SSE is simpler than WebSocket for unidirectional server→client streaming
 - HTTP requests map naturally to the existing `HandlerContext` operations
-- Easy to debug: `curl http://172.18.0.3:9100/events` from the orchestrator container
+- Easy to debug with curl
 
 ### 6. Modified SessionRunner
 
 `SessionRunner` becomes a **proxy** that delegates to the container worker instead of spawning processes directly. The public API stays identical — `HandlerContext` and WebSocket handlers don't change.
 
 ```typescript
-// src/server/container-session-runner.ts
-// Implements the same interface as SessionRunner but delegates to a container worker.
+// Changes to SessionRunner (conceptual)
 
-export class ContainerSessionRunner extends EventEmitter {
+export class SessionRunner extends EventEmitter {
   private container: SessionContainer | null = null;
   private eventSource: EventSource | null = null;  // SSE connection to worker
 
-  // Instead of spawning a local ClaudeAdapter, POST to the container worker
+  // Instead of: this.agent = new ClaudeAdapter(...)
+  // Now:        POST container:9100/agent/start
   async startAgent(opts: AgentStartOpts): Promise<void> {
     if (!this.container) {
       this.container = await containerManager.create({ ... });
     }
-    await fetch(`http://${this.container.containerIp}:9100/agent/start`, {
+    await fetch(`http://localhost:${this.container.ipcPort}/agent/start`, {
       method: "POST",
       body: JSON.stringify(opts),
     });
@@ -321,7 +330,7 @@ export class ContainerSessionRunner extends EventEmitter {
 
   private connectEventStream(): void {
     // Connect to container's SSE endpoint
-    // Parse events and emit via this.emitMessage() — same as SessionRunner
+    // Parse events and emit via this.emitMessage() — same as today
     // Handles reconnection if connection drops
   }
 
@@ -330,110 +339,21 @@ export class ContainerSessionRunner extends EventEmitter {
 }
 ```
 
-**Key insight:** `ContainerSessionRunner` and `SessionRunner` (direct mode) implement the same interface. From the perspective of `HandlerContext`, `send-message.ts`, and all WebSocket handlers, nothing changes. They call `runner.startAgent()`, `runner.getAgent()`, etc. The registry decides which implementation to create (see section 13).
+**Key insight:** From the perspective of `HandlerContext`, `send-message.ts`, and all WebSocket handlers, nothing changes. They call `runner.startAgent()`, `runner.getAgent()`, etc. The runner internally routes to the container instead of local processes.
 
 ### 7. Preview Proxy Integration
 
-With containers, each session's preview runs inside the container on its default port (e.g. 5173 for Vite, 3001 for Next.js) — no conflicts because each container has its own network namespace. The orchestrator proxies preview traffic to containers via the Docker bridge network using session-ID-based routing.
+With containers, each session's preview runs inside the container on port 5173 (no conflicts — isolated network). The orchestrator maps container:5173 to a unique host port via Docker port binding.
 
-#### URL scheme
+The existing `/preview/:port/` proxy (doc 048) works unchanged — it proxies to `localhost:{allocatedPreviewPort}` which Docker forwards to the container's 5173.
 
 ```
-/preview/{sessionId}/{port}/{path...}
+Browser                    Orchestrator                Container
+───────                    ────────────                ─────────
+/preview/10200/  ────────▶ proxy to localhost:10200 ──▶ 5173 (inside container)
 ```
 
-- `{sessionId}` — identifies which container to route to
-- `{port}` — the target port inside that container (supports multiple dev servers)
-- `{path...}` — forwarded verbatim including query string
-
-Examples:
-```
-GET /preview/abc-123/5173/           → container(abc-123) 172.17.0.3:5173/
-GET /preview/abc-123/8080/api/users  → container(abc-123) 172.17.0.3:8080/api/users
-WS  /preview/abc-123/5173/           → container(abc-123) ws://172.17.0.3:5173/  (HMR)
-```
-
-#### Why session ID instead of host port
-
-This supersedes the port-based proxy in doc 048 (`/preview/{port}/`):
-
-| | Port-based (048) | Session-ID-based (051) |
-|---|---|---|
-| Published ports | One host port per preview per session | **Zero** — bridge network only |
-| Port pool | Needed for preview port allocation | **Not needed** |
-| Multi-port | Each internal port needs its own host port | **Free** — route by container IP + any internal port |
-| Port conflicts | Impossible (allocated) but ports are a finite resource | **Impossible** — each container has own network |
-| URL construction | Client needs allocated host port from server | Client uses session ID (already known) |
-
-#### Implementation
-
-The proxy resolves `sessionId` → `containerIp` via `SessionContainerManager`, then forwards:
-
-```typescript
-app.all("/preview/:sessionId/:port/*", async (request, reply) => {
-  const { sessionId, port } = request.params;
-  const sc = containerManager.get(sessionId);
-  if (!sc) return reply.code(404).send({ error: "Session not found" });
-
-  const targetPort = Number(port);
-  const target = request.url.replace(`/preview/${sessionId}/${port}`, "") || "/";
-
-  // Forward to container's bridge IP — no host port mapping needed
-  const proxyReq = http.request({
-    hostname: sc.containerIp,
-    port: targetPort,
-    path: target,
-    method: request.method,
-    headers: { ...request.headers, host: `localhost:${targetPort}` },
-  }, (proxyRes) => {
-    reply.raw.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
-    proxyRes.pipe(reply.raw);
-  });
-
-  request.raw.pipe(proxyReq);
-});
-```
-
-WebSocket upgrade follows the same pattern — intercept `/preview/{sessionId}/{port}/*` upgrade requests and pipe to the container's bridge IP.
-
-#### Port allowlist
-
-The proxy only forwards to ports the session worker reports as active (via the SSE event stream). The worker runs its own port scanner scoped to the container's localhost and reports detected ports to the orchestrator. Unknown ports get `403 Forbidden`.
-
-#### Preview status URL format
-
-The current `SessionRunner.buildPreviewStatus()` returns `url: "http://localhost:${port}"`. With containerization, the `ContainerSessionRunner` constructs the proxy URL instead:
-
-```typescript
-buildPreviewStatus(): WsServerMessage {
-  // Worker reports: { running: true, ports: [5173, 8080] }
-  // Orchestrator constructs proxy URL for the client:
-  return {
-    type: "preview_status",
-    running: true,
-    port: workerPorts[0],
-    url: `/preview/${this.sessionId}/${workerPorts[0]}/`,
-    source: "managed",
-    detectedPorts: workerPorts.slice(1),
-  };
-}
-```
-
-The client receives a relative URL and iframes it directly — same-origin, no CORS issues.
-
-#### Path simplification
-
-With containers, Claude CLI runs with `cwd: /workspace` (the container's mount point). File paths in tool calls become `/workspace/src/App.tsx` instead of `/workspace/sessions/{uuid}/src/App.tsx`. The client-side `sessionRelativePath()` utility (`src/client/path-utils.ts`) simplifies from stripping a UUID-containing prefix to just stripping `/workspace/`:
-
-```typescript
-// Before (current): "/workspace/sessions/28e2fa34-.../src/App.tsx" → "src/App.tsx"
-const SESSION_PREFIX_RE = /^\/workspace\/sessions\/[^/]+\//;
-
-// After (containerized): "/workspace/src/App.tsx" → "src/App.tsx"
-const SESSION_PREFIX_RE = /^\/workspace\//;
-```
-
-This regex change should be gated on the `useContainers` flag or made to handle both formats for backward compatibility.
+If doc 048 is not yet implemented, the client can iframe `http://localhost:{allocatedPreviewPort}` directly. Either way, each session gets a unique preview URL with zero port conflicts.
 
 ### 8. Credential and Auth Handling
 
@@ -441,155 +361,14 @@ Containers need access to credentials for Claude CLI and GitHub operations:
 
 | Credential | Mount | Access |
 |---|---|---|
-| Claude CLI auth (`~/.claude/`) | Bind mount from host `/credentials/.claude/` | **Read-write** (CLI writes conversation cache on `--resume`) |
+| Claude CLI auth (`~/.claude/`) | Bind mount from host `/credentials/.claude/` | Read-only |
 | GitHub token | Passed via env var `GITHUB_TOKEN` | Set at container create |
 | Git identity | Passed via env vars `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL` | Set at container create |
 | Deploy credentials | Bind mount from host per-session deploy dir | Read-only |
 
 The orchestrator reads credentials from `CredentialStore` and passes them at container creation time. Containers never see the Docker socket or other sessions' credentials.
 
-### 9. Filesystem Mounts and Worktree Isolation
-
-#### Current layout (single volume)
-
-```
-/workspace/                           ← Docker VOLUME on host
-├── sessions/
-│   ├── {uuid-A}/                     ← session A's project files + .git
-│   └── {uuid-B}/                     ← session B's project files + .git
-├── repos/                            ← shared bare repos for worktree sessions
-│   └── {sha256-of-remote-url}/       ← one per GitHub repo, shared by worktrees
-├── .vibe-sessions.json               ← session metadata
-├── .vibe-chat-history/               ← per-session chat JSON
-├── .vibe-threads/                    ← thread/checkpoint data
-├── .shipit-usage.json                ← cost tracking
-└── .shipit-deploy/                   ← deploy configs and history
-
-/credentials/                         ← separate volume
-├── .claude/                          ← Claude CLI auth (symlinked to /root/.claude)
-└── .claude.json
-```
-
-#### The worktree problem
-
-Git worktrees share a parent repo. When a user forks session A into a worktree branch, the structure becomes:
-
-```
-/workspace/repos/{hash}/              ← shared bare-ish repo (primary checkout)
-  └── .git/worktrees/{uuid-B}/        ← worktree metadata for session B
-
-/workspace/sessions/{uuid-B}/         ← worktree checkout
-  └── .git                            ← file (not dir), points to ../../repos/{hash}/.git/worktrees/{uuid-B}
-```
-
-Session B's `.git` is a pointer back to the shared repo. Git operations inside session B (commit, log, diff, status) need **read-write access to both** the session directory and the shared repo's `.git/worktrees/` directory. Mounting two containers to the same shared repo with write access risks git index corruption.
-
-#### Solution: Split git operations by scope
-
-Git operations fall into two categories:
-
-**Session-local** (run inside the container) — these only touch the session's own working tree and its worktree-specific git state:
-- `git status`, `git diff`, `git log`
-- `git add`, `git commit` (writes to worktree-specific index)
-- `git stash`, `git checkout` (file-level)
-- File reads/writes by Claude CLI
-
-However, `git commit` also writes new objects (blobs, trees, commit) to the **shared object store** at `.git/objects/` in the parent repo — not to the per-worktree directory. This means a read-only shared repo mount would break commits.
-
-**Workaround: per-worktree object directory.** Git supports `GIT_OBJECT_DIRECTORY` to redirect new object writes to a separate location. The container sets this to a writable path inside the session dir:
-
-```
-Container for session B (worktree):
-  /workspace         ← bind: /workspace/sessions/{uuid-B}  (rw)
-  /repo              ← bind: /workspace/repos/{hash}        (ro)
-
-  GIT_OBJECT_DIRECTORY=/workspace/.git-objects        (writable, inside session dir)
-  GIT_ALTERNATE_OBJECTS_DIRECTORIES=/repo/.git/objects (read-only, shared store)
-```
-
-New objects from commits go to the writable session-local directory. Git reads existing objects from the shared store via alternates. On the orchestrator side, after a worktree session's container is stopped, a maintenance step (`git repack` or object transfer) can fold session-local objects back into the shared repo if needed.
-
-**Trade-off:** This adds complexity. A simpler alternative is to run **all git operations for worktree sessions through the orchestrator** via IPC, avoiding the split entirely. The orchestrator has read-write access to both the session dir and shared repo. The cost is latency for every `git commit` (HTTP round-trip instead of local), but commits are infrequent relative to file edits.
-
-**Recommended approach:** For phase 1, route all worktree git operations through the orchestrator. Revisit `GIT_OBJECT_DIRECTORY` in a later phase if the latency proves problematic.
-
-**Cross-session** (run on the orchestrator) — these modify the shared repo and affect other sessions:
-- `git worktree add` / `git worktree remove` (creates/deletes worktree entries in shared repo)
-- `git branch -d` (deletes branch from shared repo)
-- `git push` / `git fetch` (touches shared remote state)
-- `git merge` across worktree branches
-- `forkSession()`, `archiveSession()` (create/destroy worktree dirs + metadata)
-- **For worktree sessions:** `git add`, `git commit` (need write access to shared object store)
-
-These operations stay on the **orchestrator**, which has full read-write access to `/workspace`. Most are already orchestrator-scoped today — `forkSession()` and `archiveSession()` live in `src/server/services/session.ts` and are called from HTTP routes, not from the session worker. For worktree sessions, `git commit` is additionally routed through the orchestrator.
-
-#### Container mount configuration
-
-**Regular session** (standalone git repo):
-```typescript
-Binds: [
-  `${sessionDir}:/workspace:rw`,          // session's project files
-  `${credentialsDir}:/credentials:ro`,     // Claude CLI auth, GitHub token
-]
-```
-
-**Worktree session** (references shared repo):
-```typescript
-Binds: [
-  `${sessionDir}:/workspace:rw`,          // worktree checkout
-  `${sharedRepoDir}:/repo:ro`,            // shared git object store (read-only)
-  `${credentialsDir}:/credentials:ro`,
-]
-```
-
-The shared repo is mounted read-only. The container can read git objects (for `git log`, `git diff`, file reads) but cannot write new objects. All git write operations for worktree sessions (commit, add) are routed through the orchestrator via IPC. See section 10 for details.
-
-#### Git operations routing summary
-
-| Operation | Standalone session | Worktree session | Why |
-|---|---|---|---|
-| `git status/diff/log` | Container | Container | Reads working tree + objects (read-only shared repo sufficient) |
-| `git add/commit` | Container | **Orchestrator** | Standalone writes to local `.git/objects/`; worktree writes to shared object store |
-| `git push/pull/fetch` | Orchestrator | Orchestrator | Needs network egress + shared remote refs |
-| `git worktree add/remove` | — | Orchestrator | Modifies shared repo structure |
-| `git branch -d` | Orchestrator | Orchestrator | Modifies shared refs |
-| `git merge` (cross-branch) | Orchestrator | Orchestrator | May touch shared repo objects |
-| `forkSession` | Orchestrator | Orchestrator | Creates worktree + session metadata |
-| `archiveSession` | Orchestrator | Orchestrator | Removes worktree + cleans shared repo |
-
-#### What stays on the orchestrator only (never in containers)
-
-These files/directories are orchestrator-owned and never mounted into session containers:
-
-- `.vibe-sessions.json` — session metadata (SessionManager)
-- `.vibe-chat-history/` — chat persistence (ChatHistoryManager)
-- `.vibe-threads/` — thread/checkpoint data (ThreadManager)
-- `.shipit-usage.json` — cost tracking (UsageManager)
-- `.shipit-deploy/` — deployment configs (DeploymentStore)
-- `/workspace/repos/` — shared git repos (except individual repos mounted read-only for worktree sessions)
-
-### 10. Worker Git Proxy
-
-The session worker needs a way to request cross-session git operations from the orchestrator. The worker exposes these as "please do this on my behalf" requests over the IPC channel:
-
-```typescript
-// In session-worker.ts — when Claude CLI runs `git push`:
-// The worker intercepts git operations that need shared repo access
-// and proxies them to the orchestrator.
-
-// Worker → Orchestrator (reverse IPC call)
-app.post("/git-proxy/push", async (req) => {
-  // Worker cannot push directly (shared repo is read-only mount).
-  // Forward to orchestrator, which has rw access.
-  return { proxy: true, operation: "push", args: req.body };
-});
-```
-
-The orchestrator's IPC client watches for proxy requests and executes them with the real `GitManager` that has write access to the shared repo. This keeps the container's git operations fast (local commits are direct) while funneling shared-state operations through a single writer.
-
-Alternatively, rather than intercepting at the git level, Claude CLI's `Bash` tool calls could be wrapped: if the worker detects a `git push`, `git fetch`, or similar command, it returns an error asking Claude to use the dedicated push/pull UI instead. This is simpler and avoids the complexity of a transparent git proxy.
-
-### 11. Container Image
+### 9. Container Image
 
 A `Dockerfile.session-worker` builds the session worker image:
 
@@ -607,16 +386,14 @@ COPY dist/session-worker.js /app/
 COPY node_modules /app/node_modules/
 
 WORKDIR /workspace
-# IPC server port — no EXPOSE needed since we use bridge networking,
-# but documented here for clarity. Preview ports are dynamic.
-EXPOSE 9100
+EXPOSE 9100 5173
 
 CMD ["node", "/app/session-worker.js"]
 ```
 
 This image is built once and reused for all sessions. Per-session dependencies (npm install for user's project) happen at runtime inside the container, isolated from other sessions.
 
-### 12. Lifecycle Mapping
+### 10. Lifecycle Mapping
 
 | Current (SessionRunner) | Containerized |
 |---|---|
@@ -624,7 +401,7 @@ This image is built once and reused for all sessions. Per-session dependencies (
 | `runner.attachViewer()` | Connect SSE event stream from worker |
 | `runner.detachViewer()` (last viewer) | Disconnect SSE (container keeps running) |
 | `runner.startAgent()` | `POST container/agent/start` |
-| `runner.dispose()` (idle timeout) | `docker stop` + `docker rm` |
+| `runner.dispose()` (idle timeout) | `docker stop` + `docker rm` + release ports |
 | `registry.disposeAll()` (full_reset) | Stop and remove all session containers |
 
 Container startup adds ~1-2s latency vs the current ~10ms process spawn. This is acceptable because:
@@ -632,7 +409,7 @@ Container startup adds ~1-2s latency vs the current ~10ms process spawn. This is
 - Subsequent messages reuse the running container
 - The container stays alive through session switches and tab closes (same as current runner persistence)
 
-### 13. Fallback Mode
+### 11. Fallback Mode
 
 For development and environments without Docker:
 
@@ -683,10 +460,10 @@ Both `SessionRunner` (direct) and `ContainerSessionRunner` (Docker proxy) implem
 
 **Scope:**
 - Create `SessionContainerManager` with dockerode
-- Create `shipit` Docker bridge network for orchestrator ↔ container communication
+- Create `PortPool` for host port allocation
 - Create `Dockerfile.session-worker`
 - Wire container lifecycle to runner registry
-- Mount workspace volumes and credentials (read-only shared repo for worktrees)
+- Mount workspace volumes and credentials
 - Add resource limits (CPU, memory)
 - Add health checks and container restart logic
 
@@ -694,6 +471,7 @@ Both `SessionRunner` (direct) and `ContainerSessionRunner` (Docker proxy) implem
 | File | Change |
 |---|---|
 | `src/server/session-container.ts` | **NEW** — container manager |
+| `src/server/port-pool.ts` | **NEW** — port allocator |
 | `Dockerfile.session-worker` | **NEW** — worker image |
 | `src/server/index.ts` | Wire container manager into AppDeps |
 | `src/server/session-runner.ts` | Registry delegates to container manager |
@@ -704,19 +482,17 @@ Both `SessionRunner` (direct) and `ContainerSessionRunner` (Docker proxy) implem
 
 **Scope:**
 - Terminal PTY runs inside container, I/O proxied via IPC
-- Preview server runs inside container, proxied via `/preview/{sessionId}/{port}/` route
+- Preview server runs inside container, proxied via allocated host port
 - File watcher runs inside container, events streamed via SSE
 - Port scanning scoped to container's network namespace (automatic — each container has its own localhost)
-- Add preview proxy route to Fastify (replaces doc 048 port-based proxy with session-ID-based routing)
-- Update `sessionRelativePath()` to handle containerized paths (`/workspace/` prefix instead of `/workspace/sessions/{uuid}/`)
+- Integrate with doc 048 preview proxy if available
 
 **Files:**
 | File | Change |
 |---|---|
 | `src/server/session-worker.ts` | Add terminal, preview, file watcher endpoints |
 | `src/server/container-session-runner.ts` | Add terminal, preview, file watcher proxy methods |
-| `src/server/preview-proxy.ts` | **NEW** — session-ID-based reverse proxy |
-| `src/client/path-utils.ts` | Handle both containerized and direct path formats |
+| `src/server/session-container.ts` | Map preview port in container config |
 
 ### Phase 4: Speculative Container Pre-warming
 
@@ -783,11 +559,11 @@ Auto-detect at startup: `docker.ping()`. If it fails, fall back to direct proces
 
 ### 2. Container fails to start
 
-Return error to client: `{ type: "error", message: "Failed to start session container" }`. Clean up registry entry. Retry once with a fresh container before giving up.
+Return error to client: `{ type: "error", message: "Failed to start session container" }`. Clean up allocated ports. Retry once with a fresh container before giving up.
 
 ### 3. Container exits unexpectedly (OOM, crash)
 
-Orchestrator detects via Docker event stream (`docker.getEvents()`). Notifies attached viewers: `{ type: "session_status", running: false, error: "Session container exited unexpectedly" }`. Cleans up registry entry. Next interaction with the session creates a fresh container.
+Orchestrator detects via Docker event stream (`docker.getEvents()`). Notifies attached viewers: `{ type: "session_status", running: false, error: "Session container exited unexpectedly" }`. Cleans up ports and registry entry. Next interaction with the session creates a fresh container.
 
 ### 4. Network partition between orchestrator and container
 
@@ -809,9 +585,9 @@ Switching sessions detaches from runner A (SSE stays connected for reconnection)
 
 `registry.dispose(sessionId)` → `containerManager.destroy(sessionId)` → `docker stop` + `docker rm`. Same as current behavior but with container cleanup instead of process kill.
 
-### 9. Bridge network IP exhaustion
+### 9. Port pool exhaustion
 
-The default Docker bridge subnet is `/16` (65k IPs). With 10 max containers this is not a realistic concern. If the network is misconfigured, container creation fails and the orchestrator returns an error to the client.
+With 1000 ports and 20 ports per container (2 base + headroom), this supports 50 containers — well above the 10-runner cap. If somehow exhausted, return an error and refuse to create new containers.
 
 ---
 
@@ -876,16 +652,16 @@ All session containers are labeled `shipit-session=true` and `shipit-session-id=
 
 ### Unit tests
 
+- `PortPool`: allocate, release, exhaustion error
 - `SessionContainerManager`: create, destroy, destroyAll (mocked dockerode)
 - `ContainerSessionRunner`: delegates to HTTP endpoints (mocked fetch)
-- Preview proxy: session ID resolution, path stripping, port allowlist
 
 ### Integration tests
 
 - Worker IPC: start worker as subprocess, verify agent start/stop via HTTP
 - SSE event stream: verify agent events flow through SSE to orchestrator
 - Terminal proxy: verify PTY I/O round-trips through IPC
-- Preview proxy: verify `/preview/{sessionId}/{port}/` routes to correct container IP
+- Preview proxy: verify preview accessible on allocated host port
 - Full lifecycle: create container → run agent → get output → idle timeout → container removed
 
 ### Fallback tests
@@ -902,12 +678,11 @@ All session containers are labeled `shipit-session=true` and `shipit-session-id=
 | `src/server/session-worker.ts` | **NEW** — worker process running inside container |
 | `src/server/session-container.ts` | **NEW** — Docker container lifecycle manager |
 | `src/server/container-session-runner.ts` | **NEW** — SessionRunner proxy to container |
-| `src/server/preview-proxy.ts` | **NEW** — session-ID-based reverse proxy for preview traffic |
+| `src/server/port-pool.ts` | **NEW** — host port allocator |
 | `Dockerfile.session-worker` | **NEW** — container image for session workers |
 | `src/server/session-runner.ts` | Extract interface, registry delegates to container or direct |
-| `src/server/index.ts` | Wire container manager, bridge network, auto-detect Docker |
-| `src/client/path-utils.ts` | Handle `/workspace/` prefix (containerized) alongside existing format |
+| `src/server/index.ts` | Wire container manager, auto-detect Docker |
 | `src/server/ws-handlers/types.ts` | No changes (HandlerContext unchanged) |
 | `src/server/ws-handlers/send-message.ts` | No changes (delegates to runner) |
 | `docs/041-persistent-session-runners/plan.md` | Prior art — SessionRunner design |
-| `docs/048-multi-port-support/plan.md` | Superseded — session-ID routing replaces port-based proxy |
+| `docs/048-multi-port-support/plan.md` | Related — preview proxy pairs well with containerized previews |
