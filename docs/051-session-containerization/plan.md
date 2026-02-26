@@ -30,6 +30,7 @@ The orchestrator (Fastify server) remains on the host, managing session metadata
 - **Custom base images per session.** All sessions share one image. Per-session package installs happen inside the container at runtime.
 - **Live migration.** Containers are ephemeral — tied to the session runner lifecycle, not persisted across server restarts.
 - **Generic pre-warmed container pool.** A pool of idle containers without workspaces won't work because Docker bind mounts are immutable after creation. However, *speculative* pre-warming for the most recently used repo is viable — see Phase 4.
+- **Native Windows (non-WSL).** Windows support requires WSL2. Running ShipIt directly on Windows without WSL is not supported.
 
 ---
 
@@ -128,7 +129,7 @@ export class SessionContainerManager {
   private networkName: string;
 
   constructor(opts: {
-    socketPath?: string;           // default: /var/run/docker.sock
+    socketPath?: string;           // default: /var/run/docker.sock (works on Linux, macOS, WSL2)
     imageName?: string;            // default: shipit-session-worker:latest
     networkName?: string;          // default: "shipit"
     memoryLimit?: number;          // default: 512MB
@@ -779,7 +780,7 @@ Limits are configurable via `AppDeps` for different deployment environments.
 
 ### 1. Docker not available
 
-Auto-detect at startup: `docker.ping()`. If it fails, fall back to direct process spawning (current behavior) and log a warning. This ensures the app works in development without Docker.
+Auto-detect at startup: `docker.ping()`. If it fails, fall back to direct process spawning (current behavior) and log a warning. This ensures the app works in development without Docker. The `dockerode` default socket path (`/var/run/docker.sock`) is correct for Linux, macOS (Docker Desktop symlink), and WSL2 — no platform-specific configuration needed.
 
 ### 2. Container fails to start
 
@@ -869,6 +870,65 @@ if (process.env.SKIP_PERMISSIONS === "true") {
 ### Container labels for management
 
 All session containers are labeled `shipit-session=true` and `shipit-session-id={uuid}` for reliable cleanup and identification.
+
+---
+
+## Cross-Platform Support
+
+**Target platforms:** Linux, macOS, Windows 10/11 (via WSL2).
+
+Docker containers always run Linux regardless of the host OS. The orchestrator runs on the host (or inside WSL2 on Windows). `dockerode` connects to the Docker daemon via a Unix socket on all three platforms. This means the containerization design works cross-platform with minimal platform-specific code.
+
+### Platform matrix
+
+| | Linux | macOS | Windows (WSL2) |
+|---|---|---|---|
+| Docker daemon | Docker Engine (native) | Docker Desktop (Linux VM via Virtualization.framework) | Docker Desktop (WSL2 backend) or Docker Engine inside WSL2 |
+| Socket path | `/var/run/docker.sock` | `/var/run/docker.sock` (symlink) | `/var/run/docker.sock` (inside WSL2) |
+| Bind mounts | Native — fastest | virtiofs — near-native for `/Users/` paths | Native within WSL2 filesystem (`/home/...`); slow on Windows filesystem (`/mnt/c/...`) |
+| Bridge networking | Native | Inside Docker Desktop VM — transparent | Inside WSL2/Docker Desktop VM — transparent |
+| cgroups / resource limits | Native | Enforced inside VM | Enforced inside VM |
+| Container cold start | ~1-2s | ~1-2s | ~1-2s |
+
+### Docker socket auto-detection
+
+`dockerode` defaults to `/var/run/docker.sock` on all platforms. This works for:
+- **Linux:** Docker Engine's default socket location.
+- **macOS:** Docker Desktop creates a symlink at `/var/run/docker.sock` → `~/.docker/run/docker.sock`.
+- **Windows (WSL2):** If using Docker Desktop with WSL2 backend, Docker Desktop exposes the socket inside WSL2 distributions at `/var/run/docker.sock`. If using Docker Engine installed directly inside WSL2, the socket is at the same path.
+
+The existing `docker.ping()` auto-detection (see section 13) validates connectivity regardless of platform. If Docker is unavailable, the fallback to direct process spawning works identically on all platforms.
+
+For Windows users **not** using WSL2, Docker Sandboxes is the only alternative — but that has its own blockers (see research). ShipIt requires WSL2 for the Windows platform.
+
+### Bind mount path handling
+
+Bind mounts use absolute paths on the host. These are always Linux-style paths for ShipIt because:
+- **Linux:** Native paths.
+- **macOS:** Docker Desktop translates macOS paths (`/Users/...`) to VM-internal paths transparently.
+- **WSL2:** ShipIt runs inside WSL2 where paths are already Linux-style (`/home/user/...`, `/workspace/...`).
+
+No path translation code is needed in `SessionContainerManager`. The existing `sessionDir` and `credentialsDir` paths (already absolute Linux paths) are passed directly to Docker's `Binds` configuration.
+
+### Performance considerations
+
+| Platform | Concern | Mitigation |
+|---|---|---|
+| macOS | Bind mount I/O is ~10-30% slower than native (virtiofs) | Acceptable for development. `npm install` and file writes are slightly slower. No code change needed. |
+| WSL2 | Files on Windows filesystem (`/mnt/c/...`) are 5-10x slower | ShipIt's workspace (`/workspace/`) should live on the WSL2 filesystem, not on `/mnt/c/`. Document this in setup instructions. |
+| Linux | No performance concerns | N/A |
+| All | Container cold start adds ~1-2s on first session interaction | Phase 4 (speculative pre-warming) reduces this to ~0ms for the common case. |
+
+### Platform-specific Docker installation
+
+ShipIt does not install Docker — it expects Docker to be available. The auto-detection and fallback behavior handles missing Docker gracefully. Setup documentation should cover:
+
+- **Linux:** `sudo apt-get install docker.io` (or Docker Engine install script). Add user to `docker` group.
+- **macOS:** [Docker Desktop for Mac](https://docs.docker.com/desktop/install/mac-install/). Enable "Use Virtualization framework" and "VirtioFS" for best bind mount performance.
+- **Windows:** Install WSL2 (`wsl --install`), then either:
+  - Docker Desktop with "Use the WSL 2 based engine" enabled (recommended — exposes socket to all WSL2 distros), or
+  - Install Docker Engine directly inside the WSL2 distribution.
+  - Ensure workspace directories live on the WSL2 filesystem (e.g., `/home/user/workspace/`), not on `/mnt/c/`.
 
 ---
 
