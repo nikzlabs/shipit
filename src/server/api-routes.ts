@@ -474,7 +474,10 @@ export async function registerApiRoutes(
       try {
         const git = createGitManager(dir);
         const result = await gitRollback(git, request.body.commitHash);
-        deps.previewManager.restart(dir);
+        const runner = deps.runnerRegistry.get(request.params.id);
+        if (!runner?.supportsRemoteTerminal) {
+          deps.previewManager.restart(dir);
+        }
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -495,7 +498,10 @@ export async function registerApiRoutes(
       try {
         const git = createGitManager(dir);
         const result = await rejectChanges(git, request.body.fromCommit, request.body.files ?? []);
-        deps.previewManager.restart(dir);
+        const runner = deps.runnerRegistry.get(request.params.id);
+        if (!runner?.supportsRemoteTerminal) {
+          deps.previewManager.restart(dir);
+        }
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -811,7 +817,11 @@ export async function registerApiRoutes(
           sessionManager, createGitManager, deps.createSessionDir,
           request.body.templateId, request.params.id === "new" ? undefined : request.params.id,
         );
-        deps.previewManager.restart(result.sessionDir);
+        const sessionId = result.session?.id;
+        const runner = sessionId ? deps.runnerRegistry.get(sessionId) : undefined;
+        if (!runner?.supportsRemoteTerminal) {
+          deps.previewManager.restart(result.sessionDir);
+        }
         return { templateId: result.templateId, name: result.name, session: result.session };
       } catch (err) {
         if (err instanceof ServiceError) {

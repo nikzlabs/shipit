@@ -80,38 +80,78 @@ export function PreviewFrame({
 }: PreviewFrameProps) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
-  const [iframeReady, setIframeReady] = useState(false);
 
   // Compute active port early so hooks can reference it (0 when not running)
   const activePort = preview?.running ? (selectedPort ?? preview.port) : 0;
 
-  // Reset readiness when the iframe target changes (session switch, port change, reload)
-  useEffect(() => {
-    setIframeReady(false);
-  }, [sessionId, activePort, refreshKey]);
+  // API host for container-mode subdomain URLs (e.g. "localhost:3001")
+  const apiHost = import.meta.env.VITE_API_HOST || window.location.host;
+
+  // Derive iframe readiness from a key: when session/port/refresh changes,
+  // the key changes and iframeReady becomes false *in the same render* —
+  // no effect-based reset needed, which avoids a one-frame gap where the
+  // iframe would briefly load the new URL before the reset fires.
+  const targetKey = `${sessionId}:${activePort}:${refreshKey}`;
+  const [readyForKey, setReadyForKey] = useState("");
+  const iframeReady = readyForKey === targetKey;
+
+  // For container mode, build a subdomain URL so absolute paths (/src/main.tsx)
+  // resolve naturally against the preview origin without HTML rewriting.
+  // Pattern: {sessionId}--{port}.{apiHostname}:{apiPort}
+  // When accessed via IP (e.g. 127.0.0.1), substitute "localhost" — browsers
+  // resolve *.localhost to 127.0.0.1 per spec, so subdomains work without DNS.
+  const previewSubdomainUrl = preview?.url?.startsWith("/preview/") && sessionId
+    ? (() => {
+        const [rawHostname, apiPort] = apiHost.includes(":") ? apiHost.split(":") : [apiHost, ""];
+        // Substitute loopback IPs with "localhost" so subdomains resolve
+        const apiHostname = /^(127\.\d+\.\d+\.\d+|::1)$/.test(rawHostname) ? "localhost" : rawHostname;
+        // Other IP addresses (e.g. LAN) can't use subdomains without wildcard DNS
+        if (/^\d+\.\d+\.\d+\.\d+$/.test(apiHostname) || apiHostname.includes(":")) return null;
+        const portSuffix = apiPort ? `:${apiPort}` : "";
+        return `${window.location.protocol}//${sessionId}--${activePort}.${apiHostname}${portSuffix}/`;
+      })()
+    : null;
+
+  // Container mode: poll via health-check endpoint (always 200, no console
+  // errors). Local mode: poll localhost with no-cors.
+  const isContainerMode = !!(preview?.url?.startsWith("/preview/"));
+  const pollUrl = isContainerMode
+    ? `/api/preview-health/${sessionId}/${activePort}`
+    : (activePort ? `http://localhost:${activePort}` : null);
 
   // Poll the preview URL until it responds, then allow iframe to render.
   // Prevents showing a broken-page icon while the dev server is still starting
   // or Docker port mapping is not yet established.
   useEffect(() => {
-    if (!activePort || iframeReady) return;
+    if (!activePort || !pollUrl || iframeReady) return;
     let cancelled = false;
+    const key = targetKey;
     const poll = async () => {
-      for (let i = 0; i < 20 && !cancelled; i++) {
+      for (let i = 0; i < 30 && !cancelled; i++) {
         try {
-          await fetch(`http://localhost:${activePort}`, { mode: "no-cors" });
-          if (!cancelled) setIframeReady(true);
-          return;
+          if (isContainerMode) {
+            const resp = await fetch(pollUrl);
+            const data = await resp.json();
+            if (data.ready) {
+              if (!cancelled) setReadyForKey(key);
+              return;
+            }
+          } else {
+            await fetch(pollUrl, { mode: "no-cors" });
+            if (!cancelled) setReadyForKey(key);
+            return;
+          }
         } catch {
-          await new Promise((r) => setTimeout(r, 500));
+          // Network error — retry
         }
+        await new Promise((r) => setTimeout(r, 500));
       }
-      // Give up after ~10s — show iframe anyway
-      if (!cancelled) setIframeReady(true);
+      // Give up after ~15s — show iframe anyway
+      if (!cancelled) setReadyForKey(key);
     };
     poll();
     return () => { cancelled = true; };
-  }, [activePort, iframeReady]);
+  }, [activePort, pollUrl, iframeReady, isContainerMode, targetKey]);
 
   // Show install progress
   if (installStatus && installStatus.status === "running") {
@@ -199,8 +239,11 @@ export function PreviewFrame({
     );
   }
 
-  // activePort already computed above (before hooks)
-  const activeUrl = `http://localhost:${activePort}`;
+  // Build the preview URL. Subdomain URL is ideal (absolute paths resolve
+  // naturally). When unavailable (IP-based access), fall back to the path-based
+  // proxy URL. Local mode (no container) uses localhost directly.
+  const activeUrl = previewSubdomainUrl
+    ?? (preview?.url?.startsWith("/preview/") ? `${preview.url}` : `http://localhost:${activePort}`);
   const isManaged = (preview.source === "vite" || preview.source === "managed") && activePort === preview.port;
   const showSelector = detectedPorts.length > 1 || ((preview.source === "vite" || preview.source === "managed") && detectedPorts.length > 0);
 
@@ -238,7 +281,7 @@ export function PreviewFrame({
             </select>
           ) : (
             <>
-              localhost:{activePort}
+              {preview?.url?.startsWith("/preview/") ? `port ${activePort}` : `localhost:${activePort}`}
               {!isManaged && preview.source === "detected" && (
                 <span className="text-yellow-400">(auto-detected)</span>
               )}
@@ -289,7 +332,10 @@ export function PreviewFrame({
           src={activeUrl}
           title="Live Preview"
           className={`flex-1 w-full bg-white ${hasErrors && errorPanelOpen ? "min-h-0" : ""}`}
-          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+          // In container mode the iframe loads from a subdomain of our own proxy,
+          // so sandbox is unnecessary and actually breaks cross-origin framing.
+          // In local mode (dev server on host), sandbox restricts the iframe.
+          {...(!isContainerMode && { sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-modals" })}
         />
       ) : (
         <div className="flex-1 flex items-center justify-center bg-white text-gray-500 text-sm">

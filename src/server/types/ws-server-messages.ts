@@ -254,7 +254,9 @@ export interface WsSessionStatus {
   type: "session_status";
   sessionId: string;
   running: boolean;
-  queueLength: number;
+  queueLength?: number;
+  /** Present when the session encountered a fatal error (e.g. container crash). */
+  error?: string;
 }
 
 /** Server → Client: agent started running in a session (broadcast to all clients). */
