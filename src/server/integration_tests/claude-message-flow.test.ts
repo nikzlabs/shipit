@@ -97,9 +97,7 @@ describe("Integration: Claude message flow — basics", () => {
     expect(agentEvent.type).toBe("agent_event");
     expect((agentEvent as any).event.type).toBe("agent_init");
 
-    const sessionStarted = await client.receiveSkipLogs();
-    expect(sessionStarted).toBeDefined();
-    expect(sessionStarted.type).toBe("session_started");
+    const sessionStarted = await client.receiveType("session_started");
     // Session ID is now an app-generated UUID (not the agent's session_id)
     expect((sessionStarted as any).session.id).toBeTruthy();
     expect((sessionStarted as any).session.title).toBe("Hello Claude");
@@ -139,9 +137,8 @@ describe("Integration: Claude message flow — basics", () => {
       session_id: "test-session",
     });
 
-    // Consume the session_started message (agent_event is auto-skipped by receiveSkipLogs)
-    const sessionMsg = await client.receiveSkipLogs(); // session_started
-    expect(sessionMsg.type).toBe("session_started");
+    // Consume the session_started message
+    const sessionMsg = await client.receiveType("session_started");
     const sessionDir = (sessionMsg as any).session.workspaceDir;
 
     // Create a file in the session directory that will be committed on done
@@ -161,10 +158,8 @@ describe("Integration: Claude message flow — basics", () => {
     lastClaude.emit("event", { type: "result", subtype: "success", session_id: "test-session" });
     lastClaude.emit("done", 0);
 
-    // Wait for the async auto-commit (skip log_entry messages)
-    const msg = await client.receiveSkipLogs();
-
-    expect(msg.type).toBe("git_committed");
+    // Wait for the async auto-commit
+    const msg = await client.receiveType("git_committed");
     expect((msg as any).message).toBe("I created new-file.txt for you");
     expect((msg as any).hash).toBeTruthy();
 
@@ -180,10 +175,7 @@ describe("Integration: Claude message flow — basics", () => {
 
     lastClaude.emit("error", new Error("spawn ENOENT"));
 
-    // Skip log_entry messages to get the error
-    const msg = await client.receiveSkipLogs();
-
-    expect(msg.type).toBe("error");
+    const msg = await client.receiveType("error");
     expect((msg as any).message).toContain("Agent process error");
     expect((msg as any).message).toContain("spawn ENOENT");
 
@@ -200,9 +192,7 @@ describe("Integration: Claude message flow — basics", () => {
     // Process exits with non-zero code and no result event
     lastClaude.emit("done", 1);
 
-    const msg = await client.receiveSkipLogs();
-
-    expect(msg.type).toBe("error");
+    const msg = await client.receiveType("error");
     expect((msg as any).message).toContain("exited with code 1");
 
     client.close();
@@ -218,9 +208,7 @@ describe("Integration: Claude message flow — basics", () => {
     // Process exits with code 0 but no result event (e.g. auth issue)
     lastClaude.emit("done", 0);
 
-    const msg = await client.receiveSkipLogs();
-
-    expect(msg.type).toBe("error");
+    const msg = await client.receiveType("error");
     expect((msg as any).message).toContain("ended without a response");
 
     client.close();
@@ -296,8 +284,7 @@ describe("Integration: Claude message flow — basics", () => {
       subtype: "init",
       session_id: "track-session",
     });
-    // Consume session_started (agent_event is auto-skipped by receiveSkipLogs)
-    await client.receiveSkipLogs(); // session_started
+    await client.receiveType("session_started");
 
     const sessionsBefore = sessionManager.list();
     const lastUsedBefore = sessionsBefore[0].lastUsedAt;

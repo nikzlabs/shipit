@@ -540,7 +540,7 @@ describe("Integration: Session Worker IPC", () => {
 
     // Wait for the done event to propagate
     await waitFor(() => {
-      const status = worker.getApp().inject({ method: "GET", url: "/agent/status" });
+      worker.getApp().inject({ method: "GET", url: "/agent/status" });
       return true; // The agent reference is cleared in the worker's done handler
     }, 1000, "agent cleared");
 

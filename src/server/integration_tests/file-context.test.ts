@@ -124,8 +124,7 @@ describe("Integration: File context attachments", () => {
       files: [{ path: "../../etc/passwd" }],
     });
 
-    const msg = await client.receiveSkipLogs();
-    expect(msg.type).toBe("error");
+    const msg = await client.receiveType("error");
     expect((msg as any).message).toContain("Invalid file path");
 
     client.close();
@@ -141,8 +140,7 @@ describe("Integration: File context attachments", () => {
       files: [{ path: "nonexistent.ts" }],
     });
 
-    const msg = await client.receiveSkipLogs();
-    expect(msg.type).toBe("error");
+    const msg = await client.receiveType("error");
     expect((msg as any).message).toContain("File not found");
 
     client.close();
@@ -162,8 +160,7 @@ describe("Integration: File context attachments", () => {
       files: [{ path: "big.ts" }],
     });
 
-    const msg = await client.receiveSkipLogs();
-    expect(msg.type).toBe("error");
+    const msg = await client.receiveType("error");
     expect((msg as any).message).toContain("File too large");
 
     client.close();
@@ -186,8 +183,7 @@ describe("Integration: File context attachments", () => {
       files,
     });
 
-    const msg = await client.receiveSkipLogs();
-    expect(msg.type).toBe("error");
+    const msg = await client.receiveType("error");
     expect((msg as any).message).toContain("Maximum 10");
 
     client.close();
@@ -222,8 +218,7 @@ describe("Integration: File context attachments", () => {
       files: [{ path: "" }],
     });
 
-    const msg = await client.receiveSkipLogs();
-    expect(msg.type).toBe("error");
+    const msg = await client.receiveType("error");
     expect((msg as any).message).toContain("File path is required");
 
     client.close();

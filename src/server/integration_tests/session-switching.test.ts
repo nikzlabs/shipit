@@ -184,7 +184,7 @@ describe("Integration: Session isolation — switching & resume", () => {
     client.send({ type: "send_message", text: "First turn" });
     await waitForClaude(() => lastClaude);
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "my-agent-session" });
-    const sessionMsg = await client.receiveSkipLogs();
+    const sessionMsg = await client.receiveType("session_started");
     const appSessionId = (sessionMsg as any).session.id;
     lastClaude.emit("done", 0);
     await new Promise((r) => setTimeout(r, 100));
