@@ -152,7 +152,7 @@ describe("Integration: Interrupt and Redirect", () => {
     // Interrupt — should clear the queue
     client.send({ type: "interrupt_claude" });
 
-    const interrupted = await client.receiveType("claude_interrupted");
+    await client.receiveType("claude_interrupted");
 
     // Wait for done handler to fire and clear queue
     await new Promise((r) => setTimeout(r, 200));
@@ -186,7 +186,7 @@ describe("Integration: Interrupt and Redirect", () => {
 
     // Interrupt
     client.send({ type: "interrupt_claude" });
-    const interrupted = await client.receiveType("claude_interrupted");
+    await client.receiveType("claude_interrupted");
 
     // Wait for done handler to complete
     await new Promise((r) => setTimeout(r, 200));

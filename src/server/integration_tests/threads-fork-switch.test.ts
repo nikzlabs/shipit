@@ -219,7 +219,7 @@ describe("Integration: Threads — fork & switch", () => {
     const checkpointId = cpRes.json().checkpoint.id;
 
     client.send({ type: "fork_thread", checkpointId } as any);
-    const forkResp = await client.receiveType("thread_forked", 5000);
+    await client.receiveType("thread_forked", 5000);
 
     // Switch back to main
     client.send({ type: "switch_thread", threadId: mainThreadId } as any);

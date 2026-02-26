@@ -641,7 +641,7 @@ describe("Integration: home_send_with_repo worktree reuse", () => {
     const client2 = await TestClient.connect(port);
     await client2.receive(); // preview_status
     client2.send({ type: "home_send_with_repo", repoUrl, text: "Second" } as any);
-    const s2Msg = await client2.receiveType("session_started", 10_000);
+    await client2.receiveType("session_started", 10_000);
     const claude2 = await waitForClaude(() => lastClaude, claude1, 10_000);
     claude2.finish();
     try { while (true) { await client2.receive(500); } } catch { /* drain */ }
