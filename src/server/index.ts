@@ -709,6 +709,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     sessionsRoot,
   });
 
+  // ---- Preview reverse proxy (container mode) ----
+  // Routes /preview/:sessionId/:port/* and /api/preview-health/* to the
+  // container's bridge IP. Must be registered BEFORE static file serving
+  // so the SPA fallback (setNotFoundHandler) doesn't catch these routes.
+  if (containerManager) {
+    registerPreviewProxy(app, { containerManager });
+  }
+
   // Serve the built client files from dist/client/
   if (shouldServeStatic) {
     const clientDir = path.resolve(process.cwd(), "dist/client");
@@ -1169,11 +1177,6 @@ to determine the correct install command, preview mode, command, and ports.`;
     });
   }
 
-  // ---- Preview reverse proxy (container mode) ----
-  // Routes /preview/:sessionId/:port/* to the container's bridge IP.
-  if (containerManager) {
-    registerPreviewProxy(app, { containerManager });
-  }
 
   // Graceful shutdown — register once via app hook rather than per-call
   // process.on() to avoid MaxListeners warnings when buildApp() is called

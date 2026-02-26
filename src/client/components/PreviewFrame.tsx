@@ -98,9 +98,15 @@ export function PreviewFrame({
   // For container mode, build a subdomain URL so absolute paths (/src/main.tsx)
   // resolve naturally against the preview origin without HTML rewriting.
   // Pattern: {sessionId}--{port}.{apiHostname}:{apiPort}
+  // When accessed via IP (e.g. 127.0.0.1), substitute "localhost" — browsers
+  // resolve *.localhost to 127.0.0.1 per spec, so subdomains work without DNS.
   const previewSubdomainUrl = preview?.url?.startsWith("/preview/") && sessionId
     ? (() => {
-        const [apiHostname, apiPort] = apiHost.includes(":") ? apiHost.split(":") : [apiHost, ""];
+        const [rawHostname, apiPort] = apiHost.includes(":") ? apiHost.split(":") : [apiHost, ""];
+        // Substitute loopback IPs with "localhost" so subdomains resolve
+        const apiHostname = /^(127\.\d+\.\d+\.\d+|::1)$/.test(rawHostname) ? "localhost" : rawHostname;
+        // Other IP addresses (e.g. LAN) can't use subdomains without wildcard DNS
+        if (/^\d+\.\d+\.\d+\.\d+$/.test(apiHostname) || apiHostname.includes(":")) return null;
         const portSuffix = apiPort ? `:${apiPort}` : "";
         return `${window.location.protocol}//${sessionId}--${activePort}.${apiHostname}${portSuffix}/`;
       })()
@@ -108,7 +114,7 @@ export function PreviewFrame({
 
   // Container mode: poll via health-check endpoint (always 200, no console
   // errors). Local mode: poll localhost with no-cors.
-  const isContainerMode = !!previewSubdomainUrl;
+  const isContainerMode = !!(preview?.url?.startsWith("/preview/"));
   const pollUrl = isContainerMode
     ? `/api/preview-health/${sessionId}/${activePort}`
     : (activePort ? `http://localhost:${activePort}` : null);
@@ -233,9 +239,11 @@ export function PreviewFrame({
     );
   }
 
-  // Build the preview URL. In container mode, use the subdomain URL so all
-  // sub-resources (JS, CSS, images) resolve naturally. In local mode, use localhost.
-  const activeUrl = previewSubdomainUrl ?? `http://localhost:${activePort}`;
+  // Build the preview URL. Subdomain URL is ideal (absolute paths resolve
+  // naturally). When unavailable (IP-based access), fall back to the path-based
+  // proxy URL. Local mode (no container) uses localhost directly.
+  const activeUrl = previewSubdomainUrl
+    ?? (preview?.url?.startsWith("/preview/") ? `${preview.url}` : `http://localhost:${activePort}`);
   const isManaged = (preview.source === "vite" || preview.source === "managed") && activePort === preview.port;
   const showSelector = detectedPorts.length > 1 || ((preview.source === "vite" || preview.source === "managed") && detectedPorts.length > 0);
 
@@ -324,7 +332,10 @@ export function PreviewFrame({
           src={activeUrl}
           title="Live Preview"
           className={`flex-1 w-full bg-white ${hasErrors && errorPanelOpen ? "min-h-0" : ""}`}
-          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+          // In container mode the iframe loads from a subdomain of our own proxy,
+          // so sandbox is unnecessary and actually breaks cross-origin framing.
+          // In local mode (dev server on host), sandbox restricts the iframe.
+          {...(!isContainerMode && { sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-modals" })}
         />
       ) : (
         <div className="flex-1 flex items-center justify-center bg-white text-gray-500 text-sm">
