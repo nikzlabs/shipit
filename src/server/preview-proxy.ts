@@ -43,6 +43,32 @@ function parsePreviewSubdomain(
 }
 
 // ---------------------------------------------------------------------------
+// HMR WebSocket patch
+// ---------------------------------------------------------------------------
+
+/**
+ * Tiny script injected into HTML responses from the container's dev server.
+ * Dev servers (Vite, Webpack, etc.) open HMR WebSocket connections to their own
+ * listening address (e.g. localhost:5173). From the browser, that address doesn't
+ * reach the container — it needs to go through our subdomain proxy instead.
+ *
+ * This script wraps the WebSocket constructor to rewrite localhost connections
+ * to use the page's origin, which our proxy then forwards to the container.
+ */
+const HMR_WS_PATCH = `<script>(function(){` +
+  `var O=WebSocket;` +
+  `window.WebSocket=function(u,p){` +
+    `try{var a=new URL(u);` +
+    `if((a.hostname==="localhost"||a.hostname==="127.0.0.1")&&a.port!==location.port){` +
+      `a.hostname=location.hostname;a.port=location.port;u=a.toString()` +
+    `}}catch(e){}` +
+    `return new O(u,p)};` +
+  `window.WebSocket.prototype=O.prototype;` +
+  `window.WebSocket.CONNECTING=0;window.WebSocket.OPEN=1;` +
+  `window.WebSocket.CLOSING=2;window.WebSocket.CLOSED=3` +
+  `})()</script>`;
+
+// ---------------------------------------------------------------------------
 // Shared proxy helpers
 // ---------------------------------------------------------------------------
 
@@ -55,20 +81,49 @@ function proxyHttp(
   rawReq: http.IncomingMessage,
   rawRes: http.ServerResponse,
 ): void {
+  // Strip accept-encoding so the upstream sends uncompressed content — allows
+  // us to inject the HMR WebSocket patch into HTML responses.
+  const fwdHeaders = { ...headers, host: `localhost:${targetPort}` };
+  delete fwdHeaders["accept-encoding"];
+
   const proxyReq = http.request(
     {
       hostname: containerIp,
       port: targetPort,
       path: targetPath,
       method,
-      headers: {
-        ...headers,
-        host: `localhost:${targetPort}`,
-      },
+      headers: fwdHeaders,
     },
     (proxyRes) => {
-      rawRes.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
-      proxyRes.pipe(rawRes);
+      const ct = proxyRes.headers["content-type"] || "";
+      const isHtml = method === "GET" && ct.includes("text/html");
+
+      if (isHtml) {
+        // Buffer HTML response, inject HMR WebSocket patch, then send.
+        const chunks: Buffer[] = [];
+        proxyRes.on("data", (chunk: Buffer) => chunks.push(chunk));
+        proxyRes.on("end", () => {
+          let html = Buffer.concat(chunks).toString("utf-8");
+          // Inject right after <head> (or at the start if no <head>)
+          const headIdx = html.search(/<head[^>]*>/i);
+          if (headIdx !== -1) {
+            const insertAt = html.indexOf(">", headIdx) + 1;
+            html = html.slice(0, insertAt) + HMR_WS_PATCH + html.slice(insertAt);
+          } else {
+            html = HMR_WS_PATCH + html;
+          }
+          const outHeaders = { ...proxyRes.headers };
+          delete outHeaders["content-length"];
+          delete outHeaders["content-encoding"];
+          delete outHeaders["transfer-encoding"];
+          outHeaders["content-length"] = String(Buffer.byteLength(html));
+          rawRes.writeHead(proxyRes.statusCode ?? 200, outHeaders);
+          rawRes.end(html);
+        });
+      } else {
+        rawRes.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
+        proxyRes.pipe(rawRes);
+      }
     },
   );
 
@@ -100,13 +155,16 @@ function proxyWebSocket(
     },
   });
 
-  proxyReq.on("upgrade", (_proxyRes, proxySocket, proxyHead) => {
-    socket.write(
-      "HTTP/1.1 101 Switching Protocols\r\n" +
-        "Upgrade: websocket\r\n" +
-        "Connection: Upgrade\r\n" +
-        "\r\n",
-    );
+  proxyReq.on("upgrade", (proxyRes, proxySocket, proxyHead) => {
+    // Forward the upstream's 101 response verbatim — includes the required
+    // Sec-WebSocket-Accept header and any negotiated subprotocols.
+    let head = `HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage}\r\n`;
+    const raw = proxyRes.rawHeaders;
+    for (let i = 0; i < raw.length; i += 2) {
+      head += `${raw[i]}: ${raw[i + 1]}\r\n`;
+    }
+    head += "\r\n";
+    socket.write(head);
     if (proxyHead.length > 0) socket.write(proxyHead);
     proxySocket.pipe(socket);
     socket.pipe(proxySocket);
@@ -213,46 +271,68 @@ export function registerPreviewProxy(
   });
 
   // --- WebSocket upgrade proxy (subdomain + path-based) -------------------
+  //
+  // @fastify/websocket registers its own `upgrade` listener (for /ws).
+  // Both listeners fire for every upgrade request. For preview WebSockets,
+  // Fastify's handler finds no matching route and destroys the socket before
+  // our proxy can use it. Fix: take over the upgrade event — handle preview
+  // WebSockets ourselves, delegate everything else to the original handlers.
 
-  app.server.on("upgrade", (req, socket, _head) => {
-    // Try subdomain-based first
-    const subdomainParsed = parsePreviewSubdomain(req.headers.host);
-    if (subdomainParsed) {
-      const { sessionId, port: targetPort } = subdomainParsed;
-      const sc = containerManager.get(sessionId);
-      if (!sc) {
-        socket.destroy();
+  const originalUpgradeListeners = [
+    ...app.server.listeners("upgrade"),
+  ] as ((...args: unknown[]) => void)[];
+  app.server.removeAllListeners("upgrade");
+
+  app.server.on(
+    "upgrade",
+    (
+      req: http.IncomingMessage,
+      socket: import("node:stream").Duplex,
+      head: Buffer,
+    ) => {
+      // Try subdomain-based first
+      const subdomainParsed = parsePreviewSubdomain(req.headers.host);
+      if (subdomainParsed) {
+        const { sessionId, port: targetPort } = subdomainParsed;
+        const sc = containerManager.get(sessionId);
+        if (!sc) {
+          socket.destroy();
+          return;
+        }
+        proxyWebSocket(
+          sc.containerIp,
+          targetPort,
+          req.url || "/",
+          req.headers,
+          socket,
+        );
         return;
       }
-      proxyWebSocket(
-        sc.containerIp,
-        targetPort,
-        req.url || "/",
-        req.headers,
-        socket,
-      );
-      return;
-    }
 
-    // Try path-based
-    const match = req.url?.match(/^\/preview\/([^/]+)\/(\d+)\/(.*)/);
-    if (!match) return; // Not a preview WebSocket — let default handler proceed
+      // Try path-based
+      const match = req.url?.match(/^\/preview\/([^/]+)\/(\d+)\/(.*)/);
+      if (match) {
+        const [, sessionId, portStr, restPath] = match;
+        const targetPort = Number(portStr);
+        const sc = containerManager.get(sessionId);
+        if (!sc) {
+          socket.destroy();
+          return;
+        }
+        proxyWebSocket(
+          sc.containerIp,
+          targetPort,
+          `/${restPath}`,
+          req.headers,
+          socket,
+        );
+        return;
+      }
 
-    const [, sessionId, portStr, restPath] = match;
-    const targetPort = Number(portStr);
-
-    const sc = containerManager.get(sessionId);
-    if (!sc) {
-      socket.destroy();
-      return;
-    }
-
-    proxyWebSocket(
-      sc.containerIp,
-      targetPort,
-      `/${restPath}`,
-      req.headers,
-      socket,
-    );
-  });
+      // Not a preview WebSocket — forward to original handlers (Fastify /ws)
+      for (const listener of originalUpgradeListeners) {
+        listener.call(app.server, req, socket, head);
+      }
+    },
+  );
 }

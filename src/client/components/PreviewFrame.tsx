@@ -104,9 +104,13 @@ export function PreviewFrame({
       })()
     : null;
 
-  // Poll URL: subdomain in container mode, localhost in local mode.
-  const pollUrl = previewSubdomainUrl
-    ?? (activePort ? `http://localhost:${activePort}` : null);
+  // Container mode: poll via path-based URL (same-origin) so we can check
+  // response.ok — prevents showing the 502 "unreachable" error while the dev
+  // server is still starting. Local mode: poll localhost with no-cors.
+  const isContainerMode = !!previewSubdomainUrl;
+  const pollUrl = isContainerMode
+    ? `/preview/${sessionId}/${activePort}/`
+    : (activePort ? `http://localhost:${activePort}` : null);
 
   // Poll the preview URL until it responds, then allow iframe to render.
   // Prevents showing a broken-page icon while the dev server is still starting
@@ -115,21 +119,26 @@ export function PreviewFrame({
     if (!activePort || !pollUrl || iframeReady) return;
     let cancelled = false;
     const poll = async () => {
-      for (let i = 0; i < 20 && !cancelled; i++) {
+      for (let i = 0; i < 30 && !cancelled; i++) {
         try {
-          await fetch(pollUrl, { mode: "no-cors" });
-          if (!cancelled) setIframeReady(true);
-          return;
+          const resp = await fetch(pollUrl, isContainerMode ? undefined : { mode: "no-cors" });
+          // Container mode (same-origin): verify the dev server responds ok.
+          // Local mode (cross-origin no-cors): any response means the server is up.
+          if (!isContainerMode || resp.ok) {
+            if (!cancelled) setIframeReady(true);
+            return;
+          }
         } catch {
-          await new Promise((r) => setTimeout(r, 500));
+          // Network error (ECONNREFUSED, CORS block) — retry
         }
+        await new Promise((r) => setTimeout(r, 500));
       }
-      // Give up after ~10s — show iframe anyway
+      // Give up after ~15s — show iframe anyway
       if (!cancelled) setIframeReady(true);
     };
     poll();
     return () => { cancelled = true; };
-  }, [activePort, pollUrl, iframeReady]);
+  }, [activePort, pollUrl, iframeReady, isContainerMode]);
 
   // Show install progress
   if (installStatus && installStatus.status === "running") {
