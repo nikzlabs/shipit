@@ -445,10 +445,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   getPreview(): PreviewManager | null { return null; }
   getFileWatcher(): FileWatcher | null { return null; }
 
+  private _workerResourcesStarted = false;
+
   attachViewer(): void {
     this._viewerCount++;
     console.log(`[container-runner:${this.sessionId}] attachViewer (count=${this._viewerCount}, disposed=${this._disposed})`);
-    if (this._viewerCount === 1 && !this._disposed) {
+    if (!this._workerResourcesStarted && !this._disposed) {
+      this._workerResourcesStarted = true;
       // Connect SSE first, then start resources so we don't miss events
       this.connectEventStream().then(() => {
         if (!this._disposed) this.startWorkerResources();
@@ -458,11 +461,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   detachViewer(): void {
     this._viewerCount = Math.max(0, this._viewerCount - 1);
-    if (this._viewerCount === 0) {
-      this.disconnectEventStream();
-      // Stop per-session resources on the worker
-      this.stopWorkerResources();
-    }
+    // Don't stop worker resources or SSE — the container keeps running and
+    // the viewer may reattach quickly (session switching). Cleanup happens
+    // in dispose() when the runner is actually torn down.
   }
 
   buildPreviewStatus(): WsServerMessage {
@@ -630,7 +631,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       },
       () => {
         this.sseConnection = null;
-        if (this._viewerCount > 0 && !this._disposed) {
+        if (this._workerResourcesStarted && !this._disposed) {
           this.scheduleReconnect();
         }
       },
