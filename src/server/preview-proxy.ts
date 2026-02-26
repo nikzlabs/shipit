@@ -228,6 +228,55 @@ export function registerPreviewProxy(
     done();
   });
 
+  // --- Preview health check (for polling without console errors) ----------
+  //
+  // Always returns 200 with { ready: true/false }. The browser logs non-2xx
+  // fetch() responses as errors in the console; this endpoint avoids that.
+
+  app.get(
+    "/api/preview-health/:sessionId/:port",
+    async (request, reply) => {
+      const params = request.params as { sessionId: string; port: string };
+      const targetPort = Number(params.port);
+      if (
+        !Number.isInteger(targetPort) ||
+        targetPort < 1 ||
+        targetPort > 65535
+      ) {
+        return reply.send({ ready: false });
+      }
+      const sc = containerManager.get(params.sessionId);
+      if (!sc) {
+        return reply.send({ ready: false });
+      }
+      // Quick HTTP probe to the container's dev server
+      const ready = await new Promise<boolean>((resolve) => {
+        const probe = http.request(
+          {
+            hostname: sc.containerIp,
+            port: targetPort,
+            path: "/",
+            method: "HEAD",
+            timeout: 2000,
+          },
+          (res) => {
+            res.resume();
+            resolve(
+              res.statusCode !== undefined && res.statusCode < 500,
+            );
+          },
+        );
+        probe.on("error", () => resolve(false));
+        probe.on("timeout", () => {
+          probe.destroy();
+          resolve(false);
+        });
+        probe.end();
+      });
+      return reply.send({ ready });
+    },
+  );
+
   // --- Path-based HTTP proxy (fallback) -----------------------------------
 
   app.all("/preview/:sessionId/:port/*", async (request, reply) => {

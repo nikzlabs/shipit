@@ -80,7 +80,6 @@ export function PreviewFrame({
 }: PreviewFrameProps) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
-  const [iframeReady, setIframeReady] = useState(false);
 
   // Compute active port early so hooks can reference it (0 when not running)
   const activePort = preview?.running ? (selectedPort ?? preview.port) : 0;
@@ -88,10 +87,13 @@ export function PreviewFrame({
   // API host for container-mode subdomain URLs (e.g. "localhost:3001")
   const apiHost = import.meta.env.VITE_API_HOST || window.location.host;
 
-  // Reset readiness when the iframe target changes (session switch, port change, reload)
-  useEffect(() => {
-    setIframeReady(false);
-  }, [sessionId, activePort, refreshKey]);
+  // Derive iframe readiness from a key: when session/port/refresh changes,
+  // the key changes and iframeReady becomes false *in the same render* —
+  // no effect-based reset needed, which avoids a one-frame gap where the
+  // iframe would briefly load the new URL before the reset fires.
+  const targetKey = `${sessionId}:${activePort}:${refreshKey}`;
+  const [readyForKey, setReadyForKey] = useState("");
+  const iframeReady = readyForKey === targetKey;
 
   // For container mode, build a subdomain URL so absolute paths (/src/main.tsx)
   // resolve naturally against the preview origin without HTML rewriting.
@@ -104,12 +106,11 @@ export function PreviewFrame({
       })()
     : null;
 
-  // Container mode: poll via path-based URL (same-origin) so we can check
-  // response.ok — prevents showing the 502 "unreachable" error while the dev
-  // server is still starting. Local mode: poll localhost with no-cors.
+  // Container mode: poll via health-check endpoint (always 200, no console
+  // errors). Local mode: poll localhost with no-cors.
   const isContainerMode = !!previewSubdomainUrl;
   const pollUrl = isContainerMode
-    ? `/preview/${sessionId}/${activePort}/`
+    ? `/api/preview-health/${sessionId}/${activePort}`
     : (activePort ? `http://localhost:${activePort}` : null);
 
   // Poll the preview URL until it responds, then allow iframe to render.
@@ -118,27 +119,33 @@ export function PreviewFrame({
   useEffect(() => {
     if (!activePort || !pollUrl || iframeReady) return;
     let cancelled = false;
+    const key = targetKey;
     const poll = async () => {
       for (let i = 0; i < 30 && !cancelled; i++) {
         try {
-          const resp = await fetch(pollUrl, isContainerMode ? undefined : { mode: "no-cors" });
-          // Container mode (same-origin): verify the dev server responds ok.
-          // Local mode (cross-origin no-cors): any response means the server is up.
-          if (!isContainerMode || resp.ok) {
-            if (!cancelled) setIframeReady(true);
+          if (isContainerMode) {
+            const resp = await fetch(pollUrl);
+            const data = await resp.json();
+            if (data.ready) {
+              if (!cancelled) setReadyForKey(key);
+              return;
+            }
+          } else {
+            await fetch(pollUrl, { mode: "no-cors" });
+            if (!cancelled) setReadyForKey(key);
             return;
           }
         } catch {
-          // Network error (ECONNREFUSED, CORS block) — retry
+          // Network error — retry
         }
         await new Promise((r) => setTimeout(r, 500));
       }
       // Give up after ~15s — show iframe anyway
-      if (!cancelled) setIframeReady(true);
+      if (!cancelled) setReadyForKey(key);
     };
     poll();
     return () => { cancelled = true; };
-  }, [activePort, pollUrl, iframeReady, isContainerMode]);
+  }, [activePort, pollUrl, iframeReady, isContainerMode, targetKey]);
 
   // Show install progress
   if (installStatus && installStatus.status === "running") {
