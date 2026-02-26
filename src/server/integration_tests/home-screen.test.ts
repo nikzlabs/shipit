@@ -260,8 +260,7 @@ describe("Integration: home_send_with_repo", () => {
     } as any);
 
     // Should receive session_started
-    const sessionMsg = await client.receiveSkipLogs();
-    expect(sessionMsg.type).toBe("session_started");
+    const sessionMsg = await client.receiveType("session_started");
     const session = (sessionMsg as any).session;
     expect(session.id).toBeTruthy();
     expect(session.workspaceDir).toBeTruthy();
@@ -284,11 +283,8 @@ describe("Integration: home_send_with_repo", () => {
       text: "",
     } as any);
 
-    const msg = await client.receiveSkipLogs();
-    expect(msg).toMatchObject({
-      type: "error",
-      message: "Message text is required",
-    });
+    const msg = await client.receiveType("error");
+    expect((msg as any).message).toBe("Message text is required");
 
     client.close();
   });
@@ -303,11 +299,8 @@ describe("Integration: home_send_with_repo", () => {
       text: "Build something",
     } as any);
 
-    const msg = await client.receiveSkipLogs();
-    expect(msg).toMatchObject({
-      type: "error",
-      message: "Repository URL is required",
-    });
+    const msg = await client.receiveType("error");
+    expect((msg as any).message).toBe("Repository URL is required");
 
     client.close();
   });
@@ -323,11 +316,8 @@ describe("Integration: home_send_with_repo", () => {
       text: longText,
     } as any);
 
-    const msg = await client.receiveSkipLogs();
-    expect(msg).toMatchObject({
-      type: "error",
-      message: "Message too long (max 10000 characters)",
-    });
+    const msg = await client.receiveType("error");
+    expect((msg as any).message).toBe("Message too long (max 10000 characters)");
 
     client.close();
   });
@@ -346,8 +336,7 @@ describe("Integration: home_send_with_repo", () => {
 
     // The clone will fail since the URL isn't a real repo. We should get an
     // error message about the failed setup rather than a validation error.
-    const msg = await client.receiveSkipLogs();
-    expect(msg.type).toBe("error");
+    const msg = await client.receiveType("error");
     expect((msg as any).message).toContain("Failed to setup repo");
 
     client.close();

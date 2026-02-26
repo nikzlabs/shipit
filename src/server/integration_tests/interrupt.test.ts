@@ -78,8 +78,7 @@ describe("Integration: Interrupt and Redirect", () => {
     // Send interrupt
     client.send({ type: "interrupt_claude" });
 
-    // Should receive claude_interrupted (skip any log entries)
-    const interrupted = await client.receiveSkipLogs();
+    const interrupted = await client.receiveType("claude_interrupted");
     expect(interrupted).toMatchObject({ type: "claude_interrupted" });
 
     // The FakeClaudeProcess should have been interrupted
@@ -95,11 +94,8 @@ describe("Integration: Interrupt and Redirect", () => {
     // Send interrupt with no active process
     client.send({ type: "interrupt_claude" });
 
-    const response = await client.receiveSkipLogs();
-    expect(response).toMatchObject({
-      type: "error",
-      message: "No active Claude process to interrupt",
-    });
+    const response = await client.receiveType("error");
+    expect((response as any).message).toBe("No active Claude process to interrupt");
 
     client.close();
   });
@@ -116,7 +112,7 @@ describe("Integration: Interrupt and Redirect", () => {
     // and FakeClaudeProcess.interrupt() emits "done" with code 1 after 10ms.
     client.send({ type: "interrupt_claude" });
 
-    const interrupted = await client.receiveSkipLogs();
+    const interrupted = await client.receiveType("claude_interrupted");
     expect(interrupted).toMatchObject({ type: "claude_interrupted" });
 
     // Wait for the process to finish (FakeClaudeProcess emits done after 10ms)
@@ -150,14 +146,13 @@ describe("Integration: Interrupt and Redirect", () => {
 
     // Queue a second message while Claude is busy
     client.send({ type: "send_message", text: "queued message" });
-    const queued = await client.receiveSkipLogs();
+    const queued = await client.receiveType("message_queued");
     expect(queued).toMatchObject({ type: "message_queued", text: "queued message" });
 
     // Interrupt — should clear the queue
     client.send({ type: "interrupt_claude" });
 
-    const interrupted = await client.receiveSkipLogs();
-    expect(interrupted).toMatchObject({ type: "claude_interrupted" });
+    const interrupted = await client.receiveType("claude_interrupted");
 
     // Wait for done handler to fire and clear queue
     await new Promise((r) => setTimeout(r, 200));
@@ -191,8 +186,7 @@ describe("Integration: Interrupt and Redirect", () => {
 
     // Interrupt
     client.send({ type: "interrupt_claude" });
-    const interrupted = await client.receiveSkipLogs();
-    expect(interrupted).toMatchObject({ type: "claude_interrupted" });
+    const interrupted = await client.receiveType("claude_interrupted");
 
     // Wait for done handler to complete
     await new Promise((r) => setTimeout(r, 200));

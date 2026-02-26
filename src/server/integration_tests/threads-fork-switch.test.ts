@@ -154,9 +154,7 @@ describe("Integration: Threads — fork & switch", () => {
 
     // Fork from it
     client.send({ type: "fork_thread", checkpointId } as any);
-    const response = await client.receiveSkipLogs(5000);
-
-    expect(response.type).toBe("thread_forked");
+    const response = await client.receiveType("thread_forked", 5000);
     if (response.type === "thread_forked") {
       expect(response.thread.name).toBe("Thread 1");
       expect(response.thread.parentCheckpointId).toBe(checkpointId);
@@ -192,12 +190,8 @@ describe("Integration: Threads — fork & switch", () => {
       type: "fork_thread",
       checkpointId: "some-id",
     } as any);
-    const msg = await client.receiveSkipLogs();
-
-    expect(msg).toMatchObject({
-      type: "error",
-      message: "No active session",
-    });
+    const msg = await client.receiveType("error");
+    expect((msg as any).message).toBe("No active session");
 
     client.close();
   });
@@ -225,14 +219,11 @@ describe("Integration: Threads — fork & switch", () => {
     const checkpointId = cpRes.json().checkpoint.id;
 
     client.send({ type: "fork_thread", checkpointId } as any);
-    const forkResp = await client.receiveSkipLogs(5000);
-    expect(forkResp.type).toBe("thread_forked");
+    const forkResp = await client.receiveType("thread_forked", 5000);
 
     // Switch back to main
     client.send({ type: "switch_thread", threadId: mainThreadId } as any);
-    const switchResp = await client.receiveSkipLogs(5000);
-
-    expect(switchResp.type).toBe("thread_switched");
+    const switchResp = await client.receiveType("thread_switched", 5000);
     if (switchResp.type === "thread_switched") {
       expect(switchResp.thread.name).toBe("main");
       expect(switchResp.thread.isActive).toBe(true);
@@ -267,12 +258,8 @@ describe("Integration: Threads — fork & switch", () => {
       type: "switch_thread",
       threadId: "some-id",
     } as any);
-    const msg = await client.receiveSkipLogs();
-
-    expect(msg).toMatchObject({
-      type: "error",
-      message: "No active session",
-    });
+    const msg = await client.receiveType("error");
+    expect((msg as any).message).toBe("No active session");
 
     client.close();
   });

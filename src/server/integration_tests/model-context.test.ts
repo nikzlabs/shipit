@@ -83,11 +83,10 @@ describe("Integration: Model context & token tracking", () => {
       model: "claude-sonnet-4-20250514",
     });
 
-    // session_started
-    await client.receiveSkipLogs(); // session_started
+    await client.receiveType("session_started");
 
     // Next message should be model_info
-    const modelInfo = await client.receiveSkipLogs();
+    const modelInfo = await client.receiveType("model_info");
     expect(modelInfo).toMatchObject({
       type: "model_info",
       model: "claude-sonnet-4-20250514",
@@ -152,8 +151,7 @@ describe("Integration: Model context & token tracking", () => {
       session_id: "token-session",
     });
 
-    // Drain session_started
-    await client.receiveSkipLogs(); // session_started
+    await client.receiveType("session_started");
 
     // Simulate assistant text
     lastClaude.emit("event", {
@@ -176,7 +174,7 @@ describe("Integration: Model context & token tracking", () => {
     expect(resultEvent.type).toBe("agent_event");
 
     // Next should be usage_update with token data
-    const usageUpdate = await client.receiveSkipLogs();
+    const usageUpdate = await client.receiveType("usage_update");
     expect(usageUpdate).toMatchObject({
       type: "usage_update",
       lastTurnInputTokens: 5000,

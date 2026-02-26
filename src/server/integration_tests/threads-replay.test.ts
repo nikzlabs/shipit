@@ -154,8 +154,7 @@ describe("Integration: Threads — replay & lifecycle", () => {
 
     // Fork from it
     client.send({ type: "fork_thread", checkpointId } as any);
-    const forkResp = await client.receiveSkipLogs(5000);
-    expect(forkResp.type).toBe("thread_forked");
+    const forkResp = await client.receiveType("thread_forked", 5000);
 
     if (forkResp.type === "thread_forked") {
       // The new thread should have a conversation replay set on the server
@@ -188,8 +187,7 @@ describe("Integration: Threads — replay & lifecycle", () => {
     const checkpointId = cpRes.json().checkpoint.id;
 
     client.send({ type: "fork_thread", checkpointId } as any);
-    const forkResp = await client.receiveSkipLogs(5000);
-    expect(forkResp.type).toBe("thread_forked");
+    const forkResp = await client.receiveType("thread_forked", 5000);
 
     // Now send a message on the forked thread — it should use the replay
     // as system prompt (no --resume) since this is a fresh CLI session.
