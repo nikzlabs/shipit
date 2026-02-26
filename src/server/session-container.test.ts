@@ -68,7 +68,6 @@ function createMockDocker() {
     createContainer: vi.fn(async (opts: any) => {
       containerCounter++;
       const id = `container-${containerCounter}`;
-      const sessionId = opts.Labels?.[CONTAINER_SESSION_ID_LABEL] ?? "unknown";
       const info: MockContainerInfo = {
         id,
         NetworkSettings: {
