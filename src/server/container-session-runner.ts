@@ -195,7 +195,8 @@ async function workerGet(baseUrl: string, path: string): Promise<unknown> {
 /**
  * A proxy AgentProcess that doesn't own a real process — it represents
  * the agent running inside the worker. Events are pushed in by the
- * ContainerSessionRunner's SSE listener.
+ * ContainerSessionRunner's SSE listener. Methods delegate to the worker
+ * via HTTP through the parent ContainerSessionRunner.
  */
 class ProxyAgentProcess extends EventEmitter<{
   event: [AgentEvent];
@@ -215,17 +216,41 @@ class ProxyAgentProcess extends EventEmitter<{
     models: [] as string[],
   };
 
-  constructor(agentId: AgentId) {
+  private runner: ContainerSessionRunner;
+
+  constructor(agentId: AgentId, runner: ContainerSessionRunner) {
     super();
     this.agentId = agentId;
+    this.runner = runner;
   }
 
-  // These are no-ops — the real process lives in the worker.
-  // Start/stop/interrupt are handled via HTTP to the worker.
-  run(_params: AgentRunParams): void { /* no-op — worker handles this */ }
-  writeStdin(_data: string): void { /* no-op — use workerPost /agent/stdin */ }
-  interrupt(): void { /* no-op — use workerPost /agent/interrupt */ }
-  kill(): void { /* no-op — use workerPost /agent/kill */ }
+  /** Fire-and-forget POST to worker /agent/start. Errors emitted as events. */
+  run(params: AgentRunParams): void {
+    this.runner._startAgentViaProxy(this.agentId, params).catch((err: unknown) => {
+      this.emit("error", err instanceof Error ? err : new Error(String(err)));
+    });
+  }
+
+  /** Fire-and-forget POST to worker /agent/stdin. */
+  writeStdin(data: string): void {
+    this.runner.writeAgentStdin(data).catch((err: unknown) => {
+      this.emit("error", err instanceof Error ? err : new Error(String(err)));
+    });
+  }
+
+  /** Fire-and-forget POST to worker /agent/interrupt. */
+  interrupt(): void {
+    this.runner.interruptAgentOnWorker().catch((err: unknown) => {
+      this.emit("error", err instanceof Error ? err : new Error(String(err)));
+    });
+  }
+
+  /** Fire-and-forget POST to worker /agent/kill. */
+  kill(): void {
+    this.runner.killAgentOnWorker().catch(() => {
+      // Swallow kill errors — the agent may already be dead
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -501,12 +526,35 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   // --- Worker communication: agent ---
 
   /**
+   * Create a ProxyAgentProcess for this runner. The proxy's run()/interrupt()/
+   * kill()/writeStdin() methods delegate to the worker via HTTP. Called by the
+   * dynamic agentFactory when this runner is attached.
+   */
+  createAgent(agentId: AgentId): ProxyAgentProcess {
+    const proxy = new ProxyAgentProcess(agentId, this);
+    this._agent = proxy;
+    return proxy;
+  }
+
+  /**
+   * Called by ProxyAgentProcess.run(). Waits for worker readiness, POSTs
+   * /agent/start, and ensures the SSE stream is connected for events.
+   */
+  async _startAgentViaProxy(agentId: AgentId, params: AgentRunParams): Promise<void> {
+    await this._workerReady;
+    await workerPost(this.workerUrl, "/agent/start", { agentId, params });
+    if (!this.sseConnection) {
+      await this.connectEventStream();
+    }
+  }
+
+  /**
    * Start an agent on the worker. Creates a proxy AgentProcess locally
-   * that receives events via the SSE stream.
+   * that receives events via the SSE stream. Convenience method for tests.
    */
   async startAgentOnWorker(agentId: AgentId, params: AgentRunParams): Promise<ProxyAgentProcess> {
     await this._workerReady;
-    const proxy = new ProxyAgentProcess(agentId);
+    const proxy = new ProxyAgentProcess(agentId, this);
     this._agent = proxy;
 
     await workerPost(this.workerUrl, "/agent/start", { agentId, params });

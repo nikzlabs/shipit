@@ -988,7 +988,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       getActiveSessionDir: () => activeSessionDir,
       setActiveSessionDir: (dir) => { activeSessionDir = dir; },
       activateSession,
-      agentFactory,
+      agentFactory: (agentId: AgentId) => {
+        if (attachedRunner?.createAgent) {
+          return attachedRunner.createAgent(agentId);
+        }
+        return agentFactory(agentId);
+      },
       // Agent state delegates to runner
       getAgent: () => attachedRunner?.getAgent() ?? null,
       setAgent: (a) => { if (attachedRunner) attachedRunner.setAgent(a); },
