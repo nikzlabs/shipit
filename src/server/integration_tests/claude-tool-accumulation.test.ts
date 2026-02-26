@@ -83,7 +83,7 @@ describe("Integration: Claude tool use accumulation", () => {
       subtype: "init",
       session_id: "tool-accum-session",
     });
-    const sessionStarted = await client.receiveSkipLogs(); // session_started
+    const sessionStarted = await client.receiveType("session_started");
     const appSessionId = (sessionStarted as any).session.id;
 
     // First assistant event with text + one tool call
@@ -167,7 +167,7 @@ describe("Integration: Claude tool use accumulation", () => {
       subtype: "init",
       session_id: "relay-session",
     });
-    await client.receiveSkipLogs(); // session_started
+    await client.receiveType("session_started");
 
     // First assistant event with a tool call
     lastClaude.emit("event", {

@@ -115,9 +115,7 @@ describe("Integration: Deployment", () => {
     await client.receive(); // preview_status
 
     client.send({ type: "initiate_deploy", targetId: "test-target" } as any);
-    const msg = await client.receiveSkipLogs();
-
-    expect(msg.type).toBe("error");
+    const msg = await client.receiveType("error");
     expect((msg as any).message).toMatch(/No active session/);
 
     client.close();
