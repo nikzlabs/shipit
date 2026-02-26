@@ -102,6 +102,25 @@
   - [ ] Standby container reclaimed on repo mismatch
   - [ ] No pre-warm when at container cap
 
+## Phase 5: Cross-Platform Validation
+
+- [ ] Docker socket auto-detection — verify `docker.ping()` via default `/var/run/docker.sock` on all platforms
+  - [ ] Linux (Docker Engine)
+  - [ ] macOS (Docker Desktop with virtiofs)
+  - [ ] Windows WSL2 (Docker Desktop WSL2 backend)
+  - [ ] Windows WSL2 (Docker Engine installed inside WSL2)
+- [ ] Bind mount path validation — confirm absolute paths work without translation
+  - [ ] Linux: `/workspace/sessions/{uuid}` → container `/workspace`
+  - [ ] macOS: Docker Desktop translates host paths to VM paths transparently
+  - [ ] WSL2: WSL2 filesystem paths (`/home/user/...`) mount correctly
+- [ ] Performance baseline per platform
+  - [ ] Linux: document cold start time, `npm install` duration, file I/O throughput
+  - [ ] macOS: document virtiofs overhead vs native (expect ~10-30% slower I/O)
+  - [ ] WSL2: verify workspace on WSL2 filesystem (not `/mnt/c/`) for acceptable performance
+- [ ] Bridge networking validation — verify orchestrator can reach container IPs on all platforms
+- [ ] Graceful fallback — verify `useContainers: false` auto-triggers when Docker is missing on each platform
+- [ ] Add setup documentation for each platform (Docker installation prerequisites)
+
 ## Post-launch
 
 - [ ] Credential mounts: switch `/credentials` to read-only once Claude CLI `--resume` write path is isolated
