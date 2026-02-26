@@ -311,13 +311,16 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
     }
 
     // Restart preview after agent finishes in case new files were created.
-    // Use the captured session dir to avoid restarting the wrong preview.
-    if (capturedSessionDir && !ctx.previewManager.running) {
+    // Skip when the runner manages its own preview (container mode).
+    const runnerAfterTurn = ctx.getRunner();
+    if (capturedSessionDir && !ctx.previewManager.running && !runnerAfterTurn?.supportsRemoteTerminal) {
       await ctx.previewManager.start(capturedSessionDir);
     }
 
     // Scan for dev servers that the agent may have started.
-    await ctx.runPortScan();
+    if (!runnerAfterTurn?.supportsRemoteTerminal) {
+      await ctx.runPortScan();
+    }
 
     // Mark Claude as no longer running, then process the next queued message
     // If interrupted, clear the queue instead of dequeuing.
@@ -623,10 +626,13 @@ export async function handleAnswerQuestion(ctx: HandlerContext, msg: WsAnswerQue
       console.error("[git] auto-commit failed:", getErrorMessage(err));
     }
 
-    if (capturedSessionDir && !ctx.previewManager.running) {
+    const homeRunner = ctx.getRunner();
+    if (capturedSessionDir && !ctx.previewManager.running && !homeRunner?.supportsRemoteTerminal) {
       await ctx.previewManager.start(capturedSessionDir);
     }
-    await ctx.runPortScan();
+    if (!homeRunner?.supportsRemoteTerminal) {
+      await ctx.runPortScan();
+    }
   });
 
   // Look up agent session ID for --resume

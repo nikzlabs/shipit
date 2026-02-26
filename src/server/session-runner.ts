@@ -92,6 +92,9 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   // Detected ports (per-session)
   detectedPorts: number[];
 
+  // Remote terminal support (container mode)
+  readonly supportsRemoteTerminal?: boolean;
+
   // Viewer management
   readonly viewerCount: number;
   getPreview(): PreviewManager | null;
