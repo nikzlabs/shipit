@@ -282,6 +282,14 @@ export class SessionWorker extends EventEmitter {
       this.sseClients.add(sendEvent);
       this.sseRawResponses.add(reply.raw);
 
+      // Replay current state so late-connecting clients don't miss events
+      if (this.preview?.running && this.preview.ports.length > 0) {
+        sendEvent({ type: "preview_ready", data: { ports: this.preview.ports } });
+      }
+      if (this.terminal) {
+        sendEvent({ type: "terminal_data", data: { data: "" } }); // Signal terminal is alive
+      }
+
       // Keep alive every 15s
       const keepalive = setInterval(() => {
         try {

@@ -85,21 +85,39 @@ export function PreviewFrame({
   // Compute active port early so hooks can reference it (0 when not running)
   const activePort = preview?.running ? (selectedPort ?? preview.port) : 0;
 
+  // API host for container-mode subdomain URLs (e.g. "localhost:3001")
+  const apiHost = import.meta.env.VITE_API_HOST || window.location.host;
+
   // Reset readiness when the iframe target changes (session switch, port change, reload)
   useEffect(() => {
     setIframeReady(false);
   }, [sessionId, activePort, refreshKey]);
 
+  // For container mode, build a subdomain URL so absolute paths (/src/main.tsx)
+  // resolve naturally against the preview origin without HTML rewriting.
+  // Pattern: {sessionId}--{port}.{apiHostname}:{apiPort}
+  const previewSubdomainUrl = preview?.url?.startsWith("/preview/") && sessionId
+    ? (() => {
+        const [apiHostname, apiPort] = apiHost.includes(":") ? apiHost.split(":") : [apiHost, ""];
+        const portSuffix = apiPort ? `:${apiPort}` : "";
+        return `${window.location.protocol}//${sessionId}--${activePort}.${apiHostname}${portSuffix}/`;
+      })()
+    : null;
+
+  // Poll URL: subdomain in container mode, localhost in local mode.
+  const pollUrl = previewSubdomainUrl
+    ?? (activePort ? `http://localhost:${activePort}` : null);
+
   // Poll the preview URL until it responds, then allow iframe to render.
   // Prevents showing a broken-page icon while the dev server is still starting
   // or Docker port mapping is not yet established.
   useEffect(() => {
-    if (!activePort || iframeReady) return;
+    if (!activePort || !pollUrl || iframeReady) return;
     let cancelled = false;
     const poll = async () => {
       for (let i = 0; i < 20 && !cancelled; i++) {
         try {
-          await fetch(`http://localhost:${activePort}`, { mode: "no-cors" });
+          await fetch(pollUrl, { mode: "no-cors" });
           if (!cancelled) setIframeReady(true);
           return;
         } catch {
@@ -111,7 +129,7 @@ export function PreviewFrame({
     };
     poll();
     return () => { cancelled = true; };
-  }, [activePort, iframeReady]);
+  }, [activePort, pollUrl, iframeReady]);
 
   // Show install progress
   if (installStatus && installStatus.status === "running") {
@@ -199,8 +217,9 @@ export function PreviewFrame({
     );
   }
 
-  // activePort already computed above (before hooks)
-  const activeUrl = `http://localhost:${activePort}`;
+  // Build the preview URL. In container mode, use the subdomain URL so all
+  // sub-resources (JS, CSS, images) resolve naturally. In local mode, use localhost.
+  const activeUrl = previewSubdomainUrl ?? `http://localhost:${activePort}`;
   const isManaged = (preview.source === "vite" || preview.source === "managed") && activePort === preview.port;
   const showSelector = detectedPorts.length > 1 || ((preview.source === "vite" || preview.source === "managed") && detectedPorts.length > 0);
 
@@ -238,7 +257,7 @@ export function PreviewFrame({
             </select>
           ) : (
             <>
-              localhost:{activePort}
+              {preview?.url?.startsWith("/preview/") ? `port ${activePort}` : `localhost:${activePort}`}
               {!isManaged && preview.source === "detected" && (
                 <span className="text-yellow-400">(auto-detected)</span>
               )}

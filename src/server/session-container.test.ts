@@ -161,6 +161,7 @@ describe("SessionContainerManager", () => {
     manager = new SessionContainerManager({
       docker: mockDocker as any,
       networkName: "shipit",
+      skipHealthCheck: true,
     });
   });
 
@@ -219,7 +220,7 @@ describe("SessionContainerManager", () => {
       expect(mockDocker.createContainer).toHaveBeenCalledWith(
         expect.objectContaining({
           Image: "shipit-session-worker:latest",
-          Cmd: ["node", "/app/session-worker.js"],
+          Cmd: ["node", "--import", "tsx", "src/server/session-worker.ts"],
           Labels: {
             [CONTAINER_LABEL_KEY]: CONTAINER_LABEL_VALUE,
             [CONTAINER_SESSION_ID_LABEL]: "test-session-1",

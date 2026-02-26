@@ -338,7 +338,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   if (deps.sessionContainerManager) {
     containerManager = deps.sessionContainerManager;
   } else if (deps.useContainers) {
-    containerManager = new SessionContainerManager();
+    containerManager = new SessionContainerManager({
+      workspaceVolume: process.env.WORKSPACE_VOLUME,
+      credentialsVolume: process.env.CREDENTIALS_VOLUME,
+    });
     const dockerAvailable = await containerManager.isAvailable();
     if (dockerAvailable) {
       await containerManager.ensureNetwork();
@@ -348,8 +351,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       await containerManager.startHealthMonitor();
       console.log("[server] Docker container mode enabled");
     } else {
-      console.log("[server] Docker not available — falling back to direct mode");
-      containerManager = null;
+      throw new Error("USE_CONTAINERS is true but Docker is not available (is /var/run/docker.sock mounted?)");
     }
   }
 
@@ -390,11 +392,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         });
 
         // Start the container in the background and update the worker URL
+        console.log(`[container] Creating container for session ${o.sessionId}...`);
         mgr.create(config).then((sc) => {
-          // Update the runner's worker URL now that we have the container IP.
-          // ContainerSessionRunner exposes workerUrl as a private field set in
-          // the constructor — we use Object.assign to update it.
-          Object.assign(runner, { workerUrl: sc.workerUrl });
+          console.log(`[container] Container ready for ${o.sessionId} at ${sc.workerUrl}`);
+          runner.setWorkerUrl(sc.workerUrl);
         }).catch((err) => {
           console.error(`[container] Failed to start container for ${o.sessionId}:`, getErrorMessage(err));
           runner.dispose();
@@ -457,7 +458,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // (e.g., pre-session state, or in tests that don't use per-runner factories).
   fileWatcher.on("changes", (changedFiles: string[]) => {
     broadcast({ type: "files_changed", paths: changedFiles });
-    if (changedFiles.some((f) => f === "shipit.yaml" || f.endsWith("/shipit.yaml"))) {
+    if (!containerManager && changedFiles.some((f) => f === "shipit.yaml" || f.endsWith("/shipit.yaml"))) {
       previewManager.restart(workspaceDir);
     }
   });
@@ -636,8 +637,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     console.log("[auth] OAuth flow failed — client should provide API key");
   });
 
-  // Start preview server (skipped in tests)
-  if (startPreview) {
+  // Start preview server (skipped in tests, and in container mode where each
+  // session container manages its own preview via the worker process).
+  if (startPreview && !containerManager) {
     previewManager.start(workspaceDir);
   }
 
@@ -801,8 +803,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       // created by attachViewer() above, it will emit "ready" / "config_missing"
       // on its own once it finishes starting — sending a premature "running: false"
       // here would flash the placeholder UI unnecessarily.
-      if (runner.getPreview()?.running) {
-        send(runner.buildPreviewStatus());
+      // For container runners, check buildPreviewStatus() since getPreview() returns null.
+      const previewStatus = runner.buildPreviewStatus();
+      if (runner.getPreview()?.running || (previewStatus.type === "preview_status" && previewStatus.running)) {
+        send(previewStatus);
       }
     };
 
@@ -861,13 +865,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       // In production (with per-runner factories), also eagerly create a runner
       // so that preview/file-watcher start when the first viewer attaches.
       const existingRunner = runnerRegistry.get(sessionId);
+      console.log(`[session] Activating ${sessionId}, dir=${dir}, existingRunner=${!!existingRunner}, containerMode=${!!containerManager}`);
       if (existingRunner) {
         attachToRunner(existingRunner);
       } else if (dir && (runnerCreatePreviewManager || runnerCreateFileWatcher)) {
         // Production: create runner eagerly for per-session resources
         const runner = runnerRegistry.getOrCreate(sessionId, dir, perConnectionAgentId);
+        console.log(`[session] Created runner for ${sessionId}, supportsRemoteTerminal=${runner.supportsRemoteTerminal}`);
         attachToRunner(runner);
       } else {
+        console.log(`[session] No runner created: dir=${dir}, hasPreviewFactory=${!!runnerCreatePreviewManager}, hasFileWatcherFactory=${!!runnerCreateFileWatcher}`);
         detachFromRunner();
       }
 
@@ -899,17 +906,20 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
         // 5. If the runner doesn't have per-session resources (test mode),
         //    use the global file watcher and preview manager as fallback.
+        //    Skip for container runners — they manage resources via the worker.
         const runner = attachedRunner;
-        if (runner && !runner.getFileWatcher()) {
+        if (runner && !runner.getFileWatcher() && !runner.supportsRemoteTerminal) {
           fileWatcher.stop();
           fileWatcher.start(getActiveDir());
         }
-        if (runner && !runner.getPreview() && dir) {
+        if (runner && !runner.getPreview() && !runner.supportsRemoteTerminal && dir) {
           await previewManager.start(dir);
         }
 
-        // 6. Run a fresh port scan
-        await runPortScan();
+        // 6. Run a fresh port scan (skip in container mode — ports are per-container)
+        if (!runner?.supportsRemoteTerminal) {
+          await runPortScan();
+        }
       }
       // Check git identity for the newly activated session
       if (dir) {
@@ -1193,7 +1203,8 @@ if (!process.env.VITEST) {
     console.log("[server] baseline ports (will be excluded from preview):", baselinePorts);
   }
 
-  const app = await buildApp({ serveStatic: true, startPreview: true, baselinePorts });
+  const useContainers = process.env.USE_CONTAINERS === "true";
+  const app = await buildApp({ serveStatic: true, startPreview: true, baselinePorts, useContainers });
 
   let shuttingDown = false;
   const shutdown = async () => {

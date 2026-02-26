@@ -37,6 +37,7 @@ function connectSSE(
   onEvent: (event: SSEEvent) => void,
   onError: (err: Error) => void,
   onClose: () => void,
+  onOpen?: () => void,
 ): { close: () => void } {
   const parsedUrl = new URL(url);
   let destroyed = false;
@@ -53,6 +54,8 @@ function connectSSE(
       let buffer = "";
       let currentEvent = "";
       let currentData = "";
+
+      if (onOpen) onOpen();
 
       res.setEncoding("utf-8");
       res.on("data", (chunk: string) => {
@@ -236,10 +239,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   // Worker connection
   private workerUrl: string;
+  private _workerReady: Promise<void>;
+  private _resolveWorkerReady!: () => void;
   private sseConnection: { close: () => void } | null = null;
   private sseReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private sseReconnectAttempts = 0;
   private static readonly MAX_RECONNECT_DELAY_MS = 10_000;
+  private _sseConnected: Promise<void> | null = null;
+  private _resolveSseConnected: (() => void) | null = null;
 
   // Agent state (mirrored locally for synchronous access by HandlerContext)
   private _agent: ProxyAgentProcess | null = null;
@@ -299,7 +306,20 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._agentId = opts.defaultAgentId;
     this.workerUrl = opts.workerUrl;
     this._idleTimeoutMs = opts.idleTimeoutMs ?? 10 * 60 * 1000;
+    // If workerUrl looks like a placeholder, defer readiness until setWorkerUrl() is called.
+    if (opts.workerUrl === "http://0.0.0.0:0") {
+      this._workerReady = new Promise<void>((resolve) => { this._resolveWorkerReady = resolve; });
+    } else {
+      this._workerReady = Promise.resolve();
+      this._resolveWorkerReady = () => {};
+    }
     this.resetIdleTimer();
+  }
+
+  /** Update the worker URL once the container is ready. */
+  setWorkerUrl(url: string): void {
+    this.workerUrl = url;
+    this._resolveWorkerReady();
   }
 
   // --- Agent state (same interface as SessionRunner) ---
@@ -427,10 +447,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   attachViewer(): void {
     this._viewerCount++;
+    console.log(`[container-runner:${this.sessionId}] attachViewer (count=${this._viewerCount}, disposed=${this._disposed})`);
     if (this._viewerCount === 1 && !this._disposed) {
-      this.connectEventStream();
-      // Start per-session resources on the worker
-      this.startWorkerResources();
+      // Connect SSE first, then start resources so we don't miss events
+      this.connectEventStream().then(() => {
+        if (!this._disposed) this.startWorkerResources();
+      });
     }
   }
 
@@ -482,6 +504,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * that receives events via the SSE stream.
    */
   async startAgentOnWorker(agentId: AgentId, params: AgentRunParams): Promise<ProxyAgentProcess> {
+    await this._workerReady;
     const proxy = new ProxyAgentProcess(agentId);
     this._agent = proxy;
 
@@ -489,7 +512,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
     // Ensure SSE is connected to receive events
     if (!this.sseConnection) {
-      this.connectEventStream();
+      await this.connectEventStream();
     }
 
     return proxy;
@@ -551,13 +574,19 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   /** Start preview and file watcher on the worker (called when first viewer attaches). */
   private async startWorkerResources(): Promise<void> {
+    console.log(`[container-runner:${this.sessionId}] Waiting for worker to be ready...`);
+    await this._workerReady;
+    if (this._disposed) { console.log(`[container-runner:${this.sessionId}] Disposed before worker ready`); return; }
+    console.log(`[container-runner:${this.sessionId}] Starting worker resources at ${this.workerUrl}`);
     try {
       await workerPost(this.workerUrl, "/files/watch");
+      console.log(`[container-runner:${this.sessionId}] File watcher started on worker`);
     } catch (err) {
       console.error(`[container-runner:${this.sessionId}] Failed to start file watcher:`, err);
     }
     try {
       await workerPost(this.workerUrl, "/preview/start");
+      console.log(`[container-runner:${this.sessionId}] Preview started on worker`);
     } catch (err) {
       console.error(`[container-runner:${this.sessionId}] Failed to start preview:`, err);
     }
@@ -571,9 +600,26 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   // --- SSE connection management ---
 
-  private connectEventStream(): void {
-    if (this.sseConnection || this._disposed) return;
+  /** Connect to the worker SSE stream. Returns a promise that resolves once the connection is open. */
+  private connectEventStream(): Promise<void> {
+    if (this.sseConnection || this._disposed) {
+      return this._sseConnected ?? Promise.resolve();
+    }
 
+    this._sseConnected = new Promise<void>((resolve) => {
+      this._resolveSseConnected = resolve;
+    });
+
+    // Wait for the container to be ready before connecting
+    this._workerReady.then(() => {
+      if (this.sseConnection || this._disposed) return;
+      this._connectEventStreamNow();
+    });
+
+    return this._sseConnected;
+  }
+
+  private _connectEventStreamNow(): void {
     this.sseConnection = connectSSE(
       `${this.workerUrl}/events`,
       (event) => this.handleSSEEvent(event),
@@ -586,6 +632,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         this.sseConnection = null;
         if (this._viewerCount > 0 && !this._disposed) {
           this.scheduleReconnect();
+        }
+      },
+      () => {
+        // onOpen — SSE connection established, resolve the promise
+        if (this._resolveSseConnected) {
+          this._resolveSseConnected();
+          this._resolveSseConnected = null;
         }
       },
     );

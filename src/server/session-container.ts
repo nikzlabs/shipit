@@ -76,6 +76,17 @@ export interface SessionContainerManagerOpts {
   pidsLimit?: number;
   /** Worker IPC port inside containers. Defaults to 9100. */
   workerPort?: number;
+  /** Skip health check polling after container start (for unit tests with mocked Docker). */
+  skipHealthCheck?: boolean;
+  /**
+   * Docker named volume for workspace data. When set, session containers mount
+   * this volume instead of bind-mounting the sessionDir path (which only exists
+   * inside the orchestrator container, not on the host). The session subdirectory
+   * is passed as WORKSPACE_DIR env var.
+   */
+  workspaceVolume?: string;
+  /** Docker named volume for credentials. */
+  credentialsVolume?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +118,9 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private defaultCpuQuota: number;
   private defaultPidsLimit: number;
   private workerPort: number;
+  private skipHealthCheck: boolean;
+  private workspaceVolume?: string;
+  private credentialsVolume?: string;
   private eventStream: (NodeJS.ReadableStream & { destroy?: () => void }) | null = null;
   private _disposed = false;
 
@@ -119,6 +133,9 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     this.defaultCpuQuota = opts.cpuQuota ?? DEFAULT_CPU_QUOTA;
     this.defaultPidsLimit = opts.pidsLimit ?? DEFAULT_PIDS_LIMIT;
     this.workerPort = opts.workerPort ?? DEFAULT_WORKER_PORT;
+    this.skipHealthCheck = opts.skipHealthCheck ?? false;
+    this.workspaceVolume = opts.workspaceVolume;
+    this.credentialsVolume = opts.credentialsVolume;
   }
 
   // --- Docker availability ---
@@ -164,11 +181,26 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       throw new Error(`Container already exists for session ${config.sessionId}`);
     }
 
-    // Build bind mounts
-    const binds: string[] = [
-      `${config.sessionDir}:/workspace:rw`,
-      `${config.credentialsDir}:/credentials:rw`,
-    ];
+    // Build bind mounts. When running inside Docker (orchestrator is itself a
+    // container), paths like /workspace/sessions/{uuid} exist in a named volume,
+    // not on the host. In that case, mount the named volume and pass the session
+    // subdirectory as WORKSPACE_DIR.
+    const binds: string[] = [];
+    let workspaceDir = "/workspace";
+    if (this.workspaceVolume) {
+      // Mount the entire named volume, set WORKSPACE_DIR to the session subdir
+      binds.push(`${this.workspaceVolume}:/workspace-vol:rw`);
+      // Extract relative path from the session dir (e.g., "sessions/{uuid}")
+      const relPath = config.sessionDir.replace(/^\/workspace\//, "");
+      workspaceDir = `/workspace-vol/${relPath}`;
+    } else {
+      binds.push(`${config.sessionDir}:/workspace:rw`);
+    }
+    if (this.credentialsVolume) {
+      binds.push(`${this.credentialsVolume}:/credentials:rw`);
+    } else {
+      binds.push(`${config.credentialsDir}:/credentials:rw`);
+    }
     if (config.sharedRepoDir) {
       binds.push(`${config.sharedRepoDir}:/repo:ro`);
     }
@@ -176,7 +208,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     // Build environment variables
     const env: string[] = [
       `SESSION_ID=${config.sessionId}`,
-      `WORKSPACE_DIR=/workspace`,
+      `WORKSPACE_DIR=${workspaceDir}`,
       `WORKER_PORT=${this.workerPort}`,
       "HOME=/root",
     ];
@@ -198,7 +230,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     try {
       const container = await this.docker.createContainer({
         Image: config.imageName,
-        Cmd: ["node", "/app/session-worker.js"],
+        Cmd: ["node", "--import", "tsx", "src/server/session-worker.ts"],
         Labels: {
           [CONTAINER_LABEL_KEY]: CONTAINER_LABEL_VALUE,
           [CONTAINER_SESSION_ID_LABEL]: config.sessionId,
@@ -229,6 +261,11 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       sc.id = container.id;
       sc.containerIp = networkInfo.IPAddress;
       sc.workerUrl = `http://${sc.containerIp}:${this.workerPort}`;
+
+      // Wait for the worker process to be healthy before declaring the container ready.
+      if (!this.skipHealthCheck) {
+        await this.waitForWorkerHealth(sc.workerUrl);
+      }
       sc.status = "running";
 
       this.emit("container_started", config.sessionId);
@@ -238,6 +275,27 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       this.containers.delete(config.sessionId);
       throw err;
     }
+  }
+
+  /**
+   * Poll the worker's /health endpoint until it responds.
+   * Retries every 500ms up to 30s before giving up.
+   */
+  private async waitForWorkerHealth(workerUrl: string): Promise<void> {
+    const maxWaitMs = 30_000;
+    const intervalMs = 500;
+    const deadline = Date.now() + maxWaitMs;
+
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch(`${workerUrl}/health`);
+        if (res.ok) return;
+      } catch {
+        // Worker not up yet — retry
+      }
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+    throw new Error(`Worker at ${workerUrl} did not become healthy within ${maxWaitMs / 1000}s`);
   }
 
   /**

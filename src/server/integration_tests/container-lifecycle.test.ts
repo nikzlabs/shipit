@@ -126,6 +126,7 @@ describe("container lifecycle integration", () => {
       docker: fakeDocker as any,
       networkName: "shipit",
       workerPort: 9100,
+      skipHealthCheck: true,
     });
 
     // Pass createPreviewManager and createFileWatcher as factories so that
