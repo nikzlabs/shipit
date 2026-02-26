@@ -1,0 +1,37 @@
+services:
+  shipit:
+    build:
+      context: ../../..
+      dockerfile: docker/Dockerfile.prod
+    ports:
+      - "3000:3000"
+      - "5173:5173"
+    volumes:
+      - workspace:/workspace
+      - credentials:/credentials
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - USE_CONTAINERS=true
+      - WORKSPACE_VOLUME=prod_workspace
+      - CREDENTIALS_VOLUME=prod_credentials
+    networks:
+      - shipit
+
+  session-worker:
+    build:
+      context: ../../..
+      dockerfile: docker/Dockerfile.session-worker
+    image: shipit-session-worker:latest
+    profiles:
+      - build-only
+
+networks:
+  shipit:
+    name: shipit
+    driver: bridge
+
+volumes:
+  workspace:
+  credentials:
