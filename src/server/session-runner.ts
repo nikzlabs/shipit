@@ -95,6 +95,9 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   // Remote terminal support (container mode)
   readonly supportsRemoteTerminal?: boolean;
 
+  // Agent factory (container mode — returns a proxy that delegates to the worker)
+  createAgent?(agentId: AgentId): AgentProcess;
+
   // Viewer management
   readonly viewerCount: number;
   getPreview(): PreviewManager | null;

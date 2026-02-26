@@ -112,7 +112,10 @@ export class SessionWorker extends EventEmitter {
       try {
         this.agent = this.agentFactory(agentId);
         this.wireAgentEvents(this.agent);
-        this.agent.run(params);
+        // Override cwd to the container's workspace dir — the orchestrator sends
+        // the host path (e.g. /workspace/sessions/{uuid}) which doesn't exist
+        // inside the container where the session is bind-mounted at /workspace.
+        this.agent.run({ ...params, cwd: this.workspaceDir });
         return { started: true };
       } catch (err) {
         this.agent = null;
@@ -446,7 +449,7 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
   const worker = new SessionWorker({
     agentFactory: () => new ClaudeAdapter(new ClaudeProcess()),
     port: Number(process.env.WORKER_PORT) || 9100,
-    workspaceDir: process.env.WORKSPACE_DIR || "/workspace",
+    workspaceDir: process.env.WORKSPACE_DIR || "/user",
   });
 
   const address = await worker.start();

@@ -181,23 +181,34 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       throw new Error(`Container already exists for session ${config.sessionId}`);
     }
 
-    // Build bind mounts. When running inside Docker (orchestrator is itself a
+    // Build mounts. When running inside Docker (orchestrator is itself a
     // container), paths like /workspace/sessions/{uuid} exist in a named volume,
-    // not on the host. In that case, mount the named volume and pass the session
-    // subdirectory as WORKSPACE_DIR.
+    // not on the host. Use Docker volume subpaths (API 1.45+) to mount just
+    // the session subdir at /user for a short cwd that saves tokens.
     const binds: string[] = [];
-    let workspaceDir = "/workspace";
+    const mounts: Array<{
+      Type: "volume"; Source: string; Target: string; ReadOnly?: boolean;
+      VolumeOptions?: { Subpath?: string };
+    }> = [];
+    const workspaceDir = "/user";
     if (this.workspaceVolume) {
-      // Mount the entire named volume, set WORKSPACE_DIR to the session subdir
-      binds.push(`${this.workspaceVolume}:/workspace-vol:rw`);
-      // Extract relative path from the session dir (e.g., "sessions/{uuid}")
+      // Mount the session subdir from the named volume at /user
       const relPath = config.sessionDir.replace(/^\/workspace\//, "");
-      workspaceDir = `/workspace-vol/${relPath}`;
+      mounts.push({
+        Type: "volume",
+        Source: this.workspaceVolume,
+        Target: "/user",
+        VolumeOptions: { Subpath: relPath },
+      });
     } else {
-      binds.push(`${config.sessionDir}:/workspace:rw`);
+      binds.push(`${config.sessionDir}:/user:rw`);
     }
     if (this.credentialsVolume) {
-      binds.push(`${this.credentialsVolume}:/credentials:rw`);
+      mounts.push({
+        Type: "volume",
+        Source: this.credentialsVolume,
+        Target: "/credentials",
+      });
     } else {
       binds.push(`${config.credentialsDir}:/credentials:rw`);
     }
@@ -236,7 +247,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
           [CONTAINER_SESSION_ID_LABEL]: config.sessionId,
         },
         HostConfig: {
-          Binds: binds,
+          Binds: binds.length > 0 ? binds : undefined,
+          Mounts: mounts.length > 0 ? mounts as Parameters<typeof this.docker.createContainer>[0]["HostConfig"] extends { Mounts?: infer M } ? M : never : undefined,
           Memory: config.memoryLimit,
           CpuQuota: config.cpuQuota,
           CpuPeriod: DEFAULT_CPU_PERIOD,
