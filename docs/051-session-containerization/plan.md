@@ -959,17 +959,20 @@ ShipIt does not install Docker — it expects Docker to be available. The auto-d
 
 | File | Role |
 |---|---|
-| `src/server/session-worker.ts` | Worker process running inside container (Phase 1) |
+| `src/server/session-worker.ts` | Worker process running inside container (Phase 1 + Phase 3: terminal, preview, file watcher endpoints) |
 | `src/server/session-container.ts` | Docker container lifecycle manager (Phase 2) |
 | `src/server/session-container.test.ts` | Unit tests for SessionContainerManager (27 tests) |
-| `src/server/container-session-runner.ts` | SessionRunner proxy to container (Phase 1) |
-| `src/server/preview-proxy.ts` | **Phase 3** — session-ID-based reverse proxy for preview traffic |
+| `src/server/container-session-runner.ts` | SessionRunner proxy to container (Phase 1 + Phase 3: terminal/preview/file watcher proxy, SSE routing) |
+| `src/server/preview-proxy.ts` | Phase 3 — session-ID-based reverse proxy for preview traffic (HTTP + WebSocket) |
 | `Dockerfile.session-worker` | Container image for session workers (Phase 2) |
-| `src/server/session-runner.ts` | SessionRunnerInterface + registry with factory delegation |
-| `src/server/index.ts` | AppDeps wiring: useContainers, containerManager, runner factory |
+| `src/server/session-runner.ts` | SessionRunnerInterface + registry (Phase 3: added `supportsRemoteTerminal`) |
+| `src/server/ws-handlers/terminal-handlers.ts` | Phase 3 — adapted for container mode (delegates to ContainerSessionRunner) |
+| `src/server/index.ts` | AppDeps wiring: useContainers, containerManager, runner factory, preview proxy registration |
 | `src/server/types/ws-server-messages.ts` | WsSessionStatus — added optional `error` field |
 | `src/server/integration_tests/container-lifecycle.test.ts` | Integration tests for container lifecycle (5 tests) |
-| `src/client/path-utils.ts` | **Phase 3** — handle `/workspace/` prefix (containerized) alongside existing format |
+| `src/server/integration_tests/container-phase3.test.ts` | Phase 3 — integration tests for terminal/preview/file watcher (35 tests) |
+| `src/client/path-utils.ts` | Phase 3 — handle `/workspace/` prefix (containerized) alongside existing format |
+| `src/client/path-utils.test.ts` | Phase 3 — unit tests for path normalization (7 tests) |
 | `src/server/ws-handlers/types.ts` | No changes (HandlerContext unchanged) |
 | `src/server/ws-handlers/send-message.ts` | No changes (delegates to runner) |
 | `docs/041-persistent-session-runners/plan.md` | Prior art — SessionRunner design |

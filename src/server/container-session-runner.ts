@@ -102,7 +102,7 @@ function connectSSE(
 }
 
 // ---------------------------------------------------------------------------
-// Helper: POST JSON to worker
+// Helpers: HTTP calls to worker
 // ---------------------------------------------------------------------------
 
 async function workerPost(baseUrl: string, path: string, body?: unknown): Promise<unknown> {
@@ -145,6 +145,42 @@ async function workerPost(baseUrl: string, path: string, body?: unknown): Promis
 
     req.on("error", reject);
     if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+async function workerGet(baseUrl: string, path: string): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const url = new URL(path, baseUrl);
+
+    const req = http.request(
+      {
+        hostname: url.hostname,
+        port: url.port,
+        path: url.pathname,
+        method: "GET",
+      },
+      (res) => {
+        let data = "";
+        res.setEncoding("utf-8");
+        res.on("data", (chunk: string) => { data += chunk; });
+        res.on("end", () => {
+          try {
+            const parsed = JSON.parse(data);
+            if (res.statusCode && res.statusCode >= 400) {
+              reject(new Error(parsed.error ?? `HTTP ${res.statusCode}`));
+            } else {
+              resolve(parsed);
+            }
+          } catch {
+            reject(new Error(`Invalid response from worker: ${data}`));
+          }
+        });
+        res.on("error", reject);
+      },
+    );
+
+    req.on("error", reject);
     req.end();
   });
 }
@@ -196,6 +232,7 @@ class ProxyAgentProcess extends EventEmitter<{
 export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> implements SessionRunnerInterface {
   readonly sessionId: string;
   readonly sessionDir: string;
+  readonly supportsRemoteTerminal = true;
 
   // Worker connection
   private workerUrl: string;
@@ -219,10 +256,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _messageQueue: QueuedMessage[] = [];
   private static readonly MAX_QUEUE_SIZE = 50;
 
-  // Terminal (Phase 3)
+  // Terminal (remote — runs inside container)
   private _terminal: TerminalProcess | null = null;
   private _terminalOutputBuffer = "";
   private static readonly MAX_TERMINAL_BUFFER = 10_000;
+  private _remoteTerminalRunning = false;
+
+  // Preview (remote — runs inside container)
+  private _workerPreviewPorts: number[] = [];
 
   // Auto-push timer
   private _pushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -325,6 +366,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   getTerminal(): TerminalProcess | null { return this._terminal; }
   setTerminal(t: TerminalProcess | null): void { this._terminal = t; }
 
+  /** Whether the remote terminal inside the container is running. */
+  get remoteTerminalRunning(): boolean { return this._remoteTerminalRunning; }
+
   appendTerminalOutput(data: string): void {
     this._terminalOutputBuffer += data;
     if (this._terminalOutputBuffer.length > ContainerSessionRunner.MAX_TERMINAL_BUFFER) {
@@ -378,13 +422,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get viewerCount(): number { return this._viewerCount; }
 
-  getPreview(): PreviewManager | null { return null; /* Phase 3 */ }
-  getFileWatcher(): FileWatcher | null { return null; /* Phase 3 */ }
+  getPreview(): PreviewManager | null { return null; }
+  getFileWatcher(): FileWatcher | null { return null; }
 
   attachViewer(): void {
     this._viewerCount++;
     if (this._viewerCount === 1 && !this._disposed) {
       this.connectEventStream();
+      // Start per-session resources on the worker
+      this.startWorkerResources();
     }
   }
 
@@ -392,17 +438,31 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._viewerCount = Math.max(0, this._viewerCount - 1);
     if (this._viewerCount === 0) {
       this.disconnectEventStream();
+      // Stop per-session resources on the worker
+      this.stopWorkerResources();
     }
   }
 
   buildPreviewStatus(): WsServerMessage {
-    // Phase 3: query worker for preview status
+    if (this._workerPreviewPorts.length > 0) {
+      const primaryPort = this._workerPreviewPorts[0];
+      return {
+        type: "preview_status",
+        running: true,
+        port: primaryPort,
+        url: `/preview/${this.sessionId}/${primaryPort}/`,
+        source: "managed",
+        detectedPorts: this._workerPreviewPorts.length > 1
+          ? this._workerPreviewPorts.slice(1)
+          : undefined,
+      };
+    }
     if (this._detectedPorts.length > 0) {
       return {
         type: "preview_status",
         running: true,
         port: this._detectedPorts[0],
-        url: `http://localhost:${this._detectedPorts[0]}`,
+        url: `/preview/${this.sessionId}/${this._detectedPorts[0]}/`,
         source: "detected",
         detectedPorts: this._detectedPorts,
       };
@@ -411,11 +471,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       type: "preview_status",
       running: false,
       port: 5173,
-      url: "http://localhost:5173",
+      url: `/preview/${this.sessionId}/5173/`,
     };
   }
 
-  // --- Worker communication ---
+  // --- Worker communication: agent ---
 
   /**
    * Start an agent on the worker. Creates a proxy AgentProcess locally
@@ -449,6 +509,64 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   /** Write to the agent's stdin on the worker. */
   async writeAgentStdin(data: string): Promise<void> {
     await workerPost(this.workerUrl, "/agent/stdin", { data });
+  }
+
+  // --- Worker communication: terminal ---
+
+  /** Start a terminal PTY inside the container. */
+  async startTerminalOnWorker(cols?: number, rows?: number): Promise<void> {
+    await workerPost(this.workerUrl, "/terminal/start", { cols, rows });
+    this._remoteTerminalRunning = true;
+  }
+
+  /** Write data to the terminal inside the container. */
+  async writeTerminalOnWorker(data: string): Promise<void> {
+    await workerPost(this.workerUrl, "/terminal/input", { data });
+  }
+
+  /** Resize the terminal inside the container. */
+  async resizeTerminalOnWorker(cols: number, rows: number): Promise<void> {
+    await workerPost(this.workerUrl, "/terminal/resize", { cols, rows });
+  }
+
+  // --- Worker communication: preview ---
+
+  /** Start the preview server inside the container. */
+  async startPreviewOnWorker(): Promise<void> {
+    await workerPost(this.workerUrl, "/preview/start");
+  }
+
+  /** Stop the preview server inside the container. */
+  async stopPreviewOnWorker(): Promise<void> {
+    await workerPost(this.workerUrl, "/preview/stop");
+    this._workerPreviewPorts = [];
+  }
+
+  /** Get the file tree from the container's workspace. */
+  async getFileTreeFromWorker(): Promise<unknown> {
+    return workerGet(this.workerUrl, "/files/tree");
+  }
+
+  // --- Worker resource lifecycle ---
+
+  /** Start preview and file watcher on the worker (called when first viewer attaches). */
+  private async startWorkerResources(): Promise<void> {
+    try {
+      await workerPost(this.workerUrl, "/files/watch");
+    } catch (err) {
+      console.error(`[container-runner:${this.sessionId}] Failed to start file watcher:`, err);
+    }
+    try {
+      await workerPost(this.workerUrl, "/preview/start");
+    } catch (err) {
+      console.error(`[container-runner:${this.sessionId}] Failed to start preview:`, err);
+    }
+  }
+
+  /** Stop preview and file watcher on the worker (called when last viewer detaches). */
+  private async stopWorkerResources(): Promise<void> {
+    try { await workerPost(this.workerUrl, "/preview/stop"); } catch { /* container may be gone */ }
+    try { await workerPost(this.workerUrl, "/files/unwatch"); } catch { /* container may be gone */ }
   }
 
   // --- SSE connection management ---
@@ -507,8 +625,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       const data = JSON.parse(event.data);
 
       switch (event.type) {
+        // --- Agent events ---
+
         case "agent_event":
-          // Forward to the proxy agent process so wireAgentListeners picks it up
           if (this._agent) {
             this._agent.emit("event", data as AgentEvent);
           }
@@ -535,6 +654,72 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         case "agent_log":
           if (this._agent) {
             this._agent.emit("log", data.source ?? "worker", data.text ?? "");
+          }
+          break;
+
+        // --- Terminal events ---
+
+        case "terminal_data":
+          this.appendTerminalOutput(data.data);
+          this.emitMessage({ type: "terminal_output", data: data.data });
+          break;
+
+        case "terminal_exit":
+          this._remoteTerminalRunning = false;
+          this.emitMessage({ type: "terminal_exit", exitCode: data.exitCode });
+          break;
+
+        // --- Preview events ---
+
+        case "preview_ready":
+          this._workerPreviewPorts = data.ports ?? [];
+          this.emitMessage(this.buildPreviewStatus());
+          break;
+
+        case "preview_stopped":
+          this._workerPreviewPorts = [];
+          this.emitMessage(this.buildPreviewStatus());
+          break;
+
+        case "preview_config_missing":
+          this.emitMessage({
+            type: "preview_config_missing",
+            checked: data.checked ?? [],
+          } as WsServerMessage);
+          break;
+
+        case "preview_config_error":
+          this.emitMessage({
+            type: "preview_config_error",
+            message: data.message ?? "",
+          } as WsServerMessage);
+          break;
+
+        case "preview_install_status":
+          this.emitMessage({
+            type: "install_status",
+            ...data,
+          } as WsServerMessage);
+          break;
+
+        case "preview_log":
+          this.emitMessage({
+            type: "log_entry",
+            source: data.source ?? "preview",
+            text: data.text ?? "",
+            timestamp: new Date().toISOString(),
+          } as WsServerMessage);
+          break;
+
+        // --- File watcher events ---
+
+        case "file_changes":
+          this.emitMessage({ type: "files_changed", paths: data.paths ?? [] } as WsServerMessage);
+          // Detect shipit.yaml changes and restart preview on worker
+          if ((data.paths as string[])?.some((p: string) => p === "shipit.yaml" || p.endsWith("/shipit.yaml"))) {
+            workerPost(this.workerUrl, "/preview/stop")
+              .then(() => workerPost(this.workerUrl, "/preview/start"))
+              .catch(() => {});
           }
           break;
       }
@@ -573,12 +758,17 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this._agent = null;
     }
 
+    // Stop worker resources (fire and forget)
+    this.stopWorkerResources().catch(() => {});
+
     this.disconnectEventStream();
     this.clearPushTimer();
     if (this._idleTimer) { clearTimeout(this._idleTimer); this._idleTimer = null; }
     this._messageQueue.length = 0;
     this._turnEventBuffer = [];
     this._isRunning = false;
+    this._remoteTerminalRunning = false;
+    this._workerPreviewPorts = [];
     this.emit("disposed");
     this.removeAllListeners();
   }

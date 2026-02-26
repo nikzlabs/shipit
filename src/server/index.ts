@@ -30,6 +30,7 @@ import { SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import { SessionContainerManager } from "./session-container.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
+import { registerPreviewProxy } from "./preview-proxy.js";
 import type { AgentId, AgentEvent, AgentProcess } from "./agents/agent-process.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry } from "./types.js";
 import { getErrorMessage } from "./validation.js";
@@ -1156,6 +1157,12 @@ to determine the correct install command, preview mode, command, and ports.`;
         runner.dispose();
       }
     });
+  }
+
+  // ---- Preview reverse proxy (container mode) ----
+  // Routes /preview/:sessionId/:port/* to the container's bridge IP.
+  if (containerManager) {
+    registerPreviewProxy(app, { containerManager });
   }
 
   // Graceful shutdown — register once via app hook rather than per-call
