@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in-progress
 ---
 
 # 053 — Server Code Separation: Session vs Orchestrator
@@ -266,31 +266,14 @@ Every non-type server file was traced method-by-method to its actual callers to 
 
 The session worker's imports are minimal: `agents/agent-process.ts`, `terminal.ts`, `preview-manager.ts`, `file-watcher.ts`, `file-tree.ts`, plus type definitions. It doesn't touch chat history, threads, usage, templates, validation, git config, or markdown. The session worker manages *processes* (agent, terminal, preview, file watching); the orchestrator manages *data* (history, threads, usage, templates). Placing the data managers in `orchestrator/` means the type system prevents session code from accidentally importing them.
 
-## Other Entanglement Points
+## Related: Cross-Layer Entanglement Points
 
-### 1. HandlerContext is the biggest coupling surface
+Four areas where the session/orchestrator boundary is non-trivial. Each has its own design doc:
 
-`HandlerContext` (in `ws-handlers/types.ts`) contains ~40 methods mixing per-connection state, per-session runner delegation, and app-wide manager references. This is the main "god object" bridging orchestrator and session.
-
-**This refactoring**: HandlerContext stays in `orchestrator/ws-handlers/types.ts`. It already imports types from managers rather than concrete implementations. The imports just get longer paths. No structural change needed — HandlerContext is inherently an orchestrator concept (it exists per WebSocket connection in the main process).
-
-### 2. SessionRunner vs SessionWorker duality
-
-`SessionRunner` (in-process, test mode) and `ContainerSessionRunner` (proxy to worker) implement the same `SessionRunnerInterface`. The interface itself references session-layer types (`AgentProcess`, `TerminalProcess`).
-
-**This refactoring**: `SessionRunnerInterface` stays in `orchestrator/session-runner.ts`. It imports types from `session/agents/agent-process.ts` and `session/terminal.ts`. The interface definition doesn't move layers — the orchestrator needs to know the shape of what it's managing, but the implementations live in their respective layers.
-
-### 3. AgentRegistry spans both layers
-
-`AgentRegistry` detects installed agent CLIs (orchestrator concern) but is also referenced when creating agent processes (session concern, inside `session-worker.ts`).
-
-**This refactoring**: `agents/` directory moves to `session/agents/`. The `AgentRegistry` class moves there too, since it's primarily about agent CLI detection and the agents themselves are session-scoped processes. The orchestrator imports it for the detection step at startup.
-
-### 4. ChatHistoryManager / ThreadManager / UsageManager
-
-These are app-wide singletons that organize data per-session. Every caller is in `ws-handlers/*.ts`, `services/*.ts`, or `index.ts` — all orchestrator code. `session-worker.ts` does not import any of them.
-
-**This refactoring**: Move to `orchestrator/`. If a future containerization step needs them inside the session worker, they can be promoted to `shared/` then — but today the type system will correctly prevent session code from reaching them.
+- [054 — HandlerContext Refactor](../054-handler-context-refactor/plan.md) — the ~40-method god object bridging per-connection state, runner delegation, and app-wide managers. Stays in `orchestrator/ws-handlers/types.ts` unchanged.
+- [055 — SessionRunner Interface Boundary](../055-session-runner-interface/plan.md) — `SessionRunnerInterface` in orchestrator references session-layer types. Acceptable as type-only imports.
+- [056 — AgentRegistry Placement](../056-agent-registry-split/plan.md) — spans detection (orchestrator) and process creation (session). Moves to `session/agents/`; orchestrator imports it.
+- [057 — Data Manager Placement](../057-data-manager-placement/plan.md) — ChatHistoryManager, ThreadManager, UsageManager are orchestrator-only today. Move to `orchestrator/`.
 
 ## Migration Strategy
 
