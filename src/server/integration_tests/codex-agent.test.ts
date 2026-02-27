@@ -20,8 +20,6 @@ import { GitManager } from "../git.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../auth.js";
-import { PreviewManager } from "../preview-manager.js";
-import { FileWatcher } from "../file-watcher.js";
 import { AgentRegistry } from "../agents/agent-registry.js";
 import type { FastifyInstance } from "fastify";
 import type { WsServerMessage } from "../types.js";
@@ -34,10 +32,8 @@ import type {
 } from "../agents/agent-process.js";
 import {
   TestClient,
-  StubPreviewManager,
   StubAuthManager,
   FakeClaudeProcess,
-  StubFileWatcher,
   waitForClaude,
   createTestCredentialStore,
 } from "./test-helpers.js";
@@ -201,7 +197,6 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       chatHistoryManager,
-      previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentRegistry: registry,
       agentFactory: makeAgentFactory(
@@ -209,11 +204,8 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
         () => lastCodex, (c) => { lastCodex = c; },
       ),
       defaultAgentId: "codex" as AgentId,
-      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
-      startPreview: false,
-      portScanIntervalMs: 0,
     });
 
     const address = await app.listen({ port: 0, host: "127.0.0.1" });
@@ -422,18 +414,14 @@ describe("Integration: Codex agent — validation and default agent", () => {
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       chatHistoryManager,
-      previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentRegistry: registry,
       agentFactory: makeAgentFactory(
         () => lastClaude, (c) => { lastClaude = c; },
         () => lastCodex, (c) => { lastCodex = c; },
       ),
-      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
-      startPreview: false,
-      portScanIntervalMs: 0,
     });
 
     const address = await app.listen({ port: 0, host: "127.0.0.1" });

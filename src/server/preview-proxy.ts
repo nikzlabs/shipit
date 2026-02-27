@@ -11,8 +11,7 @@
  *
  * Supports WebSocket upgrades for HMR in both modes.
  *
- * Only registered when useContainers is true and a SessionContainerManager
- * is available.
+ * Registered when a SessionContainerManager is available (production mode).
  */
 
 import http from "node:http";

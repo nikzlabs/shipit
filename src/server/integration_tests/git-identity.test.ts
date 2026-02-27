@@ -8,18 +8,16 @@ import { GitManager } from "../git.js";
 import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../auth.js";
 import { GitHubAuthManager } from "../github-auth.js";
-import { PreviewManager } from "../preview-manager.js";
+
 import { ClaudeProcess } from "../claude.js";
-import { FileWatcher } from "../file-watcher.js";
+
 import { setGitIdentity } from "../git-config.js";
 import type { FastifyInstance } from "fastify";
 import {
   TestClient,
-  StubPreviewManager,
   StubAuthManager,
   StubGitHubAuthManager,
   FakeClaudeProcess,
-  StubFileWatcher,
 } from "./test-helpers.js";
 
 describe("Integration: git identity flow", () => {
@@ -70,16 +68,12 @@ describe("Integration: git identity flow", () => {
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
-      previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
       claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
-      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       credentialsDir: path.join(tmpDir, "credentials"),
       serveStatic: false,
-      startPreview: false,
-      portScanIntervalMs: 0,
     });
     const address = await app.listen({ port: 0, host: "127.0.0.1" });
     const match = address.match(/:(\d+)$/);

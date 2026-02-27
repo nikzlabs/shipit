@@ -141,38 +141,6 @@ export class TestClient {
 // ---------------------------------------------------------------------------
 
 /**
- * Stub ViteManager that never spawns a process.
- * Reports as not running with port 5173 (matching production defaults).
- * @deprecated Use StubPreviewManager instead.
- */
-export class StubViteManager extends EventEmitter {
-  private _running = false;
-  private _port = 5173;
-  get running() { return this._running; }
-  get port() { return this._port; }
-  start() { /* no-op */ }
-  stop() { /* no-op */ }
-  restart() { /* no-op */ }
-}
-
-/**
- * Stub PreviewManager that never spawns a process.
- * Reports as not running with no ports (matching production defaults).
- */
-export class StubPreviewManager extends EventEmitter {
-  private _running = false;
-  private _ports: number[] = [];
-  private _config: null = null;
-  get running() { return this._running; }
-  get port() { return this._ports.length > 0 ? this._ports[0] : null; }
-  get ports() { return this._ports; }
-  get config() { return this._config; }
-  async start() { /* no-op */ }
-  stop() { /* no-op */ }
-  async restart() { /* no-op */ }
-}
-
-/**
  * Stub AuthManager that never spawns a process.
  * checkCredentials() always returns false.
  */
@@ -360,18 +328,6 @@ export class FakeClaudeProcess extends EventEmitter {
   finish(sessionId = "test-session", code = 0) {
     this.emit("event", { type: "result", subtype: "success", session_id: sessionId });
     this.emit("done", code);
-  }
-}
-
-/**
- * Stub FileWatcher that doesn't actually watch the filesystem.
- * Tests can call simulateChanges() to trigger "changes" events manually.
- */
-export class StubFileWatcher extends EventEmitter {
-  start() { /* no-op */ }
-  stop() { /* no-op */ }
-  simulateChanges(paths: string[]) {
-    this.emit("changes", paths);
   }
 }
 
