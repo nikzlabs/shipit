@@ -72,11 +72,6 @@ export async function handleForkThread(ctx: HandlerContext, msg: WsForkThread): 
       ctx.chatHistoryManager.append(threadHistoryKey, m);
     }
 
-    // Restart Vite after git rollback (skip in container mode — preview runs on the worker)
-    if (!ctx.getRunner()?.supportsRemoteTerminal) {
-      ctx.previewManager.restart(ctx.getActiveDir());
-    }
-
     ctx.send({
       type: "thread_forked",
       thread: newThread,
@@ -133,9 +128,6 @@ export async function handleSwitchThread(ctx: HandlerContext, msg: WsSwitchThrea
             isActive: t.id === threadId,
           })),
         });
-        if (!ctx.getRunner()?.supportsRemoteTerminal) {
-          ctx.previewManager.restart(ctx.getActiveDir());
-        }
       }
     }
 

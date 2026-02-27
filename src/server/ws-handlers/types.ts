@@ -8,9 +8,7 @@ import type { DeploymentManager } from "../deployment-manager.js";
 import type { DeploymentStore } from "../deployment-store.js";
 import type { FeatureManager } from "../features.js";
 import type { UsageManager } from "../usage.js";
-import type { PreviewManager } from "../preview-manager.js";
 import type { AuthManager } from "../auth.js";
-import type { FileWatcher } from "../file-watcher.js";
 import type { AgentRegistry } from "../agents/agent-registry.js";
 import type { AgentId, AgentProcess } from "../agents/agent-process.js";
 import type { TerminalProcess } from "../terminal.js";
@@ -102,9 +100,7 @@ export interface HandlerContext {
   deploymentStore: DeploymentStore;
   featureManager: FeatureManager;
   usageManager: UsageManager;
-  previewManager: PreviewManager;
   authManager: AuthManager;
-  fileWatcher: FileWatcher;
   agentRegistry: AgentRegistry;
 
   // === Factories ===
@@ -116,7 +112,6 @@ export interface HandlerContext {
   checkGitIdentity: (dir: string) => void;
   readSystemPrompt: () => Promise<string | undefined>;
   scheduleAutoPush: (git: GitManager, sendFn: (msg: WsServerMessage) => void) => void;
-  runPortScan: () => Promise<void>;
 
   // === Config ===
   workspaceDir: string;

@@ -7,17 +7,15 @@ import { GitManager } from "../git.js";
 import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../auth.js";
 import { GitHubAuthManager } from "../github-auth.js";
-import { PreviewManager } from "../preview-manager.js";
+
 import { ClaudeProcess } from "../claude.js";
-import { FileWatcher } from "../file-watcher.js";
+
 import type { FastifyInstance } from "fastify";
 import {
   TestClient,
-  StubPreviewManager,
   StubAuthManager,
   StubGitHubAuthManager,
   FakeClaudeProcess,
-  StubFileWatcher,
   waitForClaude,
   createTestCredentialStore,
 } from "./test-helpers.js";
@@ -43,7 +41,6 @@ describe("Integration: PR description generation", () => {
       credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
-      previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
       claudeFactory: () => {
@@ -51,11 +48,8 @@ describe("Integration: PR description generation", () => {
         lastClaude = cp;
         return cp as unknown as ClaudeProcess;
       },
-      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
-      startPreview: false,
-      portScanIntervalMs: 0,
       generateText: async () => {
         if (generateTextError) throw generateTextError;
         return generateTextResult;
@@ -128,7 +122,6 @@ describe("Integration: PR description generation", () => {
       credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: new SessionManager(emptySessionsFile),
-      previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
       claudeFactory: () => {
@@ -136,11 +129,8 @@ describe("Integration: PR description generation", () => {
         emptyLastClaude = cp;
         return cp as unknown as ClaudeProcess;
       },
-      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: emptyDir,
       serveStatic: false,
-      startPreview: false,
-      portScanIntervalMs: 0,
       generateText: async () => generateTextResult,
     });
 

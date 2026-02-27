@@ -8,32 +8,28 @@ import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../auth.js";
 import { GitHubAuthManager } from "../github-auth.js";
-import { PreviewManager } from "../preview-manager.js";
+
 import { ClaudeProcess } from "../claude.js";
-import { FileWatcher } from "../file-watcher.js";
+
 import type { FastifyInstance } from "fastify";
 import {
   TestClient,
-  StubPreviewManager,
   StubAuthManager,
   StubGitHubAuthManager,
   FakeClaudeProcess,
-  StubFileWatcher,
   waitForClaude,
   createTestCredentialStore,
 } from "./test-helpers.js";
 
-describe("Integration: File watcher", () => {
+describe("Integration: Image upload", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
   let lastClaude: FakeClaudeProcess = null as any;
-  let stubFileWatcher: StubFileWatcher;
 
   beforeEach(async () => {
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-filewatcher-"));
-    stubFileWatcher = new StubFileWatcher();
     lastClaude = undefined as unknown as FakeClaudeProcess;
 
     app = await buildApp({
@@ -41,18 +37,14 @@ describe("Integration: File watcher", () => {
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
       chatHistoryManager: new ChatHistoryManager(path.join(tmpDir, "chat-history")),
-      previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
       claudeFactory: () => {
         lastClaude = new FakeClaudeProcess();
         return lastClaude as unknown as ClaudeProcess;
       },
-      fileWatcher: stubFileWatcher as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
-      startPreview: false,
-      portScanIntervalMs: 0,
     });
 
     const address = await app.listen({ port: 0, host: "127.0.0.1" });
@@ -69,80 +61,6 @@ describe("Integration: File watcher", () => {
       // Ignore cleanup errors
     }
   });
-
-  it("broadcasts files_changed when file watcher emits changes", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // Simulate file changes via the stub
-    stubFileWatcher.simulateChanges(["src/app.ts", "package.json"]);
-
-    const msg = await client.receive();
-
-    expect(msg).toMatchObject({
-      type: "files_changed",
-      paths: ["src/app.ts", "package.json"],
-    });
-
-    client.close();
-  });
-
-  it("broadcasts files_changed to multiple connected clients", async () => {
-    const client1 = await TestClient.connect(port);
-    await client1.receive(); // preview_status
-
-    const client2 = await TestClient.connect(port);
-    await client2.receive(); // preview_status
-
-    stubFileWatcher.simulateChanges(["index.html"]);
-
-    const msg1 = await client1.receive();
-    const msg2 = await client2.receive();
-
-    expect(msg1).toMatchObject({ type: "files_changed", paths: ["index.html"] });
-    expect(msg2).toMatchObject({ type: "files_changed", paths: ["index.html"] });
-
-    client1.close();
-    client2.close();
-  });
-
-  it("handles multiple sequential file change events", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    // First batch of changes
-    stubFileWatcher.simulateChanges(["a.ts"]);
-    const msg1 = await client.receive();
-    expect(msg1).toMatchObject({ type: "files_changed", paths: ["a.ts"] });
-
-    // Second batch of changes
-    stubFileWatcher.simulateChanges(["b.ts", "c.ts"]);
-    const msg2 = await client.receive();
-    expect(msg2).toMatchObject({ type: "files_changed", paths: ["b.ts", "c.ts"] });
-
-    client.close();
-  });
-
-  it("files_changed is not received after client disconnects", async () => {
-    const client1 = await TestClient.connect(port);
-    await client1.receive(); // preview_status
-
-    const client2 = await TestClient.connect(port);
-    await client2.receive(); // preview_status
-
-    // Disconnect client1
-    client1.close();
-    await new Promise((r) => setTimeout(r, 100));
-
-    // Simulate changes — only client2 should receive
-    stubFileWatcher.simulateChanges(["test.ts"]);
-    const msg = await client2.receive();
-    expect(msg).toMatchObject({ type: "files_changed", paths: ["test.ts"] });
-
-    client2.close();
-  });
-
-  // ---- Image upload (send_message with images) ----
 
   // A minimal 1x1 red PNG (valid base64)
   const TINY_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg==";

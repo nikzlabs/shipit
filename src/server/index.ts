@@ -5,16 +5,12 @@ import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { ClaudeProcess } from "./claude.js";
-import { PreviewManager } from "./preview-manager.js";
 import { GitManager } from "./git.js";
 import { AuthManager } from "./auth.js";
 import { GitHubAuthManager } from "./github-auth.js";
 import { SessionManager } from "./sessions.js";
 import { ChatHistoryManager } from "./chat-history.js";
-import { scanPorts, snapshotBaselinePorts, DEFAULT_SCAN_PORTS } from "./port-scanner.js";
 import { UsageManager } from "./usage.js";
-import { FileWatcher } from "./file-watcher.js";
-import type { TerminalProcess } from "./terminal.js";
 import { FeatureManager } from "./features.js";
 import { ThreadManager } from "./threads.js";
 import { DeploymentManager } from "./deployment-manager.js";
@@ -57,8 +53,6 @@ export interface AppDeps {
    * Defaults to `(dir) => new GitManager(dir)`.
    */
   createGitManager?: (workspaceDir: string) => GitManager;
-  /** Preview manager. Defaults to `new PreviewManager()` with auto-start. */
-  previewManager?: PreviewManager;
   /** Session manager instance. Defaults to `new SessionManager()`. */
   sessionManager?: SessionManager;
   /** Auth manager instance. Defaults to `new AuthManager()`. */
@@ -85,47 +79,6 @@ export interface AppDeps {
   credentialsDir?: string;
   /** Whether to serve static files from dist/client. Defaults to true. */
   serveStatic?: boolean;
-  /** Whether to start the preview server. Defaults to true. */
-  startPreview?: boolean;
-  /**
-   * Port detection function called after each Claude turn and periodically to
-   * find non-Vite dev servers. Returns all detected ports. Defaults to scanning
-   * DEFAULT_SCAN_PORTS. Inject a stub in tests to avoid real port scanning.
-   */
-  detectPorts?: (excludePorts: number[]) => Promise<number[]>;
-  /**
-   * Ports belonging to ShipIt itself, excluded from port scans. Defaults to
-   * [PORT, CLIENT_DEV_PORT] — the Fastify server and the client Vite HMR server.
-   */
-  serverPorts?: number[];
-  /**
-   * Interval in milliseconds for periodic port scanning. Set to 0 to disable.
-   * The scanner runs while at least one WebSocket client is connected.
-   * Defaults to 5000 (5 seconds).
-   */
-  portScanIntervalMs?: number;
-  /**
-   * Ports that were already open when the server started. These are excluded
-   * from port scans so that system-level services (e.g. ShipIt's own Vite dev
-   * server during development, or other host tooling) never appear in the
-   * user-facing preview tab. Defaults to a live snapshot via snapshotBaselinePorts().
-   */
-  baselinePorts?: number[];
-  /**
-   * File watcher instance. Defaults to `new FileWatcher()`.
-   * Inject a stub in tests to avoid real filesystem watching.
-   */
-  fileWatcher?: FileWatcher;
-  /**
-   * Factory for creating per-session PreviewManager instances (inside SessionRunnerInterface).
-   * Defaults to `() => new PreviewManager()`. Inject a stub factory in tests.
-   */
-  createPreviewManager?: () => PreviewManager;
-  /**
-   * Factory for creating per-session FileWatcher instances (inside SessionRunnerInterface).
-   * Defaults to `() => new FileWatcher()`. Inject a stub factory in tests.
-   */
-  createFileWatcher?: () => FileWatcher;
   /**
    * Thread manager instance. Defaults to `new ThreadManager()`.
    * Manages conversation threads and checkpoints.
@@ -168,16 +121,10 @@ export interface AppDeps {
   agentRegistry?: AgentRegistry;
   /**
    * Custom runner factory for the session runner registry. When provided,
-   * the registry uses this to create runners instead of the default
-   * SessionRunner. Used to inject ContainerSessionRunner for Docker mode.
+   * the registry uses this to create runners instead of the default.
+   * Used to inject ContainerSessionRunner for Docker mode.
    */
   runnerFactory?: import("./session-runner.js").SessionRunnerFactory;
-  /**
-   * Whether to run session workers inside Docker containers.
-   * When true (and Docker is available), each session gets an isolated container.
-   * Defaults to false. Auto-detected at startup in production mode.
-   */
-  useContainers?: boolean;
   /**
    * Pre-configured SessionContainerManager instance. When provided, skips
    * Docker auto-detection and network setup. Useful for testing.
@@ -200,11 +147,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     workspaceDir = WORKSPACE,
     credentialsDir = "/credentials",
     serveStatic: shouldServeStatic = true,
-    startPreview = true,
-    detectPorts = (excludePorts: number[]) => scanPorts(DEFAULT_SCAN_PORTS, excludePorts),
-    serverPorts = [...new Set([Number(process.env.PORT) || 3000, Number(process.env.CLIENT_DEV_PORT) || 3000])],
-    portScanIntervalMs = 5000,
-    baselinePorts = [],
     autoPushDebounceMs = 5000,
   } = deps;
 
@@ -228,9 +170,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Per-session GitManager factory ----
   const createGitManager = deps.createGitManager ?? ((dir: string) => new GitManager(dir));
-
-  // ---- Preview manager (replaces ViteManager) ----
-  const previewManager = deps.previewManager ?? new PreviewManager();
 
   // ---- Session manager ----
   const sessionManager = deps.sessionManager ?? new SessionManager();
@@ -330,14 +269,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     });
   });
 
-  // ---- File watcher (global instance — used as fallback before any session is active) ----
-  const fileWatcher = deps.fileWatcher ?? new FileWatcher();
-
-  // ---- Container manager (Docker isolation, Phase 2) ----
+  // ---- Container manager (Docker isolation) ----
+  // In production (serveStatic !== false), every session gets a Docker container.
+  // Tests set serveStatic: false and inject stubs, so Docker is not required.
+  const isTestMode = deps.serveStatic === false;
   let containerManager: SessionContainerManager | null = null;
   if (deps.sessionContainerManager) {
     containerManager = deps.sessionContainerManager;
-  } else if (deps.useContainers) {
+  } else if (!isTestMode && !deps.runnerFactory) {
+    // Production mode: Docker is required
     containerManager = new SessionContainerManager({
       workspaceVolume: process.env.WORKSPACE_VOLUME,
       credentialsVolume: process.env.CREDENTIALS_VOLUME,
@@ -351,64 +291,44 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       await containerManager.startHealthMonitor();
       console.log("[server] Docker container mode enabled");
     } else {
-      throw new Error("USE_CONTAINERS is true but Docker is not available (is /var/run/docker.sock mounted?)");
+      throw new Error("Docker is not available (is /var/run/docker.sock mounted?)");
     }
   }
 
   // ---- Session runner registry (app-level, shared across connections) ----
-  // Runners create per-session preview and file watcher instances, ref-counted by viewers.
-  // When deps provides a singleton (test stubs), we don't create per-runner instances
-  // unless an explicit factory is given. In production (no deps), use real factories.
-  const runnerCreatePreviewManager = deps.createPreviewManager
-    ?? (deps.previewManager ? undefined : () => new PreviewManager());
-  const runnerCreateFileWatcher = deps.createFileWatcher
-    ?? (deps.fileWatcher ? undefined : () => new FileWatcher());
+  // In production, the factory creates ContainerSessionRunner instances that
+  // talk to per-session Docker containers via HTTP+SSE. Tests inject a custom
+  // factory or claudeFactory (using in-process SessionRunner via registry default).
+  const effectiveRunnerFactory: import("./session-runner.js").SessionRunnerFactory | undefined =
+    deps.runnerFactory ?? (containerManager ? ((o: Parameters<import("./session-runner.js").SessionRunnerFactory>[0]) => {
+      const mgr = containerManager!;
+      const config = mgr.buildConfig({
+        sessionId: o.sessionId,
+        sessionDir: o.sessionDir,
+        credentialsDir,
+      });
+      const runner = new ContainerSessionRunner({
+        sessionId: o.sessionId,
+        sessionDir: o.sessionDir,
+        defaultAgentId: o.defaultAgentId,
+        workerUrl: "http://0.0.0.0:0", // placeholder — updated after container starts
+        idleTimeoutMs: o.idleTimeoutMs,
+      });
 
-  // Build runner factory: use container runners when Docker is available,
-  // otherwise fall back to direct process spawning.
-  const effectiveRunnerFactory = deps.runnerFactory ?? (containerManager
-    ? ((o: Parameters<import("./session-runner.js").SessionRunnerFactory>[0]) => {
-        // Create a container for this session and return a ContainerSessionRunner
-        // that talks to the worker inside it. The container is created lazily —
-        // getOrCreate() calls this factory, so the container starts here.
-        const mgr = containerManager!;
-        const config = mgr.buildConfig({
-          sessionId: o.sessionId,
-          sessionDir: o.sessionDir,
-          credentialsDir,
-        });
-        // Container creation is async but the factory is sync. We start with a
-        // placeholder workerUrl and update it once the container is ready.
-        // The ContainerSessionRunner handles the case where the worker isn't
-        // reachable yet (SSE reconnection with backoff).
-        const runner = new ContainerSessionRunner({
-          sessionId: o.sessionId,
-          sessionDir: o.sessionDir,
-          defaultAgentId: o.defaultAgentId,
-          workerUrl: "http://0.0.0.0:0", // placeholder — updated after container starts
-          idleTimeoutMs: o.idleTimeoutMs,
-          createPreviewManager: o.createPreviewManager,
-          createFileWatcher: o.createFileWatcher,
-        });
+      console.log(`[container] Creating container for session ${o.sessionId}...`);
+      mgr.create(config).then((sc) => {
+        console.log(`[container] Container ready for ${o.sessionId} at ${sc.workerUrl}`);
+        runner.setWorkerUrl(sc.workerUrl);
+      }).catch((err) => {
+        console.error(`[container] Failed to start container for ${o.sessionId}:`, getErrorMessage(err));
+        runner.dispose();
+      });
 
-        // Start the container in the background and update the worker URL
-        console.log(`[container] Creating container for session ${o.sessionId}...`);
-        mgr.create(config).then((sc) => {
-          console.log(`[container] Container ready for ${o.sessionId} at ${sc.workerUrl}`);
-          runner.setWorkerUrl(sc.workerUrl);
-        }).catch((err) => {
-          console.error(`[container] Failed to start container for ${o.sessionId}:`, getErrorMessage(err));
-          runner.dispose();
-        });
-
-        return runner;
-      })
-    : undefined);
+      return runner;
+    }) : undefined);
 
   const runnerRegistry = new SessionRunnerRegistry({
-    createPreviewManager: runnerCreatePreviewManager,
-    createFileWatcher: runnerCreateFileWatcher,
-    runnerFactory: effectiveRunnerFactory,
+    ...(effectiveRunnerFactory ? { runnerFactory: effectiveRunnerFactory } : {}),
   });
 
   // Track connected WebSocket clients so we can broadcast
@@ -452,171 +372,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     broadcast({ type: "deploy_error", message: err.message, phase: err.phase as "building" | "deploying" });
   });
 
-  // ---- File watcher event handler (global fallback) ----
-  // Per-session file watcher events are handled inside SessionRunnerInterface.
-  // This global handler fires only when no runner is managing a session's file watcher
-  // (e.g., pre-session state, or in tests that don't use per-runner factories).
-  fileWatcher.on("changes", (changedFiles: string[]) => {
-    broadcast({ type: "files_changed", paths: changedFiles });
-    if (!containerManager && changedFiles.some((f) => f === "shipit.yaml" || f.endsWith("/shipit.yaml"))) {
-      previewManager.restart(workspaceDir);
-    }
-  });
-
-  // Track auto-detected dev server ports for pre-session state (global fallback).
-  // Once a session is active, detected ports are stored per-runner.
-  let detectedPorts: number[] = [];
-
-  /**
-   * Run a port scan and update detected ports per-runner (and global fallback).
-   * Shared between the post-turn scan and the periodic interval scanner.
-   *
-   * The exclude list combines three sources:
-   *  1. serverPorts         — ShipIt's own ports (Fastify + dev Vite HMR)
-   *  2. managed preview ports — from the global preview manager and active runners
-   *  3. baselinePorts       — ports that were already open before the session
-   *                           started (other system services, host tooling, etc.)
-   *
-   * Detected ports are stored on each active runner so each session tracks
-   * its own ports independently. The global `detectedPorts` is kept as a
-   * fallback for pre-session connections.
-   */
-  const runPortScan = async () => {
-    try {
-      // Collect managed ports from global preview and all active runners
-      const managedPorts: number[] = [];
-      if (previewManager.port) managedPorts.push(previewManager.port);
-      for (const sessionId of runnerRegistry.listActive()) {
-        const runner = runnerRegistry.get(sessionId);
-        const rp = runner?.getPreview()?.port;
-        if (rp) managedPorts.push(rp);
-      }
-      const excludeList = [...serverPorts, ...managedPorts, ...baselinePorts];
-      const ports = await detectPorts(excludeList);
-
-      // Update global fallback
-      const globalChanged =
-        ports.length !== detectedPorts.length ||
-        ports.some((p, i) => p !== detectedPorts[i]);
-      if (globalChanged) {
-        detectedPorts = ports;
-      }
-
-      // Update each active runner's detected ports and notify their viewers
-      let anyRunnerUpdated = false;
-      for (const sessionId of runnerRegistry.listActive()) {
-        const runner = runnerRegistry.get(sessionId);
-        if (!runner) continue;
-        const oldPorts = runner.detectedPorts;
-        const runnerChanged =
-          ports.length !== oldPorts.length ||
-          ports.some((p, i) => p !== oldPorts[i]);
-        if (runnerChanged) {
-          runner.detectedPorts = ports;
-          runner.emitMessage(runner.buildPreviewStatus());
-          anyRunnerUpdated = true;
-        }
-      }
-
-      // Broadcast global status only for connections NOT covered by a runner.
-      // When runners handle the update, their viewers already get notified via
-      // emitMessage(). Broadcasting globally too would cause duplicate messages.
-      if (globalChanged && !anyRunnerUpdated) {
-        broadcastPreviewStatus();
-      }
-    } catch (err) {
-      console.error("[port-scanner] scan failed:", getErrorMessage(err));
-    }
-  };
-
-  // ---- Periodic port scanning ----
-  // Scans on an interval while at least one WebSocket client is connected,
-  // catching dev servers started mid-turn (e.g. via Bash tool).
-  let portScanTimer: ReturnType<typeof setInterval> | null = null;
-
-  const startPortScanInterval = () => {
-    if (portScanTimer || portScanIntervalMs <= 0) return;
-    portScanTimer = setInterval(runPortScan, portScanIntervalMs);
-  };
-
-  const stopPortScanInterval = () => {
-    if (portScanTimer) {
-      clearInterval(portScanTimer);
-      portScanTimer = null;
-    }
-  };
-
-  /**
-   * Build the current preview status message. Checks the global preview manager
-   * (used before any session is active) as a fallback. Per-session preview status
-   * is handled by SessionRunnerInterface.buildPreviewStatus() and emitted to viewers.
-   */
-  const getPreviewStatus = (): WsServerMessage => {
-    if (previewManager.running && previewManager.port) {
-      // Merge managed ports (after primary) with scanner-detected ports
-      const extraManagedPorts = previewManager.ports.slice(1);
-      const allDetected = [...extraManagedPorts, ...detectedPorts];
-      return {
-        type: "preview_status",
-        running: true,
-        port: previewManager.port,
-        url: `http://localhost:${previewManager.port}`,
-        source: previewManager.config?.mode.kind === "html" ? "vite" : "managed",
-        detectedPorts: allDetected.length > 0 ? allDetected : undefined,
-      };
-    }
-    if (detectedPorts.length > 0) {
-      return {
-        type: "preview_status",
-        running: true,
-        port: detectedPorts[0],
-        url: `http://localhost:${detectedPorts[0]}`,
-        source: "detected",
-        detectedPorts,
-      };
-    }
-    return {
-      type: "preview_status",
-      running: false,
-      port: 5173,
-      url: "http://localhost:5173",
-    };
-  };
-
-  const broadcastPreviewStatus = () => {
-    const payload = JSON.stringify(getPreviewStatus());
-    for (const ws of clients) {
-      if (ws.readyState === 1) ws.send(payload);
-    }
-  };
-
-  // Preview events for the global (pre-session) preview manager.
-  // Per-session preview events are wired inside SessionRunnerInterface.wirePreviewEvents().
-  // In production, the global preview is stopped when a runner takes over.
-  previewManager.on("ready", () => {
-    console.log("[server] Preview server is ready");
-    broadcastPreviewStatus();
-  });
-
-  previewManager.on("stopped", () => {
-    broadcastPreviewStatus();
-  });
-
-  previewManager.on("config_missing", (checked: string[]) => {
-    broadcast({ type: "preview_config_missing", checked: checked as ("shipit.yaml" | "package.json")[] });
-  });
-
-  previewManager.on("config_error", (message: string) => {
-    broadcast({ type: "preview_config_error", message });
-  });
-
-  previewManager.on("install_status", (status: { status: "running" | "complete" | "error"; message?: string }) => {
-    broadcast({ type: "install_status", ...status });
-  });
-
-  previewManager.on("log", ({ source, text }: { source: string; text: string }) => {
-    broadcastLog(source as WsLogEntry["source"], text);
-  });
 
   // ---- Auth event handlers ----
   authManager.on("auth_url", (url: string) => {
@@ -636,12 +391,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   authManager.on("auth_failed", () => {
     console.log("[auth] OAuth flow failed — client should provide API key");
   });
-
-  // Start preview server (skipped in tests, and in container mode where each
-  // session container manages its own preview via the worker process).
-  if (startPreview && !containerManager) {
-    previewManager.start(workspaceDir);
-  }
 
   /**
    * Create a new isolated session directory with its own git repo.
@@ -699,7 +448,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     usageManager,
     runnerRegistry,
     chatHistoryManager,
-    previewManager,
     authManager,
     broadcast,
     broadcastLog,
@@ -741,19 +489,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     console.log("[ws] client connected");
     clients.add(socket);
 
-    // Start periodic port scanning when the first client connects
-    if (clients.size === 1) {
-      startPortScanInterval();
-    }
     // Per-connection active session state (lightweight — which session this tab views)
     let activeAppSessionId: string | undefined;
     let activeSessionDir: string | null = null;
 
     // Per-connection active agent selection (survives across runners)
     let perConnectionAgentId: AgentId = defaultAgentId;
-
-    // Per-connection fallback terminal (used only when no runner is attached)
-    let terminal: TerminalProcess | null = null;
 
     // Per-connection runner attachment
     let attachedRunner: SessionRunnerInterface | null = null;
@@ -765,6 +506,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       }
     };
 
+    // Send initial preview_status so client has a baseline state
+    send({ type: "preview_status", running: false, port: 5173, url: "http://localhost:5173" });
+
     // ---- Runner attach/detach helpers ----
 
     const attachToRunner = (runner: SessionRunnerInterface) => {
@@ -773,12 +517,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
       // Detach from previous runner first
       detachFromRunner();
-
-      // Stop the global file watcher and preview manager before the runner
-      // starts its own per-session instances (avoids duplicate watchers).
-      // In test mode (no per-runner factories), the globals remain active.
-      if (runnerCreateFileWatcher) fileWatcher.stop();
-      if (runnerCreatePreviewManager) previewManager.stop();
 
       attachedRunner = runner;
       runnerMessageListener = (msg: WsServerMessage) => send(msg);
@@ -861,28 +599,23 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     };
 
     /**
-     * Activate a session by ID — sets activeSessionDir and restarts the
-     * file watcher to watch the session's directory.
+     * Activate a session by ID — sets activeSessionDir, creates a runner
+     * (which starts a container), and attaches this connection to it.
      */
     const activateSession = async (sessionId: string) => {
       const session = sessionManager.get(sessionId);
       activeAppSessionId = sessionId;
       const dir = session?.workspaceDir ?? null;
 
-      // Attach to an existing runner if one exists for this session.
-      // In production (with per-runner factories), also eagerly create a runner
-      // so that preview/file-watcher start when the first viewer attaches.
+      // Attach to an existing runner or eagerly create one for the container.
       const existingRunner = runnerRegistry.get(sessionId);
-      console.log(`[session] Activating ${sessionId}, dir=${dir}, existingRunner=${!!existingRunner}, containerMode=${!!containerManager}`);
+      console.log(`[session] Activating ${sessionId}, dir=${dir}, existingRunner=${!!existingRunner}`);
       if (existingRunner) {
         attachToRunner(existingRunner);
-      } else if (dir && (runnerCreatePreviewManager || runnerCreateFileWatcher)) {
-        // Production: create runner eagerly for per-session resources
+      } else if (dir) {
         const runner = runnerRegistry.getOrCreate(sessionId, dir, perConnectionAgentId);
-        console.log(`[session] Created runner for ${sessionId}, supportsRemoteTerminal=${runner.supportsRemoteTerminal}`);
         attachToRunner(runner);
       } else {
-        console.log(`[session] No runner created: dir=${dir}, hasPreviewFactory=${!!runnerCreatePreviewManager}, hasFileWatcherFactory=${!!runnerCreateFileWatcher}`);
         detachFromRunner();
       }
 
@@ -890,43 +623,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         const oldDir = activeSessionDir;
         activeSessionDir = dir;
 
-        // Only perform full cleanup when switching away from a previous session
+        // Clear terminal logs when switching away from a previous session
         if (oldDir !== null) {
-          // 1. Stop global preview process (runner's preview handled by detach)
-          previewManager.stop();
-
-          // 2. Clear detected ports
-          detectedPorts = [];
-
-          // 3. Send clean "not running" preview status to this connection only
-          //    (other connections have their own runners and shouldn't be affected).
-          //    When per-runner previews are in use, the runner will emit the real
-          //    status once it starts — skip the premature "not running" to avoid
-          //    flashing the placeholder UI.
-          if (!runnerCreatePreviewManager) {
-            send(getPreviewStatus());
-          }
-
-          // 4. Clear terminal logs (old session's output is irrelevant)
           logBuffer = [];
           broadcast({ type: "clear_logs" });
-        }
-
-        // 5. If the runner doesn't have per-session resources (test mode),
-        //    use the global file watcher and preview manager as fallback.
-        //    Skip for container runners — they manage resources via the worker.
-        const runner = attachedRunner;
-        if (runner && !runner.getFileWatcher() && !runner.supportsRemoteTerminal) {
-          fileWatcher.stop();
-          fileWatcher.start(getActiveDir());
-        }
-        if (runner && !runner.getPreview() && !runner.supportsRemoteTerminal && dir) {
-          await previewManager.start(dir);
-        }
-
-        // 6. Run a fresh port scan (skip in container mode — ports are per-container)
-        if (!runner?.supportsRemoteTerminal) {
-          await runPortScan();
         }
       }
       // Check git identity for the newly activated session
@@ -934,13 +634,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         checkGitIdentity(dir);
       }
     };
-
-    // Send current preview status on connect (only when per-runner previews
-    // are NOT in use — otherwise the runner will emit its own status once the
-    // session is activated and the preview starts).
-    if (!runnerCreatePreviewManager) {
-      send(getPreviewStatus());
-    }
 
     // Send buffered log entries so new clients see existing terminal output
     for (const entry of logBuffer) {
@@ -1015,11 +708,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       setNeedsNewMessageGroup: (v) => { if (attachedRunner) attachedRunner.needsNewMessageGroup = v; },
       getMessageQueue: () => attachedRunner?.messageQueue ?? [],
       clearMessageQueue: () => { if (attachedRunner) attachedRunner.clearQueue(); },
-      getTerminal: () => attachedRunner?.getTerminal() ?? terminal,
-      setTerminal: (t) => {
-        if (attachedRunner) { attachedRunner.setTerminal(t); }
-        else { terminal = t; }
-      },
+      getTerminal: () => attachedRunner?.getTerminal() ?? null,
+      setTerminal: (t) => { if (attachedRunner) attachedRunner.setTerminal(t); },
       clearLogBuffer: () => { logBuffer = []; },
       // Session runner
       getRunner: () => attachedRunner,
@@ -1035,9 +725,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       deploymentStore,
       featureManager,
       usageManager,
-      get previewManager() { return attachedRunner?.getPreview() ?? previewManager; },
       authManager,
-      get fileWatcher() { return attachedRunner?.getFileWatcher() ?? fileWatcher; },
       agentRegistry,
       createSessionDir,
       generateText,
@@ -1045,7 +733,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       checkGitIdentity,
       readSystemPrompt,
       scheduleAutoPush,
-      runPortScan,
       workspaceDir,
       sessionsRoot,
       defaultAgentId,
@@ -1150,17 +837,6 @@ to determine the correct install command, preview mode, command, and ports.`;
 
       // Detach from runner — runner keeps going (including its terminal)!
       detachFromRunner();
-
-      // Kill per-connection fallback terminal (only used when no runner attached)
-      if (terminal) {
-        terminal.kill();
-        terminal = null;
-      }
-
-      // Stop periodic port scanning when the last client disconnects
-      if (clients.size === 0) {
-        stopPortScanInterval();
-      }
     });
   });
 
@@ -1182,14 +858,10 @@ to determine the correct install command, preview mode, command, and ports.`;
     });
   }
 
-
   // Graceful shutdown — register once via app hook rather than per-call
   // process.on() to avoid MaxListeners warnings when buildApp() is called
   // repeatedly in tests.
   app.addHook("onClose", async () => {
-    stopPortScanInterval();
-    fileWatcher.stop();
-    previewManager.stop();
     authManager.kill();
     runnerRegistry.disposeAll();
     if (containerManager) {
@@ -1203,16 +875,7 @@ to determine the correct install command, preview mode, command, and ports.`;
 // Only start the server when this file is the entry point (not when imported by tests).
 // Vitest sets process.env.VITEST; alternatively check import.meta.url vs process.argv[1].
 if (!process.env.VITEST) {
-  // Snapshot which ports are already listening before the session starts.
-  // These belong to the host system (e.g. ShipIt's own Vite dev server, or
-  // other tooling) and should never appear in the user-facing preview tab.
-  const baselinePorts = await snapshotBaselinePorts();
-  if (baselinePorts.length > 0) {
-    console.log("[server] baseline ports (will be excluded from preview):", baselinePorts);
-  }
-
-  const useContainers = process.env.USE_CONTAINERS === "true";
-  const app = await buildApp({ serveStatic: true, startPreview: true, baselinePorts, useContainers });
+  const app = await buildApp({ serveStatic: true });
 
   let shuttingDown = false;
   const shutdown = async () => {

@@ -1,6 +1,5 @@
 import type { WsClientMessage } from "../types.js";
 import type { HandlerContext } from "./types.js";
-import { TerminalProcess } from "../terminal.js";
 import type { ContainerSessionRunner } from "../container-session-runner.js";
 
 type WsTerminalInput = Extract<WsClientMessage, { type: "terminal_input" }>;
@@ -8,96 +7,34 @@ type WsTerminalResize = Extract<WsClientMessage, { type: "terminal_resize" }>;
 
 export async function handleTerminalStart(ctx: HandlerContext): Promise<void> {
   const runner = ctx.getRunner();
+  if (!runner) return;
 
-  // If a runner is attached, use its terminal (per-session, persistent)
-  if (runner) {
-    // Container runner: delegate to worker
-    if (runner.supportsRemoteTerminal) {
-      const containerRunner = runner as ContainerSessionRunner;
-      if (!containerRunner.remoteTerminalRunning) {
-        await containerRunner.startTerminalOnWorker();
-      } else {
-        // Terminal already running — replay buffered output for this viewer
-        const buffered = runner.getTerminalOutputBuffer();
-        if (buffered) {
-          ctx.send({ type: "terminal_output", data: buffered });
-        }
-      }
-      return;
+  const containerRunner = runner as ContainerSessionRunner;
+  if (!containerRunner.remoteTerminalRunning) {
+    await containerRunner.startTerminalOnWorker();
+  } else {
+    // Terminal already running — replay buffered output for this viewer
+    const buffered = runner.getTerminalOutputBuffer();
+    if (buffered) {
+      ctx.send({ type: "terminal_output", data: buffered });
     }
-
-    // Direct runner: create local TerminalProcess
-    if (!runner.getTerminal()) {
-      const terminal = new TerminalProcess();
-      terminal.on("data", (data: string) => {
-        runner.appendTerminalOutput(data);
-        runner.emitMessage({ type: "terminal_output", data });
-      });
-      terminal.on("exit", (code: number | null) => {
-        runner.emitMessage({ type: "terminal_exit", exitCode: code });
-        runner.setTerminal(null);
-      });
-      terminal.start(ctx.getActiveDir());
-      runner.setTerminal(terminal);
-    } else {
-      // Terminal already running — replay buffered output for this viewer
-      const buffered = runner.getTerminalOutputBuffer();
-      if (buffered) {
-        ctx.send({ type: "terminal_output", data: buffered });
-      }
-    }
-    return;
-  }
-
-  // Fallback: per-connection terminal (no runner attached)
-  if (!ctx.getTerminal()) {
-    const terminal = new TerminalProcess();
-    terminal.on("data", (data: string) => {
-      ctx.send({ type: "terminal_output", data });
-    });
-    terminal.on("exit", (code: number | null) => {
-      ctx.send({ type: "terminal_exit", exitCode: code });
-      ctx.setTerminal(null);
-    });
-    terminal.start(ctx.getActiveDir());
-    ctx.setTerminal(terminal);
   }
 }
 
 export async function handleTerminalInput(ctx: HandlerContext, msg: WsTerminalInput): Promise<void> {
   const runner = ctx.getRunner();
+  if (!runner) return;
 
-  // Container runner: delegate to worker
-  if (runner?.supportsRemoteTerminal) {
-    await (runner as ContainerSessionRunner).writeTerminalOnWorker(msg.data);
-    return;
-  }
-
-  // Prefer runner's terminal, fallback to per-connection
-  const terminal = runner?.getTerminal() ?? ctx.getTerminal();
-  if (terminal) {
-    terminal.write(msg.data);
-  }
+  await (runner as ContainerSessionRunner).writeTerminalOnWorker(msg.data);
 }
 
 export async function handleTerminalResize(ctx: HandlerContext, msg: WsTerminalResize): Promise<void> {
   const runner = ctx.getRunner();
+  if (!runner) return;
 
-  // Container runner: delegate to worker
-  if (runner?.supportsRemoteTerminal) {
-    const cols = typeof msg.cols === "number" ? Math.max(1, Math.min(500, msg.cols)) : 80;
-    const rows = typeof msg.rows === "number" ? Math.max(1, Math.min(200, msg.rows)) : 24;
-    await (runner as ContainerSessionRunner).resizeTerminalOnWorker(cols, rows);
-    return;
-  }
-
-  // Prefer runner's terminal, fallback to per-connection
-  const terminal = runner?.getTerminal() ?? ctx.getTerminal();
-  if (terminal) {
-    const cols = typeof msg.cols === "number" ? Math.max(1, Math.min(500, msg.cols)) : 80;
-    const rows = typeof msg.rows === "number" ? Math.max(1, Math.min(200, msg.rows)) : 24;
-    terminal.resize(cols, rows);
-  }
+  const cols = typeof msg.cols === "number" ? Math.max(1, Math.min(500, msg.cols)) : 80;
+  const rows = typeof msg.rows === "number" ? Math.max(1, Math.min(200, msg.rows)) : 24;
+  await (runner as ContainerSessionRunner).resizeTerminalOnWorker(cols, rows);
 }
 
 export function handleClearLogs(ctx: HandlerContext): void {
