@@ -21,6 +21,12 @@ dist
 dist-ssr
 *.local
 
+# ShipIt
+.shipit
+
+# Vite
+.vite
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -73,6 +79,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# ShipIt
+.shipit
 `;
 
 // From: create-astro (basics template)
@@ -97,6 +106,9 @@ pnpm-debug.log*
 
 # macOS-specific files
 .DS_Store
+
+# ShipIt
+.shipit
 `;
 
 // For backend APIs and CLI tools (no canonical scaffolder)
@@ -116,6 +128,9 @@ pnpm-debug.log*
 
 # misc
 .DS_Store
+
+# ShipIt
+.shipit
 `;
 
 // ---------------------------------------------------------------------------
@@ -674,6 +689,9 @@ h1 {
 }
 `,
       "main.js": `console.log("Hello from main.js");
+`,
+      ".gitignore": `.shipit
+.vite
 `,
       "shipit.yaml": `preview:
   html: index.html
