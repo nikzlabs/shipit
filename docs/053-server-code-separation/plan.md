@@ -246,11 +246,9 @@ A single `GitManager` in `shared/` would work but defeats the purpose of the sep
 
 Splitting makes it impossible to accidentally call `createWorktree()` on a session workspace or `autoCommit()` on a shared repo. The type system enforces the boundary.
 
-## Cross-Layer Analysis: What's Actually Shared?
+## Cross-Layer Analysis
 
-Every file originally proposed for `shared/` was traced method-by-method to its actual callers. The session layer is defined as files that run inside a session container: `session-worker.ts`, `claude.ts`, `terminal.ts`, `preview-manager.ts`, `preview-config.ts`, `file-watcher.ts`, `file-tree.ts`, `port-scanner.ts`, `install-runner.ts`, `agents/*.ts`. Everything else is orchestrator.
-
-### Results
+Every non-type server file was traced method-by-method to its actual callers to determine placement. The session layer is defined as files that run inside a session container: `session-worker.ts`, `claude.ts`, `terminal.ts`, `preview-manager.ts`, `preview-config.ts`, `file-watcher.ts`, `file-tree.ts`, `port-scanner.ts`, `install-runner.ts`, `agents/*.ts`. Everything else is orchestrator.
 
 | File | Session callers | Orchestrator callers | Verdict |
 |------|----------------|---------------------|---------|
@@ -266,11 +264,7 @@ Every file originally proposed for `shared/` was traced method-by-method to its 
 | `templates.ts` | none | `services/templates.ts`, `services/misc.ts` | **Orchestrator** |
 | `markdown.ts` | none | `services/files.ts`, `features.ts` | **Orchestrator** |
 
-### Key insight
-
-**7 of 11 files originally proposed for `shared/` are actually orchestrator-only.** The session worker's imports are minimal: `agents/agent-process.ts`, `terminal.ts`, `preview-manager.ts`, `file-watcher.ts`, `file-tree.ts`, plus type definitions. It doesn't touch chat history, threads, usage, templates, validation, git config, or markdown. This makes sense — the session worker manages *processes* (agent, terminal, preview, file watching), while the orchestrator manages *data* (history, threads, usage, templates).
-
-Moving these files to `orchestrator/` instead of `shared/` means the type system will prevent session-layer code from accidentally importing them, which is exactly what this refactoring aims for.
+The session worker's imports are minimal: `agents/agent-process.ts`, `terminal.ts`, `preview-manager.ts`, `file-watcher.ts`, `file-tree.ts`, plus type definitions. It doesn't touch chat history, threads, usage, templates, validation, git config, or markdown. The session worker manages *processes* (agent, terminal, preview, file watching); the orchestrator manages *data* (history, threads, usage, templates). Placing the data managers in `orchestrator/` means the type system prevents session code from accidentally importing them.
 
 ## Other Entanglement Points
 
@@ -294,11 +288,9 @@ Moving these files to `orchestrator/` instead of `shared/` means the type system
 
 ### 4. ChatHistoryManager / ThreadManager / UsageManager
 
-These are app-wide singletons that organize data per-session. They were originally proposed for `shared/` on the assumption that session workers might need them.
+These are app-wide singletons that organize data per-session. Every caller is in `ws-handlers/*.ts`, `services/*.ts`, or `index.ts` — all orchestrator code. `session-worker.ts` does not import any of them.
 
-**Cross-layer analysis shows they are orchestrator-only.** Every caller is in `ws-handlers/*.ts`, `services/*.ts`, or `index.ts` — all orchestrator code. `session-worker.ts` does not import any of them. This makes sense: the session worker manages processes (agent, terminal, preview), while the orchestrator manages data (history, threads, usage).
-
-**This refactoring**: Move to `orchestrator/`. If a future containerization step needs them inside the session worker, they can be moved to `shared/` then — but today the type system will correctly prevent session code from reaching them.
+**This refactoring**: Move to `orchestrator/`. If a future containerization step needs them inside the session worker, they can be promoted to `shared/` then — but today the type system will correctly prevent session code from reaching them.
 
 ## Migration Strategy
 
@@ -320,7 +312,7 @@ Do this first as a standalone commit — it's the only code change (as opposed t
 1. Create `src/server/session/`, `src/server/orchestrator/`, `src/server/shared/`
 2. Move files according to the classification above:
    - `shared/` gets only 3 files: `types/`, `git.ts`, `file-tree.ts`
-   - `orchestrator/` gets the bulk: index, api-routes, managers, ws-handlers, services, plus the 7 files that were originally proposed for shared (validation, chat-history, threads, usage, templates, markdown, git-config, git-utils)
+   - `orchestrator/` gets the bulk: index, api-routes, managers, ws-handlers, services, and the orchestrator-only data managers (validation, chat-history, threads, usage, templates, markdown, git-config, git-utils)
    - `session/` gets the process managers: claude, terminal, preview, file-watcher, agents, session-worker
 3. Update all `import` paths — this is the bulk of the work
 
