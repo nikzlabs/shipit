@@ -63,6 +63,8 @@ import {
   setAgentEnv,
   setApiKey,
   clearApiKey,
+  setUtilityModel,
+  clearUtilityModel,
   setGitHubToken,
   gitHubLogout,
   applyTemplate,
@@ -734,6 +736,41 @@ export async function registerApiRoutes(
       }
     },
   );
+
+  // ---- Utility model ----
+
+  // GET /api/settings/utility-model — get utility model config (without API key)
+  app.get("/api/settings/utility-model", async () => {
+    const config = deps.credentialStore.getUtilityModel();
+    if (!config) return { configured: false };
+    return { configured: true, provider: config.provider, model: config.model, baseUrl: config.baseUrl };
+  });
+
+  // PUT /api/settings/utility-model — set utility model config
+  app.put<{ Body: { provider: string; apiKey: string; model: string; baseUrl?: string } }>(
+    "/api/settings/utility-model",
+    async (request, reply) => {
+      try {
+        const result = setUtilityModel(
+          deps.credentialStore,
+          request.body.provider, request.body.apiKey, request.body.model, request.body.baseUrl,
+        );
+        return { configured: true, ...result };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to set utility model: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // DELETE /api/settings/utility-model — clear utility model config
+  app.delete("/api/settings/utility-model", async () => {
+    clearUtilityModel(deps.credentialStore);
+    return { configured: false };
+  });
 
   // ---- Auth mutations ----
 

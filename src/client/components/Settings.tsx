@@ -4,6 +4,7 @@ import type { DeployTargetInfo } from "../../server/shared/types.js";
 import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
 import { CodexAuthCard } from "./CodexAuthCard.js";
 import { GitHubTokenForm } from "./GitHubTokenForm.js";
+import { UtilityModelCard } from "./UtilityModelCard.js";
 
 const MAX_LENGTH = 50_000;
 
@@ -230,6 +231,10 @@ export function Settings({
                   />
                 </div>
               )}
+
+              <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
+                <UtilityModelCard />
+              </div>
             </div>
           )}
 

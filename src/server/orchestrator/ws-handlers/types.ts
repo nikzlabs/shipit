@@ -10,6 +10,7 @@ import type { DeploymentStore } from "../deployment-store.js";
 import type { FeatureManager } from "../features.js";
 import type { UsageManager } from "../usage.js";
 import type { AuthManager } from "../auth.js";
+import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { AgentId, AgentProcess, TerminalProcess } from "../../shared/types.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
@@ -103,6 +104,7 @@ export interface HandlerContext {
   usageManager: UsageManager;
   authManager: AuthManager;
   agentRegistry: AgentRegistry;
+  credentialStore: CredentialStore;
 
   // === Factories ===
   createSessionDir: (title: string, opts?: { skipGitInit?: boolean }) => Promise<{ appSessionId: string; sessionDir: string }>;

@@ -784,8 +784,9 @@ export async function handleHomeSendWithRepo(ctx: HandlerContext, msg: WsHomeSen
       ctx.send({ type: "session_started", session });
     }
 
-    // Fire non-blocking Claude call to generate session name + branch slug
-    generateSessionName(text, sessionDir).then(async (nameResult) => {
+    // Fire non-blocking utility model call to generate session name + branch slug
+    const utilityModel = ctx.credentialStore.getUtilityModel();
+    if (utilityModel) generateSessionName(text, utilityModel).then(async (nameResult) => {
       if (!nameResult) return;
       try {
         const newBranchName = `${branchPrefix}-${nameResult.slug}`;
