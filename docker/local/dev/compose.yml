@@ -24,6 +24,7 @@ services:
       - CREDENTIALS_VOLUME=shipit-dev_credentials
       - DOCKER_NETWORK=shipit-dev
       - SESSION_WORKER_IMAGE=shipit-session-worker:dev
+      - DOCKER_STACK=shipit-dev
     networks:
       - shipit-dev
 

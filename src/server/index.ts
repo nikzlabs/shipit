@@ -281,6 +281,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     containerManager = new SessionContainerManager({
       workspaceVolume: process.env.WORKSPACE_VOLUME,
       credentialsVolume: process.env.CREDENTIALS_VOLUME,
+      stackName: process.env.DOCKER_STACK,
     });
     const dockerAvailable = await containerManager.isAvailable();
     if (dockerAvailable) {

@@ -87,6 +87,8 @@ export interface SessionContainerManagerOpts {
   workspaceVolume?: string;
   /** Docker named volume for credentials. */
   credentialsVolume?: string;
+  /** Stack name for labelling containers (e.g. "shipit-dev", "shipit-prod"). */
+  stackName?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -104,6 +106,7 @@ const DEFAULT_WORKER_PORT = 9100;
 export const CONTAINER_LABEL_KEY = "shipit-session";
 export const CONTAINER_LABEL_VALUE = "true";
 export const CONTAINER_SESSION_ID_LABEL = "shipit-session-id";
+export const CONTAINER_STACK_LABEL = "shipit-stack";
 
 // ---------------------------------------------------------------------------
 // SessionContainerManager
@@ -121,6 +124,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private skipHealthCheck: boolean;
   private workspaceVolume?: string;
   private credentialsVolume?: string;
+  private stackName?: string;
   private eventStream: (NodeJS.ReadableStream & { destroy?: () => void }) | null = null;
   private _disposed = false;
 
@@ -136,6 +140,27 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     this.skipHealthCheck = opts.skipHealthCheck ?? false;
     this.workspaceVolume = opts.workspaceVolume;
     this.credentialsVolume = opts.credentialsVolume;
+    this.stackName = opts.stackName;
+  }
+
+  /** Build the base label set for containers and networks. */
+  private baseLabels(): Record<string, string> {
+    const labels: Record<string, string> = {
+      [CONTAINER_LABEL_KEY]: CONTAINER_LABEL_VALUE,
+    };
+    if (this.stackName) {
+      labels[CONTAINER_STACK_LABEL] = this.stackName;
+    }
+    return labels;
+  }
+
+  /** Build the label filter array for listing/querying containers. */
+  private labelFilters(): string[] {
+    const filters = [`${CONTAINER_LABEL_KEY}=${CONTAINER_LABEL_VALUE}`];
+    if (this.stackName) {
+      filters.push(`${CONTAINER_STACK_LABEL}=${this.stackName}`);
+    }
+    return filters;
   }
 
   // --- Docker availability ---
@@ -165,7 +190,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       await this.docker.createNetwork({
         Name: this.networkName,
         Driver: "bridge",
-        Labels: { [CONTAINER_LABEL_KEY]: CONTAINER_LABEL_VALUE },
+        Labels: this.baseLabels(),
       });
     }
   }
@@ -243,7 +268,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         Image: config.imageName,
         Cmd: ["node", "--import", "tsx", "src/server/session-worker.ts"],
         Labels: {
-          [CONTAINER_LABEL_KEY]: CONTAINER_LABEL_VALUE,
+          ...this.baseLabels(),
           [CONTAINER_SESSION_ID_LABEL]: config.sessionId,
         },
         HostConfig: {
@@ -375,7 +400,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       const containers = await this.docker.listContainers({
         all: true,
         filters: {
-          label: [`${CONTAINER_LABEL_KEY}=${CONTAINER_LABEL_VALUE}`],
+          label: this.labelFilters(),
         },
       });
 
@@ -414,7 +439,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         filters: {
           type: ["container"],
           event: ["die", "oom"],
-          label: [`${CONTAINER_LABEL_KEY}=${CONTAINER_LABEL_VALUE}`],
+          label: this.labelFilters(),
         },
       });
 

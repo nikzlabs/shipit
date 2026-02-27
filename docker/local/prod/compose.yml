@@ -20,6 +20,7 @@ services:
       - CREDENTIALS_VOLUME=shipit-prod_credentials
       - DOCKER_NETWORK=shipit-prod
       - SESSION_WORKER_IMAGE=shipit-session-worker:prod
+      - DOCKER_STACK=shipit-prod
     networks:
       - shipit-prod
 
