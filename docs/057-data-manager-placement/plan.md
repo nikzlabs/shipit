@@ -1,0 +1,47 @@
+---
+status: paused
+---
+
+# 057 — Data Manager Placement (ChatHistory, Threads, Usage)
+
+## Problem
+
+`ChatHistoryManager`, `ThreadManager`, and `UsageManager` are app-wide singletons that organize data per-session. They're created once by the orchestrator at startup and accessed from WS handlers and services.
+
+Today all callers are orchestrator code. The session worker (`session-worker.ts`) does not import any of them. But in a fully containerized architecture, the session container might need to persist chat history or record usage locally.
+
+## Scope
+
+This doc covers the placement of these three data managers. For the broader directory restructure, see [053-server-code-separation](../053-server-code-separation/plan.md).
+
+## Current State
+
+The 053 refactoring places all three in `orchestrator/`. This is correct for today's call-site analysis: every caller is in `ws-handlers/*.ts`, `services/*.ts`, or `index.ts`.
+
+## Callers
+
+**ChatHistoryManager**:
+- `ws-handlers/send-message.ts` — `append()` after agent turn, `load()` for resume context
+- `ws-handlers/thread-handlers.ts` — `load()` for thread fork
+- `services/session.ts` — `load()` for session chat history API
+- `services/threads.ts` — `load()` for thread checkpoint
+- `services/misc.ts` — `delete()` during full reset
+
+**ThreadManager**:
+- `ws-handlers/send-message.ts` — `getActiveThread()`, `consumeConversationReplay()`
+- `ws-handlers/thread-handlers.ts` — `listThreads()`, `forkThread()`, `switchThread()`, `getCheckpoint()`, `restore()`
+- `services/threads.ts` — `createCheckpoint()`, `forkThread()`, `listThreads()`
+- `services/misc.ts` — `delete()` during full reset
+
+**UsageManager**:
+- `ws-handlers/send-message.ts` — `record()` after turn, `getSessionUsage()` for stats
+- `ws-handlers/deploy-handlers.ts` — `record()` after deploy
+- `services/misc.ts` — `getStats()`, `clear()`, `delete()`
+
+## Future Consideration
+
+If session containers need local data persistence (e.g., to survive container restarts without round-tripping to the orchestrator), these managers would move to `shared/` and be instantiated in both layers. But that's a design change, not a file-move — it requires deciding on data ownership and sync strategy.
+
+## Decision
+
+Place in `orchestrator/` for now. Promote to `shared/` only when a concrete containerization requirement demands it.
