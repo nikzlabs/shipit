@@ -6,15 +6,15 @@ services:
       context: ../../..
       dockerfile: docker/Dockerfile.prod
     ports:
-      - "3000:3000"
-      - "5173:5173"
+      - "4123:4123"
+      - "4124:5173"
     volumes:
       - workspace:/workspace
       - credentials:/credentials
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - NODE_ENV=production
-      - PORT=3000
+      - PORT=4123
       - USE_CONTAINERS=true
       - WORKSPACE_VOLUME=shipit-prod_workspace
       - CREDENTIALS_VOLUME=shipit-prod_credentials
