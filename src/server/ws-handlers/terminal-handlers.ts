@@ -5,13 +5,21 @@ import type { ContainerSessionRunner } from "../container-session-runner.js";
 type WsTerminalInput = Extract<WsClientMessage, { type: "terminal_input" }>;
 type WsTerminalResize = Extract<WsClientMessage, { type: "terminal_resize" }>;
 
+function isContainerRunner(runner: unknown): runner is ContainerSessionRunner {
+  return !!runner && typeof (runner as ContainerSessionRunner).startTerminalOnWorker === "function";
+}
+
 export async function handleTerminalStart(ctx: HandlerContext): Promise<void> {
   const runner = ctx.getRunner();
   if (!runner) return;
 
-  const containerRunner = runner as ContainerSessionRunner;
-  if (!containerRunner.remoteTerminalRunning) {
-    await containerRunner.startTerminalOnWorker();
+  if (!isContainerRunner(runner)) {
+    ctx.send({ type: "error", message: "Terminal requires a container-backed session" });
+    return;
+  }
+
+  if (!runner.remoteTerminalRunning) {
+    await runner.startTerminalOnWorker();
   } else {
     // Terminal already running — replay buffered output for this viewer
     const buffered = runner.getTerminalOutputBuffer();
@@ -23,18 +31,18 @@ export async function handleTerminalStart(ctx: HandlerContext): Promise<void> {
 
 export async function handleTerminalInput(ctx: HandlerContext, msg: WsTerminalInput): Promise<void> {
   const runner = ctx.getRunner();
-  if (!runner) return;
+  if (!runner || !isContainerRunner(runner)) return;
 
-  await (runner as ContainerSessionRunner).writeTerminalOnWorker(msg.data);
+  await runner.writeTerminalOnWorker(msg.data);
 }
 
 export async function handleTerminalResize(ctx: HandlerContext, msg: WsTerminalResize): Promise<void> {
   const runner = ctx.getRunner();
-  if (!runner) return;
+  if (!runner || !isContainerRunner(runner)) return;
 
   const cols = typeof msg.cols === "number" ? Math.max(1, Math.min(500, msg.cols)) : 80;
   const rows = typeof msg.rows === "number" ? Math.max(1, Math.min(200, msg.rows)) : 24;
-  await (runner as ContainerSessionRunner).resizeTerminalOnWorker(cols, rows);
+  await runner.resizeTerminalOnWorker(cols, rows);
 }
 
 export function handleClearLogs(ctx: HandlerContext): void {

@@ -545,13 +545,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       }
 
       // Send preview status only if the preview is already running (e.g.
-      // reconnecting a second viewer tab).  When a preview manager was just
-      // created by attachViewer() above, it will emit "ready" / "config_missing"
-      // on its own once it finishes starting — sending a premature "running: false"
-      // here would flash the placeholder UI unnecessarily.
-      // For container runners, check buildPreviewStatus() since getPreview() returns null.
+      // reconnecting a second viewer tab). When a preview was just started by
+      // attachViewer() above, the container will emit events on its own once
+      // it finishes — sending a premature "running: false" here would flash
+      // the placeholder UI unnecessarily.
       const previewStatus = runner.buildPreviewStatus();
-      if (runner.getPreview()?.running || (previewStatus.type === "preview_status" && previewStatus.running)) {
+      if (previewStatus.type === "preview_status" && previewStatus.running) {
         send(previewStatus);
       }
     };

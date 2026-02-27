@@ -29,7 +29,7 @@ describe("Integration: Image upload", () => {
 
   beforeEach(async () => {
     lastClaude = null as any;
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-filewatcher-"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-imageupload-"));
     lastClaude = undefined as unknown as FakeClaudeProcess;
 
     app = await buildApp({

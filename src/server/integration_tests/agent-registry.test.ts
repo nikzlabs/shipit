@@ -11,8 +11,6 @@ import { GitManager } from "../git.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../auth.js";
-
-
 import { AgentRegistry } from "../agents/agent-registry.js";
 import type { FastifyInstance } from "fastify";
 import {

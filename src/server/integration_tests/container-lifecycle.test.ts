@@ -1,9 +1,9 @@
 /**
  * Integration tests for Docker container lifecycle wiring in buildApp().
  *
- * Validates that when useContainers is true and a SessionContainerManager
- * is injected, the runner factory creates ContainerSessionRunner instances
- * backed by containers. Uses a fake Docker client to avoid real Docker.
+ * Validates that when a SessionContainerManager is injected, the runner
+ * factory creates ContainerSessionRunner instances backed by containers.
+ * Uses a fake Docker client to avoid real Docker.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";

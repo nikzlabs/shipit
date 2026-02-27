@@ -10,8 +10,6 @@ import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId } from "./agents/agent-process.js";
 import type { WsServerMessage, ImageAttachment, FileContextRef, PermissionMode, ClaudeContentBlockToolUse } from "./types.js";
 import type { TerminalProcess } from "./terminal.js";
-import type { PreviewManager } from "./preview-manager.js";
-import type { FileWatcher } from "./file-watcher.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -96,8 +94,8 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
 
   // Viewer management
   readonly viewerCount: number;
-  getPreview(): PreviewManager | null;
-  getFileWatcher(): FileWatcher | null;
+  getPreview(): null;
+  getFileWatcher(): null;
   attachViewer(): void;
   detachViewer(): void;
   buildPreviewStatus(): WsServerMessage;
@@ -213,6 +211,15 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   emitMessage(msg: WsServerMessage): void {
     if (this._turnEventBuffer.length < SessionRunner.MAX_TURN_BUFFER) {
       this._turnEventBuffer.push(msg);
+    } else if (this._turnEventBuffer.length === SessionRunner.MAX_TURN_BUFFER) {
+      // Evict: keep first 10 (init/model_info) + most recent, then append
+      const keep = 10;
+      const recent = this._turnEventBuffer.length - keep;
+      this._turnEventBuffer = [
+        ...this._turnEventBuffer.slice(0, keep),
+        ...this._turnEventBuffer.slice(recent),
+        msg,
+      ];
     }
     this.emit("message", msg);
   }
@@ -220,8 +227,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   get detectedPorts(): number[] { return this._detectedPorts; }
   set detectedPorts(ports: number[]) { this._detectedPorts = ports; }
   get viewerCount(): number { return this._viewerCount; }
-  getPreview(): PreviewManager | null { return null; }
-  getFileWatcher(): FileWatcher | null { return null; }
+  getPreview(): null { return null; }
+  getFileWatcher(): null { return null; }
   attachViewer(): void { this._viewerCount++; }
   detachViewer(): void { this._viewerCount = Math.max(0, this._viewerCount - 1); }
   buildPreviewStatus(): WsServerMessage {
