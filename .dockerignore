@@ -21,3 +21,5 @@ eslint.config.js
 
 # Legacy root Dockerfile
 Dockerfile.session-worker
+Dockerfile.session-worker.dev
+Dockerfile.session-worker.prod

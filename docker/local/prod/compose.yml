@@ -27,7 +27,7 @@ services:
   session-worker:
     build:
       context: ../../..
-      dockerfile: docker/Dockerfile.session-worker
+      dockerfile: docker/Dockerfile.session-worker.prod
     image: shipit-session-worker:prod
     profiles:
       - build-only
