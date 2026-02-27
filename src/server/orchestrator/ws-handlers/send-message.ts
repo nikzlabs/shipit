@@ -730,6 +730,8 @@ export async function handleHomeSendWithRepo(ctx: HandlerContext, msg: WsHomeSen
       await sessionGit.init();
       const cloneUrl = ctx.githubAuthManager.getAuthenticatedCloneUrl(repoUrl);
       await sessionGit.addRemote("origin", cloneUrl);
+      // Create feature branch so Claude's work doesn't go directly to main
+      await sessionGit.checkoutNewBranch(branchPrefix);
     } else {
       let startPoint: string | undefined;
       try {
@@ -770,12 +772,10 @@ export async function handleHomeSendWithRepo(ctx: HandlerContext, msg: WsHomeSen
 
     // Store metadata and activate session
     ctx.sessionManager.setRemoteUrl(appSessionId, repoUrl);
-    if (!isEmptyRepo) {
-      ctx.sessionManager.setWorktreeInfo(appSessionId, {
-        branch: branchPrefix,
-        sessionType: "worktree",
-      });
-    }
+    ctx.sessionManager.setWorktreeInfo(appSessionId, {
+      branch: branchPrefix,
+      sessionType: isEmptyRepo ? "standalone" : "worktree",
+    });
     ctx.setActiveAppSessionId(appSessionId);
     ctx.setActiveSessionDir(sessionDir);
 
@@ -792,9 +792,10 @@ export async function handleHomeSendWithRepo(ctx: HandlerContext, msg: WsHomeSen
         const sessionGit = ctx.createGitManager(sessionDir);
         await sessionGit.renameBranch(branchPrefix, newBranchName);
         ctx.sessionManager.rename(appSessionId, nameResult.title);
+        const currentSession = ctx.sessionManager.get(appSessionId);
         ctx.sessionManager.setWorktreeInfo(appSessionId, {
           branch: newBranchName,
-          sessionType: "worktree",
+          sessionType: currentSession?.sessionType === "standalone" ? "standalone" : "worktree",
         });
         const finalSession = ctx.sessionManager.get(appSessionId);
         if (finalSession) {

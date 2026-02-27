@@ -153,8 +153,11 @@ export class PreviewManager extends EventEmitter {
     }
 
     // ---- Install step ----
+    console.log("[preview-manager] config source:", config.source, "install:", config.install ?? "(none)");
     if (config.install) {
-      if (!isInstallDone(workspaceDir)) {
+      const installDone = isInstallDone(workspaceDir);
+      console.log("[preview-manager] install needed, isInstallDone:", installDone);
+      if (!installDone) {
         this.emit("install_status", { status: "running" });
 
         const cwd = config.mode.kind === "command" && config.mode.directory

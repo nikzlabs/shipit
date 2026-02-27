@@ -237,8 +237,23 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     } else {
       binds.push(`${config.credentialsDir}:/credentials:rw`);
     }
+    // For worktree sessions, mount the shared repo at its ORIGINAL absolute
+    // path so that the worktree's .git file (which contains an absolute gitdir
+    // reference like /workspace/repos/{hash}/.git/worktrees/{branch}) resolves
+    // correctly inside the container. Read-write is required because git commits
+    // in a worktree write objects to the shared repo's object store.
     if (config.sharedRepoDir) {
-      binds.push(`${config.sharedRepoDir}:/repo:ro`);
+      if (this.workspaceVolume) {
+        const repoRelPath = config.sharedRepoDir.replace(/^\/workspace\//, "");
+        mounts.push({
+          Type: "volume",
+          Source: this.workspaceVolume,
+          Target: config.sharedRepoDir,
+          VolumeOptions: { Subpath: repoRelPath },
+        });
+      } else {
+        binds.push(`${config.sharedRepoDir}:${config.sharedRepoDir}:rw`);
+      }
     }
 
     // Build environment variables

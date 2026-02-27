@@ -280,6 +280,8 @@ export type SessionRunnerFactory = (opts: {
   sessionDir: string;
   defaultAgentId: AgentId;
   idleTimeoutMs: number;
+  /** Absolute path to the shared repo backing this worktree session (container mount). */
+  sharedRepoDir?: string;
 }) => SessionRunnerInterface;
 
 export class SessionRunnerRegistry {
@@ -287,6 +289,7 @@ export class SessionRunnerRegistry {
   private _maxConcurrentRunners: number;
   private _defaultIdleTimeoutMs: number;
   private _runnerFactory: SessionRunnerFactory;
+  private _sharedRepoDirResolver?: (sessionId: string) => string | undefined;
 
   constructor(opts?: {
     maxConcurrentRunners?: number;
@@ -296,10 +299,16 @@ export class SessionRunnerRegistry {
      * (used in tests). Production overrides with ContainerSessionRunner factory.
      */
     runnerFactory?: SessionRunnerFactory;
+    /**
+     * Optional resolver that returns the shared repo directory for a session.
+     * Used in container mode to mount the parent git repo for worktree sessions.
+     */
+    sharedRepoDirResolver?: (sessionId: string) => string | undefined;
   }) {
     this._maxConcurrentRunners = opts?.maxConcurrentRunners ?? 10;
     this._defaultIdleTimeoutMs = opts?.defaultIdleTimeoutMs ?? 10 * 60 * 1000;
     this._runnerFactory = opts?.runnerFactory ?? ((o) => new SessionRunner(o));
+    this._sharedRepoDirResolver = opts?.sharedRepoDirResolver;
   }
 
   /** Get or create a runner for the given session. */
@@ -331,6 +340,7 @@ export class SessionRunnerRegistry {
       sessionDir,
       defaultAgentId,
       idleTimeoutMs: this._defaultIdleTimeoutMs,
+      sharedRepoDir: this._sharedRepoDirResolver?.(sessionId),
     });
     runner.on("disposed", () => this.runners.delete(sessionId));
     this.runners.set(sessionId, runner);

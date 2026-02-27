@@ -314,6 +314,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         sessionId: o.sessionId,
         sessionDir: o.sessionDir,
         credentialsDir,
+        sharedRepoDir: o.sharedRepoDir,
       });
       const runner = new ContainerSessionRunner({
         sessionId: o.sessionId,
@@ -337,6 +338,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   const runnerRegistry = new SessionRunnerRegistry({
     ...(effectiveRunnerFactory ? { runnerFactory: effectiveRunnerFactory } : {}),
+    sharedRepoDirResolver: (sessionId: string) => {
+      const session = sessionManager.get(sessionId);
+      if (session?.remoteUrl && session?.sessionType === "worktree") {
+        return getSharedRepoDir(session.remoteUrl);
+      }
+      return undefined;
+    },
   });
 
   // Track connected WebSocket clients so we can broadcast
@@ -421,8 +429,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       await git.init();
     }
 
-    // Configure GitHub credentials in the new repo if available
-    if (githubAuthManager.authenticated) {
+    // Configure GitHub credentials in the new repo if available.
+    // Skip when skipGitInit — the directory isn't a git repo yet (worktree
+    // will be created later and has its own configureGitCredentials call).
+    if (!opts?.skipGitInit && githubAuthManager.authenticated) {
       githubAuthManager.configureGitCredentials(sessionDir);
     }
 
