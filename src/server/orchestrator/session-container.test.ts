@@ -222,7 +222,7 @@ describe("SessionContainerManager", () => {
       expect(mockDocker.createContainer).toHaveBeenCalledWith(
         expect.objectContaining({
           Image: "shipit-session-worker:test",
-          Cmd: ["node", "--import", "tsx", "src/server/session-worker.ts"],
+          Cmd: ["node", "--import", "tsx", "src/server/session/session-worker.ts"],
           Labels: {
             [CONTAINER_LABEL_KEY]: CONTAINER_LABEL_VALUE,
             [CONTAINER_STACK_LABEL]: "shipit-test",
