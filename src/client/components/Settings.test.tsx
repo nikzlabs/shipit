@@ -1,9 +1,12 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { Settings, type SettingsProps } from "./Settings.js";
 import type { DeployTargetInfo } from "../../server/types.js";
 
 afterEach(cleanup);
+
+const claudeAuthed = { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-sonnet"] };
+const claudeUnauthed = { ...claudeAuthed, authConfigured: false };
 
 const defaultProps: SettingsProps = {
   initialContent: "",
@@ -16,6 +19,7 @@ const defaultProps: SettingsProps = {
   onClearApiKey: vi.fn(),
   onStartAuth: vi.fn(),
   onPasteCode: vi.fn(),
+  agentList: [claudeAuthed],
   gitIdentity: { name: "", email: "" },
   onGitIdentitySave: vi.fn(),
   deployTargets: [],
@@ -73,98 +77,61 @@ describe("Settings - Agent tab", () => {
     expect(tab.className).toContain("font-medium");
   });
 
-  it("shows authenticated state when authUrl is null", () => {
-    render(<Settings {...defaultProps} authUrl={null} />);
-    expect(screen.getByText("Claude CLI")).toBeInTheDocument();
+  it("renders ClaudeAuthCard", () => {
+    render(<Settings {...defaultProps} />);
+    expect(screen.getByTestId("claude-auth-card")).toBeInTheDocument();
+  });
+
+  it("shows authenticated state when agent is auth-configured", () => {
+    render(<Settings {...defaultProps} />);
+    expect(screen.getByText("Claude Code")).toBeInTheDocument();
     expect(screen.getByText("Authenticated")).toBeInTheDocument();
   });
 
-  it("shows auth required state when authUrl is set", () => {
-    render(<Settings {...defaultProps} authUrl="https://auth.example.com" />);
-    expect(screen.getByText("Claude CLI")).toBeInTheDocument();
-    expect(screen.getByText("Authentication required")).toBeInTheDocument();
+  it("shows not-authenticated state when agent is not auth-configured", () => {
+    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} authUrl="https://auth.example.com" />);
+    expect(screen.getByText("Claude Code")).toBeInTheDocument();
+    expect(screen.getByText("Not authenticated")).toBeInTheDocument();
   });
 
-  it("shows API key input", () => {
+  it("shows API key input when authenticated (showApiKeyWhenAuthed)", () => {
     render(<Settings {...defaultProps} />);
-    const input = screen.getByTestId("settings-api-key-input");
+    const input = screen.getByTestId("claude-api-key-input");
     expect(input).toBeInTheDocument();
     expect(input).toHaveAttribute("type", "password");
   });
 
-  it("submit button is disabled when input is empty", () => {
-    render(<Settings {...defaultProps} />);
-    expect(screen.getByTestId("settings-api-key-submit")).toBeDisabled();
-  });
-
-  it("calls onApiKey with valid key on submit", () => {
+  it("calls onApiKey when API key is submitted", async () => {
     const onApiKey = vi.fn();
     render(<Settings {...defaultProps} onApiKey={onApiKey} />);
-    fireEvent.change(screen.getByTestId("settings-api-key-input"), {
-      target: { value: "sk-ant-test123" },
-    });
-    fireEvent.click(screen.getByTestId("settings-api-key-submit"));
-    expect(onApiKey).toHaveBeenCalledWith("sk-ant-test123");
+    fireEvent.change(screen.getByTestId("claude-api-key-input"), { target: { value: "sk-ant-test123" } });
+    fireEvent.click(screen.getByTestId("claude-api-key-submit"));
+    await waitFor(() => expect(onApiKey).toHaveBeenCalledWith("sk-ant-test123"));
   });
 
-  it("shows error for invalid API key format", () => {
-    const onApiKey = vi.fn();
-    render(<Settings {...defaultProps} onApiKey={onApiKey} />);
-    fireEvent.change(screen.getByTestId("settings-api-key-input"), {
-      target: { value: "invalid-key" },
-    });
-    fireEvent.click(screen.getByTestId("settings-api-key-submit"));
-    expect(onApiKey).not.toHaveBeenCalled();
-    expect(screen.getByTestId("settings-api-key-error")).toHaveTextContent("sk-ant-");
-  });
-
-  it("calls onApiKey on Enter in input", () => {
-    const onApiKey = vi.fn();
-    render(<Settings {...defaultProps} onApiKey={onApiKey} />);
-    const input = screen.getByTestId("settings-api-key-input");
-    fireEvent.change(input, { target: { value: "sk-ant-test123" } });
-    fireEvent.keyDown(input, { key: "Enter" });
-    expect(onApiKey).toHaveBeenCalledWith("sk-ant-test123");
-  });
-
-  it("clears error when input changes", () => {
-    render(<Settings {...defaultProps} />);
-    const input = screen.getByTestId("settings-api-key-input");
-    fireEvent.change(input, { target: { value: "bad" } });
-    fireEvent.click(screen.getByTestId("settings-api-key-submit"));
-    expect(screen.getByTestId("settings-api-key-error")).toBeInTheDocument();
-    fireEvent.change(input, { target: { value: "sk-ant-new" } });
-    expect(screen.queryByTestId("settings-api-key-error")).not.toBeInTheDocument();
-  });
-
-  it("shows Open Authentication Page link when auth URL is set", () => {
-    render(<Settings {...defaultProps} authUrl="https://auth.example.com" />);
-    const link = screen.getByTestId("settings-open-auth-url");
+  it("shows Open Authentication Page link when authUrl is set", () => {
+    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} authUrl="https://auth.example.com" />);
+    const link = screen.getByTestId("claude-open-auth-url");
     expect(link).toHaveTextContent("Open Authentication Page");
     expect(link).toHaveAttribute("href", "https://auth.example.com");
     expect(link).toHaveAttribute("target", "_blank");
   });
 
-  it("shows Set API Key button when already authenticated", () => {
-    render(<Settings {...defaultProps} authUrl={null} />);
-    expect(screen.getByTestId("settings-api-key-submit")).toHaveTextContent("Set API Key");
-  });
-
   it("shows Clear API Key button when authenticated", () => {
-    render(<Settings {...defaultProps} authUrl={null} />);
-    expect(screen.getByTestId("settings-clear-api-key")).toHaveTextContent("Clear API Key");
+    render(<Settings {...defaultProps} />);
+    expect(screen.getByTestId("claude-clear-api-key")).toHaveTextContent("Clear API Key");
   });
 
   it("calls onClearApiKey when Clear API Key is clicked", () => {
     const onClearApiKey = vi.fn();
-    render(<Settings {...defaultProps} authUrl={null} onClearApiKey={onClearApiKey} />);
-    fireEvent.click(screen.getByTestId("settings-clear-api-key"));
+    render(<Settings {...defaultProps} onClearApiKey={onClearApiKey} />);
+    fireEvent.click(screen.getByTestId("claude-clear-api-key"));
     expect(onClearApiKey).toHaveBeenCalledOnce();
   });
 
-  it("does not show Clear API Key button when auth is required", () => {
-    render(<Settings {...defaultProps} authUrl="https://auth.example.com" />);
-    expect(screen.queryByTestId("settings-clear-api-key")).not.toBeInTheDocument();
+  it("does not show Clear API Key when not authenticated", () => {
+    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} authUrl="https://auth.example.com" />);
+    expect(screen.queryByTestId("claude-clear-api-key")).not.toBeInTheDocument();
   });
 });
 
@@ -175,50 +142,17 @@ describe("Settings - GitHub tab", () => {
     return result;
   }
 
-  it("shows token input when not authenticated", () => {
+  it("shows GitHubTokenForm when not authenticated", () => {
     renderOnGitHubTab();
-    const input = screen.getByTestId("settings-token-input");
-    expect(input).toBeInTheDocument();
-    expect(input).toHaveAttribute("type", "password");
+    expect(screen.getByTestId("github-token-form")).toBeInTheDocument();
   });
 
-  it("Connect button is disabled when input is empty", () => {
-    renderOnGitHubTab();
-    expect(screen.getByTestId("settings-connect")).toBeDisabled();
-  });
-
-  it("Connect button is enabled when input has a value", () => {
-    renderOnGitHubTab();
-    fireEvent.change(screen.getByTestId("settings-token-input"), {
-      target: { value: "ghp_test123" },
-    });
-    expect(screen.getByTestId("settings-connect")).not.toBeDisabled();
-  });
-
-  it("calls onGitHubTokenSubmit with trimmed token on Connect click", () => {
+  it("calls onGitHubTokenSubmit with trimmed token", async () => {
     const onGitHubTokenSubmit = vi.fn();
     renderOnGitHubTab({ onGitHubTokenSubmit });
-    fireEvent.change(screen.getByTestId("settings-token-input"), {
-      target: { value: "  ghp_test123  " },
-    });
-    fireEvent.click(screen.getByTestId("settings-connect"));
-    expect(onGitHubTokenSubmit).toHaveBeenCalledWith("ghp_test123");
-  });
-
-  it("calls onGitHubTokenSubmit on Enter in input", () => {
-    const onGitHubTokenSubmit = vi.fn();
-    renderOnGitHubTab({ onGitHubTokenSubmit });
-    const input = screen.getByTestId("settings-token-input");
-    fireEvent.change(input, { target: { value: "ghp_test123" } });
-    fireEvent.keyDown(input, { key: "Enter" });
-    expect(onGitHubTokenSubmit).toHaveBeenCalledWith("ghp_test123");
-  });
-
-  it("does not call onGitHubTokenSubmit on Enter with empty input", () => {
-    const onGitHubTokenSubmit = vi.fn();
-    renderOnGitHubTab({ onGitHubTokenSubmit });
-    fireEvent.keyDown(screen.getByTestId("settings-token-input"), { key: "Enter" });
-    expect(onGitHubTokenSubmit).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByTestId("github-token-input"), { target: { value: "  ghp_test123  " } });
+    fireEvent.click(screen.getByTestId("github-token-submit"));
+    await waitFor(() => expect(onGitHubTokenSubmit).toHaveBeenCalledWith("ghp_test123"));
   });
 
   it("shows connected state with username when authenticated", () => {
@@ -253,19 +187,6 @@ describe("Settings - GitHub tab", () => {
     expect(btn).toHaveTextContent("Click again to disconnect");
     fireEvent.blur(btn);
     expect(btn).toHaveTextContent("Disconnect");
-  });
-
-  it("links to GitHub token settings page", () => {
-    renderOnGitHubTab();
-    const link = screen.getByText("GitHub Settings");
-    expect(link).toHaveAttribute("href", "https://github.com/settings/tokens/new");
-    expect(link).toHaveAttribute("target", "_blank");
-  });
-
-  it("mentions classic token requirement", () => {
-    renderOnGitHubTab();
-    expect(screen.getByText("classic")).toBeInTheDocument();
-    expect(screen.getByText(/fine-grained tokens are not supported/i)).toBeInTheDocument();
   });
 });
 
@@ -421,91 +342,23 @@ describe("Settings - Codex agent section", () => {
     models: ["codex-mini-latest"],
   };
 
-  const codexAuthenticated = {
-    ...codexInstalled,
-    authConfigured: true,
-  };
-
-  const codexNotInstalled = {
-    id: "codex",
-    name: "Codex",
-    installed: false,
-    authConfigured: false,
-    models: ["codex-mini-latest"],
-  };
-
-  it("shows Codex section when codex is in agentList", () => {
-    render(<Settings {...defaultProps} agentList={[codexInstalled]} />);
-    expect(screen.getByTestId("codex-agent-section")).toBeInTheDocument();
+  it("shows CodexAuthCard when codex is in agentList", () => {
+    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
+    expect(screen.getByTestId("codex-auth-card")).toBeInTheDocument();
     expect(screen.getByText("Codex")).toBeInTheDocument();
   });
 
-  it("does not show Codex section when agentList is empty", () => {
-    render(<Settings {...defaultProps} agentList={[]} />);
-    expect(screen.queryByTestId("codex-agent-section")).not.toBeInTheDocument();
+  it("does not show CodexAuthCard when agentList has no codex", () => {
+    render(<Settings {...defaultProps} agentList={[claudeAuthed]} />);
+    expect(screen.queryByTestId("codex-auth-card")).not.toBeInTheDocument();
   });
 
-  it("shows 'Not installed' when codex is not installed", () => {
-    render(<Settings {...defaultProps} agentList={[codexNotInstalled]} />);
-    expect(screen.getByText("Not installed")).toBeInTheDocument();
-  });
-
-  it("shows 'API key not set' when installed but not auth-configured", () => {
-    render(<Settings {...defaultProps} agentList={[codexInstalled]} />);
-    expect(screen.getByText("API key not set")).toBeInTheDocument();
-  });
-
-  it("shows 'Authenticated' when installed and auth-configured", () => {
-    render(<Settings {...defaultProps} agentList={[codexAuthenticated]} />);
-    expect(screen.getAllByText("Authenticated")).toHaveLength(2); // Claude + Codex
-  });
-
-  it("shows API key input when installed but not auth-configured", () => {
-    render(<Settings {...defaultProps} agentList={[codexInstalled]} />);
-    expect(screen.getByTestId("codex-api-key-input")).toBeInTheDocument();
-    expect(screen.getByTestId("codex-api-key-input")).toHaveAttribute("type", "password");
-  });
-
-  it("hides API key input when auth is already configured", () => {
-    render(<Settings {...defaultProps} agentList={[codexAuthenticated]} />);
-    expect(screen.queryByTestId("codex-api-key-input")).not.toBeInTheDocument();
-  });
-
-  it("hides API key input when codex is not installed", () => {
-    render(<Settings {...defaultProps} agentList={[codexNotInstalled]} />);
-    expect(screen.queryByTestId("codex-api-key-input")).not.toBeInTheDocument();
-  });
-
-  it("Save button is disabled when codex key input is empty", () => {
-    render(<Settings {...defaultProps} agentList={[codexInstalled]} />);
-    expect(screen.getByTestId("codex-api-key-submit")).toBeDisabled();
-  });
-
-  it("calls onSetAgentEnv when Save is clicked with a key", () => {
+  it("calls onSetAgentEnv when codex API key is submitted", async () => {
     const onSetAgentEnv = vi.fn();
-    render(<Settings {...defaultProps} agentList={[codexInstalled]} onSetAgentEnv={onSetAgentEnv} />);
-    const input = screen.getByTestId("codex-api-key-input");
-    fireEvent.change(input, { target: { value: "sk-test-key" } });
+    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} onSetAgentEnv={onSetAgentEnv} />);
+    fireEvent.change(screen.getByTestId("codex-api-key-input"), { target: { value: "sk-test-key" } });
     fireEvent.click(screen.getByTestId("codex-api-key-submit"));
-    expect(onSetAgentEnv).toHaveBeenCalledWith("codex", "OPENAI_API_KEY", "sk-test-key");
-  });
-
-  it("calls onSetAgentEnv on Enter in codex key input", () => {
-    const onSetAgentEnv = vi.fn();
-    render(<Settings {...defaultProps} agentList={[codexInstalled]} onSetAgentEnv={onSetAgentEnv} />);
-    const input = screen.getByTestId("codex-api-key-input");
-    fireEvent.change(input, { target: { value: "sk-test-key" } });
-    fireEvent.keyDown(input, { key: "Enter" });
-    expect(onSetAgentEnv).toHaveBeenCalledWith("codex", "OPENAI_API_KEY", "sk-test-key");
-  });
-
-  it("clears codex key input after submit", () => {
-    const onSetAgentEnv = vi.fn();
-    render(<Settings {...defaultProps} agentList={[codexInstalled]} onSetAgentEnv={onSetAgentEnv} />);
-    const input = screen.getByTestId("codex-api-key-input");
-    fireEvent.change(input, { target: { value: "sk-test-key" } });
-    fireEvent.click(screen.getByTestId("codex-api-key-submit"));
-    expect(input).toHaveValue("");
+    await waitFor(() => expect(onSetAgentEnv).toHaveBeenCalledWith("codex", "OPENAI_API_KEY", "sk-test-key"));
   });
 });
 
@@ -593,7 +446,7 @@ describe("Settings - Deploy tab disabled", () => {
   it("clicking disabled Deploy tab does not switch tabs", () => {
     render(<Settings {...defaultProps} hasActiveSession={false} />);
     fireEvent.click(screen.getByTestId("settings-tab-deploy"));
-    expect(screen.getByTestId("settings-api-key-input")).toBeInTheDocument();
+    expect(screen.getByTestId("claude-api-key-input")).toBeInTheDocument();
   });
 
   it("Deploy tab is enabled when session is active", () => {
@@ -767,49 +620,49 @@ describe("Settings - Deploy tab", () => {
 describe("Settings - Tab switching", () => {
   it("Agent tab is selected by default", () => {
     render(<Settings {...defaultProps} />);
-    expect(screen.getByTestId("settings-api-key-input")).toBeInTheDocument();
+    expect(screen.getByTestId("claude-api-key-input")).toBeInTheDocument();
   });
 
   it("clicking GitHub tab switches to GitHub section", () => {
     render(<Settings {...defaultProps} />);
     fireEvent.click(screen.getByText("GitHub"));
-    expect(screen.getByTestId("settings-token-input")).toBeInTheDocument();
-    expect(screen.queryByTestId("settings-api-key-input")).not.toBeInTheDocument();
+    expect(screen.getByTestId("github-token-form")).toBeInTheDocument();
+    expect(screen.queryByTestId("claude-api-key-input")).not.toBeInTheDocument();
   });
 
   it("clicking Git tab switches to git section", () => {
     render(<Settings {...defaultProps} />);
     fireEvent.click(screen.getByText("Git"));
     expect(screen.getByTestId("settings-git-name")).toBeInTheDocument();
-    expect(screen.queryByTestId("settings-api-key-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("claude-api-key-input")).not.toBeInTheDocument();
   });
 
   it("clicking Instructions tab switches to instructions section", () => {
     render(<Settings {...defaultProps} />);
     fireEvent.click(screen.getByText("Instructions"));
     expect(screen.getByTestId("settings-textarea")).toBeInTheDocument();
-    expect(screen.queryByTestId("settings-api-key-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("claude-api-key-input")).not.toBeInTheDocument();
   });
 
   it("clicking Advanced tab switches to advanced section", () => {
     render(<Settings {...defaultProps} />);
     fireEvent.click(screen.getByText("Advanced"));
     expect(screen.getByTestId("settings-reset")).toBeInTheDocument();
-    expect(screen.queryByTestId("settings-api-key-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("claude-api-key-input")).not.toBeInTheDocument();
   });
 
   it("clicking Deploy tab switches to deploy section when session active", () => {
     render(<Settings {...defaultProps} hasActiveSession={true} deployTargets={[]} />);
     fireEvent.click(screen.getByTestId("settings-tab-deploy"));
     expect(screen.getByText("Deploy Targets")).toBeInTheDocument();
-    expect(screen.queryByTestId("settings-api-key-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("claude-api-key-input")).not.toBeInTheDocument();
   });
 
   it("clicking Agent tab switches back", () => {
     render(<Settings {...defaultProps} />);
     fireEvent.click(screen.getByText("GitHub"));
     fireEvent.click(screen.getByText("Agent"));
-    expect(screen.getByTestId("settings-api-key-input")).toBeInTheDocument();
-    expect(screen.queryByTestId("settings-token-input")).not.toBeInTheDocument();
+    expect(screen.getByTestId("claude-api-key-input")).toBeInTheDocument();
+    expect(screen.queryByTestId("github-token-form")).not.toBeInTheDocument();
   });
 });

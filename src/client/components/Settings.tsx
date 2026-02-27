@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import type { AgentOption } from "./AgentPicker.js";
 import type { DeployTargetInfo } from "../../server/types.js";
+import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
+import { CodexAuthCard } from "./CodexAuthCard.js";
+import { GitHubTokenForm } from "./GitHubTokenForm.js";
 
 const MAX_LENGTH = 50_000;
 
@@ -59,12 +62,6 @@ export function Settings({
 }: SettingsProps) {
   const [activeTab, setActiveTab] = useState<Tab>(initialTab ?? "agent");
   const [content, setContent] = useState(initialContent);
-  const [token, setToken] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [apiKeyError, setApiKeyError] = useState("");
-  const [authCode, setAuthCode] = useState("");
-  const [authPending, setAuthPending] = useState(false);
-  const [codexKey, setCodexKey] = useState("");
   const [confirmingLogout, setConfirmingLogout] = useState(false);
   const [confirmingReset, setConfirmingReset] = useState(false);
   const [resetting, setResetting] = useState(false);
@@ -76,8 +73,6 @@ export function Settings({
   const [gitSaved, setGitSaved] = useState(false);
   const savedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const tokenInputRef = useRef<HTMLInputElement>(null);
-  const apiKeyInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (activeTab === "deploy") {
@@ -91,20 +86,10 @@ export function Settings({
   }, [gitIdentity.name, gitIdentity.email]);
 
   useEffect(() => {
-    if (authUrl !== null || agentList.find((a) => a.id === "claude")?.authConfigured) {
-      setAuthPending(false);
-    }
-  }, [authUrl, agentList]);
-
-  useEffect(() => {
     if (activeTab === "instructions") {
       textareaRef.current?.focus();
-    } else if (activeTab === "github" && !githubStatus.authenticated) {
-      tokenInputRef.current?.focus();
-    } else if (activeTab === "agent" && authUrl !== null) {
-      apiKeyInputRef.current?.focus();
     }
-  }, [activeTab, githubStatus.authenticated, authUrl]);
+  }, [activeTab]);
 
   const handleSave = () => {
     savedRef.current = true;
@@ -125,52 +110,6 @@ export function Settings({
     if (activeTab === "instructions" && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       handleSave();
-    }
-  };
-
-  const handleTokenSubmit = () => {
-    const trimmed = token.trim();
-    if (trimmed) {
-      onGitHubTokenSubmit(trimmed);
-    }
-  };
-
-  const handleTokenKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      handleTokenSubmit();
-    }
-  };
-
-  const handleApiKeySubmit = () => {
-    const trimmed = apiKey.trim();
-    if (!trimmed) return;
-    if (!trimmed.startsWith("sk-ant-")) {
-      setApiKeyError("API key must start with sk-ant-");
-      return;
-    }
-    setApiKeyError("");
-    onApiKey(trimmed);
-  };
-
-  const handleApiKeyKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      handleApiKeySubmit();
-    }
-  };
-
-  const handleCodexKeySubmit = () => {
-    const trimmed = codexKey.trim();
-    if (!trimmed) return;
-    onSetAgentEnv?.("codex", "OPENAI_API_KEY", trimmed);
-    setCodexKey("");
-  };
-
-  const handleCodexKeyKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      handleCodexKeySubmit();
     }
   };
 
@@ -273,187 +212,24 @@ export function Settings({
           {/* Right content area */}
           {activeTab === "agent" && (
             <div className="flex-1 min-w-0 px-5 py-4 flex flex-col gap-4 overflow-y-auto">
-              {authUrl === null ? (
-                <div className="space-y-4">
-                  <div className="flex items-center gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
-                    <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${claudeAgent?.authConfigured !== false ? "bg-green-400" : "bg-yellow-400"}`} />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                        Claude CLI
-                      </p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">
-                        {claudeAgent?.authConfigured !== false ? "Authenticated" : "Not authenticated"}
-                      </p>
-                    </div>
-                  </div>
+              <ClaudeAuthCard
+                agent={claudeAgent}
+                authUrl={authUrl}
+                onStartAuth={onStartAuth}
+                onApiKeySubmit={async (key) => { onApiKey(key); }}
+                onPasteAuthCode={onPasteCode}
+                onClearApiKey={onClearApiKey}
+                showApiKeyWhenAuthed
+              />
 
-                  {claudeAgent?.authConfigured === false && (
-                    <button
-                      onClick={() => { setAuthPending(true); onStartAuth(); }}
-                      disabled={authPending}
-                      className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                      data-testid="settings-start-auth"
-                    >
-                      {authPending ? "Waiting for login..." : "Login with Claude"}
-                    </button>
-                  )}
-
-                  <div className="space-y-2">
-                    <p className="text-sm text-gray-600 dark:text-gray-400">
-                      {claudeAgent?.authConfigured !== false ? "Override authentication with an API key:" : "Or authenticate with an API key:"}
-                    </p>
-                    <input
-                      ref={apiKeyInputRef}
-                      type="password"
-                      value={apiKey}
-                      onChange={(e) => { setApiKey(e.target.value); setApiKeyError(""); }}
-                      onKeyDown={handleApiKeyKeyDown}
-                      placeholder="sk-ant-..."
-                      className="w-full rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono"
-                      data-testid="settings-api-key-input"
-                    />
-                    {apiKeyError && <p className="text-xs text-red-500" data-testid="settings-api-key-error">{apiKeyError}</p>}
-                    <button
-                      onClick={handleApiKeySubmit}
-                      disabled={!apiKey.trim()}
-                      className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                      data-testid="settings-api-key-submit"
-                    >
-                      Set API Key
-                    </button>
-                  </div>
-
-                  {claudeAgent?.authConfigured !== false && (
-                    <button
-                      onClick={onClearApiKey}
-                      className="w-full px-3 py-2 text-sm rounded-md border bg-gray-50 dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                      data-testid="settings-clear-api-key"
-                    >
-                      Clear API Key
-                    </button>
-                  )}
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="flex items-center gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
-                    <span className="w-2.5 h-2.5 rounded-full bg-yellow-400 shrink-0" />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                        Claude CLI
-                      </p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">Authentication required</p>
-                    </div>
-                  </div>
-
-                  {authUrl && (
-                    <div className="space-y-3">
-                      <a
-                        href={authUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="block w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors text-center"
-                        data-testid="settings-open-auth-url"
-                      >
-                        Open Authentication Page
-                      </a>
-                      <div className="space-y-2">
-                        <label className="block text-sm text-gray-600 dark:text-gray-400">
-                          After signing in, paste the authorization code:
-                        </label>
-                        <div className="flex gap-2">
-                          <input
-                            type="text"
-                            value={authCode}
-                            onChange={(e) => setAuthCode(e.target.value)}
-                            placeholder="Paste code here..."
-                            className="flex-1 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-4 py-2.5 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono"
-                            data-testid="settings-auth-code-input"
-                          />
-                          <button
-                            onClick={() => { if (authCode.trim()) onPasteCode(authCode.trim()); }}
-                            disabled={!authCode.trim()}
-                            className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
-                            data-testid="settings-auth-code-submit"
-                          >
-                            Submit
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="space-y-2 pt-2 border-t border-gray-200 dark:border-gray-700">
-                    <p className="text-sm text-gray-600 dark:text-gray-400">
-                      Or authenticate with an API key:
-                    </p>
-                    <input
-                      ref={apiKeyInputRef}
-                      type="password"
-                      value={apiKey}
-                      onChange={(e) => { setApiKey(e.target.value); setApiKeyError(""); }}
-                      onKeyDown={handleApiKeyKeyDown}
-                      placeholder="sk-ant-..."
-                      className="w-full rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono"
-                      data-testid="settings-api-key-input"
-                    />
-                    {apiKeyError && <p className="text-xs text-red-500" data-testid="settings-api-key-error">{apiKeyError}</p>}
-                    <button
-                      onClick={handleApiKeySubmit}
-                      disabled={!apiKey.trim()}
-                      className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                      data-testid="settings-api-key-submit"
-                    >
-                      Set API Key
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Codex agent section */}
               {codexAgent && (
-                <div className="space-y-2 pt-2 border-t border-gray-200 dark:border-gray-700" data-testid="codex-agent-section">
-                  <div className="flex items-center gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
-                    <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-                      !codexAgent.installed ? "bg-gray-400" : codexAgent.authConfigured ? "bg-green-400" : "bg-yellow-400"
-                    }`} />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                        Codex
-                      </p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">
-                        {!codexAgent.installed
-                          ? "Not installed"
-                          : codexAgent.authConfigured
-                            ? "Authenticated"
-                            : "API key not set"}
-                      </p>
-                    </div>
-                  </div>
-
-                  {codexAgent.installed && !codexAgent.authConfigured && (
-                    <div className="space-y-2">
-                      <input
-                        type="password"
-                        value={codexKey}
-                        onChange={(e) => setCodexKey(e.target.value)}
-                        onKeyDown={handleCodexKeyKeyDown}
-                        placeholder="OPENAI_API_KEY"
-                        className="w-full rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono"
-                        data-testid="codex-api-key-input"
-                      />
-                      <button
-                        onClick={handleCodexKeySubmit}
-                        disabled={!codexKey.trim()}
-                        className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                        data-testid="codex-api-key-submit"
-                      >
-                        Save
-                      </button>
-                    </div>
-                  )}
+                <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
+                  <CodexAuthCard
+                    agent={codexAgent}
+                    onApiKeySubmit={async (key) => { onSetAgentEnv?.("codex", "OPENAI_API_KEY", key); }}
+                  />
                 </div>
               )}
-
             </div>
           )}
 
@@ -536,45 +312,7 @@ export function Settings({
                   </button>
                 </div>
               ) : (
-                <div className="space-y-4">
-                  <p className="text-sm text-gray-600 dark:text-gray-400">
-                    Enter a <strong className="text-gray-700 dark:text-gray-300">classic</strong> Personal Access Token with
-                    the <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded">repo</code> scope.
-                    Fine-grained tokens are not supported.
-                  </p>
-
-                  <input
-                    ref={tokenInputRef}
-                    type="password"
-                    value={token}
-                    onChange={(e) => setToken(e.target.value)}
-                    onKeyDown={handleTokenKeyDown}
-                    placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
-                    className="w-full rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono"
-                    data-testid="settings-token-input"
-                  />
-
-                  <button
-                    onClick={handleTokenSubmit}
-                    disabled={!token.trim()}
-                    className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    data-testid="settings-connect"
-                  >
-                    Connect
-                  </button>
-
-                  <p className="text-xs text-gray-500">
-                    Your token is stored locally and never shared. Create one at{" "}
-                    <a
-                      href="https://github.com/settings/tokens/new"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-400 hover:text-blue-300"
-                    >
-                      GitHub Settings
-                    </a>.
-                  </p>
-                </div>
+                <GitHubTokenForm onSubmit={async (t) => { onGitHubTokenSubmit(t); }} />
               )}
             </div>
           )}
