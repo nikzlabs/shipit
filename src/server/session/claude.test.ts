@@ -8,8 +8,8 @@ vi.mock("node-pty", () => {
   };
 });
 
-// Mock stripAnsi import from auth.js — pass through for tests
-vi.mock("./auth.js", () => {
+// Mock stripAnsi — pass through for tests
+vi.mock("../shared/strip-ansi.js", () => {
   return {
     stripAnsi: (text: string) => text,
   };
