@@ -58,7 +58,7 @@ function createFakeDocker() {
         inspect: async () => ({
           id,
           NetworkSettings: {
-            Networks: { shipit: { IPAddress: ip } },
+            Networks: { "shipit-test": { IPAddress: ip } },
           },
         }),
         stop: async () => { if (containers.has(id)) containers.get(id)!.started = false; },
@@ -121,9 +121,11 @@ describe("container lifecycle integration", () => {
     fakeDocker = createFakeDocker();
     containerManager = new SessionContainerManager({
       docker: fakeDocker as any,
-      networkName: "shipit",
+      imageName: "shipit-session-worker:test",
+      networkName: "shipit-test",
       workerPort: 9100,
       skipHealthCheck: true,
+      stackName: "shipit-test",
     });
 
     // Pass createPreviewManager and createFileWatcher as factories so that
@@ -209,7 +211,7 @@ describe("container lifecycle integration", () => {
       sessionId: "orphan-session",
       sessionDir: "/workspace/sessions/orphan",
       credentialsDir: "/credentials",
-      imageName: "shipit-session-worker:latest",
+      imageName: "shipit-session-worker:test",
       memoryLimit: 512 * 1024 * 1024,
       cpuQuota: 50_000,
       pidsLimit: 256,
