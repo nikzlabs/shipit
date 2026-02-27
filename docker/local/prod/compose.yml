@@ -1,3 +1,5 @@
+name: shipit-prod
+
 services:
   shipit:
     build:
@@ -14,8 +16,8 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - USE_CONTAINERS=true
-      - WORKSPACE_VOLUME=prod_workspace
-      - CREDENTIALS_VOLUME=prod_credentials
+      - WORKSPACE_VOLUME=shipit-prod_workspace
+      - CREDENTIALS_VOLUME=shipit-prod_credentials
       - DOCKER_NETWORK=shipit-prod
     networks:
       - shipit

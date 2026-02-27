@@ -94,7 +94,7 @@ export interface SessionContainerManagerOpts {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_IMAGE = "shipit-session-worker:latest";
-const DEFAULT_NETWORK = process.env.DOCKER_NETWORK ?? "shipit";
+const DEFAULT_NETWORK = process.env.DOCKER_NETWORK!;
 const DEFAULT_MEMORY_LIMIT = 512 * 1024 * 1024; // 512 MB
 const DEFAULT_CPU_QUOTA = 50_000; // 0.5 CPU (50000 µs per 100ms period)
 const DEFAULT_CPU_PERIOD = 100_000; // 100ms

@@ -1,3 +1,5 @@
+name: shipit-dev
+
 services:
   shipit:
     build:
@@ -18,8 +20,8 @@ services:
       - CLIENT_DEV_PORT=3000
       - VITE_API_HOST=localhost:3001
       - USE_CONTAINERS=true
-      - WORKSPACE_VOLUME=dev_workspace
-      - CREDENTIALS_VOLUME=dev_credentials
+      - WORKSPACE_VOLUME=shipit-dev_workspace
+      - CREDENTIALS_VOLUME=shipit-dev_credentials
       - DOCKER_NETWORK=shipit-dev
     networks:
       - shipit
