@@ -931,8 +931,8 @@ export async function registerApiRoutes(
     async (_request, reply) => {
       try {
         const result = await createRepoWithTemplate(
-          sessionManager, createGitManager, deps.createSessionDir,
-          deps.githubAuthManager,
+          sessionManager, createGitManager, createRepoGit, deps.createSessionDir,
+          deps.githubAuthManager, deps.getSharedRepoDir,
           _request.body.repoName, _request.body.templateId,
           _request.body.description, _request.body.isPrivate,
         );

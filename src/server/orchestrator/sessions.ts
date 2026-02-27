@@ -134,10 +134,10 @@ export class SessionManager {
     );
   }
 
-  /** Set worktree-specific fields on a session. */
+  /** Set branch and session type on a session. */
   setWorktreeInfo(
     id: string,
-    info: { branch: string; sessionType: "worktree" },
+    info: { branch: string; sessionType: "standalone" | "worktree" },
   ): void {
     const session = this.sessions.find((s) => s.id === id);
     if (session) {

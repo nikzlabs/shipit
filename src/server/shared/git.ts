@@ -57,7 +57,7 @@ export class GitManager {
     const message = summary || "Claude turn";
     const result = await this.git.commit(message);
     const hash = result.commit || "";
-    console.log("[git] Committed:", hash, message);
+    console.log("[git] Committed:", hash, message, "on branch:", status.current ?? "(detached)");
     return hash;
   }
 

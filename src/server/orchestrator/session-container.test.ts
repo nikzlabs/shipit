@@ -244,17 +244,54 @@ describe("SessionContainerManager", () => {
       );
     });
 
-    it("includes shared repo mount for worktree sessions", async () => {
+    it("includes shared repo mount for worktree sessions (bind mount)", async () => {
       const config = buildConfig({
         sharedRepoDir: "/workspace/repos/abc123",
       });
       await manager.create(config);
 
+      // Shared repo is mounted at its original absolute path (not /repo)
+      // so that worktree .git file references resolve correctly inside
+      // the container.
       expect(mockDocker.createContainer).toHaveBeenCalledWith(
         expect.objectContaining({
           HostConfig: expect.objectContaining({
             Binds: expect.arrayContaining([
-              "/workspace/repos/abc123:/repo:ro",
+              "/workspace/repos/abc123:/workspace/repos/abc123:rw",
+            ]),
+          }),
+        }),
+      );
+    });
+
+    it("includes shared repo volume mount for worktree sessions", async () => {
+      await manager.dispose();
+      manager = new SessionContainerManager({
+        docker: mockDocker as any,
+        imageName: "shipit-session-worker:test",
+        networkName: "shipit-test",
+        skipHealthCheck: true,
+        workspaceVolume: "shipit_workspace",
+      });
+      await manager.ensureNetwork();
+
+      const config = buildConfig({
+        sharedRepoDir: "/workspace/repos/abc123",
+      });
+      await manager.create(config);
+
+      // When using a workspace volume, shared repo is mounted via volume
+      // subpath at the original absolute path for worktree .git references.
+      expect(mockDocker.createContainer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          HostConfig: expect.objectContaining({
+            Mounts: expect.arrayContaining([
+              expect.objectContaining({
+                Type: "volume",
+                Source: "shipit_workspace",
+                Target: "/workspace/repos/abc123",
+                VolumeOptions: { Subpath: "repos/abc123" },
+              }),
             ]),
           }),
         }),
