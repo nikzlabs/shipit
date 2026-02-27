@@ -1,0 +1,42 @@
+name: shipit-prod
+
+services:
+  shipit:
+    build:
+      context: ../../..
+      dockerfile: docker/Dockerfile.prod
+    ports:
+      - "4123:4123"
+      - "4124:5173"
+    volumes:
+      - workspace:/workspace
+      - credentials:/credentials
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - NODE_ENV=production
+      - PORT=4123
+      - USE_CONTAINERS=true
+      - WORKSPACE_VOLUME=shipit-prod_workspace
+      - CREDENTIALS_VOLUME=shipit-prod_credentials
+      - DOCKER_NETWORK=shipit-prod
+      - SESSION_WORKER_IMAGE=shipit-session-worker:prod
+      - DOCKER_STACK=shipit-prod
+    networks:
+      - shipit-prod
+
+  session-worker:
+    build:
+      context: ../../..
+      dockerfile: docker/Dockerfile.session-worker
+    image: shipit-session-worker:prod
+    profiles:
+      - build-only
+
+networks:
+  shipit-prod:
+    name: shipit-prod
+    driver: bridge
+
+volumes:
+  workspace:
+  credentials:

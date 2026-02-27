@@ -68,7 +68,12 @@ For local development without Docker:
 ```bash
 git clone https://github.com/anthropics/shipit.git
 cd shipit
-docker compose up --build
+
+# Development (hot-reload, source mounted)
+docker/local/dev.sh
+
+# Production (optimized build)
+docker/local/prod.sh
 ```
 
 Open [http://localhost:3000](http://localhost:3000) in your browser.

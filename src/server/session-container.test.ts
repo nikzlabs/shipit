@@ -12,6 +12,7 @@ import {
   CONTAINER_LABEL_KEY,
   CONTAINER_LABEL_VALUE,
   CONTAINER_SESSION_ID_LABEL,
+  CONTAINER_STACK_LABEL,
 } from "./session-container.js";
 import type { ContainerConfig } from "./session-container.js";
 
@@ -61,7 +62,7 @@ function createMockDocker() {
     getNetwork: vi.fn(() => ({
       inspect: vi.fn(async () => {
         if (!networkExists) throw new Error("network not found");
-        return { Name: "shipit" };
+        return { Name: "shipit-test" };
       }),
     })),
 
@@ -72,7 +73,7 @@ function createMockDocker() {
         id,
         NetworkSettings: {
           Networks: {
-            shipit: { IPAddress: `172.18.0.${containerCounter + 2}` },
+            "shipit-test": { IPAddress: `172.18.0.${containerCounter + 2}` },
           },
         },
       };
@@ -139,7 +140,7 @@ function buildConfig(overrides?: Partial<ContainerConfig>): ContainerConfig {
     sessionId: "test-session-1",
     sessionDir: "/workspace/sessions/test-session-1",
     credentialsDir: "/credentials",
-    imageName: "shipit-session-worker:latest",
+    imageName: "shipit-session-worker:test",
     memoryLimit: 512 * 1024 * 1024,
     cpuQuota: 50_000,
     pidsLimit: 256,
@@ -159,8 +160,10 @@ describe("SessionContainerManager", () => {
     mockDocker = createMockDocker();
     manager = new SessionContainerManager({
       docker: mockDocker as any,
-      networkName: "shipit",
+      imageName: "shipit-session-worker:test",
+      networkName: "shipit-test",
       skipHealthCheck: true,
+      stackName: "shipit-test",
     });
   });
 
@@ -189,7 +192,7 @@ describe("SessionContainerManager", () => {
       await manager.ensureNetwork();
       expect(mockDocker.createNetwork).toHaveBeenCalledWith(
         expect.objectContaining({
-          Name: "shipit",
+          Name: "shipit-test",
           Driver: "bridge",
         }),
       );
@@ -218,10 +221,11 @@ describe("SessionContainerManager", () => {
       // Verify docker.createContainer was called with the right options
       expect(mockDocker.createContainer).toHaveBeenCalledWith(
         expect.objectContaining({
-          Image: "shipit-session-worker:latest",
+          Image: "shipit-session-worker:test",
           Cmd: ["node", "--import", "tsx", "src/server/session-worker.ts"],
           Labels: {
             [CONTAINER_LABEL_KEY]: CONTAINER_LABEL_VALUE,
+            [CONTAINER_STACK_LABEL]: "shipit-test",
             [CONTAINER_SESSION_ID_LABEL]: "test-session-1",
           },
           HostConfig: expect.objectContaining({
@@ -233,7 +237,7 @@ describe("SessionContainerManager", () => {
             CpuQuota: 50_000,
             CpuPeriod: 100_000,
             PidsLimit: 256,
-            NetworkMode: "shipit",
+            NetworkMode: "shipit-test",
             SecurityOpt: ["no-new-privileges"],
           }),
         }),
@@ -390,7 +394,7 @@ describe("SessionContainerManager", () => {
         credentialsDir: "/creds",
       });
 
-      expect(config.imageName).toBe("shipit-session-worker:latest");
+      expect(config.imageName).toBe("shipit-session-worker:test");
       expect(config.memoryLimit).toBe(512 * 1024 * 1024);
       expect(config.cpuQuota).toBe(50_000);
       expect(config.pidsLimit).toBe(256);
