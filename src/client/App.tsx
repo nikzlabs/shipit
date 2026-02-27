@@ -563,7 +563,7 @@ export default function App() {
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
       {authUrl !== null && !showOnboarding && <AuthOverlay url={authUrl} onPasteCode={(code) => { apiPost("/api/auth/code", { code }).catch(() => {}); }} onApiKey={(key) => { apiPost("/api/auth/api-key", { key }).catch(() => {}); }} />}
-      {showOnboarding && <OnboardingWizard initialStep={gitIdentityNeeded ? 1 : 2} onGitIdentitySubmit={(name: string, email: string) => useGitStore.getState().submitGitIdentity(name, email).catch(() => {})} onGitHubTokenSubmit={async (token: string) => { const result = await useSettingsStore.getState().submitGitHubToken(token); if (result) { usePrStore.getState().setImportSearchResults(result.repos); return true; } return false; }} agents={agentList} onClaudeApiKeySubmit={async (key: string) => { try { await apiPost("/api/auth/api-key", { key }); const data = await apiGet<{ agents: AgentOption[] }>("/api/bootstrap"); useUiStore.getState().setAgentList(data.agents); return true; } catch { return false; } }} onCodexApiKeySubmit={async (key: string) => { try { const result = await apiPost<{ agents: AgentOption[] }>(`/api/agents/codex/env`, { key: "OPENAI_API_KEY", value: key }); useUiStore.getState().setAgentList(result.agents); return true; } catch { return false; } }} onStartClaudeAuth={() => apiPost("/api/auth/start").catch(() => {})} authUrl={authUrl} onPasteAuthCode={(code: string) => { apiPost("/api/auth/code", { code }).catch(() => {}); }} onRefreshAgents={async () => { const data = await apiGet<{ agents: AgentOption[] }>("/api/bootstrap"); useUiStore.getState().setAgentList(data.agents); }} onComplete={() => { if (gitIdentityNeeded) useGitStore.getState().setIdentityNeeded(false); }} />}
+      {showOnboarding && <OnboardingWizard initialStep={gitIdentityNeeded ? 1 : 2} onGitIdentitySubmit={(name: string, email: string) => useGitStore.getState().submitGitIdentity(name, email).catch(() => {})} onGitHubTokenSubmit={async (token: string) => { const result = await useSettingsStore.getState().submitGitHubToken(token); if (result) { usePrStore.getState().setImportSearchResults(result.repos); return true; } return false; }} agents={agentList} onClaudeApiKeySubmit={async (key: string) => { try { await apiPost("/api/auth/api-key", { key }); const data = await apiGet<{ agents: AgentOption[] }>("/api/bootstrap"); useUiStore.getState().setAgentList(data.agents); return true; } catch { return false; } }} onCodexApiKeySubmit={async (key: string) => { try { const result = await apiPost<{ agents: AgentOption[] }>(`/api/agents/codex/env`, { key: "OPENAI_API_KEY", value: key }); useUiStore.getState().setAgentList(result.agents); return true; } catch { return false; } }} onStartClaudeAuth={() => { apiPost("/api/auth/start", {}).catch(() => {}); }} authUrl={authUrl} onPasteAuthCode={(code: string) => { apiPost("/api/auth/code", { code }).catch(() => {}); }} onRefreshAgents={async () => { const data = await apiGet<{ agents: AgentOption[] }>("/api/bootstrap"); useUiStore.getState().setAgentList(data.agents); }} onComplete={() => { if (gitIdentityNeeded) useGitStore.getState().setIdentityNeeded(false); }} />}
       {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
       {settingsOpen && (
         <Settings
@@ -574,11 +574,11 @@ export default function App() {
           authUrl={authUrl}
           onApiKey={(key) => { apiPost("/api/auth/api-key", { key }).catch(() => {}); }}
           onClearApiKey={() => { apiDel("/api/auth/api-key").catch(() => {}); }}
-          onStartAuth={() => { apiPost("/api/auth/start").catch(() => {}); }}
+          onStartAuth={() => { apiPost("/api/auth/start", {}).catch(() => {}); }}
           onPasteCode={(code) => { apiPost("/api/auth/code", { code }).catch(() => {}); }}
           agentList={agentList}
           onSetAgentEnv={(agentId, key, value) => { apiPost(`/api/agents/${agentId}/env`, { key, value }).catch(() => {}); }}
-          onFullReset={async () => { try { await apiPost("/api/reset"); } catch { /* ignore */ } }}
+          onFullReset={async () => { try { await apiPost("/api/reset", {}); } catch { /* ignore */ } }}
           gitIdentity={gitIdentity}
           onGitIdentitySave={(name, email) => useGitStore.getState().submitGitIdentity(name, email).catch(() => {})}
           deployTargets={deployTargets} deployConfigStatus={deployConfigStatus}
