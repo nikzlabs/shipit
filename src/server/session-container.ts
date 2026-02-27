@@ -64,7 +64,7 @@ export interface SessionContainerManagerOpts {
   socketPath?: string;
   /** Docker instance (for testing). Overrides socketPath. */
   docker?: Docker;
-  /** Container image name. Defaults to "shipit-session-worker:latest". */
+  /** Container image name. Read from SESSION_WORKER_IMAGE env var. */
   imageName?: string;
   /** Docker bridge network name. Defaults to "shipit". */
   networkName?: string;
@@ -95,7 +95,7 @@ export interface SessionContainerManagerOpts {
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_IMAGE = process.env.SESSION_WORKER_IMAGE ?? "shipit-session-worker:latest";
+const DEFAULT_IMAGE = process.env.SESSION_WORKER_IMAGE!;
 const DEFAULT_NETWORK = process.env.DOCKER_NETWORK!;
 const DEFAULT_MEMORY_LIMIT = 512 * 1024 * 1024; // 512 MB
 const DEFAULT_CPU_QUOTA = 50_000; // 0.5 CPU (50000 µs per 100ms period)
