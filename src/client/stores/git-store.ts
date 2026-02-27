@@ -111,6 +111,6 @@ export const useGitStore = create<GitState>((set, get) => ({
       throw new Error(`Failed to save git identity: ${res.status}`);
     }
     const result = await res.json();
-    set({ identityNeeded: false, identity: result });
+    set({ identity: result });
   },
 }));
