@@ -183,6 +183,7 @@ export class AuthManager extends EventEmitter {
    */
   startOAuthFlow(): void {
     if (this.proc) {
+      console.log("[auth] startOAuthFlow() skipped — PTY process already running (pid %d)", this.proc.pid);
       return;
     }
 

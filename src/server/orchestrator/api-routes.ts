@@ -955,8 +955,13 @@ export async function registerApiRoutes(
   app.post(
     "/api/auth/start",
     async (_request, reply) => {
-      startAuth(deps.authManager);
-      reply.code(202).send({ success: true });
+      try {
+        startAuth(deps.authManager);
+        reply.code(202).send({ success: true });
+      } catch (err) {
+        console.error("[auth] startAuth() threw:", err);
+        reply.code(500).send({ error: `Failed to start auth: ${getErrorMessage(err)}` });
+      }
     },
   );
 
