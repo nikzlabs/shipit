@@ -749,6 +749,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       usageManager,
       authManager,
       agentRegistry,
+      credentialStore,
       createSessionDir,
       generateText,
       getSharedRepoDir,

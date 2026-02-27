@@ -1,9 +1,19 @@
 import fs from "node:fs";
 import path from "node:path";
 
+export type UtilityModelProvider = "openai-compatible" | "anthropic";
+
+export interface UtilityModelConfig {
+  provider: UtilityModelProvider;
+  apiKey: string;
+  model: string;
+  baseUrl?: string;
+}
+
 interface CredentialData {
   agentEnv?: Record<string, string>;
   githubToken?: string;
+  utilityModel?: UtilityModelConfig;
 }
 
 const DEFAULT_CREDENTIALS_DIR = "/credentials";
@@ -85,6 +95,26 @@ export class CredentialStore {
 
   clearGithubToken(): void {
     delete this.data.githubToken;
+    this.save();
+  }
+
+  // ---- Utility model ----
+
+  getUtilityModel(): UtilityModelConfig | null {
+    const m = this.data.utilityModel;
+    if (m && typeof m.apiKey === "string" && m.apiKey.trim()) {
+      return m;
+    }
+    return null;
+  }
+
+  setUtilityModel(config: UtilityModelConfig): void {
+    this.data.utilityModel = config;
+    this.save();
+  }
+
+  clearUtilityModel(): void {
+    delete this.data.utilityModel;
     this.save();
   }
 
