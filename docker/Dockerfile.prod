@@ -26,10 +26,14 @@ WORKDIR /app
 # Copy pre-built node_modules from build stage (includes compiled node-pty)
 COPY --from=build /app/node_modules ./node_modules
 
-# Copy only server source needed at runtime (no client source, tests, or docs)
+# Copy only server source needed at runtime (no client source, tests, or docs).
+# Orchestrator imports from all three layers: its own code, session adapters
+# (ClaudeAdapter, AgentRegistry, TerminalProcess …), and shared types/utilities.
 COPY package.json package-lock.json ./
 COPY tsconfig.json ./
-COPY src/server/ ./src/server/
+COPY src/server/orchestrator/ ./src/server/orchestrator/
+COPY src/server/session/ ./src/server/session/
+COPY src/server/shared/ ./src/server/shared/
 COPY --from=build /app/dist/client ./dist/client
 
 # Workspace for user projects — each session creates its own git repo
