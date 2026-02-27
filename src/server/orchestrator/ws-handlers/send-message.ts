@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import type { WsClientMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment, FileAttachment, FileContextRef, PermissionMode } from "../../shared/types.js";
-import type { AgentEvent, AgentProcess } from "../../session/agents/agent-process.js";
+import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { HandlerContext } from "./types.js";
 import { getErrorMessage, validateImages, resolveFileAttachments, formatFileContext } from "../validation.js";
 import { generateBranchPrefix } from "../git-utils.js";

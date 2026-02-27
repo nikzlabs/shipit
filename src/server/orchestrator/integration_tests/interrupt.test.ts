@@ -7,7 +7,6 @@ import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../auth.js";
 
-import { ClaudeProcess } from "../../session/claude.js";
 
 import type { WsServerMessage } from "../../shared/types.js";
 import type { FastifyInstance } from "fastify";
@@ -38,9 +37,9 @@ describe("Integration: Interrupt and Redirect", () => {
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
-      claudeFactory: () => {
+      agentFactory: () => {
         lastClaude = new FakeClaudeProcess();
-        return lastClaude as unknown as ClaudeProcess;
+        return lastClaude as any;
       },
       workspaceDir: tmpDir,
       serveStatic: false,

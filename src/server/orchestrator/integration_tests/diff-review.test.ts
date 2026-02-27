@@ -8,7 +8,6 @@ import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../auth.js";
 
-import { ClaudeProcess } from "../../session/claude.js";
 
 import type { FastifyInstance } from "fastify";
 import {
@@ -44,7 +43,7 @@ describe("Integration: Diff review", () => {
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
-      claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
+      agentFactory: () => new FakeClaudeProcess() as any,
       workspaceDir: tmpDir,
       serveStatic: false,
     });

@@ -8,7 +8,6 @@ import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../auth.js";
 
-import { ClaudeProcess } from "../../session/claude.js";
 
 import type { FastifyInstance } from "fastify";
 import {
@@ -23,7 +22,7 @@ import { CredentialStore } from "../credential-store.js";
 import { initGlobalGitConfig, getGitIdentity, setGitIdentity } from "../git-config.js";
 import { DeploymentManager } from "../deployment-manager.js";
 import { DeploymentStore } from "../deployment-store.js";
-import { AgentRegistry } from "../../session/agents/agent-registry.js";
+import { AgentRegistry } from "../../shared/agent-registry.js";
 
 describe("Integration: Phase 2 HTTP mutation endpoints", () => {
   let app: FastifyInstance;
@@ -53,7 +52,7 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: githubAuthManager as unknown as GitHubAuthManager,
-      claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
+      agentFactory: () => new FakeClaudeProcess() as any,
       credentialStore,
       chatHistoryManager,
       workspaceDir: tmpDir,
@@ -883,7 +882,7 @@ describe("Integration: Phase 2 HTTP deploy config mutations", () => {
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
-      claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
+      agentFactory: () => new FakeClaudeProcess() as any,
       deploymentManager: stubDeployMgr as unknown as DeploymentManager,
       deploymentStore: stubDeployStore as unknown as DeploymentStore,
       workspaceDir: tmpDir,

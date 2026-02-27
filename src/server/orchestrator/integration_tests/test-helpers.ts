@@ -280,11 +280,28 @@ export class StubGitHubAuthManager extends EventEmitter {
 }
 
 /**
- * Fake ClaudeProcess for testing the send_message flow.
+ * Fake AgentProcess for testing the send_message flow.
  * The test controls this object: call emit("event", ...) or emit("done", ...)
  * to simulate the real CLI producing output.
+ *
+ * Tests emit events in raw Claude CLI format (type: "system", "assistant",
+ * "result", etc.) for convenience. The emit() override automatically
+ * translates them to AgentEvent format (agent_init, agent_assistant,
+ * agent_result) — the same translation that ClaudeAdapter performs in
+ * production. Events already in AgentEvent format pass through unchanged.
  */
 export class FakeClaudeProcess extends EventEmitter {
+  public readonly agentId = "claude";
+  public readonly capabilities = {
+    supportsResume: true,
+    supportsImages: true,
+    supportsSystemPrompt: true,
+    supportsPermissionModes: true,
+    supportedPermissionModes: ["auto" as const, "plan" as const, "normal" as const],
+    toolNames: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+    models: ["claude-sonnet-4-20250514"],
+  };
+
   public runCalled = false;
   public lastPrompt = "";
   public lastSessionId: string | undefined;
@@ -296,14 +313,29 @@ export class FakeClaudeProcess extends EventEmitter {
   public interrupted = false;
   public stdinData: string[] = [];
 
-  run(prompt: string, sessionId?: string, systemPrompt?: string, images?: Array<{ data: string; mediaType: string; filename?: string }>, cwd?: string, permissionMode?: string) {
+  /** Override emit to auto-translate raw Claude events → AgentEvent. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  emit(eventName: string | symbol, ...args: any[]): boolean {
+    if (eventName === "event" && args[0] && typeof args[0] === "object") {
+      const raw = args[0];
+      const mapped = mapClaudeEvent(raw);
+      if (mapped) {
+        return super.emit("event", mapped);
+      }
+      // Already an AgentEvent or unrecognized — pass through
+      return super.emit("event", raw);
+    }
+    return super.emit(eventName, ...args);
+  }
+
+  run(params: { prompt: string; sessionId?: string; systemPrompt?: string; images?: Array<{ data: string; mediaType: string; filename?: string }>; cwd?: string; permissionMode?: string }) {
     this.runCalled = true;
-    this.lastPrompt = prompt;
-    this.lastSessionId = sessionId;
-    this.lastSystemPrompt = systemPrompt;
-    this.lastImages = images;
-    this.lastCwd = cwd;
-    this.lastPermissionMode = permissionMode;
+    this.lastPrompt = params.prompt;
+    this.lastSessionId = params.sessionId;
+    this.lastSystemPrompt = params.systemPrompt;
+    this.lastImages = params.images;
+    this.lastCwd = params.cwd;
+    this.lastPermissionMode = params.permissionMode;
   }
 
   kill() {
@@ -313,7 +345,7 @@ export class FakeClaudeProcess extends EventEmitter {
   interrupt() {
     this.interrupted = true;
     // Simulate the process exiting after interrupt (non-zero exit code)
-    setTimeout(() => this.emit("done", 1), 10);
+    setTimeout(() => super.emit("done", 1), 10);
   }
 
   writeStdin(data: string) {
@@ -327,7 +359,57 @@ export class FakeClaudeProcess extends EventEmitter {
    */
   finish(sessionId = "test-session", code = 0) {
     this.emit("event", { type: "result", subtype: "success", session_id: sessionId });
-    this.emit("done", code);
+    super.emit("done", code);
+  }
+}
+
+/**
+ * Translate raw Claude CLI events to AgentEvent format.
+ * Same mapping as ClaudeAdapter.mapEvent() — kept here so tests can emit
+ * events in the familiar Claude format without depending on session code.
+ * Returns null for events already in AgentEvent format.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapClaudeEvent(raw: any): any {
+  switch (raw.type) {
+    case "system":
+      return {
+        type: "agent_init",
+        agentId: "claude",
+        sessionId: raw.session_id,
+        model: raw.model,
+        tools: raw.tools,
+      };
+    case "assistant":
+      return {
+        type: "agent_assistant",
+        content: raw.message?.content ?? [],
+      };
+    case "user":
+      return {
+        type: "agent_tool_result",
+        content: raw.message?.content ?? [],
+      };
+    case "result":
+      return {
+        type: "agent_result",
+        status: raw.subtype,
+        sessionId: raw.session_id,
+        cost: raw.total_cost_usd != null ? { totalUsd: raw.total_cost_usd } : undefined,
+        tokens: raw.input_tokens != null
+          ? {
+              input: raw.input_tokens,
+              output: raw.output_tokens ?? 0,
+              cacheRead: raw.cache_read_tokens,
+              cacheWrite: raw.cache_write_tokens,
+            }
+          : undefined,
+        durationMs: raw.duration_ms,
+        error: raw.subtype === "error" ? raw.result : undefined,
+      };
+    default:
+      // Already an AgentEvent or unrecognized — pass through
+      return null;
   }
 }
 

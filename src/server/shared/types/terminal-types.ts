@@ -1,5 +1,20 @@
 // ---- Interactive terminal types (client → server) ----
 
+import type { EventEmitter } from "node:events";
+
+/**
+ * TerminalProcess — interface for the orchestrator to hold a reference to
+ * a terminal without depending on the session-layer implementation.
+ * The concrete class (using node-pty) lives in session/terminal.ts.
+ */
+export interface TerminalProcess extends EventEmitter {
+  start(cwd: string, cols?: number, rows?: number): void;
+  write(data: string): void;
+  resize(cols: number, rows: number): void;
+  kill(): void;
+  readonly running: boolean;
+}
+
 export interface WsTerminalStart {
   type: "terminal_start";
 }

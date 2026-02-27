@@ -7,7 +7,6 @@ import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../auth.js";
 
-import { ClaudeProcess } from "../../session/claude.js";
 
 import type { FastifyInstance } from "fastify";
 import {
@@ -23,7 +22,7 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
   let port: number;
   let tmpDir: string;
   let sessionManager: SessionManager;
-  /** Most recently created FakeClaudeProcess — set by claudeFactory. */
+  /** Most recently created FakeClaudeProcess — set by agentFactory. */
   let lastClaude: FakeClaudeProcess = null as any;
 
   beforeEach(async () => {
@@ -38,9 +37,9 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
-      claudeFactory: () => {
+      agentFactory: () => {
         lastClaude = new FakeClaudeProcess();
-        return lastClaude as unknown as ClaudeProcess;
+        return lastClaude as any;
       },
       workspaceDir: tmpDir,
       serveStatic: false,

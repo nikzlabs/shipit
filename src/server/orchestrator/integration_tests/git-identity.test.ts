@@ -9,7 +9,6 @@ import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../auth.js";
 import { GitHubAuthManager } from "../github-auth.js";
 
-import { ClaudeProcess } from "../../session/claude.js";
 
 import { setGitIdentity } from "../git-config.js";
 import type { FastifyInstance } from "fastify";
@@ -70,7 +69,7 @@ describe("Integration: git identity flow", () => {
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
-      claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
+      agentFactory: () => new FakeClaudeProcess() as any,
       workspaceDir: tmpDir,
       credentialsDir: path.join(tmpDir, "credentials"),
       serveStatic: false,

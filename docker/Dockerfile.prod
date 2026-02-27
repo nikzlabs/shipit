@@ -27,12 +27,11 @@ WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 
 # Copy only server source needed at runtime (no client source, tests, or docs).
-# Orchestrator imports from all three layers: its own code, session adapters
-# (ClaudeAdapter, AgentRegistry, TerminalProcess …), and shared types/utilities.
+# Session code runs inside per-session containers — the orchestrator only needs
+# its own code and the shared layer (types, AgentRegistry, GitManager).
 COPY package.json package-lock.json ./
 COPY tsconfig.json ./
 COPY src/server/orchestrator/ ./src/server/orchestrator/
-COPY src/server/session/ ./src/server/session/
 COPY src/server/shared/ ./src/server/shared/
 COPY --from=build /app/dist/client ./dist/client
 

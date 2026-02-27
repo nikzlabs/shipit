@@ -7,9 +7,8 @@
  */
 
 import { EventEmitter } from "node:events";
-import type { AgentProcess, AgentId } from "../session/agents/agent-process.js";
+import type { AgentProcess, AgentId, TerminalProcess } from "../shared/types.js";
 import type { WsServerMessage, ImageAttachment, FileContextRef, PermissionMode, ClaudeContentBlockToolUse } from "../shared/types.js";
-import type { TerminalProcess } from "../session/terminal.js";
 
 // ---------------------------------------------------------------------------
 // Types

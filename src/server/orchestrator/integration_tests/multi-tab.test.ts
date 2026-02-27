@@ -47,7 +47,7 @@ describe("Integration: multi-tab scenarios", () => {
       sessionManager,
       chatHistoryManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
-      claudeFactory: () => {
+      agentFactory: () => {
         lastClaude = new FakeClaudeProcess();
         return lastClaude as any;
       },
