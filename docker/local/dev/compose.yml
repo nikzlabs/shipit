@@ -20,6 +20,7 @@ services:
       - USE_CONTAINERS=true
       - WORKSPACE_VOLUME=dev_workspace
       - CREDENTIALS_VOLUME=dev_credentials
+      - DOCKER_NETWORK=shipit-dev
     networks:
       - shipit
 
@@ -33,9 +34,7 @@ services:
 
 networks:
   shipit:
-    # Created by SessionContainerManager.ensureNetwork() at startup.
-    # Using external: false so compose creates it if the app hasn't run yet.
-    name: shipit
+    name: shipit-dev
     driver: bridge
 
 volumes:

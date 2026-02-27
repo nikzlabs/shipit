@@ -16,6 +16,7 @@ services:
       - USE_CONTAINERS=true
       - WORKSPACE_VOLUME=prod_workspace
       - CREDENTIALS_VOLUME=prod_credentials
+      - DOCKER_NETWORK=shipit-prod
     networks:
       - shipit
 
@@ -29,7 +30,7 @@ services:
 
 networks:
   shipit:
-    name: shipit
+    name: shipit-prod
     driver: bridge
 
 volumes:
