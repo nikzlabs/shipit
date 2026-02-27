@@ -5,7 +5,7 @@
  * namespace, filesystem mount, and resource limits. The orchestrator (Fastify
  * server on the host) communicates with containers over a Docker bridge network.
  *
- * Containers run the session-worker process (src/server/session-worker.ts) which
+ * Containers run the session-worker process (src/server/session/session-worker.ts) which
  * exposes an HTTP + SSE interface on port 9100 inside the container. The
  * orchestrator reaches containers via their bridge IP — no host port mappings needed.
  */
@@ -266,7 +266,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     try {
       const container = await this.docker.createContainer({
         Image: config.imageName,
-        Cmd: ["node", "--import", "tsx", "src/server/session-worker.ts"],
+        Cmd: ["node", "--import", "tsx", "src/server/session/session-worker.ts"],
         Labels: {
           ...this.baseLabels(),
           [CONTAINER_SESSION_ID_LABEL]: config.sessionId,
