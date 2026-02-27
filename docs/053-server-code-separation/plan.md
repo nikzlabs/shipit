@@ -13,13 +13,12 @@ Today the separation already exists conceptually — `session-worker.ts` runs in
 ## Goals
 
 1. Make the session/orchestrator boundary **visible in the directory structure**
-2. **Zero runtime changes** — this is a pure file-move refactoring; no behavior changes, no new abstractions
+2. **Minimal runtime changes** — primarily file moves and import updates, with one targeted split (`GitManager` → `GitManager` + `RepoGit`) that enforces the boundary at the type level
 3. Maintain full test compatibility
 4. Make it obvious where new code should go
 
 ## Non-goals
 
-- Introducing new abstractions, interfaces, or dependency injection patterns
 - Splitting into separate packages or build targets (may come later)
 - Changing the services layer (already clean — pure functions with explicit params)
 
@@ -47,6 +46,7 @@ src/server/
   orchestrator/         # Code that runs in the main process
     index.ts            # buildApp(), Fastify setup, WS dispatcher
     api-routes.ts       # HTTP REST API routes
+    repo-git.ts         # RepoGit — shared-repo and worktree management (see "Splitting GitManager")
     sessions.ts         # SessionManager — tracks all sessions
     session-runner.ts   # SessionRunner + SessionRunnerRegistry
     container-session-runner.ts  # ContainerSessionRunner (proxy)
@@ -88,7 +88,8 @@ src/server/
       terminal-types.ts
       thread-types.ts
       usage-types.ts
-    git.ts              # GitManager — stateless, used in both contexts
+    git.ts              # GitManager — single-workspace git operations (see "Splitting GitManager")
+    git-utils.ts        # generateBranchPrefix() and parseGitHubRemote() — standalone helpers
     git-config.ts       # Global git config helpers
     validation.ts       # Input validation, error formatting
     markdown.ts         # findMarkdownFiles() — docs discovery
@@ -140,6 +141,12 @@ Code that manages **multiple sessions**, handles **routing/auth**, or orchestrat
 | `ws-handlers/*` | Orchestrator dispatches WS messages |
 | `services/*` | Pure functions consumed by orchestrator routes |
 
+### Orchestrator — `repo-git.ts`
+
+| File | Why orchestrator? |
+|------|-------------------|
+| `repo-git.ts` | Manages shared repos and worktree lifecycle across sessions (clone, fetch, worktree add/remove/list, branch deletion) |
+
 ### Shared (`src/server/shared/`)
 
 Code used by **both** layers:
@@ -147,7 +154,8 @@ Code used by **both** layers:
 | File | Why shared? |
 |------|-------------|
 | `types/*` | Type definitions used everywhere |
-| `git.ts` | GitManager is created per-session but also used by orchestrator (listing remotes, worktree management) |
+| `git.ts` | GitManager — single-workspace git operations (init, commit, log, push, pull, diff, rollback, etc.). Used by session layer (auto-commit after turn) and orchestrator (HTTP routes, services) |
+| `git-utils.ts` | `generateBranchPrefix()` and `parseGitHubRemote()` — standalone helpers used across layers |
 | `git-config.ts` | Global git config, used by both layers |
 | `validation.ts` | Input validation used in both WS handlers and session worker |
 | `markdown.ts` | Simple utility, no layer affiliation |
@@ -156,7 +164,94 @@ Code used by **both** layers:
 | `usage.ts` | Same pattern as chat-history |
 | `templates.ts` | Used by orchestrator services but contains session-level logic (scaffolding into a workspace) |
 
-## Key Entanglement Points (and how this refactoring handles them)
+## Splitting GitManager
+
+Today `git.ts` has a single `GitManager` class (31 methods) used in two distinct contexts:
+
+1. **On a session workspace** (`createGitManager(sessionDir)`) — everyday git: init, commit, log, push, pull, diff, rollback
+2. **On a shared repo** (`createGitManager(repoDir)`) — cross-session repo management: clone, fetch, worktree add/remove, branch deletion
+
+The same class wraps both, but the methods called in each context barely overlap (only `log(1)` for empty-repo detection). This refactoring splits it into two classes and a utility module.
+
+### Method assignment
+
+```
+shared/git.ts — GitManager                orchestrator/repo-git.ts — RepoGit
+(single-workspace operations)              (shared-repo & worktree management)
+───────────────────────────────            ────────────────────────────────────
+init()                                     clone(url, branch?)
+autoCommit(summary)                        fetch(remote)
+log(maxCount)                              getDefaultBranch(remote)
+rollback(commitHash)                       createWorktree(path, branch, startPoint?)
+push(remote, branch)                       removeWorktree(path)
+pull(remote, branch)                       listWorktrees()
+getCurrentBranch()                         deleteBranch(branchName)
+checkoutNewBranch(branchName)
+renameBranch(old, new)
+addRemote(name, url)
+getRemotes()
+listRemoteBranches()
+merge(branchName)
+diffSummary()
+diffNameStatus(from, to)
+diffStatVsBranch(base)
+getFileAtCommit(hash, path)
+checkoutFiles(hash, files)
+
+shared/git-utils.ts — standalone functions
+──────────────────────────────────────────
+generateBranchPrefix()
+parseGitHubRemote(url)    (currently GitManager.parseGitHubRemote static)
+```
+
+### Call-site mapping
+
+**GitManager** (called on sessionDir):
+
+| Method | Callers |
+|--------|---------|
+| `init()` | `index.ts` (createSessionDir), `send-message.ts` (workspace recovery, empty repo) |
+| `autoCommit()` | `send-message.ts` (after agent turn), `services/templates.ts`, `services/git.ts` (rejectChanges) |
+| `log()` | `services/git.ts` (HTTP route) |
+| `rollback()` | `services/git.ts` (HTTP route) |
+| `push()` / `pull()` | `index.ts` (auto-push), `services/git.ts` (HTTP routes) |
+| `getCurrentBranch()` | `index.ts` (auto-push), `services/git.ts`, `services/github.ts` |
+| `getRemotes()` | `services/session.ts` (lazy URL), `services/git.ts` |
+| `addRemote()` | `send-message.ts`, `services/git.ts`, `services/templates.ts` |
+| `renameBranch()` | `send-message.ts` (branch naming after repo import) |
+| `diff*()` / `getFileAtCommit()` | `services/git.ts` (turn diff), `services/github.ts` |
+| `merge()` | `services/session.ts` (merge worktree) |
+| `checkoutFiles()` | `services/git.ts` (rejectChanges) |
+
+**RepoGit** (called on shared repoDir):
+
+| Method | Callers |
+|--------|---------|
+| `clone()` | `send-message.ts` (home_send_with_repo, first clone) |
+| `fetch()` | `send-message.ts` (home_send_with_repo, refresh) |
+| `getDefaultBranch()` | `send-message.ts` (worktree start point) |
+| `createWorktree()` | `send-message.ts` (home_send_with_repo), `services/session.ts` (forkSession) |
+| `removeWorktree()` | `services/session.ts` (archiveSession) |
+| `deleteBranch()` | `services/session.ts` (archiveSession cleanup) |
+| `log(1)` | `send-message.ts` (empty repo detection — use `GitManager.log(1)` on the repo dir, no need to duplicate) |
+
+### Implementation notes
+
+- Both classes wrap `simple-git`. No shared base class needed — the constructors are one-liners (`this.git = simpleGit(dir)`).
+- `RepoGit` gets its own `log(1)` for the empty-repo check, or the caller can construct a temporary `GitManager` for that one check. Either works; the former is cleaner.
+- The DI factory in `AppDeps` splits: `createGitManager: (dir) => GitManager` stays as-is (session workspace ops). A new `createRepoGit: (dir) => RepoGit` factory is added for shared-repo operations. Alternatively, `RepoGit` can be constructed directly since it's only used in a few orchestrator call sites.
+- `parseGitHubRemote()` becomes a standalone function in `git-utils.ts` (it's already static and doesn't use `simple-git`). `generateBranchPrefix()` moves there too (already a standalone export).
+
+### Why not keep one class in `shared/`?
+
+A single `GitManager` in `shared/` would work but defeats the purpose of the separation. The two usage patterns represent genuinely different abstractions:
+
+- **GitManager** = "my workspace" — init, commit, push, pull, diff. This is what a session thinks about.
+- **RepoGit** = "the repo pool" — clone, fetch, worktree lifecycle. This is what the orchestrator thinks about when managing shared repos across sessions.
+
+Splitting makes it impossible to accidentally call `createWorktree()` on a session workspace or `autoCommit()` on a shared repo. The type system enforces the boundary.
+
+## Other Entanglement Points
 
 ### 1. HandlerContext is the biggest coupling surface
 
@@ -184,20 +279,32 @@ These are app-wide singletons that organize data per-session. They're created on
 
 ## Migration Strategy
 
-### Phase 1: Create directories and move files
+### Phase 1: Split GitManager
+
+Do this first as a standalone commit — it's the only code change (as opposed to file moves):
+
+1. Extract `generateBranchPrefix()` and `parseGitHubRemote()` into `git-utils.ts`
+2. Create `repo-git.ts` with `RepoGit` class containing: `clone`, `fetch`, `getDefaultBranch`, `createWorktree`, `removeWorktree`, `listWorktrees`, `deleteBranch`, `isEmpty`
+3. Remove those methods from `GitManager`
+4. Update call sites:
+   - `send-message.ts` (home_send_with_repo): `createGitManager(repoDir)` → `new RepoGit(repoDir)`
+   - `services/session.ts` (forkSession, archiveSession): same pattern
+   - All `generateBranchPrefix()` / `parseGitHubRemote()` imports → from `git-utils.ts`
+5. Run `typecheck` + `test` to verify
+
+### Phase 2: Create directories and move files
 
 1. Create `src/server/session/`, `src/server/orchestrator/`, `src/server/shared/`
 2. Move files according to the classification above
-3. Update all `import` paths — this is the bulk of the work
-
-### Phase 2: Update import paths
-
-The main mechanical work. Every `import` in every moved file needs path adjustment. Additionally, files that *import from* moved files (including client code that imports server types, and test files) need updates.
+3. Move `git-utils.ts` and `git.ts` to `shared/`, `repo-git.ts` to `orchestrator/`
+4. Update all `import` paths — this is the bulk of the work
 
 Key import patterns to update:
-- `from "./claude.js"` → `from "./session/claude.js"` (from orchestrator)
+- `from "./claude.js"` → `from "../session/claude.js"` (from orchestrator)
 - `from "../types.js"` → `from "../shared/types/index.js"` (from session or orchestrator)
 - `from "../validation.js"` → `from "../shared/validation.js"` (from orchestrator handlers)
+- `from "../git.js"` → `from "../shared/git.js"` (from orchestrator services)
+- `from "./repo-git.js"` → `from "./repo-git.js"` (already in orchestrator, stays)
 
 ### Phase 3: Barrel exports (optional, for convenience)
 
@@ -238,3 +345,5 @@ Add `src/server/session/index.ts` and `src/server/orchestrator/index.ts` barrel 
 2. **Should services stay under `orchestrator/` or move to `shared/`?** Services are pure functions called from HTTP routes (orchestrator), but they operate on session data. Proposed: keep under `orchestrator/` since they're consumed exclusively by orchestrator code (routes and WS handlers).
 
 3. **Should the `shared/` singletons (ChatHistoryManager, ThreadManager, UsageManager) eventually become session-scoped?** In a fully containerized world, each session container could own its own history/threads/usage. This refactoring doesn't answer that — it just puts them in `shared/` to acknowledge the ambiguity.
+
+4. **Should `RepoGit.log(1)` exist, or should the caller use `GitManager` for the empty-repo check?** The only cross-context method is `log(1)` called on a shared repo dir in `send-message.ts:723` to detect an empty repo. Options: (a) give `RepoGit` its own `isEmpty()` method that wraps the log check, (b) construct a temporary `GitManager` at that call site. Option (a) is cleaner — it expresses intent rather than leaking the mechanism.
