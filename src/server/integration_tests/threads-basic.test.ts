@@ -8,18 +8,16 @@ import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../auth.js";
 import { GitHubAuthManager } from "../github-auth.js";
-import { PreviewManager } from "../preview-manager.js";
+
 import { ClaudeProcess } from "../claude.js";
-import { FileWatcher } from "../file-watcher.js";
+
 import { ThreadManager } from "../threads.js";
 import type { FastifyInstance } from "fastify";
 import {
   TestClient,
-  StubPreviewManager,
   StubAuthManager,
   StubGitHubAuthManager,
   FakeClaudeProcess,
-  StubFileWatcher,
   waitForClaude,
   createTestCredentialStore,
 } from "./test-helpers.js";
@@ -46,18 +44,14 @@ describe("Integration: Threads — list & checkpoints", () => {
       sessionManager,
       chatHistoryManager,
       threadManager,
-      previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
       claudeFactory: () => {
         lastClaude = new FakeClaudeProcess();
         return lastClaude as unknown as ClaudeProcess;
       },
-      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
-      startPreview: false,
-      portScanIntervalMs: 0,
     });
 
     const address = await app.listen({ port: 0, host: "127.0.0.1" });

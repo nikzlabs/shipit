@@ -1,9 +1,9 @@
 /**
  * Integration tests for Docker container lifecycle wiring in buildApp().
  *
- * Validates that when useContainers is true and a SessionContainerManager
- * is injected, the runner factory creates ContainerSessionRunner instances
- * backed by containers. Uses a fake Docker client to avoid real Docker.
+ * Validates that when a SessionContainerManager is injected, the runner
+ * factory creates ContainerSessionRunner instances backed by containers.
+ * Uses a fake Docker client to avoid real Docker.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -17,13 +17,10 @@ import { GitManager } from "../git.js";
 import { SessionContainerManager, CONTAINER_SESSION_ID_LABEL } from "../session-container.js";
 import {
   TestClient,
-  StubPreviewManager,
   StubAuthManager,
-  StubFileWatcher,
   FakeClaudeProcess,
   createTestCredentialStore,
 } from "./test-helpers.js";
-import type { PreviewManager } from "../preview-manager.js";
 import type { AuthManager } from "../auth.js";
 import type { ClaudeProcess } from "../claude.js";
 import type { FastifyInstance } from "fastify";
@@ -139,12 +136,7 @@ describe("container lifecycle integration", () => {
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
-      createPreviewManager: () => new StubPreviewManager() as unknown as PreviewManager,
-      createFileWatcher: () => new StubFileWatcher() as any,
       serveStatic: false,
-      startPreview: false,
-      portScanIntervalMs: 0,
-      useContainers: true,
       sessionContainerManager: containerManager,
     });
 

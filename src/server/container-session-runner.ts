@@ -15,8 +15,6 @@ import http from "node:http";
 import type { AgentProcess, AgentId, AgentEvent, AgentRunParams } from "./agents/agent-process.js";
 import type { WsServerMessage, ClaudeContentBlockToolUse } from "./types.js";
 import type { TerminalProcess } from "./terminal.js";
-import type { PreviewManager } from "./preview-manager.js";
-import type { FileWatcher } from "./file-watcher.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage } from "./session-runner.js";
 
 // ---------------------------------------------------------------------------
@@ -322,8 +320,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     defaultAgentId: AgentId;
     workerUrl: string;
     idleTimeoutMs?: number;
-    createPreviewManager?: () => PreviewManager;
-    createFileWatcher?: () => FileWatcher;
   }) {
     super();
     this.sessionId = opts.sessionId;
@@ -467,8 +463,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get viewerCount(): number { return this._viewerCount; }
 
-  getPreview(): PreviewManager | null { return null; }
-  getFileWatcher(): FileWatcher | null { return null; }
+  getPreview(): null { return null; }
+  getFileWatcher(): null { return null; }
 
   private _workerResourcesStarted = false;
 

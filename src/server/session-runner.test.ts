@@ -134,140 +134,20 @@ describe("SessionRunner", () => {
       idleTimeoutMs: 60_000,
     });
 
-    // Fill the queue to capacity
     for (let i = 0; i < 50; i++) {
       runner.enqueue({ text: `msg${i}` });
     }
     expect(runner.queueLength).toBe(50);
 
-    // 51st message should throw
     expect(() => runner.enqueue({ text: "overflow" })).toThrow("Message queue is full");
     expect(runner.queueLength).toBe(50);
 
-    // Dequeue one and enqueue again — should work
     runner.dequeue();
     expect(runner.queueLength).toBe(49);
     runner.enqueue({ text: "fits now" });
     expect(runner.queueLength).toBe(50);
 
     runner.dispose();
-  });
-
-  it("starts file watcher on first viewer attach and stops on last detach", () => {
-    const mockFileWatcher = {
-      start: vi.fn(),
-      stop: vi.fn(),
-      on: vi.fn(),
-      removeAllListeners: vi.fn(),
-    };
-    const runner = new SessionRunner({
-      sessionId: "s1",
-      sessionDir: "/tmp/s1",
-      defaultAgentId: "claude" as AgentId,
-      idleTimeoutMs: 60_000,
-      createFileWatcher: () => mockFileWatcher as any,
-    });
-
-    // First viewer attaches — starts file watcher
-    runner.attachViewer();
-    expect(mockFileWatcher.start).toHaveBeenCalledWith("/tmp/s1");
-    expect(runner.getFileWatcher()).toBe(mockFileWatcher);
-
-    // Second viewer attaches — no new file watcher
-    runner.attachViewer();
-    expect(mockFileWatcher.start).toHaveBeenCalledTimes(1);
-
-    // First viewer detaches — still one viewer, file watcher stays
-    runner.detachViewer();
-    expect(mockFileWatcher.stop).not.toHaveBeenCalled();
-
-    // Last viewer detaches — file watcher stops
-    runner.detachViewer();
-    expect(mockFileWatcher.stop).toHaveBeenCalled();
-    expect(runner.getFileWatcher()).toBeNull();
-
-    runner.dispose();
-  });
-
-  it("starts preview on first viewer attach and stops on last detach", () => {
-    const mockPreview = {
-      start: vi.fn(),
-      stop: vi.fn(),
-      on: vi.fn(),
-      removeAllListeners: vi.fn(),
-      running: false,
-      port: null,
-      ports: [],
-      config: null,
-    };
-    const runner = new SessionRunner({
-      sessionId: "s1",
-      sessionDir: "/tmp/s1",
-      defaultAgentId: "claude" as AgentId,
-      idleTimeoutMs: 60_000,
-      createPreviewManager: () => mockPreview as any,
-    });
-
-    runner.attachViewer();
-    expect(mockPreview.start).toHaveBeenCalledWith("/tmp/s1");
-    expect(runner.getPreview()).toBe(mockPreview);
-
-    runner.detachViewer();
-    expect(mockPreview.stop).toHaveBeenCalled();
-    expect(runner.getPreview()).toBeNull();
-
-    runner.dispose();
-  });
-
-  it("does not create preview/file-watcher without factories", () => {
-    const runner = new SessionRunner({
-      sessionId: "s1",
-      sessionDir: "/tmp/s1",
-      defaultAgentId: "claude" as AgentId,
-      idleTimeoutMs: 60_000,
-    });
-
-    runner.attachViewer();
-    expect(runner.getPreview()).toBeNull();
-    expect(runner.getFileWatcher()).toBeNull();
-
-    runner.detachViewer();
-    runner.dispose();
-  });
-
-  it("dispose stops preview and file watcher", () => {
-    const mockPreview = {
-      start: vi.fn(),
-      stop: vi.fn(),
-      on: vi.fn(),
-      removeAllListeners: vi.fn(),
-      running: false,
-      port: null,
-      ports: [],
-      config: null,
-    };
-    const mockFileWatcher = {
-      start: vi.fn(),
-      stop: vi.fn(),
-      on: vi.fn(),
-      removeAllListeners: vi.fn(),
-    };
-    const runner = new SessionRunner({
-      sessionId: "s1",
-      sessionDir: "/tmp/s1",
-      defaultAgentId: "claude" as AgentId,
-      idleTimeoutMs: 60_000,
-      createPreviewManager: () => mockPreview as any,
-      createFileWatcher: () => mockFileWatcher as any,
-    });
-
-    runner.attachViewer();
-    runner.dispose();
-
-    expect(mockPreview.stop).toHaveBeenCalled();
-    expect(mockFileWatcher.stop).toHaveBeenCalled();
-    expect(runner.getPreview()).toBeNull();
-    expect(runner.getFileWatcher()).toBeNull();
   });
 
   it("dispose kills agent and terminal", () => {
@@ -340,10 +220,9 @@ describe("SessionRunnerRegistry", () => {
     const r1 = registry.getOrCreate("s1", "/tmp/s1", "claude" as AgentId);
     registry.getOrCreate("s2", "/tmp/s2", "claude" as AgentId);
 
-    // r1 and r2 are both idle, so creating r3 should evict one
     const r3 = registry.getOrCreate("s3", "/tmp/s3", "claude" as AgentId);
     expect(r3.sessionId).toBe("s3");
-    expect(r1.disposed).toBe(true); // r1 was evicted (first idle)
+    expect(r1.disposed).toBe(true);
 
     r3.dispose();
   });
@@ -352,7 +231,7 @@ describe("SessionRunnerRegistry", () => {
     const registry = new SessionRunnerRegistry({ maxConcurrentRunners: 1 });
     const r1 = registry.getOrCreate("s1", "/tmp/s1", "claude" as AgentId);
     r1.running = true;
-    r1.attachViewer(); // Mark as having a viewer so it's not evicted
+    r1.attachViewer();
 
     expect(() => {
       registry.getOrCreate("s2", "/tmp/s2", "claude" as AgentId);

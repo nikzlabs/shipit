@@ -12,12 +12,9 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { buildApp } from "../index.js";
-import type { PreviewManager } from "../preview-manager.js";
 import {
   TestClient,
-  StubPreviewManager,
   StubAuthManager,
-  StubFileWatcher,
   FakeClaudeProcess,
   waitForClaude,
   StubGitHubAuthManager,
@@ -29,7 +26,6 @@ describe("Integration: Preview config and session-switch cleanup", () => {
   let port: number;
   let app: Awaited<ReturnType<typeof buildApp>>;
   let lastClaude: FakeClaudeProcess | null;
-  const fileWatcher = new StubFileWatcher();
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "preview-cfg-"));
@@ -39,17 +35,12 @@ describe("Integration: Preview config and session-switch cleanup", () => {
       credentialStore: createTestCredentialStore(tmpDir),
       workspaceDir: tmpDir,
       serveStatic: false,
-      startPreview: false,
-      previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as any,
       githubAuthManager: new StubGitHubAuthManager() as any,
-      fileWatcher: fileWatcher as any,
       agentFactory: () => {
         lastClaude = new FakeClaudeProcess() as any;
         return lastClaude as any;
       },
-      detectPorts: async () => [],
-      baselinePorts: [],
     });
 
     await app.listen({ port: 0 });

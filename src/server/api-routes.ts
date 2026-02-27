@@ -20,7 +20,6 @@ import type { DeploymentStore } from "./deployment-store.js";
 import type { UsageManager } from "./usage.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { ChatHistoryManager } from "./chat-history.js";
-import type { PreviewManager } from "./preview-manager.js";
 import type { AuthManager } from "./auth.js";
 import type { WsServerMessage } from "./types.js";
 import {
@@ -97,8 +96,6 @@ export interface ApiDeps {
   usageManager: UsageManager;
   runnerRegistry: SessionRunnerRegistry;
   chatHistoryManager: ChatHistoryManager;
-  // Phase 2 additions
-  previewManager: PreviewManager;
   authManager: AuthManager;
   broadcast: (msg: WsServerMessage) => void;
   broadcastLog: (source: "stderr" | "stdout" | "server" | "preview" | "deploy" | "install", text: string) => void;
@@ -474,10 +471,6 @@ export async function registerApiRoutes(
       try {
         const git = createGitManager(dir);
         const result = await gitRollback(git, request.body.commitHash);
-        const runner = deps.runnerRegistry.get(request.params.id);
-        if (!runner?.supportsRemoteTerminal) {
-          deps.previewManager.restart(dir);
-        }
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -498,10 +491,6 @@ export async function registerApiRoutes(
       try {
         const git = createGitManager(dir);
         const result = await rejectChanges(git, request.body.fromCommit, request.body.files ?? []);
-        const runner = deps.runnerRegistry.get(request.params.id);
-        if (!runner?.supportsRemoteTerminal) {
-          deps.previewManager.restart(dir);
-        }
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -817,11 +806,6 @@ export async function registerApiRoutes(
           sessionManager, createGitManager, deps.createSessionDir,
           request.body.templateId, request.params.id === "new" ? undefined : request.params.id,
         );
-        const sessionId = result.session?.id;
-        const runner = sessionId ? deps.runnerRegistry.get(sessionId) : undefined;
-        if (!runner?.supportsRemoteTerminal) {
-          deps.previewManager.restart(result.sessionDir);
-        }
         return { templateId: result.templateId, name: result.name, session: result.session };
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -840,7 +824,6 @@ export async function registerApiRoutes(
     "/api/reset",
     async (_request, reply) => {
       try {
-        deps.previewManager.stop();
         await fullReset(sessionManager, deps.usageManager, deps.runnerRegistry, deps.workspaceDir);
         deps.broadcast({ type: "full_reset_complete" });
         return { success: true };

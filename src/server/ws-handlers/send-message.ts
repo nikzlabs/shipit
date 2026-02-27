@@ -310,18 +310,6 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
       console.error("[git] auto-commit failed:", getErrorMessage(err));
     }
 
-    // Restart preview after agent finishes in case new files were created.
-    // Skip when the runner manages its own preview (container mode).
-    const runnerAfterTurn = ctx.getRunner();
-    if (capturedSessionDir && !ctx.previewManager.running && !runnerAfterTurn?.supportsRemoteTerminal) {
-      await ctx.previewManager.start(capturedSessionDir);
-    }
-
-    // Scan for dev servers that the agent may have started.
-    if (!runnerAfterTurn?.supportsRemoteTerminal) {
-      await ctx.runPortScan();
-    }
-
     // Mark Claude as no longer running, then process the next queued message
     // If interrupted, clear the queue instead of dequeuing.
     ctx.setIsClaudeRunning(false);
@@ -513,10 +501,6 @@ export async function handleSendMessage(ctx: HandlerContext, msg: WsSendMessage)
     ctx.setActiveAppSessionId(appSessionId);
     ctx.setActiveSessionDir(sessionDir);
 
-    // Restart file watcher to the new session directory
-    ctx.fileWatcher.stop();
-    ctx.fileWatcher.start(sessionDir);
-
     // Check git identity for the new session
     ctx.checkGitIdentity(sessionDir);
   }
@@ -626,13 +610,6 @@ export async function handleAnswerQuestion(ctx: HandlerContext, msg: WsAnswerQue
       console.error("[git] auto-commit failed:", getErrorMessage(err));
     }
 
-    const homeRunner = ctx.getRunner();
-    if (capturedSessionDir && !ctx.previewManager.running && !homeRunner?.supportsRemoteTerminal) {
-      await ctx.previewManager.start(capturedSessionDir);
-    }
-    if (!homeRunner?.supportsRemoteTerminal) {
-      await ctx.runPortScan();
-    }
   });
 
   // Look up agent session ID for --resume
@@ -802,8 +779,6 @@ export async function handleHomeSendWithRepo(ctx: HandlerContext, msg: WsHomeSen
     }
     ctx.setActiveAppSessionId(appSessionId);
     ctx.setActiveSessionDir(sessionDir);
-    ctx.fileWatcher.stop();
-    ctx.fileWatcher.start(sessionDir);
 
     const session = ctx.sessionManager.get(appSessionId);
     if (session) {

@@ -7,16 +7,14 @@ import { GitManager } from "../git.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../auth.js";
-import { PreviewManager } from "../preview-manager.js";
+
 import { ClaudeProcess } from "../claude.js";
-import { FileWatcher } from "../file-watcher.js";
+
 import type { FastifyInstance } from "fastify";
 import {
-  StubPreviewManager,
   StubAuthManager,
   StubGitHubAuthManager,
   FakeClaudeProcess,
-  StubFileWatcher,
   StubDeploymentManager,
   StubDeploymentStore,
 } from "./test-helpers.js";
@@ -53,17 +51,13 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
-      previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: githubAuthManager as unknown as GitHubAuthManager,
       claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
-      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       credentialStore,
       chatHistoryManager,
       workspaceDir: tmpDir,
       serveStatic: false,
-      startPreview: false,
-      portScanIntervalMs: 0,
     });
   });
 
@@ -785,14 +779,10 @@ describe("Integration: Phase 2 HTTP agent mutations", () => {
       sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
       chatHistoryManager: new ChatHistoryManager(path.join(tmpDir, ".chat-history")),
       credentialStore: new CredentialStore(path.join(tmpDir, "credentials")),
-      previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentRegistry: registry,
-      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       workspaceDir: tmpDir,
       serveStatic: false,
-      startPreview: false,
-      portScanIntervalMs: 0,
     });
   });
 
@@ -892,16 +882,12 @@ describe("Integration: Phase 2 HTTP deploy config mutations", () => {
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
-      previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
-      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       deploymentManager: stubDeployMgr as unknown as DeploymentManager,
       deploymentStore: stubDeployStore as unknown as DeploymentStore,
       workspaceDir: tmpDir,
       serveStatic: false,
-      startPreview: false,
-      portScanIntervalMs: 0,
     });
   });
 

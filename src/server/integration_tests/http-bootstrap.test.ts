@@ -6,16 +6,14 @@ import { buildApp } from "../index.js";
 import { GitManager } from "../git.js";
 import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../auth.js";
-import { PreviewManager } from "../preview-manager.js";
+
 import { ClaudeProcess } from "../claude.js";
-import { FileWatcher } from "../file-watcher.js";
+
 import type { FastifyInstance } from "fastify";
 import {
-  StubPreviewManager,
   StubAuthManager,
   StubGitHubAuthManager,
   FakeClaudeProcess,
-  StubFileWatcher,
 } from "./test-helpers.js";
 import { GitHubAuthManager } from "../github-auth.js";
 import { CredentialStore } from "../credential-store.js";
@@ -40,16 +38,12 @@ describe("Integration: GET /api/bootstrap", () => {
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
-      previewManager: new StubPreviewManager() as unknown as PreviewManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: githubAuthManager as unknown as GitHubAuthManager,
       claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
-      fileWatcher: new StubFileWatcher() as unknown as FileWatcher,
       credentialStore,
       workspaceDir: tmpDir,
       serveStatic: false,
-      startPreview: false,
-      portScanIntervalMs: 0,
     });
   });
 
