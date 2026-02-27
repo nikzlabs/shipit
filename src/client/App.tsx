@@ -560,7 +560,7 @@ export default function App() {
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
       {authUrl !== null && <AuthOverlay url={authUrl} onPasteCode={(code) => { apiPost("/api/auth/code", { code }).catch(() => {}); }} onApiKey={(key) => { apiPost("/api/auth/api-key", { key }).catch(() => {}); }} />}
-      {gitIdentityNeeded && <GitIdentityOverlay onSubmit={(name, email) => useGitStore.getState().submitGitIdentity(name, email).catch(() => {})} />}
+      {gitIdentityNeeded && <GitIdentityOverlay onSubmit={(name, email) => useGitStore.getState().submitGitIdentity(name, email).catch(() => {})} onGitHubTokenSubmit={async (token) => { const result = await useSettingsStore.getState().submitGitHubToken(token); if (result) { usePrStore.getState().setImportSearchResults(result.repos); useGitStore.getState().setIdentityNeeded(false); return true; } return false; }} />}
       {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
       {settingsOpen && (
         <Settings
