@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readlinkSync, writeFileSync, readFileSync } from
 import path from "node:path";
 import * as pty from "node-pty";
 import type { IPty } from "node-pty";
+import { stripAnsi } from "../shared/strip-ansi.js";
 
 /**
  * Regex patterns to detect OAuth/verification URLs in Claude CLI output.
@@ -15,16 +16,6 @@ export const AUTH_URL_PATTERNS = [
   /https?:\/\/\S*auth\S*verify\S*/i,
   /https?:\/\/\S*login\S*/i,
 ];
-
-/** Strip ANSI escape codes and terminal control sequences from text. */
-export function stripAnsi(text: string): string {
-  /* eslint-disable no-control-regex -- stripping ANSI/terminal sequences requires matching control chars */
-  return text.replace(
-    /\x1b(?:\[[0-9;<>?]*[a-zA-Z@`~]|\][^\x07]*\x07|[()#][A-Z0-9]|[>=<])/g,
-    "",
-  );
-  /* eslint-enable no-control-regex */
-}
 
 /**
  * Extract an OAuth/auth URL from arbitrary text output.

@@ -7,7 +7,6 @@ import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../auth.js";
 
-import { ClaudeProcess } from "../../session/claude.js";
 
 import { DeploymentManager } from "../deployment-manager.js";
 import { DeploymentStore } from "../deployment-store.js";
@@ -60,7 +59,7 @@ describe("Integration: Deployment", () => {
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
-      claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
+      agentFactory: () => new FakeClaudeProcess() as any,
       deploymentManager: stubDeployMgr as unknown as DeploymentManager,
       deploymentStore: stubDeployStore as unknown as DeploymentStore,
       workspaceDir: tmpDir,

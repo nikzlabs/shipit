@@ -22,7 +22,6 @@ import {
   createTestCredentialStore,
 } from "./test-helpers.js";
 import type { AuthManager } from "../auth.js";
-import type { ClaudeProcess } from "../../session/claude.js";
 import type { FastifyInstance } from "fastify";
 
 // ---------------------------------------------------------------------------
@@ -137,7 +136,7 @@ describe("container lifecycle integration", () => {
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
-      claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
+      agentFactory: () => new FakeClaudeProcess() as any,
       serveStatic: false,
       sessionContainerManager: containerManager,
     });

@@ -8,7 +8,6 @@ import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../auth.js";
 
-import { ClaudeProcess } from "../../session/claude.js";
 
 import type { FastifyInstance } from "fastify";
 import {
@@ -41,9 +40,9 @@ describe("Integration: Claude tool use accumulation", () => {
       sessionManager,
       chatHistoryManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
-      claudeFactory: () => {
+      agentFactory: () => {
         lastClaude = new FakeClaudeProcess();
-        return lastClaude as unknown as ClaudeProcess;
+        return lastClaude as any;
       },
       workspaceDir: tmpDir,
       serveStatic: false,

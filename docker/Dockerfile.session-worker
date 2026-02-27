@@ -10,7 +10,10 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY tsconfig.json ./
-COPY src/ ./src/
+# Only copy code the session-worker actually needs — session + shared layers.
+# Orchestrator and client code are not used and would bloat the image.
+COPY src/server/session/ ./src/server/session/
+COPY src/server/shared/ ./src/server/shared/
 
 # Credential symlinks (same as dev/prod images)
 RUN mkdir -p /workspace /credentials && ln -s /credentials/.claude /root/.claude && ln -sf /credentials/.claude.json /root/.claude.json

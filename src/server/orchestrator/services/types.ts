@@ -2,7 +2,7 @@
  * Shared types and error class for the service layer.
  */
 
-import type { AgentId } from "../../session/agents/agent-process.js";
+import type { AgentId } from "../../shared/types.js";
 import type { SessionInfo, ProjectTemplate } from "../../shared/types.js";
 
 // ---- Types for service function results ----

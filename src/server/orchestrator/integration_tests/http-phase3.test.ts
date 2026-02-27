@@ -8,7 +8,6 @@ import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../auth.js";
 
-import { ClaudeProcess } from "../../session/claude.js";
 
 import type { FastifyInstance } from "fastify";
 import {
@@ -53,7 +52,7 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
       sessionManager,
       authManager: stubAuthManager as unknown as AuthManager,
       githubAuthManager: githubAuthManager as unknown as GitHubAuthManager,
-      claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
+      agentFactory: () => new FakeClaudeProcess() as any,
       credentialStore,
       chatHistoryManager,
       workspaceDir: tmpDir,

@@ -46,7 +46,7 @@ beforeEach(async () => {
     credentialStore,
     workspaceDir: tmpDir,
     createGitManager: (dir: string) => new GitManager(dir),
-    claudeFactory: () => new FakeClaudeProcess() as any,
+    agentFactory: () => new FakeClaudeProcess() as any,
     authManager: new StubAuthManager() as any,
     githubAuthManager: githubAuth as any,
     sessionManager,

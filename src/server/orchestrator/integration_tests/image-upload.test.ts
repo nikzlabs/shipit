@@ -9,7 +9,6 @@ import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../auth.js";
 import { GitHubAuthManager } from "../github-auth.js";
 
-import { ClaudeProcess } from "../../session/claude.js";
 
 import type { FastifyInstance } from "fastify";
 import {
@@ -39,9 +38,9 @@ describe("Integration: Image upload", () => {
       chatHistoryManager: new ChatHistoryManager(path.join(tmpDir, "chat-history")),
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
-      claudeFactory: () => {
+      agentFactory: () => {
         lastClaude = new FakeClaudeProcess();
-        return lastClaude as unknown as ClaudeProcess;
+        return lastClaude as any;
       },
       workspaceDir: tmpDir,
       serveStatic: false,

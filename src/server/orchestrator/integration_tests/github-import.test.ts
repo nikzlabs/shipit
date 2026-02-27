@@ -29,7 +29,7 @@ beforeEach(async () => {
   app = await buildApp({
     credentialStore: createTestCredentialStore(tmpDir),
     workspaceDir: tmpDir,
-    claudeFactory: () => new FakeClaudeProcess() as any,
+    agentFactory: () => new FakeClaudeProcess() as any,
     authManager: new StubAuthManager() as any,
     githubAuthManager: githubAuth as any,
     sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),

@@ -9,7 +9,6 @@ import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../auth.js";
 import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 
-import { ClaudeProcess } from "../../session/claude.js";
 
 import type { FastifyInstance } from "fastify";
 import {
@@ -25,7 +24,7 @@ describe("Integration: Claude message flow — basics", () => {
   let tmpDir: string;
   let sessionManager: SessionManager;
   let chatHistoryManager: ChatHistoryManager;
-  /** Most recently created FakeClaudeProcess — set by claudeFactory. */
+  /** Most recently created FakeClaudeProcess — set by agentFactory. */
   let lastClaude: FakeClaudeProcess = null as any;
 
   beforeEach(async () => {
@@ -45,9 +44,9 @@ describe("Integration: Claude message flow — basics", () => {
       sessionManager,
       chatHistoryManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
-      claudeFactory: () => {
+      agentFactory: () => {
         lastClaude = new FakeClaudeProcess();
-        return lastClaude as unknown as ClaudeProcess;
+        return lastClaude as any;
       },
       workspaceDir: tmpDir,
       serveStatic: false,

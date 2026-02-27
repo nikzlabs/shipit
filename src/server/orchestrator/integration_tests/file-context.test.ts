@@ -7,7 +7,6 @@ import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../auth.js";
 
-import { ClaudeProcess } from "../../session/claude.js";
 
 import type { FastifyInstance } from "fastify";
 import {
@@ -36,10 +35,10 @@ describe("Integration: File context attachments", () => {
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
-      claudeFactory: () => {
+      agentFactory: () => {
         const cp = new FakeClaudeProcess();
         latestClaude = cp;
-        return cp as unknown as ClaudeProcess;
+        return cp as any;
       },
       workspaceDir: tmpDir,
       serveStatic: false,

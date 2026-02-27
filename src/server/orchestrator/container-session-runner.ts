@@ -12,9 +12,8 @@
 
 import { EventEmitter } from "node:events";
 import http from "node:http";
-import type { AgentProcess, AgentId, AgentEvent, AgentRunParams } from "../session/agents/agent-process.js";
+import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess } from "../shared/types.js";
 import type { WsServerMessage, ClaudeContentBlockToolUse } from "../shared/types.js";
-import type { TerminalProcess } from "../session/terminal.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage } from "./session-runner.js";
 
 // ---------------------------------------------------------------------------
