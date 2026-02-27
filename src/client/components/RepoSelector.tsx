@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { parseRepoLabel } from "../utils/repo-label.js";
-import type { SessionInfo } from "../../server/types.js";
+import type { SessionInfo } from "../../server/shared/types.js";
 
 interface RepoResult {
   fullName: string;

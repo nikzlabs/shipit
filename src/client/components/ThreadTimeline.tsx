@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ThreadInfo, CheckpointInfo } from "../../server/types.js";
+import type { ThreadInfo, CheckpointInfo } from "../../server/shared/types.js";
 
 export { type ThreadInfo, type CheckpointInfo };
 

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { PermissionMode, FileContextRef } from "../../server/types.js";
+import type { PermissionMode, FileContextRef } from "../../server/shared/types.js";
 import { getSavedPermissionMode, savePermissionMode } from "../utils/local-storage.js";
 
 interface SettingsState {

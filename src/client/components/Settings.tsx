@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import type { AgentOption } from "./AgentPicker.js";
-import type { DeployTargetInfo } from "../../server/types.js";
+import type { DeployTargetInfo } from "../../server/shared/types.js";
 import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
 import { CodexAuthCard } from "./CodexAuthCard.js";
 import { GitHubTokenForm } from "./GitHubTokenForm.js";

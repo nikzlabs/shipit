@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { SessionSidebar } from "./SessionSidebar.js";
-import type { SessionInfo } from "../../server/types.js";
+import type { SessionInfo } from "../../server/shared/types.js";
 
 afterEach(cleanup);
 

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import type { AgentId } from "../../server/types.js";
+import type { AgentId } from "../../server/shared/types.js";
 
 export interface AgentOption {
   id: string;

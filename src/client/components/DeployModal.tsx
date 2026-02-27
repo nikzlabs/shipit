@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import type { DeployTargetInfo, DeploymentRecord } from "../../server/types.js";
+import type { DeployTargetInfo, DeploymentRecord } from "../../server/shared/types.js";
 
 export type DeployPhase = "building" | "deploying" | "complete" | "error";
 

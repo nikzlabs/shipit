@@ -8,7 +8,7 @@ import type {
 } from "../components/UsageModal.js";
 import type { ModelInfo } from "../components/StatusBar.js";
 import type { ToastData } from "../components/Toast.js";
-import type { FeatureInfo, AgentId } from "../../server/types.js";
+import type { FeatureInfo, AgentId } from "../../server/shared/types.js";
 import {
   getSavedAgentId,
   saveAgentId,

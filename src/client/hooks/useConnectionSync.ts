@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
-import type { WsClientMessage } from "../../server/types.js";
+import type { WsClientMessage } from "../../server/shared/types.js";
 import type { ChatMessage } from "../components/MessageList.js";
-import type { BootstrapData } from "../../server/services/index.js";
+import type { BootstrapData } from "../../server/orchestrator/services/index.js";
 import { getSavedAgentId } from "../utils/local-storage.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useGitStore } from "../stores/git-store.js";

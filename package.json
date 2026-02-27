@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/server/index.ts",
+    "dev": "tsx watch src/server/orchestrator/index.ts",
     "build": "vite build",
     "start": "node dist/server/index.js",
     "test": "vitest run",

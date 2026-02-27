@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { FileTreeNode } from "../../server/types.js";
+import type { FileTreeNode } from "../../server/shared/types.js";
 
 export interface FileAutoCompleteProps {
   /** The current query text (after the @). */

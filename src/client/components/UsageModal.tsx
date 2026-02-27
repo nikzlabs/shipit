@@ -1,4 +1,4 @@
-import type { SessionInfo } from "../../server/types.js";
+import type { SessionInfo } from "../../server/shared/types.js";
 import { formatModelName, formatTokenCount, getContextLevel, type ModelInfo } from "./StatusBar.js";
 
 export interface SessionUsage {

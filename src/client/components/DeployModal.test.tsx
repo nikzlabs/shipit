@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, cleanup, fireEvent, screen } from "@testing-library/react";
 import { DeployModal, type DeployModalProps } from "./DeployModal.js";
-import type { DeployTargetInfo } from "../../server/types.js";
+import type { DeployTargetInfo } from "../../server/shared/types.js";
 
 afterEach(cleanup);
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { Settings, type SettingsProps } from "./Settings.js";
-import type { DeployTargetInfo } from "../../server/types.js";
+import type { DeployTargetInfo } from "../../server/shared/types.js";
 
 afterEach(cleanup);
 

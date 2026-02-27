@@ -17,4 +17,4 @@ RUN mkdir -p /workspace /credentials && ln -s /credentials/.claude /root/.claude
 
 EXPOSE 9100
 
-CMD ["node", "--import", "tsx", "src/server/session-worker.ts"]
+CMD ["node", "--import", "tsx", "src/server/session/session-worker.ts"]

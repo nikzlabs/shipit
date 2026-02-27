@@ -22,38 +22,65 @@ npm install
 
 ```
 src/
-  server/          Fastify backend with HTTP REST API + WebSocket at /ws
-    index.ts       Entry point — buildApp(), DI setup, WS switch dispatcher
-    api-routes.ts  HTTP REST API routes (registered via registerApiRoutes())
-    validation.ts  Image/file validation (validateImages, resolveFileAttachments, formatFileContext, getErrorMessage)
-    services/      Business logic layer — pure functions consumed by both HTTP routes and WS handlers
-      session.ts, git.ts, github.ts, deploy.ts, settings.ts, threads.ts, templates.ts,
-      files.ts, misc.ts, types.ts
-    ws-handlers/   WebSocket-only message handlers (streaming, per-connection state)
-      types.ts     HandlerContext interface shared by all handlers
-      send-message.ts  send_message, answer_question, home_send_with_repo + runClaudeWithMessage
-      session-handlers.ts, terminal-handlers.ts, misc-handlers.ts, deploy-handlers.ts,
-      thread-handlers.ts
-    claude.ts      ClaudeProcess — spawns CLI, parses NDJSON, emits events
-    git.ts         GitManager — init, autoCommit, log, rollback
-    sessions.ts    SessionManager — persists session metadata to JSON
-    chat-history.ts ChatHistoryManager — per-session message persistence
-    auth.ts        AuthManager — Claude CLI OAuth flow
-    vite-manager.ts ViteManager — spawns/manages Vite dev server
-    file-tree.ts   scanFileTree() — workspace directory listing
-    file-watcher.ts FileWatcher — recursive fs.watch, debounced change events
-    markdown.ts    findMarkdownFiles() — docs discovery
-    port-scanner.ts Port detection for dev server previews
-    usage.ts       UsageManager — per-turn cost/duration tracking
-    threads.ts     ThreadManager — conversation threads and checkpoints
-    templates.ts   Project scaffolding templates
-    deployment-manager.ts  DeploymentManager — target registry, build, deploy dispatch
-    deployment-store.ts    DeploymentStore — credentials and deploy history
-    deploy-targets/        DeployTarget implementations (Vercel, Cloudflare)
-    vite-error-plugin.ts   Injects error-capture script into preview HTML
-    types.ts       All shared types (ClaudeEvent, WsClientMessage, WsServerMessage, etc.)
-    integration_tests/  Integration tests — one file per feature area
-      test-helpers.ts   Shared stubs (TestClient, FakeClaudeProcess, etc.)
+  server/
+    session/         Code that runs inside a session context
+      claude.ts      ClaudeProcess — spawns CLI, parses NDJSON, emits events
+      terminal.ts    TerminalProcess — interactive PTY
+      preview-manager.ts  PreviewManager — spawns/manages preview server
+      preview-config.ts   Preview config parsing (shipit.yaml)
+      file-watcher.ts     FileWatcher — recursive fs.watch, debounced change events
+      port-scanner.ts     Port detection for dev server previews
+      install-runner.ts   Runs install commands (npm install, etc.)
+      vite-error-plugin.ts  Injects error-capture script into preview HTML
+      session-worker.ts   Fastify server that runs inside each container
+      agents/        Agent process adapters
+        agent-process.ts, agent-registry.ts, claude-adapter.ts, codex-adapter.ts
+
+    orchestrator/    Code that runs in the main process
+      index.ts       Entry point — buildApp(), DI setup, WS switch dispatcher
+      api-routes.ts  HTTP REST API routes (registered via registerApiRoutes())
+      validation.ts  Input validation, error formatting
+      repo-git.ts    RepoGit — clone, fetch, worktree lifecycle, branch deletion
+      git-utils.ts   generateBranchPrefix(), parseGitHubRemote()
+      git-config.ts  Global git config helpers
+      sessions.ts    SessionManager — persists session metadata to JSON
+      session-runner.ts   SessionRunner + SessionRunnerRegistry
+      container-session-runner.ts  ContainerSessionRunner (proxy)
+      session-container.ts  SessionContainerManager — Docker orchestration
+      preview-proxy.ts     Reverse proxy for container previews
+      auth.ts        AuthManager — Claude CLI OAuth
+      github-auth.ts GitHubAuthManager — GitHub token + API
+      credential-store.ts  CredentialStore — unified credentials
+      deployment-manager.ts  DeploymentManager — target registry, build, deploy dispatch
+      deployment-store.ts    DeploymentStore — credentials and deploy history
+      deploy-targets/        DeployTarget implementations (Vercel, Cloudflare)
+      features.ts    FeatureManager — scans docs/ for feature status
+      session-namer.ts  AI-powered session naming
+      chat-history.ts  ChatHistoryManager — per-session message persistence
+      threads.ts     ThreadManager — conversation threads and checkpoints
+      usage.ts       UsageManager — per-session cost tracking
+      templates.ts   Project scaffolding templates
+      markdown.ts    findMarkdownFiles() — docs discovery
+      ws-handlers/   WebSocket-only message handlers (streaming, per-connection state)
+        types.ts     HandlerContext interface shared by all handlers
+        send-message.ts  send_message, answer_question, home_send_with_repo
+        session-handlers.ts, terminal-handlers.ts, misc-handlers.ts,
+        deploy-handlers.ts, thread-handlers.ts
+      services/      Business logic layer — pure functions consumed by routes and WS handlers
+        session.ts, git.ts, github.ts, deploy.ts, settings.ts, threads.ts,
+        templates.ts, files.ts, misc.ts, types.ts
+      integration_tests/  Integration tests — one file per feature area
+        test-helpers.ts   Shared stubs (TestClient, FakeClaudeProcess, etc.)
+
+    shared/          Code used by both session and orchestrator
+      types/         All type definitions
+        index.ts, ws-client-messages.ts, ws-server-messages.ts, domain-types.ts,
+        claude-types.ts, agent-types.ts, attachment-types.ts, deployment-types.ts,
+        github-types.ts, terminal-types.ts, thread-types.ts, usage-types.ts
+      types.ts       Barrel re-export of types/
+      git.ts         GitManager — init, autoCommit, log, push, pull, diff, rollback
+      file-tree.ts   scanFileTree() — workspace directory listing
+
   client/          React 19 frontend (Vite + Tailwind CSS v4)
     App.tsx        Main orchestrator — state, layout, WebSocket dispatch
     components/    UI components (MessageList, FileTree, PreviewFrame, etc.)
@@ -64,12 +91,12 @@ src/
 
 ## Architecture
 
-- **Server**: Fastify with HTTP REST API (`/api/*`) and WebSocket (`/ws`). Most operations use HTTP (reads, mutations). WebSocket is reserved for streaming events (Claude output, file changes, preview status), per-connection state (session activation, agent selection), and real-time push (agent events, notifications). Business logic lives in `src/server/services/` — pure functions consumed by both HTTP routes and WS handlers.
+- **Server**: Fastify with HTTP REST API (`/api/*`) and WebSocket (`/ws`). Most operations use HTTP (reads, mutations). WebSocket is reserved for streaming events (Claude output, file changes, preview status), per-connection state (session activation, agent selection), and real-time push (agent events, notifications). Business logic lives in `src/server/orchestrator/services/` — pure functions consumed by both HTTP routes and WS handlers.
 - **Client**: React 19 SPA. State lives in `App.tsx`. HTTP via `useApi` hook (`src/client/hooks/useApi.ts`), WebSocket via `useWebSocket` hook.
 - **Dependency injection**: `buildApp()` accepts an `AppDeps` object so tests can inject stubs/fakes instead of real processes. All external dependencies (git, Claude CLI, Vite, port scanner, file watcher) are injectable.
 - **Process management**: Claude CLI, Vite, and git are managed via child processes. Claude and Vite managers extend `EventEmitter`.
 - **Session isolation**: Each session gets its own workspace directory (`/workspace/sessions/{uuid}/`) with independent git repo. Per-connection state tracks `activeSessionDir`.
-- **Per-session GitManager**: `AppDeps.createGitManager` is a factory `(dir: string) => GitManager`. Each session gets its own instance.
+- **Per-session GitManager**: `AppDeps.createGitManager` is a factory `(dir: string) => GitManager`. Each session gets its own instance. A separate `createRepoGit` factory provides `RepoGit` instances for shared-repo operations (clone, worktree lifecycle).
 
 For feature-specific details, see `docs/NNN-feature/plan.md`.
 
@@ -91,7 +118,7 @@ Tests use Vitest with two project configs in `vitest.config.ts`:
 
 Key patterns:
 - **Server tests** use temp directories (`fs.mkdtempSync`) cleaned up in `afterEach` with `fs.rmSync(tmpDir, { recursive: true, force: true })`.
-- **Integration tests** live in `src/server/integration_tests/` — one file per feature area. Shared stubs and helpers (`TestClient`, `StubViteManager`, `StubAuthManager`, `FakeClaudeProcess`, `StubFileWatcher`, `waitForClaude`) are in `test-helpers.ts`. Each test file uses `buildApp()` with injected stubs, listens on port 0 (ephemeral), and connects via the `TestClient` message-buffering WebSocket wrapper. When adding a new integration test, create a new file in this directory (or add to an existing one if the feature area matches) and import helpers from `./test-helpers.js`.
+- **Integration tests** live in `src/server/orchestrator/integration_tests/` — one file per feature area. Shared stubs and helpers (`TestClient`, `StubViteManager`, `StubAuthManager`, `FakeClaudeProcess`, `StubFileWatcher`, `waitForClaude`) are in `test-helpers.ts`. Each test file uses `buildApp()` with injected stubs, listens on port 0 (ephemeral), and connects via the `TestClient` message-buffering WebSocket wrapper. When adding a new integration test, create a new file in this directory (or add to an existing one if the feature area matches) and import helpers from `./test-helpers.js`.
 - **Client component tests** use `render()` from `@testing-library/react` with `cleanup` in `afterEach`.
 - **Client hook tests** use `renderHook()` with `FakeWebSocket` (stubbed via `vi.stubGlobal`) and `vi.useFakeTimers()`.
 - **Mocking** — `vi.mock()` for module mocks, `vi.fn()` for function spies, manual stub/fake classes for complex dependencies. ESLint allows `any` in test files.
@@ -129,29 +156,29 @@ See `docs/001-websocket-protocol/plan.md` for the full endpoint and message refe
 
 ### Adding an HTTP endpoint (most cases)
 
-1. Add the service function in the appropriate `src/server/services/*.ts` file — pure function that accepts explicit parameters (session ID, managers) and returns data or throws `ServiceError`
-2. Add the Fastify route in `src/server/api-routes.ts` — call the service function, handle errors, return JSON
+1. Add the service function in the appropriate `src/server/orchestrator/services/*.ts` file — pure function that accepts explicit parameters (session ID, managers) and returns data or throws `ServiceError`
+2. Add the Fastify route in `src/server/orchestrator/api-routes.ts` — call the service function, handle errors, return JSON
 3. On the client, call the endpoint via `useApi` hook (`apiGet()` / `apiPost()` / etc.) from `src/client/hooks/useApi.ts`
-4. Add integration tests using `app.inject()` in `src/server/integration_tests/`
+4. Add integration tests using `app.inject()` in `src/server/orchestrator/integration_tests/`
 
 ### Adding a WebSocket message (streaming, per-connection state only)
 
-1. Add the interface to `src/server/types/ws-client-messages.ts` (and/or `ws-server-messages.ts` for server-to-client)
-2. Add the handler in the appropriate `src/server/ws-handlers/*-handlers.ts` file
-3. Add a `case` to the `switch (msg.type)` dispatcher in `src/server/index.ts`
+1. Add the interface to `src/server/shared/types/ws-client-messages.ts` (and/or `ws-server-messages.ts` for server-to-client)
+2. Add the handler in the appropriate `src/server/orchestrator/ws-handlers/*-handlers.ts` file
+3. Add a `case` to the `switch (msg.type)` dispatcher in `src/server/orchestrator/index.ts`
 4. Add the client-side handler in `src/client/hooks/useMessageHandler.ts`
-5. Add integration tests in `src/server/integration_tests/`
+5. Add integration tests in `src/server/orchestrator/integration_tests/`
 
 **Key conventions:**
 - Use `Extract<WsClientMessage, { type: "..." }>` to get the narrowed message type — don't import individual message interfaces.
 - Handler functions are `async` only if they `await` something; otherwise use `void` return.
 - Access per-connection state via `ctx` getters/setters (`ctx.getActiveAppSessionId()`, `ctx.setActiveSessionDir(...)`, etc.), not closure variables.
 - Access app-level managers directly from `ctx` (`ctx.sessionManager`, `ctx.deploymentStore`, etc.).
-- Import `getErrorMessage` from `../validation.js` for consistent error formatting.
+- Import `getErrorMessage` from `./validation.js` for consistent error formatting (within orchestrator).
 
 ## How to add a new deploy target
 
-1. Create a new file in `src/server/deploy-targets/` implementing the `DeployTarget` interface
+1. Create a new file in `src/server/orchestrator/deploy-targets/` implementing the `DeployTarget` interface
 2. Implement `info` (metadata + config fields) and `deploy(ctx)` method
 3. Optionally implement `prepare(ctx)` for pre-deploy setup
 4. Register the target in `index.ts` inside the `deploymentManager` initialization block
@@ -168,7 +195,7 @@ Every new feature must satisfy these before it's considered complete:
 1. **Input validation at system boundaries** — WebSocket handlers must validate user-supplied strings (empty, whitespace-only, too long) and return `{ type: "error" }`. Never trust client input.
 2. **Component tests for new UI** — every new React component (or significant UI addition to an existing component) needs a `*.test.tsx` file with `@testing-library/react`. Cover the happy path, edge cases (empty input, escape/cancel), and callback wiring.
 3. **Blur/focus edge cases** — inline editors that save on blur must handle the case where blur is triggered by a parent element (e.g. backdrop dismiss) that *cancels* the edit. Use a ref guard to prevent double-fire.
-4. **Integration tests for new endpoints** — every new HTTP endpoint or WS message type needs at least one happy-path and one error-path integration test in `src/server/integration_tests/`. HTTP tests use `app.inject()`. WS tests use the `TestClient` helper. Add to an existing file if the feature area matches, or create a new `<feature>.test.ts` file and import shared helpers from `./test-helpers.js`.
+4. **Integration tests for new endpoints** — every new HTTP endpoint or WS message type needs at least one happy-path and one error-path integration test in `src/server/orchestrator/integration_tests/`. HTTP tests use `app.inject()`. WS tests use the `TestClient` helper. Add to an existing file if the feature area matches, or create a new `<feature>.test.ts` file and import shared helpers from `./test-helpers.js`.
 5. **Split slow test files** — if a single test file takes more than ~10 seconds to run, split it into smaller files by feature area so Vitest can parallelize them.
 
 ## Docs structure
@@ -182,7 +209,7 @@ docs/
 
 Features are numbered by creation order. When implementing or modifying a feature, read its `plan.md` first. When a feature has remaining work, check its `checklist.md`. When adding a new feature, create `docs/NNN-new-feature/plan.md`.
 
-Every `plan.md` must have YAML frontmatter with a `status` field. Valid values: `planned`, `in-progress`, `done`, `paused`. The feature tracking system (`src/server/features.ts`) reads this frontmatter to display feature status in the UI. Example:
+Every `plan.md` must have YAML frontmatter with a `status` field. Valid values: `planned`, `in-progress`, `done`, `paused`. The feature tracking system (`src/server/orchestrator/features.ts`) reads this frontmatter to display feature status in the UI. Example:
 
 ```yaml
 ---

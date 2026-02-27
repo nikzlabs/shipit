@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { RepoSelector } from "./RepoSelector.js";
 import type { RepoSelectorProps } from "./RepoSelector.js";
-import type { SessionInfo } from "../../server/types.js";
+import type { SessionInfo } from "../../server/shared/types.js";
 
 afterEach(cleanup);
 

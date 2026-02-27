@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { DeployTargetInfo, DeploymentRecord } from "../../server/types.js";
+import type { DeployTargetInfo, DeploymentRecord } from "../../server/shared/types.js";
 import type { DeployPhase } from "../components/DeployModal.js";
 
 interface DeployState {

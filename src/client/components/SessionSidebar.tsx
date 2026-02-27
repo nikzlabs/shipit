@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { formatRelativeDate } from "../utils/dates.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
-import type { SessionInfo } from "../../server/types.js";
+import type { SessionInfo } from "../../server/shared/types.js";
 
 export type { SessionInfo };
 
