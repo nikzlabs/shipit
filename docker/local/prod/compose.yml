@@ -20,7 +20,7 @@ services:
       - CREDENTIALS_VOLUME=shipit-prod_credentials
       - DOCKER_NETWORK=shipit-prod
     networks:
-      - shipit
+      - shipit-prod
 
   session-worker:
     build:
@@ -31,7 +31,7 @@ services:
       - build-only
 
 networks:
-  shipit:
+  shipit-prod:
     name: shipit-prod
     driver: bridge
 
