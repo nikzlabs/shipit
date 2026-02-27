@@ -8,7 +8,7 @@ import { usePreviewStore } from "../preview-store.js";
 import { useDeployStore } from "../deploy-store.js";
 import { usePrStore } from "../pr-store.js";
 import { useSettingsStore } from "../settings-store.js";
-import type { WsClientMessage } from "../../../server/types.js";
+import type { WsClientMessage } from "../../../server/shared/types.js";
 import type { ChatMessage } from "../../components/MessageList.js";
 import type { GitCommit } from "../../components/GitHistory.js";
 import type { FileTreeNode } from "../../components/FileTree.js";

@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { UsageModal, type SessionUsage, type UsageStats, type TurnTokenData } from "./UsageModal.js";
 import type { ModelInfo } from "./StatusBar.js";
-import type { SessionInfo } from "../../server/types.js";
+import type { SessionInfo } from "../../server/shared/types.js";
 
 afterEach(cleanup);
 

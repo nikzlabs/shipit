@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { FeaturesPanel } from "./FeaturesPanel.js";
-import type { FeatureInfo } from "../../server/types.js";
+import type { FeatureInfo } from "../../server/shared/types.js";
 
 function makeFeature(overrides?: Partial<FeatureInfo>): FeatureInfo {
   return {

@@ -2,7 +2,7 @@ import { useState, useRef, useCallback } from "react";
 import { ModeSelector } from "./ModeSelector.js";
 import { FileAttachmentChips } from "./FileAttachmentChips.js";
 import { FileAutoComplete } from "./FileAutoComplete.js";
-import type { PermissionMode, FileContextRef, FileTreeNode } from "../../server/types.js";
+import type { PermissionMode, FileContextRef, FileTreeNode } from "../../server/shared/types.js";
 
 export interface ImagePreview {
   data: string;       // base64-encoded

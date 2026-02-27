@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { ChatMessage } from "../components/MessageList.js";
 import type { StreamingActivity } from "../components/StreamingIndicator.js";
-import type { SessionInfo } from "../../server/types.js";
+import type { SessionInfo } from "../../server/shared/types.js";
 
 interface SessionState {
   sessionId: string | undefined;

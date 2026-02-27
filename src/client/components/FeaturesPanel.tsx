@@ -1,4 +1,4 @@
-import type { FeatureInfo, FeatureStatus } from "../../server/types.js";
+import type { FeatureInfo, FeatureStatus } from "../../server/shared/types.js";
 
 export interface FeaturesPanelProps {
   features: FeatureInfo[];

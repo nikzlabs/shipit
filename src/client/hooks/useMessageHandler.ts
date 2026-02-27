@@ -7,7 +7,7 @@ import type {
   WsChatHistoryMessage,
   AgentEvent, AgentContentBlock, WsClientMessage,
   WsMessageQueued, WsQueueUpdated,
-} from "../../server/types.js";
+} from "../../server/shared/types.js";
 import { PERMISSION_MODE_KEY, SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY } from "../utils/local-storage.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useGitStore } from "../stores/git-store.js";

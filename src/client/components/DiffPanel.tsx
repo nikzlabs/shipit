@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo } from "react";
 import { DiffEditor } from "@monaco-editor/react";
-import type { FileDiff } from "../../server/types.js";
+import type { FileDiff } from "../../server/shared/types.js";
 
 /** Map file extensions to Monaco language IDs. */
 function getLanguageFromPath(filePath: string): string {

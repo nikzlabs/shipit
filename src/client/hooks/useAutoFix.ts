@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { formatErrorForMessage } from "../components/PreviewFrame.js";
 import type { PreviewError } from "./usePreviewErrors.js";
-import type { WsClientMessage } from "../../server/types.js";
+import type { WsClientMessage } from "../../server/shared/types.js";
 import { useApi } from "./useApi.js";
 import { useSessionStore } from "../stores/session-store.js";
 

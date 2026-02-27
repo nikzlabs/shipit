@@ -1,4 +1,4 @@
-import type { PermissionMode } from "../../server/types.js";
+import type { PermissionMode } from "../../server/shared/types.js";
 
 const MODES: Array<{ value: PermissionMode; label: string; description: string }> = [
   { value: "auto", label: "Auto", description: "All changes applied immediately" },

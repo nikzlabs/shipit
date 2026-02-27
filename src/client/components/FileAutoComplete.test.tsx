@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { FileAutoComplete } from "./FileAutoComplete.js";
-import type { FileTreeNode } from "../../server/types.js";
+import type { FileTreeNode } from "../../server/shared/types.js";
 
 afterEach(cleanup);
 

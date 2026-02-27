@@ -39,4 +39,4 @@ ENV NODE_ENV=production
 
 EXPOSE 3000 5173
 
-CMD ["node", "--import", "tsx", "src/server/index.ts"]
+CMD ["node", "--import", "tsx", "src/server/orchestrator/index.ts"]

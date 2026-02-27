@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import type { FileTreeNode } from "../../server/types.js";
+import type { FileTreeNode } from "../../server/shared/types.js";
 
 export type { FileTreeNode };
 

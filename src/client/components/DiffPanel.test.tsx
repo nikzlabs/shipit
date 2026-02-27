@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { DiffPanel, type TurnDiffData } from "./DiffPanel.js";
-import type { FileDiff } from "../../server/types.js";
+import type { FileDiff } from "../../server/shared/types.js";
 
 // Mock Monaco DiffEditor — it doesn't work in jsdom
 vi.mock("@monaco-editor/react", () => ({

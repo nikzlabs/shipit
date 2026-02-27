@@ -1,4 +1,4 @@
-import type { PermissionMode, AgentId } from "../../server/types.js";
+import type { PermissionMode, AgentId } from "../../server/shared/types.js";
 
 const PERMISSION_MODE_KEY = "vibe-permission-mode";
 const SIDEBAR_COLLAPSED_KEY = "vibe-sidebar-collapsed";

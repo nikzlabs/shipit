@@ -45,7 +45,7 @@ import { PrStatusBar } from "./components/PrStatusBar.js";
 import { Toast } from "./components/Toast.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentPicker, type AgentOption } from "./components/AgentPicker.js";
-import type { AgentId } from "../server/types.js";
+import type { AgentId } from "../server/shared/types.js";
 
 import { useSessionStore } from "./stores/session-store.js";
 import { useGitStore } from "./stores/git-store.js";

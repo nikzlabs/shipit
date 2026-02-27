@@ -3,7 +3,7 @@ import { RepoSelector } from "./RepoSelector.js";
 import { NewRepoDialog } from "./NewRepoDialog.js";
 import { MessageInput } from "./MessageInput.js";
 import type { TemplateInfo } from "./TemplateSelector.js";
-import type { SessionInfo, PermissionMode, FileContextRef, FileTreeNode } from "../../server/types.js";
+import type { SessionInfo, PermissionMode, FileContextRef, FileTreeNode } from "../../server/shared/types.js";
 
 interface RepoResult {
   fullName: string;
