@@ -32,7 +32,6 @@ src/server/
     preview-manager.ts  # PreviewManager — spawns/manages preview server
     preview-config.ts   # Preview config parsing (shipit.yaml)
     file-watcher.ts     # FileWatcher — recursive fs.watch
-    file-tree.ts        # scanFileTree() — workspace directory listing
     port-scanner.ts     # Port detection for dev server previews
     install-runner.ts   # Runs install commands (npm install, etc.)
     vite-error-plugin.ts # Injects error-capture script into preview HTML
@@ -46,7 +45,7 @@ src/server/
   orchestrator/         # Code that runs in the main process
     index.ts            # buildApp(), Fastify setup, WS dispatcher
     api-routes.ts       # HTTP REST API routes
-    repo-git.ts         # RepoGit — shared-repo and worktree management (see "Splitting GitManager")
+    repo-git.ts         # RepoGit — clone, fetch, worktree lifecycle, branch deletion (split from GitManager)
     git-utils.ts        # generateBranchPrefix() and parseGitHubRemote()
     git-config.ts       # Global git config helpers
     sessions.ts         # SessionManager — tracks all sessions
@@ -96,7 +95,7 @@ src/server/
       terminal-types.ts
       thread-types.ts
       usage-types.ts
-    git.ts              # GitManager — single-workspace git operations (see "Splitting GitManager")
+    git.ts              # GitManager — init, commit, log, push, pull, diff, rollback (split from original GitManager)
     file-tree.ts        # scanFileTree() — used by session-worker and orchestrator services
 ```
 
@@ -194,8 +193,8 @@ diffStatVsBranch(base)
 getFileAtCommit(hash, path)
 checkoutFiles(hash, files)
 
-shared/git-utils.ts — standalone functions
-──────────────────────────────────────────
+orchestrator/git-utils.ts — standalone functions
+────────────────────────────────────────────────
 generateBranchPrefix()
 parseGitHubRemote(url)    (currently GitManager.parseGitHubRemote static)
 ```
