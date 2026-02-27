@@ -23,6 +23,7 @@ services:
       - WORKSPACE_VOLUME=shipit-dev_workspace
       - CREDENTIALS_VOLUME=shipit-dev_credentials
       - DOCKER_NETWORK=shipit-dev
+      - SESSION_WORKER_IMAGE=shipit-session-worker:dev
     networks:
       - shipit-dev
 
@@ -30,7 +31,7 @@ services:
     build:
       context: ../../..
       dockerfile: docker/Dockerfile.session-worker
-    image: shipit-session-worker:latest
+    image: shipit-session-worker:dev
     profiles:
       - build-only
 
