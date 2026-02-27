@@ -47,6 +47,8 @@ src/server/
     index.ts            # buildApp(), Fastify setup, WS dispatcher
     api-routes.ts       # HTTP REST API routes
     repo-git.ts         # RepoGit — shared-repo and worktree management (see "Splitting GitManager")
+    git-utils.ts        # generateBranchPrefix() and parseGitHubRemote()
+    git-config.ts       # Global git config helpers
     sessions.ts         # SessionManager — tracks all sessions
     session-runner.ts   # SessionRunner + SessionRunnerRegistry
     container-session-runner.ts  # ContainerSessionRunner (proxy)
@@ -59,6 +61,12 @@ src/server/
     deployment-store.ts # DeploymentStore — deploy configs/history
     features.ts         # FeatureManager — scans docs/ for feature status
     session-namer.ts    # AI-powered session naming
+    chat-history.ts     # ChatHistoryManager — per-session message persistence
+    threads.ts          # ThreadManager — conversation threads and checkpoints
+    usage.ts            # UsageManager — per-session cost tracking
+    templates.ts        # Project scaffolding templates
+    markdown.ts         # findMarkdownFiles() — docs discovery
+    validation.ts       # Input validation, error formatting
     ws-handlers/        # WebSocket message handlers (move as-is)
       types.ts
       send-message.ts
@@ -89,14 +97,7 @@ src/server/
       thread-types.ts
       usage-types.ts
     git.ts              # GitManager — single-workspace git operations (see "Splitting GitManager")
-    git-utils.ts        # generateBranchPrefix() and parseGitHubRemote() — standalone helpers
-    git-config.ts       # Global git config helpers
-    validation.ts       # Input validation, error formatting
-    markdown.ts         # findMarkdownFiles() — docs discovery
-    chat-history.ts     # ChatHistoryManager — per-session data, app-wide singleton
-    threads.ts          # ThreadManager — per-session data, app-wide singleton
-    usage.ts            # UsageManager — per-session cost tracking
-    templates.ts        # Project scaffolding templates
+    file-tree.ts        # scanFileTree() — used by session-worker and orchestrator services
 ```
 
 ## Classification Rationale
@@ -112,7 +113,6 @@ Code that operates within a **single session's workspace** and manages processes
 | `preview-manager.ts` | Manages one session's preview server |
 | `preview-config.ts` | Parses one session's shipit.yaml |
 | `file-watcher.ts` | Watches one session's workspace directory |
-| `file-tree.ts` | Scans one session's file tree |
 | `port-scanner.ts` | Detects ports in one session's dev server |
 | `install-runner.ts` | Runs install in one session |
 | `vite-error-plugin.ts` | Injects into one session's preview |
@@ -127,6 +127,9 @@ Code that manages **multiple sessions**, handles **routing/auth**, or orchestrat
 |------|-------------------|
 | `index.ts` | App setup, DI, WS dispatcher, container lifecycle |
 | `api-routes.ts` | HTTP routing across all sessions |
+| `repo-git.ts` | Manages shared repos and worktree lifecycle across sessions |
+| `git-utils.ts` | `generateBranchPrefix()`, `parseGitHubRemote()` — only called from orchestrator code |
+| `git-config.ts` | `initGlobalGitConfig()`, `getGitIdentity()` — called at app startup and by `services/settings.ts` |
 | `sessions.ts` | Tracks all sessions (list, rename, archive) |
 | `session-runner.ts` | Registry of active runners (one per session) |
 | `container-session-runner.ts` | Proxies to session worker in container |
@@ -138,31 +141,24 @@ Code that manages **multiple sessions**, handles **routing/auth**, or orchestrat
 | `deployment-manager.ts` | App-wide deploy target registry |
 | `deployment-store.ts` | Per-session deploy configs (app-wide store) |
 | `features.ts` | App-wide feature scanning |
+| `chat-history.ts` | All callers are orchestrator: `ws-handlers/send-message.ts`, `ws-handlers/thread-handlers.ts`, `services/session.ts`, `services/threads.ts` |
+| `threads.ts` | All callers are orchestrator: `ws-handlers/send-message.ts`, `ws-handlers/thread-handlers.ts`, `services/threads.ts` |
+| `usage.ts` | All callers are orchestrator: `ws-handlers/send-message.ts`, `services/misc.ts` |
+| `templates.ts` | All callers are orchestrator: `services/templates.ts`, `services/misc.ts` |
+| `markdown.ts` | All callers are orchestrator: `services/files.ts`, `features.ts` |
+| `validation.ts` | All callers are orchestrator: `api-routes.ts`, `index.ts`, `ws-handlers/send-message.ts`, `ws-handlers/thread-handlers.ts` |
 | `ws-handlers/*` | Orchestrator dispatches WS messages |
 | `services/*` | Pure functions consumed by orchestrator routes |
 
-### Orchestrator — `repo-git.ts`
-
-| File | Why orchestrator? |
-|------|-------------------|
-| `repo-git.ts` | Manages shared repos and worktree lifecycle across sessions (clone, fetch, worktree add/remove/list, branch deletion) |
-
 ### Shared (`src/server/shared/`)
 
-Code used by **both** layers:
+Code used by **both** session and orchestrator layers. Only files with verified cross-layer usage belong here:
 
-| File | Why shared? |
-|------|-------------|
-| `types/*` | Type definitions used everywhere |
-| `git.ts` | GitManager — single-workspace git operations (init, commit, log, push, pull, diff, rollback, etc.). Used by session layer (auto-commit after turn) and orchestrator (HTTP routes, services) |
-| `git-utils.ts` | `generateBranchPrefix()` and `parseGitHubRemote()` — standalone helpers used across layers |
-| `git-config.ts` | Global git config, used by both layers |
-| `validation.ts` | Input validation used in both WS handlers and session worker |
-| `markdown.ts` | Simple utility, no layer affiliation |
-| `chat-history.ts` | App-wide singleton, but stores per-session data; used by both orchestrator (HTTP routes) and potentially session worker |
-| `threads.ts` | Same pattern as chat-history |
-| `usage.ts` | Same pattern as chat-history |
-| `templates.ts` | Used by orchestrator services but contains session-level logic (scaffolding into a workspace) |
+| File | Session callers | Orchestrator callers |
+|------|----------------|---------------------|
+| `types/*` | `session-worker.ts`, `agents/*.ts` | everywhere |
+| `git.ts` (GitManager) | none today, but auto-commit will move to session layer in fully-containerized mode | `services/git.ts`, `services/github.ts`, `services/templates.ts`, `ws-handlers/send-message.ts`, `index.ts` |
+| `file-tree.ts` | `session-worker.ts` (serves file listing to preview) | `services/files.ts`, `services/git.ts` |
 
 ## Splitting GitManager
 
@@ -251,6 +247,32 @@ A single `GitManager` in `shared/` would work but defeats the purpose of the sep
 
 Splitting makes it impossible to accidentally call `createWorktree()` on a session workspace or `autoCommit()` on a shared repo. The type system enforces the boundary.
 
+## Cross-Layer Analysis: What's Actually Shared?
+
+Every file originally proposed for `shared/` was traced method-by-method to its actual callers. The session layer is defined as files that run inside a session container: `session-worker.ts`, `claude.ts`, `terminal.ts`, `preview-manager.ts`, `preview-config.ts`, `file-watcher.ts`, `file-tree.ts`, `port-scanner.ts`, `install-runner.ts`, `agents/*.ts`. Everything else is orchestrator.
+
+### Results
+
+| File | Session callers | Orchestrator callers | Verdict |
+|------|----------------|---------------------|---------|
+| `types/*` | `session-worker.ts`, `agents/*.ts` | everywhere | **Shared** |
+| `git.ts` (GitManager) | none today (but logically session-scoped) | services, ws-handlers, index.ts | **Shared** |
+| `file-tree.ts` | `session-worker.ts` (GET /files/tree) | `services/files.ts`, `services/git.ts` | **Shared** |
+| `validation.ts` | none | `api-routes.ts`, `index.ts`, `ws-handlers/*` | **Orchestrator** |
+| `git-utils.ts` | none | `ws-handlers/send-message.ts`, `services/github.ts` | **Orchestrator** |
+| `git-config.ts` | none | `index.ts`, `services/settings.ts`, `github-auth.ts` | **Orchestrator** |
+| `chat-history.ts` | none | `ws-handlers/send-message.ts`, `ws-handlers/thread-handlers.ts`, `services/session.ts`, `services/threads.ts` | **Orchestrator** |
+| `threads.ts` | none | `ws-handlers/send-message.ts`, `ws-handlers/thread-handlers.ts`, `services/threads.ts` | **Orchestrator** |
+| `usage.ts` | none | `ws-handlers/send-message.ts`, `services/misc.ts` | **Orchestrator** |
+| `templates.ts` | none | `services/templates.ts`, `services/misc.ts` | **Orchestrator** |
+| `markdown.ts` | none | `services/files.ts`, `features.ts` | **Orchestrator** |
+
+### Key insight
+
+**7 of 11 files originally proposed for `shared/` are actually orchestrator-only.** The session worker's imports are minimal: `agents/agent-process.ts`, `terminal.ts`, `preview-manager.ts`, `file-watcher.ts`, `file-tree.ts`, plus type definitions. It doesn't touch chat history, threads, usage, templates, validation, git config, or markdown. This makes sense — the session worker manages *processes* (agent, terminal, preview, file watching), while the orchestrator manages *data* (history, threads, usage, templates).
+
+Moving these files to `orchestrator/` instead of `shared/` means the type system will prevent session-layer code from accidentally importing them, which is exactly what this refactoring aims for.
+
 ## Other Entanglement Points
 
 ### 1. HandlerContext is the biggest coupling surface
@@ -273,9 +295,11 @@ Splitting makes it impossible to accidentally call `createWorktree()` on a sessi
 
 ### 4. ChatHistoryManager / ThreadManager / UsageManager
 
-These are app-wide singletons that organize data per-session. They're created once by the orchestrator but could theoretically be used inside session workers too.
+These are app-wide singletons that organize data per-session. They were originally proposed for `shared/` on the assumption that session workers might need them.
 
-**This refactoring**: Move to `shared/`. They're genuinely shared — the orchestrator creates and owns them, but the data model is inherently per-session.
+**Cross-layer analysis shows they are orchestrator-only.** Every caller is in `ws-handlers/*.ts`, `services/*.ts`, or `index.ts` — all orchestrator code. `session-worker.ts` does not import any of them. This makes sense: the session worker manages processes (agent, terminal, preview), while the orchestrator manages data (history, threads, usage).
+
+**This refactoring**: Move to `orchestrator/`. If a future containerization step needs them inside the session worker, they can be moved to `shared/` then — but today the type system will correctly prevent session code from reaching them.
 
 ## Migration Strategy
 
@@ -295,16 +319,18 @@ Do this first as a standalone commit — it's the only code change (as opposed t
 ### Phase 2: Create directories and move files
 
 1. Create `src/server/session/`, `src/server/orchestrator/`, `src/server/shared/`
-2. Move files according to the classification above
-3. Move `git-utils.ts` and `git.ts` to `shared/`, `repo-git.ts` to `orchestrator/`
-4. Update all `import` paths — this is the bulk of the work
+2. Move files according to the classification above:
+   - `shared/` gets only 3 files: `types/`, `git.ts`, `file-tree.ts`
+   - `orchestrator/` gets the bulk: index, api-routes, managers, ws-handlers, services, plus the 7 files that were originally proposed for shared (validation, chat-history, threads, usage, templates, markdown, git-config, git-utils)
+   - `session/` gets the process managers: claude, terminal, preview, file-watcher, agents, session-worker
+3. Update all `import` paths — this is the bulk of the work
 
 Key import patterns to update:
 - `from "./claude.js"` → `from "../session/claude.js"` (from orchestrator)
 - `from "../types.js"` → `from "../shared/types/index.js"` (from session or orchestrator)
-- `from "../validation.js"` → `from "../shared/validation.js"` (from orchestrator handlers)
+- `from "../validation.js"` → `from "./validation.js"` (stays within orchestrator)
 - `from "../git.js"` → `from "../shared/git.js"` (from orchestrator services)
-- `from "./repo-git.js"` → `from "./repo-git.js"` (already in orchestrator, stays)
+- `from "./chat-history.js"` → `from "./chat-history.js"` (stays within orchestrator)
 
 ### Phase 3: Barrel exports (optional, for convenience)
 
@@ -344,6 +370,4 @@ Add `src/server/session/index.ts` and `src/server/orchestrator/index.ts` barrel 
 
 2. **Should services stay under `orchestrator/` or move to `shared/`?** Services are pure functions called from HTTP routes (orchestrator), but they operate on session data. Proposed: keep under `orchestrator/` since they're consumed exclusively by orchestrator code (routes and WS handlers).
 
-3. **Should the `shared/` singletons (ChatHistoryManager, ThreadManager, UsageManager) eventually become session-scoped?** In a fully containerized world, each session container could own its own history/threads/usage. This refactoring doesn't answer that — it just puts them in `shared/` to acknowledge the ambiguity.
-
-4. **Should `RepoGit.log(1)` exist, or should the caller use `GitManager` for the empty-repo check?** The only cross-context method is `log(1)` called on a shared repo dir in `send-message.ts:723` to detect an empty repo. Options: (a) give `RepoGit` its own `isEmpty()` method that wraps the log check, (b) construct a temporary `GitManager` at that call site. Option (a) is cleaner — it expresses intent rather than leaking the mechanism.
+3. **Should `RepoGit` have an `isEmpty()` method?** The only cross-context method is `log(1)` called on a shared repo dir in `send-message.ts:723` to detect an empty repo. Options: (a) give `RepoGit` its own `isEmpty()` that wraps the check, (b) construct a temporary `GitManager` at that call site. Option (a) is cleaner — it expresses intent rather than leaking the mechanism.
