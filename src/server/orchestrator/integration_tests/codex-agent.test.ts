@@ -20,7 +20,7 @@ import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../auth.js";
-import { AgentRegistry } from "../../session/agents/agent-registry.js";
+import { AgentRegistry } from "../../shared/agent-registry.js";
 import type { FastifyInstance } from "fastify";
 import type { WsServerMessage } from "../../shared/types.js";
 import type {
@@ -29,7 +29,7 @@ import type {
   AgentCapabilities,
   AgentId,
   AgentRunParams,
-} from "../../session/agents/agent-process.js";
+} from "../../shared/types.js";
 import {
   TestClient,
   StubAuthManager,
@@ -118,9 +118,9 @@ async function receiveByType(
 
 /** Shared agent factory builder for codex tests. */
 function makeAgentFactory(
-  getLastClaude: () => FakeClaudeProcess,
+  _getLastClaude: () => FakeClaudeProcess,
   setLastClaude: (c: FakeClaudeProcess) => void,
-  getLastCodex: () => FakeCodexProcess,
+  _getLastCodex: () => FakeCodexProcess,
   setLastCodex: (c: FakeCodexProcess) => void,
 ) {
   return (agentId: AgentId) => {
@@ -129,35 +129,9 @@ function makeAgentFactory(
       setLastCodex(codex);
       return codex;
     }
-    // Default: Claude — wrap FakeClaudeProcess in AgentProcess shape
     const claude = new FakeClaudeProcess();
     setLastClaude(claude);
-    return {
-      ...claude,
-      agentId: "claude" as AgentId,
-      capabilities: {
-        supportsResume: true,
-        supportsImages: true,
-        supportsSystemPrompt: true,
-        supportsPermissionModes: true,
-        supportedPermissionModes: ["auto", "plan", "normal"],
-        toolNames: ["Write", "Read", "Edit", "Bash"],
-        models: ["claude-sonnet-4-20250514"],
-      },
-      run: (params: AgentRunParams) => {
-        claude.run(params.prompt, params.sessionId, params.systemPrompt, params.images, params.cwd, params.permissionMode);
-      },
-      writeStdin: (data: string) => claude.writeStdin(data),
-      kill: () => claude.kill(),
-      on: claude.on.bind(claude),
-      once: claude.once.bind(claude),
-      emit: claude.emit.bind(claude),
-      removeListener: claude.removeListener.bind(claude),
-      removeAllListeners: claude.removeAllListeners.bind(claude),
-      addListener: claude.addListener.bind(claude),
-      off: claude.off.bind(claude),
-      listeners: claude.listeners.bind(claude),
-    } as unknown as AgentProcess;
+    return claude as any;
   };
 }
 

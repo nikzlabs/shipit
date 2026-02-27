@@ -4,8 +4,8 @@ import fastifyStatic from "@fastify/static";
 import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs/promises";
-import { ClaudeProcess } from "../session/claude.js";
 import { GitManager } from "../shared/git.js";
+import { AgentRegistry, ALLOWED_ENV_KEYS } from "../shared/agent-registry.js";
 import { RepoGit } from "./repo-git.js";
 import { AuthManager } from "./auth.js";
 import { GitHubAuthManager } from "./github-auth.js";
@@ -20,15 +20,12 @@ import { CredentialStore } from "./credential-store.js";
 import { initGlobalGitConfig, getGitIdentity } from "./git-config.js";
 import { VercelTarget } from "./deploy-targets/vercel.js";
 import { CloudflareTarget } from "./deploy-targets/cloudflare.js";
-import { ClaudeAdapter } from "../session/agents/claude-adapter.js";
-import { CodexAdapter } from "../session/agents/codex-adapter.js";
-import { AgentRegistry, ALLOWED_ENV_KEYS } from "../session/agents/agent-registry.js";
 import { SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import { SessionContainerManager } from "./session-container.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import { registerPreviewProxy } from "./preview-proxy.js";
-import type { AgentId, AgentEvent, AgentProcess } from "../session/agents/agent-process.js";
+import type { AgentId, AgentEvent, AgentProcess } from "../shared/types.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry } from "../shared/types.js";
 import { getErrorMessage } from "./validation.js";
 import type { HandlerContext } from "./ws-handlers/types.js";
@@ -69,12 +66,11 @@ export interface AppDeps {
   chatHistoryManager?: ChatHistoryManager;
   /** Usage/cost tracking manager instance. Defaults to `new UsageManager()`. */
   usageManager?: UsageManager;
-  /** Factory for creating ClaudeProcess instances. Defaults to `() => new ClaudeProcess()`. */
-  claudeFactory?: () => ClaudeProcess;
   /**
    * Factory for creating AgentProcess instances by agent ID.
-   * When provided, takes precedence over claudeFactory.
-   * Defaults to `(id) => new ClaudeAdapter()` (only "claude" is supported).
+   * Required for integration tests (inject FakeClaudeProcess / FakeCodexProcess).
+   * In production, agent processes live inside session containers — the
+   * orchestrator never spawns agents directly.
    */
   agentFactory?: (agentId: AgentId) => AgentProcess;
   /** Default agent ID for new sessions. Defaults to "claude". */
@@ -148,7 +144,6 @@ export interface AppDeps {
  */
 export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const {
-    claudeFactory = () => new ClaudeProcess(),
     defaultAgentId = "claude" as AgentId,
     workspaceDir = WORKSPACE,
     credentialsDir = "/credentials",
@@ -156,16 +151,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     autoPushDebounceMs = 5000,
   } = deps;
 
-  // Build effective agent factory — agentFactory takes precedence over claudeFactory
-  const agentFactory: (agentId: AgentId) => AgentProcess = deps.agentFactory ?? ((agentId: AgentId) => {
-    switch (agentId) {
-      case "codex":
-        return new CodexAdapter();
-      case "claude":
-      default:
-        return new ClaudeAdapter(claudeFactory());
-    }
-  });
+  // Agent factory — only available in tests (injected via deps.agentFactory).
+  // In production, agent processes live inside session containers; the
+  // orchestrator never spawns agents directly. The ctx.agentFactory delegates
+  // to runner.createAgent() which creates a proxy to the container worker.
+  const agentFactory: ((agentId: AgentId) => AgentProcess) | undefined = deps.agentFactory;
 
   const app = Fastify({ logger: false });
 
@@ -253,7 +243,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const featureManager = deps.featureManager ?? new FeatureManager(workspaceDir);
 
   // ---- Text generation (AI-powered features) ----
+  // Tests inject a stub. In production, agentFactory is unavailable (agents
+  // live inside session containers), so the default uses agentFactory only
+  // when provided, otherwise returns empty string (feature gracefully degrades).
   const generateText = deps.generateText ?? ((prompt: string, cwd?: string): Promise<string> => {
+    if (!agentFactory) {
+      // No in-process agent available — return empty to degrade gracefully.
+      return Promise.resolve("");
+    }
     return new Promise((resolve, reject) => {
       const agent = agentFactory(defaultAgentId);
       let text = "";
@@ -700,10 +697,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       setActiveSessionDir: (dir) => { activeSessionDir = dir; },
       activateSession,
       agentFactory: (agentId: AgentId) => {
+        // In production, the attached runner creates a proxy agent that
+        // delegates to the session container over HTTP.
         if (attachedRunner?.createAgent) {
           return attachedRunner.createAgent(agentId);
         }
-        return agentFactory(agentId);
+        // Test fallback — agentFactory is injected via deps in tests.
+        if (agentFactory) {
+          return agentFactory(agentId);
+        }
+        throw new Error("No agent factory available — session not activated or no runner attached");
       },
       // Agent state delegates to runner
       getAgent: () => attachedRunner?.getAgent() ?? null,

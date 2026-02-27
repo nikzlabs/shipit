@@ -7,7 +7,6 @@ import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../auth.js";
 
-import { ClaudeProcess } from "../../session/claude.js";
 
 import type { FastifyInstance } from "fastify";
 import {
@@ -33,7 +32,7 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
-      claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
+      agentFactory: () => new FakeClaudeProcess() as any,
       workspaceDir: tmpDir,
       serveStatic: false,
     });
@@ -64,7 +63,7 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
       sessionManager: unauthSessions,
       authManager: unauthStub,
       githubAuthManager: new StubGitHubAuthManager() as unknown as import("../github-auth.js").GitHubAuthManager,
-      claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
+      agentFactory: () => new FakeClaudeProcess() as any,
       workspaceDir: unauthTmpDir,
       serveStatic: false,
     });
@@ -112,7 +111,7 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
       sessionManager: unauthSessions,
       authManager: unauthStub,
       githubAuthManager: new StubGitHubAuthManager() as unknown as import("../github-auth.js").GitHubAuthManager,
-      claudeFactory: () => new FakeClaudeProcess() as unknown as ClaudeProcess,
+      agentFactory: () => new FakeClaudeProcess() as any,
       workspaceDir: unauthTmpDir,
       serveStatic: false,
     });

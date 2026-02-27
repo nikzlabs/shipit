@@ -35,7 +35,7 @@ beforeEach(async () => {
   app = await buildApp({
     credentialStore: createTestCredentialStore(tmpDir),
     workspaceDir: tmpDir,
-    claudeFactory: () => {
+    agentFactory: () => {
       const c = new FakeClaudeProcess();
       latestClaude = c;
       return c as any;

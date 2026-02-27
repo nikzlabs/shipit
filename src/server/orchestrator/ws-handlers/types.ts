@@ -10,9 +10,8 @@ import type { DeploymentStore } from "../deployment-store.js";
 import type { FeatureManager } from "../features.js";
 import type { UsageManager } from "../usage.js";
 import type { AuthManager } from "../auth.js";
-import type { AgentRegistry } from "../../session/agents/agent-registry.js";
-import type { AgentId, AgentProcess } from "../../session/agents/agent-process.js";
-import type { TerminalProcess } from "../../session/terminal.js";
+import type { AgentRegistry } from "../../shared/agent-registry.js";
+import type { AgentId, AgentProcess, TerminalProcess } from "../../shared/types.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
 
 /** Queued message waiting for the current Claude turn to finish. */

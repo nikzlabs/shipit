@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { SessionRunner, SessionRunnerRegistry } from "./session-runner.js";
-import type { AgentId } from "../session/agents/agent-process.js";
+import type { AgentId } from "../shared/types.js";
 
 describe("SessionRunner", () => {
   afterEach(() => {

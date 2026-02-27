@@ -2,7 +2,7 @@ import * as pty from "node-pty";
 import type { IPty } from "node-pty";
 import { EventEmitter } from "node:events";
 import type { ClaudeEvent, ImageAttachment, PermissionMode } from "../shared/types.js";
-import { stripAnsi } from "../orchestrator/auth.js";
+import { stripAnsi } from "../shared/strip-ansi.js";
 
 export class ClaudeProcess extends EventEmitter {
   private proc: IPty | null = null;

@@ -8,7 +8,6 @@ import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../auth.js";
 import { GitHubAuthManager } from "../github-auth.js";
 
-import { ClaudeProcess } from "../../session/claude.js";
 
 import type { FastifyInstance } from "fastify";
 import {
@@ -43,10 +42,10 @@ describe("Integration: PR description generation", () => {
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
-      claudeFactory: () => {
+      agentFactory: () => {
         const cp = new FakeClaudeProcess();
         lastClaude = cp;
-        return cp as unknown as ClaudeProcess;
+        return cp as any;
       },
       workspaceDir: tmpDir,
       serveStatic: false,
@@ -124,10 +123,10 @@ describe("Integration: PR description generation", () => {
       sessionManager: new SessionManager(emptySessionsFile),
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
-      claudeFactory: () => {
+      agentFactory: () => {
         const cp = new FakeClaudeProcess();
         emptyLastClaude = cp;
-        return cp as unknown as ClaudeProcess;
+        return cp as any;
       },
       workspaceDir: emptyDir,
       serveStatic: false,

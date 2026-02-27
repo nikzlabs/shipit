@@ -21,7 +21,7 @@ import Fastify from "fastify";
 import { SessionWorker } from "../../session/session-worker.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import { registerPreviewProxy } from "../preview-proxy.js";
-import type { AgentProcess, AgentProcessEvents, AgentId, AgentRunParams } from "../../session/agents/agent-process.js";
+import type { AgentProcess, AgentProcessEvents, AgentId, AgentRunParams } from "../../shared/types.js";
 import type { WsServerMessage } from "../../shared/types.js";
 
 // ---------------------------------------------------------------------------

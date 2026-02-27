@@ -6,9 +6,9 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import type { CredentialStore } from "../credential-store.js";
-import type { AgentRegistry } from "../../session/agents/agent-registry.js";
-import { ALLOWED_ENV_KEYS } from "../../session/agents/agent-registry.js";
-import type { AgentId } from "../../session/agents/agent-process.js";
+import type { AgentRegistry } from "../../shared/agent-registry.js";
+import { ALLOWED_ENV_KEYS } from "../../shared/agent-registry.js";
+import type { AgentId } from "../../shared/types.js";
 import { getGitIdentity, setGitIdentity as writeGitIdentity } from "../git-config.js";
 import { ServiceError } from "./types.js";
 import type { AgentInfo, GlobalSettings } from "./types.js";
