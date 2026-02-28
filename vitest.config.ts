@@ -1,6 +1,13 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
+// Node 25 exposes localStorage/sessionStorage on globalThis, which
+// prevents Vitest from copying jsdom's implementations into scope.
+// --no-webstorage disables the built-in Web Storage API so jsdom wins.
+// The flag doesn't exist in earlier Node versions, so only add it for 25+.
+const nodeMajor = parseInt(process.versions.node.split(".")[0], 10);
+const clientExecArgv = nodeMajor >= 25 ? ["--no-webstorage"] : [];
+
 export default defineConfig({
   plugins: [react()],
   test: {
@@ -21,10 +28,7 @@ export default defineConfig({
           include: ["src/client/**/*.test.ts", "src/client/**/*.test.tsx"],
           environment: "jsdom",
           setupFiles: ["src/client/test-setup.ts"],
-          // Node 25 exposes localStorage/sessionStorage on globalThis, which
-          // prevents Vitest from copying jsdom's implementations into scope.
-          // --no-webstorage disables the built-in Web Storage API so jsdom wins.
-          execArgv: ["--no-webstorage"],
+          execArgv: clientExecArgv,
         },
       },
     ],
