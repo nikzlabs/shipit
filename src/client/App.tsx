@@ -31,6 +31,7 @@ import { ConnectionBanner } from "./components/ConnectionBanner.js";
 import { MobileTabBar } from "./components/MobileTabBar.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
 import { HomeScreen } from "./components/HomeScreen.js";
+import { AddRepoDialog } from "./components/AddRepoDialog.js";
 import { UsageModal } from "./components/UsageModal.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { OnboardingWizard } from "./components/OnboardingWizard.js";
@@ -57,6 +58,7 @@ import { useDeployStore } from "./stores/deploy-store.js";
 import { usePrStore } from "./stores/pr-store.js";
 import { useSettingsStore } from "./stores/settings-store.js";
 import { useUiStore } from "./stores/ui-store.js";
+import { useRepoStore } from "./stores/repo-store.js";
 import { resumeSessionInternal, newSession, resetSessionState } from "./stores/actions/session-actions.js";
 
 function getWsUrl(): string {
@@ -155,6 +157,9 @@ export default function App() {
   const toast = useUiStore((s) => s.toast);
 
   const features = useUiStore((s) => s.features);
+
+  const repos = useRepoStore((s) => s.repos);
+  const addRepoDialogOpen = useRepoStore((s) => s.addRepoDialogOpen);
 
   const noAgentReady = agentList.length > 0 && !agentList.some(a => a.installed && a.authConfigured);
   const showOnboarding = gitIdentityNeeded || noAgentReady;
@@ -658,12 +663,14 @@ export default function App() {
       ) : (
         <div className="flex flex-1 min-h-0">
           <SessionSidebar
-            sessions={sessions} currentSessionId={sessionId} activeRunnerSessions={activeRunnerSessions}
+            sessions={sessions} repos={repos} currentSessionId={sessionId} activeRunnerSessions={activeRunnerSessions}
             onResume={(sid) => { resumeSessionInternal(sid, send); navigate(`/session/${sid}`); }}
             onNew={() => newSession(send, navigate)}
             onArchive={async (sid) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId) { useSessionStore.getState().setSessionId(undefined); navigate("/"); } }}
             onRename={(sid, title) => useSessionStore.getState().renameSession(sid, title)}
             onRefresh={() => useSessionStore.getState().refreshSessions()}
+            onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)}
+            onRemoveRepo={(url) => useRepoStore.getState().removeRepo(url)}
             collapsed={sidebarCollapsed}
             onToggleCollapse={() => useUiStore.getState().setSidebarCollapsed(!sidebarCollapsed)}
           />
@@ -682,6 +689,13 @@ export default function App() {
       )}
 
       {toast && <Toast toast={toast} onDismiss={() => useUiStore.getState().setToast(null)} />}
+      <AddRepoDialog
+        open={addRepoDialogOpen}
+        onClose={() => useRepoStore.getState().setAddRepoDialogOpen(false)}
+        onAdd={async (url) => { await useRepoStore.getState().addRepo(url); }}
+        searchResults={importSearchResults}
+        onSearch={(q) => usePrStore.getState().searchRepos(q).catch(() => {})}
+      />
     </div>
   );
 }

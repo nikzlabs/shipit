@@ -10,6 +10,8 @@ import { RepoGit } from "./repo-git.js";
 import { AuthManager } from "./auth.js";
 import { GitHubAuthManager } from "./github-auth.js";
 import { SessionManager } from "./sessions.js";
+import { RepoStore } from "./repo-store.js";
+import { generateBranchPrefix } from "./git-utils.js";
 import { ChatHistoryManager } from "./chat-history.js";
 import { UsageManager } from "./usage.js";
 import { FeatureManager } from "./features.js";
@@ -132,6 +134,8 @@ export interface AppDeps {
    * Docker auto-detection and network setup. Useful for testing.
    */
   sessionContainerManager?: import("./session-container.js").SessionContainerManager;
+  /** Repo store instance. Defaults to `new RepoStore()`. */
+  repoStore?: RepoStore;
 }
 
 /**
@@ -170,6 +174,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Session manager ----
   const sessionManager = deps.sessionManager ?? new SessionManager();
+
+  // ---- Repo store ----
+  const repoStore = deps.repoStore ?? new RepoStore(
+    path.join(workspaceDir, ".vibe-repos.json")
+  );
 
   // ---- Chat history manager ----
   const chatHistoryManager = deps.chatHistoryManager ?? new ChatHistoryManager();
@@ -448,9 +457,122 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     return path.join(reposRoot, hash);
   };
 
+  // ---- Warm session pool ----
+  // Each repo with status "ready" can have one pre-created warm session.
+  // The warm session has a worktree, a runner, and a running preview — but
+  // is not visible in the sidebar until the user sends their first message.
+
+  const warmSessionForRepo = (repoUrl: string): void => {
+    const repo = repoStore.get(repoUrl);
+    if (!repo || repo.status !== "ready") return;
+    // Don't warm if already warming
+    if (repo.warmSessionId) {
+      const existing = sessionManager.get(repo.warmSessionId);
+      if (existing) return;
+    }
+
+    // Fire-and-forget — warming runs entirely in the background
+    (async () => {
+      try {
+        const repoDir = getSharedRepoDir(repoUrl);
+        const repoExists = await fs.stat(repoDir).then(() => true, () => false);
+        if (!repoExists) return;
+
+        const branchPrefix = generateBranchPrefix();
+        const created = await createSessionDir("Warm session", { skipGitInit: true });
+        const { appSessionId, sessionDir } = created;
+
+        // Mark as warm before doing git work
+        sessionManager.setWarm(appSessionId, true);
+        sessionManager.setRemoteUrl(appSessionId, repoUrl);
+
+        // Remove the empty dir (worktree add needs it absent)
+        await fs.rm(sessionDir, { recursive: true, force: true });
+
+        const repoGit = createRepoGit(repoDir);
+        const isEmptyRepo = await repoGit.isEmpty();
+
+        if (isEmptyRepo) {
+          await fs.mkdir(sessionDir, { recursive: true });
+          const sessionGit = createGitManager(sessionDir);
+          await sessionGit.init();
+          const cloneUrl = githubAuthManager.getAuthenticatedCloneUrl(repoUrl);
+          await sessionGit.addRemote("origin", cloneUrl);
+          await sessionGit.checkoutNewBranch(branchPrefix);
+        } else {
+          let startPoint: string | undefined;
+          try {
+            const defaultBranch = await repoGit.getDefaultBranch();
+            if (defaultBranch && !defaultBranch.includes("(")) {
+              startPoint = `origin/${defaultBranch}`;
+            }
+          } catch {
+            // Fallback: let git use HEAD
+          }
+          // Retry worktree creation (git lock contention)
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              await repoGit.createWorktree(sessionDir, branchPrefix, startPoint);
+              break;
+            } catch (wtErr) {
+              if (attempt < 2) {
+                await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+              } else {
+                throw wtErr;
+              }
+            }
+          }
+        }
+
+        // Configure credentials
+        if (githubAuthManager.authenticated) {
+          githubAuthManager.configureGitCredentials(sessionDir);
+        }
+
+        sessionManager.setWorktreeInfo(appSessionId, {
+          branch: branchPrefix,
+          sessionType: isEmptyRepo ? "standalone" : "worktree",
+        });
+
+        // Create a runner (starts container, preview, file watcher, install)
+        const runner = runnerRegistry.getOrCreate(appSessionId, sessionDir, defaultAgentId);
+
+        // Store the warm session ID on the repo
+        repoStore.setWarmSessionId(repoUrl, appSessionId);
+
+        // Broadcast so client knows the repo is ready for instant sessions
+        broadcast({ type: "repo_warm_ready", url: repoUrl, sessionId: appSessionId });
+
+        console.log(`[warm] Warm session ${appSessionId} ready for ${repoUrl} (runner=${!!runner})`);
+      } catch (err) {
+        console.error(`[warm] Failed to warm session for ${repoUrl}:`, getErrorMessage(err));
+      }
+    })();
+  };
+
+  // ---- Migration: derive RepoStore from existing sessions ----
+  // On first startup with the new code, scan sessions for unique remoteUrl values.
+  if (repoStore.list().length === 0) {
+    const allSessions = sessionManager.list();
+    const seenUrls = new Set<string>();
+    for (const session of allSessions) {
+      if (session.remoteUrl && !seenUrls.has(session.remoteUrl)) {
+        seenUrls.add(session.remoteUrl);
+        const repoDir = getSharedRepoDir(session.remoteUrl);
+        const exists = await fs.stat(repoDir).then(() => true, () => false);
+        if (exists) {
+          repoStore.add(session.remoteUrl);
+          repoStore.setReady(session.remoteUrl);
+          console.log(`[migration] Added repo from session: ${session.remoteUrl}`);
+        }
+      }
+    }
+  }
+
   // ---- HTTP API routes ----
   await registerApiRoutes(app, {
     sessionManager,
+    repoStore,
     createGitManager,
     createRepoGit,
     agentRegistry,
@@ -471,6 +593,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     createSessionDir,
     generateText,
     sessionsRoot,
+    warmSessionForRepo,
+    createSessionDirFull: createSessionDir,
   });
 
   // ---- Preview reverse proxy (container mode) ----
@@ -750,6 +874,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       authManager,
       agentRegistry,
       credentialStore,
+      repoStore,
+      warmSessionForRepo,
       createSessionDir,
       generateText,
       getSharedRepoDir,

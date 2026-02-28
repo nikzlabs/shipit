@@ -10,6 +10,7 @@ import { useThreadStore } from "../stores/thread-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { usePrStore } from "../stores/pr-store.js";
+import { useRepoStore } from "../stores/repo-store.js";
 
 export function useConnectionSync(params: {
   status: string;
@@ -32,6 +33,7 @@ export function useConnectionSync(params: {
       })
       .then((data) => {
         useSessionStore.getState().setSessions(data.sessions);
+        if (data.repos) useRepoStore.getState().setRepos(data.repos);
         useUiStore.getState().setAgentList(data.agents);
         useUiStore.getState().setTemplates(data.templates);
         useSettingsStore.getState().setGithubStatus({

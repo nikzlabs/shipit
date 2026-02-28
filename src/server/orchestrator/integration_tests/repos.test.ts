@@ -1,0 +1,141 @@
+/**
+ * Integration tests for repo management endpoints and RepoStore.
+ */
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import type { FastifyInstance } from "fastify";
+import { buildApp } from "../index.js";
+import { SessionManager } from "../sessions.js";
+import { RepoStore } from "../repo-store.js";
+import type { AuthManager } from "../auth.js";
+import { StubAuthManager, StubGitHubAuthManager, createTestCredentialStore } from "./test-helpers.js";
+
+let tmpDir: string;
+let app: FastifyInstance;
+let sessionManager: SessionManager;
+let repoStore: RepoStore;
+
+beforeEach(async () => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-repo-test-"));
+  sessionManager = new SessionManager(path.join(tmpDir, "sessions.json"));
+  repoStore = new RepoStore(path.join(tmpDir, "repos.json"));
+  const credentialStore = createTestCredentialStore(tmpDir);
+
+  app = await buildApp({
+    sessionManager,
+    repoStore,
+    authManager: new StubAuthManager() as unknown as AuthManager,
+    githubAuthManager: new StubGitHubAuthManager() as unknown as import("../github-auth.js").GitHubAuthManager,
+    credentialStore,
+    workspaceDir: tmpDir,
+    serveStatic: false,
+  });
+  await app.listen({ port: 0, host: "127.0.0.1" });
+});
+
+afterEach(async () => {
+  await app.close();
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+describe("GET /api/repos", () => {
+  it("returns empty list initially", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/repos" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.repos).toEqual([]);
+  });
+
+  it("returns repos after adding", async () => {
+    repoStore.add("https://github.com/owner/repo.git");
+    repoStore.setReady("https://github.com/owner/repo.git");
+
+    const res = await app.inject({ method: "GET", url: "/api/repos" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.repos).toHaveLength(1);
+    expect(body.repos[0]).toMatchObject({
+      url: "https://github.com/owner/repo.git",
+      status: "ready",
+    });
+  });
+});
+
+describe("POST /api/repos with url", () => {
+  it("adds a new repo", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/repos",
+      payload: { url: "https://github.com/test/repo.git" },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.repo).toMatchObject({
+      url: "https://github.com/test/repo.git",
+      status: "cloning",
+    });
+
+    // Verify it's in the store
+    expect(repoStore.has("https://github.com/test/repo.git")).toBe(true);
+  });
+
+  it("supports owner/repo shorthand", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/repos",
+      payload: { url: "owner/repo" },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.repo.url).toBe("https://github.com/owner/repo.git");
+  });
+
+  it("returns 400 for empty url", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/repos",
+      payload: { url: "" },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});
+
+describe("DELETE /api/repos/:url", () => {
+  it("removes a repo", async () => {
+    repoStore.add("https://github.com/owner/repo.git");
+
+    const encodedUrl = encodeURIComponent("https://github.com/owner/repo.git");
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/repos/${encodedUrl}`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ success: true });
+
+    expect(repoStore.has("https://github.com/owner/repo.git")).toBe(false);
+  });
+
+  it("returns 404 for unknown repo", async () => {
+    const encodedUrl = encodeURIComponent("https://github.com/unknown/repo.git");
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/repos/${encodedUrl}`,
+    });
+    expect(res.statusCode).toBe(404);
+  });
+});
+
+describe("Bootstrap includes repos", () => {
+  it("returns repos in bootstrap data", async () => {
+    repoStore.add("https://github.com/owner/repo.git");
+    repoStore.setReady("https://github.com/owner/repo.git");
+
+    const res = await app.inject({ method: "GET", url: "/api/bootstrap" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.repos).toHaveLength(1);
+    expect(body.repos[0].url).toBe("https://github.com/owner/repo.git");
+  });
+});

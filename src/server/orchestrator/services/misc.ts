@@ -6,6 +6,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import type { SessionManager } from "../sessions.js";
+import type { RepoStore } from "../repo-store.js";
 import type { GitManager } from "../../shared/git.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { GitHubAuthManager } from "../github-auth.js";
@@ -19,6 +20,7 @@ import type { BootstrapData } from "./types.js";
 import { listSessions } from "./session.js";
 import { listAgents, getGlobalSettings } from "./settings.js";
 import { getGitHubStatus, getGitHubRepos } from "./github.js";
+import { listRepos } from "./repos.js";
 
 // ---- Read operations ----
 
@@ -36,6 +38,7 @@ export async function listFeatures(workspaceDir: string) {
 /** Get all data needed for the initial bootstrap. */
 export async function getBootstrapData(deps: {
   sessionManager: SessionManager;
+  repoStore?: RepoStore;
   createGitManager: (dir: string) => GitManager;
   agentRegistry: AgentRegistry;
   githubAuthManager: GitHubAuthManager;
@@ -67,6 +70,7 @@ export async function getBootstrapData(deps: {
 
   return {
     sessions,
+    repos: deps.repoStore ? listRepos(deps.repoStore) : [],
     agents: settings.agents,
     defaultAgentId: deps.defaultAgentId,
     templates: listTemplates(),
@@ -84,6 +88,7 @@ export async function fullReset(
   usageManager: UsageManager,
   runnerRegistry: SessionRunnerRegistry,
   workspaceDir: string,
+  repoStore?: RepoStore,
 ): Promise<void> {
   // Dispose all runners
   runnerRegistry.disposeAll();
@@ -101,6 +106,7 @@ export async function fullReset(
   // Clear in-memory state
   sessionManager.clear();
   usageManager.clear();
+  if (repoStore) repoStore.clear();
 }
 
 /** Report a preview error (log broadcast). */

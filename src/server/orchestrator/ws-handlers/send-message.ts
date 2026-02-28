@@ -473,6 +473,48 @@ export async function handleSendMessage(ctx: HandlerContext, msg: WsSendMessage)
     // Only resume if we have a real Claude CLI session ID
     agentSessionId = session?.agentSessionId;
 
+    // Graduate warm session on first message
+    if (session?.warm) {
+      ctx.sessionManager.setWarm(msg.sessionId, false);
+
+      // Generate session name from the message text
+      const utilityModel = ctx.credentialStore.getUtilityModel();
+      if (utilityModel && session.workspaceDir) {
+        generateSessionName(userText, utilityModel).then(async (nameResult) => {
+          if (!nameResult) return;
+          try {
+            const currentBranch = session.branch;
+            if (currentBranch) {
+              const newBranchName = `${currentBranch}-${nameResult.slug}`;
+              const sessionGit = ctx.createGitManager(session.workspaceDir!);
+              await sessionGit.renameBranch(currentBranch, newBranchName);
+              ctx.sessionManager.setWorktreeInfo(msg.sessionId!, {
+                branch: newBranchName,
+                sessionType: session.sessionType ?? "worktree",
+              });
+            }
+            ctx.sessionManager.rename(msg.sessionId!, nameResult.title);
+            const updatedSession = ctx.sessionManager.get(msg.sessionId!);
+            if (updatedSession) {
+              ctx.send({ type: "session_renamed", session: updatedSession });
+            }
+          } catch (err) {
+            console.warn("[warm] Branch rename failed:", getErrorMessage(err));
+          }
+        }).catch((err) => {
+          console.warn("[warm] Session naming failed:", err);
+        });
+      }
+
+      // Broadcast session list so sidebar updates with the graduated session
+      ctx.broadcast({ type: "session_list", sessions: ctx.sessionManager.list() });
+
+      // Start warming the next session for this repo in the background
+      if (session.remoteUrl) {
+        ctx.warmSessionForRepo(session.remoteUrl);
+      }
+    }
+
     // If session has a workspaceDir but it was deleted, handle recovery
     if (session?.workspaceDir) {
       try {
@@ -776,6 +818,16 @@ export async function handleHomeSendWithRepo(ctx: HandlerContext, msg: WsHomeSen
       branch: branchPrefix,
       sessionType: isEmptyRepo ? "standalone" : "worktree",
     });
+
+    // Track the repo in RepoStore (ensures it shows in the sidebar)
+    if (!ctx.repoStore.has(repoUrl)) {
+      ctx.repoStore.add(repoUrl);
+      ctx.repoStore.setReady(repoUrl);
+      ctx.broadcast({ type: "repo_list", repos: ctx.repoStore.list() });
+    } else {
+      ctx.repoStore.touch(repoUrl);
+    }
+
     ctx.setActiveAppSessionId(appSessionId);
     ctx.setActiveSessionDir(sessionDir);
 

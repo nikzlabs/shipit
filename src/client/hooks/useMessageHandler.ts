@@ -18,6 +18,7 @@ import { useThreadStore } from "../stores/thread-store.js";
 import { useDeployStore } from "../stores/deploy-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { useRepoStore } from "../stores/repo-store.js";
 
 export function useMessageHandler(params: {
   lastMessage: MessageEvent | null;
@@ -515,6 +516,19 @@ export function useMessageHandler(params: {
 
     if (data.type === "session_agent_finished") {
       session.setActiveRunnerSessions((prev) => { const next = new Set(prev); next.delete(data.sessionId); return next; });
+    }
+
+    // ---- Repo messages ----
+    if (data.type === "repo_status") {
+      useRepoStore.getState().updateRepoStatus(data.url, data.status);
+    }
+
+    if (data.type === "repo_warm_ready") {
+      useRepoStore.getState().updateRepoWarmSession(data.url, data.sessionId);
+    }
+
+    if (data.type === "repo_list") {
+      useRepoStore.getState().setRepos(data.repos);
     }
   }, [lastMessage, send, terminalRef, notify, navigate]);
 }
