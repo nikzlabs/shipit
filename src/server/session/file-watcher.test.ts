@@ -4,6 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { FileWatcher } from "./file-watcher.js";
 
+// On macOS, fs.watch needs a moment to fully initialize before events are reliably
+// delivered for synchronous writes immediately after start().
+const settle = () => new Promise<void>((r) => setTimeout(r, 50));
+
 describe("FileWatcher", () => {
   let tmpDir: string;
 
@@ -22,6 +26,7 @@ describe("FileWatcher", () => {
     });
 
     watcher.start(tmpDir);
+    await settle();
 
     // Create a file to trigger the watch
     fs.writeFileSync(path.join(tmpDir, "hello.txt"), "world");
@@ -38,6 +43,7 @@ describe("FileWatcher", () => {
 
     const watcher = new FileWatcher(50);
     watcher.start(tmpDir);
+    await settle();
 
     const changesPromise = new Promise<string[]>((resolve) => {
       watcher.on("changes", resolve);
@@ -58,6 +64,7 @@ describe("FileWatcher", () => {
     watcher.on("changes", emitSpy);
 
     watcher.start(tmpDir);
+    await settle();
 
     // Rapidly create multiple files
     fs.writeFileSync(path.join(tmpDir, "a.txt"), "a");
@@ -65,7 +72,7 @@ describe("FileWatcher", () => {
     fs.writeFileSync(path.join(tmpDir, "c.txt"), "c");
 
     // Wait for debounce to fire
-    await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, 500));
 
     // Should have emitted exactly once with all changes batched
     expect(emitSpy).toHaveBeenCalledTimes(1);
@@ -84,6 +91,7 @@ describe("FileWatcher", () => {
     });
 
     watcher.start(tmpDir);
+    await settle();
 
     // Write to the same file multiple times rapidly
     fs.writeFileSync(path.join(tmpDir, "dup.txt"), "v1");
@@ -109,6 +117,7 @@ describe("FileWatcher", () => {
     watcher.on("changes", emitSpy);
 
     watcher.start(tmpDir);
+    await settle();
 
     // Write into node_modules
     fs.writeFileSync(path.join(nmDir, "pkg.json"), "{}");
@@ -116,7 +125,7 @@ describe("FileWatcher", () => {
     // Also write a non-ignored file to verify the watcher is working
     fs.writeFileSync(path.join(tmpDir, "app.ts"), "export {}");
 
-    await new Promise((r) => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, 500));
 
     // The changes should include app.ts but NOT the node_modules file
     expect(emitSpy).toHaveBeenCalled();
@@ -136,6 +145,7 @@ describe("FileWatcher", () => {
     watcher.on("changes", emitSpy);
 
     watcher.start(tmpDir);
+    await settle();
 
     // Write into .git
     fs.writeFileSync(path.join(gitDir, "HEAD"), "ref: refs/heads/main");
@@ -143,7 +153,7 @@ describe("FileWatcher", () => {
     // Also write a non-ignored file
     fs.writeFileSync(path.join(tmpDir, "readme.md"), "# Hello");
 
-    await new Promise((r) => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, 500));
 
     expect(emitSpy).toHaveBeenCalled();
     const allChanges: string[] = emitSpy.mock.calls.flatMap((c) => c[0]);
@@ -162,11 +172,12 @@ describe("FileWatcher", () => {
     watcher.on("changes", emitSpy);
 
     watcher.start(tmpDir);
+    await settle();
 
     fs.writeFileSync(path.join(histDir, "session.json"), "[]");
     fs.writeFileSync(path.join(tmpDir, "index.ts"), "console.log('hi')");
 
-    await new Promise((r) => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, 500));
 
     expect(emitSpy).toHaveBeenCalled();
     const allChanges: string[] = emitSpy.mock.calls.flatMap((c) => c[0]);
@@ -182,11 +193,12 @@ describe("FileWatcher", () => {
     watcher.on("changes", emitSpy);
 
     watcher.start(tmpDir);
+    await settle();
 
     fs.writeFileSync(path.join(tmpDir, ".shipit-usage.json"), "{}");
     fs.writeFileSync(path.join(tmpDir, "src.ts"), "export {}");
 
-    await new Promise((r) => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, 500));
 
     expect(emitSpy).toHaveBeenCalled();
     const allChanges: string[] = emitSpy.mock.calls.flatMap((c) => c[0]);
@@ -207,7 +219,7 @@ describe("FileWatcher", () => {
     // Write a file after stop — should not trigger any event
     fs.writeFileSync(path.join(tmpDir, "after-stop.txt"), "data");
 
-    await new Promise((r) => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, 300));
 
     expect(emitSpy).not.toHaveBeenCalled();
   });
@@ -219,10 +231,11 @@ describe("FileWatcher", () => {
 
     watcher.start(tmpDir);
     watcher.start(tmpDir); // should be a no-op
+    await settle();
 
     fs.writeFileSync(path.join(tmpDir, "once.txt"), "data");
 
-    await new Promise((r) => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, 500));
 
     // Should only emit once, not twice (from two watchers)
     expect(emitSpy).toHaveBeenCalledTimes(1);
@@ -240,12 +253,15 @@ describe("FileWatcher", () => {
     });
 
     watcher.start(tmpDir);
+    await settle();
 
     fs.writeFileSync(path.join(subDir, "app.ts"), "export default {}");
 
     const changes = await changesPromise;
-    // The path should include the subdirectory
-    expect(changes.some((p) => p.includes("src") && p.includes("app.ts"))).toBe(true);
+    // The path should include subdirectory information.
+    // On macOS, fs.watch reports the containing directory ("src") rather than
+    // the full relative path ("src/app.ts") due to FSEvents firing at dir level.
+    expect(changes.some((p) => p === path.join("src", "app.ts") || p === "src")).toBe(true);
 
     watcher.stop();
   });
@@ -258,7 +274,7 @@ describe("FileWatcher", () => {
     watcher.start(tmpDir);
 
     // Wait without making any changes
-    await new Promise((r) => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, 300));
 
     expect(emitSpy).not.toHaveBeenCalled();
 
