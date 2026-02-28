@@ -592,7 +592,7 @@ Alternatively, rather than intercepting at the git level, Claude CLI's `Bash` to
 
 ### 11. Container Image
 
-A `Dockerfile.session-worker` builds the session worker image:
+Separate dev and prod Dockerfiles build the session worker image (`Dockerfile.session-worker.dev` and `Dockerfile.session-worker.prod`). The prod variant uses a multi-stage build to prune devDependencies:
 
 ```dockerfile
 FROM node:22-slim
@@ -685,7 +685,7 @@ Both `SessionRunner` (direct) and `ContainerSessionRunner` (Docker proxy) implem
 **Scope:**
 - Create `SessionContainerManager` with dockerode
 - Create `shipit` Docker bridge network for orchestrator ↔ container communication
-- Create `Dockerfile.session-worker`
+- Create `Dockerfile.session-worker.dev` and `Dockerfile.session-worker.prod`
 - Wire container lifecycle to runner registry
 - Mount workspace volumes and credentials (read-only shared repo for worktrees)
 - Add resource limits (CPU, memory)
@@ -695,7 +695,7 @@ Both `SessionRunner` (direct) and `ContainerSessionRunner` (Docker proxy) implem
 | File | Change |
 |---|---|
 | `src/server/session-container.ts` | **NEW** — container manager |
-| `Dockerfile.session-worker` | **NEW** — worker image |
+| `Dockerfile.session-worker.{dev,prod}` | **NEW** — worker images (dev and prod variants) |
 | `src/server/index.ts` | Wire container manager into AppDeps |
 | `src/server/session-runner.ts` | Registry delegates to container manager |
 
@@ -964,7 +964,7 @@ ShipIt does not install Docker — it expects Docker to be available. The auto-d
 | `src/server/session-container.test.ts` | Unit tests for SessionContainerManager (27 tests) |
 | `src/server/container-session-runner.ts` | SessionRunner proxy to container (Phase 1 + Phase 3: terminal/preview/file watcher proxy, SSE routing) |
 | `src/server/preview-proxy.ts` | Phase 3 — session-ID-based reverse proxy for preview traffic (HTTP + WebSocket) |
-| `Dockerfile.session-worker` | Container image for session workers (Phase 2) |
+| `Dockerfile.session-worker.{dev,prod}` | Container images for session workers — dev (full deps) and prod (multi-stage, pruned devDeps) (Phase 2) |
 | `src/server/session-runner.ts` | SessionRunnerInterface + registry (Phase 3: added `supportsRemoteTerminal`) |
 | `src/server/ws-handlers/terminal-handlers.ts` | Phase 3 — adapted for container mode (delegates to ContainerSessionRunner) |
 | `src/server/index.ts` | AppDeps wiring: useContainers, containerManager, runner factory, preview proxy registration |

@@ -33,7 +33,7 @@
 - [x] Create Docker bridge network (`shipit`) at startup
   - [x] Auto-create if missing on startup
   - [x] Orchestrator container joins the network
-- [x] Create `Dockerfile.session-worker` — slim image with Node, git, Claude CLI
+- [x] Create `Dockerfile.session-worker.dev` / `Dockerfile.session-worker.prod` — separate dev and prod session worker images
 - [x] Wire `SessionContainerManager` into `AppDeps` and `buildApp()`
 - [x] `SessionRunnerRegistry.getOrCreate()` — delegate to `ContainerSessionRunner` when `useContainers: true`
 - [x] Docker auto-detection at startup (`docker.ping()`) — fall back to direct mode if unavailable

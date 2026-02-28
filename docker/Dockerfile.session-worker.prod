@@ -1,0 +1,42 @@
+# ---- Build stage (install all deps including native addons) ----
+FROM node:24-slim AS build
+
+RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY tsconfig.json ./
+COPY src/server/session/ ./src/server/session/
+COPY src/server/shared/ ./src/server/shared/
+
+# Prune devDependencies so we can copy a clean node_modules to prod
+RUN npm prune --omit=dev && npm install tsx
+
+# ---- Production image ----
+FROM node:24-slim
+
+# Runtime tools: git + curl for user projects, python3/make/g++ for native npm addons
+# in user sessions (npm install inside /user may compile C/C++ addons).
+RUN apt-get update && apt-get install -y git curl python3 make g++ && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g @anthropic-ai/claude-code @openai/codex
+
+WORKDIR /app
+
+# Copy pre-built node_modules from build stage (devDependencies pruned)
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/package.json ./
+COPY --from=build /app/tsconfig.json ./
+COPY --from=build /app/src ./src
+
+# Credential symlinks (same as dev/prod images)
+RUN mkdir -p /workspace /credentials && ln -s /credentials/.claude /root/.claude && ln -sf /credentials/.claude.json /root/.claude.json
+
+ENV NODE_ENV=production
+
+EXPOSE 9100
+
+CMD ["node", "--import", "tsx", "src/server/session/session-worker.ts"]
