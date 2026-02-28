@@ -1164,6 +1164,9 @@ export async function registerApiRoutes(
         sessionManager.setWarm(appSessionId, true);
         deps.repoStore.touch(url);
 
+        // Create a runner so preview/file watcher start immediately
+        deps.runnerRegistry.getOrCreate(appSessionId, sessionDir, deps.defaultAgentId);
+
         // Start warming the next session in background
         deps.warmSessionForRepo?.(url);
 

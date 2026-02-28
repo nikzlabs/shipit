@@ -12,6 +12,7 @@ interface SessionSidebarProps {
   activeRunnerSessions?: Set<string>;
   onResume: (sessionId: string) => void;
   onNew: () => void;
+  onNewSessionForRepo: (repoUrl: string) => void;
   onArchive: (sessionId: string) => void;
   onRename: (sessionId: string, title: string) => void;
   onRefresh: () => void;
@@ -169,10 +170,11 @@ interface GroupProps {
   onArchive: (id: string) => void;
   onRename: (id: string, title: string) => void;
   status?: "cloning" | "ready";
+  onNewSession?: () => void;
   onRemove?: () => void;
 }
 
-function SessionGroup({ label, sessions, currentSessionId, activeRunnerSessions, onResume, onArchive, onRename, status, onRemove }: GroupProps) {
+function SessionGroup({ label, sessions, currentSessionId, activeRunnerSessions, onResume, onArchive, onRename, status, onNewSession, onRemove }: GroupProps) {
   const [expanded, setExpanded] = useState(true);
 
   return (
@@ -191,6 +193,18 @@ function SessionGroup({ label, sessions, currentSessionId, activeRunnerSessions,
             <span className="text-gray-400 dark:text-gray-700 font-normal normal-case">({sessions.length})</span>
           )}
         </button>
+        {onNewSession && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onNewSession(); }}
+            disabled={status === "cloning"}
+            className="shrink-0 p-0.5 rounded text-emerald-600 dark:text-emerald-500 opacity-0 group-hover/header:opacity-100 hover:text-emerald-400 hover:bg-gray-200 dark:hover:bg-gray-800 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            title="New session"
+          >
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+            </svg>
+          </button>
+        )}
         {onRemove && (
           <button
             onClick={(e) => { e.stopPropagation(); onRemove(); }}
@@ -229,6 +243,7 @@ export function SessionSidebar({
   activeRunnerSessions,
   onResume,
   onNew,
+  onNewSessionForRepo,
   onArchive,
   onRename,
   onRefresh: _onRefresh,
@@ -358,6 +373,7 @@ export function SessionSidebar({
                   onArchive={onArchive}
                   onRename={onRename}
                   status={repo?.status}
+                  onNewSession={() => onNewSessionForRepo(url)}
                   onRemove={() => onRemoveRepo(url)}
                 />
               );

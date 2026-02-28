@@ -334,6 +334,17 @@ export default function App() {
     [apiPost, send, navigate],
   );
 
+  const handleNewSessionForRepo = useCallback(
+    async (repoUrl: string) => {
+      const result = await useRepoStore.getState().claimSession(repoUrl);
+      if (result) {
+        resumeSessionInternal(result.sessionId, send);
+        navigate(`/session/${result.sessionId}`);
+      }
+    },
+    [send, navigate],
+  );
+
   const handleTabChange = useCallback(
     (tab: "preview" | "docs" | "files" | "terminal" | "features" | "changes" | "history") => {
       useUiStore.getState().setRightTab(tab);
@@ -483,7 +494,7 @@ export default function App() {
     }
     return dividers;
   }, [threads]);
-  const showHomeScreen = showTemplates && messages.length === 0 && !isLoading;
+  const showHomeScreen = showTemplates && messages.length === 0 && !isLoading && repos.length === 0;
 
   // ── Right panel ──
   const rightPanel = (
@@ -666,6 +677,7 @@ export default function App() {
             sessions={sessions} repos={repos} currentSessionId={sessionId} activeRunnerSessions={activeRunnerSessions}
             onResume={(sid) => { resumeSessionInternal(sid, send); navigate(`/session/${sid}`); }}
             onNew={() => newSession(send, navigate)}
+            onNewSessionForRepo={handleNewSessionForRepo}
             onArchive={async (sid) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId) { useSessionStore.getState().setSessionId(undefined); navigate("/"); } }}
             onRename={(sid, title) => useSessionStore.getState().renameSession(sid, title)}
             onRefresh={() => useSessionStore.getState().refreshSessions()}
@@ -693,8 +705,18 @@ export default function App() {
         open={addRepoDialogOpen}
         onClose={() => useRepoStore.getState().setAddRepoDialogOpen(false)}
         onAdd={async (url) => { await useRepoStore.getState().addRepo(url); }}
+        onCreateNew={() => {
+          useRepoStore.getState().setAddRepoDialogOpen(false);
+          if (templates.length === 0) apiGet<{ templates: typeof templates }>("/api/bootstrap").then((d) => useUiStore.getState().setTemplates(d.templates)).catch(() => {});
+          // Navigate to HomeScreen which has the NewRepoDialog flow
+          useSessionStore.getState().setSessionId(undefined);
+          resetSessionState();
+          useUiStore.getState().setShowTemplates(true);
+          navigate("/");
+        }}
         searchResults={importSearchResults}
         onSearch={(q) => usePrStore.getState().searchRepos(q).catch(() => {})}
+        repos={repos}
       />
     </div>
   );

@@ -552,6 +552,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Migration: derive RepoStore from existing sessions ----
   // On first startup with the new code, scan sessions for unique remoteUrl values.
+  const migratedRepoUrls: string[] = [];
   if (repoStore.list().length === 0) {
     const allSessions = sessionManager.list();
     const seenUrls = new Set<string>();
@@ -563,10 +564,34 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         if (exists) {
           repoStore.add(session.remoteUrl);
           repoStore.setReady(session.remoteUrl);
+          migratedRepoUrls.push(session.remoteUrl);
           console.log(`[migration] Added repo from session: ${session.remoteUrl}`);
         }
       }
     }
+  }
+
+  // ---- Startup re-warming ----
+  // Check each "ready" repo's warm session; re-warm if missing.
+  // Runs after HTTP routes are registered (warmSessionForRepo needs runnerRegistry).
+  // Uses setTimeout(0) to defer until after buildApp() returns.
+  const reposToWarm = [
+    ...migratedRepoUrls,
+    ...repoStore.list()
+      .filter((r) => r.status === "ready" && !migratedRepoUrls.includes(r.url))
+      .filter((r) => {
+        if (!r.warmSessionId) return true;
+        const ws = sessionManager.get(r.warmSessionId);
+        return !ws; // Re-warm if warm session no longer exists
+      })
+      .map((r) => r.url),
+  ];
+  if (reposToWarm.length > 0) {
+    setTimeout(() => {
+      for (const url of reposToWarm) {
+        warmSessionForRepo(url);
+      }
+    }, 0);
   }
 
   // ---- HTTP API routes ----

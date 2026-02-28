@@ -15,6 +15,7 @@ interface RepoState {
   // Async actions
   addRepo: (url: string) => Promise<RepoInfo | null>;
   removeRepo: (url: string) => Promise<boolean>;
+  claimSession: (url: string) => Promise<{ sessionId: string; sessionDir: string } | null>;
 }
 
 export const useRepoStore = create<RepoState>((set) => ({
@@ -83,6 +84,20 @@ export const useRepoStore = create<RepoState>((set) => ({
       return true;
     } catch {
       return false;
+    }
+  },
+
+  claimSession: async (url) => {
+    try {
+      const res = await fetch(`/api/repos/${encodeURIComponent(url)}/claim-session`, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data as { sessionId: string; sessionDir: string };
+    } catch {
+      return null;
     }
   },
 }));

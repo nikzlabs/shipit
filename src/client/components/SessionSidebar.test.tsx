@@ -19,6 +19,7 @@ const defaultProps = {
   currentSessionId: undefined,
   onResume: vi.fn(),
   onNew: vi.fn(),
+  onNewSessionForRepo: vi.fn(),
   onArchive: vi.fn(),
   onRename: vi.fn(),
   onRefresh: vi.fn(),
@@ -188,5 +189,41 @@ describe("SessionSidebar", () => {
     // Click again to expand
     fireEvent.click(screen.getByText("x/y"));
     expect(screen.getByText("Visible session")).toBeTruthy();
+  });
+
+  it("shows per-repo 'New session' button on repo groups", () => {
+    const repos = [
+      { url: "https://github.com/owner/repo.git", addedAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), status: "ready" as const },
+    ];
+    render(<SessionSidebar {...defaultProps} repos={repos} />);
+    const btn = screen.getByTitle("New session");
+    expect(btn).toBeTruthy();
+  });
+
+  it("calls onNewSessionForRepo when per-repo button is clicked", () => {
+    const onNewSessionForRepo = vi.fn();
+    const repos = [
+      { url: "https://github.com/owner/repo.git", addedAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), status: "ready" as const },
+    ];
+    render(<SessionSidebar {...defaultProps} repos={repos} onNewSessionForRepo={onNewSessionForRepo} />);
+    fireEvent.click(screen.getByTitle("New session"));
+    expect(onNewSessionForRepo).toHaveBeenCalledWith("https://github.com/owner/repo.git");
+  });
+
+  it("disables per-repo button when repo is cloning", () => {
+    const repos = [
+      { url: "https://github.com/owner/repo.git", addedAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), status: "cloning" as const },
+    ];
+    render(<SessionSidebar {...defaultProps} repos={repos} />);
+    const btn = screen.getByTitle("New session");
+    expect(btn).toBeDisabled();
+  });
+
+  it("shows cloning indicator on repo group with cloning status", () => {
+    const repos = [
+      { url: "https://github.com/owner/repo.git", addedAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), status: "cloning" as const },
+    ];
+    render(<SessionSidebar {...defaultProps} repos={repos} />);
+    expect(screen.getByText("cloning")).toBeTruthy();
   });
 });
