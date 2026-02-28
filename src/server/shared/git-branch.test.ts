@@ -61,10 +61,10 @@ describe("GitManager: branch operations", () => {
 });
 
 describe("generateBranchPrefix", () => {
-  it("returns a 5-character lowercase string", () => {
+  it("returns a shipit/-prefixed lowercase string", () => {
     const prefix = generateBranchPrefix();
-    expect(prefix).toHaveLength(5);
-    expect(prefix).toMatch(/^[a-z0-9_-]+$/);
+    expect(prefix).toHaveLength(11);
+    expect(prefix).toMatch(/^shipit\/[a-z0-9_-]{4}$/);
   });
 
   it("generates unique prefixes", () => {

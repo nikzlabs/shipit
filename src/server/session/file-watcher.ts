@@ -54,8 +54,12 @@ export class FileWatcher extends EventEmitter {
     if (this.watcher) return; // already watching
 
     try {
+      // On macOS, FSEvents fires a spurious initial event where filename equals
+      // the basename of the watched directory itself. Filter it out.
+      const dirBasename = path.basename(dir);
       this.watcher = watch(dir, { recursive: true }, (_eventType, filename) => {
         if (!filename) return;
+        if (filename === dirBasename) return;
         if (this.shouldIgnore(filename)) return;
 
         this.pendingChanges.add(filename);

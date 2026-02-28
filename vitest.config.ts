@@ -21,6 +21,10 @@ export default defineConfig({
           include: ["src/client/**/*.test.ts", "src/client/**/*.test.tsx"],
           environment: "jsdom",
           setupFiles: ["src/client/test-setup.ts"],
+          // Node 25 exposes localStorage/sessionStorage on globalThis, which
+          // prevents Vitest from copying jsdom's implementations into scope.
+          // --no-webstorage disables the built-in Web Storage API so jsdom wins.
+          execArgv: ["--no-webstorage"],
         },
       },
     ],

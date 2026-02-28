@@ -1,8 +1,10 @@
 import crypto from "node:crypto";
 
-/** Generate a short random alphanumeric prefix for branch names (5 chars). */
+/** Generate a short random branch prefix in the "shipit/" namespace. */
 export function generateBranchPrefix(): string {
-  return crypto.randomBytes(4).toString("base64url").slice(0, 5).toLowerCase();
+  // 3 bytes → exactly 4 base64url chars (no padding). The 'shipit/' namespace
+  // groups all agent branches together and avoids git's '-' prefix rejection.
+  return "shipit/" + crypto.randomBytes(3).toString("base64url").toLowerCase();
 }
 
 /** Parse owner/repo from a GitHub remote URL. */
