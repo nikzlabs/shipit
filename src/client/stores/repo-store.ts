@@ -66,7 +66,8 @@ export const useRepoStore = create<RepoState>((set) => ({
         return data.repo as RepoInfo;
       }
       return null;
-    } catch {
+    } catch (err) {
+      console.error("[repo-store] addRepo failed:", err);
       return null;
     }
   },
@@ -82,7 +83,8 @@ export const useRepoStore = create<RepoState>((set) => ({
         repos: state.repos.filter((r) => r.url !== url),
       }));
       return true;
-    } catch {
+    } catch (err) {
+      console.error("[repo-store] removeRepo failed:", err);
       return false;
     }
   },
@@ -96,7 +98,8 @@ export const useRepoStore = create<RepoState>((set) => ({
       if (!res.ok) return null;
       const data = await res.json();
       return data as { sessionId: string; sessionDir: string };
-    } catch {
+    } catch (err) {
+      console.error("[repo-store] claimSession failed:", err);
       return null;
     }
   },

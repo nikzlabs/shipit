@@ -63,3 +63,9 @@
 - [x] `AddRepoDialog.test.tsx` component test (open/close, search, submit, create new, debounce)
 - [x] Integration test for `POST /api/repos/:url/claim-session` (404, 400 cloning, fallback)
 - [x] Sidebar tests for per-repo New Session button and cloning indicator
+- [x] Integration test for `warmSessionForRepo()` lifecycle (warm → claim → graduate)
+- [x] Integration test for graduation logic in `handleSendMessage` (warm flag removal, rename, broadcast)
+
+## Hardening
+
+- [x] Add `console.error` in `useRepoStore` async actions (`addRepo`, `removeRepo`, `claimSession`) — errors are swallowed silently
