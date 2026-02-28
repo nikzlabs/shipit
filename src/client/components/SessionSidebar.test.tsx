@@ -15,12 +15,15 @@ const baseSession = (overrides: Partial<SessionInfo> = {}): SessionInfo => ({
 
 const defaultProps = {
   sessions: [],
+  repos: [],
   currentSessionId: undefined,
   onResume: vi.fn(),
   onNew: vi.fn(),
   onArchive: vi.fn(),
   onRename: vi.fn(),
   onRefresh: vi.fn(),
+  onAddRepo: vi.fn(),
+  onRemoveRepo: vi.fn(),
   collapsed: false,
   onToggleCollapse: vi.fn(),
 };

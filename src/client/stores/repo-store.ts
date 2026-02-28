@@ -17,7 +17,7 @@ interface RepoState {
   removeRepo: (url: string) => Promise<boolean>;
 }
 
-export const useRepoStore = create<RepoState>((set, get) => ({
+export const useRepoStore = create<RepoState>((set) => ({
   repos: [],
   addRepoDialogOpen: false,
 

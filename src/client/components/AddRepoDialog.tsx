@@ -12,7 +12,7 @@ export function AddRepoDialog({ open, onClose, onAdd, searchResults, onSearch }:
   const [query, setQuery] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
     if (open) {

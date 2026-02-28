@@ -51,7 +51,7 @@ describe("RepoStore", () => {
 
   it("touch updates lastUsedAt", () => {
     const repo = store.add("https://github.com/owner/repo.git");
-    const originalDate = repo.lastUsedAt;
+    const _originalDate = repo.lastUsedAt;
     // Small delay to ensure different timestamp
     store.touch("https://github.com/owner/repo.git");
     const updated = store.get("https://github.com/owner/repo.git");
