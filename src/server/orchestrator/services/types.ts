@@ -35,7 +35,6 @@ export interface BootstrapData {
   defaultAgentId: AgentId;
   templates: Array<Omit<ProjectTemplate, "files">>;
   githubStatus: GitHubStatus;
-  githubRepos: Array<{ fullName: string; description: string | null; private: boolean; defaultBranch: string; cloneUrl: string }>;
   settings: GlobalSettings;
 }
 

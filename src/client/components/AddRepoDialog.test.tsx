@@ -93,11 +93,11 @@ describe("AddRepoDialog", () => {
     await waitFor(() => expect(onAdd).toHaveBeenCalledWith("https://github.com/alice/cool-app.git"));
   });
 
-  it("shows 'no results' hint when query is non-empty and no results", () => {
+  it("shows 'no results' hint when query is non-empty and no results", async () => {
     render(<AddRepoDialog {...defaultProps} />);
     const input = screen.getByPlaceholderText("Search GitHub repos or paste a URL...");
     fireEvent.change(input, { target: { value: "nonexistent" } });
-    expect(screen.getByText("No results. Press Enter to add by URL.")).toBeTruthy();
+    await waitFor(() => expect(screen.getByText("No results. Press Enter to add by URL.")).toBeTruthy());
   });
 
   it("calls onCreateNew when 'Create new repository' is clicked", () => {
@@ -129,17 +129,21 @@ describe("AddRepoDialog", () => {
     vi.useFakeTimers();
     const onSearch = vi.fn();
     render(<AddRepoDialog {...defaultProps} onSearch={onSearch} />);
+
+    // Initial open triggers a lazy-load fetch for the user's repos
+    const initialCalls = onSearch.mock.calls.length;
+
     const input = screen.getByPlaceholderText("Search GitHub repos or paste a URL...");
     fireEvent.change(input, { target: { value: "te" } });
     fireEvent.change(input, { target: { value: "tes" } });
     fireEvent.change(input, { target: { value: "test" } });
 
-    // No immediate call
-    expect(onSearch).not.toHaveBeenCalled();
+    // No immediate search call from typing (only the initial lazy-load)
+    expect(onSearch).toHaveBeenCalledTimes(initialCalls);
 
     // After debounce
     vi.advanceTimersByTime(300);
-    expect(onSearch).toHaveBeenCalledTimes(1);
+    expect(onSearch).toHaveBeenCalledTimes(initialCalls + 1);
     expect(onSearch).toHaveBeenCalledWith("test");
 
     vi.useRealTimers();

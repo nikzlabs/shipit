@@ -155,6 +155,7 @@ export default function App() {
   const toast = useUiStore((s) => s.toast);
 
   const features = useUiStore((s) => s.features);
+  const bootstrapLoaded = useUiStore((s) => s.bootstrapLoaded);
 
   const repos = useRepoStore((s) => s.repos);
   const addRepoDialogOpen = useRepoStore((s) => s.addRepoDialogOpen);
@@ -196,6 +197,14 @@ export default function App() {
   });
 
   useConnectionSync({ status, send });
+
+  // Delayed spinner for bootstrap loading gate — only show after 1s
+  const [showBootstrapSpinner, setShowBootstrapSpinner] = useState(false);
+  useEffect(() => {
+    if (bootstrapLoaded) return;
+    const timer = setTimeout(() => setShowBootstrapSpinner(true), 1000);
+    return () => clearTimeout(timer);
+  }, [bootstrapLoaded]);
 
   useMessageHandler({
     lastMessage,
@@ -466,7 +475,7 @@ export default function App() {
     }
     return dividers;
   }, [threads]);
-  const showHomeScreen = showTemplates && messages.length === 0 && !isLoading;
+  const showHomeScreen = !sessionId || (showTemplates && messages.length === 0 && !isLoading);
 
   // ── Right panel ──
   const rightPanel = (
@@ -536,6 +545,20 @@ export default function App() {
       {!showHomeScreen && <MessageInput onSend={handleSend} disabled={status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_claude" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} />}
     </>
   );
+
+  // ── Bootstrap loading gate ──
+  if (!bootstrapLoaded) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-gray-950">
+        {showBootstrapSpinner && (
+          <svg className="h-6 w-6 animate-spin text-gray-600" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+          </svg>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">

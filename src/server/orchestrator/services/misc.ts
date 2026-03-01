@@ -19,7 +19,7 @@ import { ServiceError } from "./types.js";
 import type { BootstrapData } from "./types.js";
 import { listSessions } from "./session.js";
 import { listAgents, getGlobalSettings } from "./settings.js";
-import { getGitHubStatus, getGitHubRepos } from "./github.js";
+import { getGitHubStatus } from "./github.js";
 import { listRepos } from "./repos.js";
 
 // ---- Read operations ----
@@ -48,7 +48,7 @@ export async function getBootstrapData(deps: {
   // Each call is wrapped individually so a failure in one (e.g. expired
   // GitHub token causing listUserRepos to throw) doesn't kill the entire
   // bootstrap — the other data still loads.
-  const [sessions, settings, githubRepos] = await Promise.all([
+  const [sessions, settings] = await Promise.all([
     listSessions(deps.sessionManager, deps.createGitManager).catch((err) => {
       console.error("[bootstrap] Failed to list sessions:", err);
       return [] as Awaited<ReturnType<typeof listSessions>>;
@@ -62,10 +62,6 @@ export async function getBootstrapData(deps: {
         defaultAgentId: deps.defaultAgentId,
       } as Awaited<ReturnType<typeof getGlobalSettings>>;
     }),
-    getGitHubRepos(deps.githubAuthManager).catch((err) => {
-      console.error("[bootstrap] Failed to fetch GitHub repos:", err);
-      return [] as Awaited<ReturnType<typeof getGitHubRepos>>;
-    }),
   ]);
 
   return {
@@ -75,7 +71,6 @@ export async function getBootstrapData(deps: {
     defaultAgentId: deps.defaultAgentId,
     templates: listTemplates(),
     githubStatus: getGitHubStatus(deps.githubAuthManager),
-    githubRepos,
     settings,
   };
 }

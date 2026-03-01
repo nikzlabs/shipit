@@ -41,15 +41,14 @@ export function useConnectionSync(params: {
           username: data.githubStatus.username,
           avatarUrl: data.githubStatus.avatarUrl,
         });
-        if (data.githubRepos.length > 0) {
-          usePrStore.getState().setImportSearchResults(data.githubRepos);
-        }
         useGitStore.getState().setIdentity(data.settings.gitIdentity);
         useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
         useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
+        useUiStore.getState().setBootstrapLoaded(true);
       })
       .catch((err) => {
         console.error("[bootstrap] Failed to fetch initial data:", err);
+        useUiStore.getState().setBootstrapLoaded(true);
       });
   }, []);
 

@@ -7,7 +7,7 @@ interface AddRepoDialogProps {
   onAdd: (url: string) => Promise<void>;
   onCreateNew: () => void;
   searchResults: Array<{ fullName: string; description: string | null; private: boolean; cloneUrl: string }>;
-  onSearch: (query: string) => void;
+  onSearch: (query: string) => void | Promise<void>;
   /** Current repos from the store — used to track clone progress. */
   repos: RepoInfo[];
 }
@@ -17,6 +17,8 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, searchResults
   const [submitting, setSubmitting] = useState(false);
   /** URL of the repo we just added — tracked for clone progress. */
   const [pendingUrl, setPendingUrl] = useState<string | null>(null);
+  /** True while the initial GitHub repos list is being fetched. */
+  const [loadingRepos, setLoadingRepos] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -25,6 +27,14 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, searchResults
       setQuery("");
       setPendingUrl(null);
       setTimeout(() => inputRef.current?.focus(), 50);
+      // Lazy-load the user's GitHub repos on first open
+      if (searchResults.length === 0) {
+        setLoadingRepos(true);
+        Promise.resolve(onSearch("")).then(
+          () => setLoadingRepos(false),
+          () => setLoadingRepos(false),
+        );
+      }
     }
   }, [open]);
 
@@ -118,6 +128,17 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, searchResults
             />
           </div>
 
+          {/* Loading spinner while fetching initial repo list */}
+          {loadingRepos && !isCloning && (
+            <div className="mt-4 flex items-center justify-center gap-2 py-6">
+              <svg className="h-4 w-4 animate-spin text-gray-400" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+              </svg>
+              <span className="text-xs text-gray-500">Loading repositories...</span>
+            </div>
+          )}
+
           {/* Search results */}
           {searchResults.length > 0 && !isCloning && (
             <div className="mt-2 max-h-64 overflow-y-auto rounded-md border border-gray-700">
@@ -146,7 +167,7 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, searchResults
             </div>
           )}
 
-          {query.trim().length > 0 && searchResults.length === 0 && !isCloning && (
+          {query.trim().length > 0 && searchResults.length === 0 && !isCloning && !loadingRepos && (
             <p className="mt-2 text-xs text-gray-500">
               No results. Press Enter to add by URL.
             </p>
