@@ -23,7 +23,7 @@ import type { UsageManager } from "./usage.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { AuthManager } from "./auth.js";
-import type { WsServerMessage } from "../shared/types.js";
+
 import {
   getBootstrapData,
   getFileTree,
@@ -106,8 +106,8 @@ export interface ApiDeps {
   runnerRegistry: SessionRunnerRegistry;
   chatHistoryManager: ChatHistoryManager;
   authManager: AuthManager;
-  broadcast: (msg: WsServerMessage) => void;
   broadcastLog: (source: "stderr" | "stdout" | "server" | "preview" | "deploy" | "install", text: string) => void;
+  sseBroadcast: (event: string, data: unknown) => void;
   getSharedRepoDir: (repoUrl: string) => string;
   createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string }>;
   // Phase 3 additions
@@ -432,6 +432,21 @@ export async function registerApiRoutes(
   // ===========================================================================
 
   // ---- Session mutations ----
+
+  // POST /api/sessions — create a new standalone session (no repo)
+  app.post<{ Body: { title?: string } }>(
+    "/api/sessions",
+    async (_request, reply) => {
+      try {
+        const title = _request.body?.title?.trim() || "New session";
+        const { appSessionId, sessionDir } = await deps.createSessionDir(title);
+        deps.sseBroadcast("session_list", { sessions: sessionManager.list() });
+        return { sessionId: appSessionId, sessionDir };
+      } catch (err) {
+        reply.code(500).send({ error: `Failed to create session: ${getErrorMessage(err)}` });
+      }
+    },
+  );
 
   // PATCH /api/sessions/:id — rename session
   app.patch<{ Params: { id: string }; Body: { title: string } }>(
@@ -791,7 +806,7 @@ export async function registerApiRoutes(
         setApiKey(request.body.key);
         deps.authManager.kill();
         deps.authManager.checkCredentials();
-        deps.broadcast({ type: "auth_complete" });
+        deps.sseBroadcast("auth_complete", {});
         return { success: true };
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -873,7 +888,7 @@ export async function registerApiRoutes(
     async (_request, reply) => {
       try {
         await fullReset(sessionManager, deps.usageManager, deps.runnerRegistry, deps.workspaceDir, deps.repoStore);
-        deps.broadcast({ type: "full_reset_complete" });
+        deps.sseBroadcast("full_reset_complete", {});
         return { success: true };
       } catch (err) {
         reply.code(500).send({ error: `Full reset failed: ${getErrorMessage(err)}` });
@@ -889,7 +904,13 @@ export async function registerApiRoutes(
         const validated = validatePreviewError(request.body.message, request.body.stack);
         const parts = [validated.message];
         if (validated.stack) parts.push(validated.stack);
-        deps.broadcastLog("preview", parts.join("\n"));
+        const text = parts.join("\n");
+        deps.broadcastLog("preview", text);
+        // Also emit to the session's runner so connected WS viewers receive it
+        const runner = deps.runnerRegistry.get(request.params.id);
+        if (runner) {
+          runner.emitMessage({ type: "log_entry", source: "preview", text, timestamp: new Date().toISOString() });
+        }
         reply.code(204).send();
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -938,8 +959,8 @@ export async function registerApiRoutes(
           request.params.id, dir,
           request.body.branchName, request.body.startPoint,
         );
-        // Broadcast updated session list to other connections
-        deps.broadcast({ type: "session_list", sessions: result.sessions });
+        // Broadcast updated session list via SSE
+        deps.sseBroadcast("session_list", { sessions: result.sessions });
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -1008,12 +1029,12 @@ export async function registerApiRoutes(
                 console.log("[repos] Cloned repo to shared dir:", repoDir);
               }
               deps.repoStore.setReady(repoUrl);
-              deps.broadcast({ type: "repo_status", url: repoUrl, status: "ready" });
+              deps.sseBroadcast("repo_status", { url: repoUrl, status: "ready" });
               // Start warming a session
               deps.warmSessionForRepo?.(repoUrl);
             } catch (err) {
               console.error("[repos] Background clone failed:", getErrorMessage(err));
-              deps.broadcast({ type: "error", message: `Failed to clone repository: ${getErrorMessage(err)}` });
+              deps.sseBroadcast("error", { message: `Failed to clone repository: ${getErrorMessage(err)}` });
             }
           });
           return { repo };
@@ -1047,7 +1068,7 @@ export async function registerApiRoutes(
         if (result.repoUrl) {
           deps.repoStore.add(result.repoUrl);
           deps.repoStore.setReady(result.repoUrl);
-          deps.broadcast({ type: "repo_list", repos: listRepos(deps.repoStore) });
+          deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });
         }
         return result;
       } catch (err) {
@@ -1074,7 +1095,7 @@ export async function registerApiRoutes(
           sessionManager.delete(repo.warmSessionId);
         }
         removeRepo(deps.repoStore, url);
-        deps.broadcast({ type: "repo_list", repos: listRepos(deps.repoStore) });
+        deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });
         return { success: true };
       } catch (err) {
         if (err instanceof ServiceError) {

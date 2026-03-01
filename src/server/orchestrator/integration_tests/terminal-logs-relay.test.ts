@@ -18,18 +18,6 @@ import {
   createTestCredentialStore,
 } from "./test-helpers.js";
 
-/** Skip session runner messages but NOT log_entry — the opposite of receiveSkipLogs. */
-const RUNNER_MSG_TYPES = new Set(["session_status", "session_agent_started", "session_agent_finished"]);
-async function receiveSkipRunnerMsgs(client: TestClient, timeoutMs = 3000): Promise<WsServerMessage> {
-  const deadline = Date.now() + timeoutMs;
-  while (true) {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new Error("receiveSkipRunnerMsgs() timed out");
-    const msg = await client.receive(remaining);
-    if (!RUNNER_MSG_TYPES.has(msg.type)) return msg;
-  }
-}
-
 describe("Integration: Terminal/logs relay", () => {
   let app: FastifyInstance;
   let port: number;
@@ -80,15 +68,15 @@ describe("Integration: Terminal/logs relay", () => {
     client.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
 
-    // Consume the server "Agent process started" log entry (skip runner messages)
-    const startLog = await receiveSkipRunnerMsgs(client);
+    // Consume the server "Agent process started" log entry
+    const startLog = await client.receiveType("log_entry");
     expect(startLog.type).toBe("log_entry");
     expect((startLog as any).source).toBe("server");
 
     // Simulate stderr from Claude CLI
     lastClaude.emit("log", "stderr", "Debug: loading model");
 
-    const msg = await receiveSkipRunnerMsgs(client);
+    const msg = await client.receiveType("log_entry");
     expect(msg.type).toBe("log_entry");
     expect((msg as any).source).toBe("stderr");
     expect((msg as any).text).toBe("Debug: loading model");
@@ -104,13 +92,13 @@ describe("Integration: Terminal/logs relay", () => {
     client.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
 
-    // Consume "Agent process started" log entry (skip runner messages)
-    await receiveSkipRunnerMsgs(client);
+    // Consume "Agent process started" log entry
+    await client.receiveType("log_entry");
 
     // Simulate non-JSON stdout from Claude CLI
     lastClaude.emit("log", "stdout", "Warning: experimental feature");
 
-    const msg = await receiveSkipRunnerMsgs(client);
+    const msg = await client.receiveType("log_entry");
     expect(msg.type).toBe("log_entry");
     expect((msg as any).source).toBe("stdout");
     expect((msg as any).text).toBe("Warning: experimental feature");
@@ -125,8 +113,8 @@ describe("Integration: Terminal/logs relay", () => {
     client.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
 
-    // Should receive "Agent process started" log (skip runner messages)
-    const startLog = await receiveSkipRunnerMsgs(client);
+    // Should receive "Agent process started" log
+    const startLog = await client.receiveType("log_entry");
     expect(startLog.type).toBe("log_entry");
     expect((startLog as any).source).toBe("server");
     expect((startLog as any).text).toBe("Agent process started");
@@ -135,7 +123,7 @@ describe("Integration: Terminal/logs relay", () => {
     lastClaude.finish();
 
     // Should receive "Agent process exited" log
-    // (may also receive git_committed or runner messages — drain until we find the exit log)
+    // (may also receive git_committed or other messages — drain until we find the exit log)
     let exitLog: any = null;
     for (let i = 0; i < 15; i++) {
       const msg = await client.receive();
@@ -170,26 +158,28 @@ describe("Integration: Terminal/logs relay", () => {
     client1.send({ type: "send_message", text: "generate logs" });
     await waitForClaude(() => lastClaude);
 
-    // Consume the "Agent process started" log (skip runner messages)
-    await receiveSkipRunnerMsgs(client1);
+    // Consume the "Agent process started" log
+    await client1.receiveType("log_entry");
 
     // Add more logs via CLI output
     lastClaude.emit("log", "stderr", "Loading model...");
-    await receiveSkipRunnerMsgs(client1); // consume the stderr log
+    await client1.receiveType("log_entry"); // consume the stderr log
 
-    // Now a second client connects — should receive buffered logs
-    const client2 = await TestClient.connect(port);
-    const preview = await client2.receive(); // preview_status
-    expect(preview.type).toBe("preview_status");
+    // Second client connects to the same session — should receive buffered logs
+    // (turn event buffer entries may arrive before preview_status)
+    const client2 = await TestClient.connect(port, client1.sessionId);
 
-    // Should receive the buffered log entries (skip runner messages)
-    const log1 = await receiveSkipRunnerMsgs(client2);
-    expect(log1.type).toBe("log_entry");
-    expect((log1 as any).text).toBe("Agent process started");
+    // Collect all initial messages
+    const allMsgs: WsServerMessage[] = [];
+    try {
+      for (let i = 0; i < 15; i++) {
+        allMsgs.push(await client2.receive(500));
+      }
+    } catch { /* timeout expected */ }
 
-    const log2 = await receiveSkipRunnerMsgs(client2);
-    expect(log2.type).toBe("log_entry");
-    expect((log2 as any).text).toBe("Loading model...");
+    const logEntries = allMsgs.filter((m) => m.type === "log_entry");
+    expect(logEntries.find((m) => (m as any).text === "Agent process started")).toBeDefined();
+    expect(logEntries.find((m) => (m as any).text === "Loading model...")).toBeDefined();
 
     client1.close();
     client2.close();
@@ -202,7 +192,7 @@ describe("Integration: Terminal/logs relay", () => {
 
     client1.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
-    await receiveSkipRunnerMsgs(client1); // "Agent process started" log
+    await client1.receiveType("log_entry"); // "Agent process started" log
 
     // Clear logs
     client1.send({ type: "clear_logs" });
@@ -233,10 +223,10 @@ describe("Integration: Terminal/logs relay", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    // Send preview error via HTTP — the server broadcasts a log_entry to all WS clients
+    // Send preview error via HTTP using the client's actual session ID
     await app.inject({
       method: "POST",
-      url: "/api/sessions/any/preview-errors",
+      url: `/api/sessions/${client.sessionId}/preview-errors`,
       payload: {
         message: "TypeError: Cannot read properties of undefined",
         stack: "TypeError: Cannot read properties of undefined\n  at App.tsx:42",
@@ -281,16 +271,16 @@ describe("Integration: Terminal/logs relay", () => {
     const client1 = await TestClient.connect(port);
     await client1.receive(); // preview_status
 
-    // Send a preview error via HTTP to populate the log buffer
+    // Send a preview error via HTTP using the client's actual session ID
     await app.inject({
       method: "POST",
-      url: "/api/sessions/any/preview-errors",
+      url: `/api/sessions/${client1.sessionId}/preview-errors`,
       payload: { message: "Runtime error in preview" },
     });
     await client1.receive(); // log_entry
 
-    // Second client should get buffered preview log entries
-    const client2 = await TestClient.connect(port);
+    // Second client connects to the same session — should get buffered preview log entries
+    const client2 = await TestClient.connect(port, client1.sessionId);
     await client2.receive(); // preview_status
 
     // Collect messages and check for the preview log

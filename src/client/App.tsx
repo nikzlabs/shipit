@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { useWebSocket } from "./hooks/useWebSocket.js";
+import { useSessionWebSocket } from "./hooks/useSessionWebSocket.js";
+import { useServerEvents } from "./hooks/useServerEvents.js";
 import { useResizablePanel } from "./hooks/useResizablePanel.js";
 import { useSearch } from "./hooks/useSearch.js";
 import { useIsMobile } from "./hooks/useMediaQuery.js";
@@ -59,18 +60,17 @@ import { usePrStore } from "./stores/pr-store.js";
 import { useSettingsStore } from "./stores/settings-store.js";
 import { useUiStore } from "./stores/ui-store.js";
 import { useRepoStore } from "./stores/repo-store.js";
-import { resumeSessionInternal, newSession, resetSessionState } from "./stores/actions/session-actions.js";
-
-function getWsUrl(): string {
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const host = import.meta.env.VITE_API_HOST || window.location.host;
-  return `${proto}//${host}/ws`;
-}
+import { resumeSessionInternal, handleSessionResume, newSession, resetSessionState } from "./stores/actions/session-actions.js";
 
 export default function App() {
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
-  const { send, lastMessage, status, reconnectAttempt, reconnect } = useWebSocket(getWsUrl());
+
+  // SSE for global push (session list, repos, auth, activity dots) — always active
+  useServerEvents();
+
+  // Per-session WS — only connected when viewing a session
+  const { send, lastMessage, status, reconnectAttempt, reconnect } = useSessionWebSocket(urlSessionId);
   const { get: apiGet, post: apiPost, del: apiDel } = useApi();
   const terminalRef = useRef<InteractiveTerminalHandle>(null);
 
@@ -211,7 +211,6 @@ export default function App() {
     send,
     terminalRef,
     notify,
-    navigate,
   });
 
   // Initialize sessionId from URL on mount
@@ -225,15 +224,16 @@ export default function App() {
   }, []);
 
   // Sync session state when URL changes (back/forward navigation)
+  // WS auto-connects/disconnects via useSessionWebSocket(urlSessionId)
   useEffect(() => {
     if (urlSessionId && urlSessionId !== useSessionStore.getState().sessionId) {
-      resumeSessionInternal(urlSessionId, send);
+      resumeSessionInternal(urlSessionId);
     } else if (!urlSessionId && useSessionStore.getState().sessionId) {
       useSessionStore.getState().setSessionId(undefined);
       resetSessionState();
       useUiStore.getState().setShowTemplates(true);
     }
-  }, [urlSessionId, send]);
+  }, [urlSessionId]);
 
   // Clear newSessionRepoUrl once the claimed session graduates and appears in the list
   useEffect(() => {
@@ -244,7 +244,7 @@ export default function App() {
 
   // ── Callback helpers ──
   const handleSend = useCallback(
-    (text: string, images?: Array<{ data: string; mediaType: string; filename: string }>) => {
+    async (text: string, images?: Array<{ data: string; mediaType: string; filename: string }>) => {
       requestPermission();
       disableAutoFix();
       const session = useSessionStore.getState();
@@ -257,17 +257,39 @@ export default function App() {
       session.setMessages((prev) => [...prev, { role: "user", text, images: messageImages, files: filesForMessage }]);
       session.setIsLoading(true);
       session.setActivity({ label: "Thinking..." });
-      send({
-        type: "send_message",
-        text,
-        sessionId: useSessionStore.getState().sessionId,
-        images,
-        files: settings.pendingFiles.length > 0 ? settings.pendingFiles : undefined,
-        permissionMode: settings.permissionMode !== "auto" ? settings.permissionMode : undefined,
-      });
+
+      const currentSessionId = session.sessionId;
+      if (currentSessionId) {
+        // Already in a session — send directly over WS
+        send({
+          type: "send_message",
+          text,
+          sessionId: currentSessionId,
+          images,
+          files: settings.pendingFiles.length > 0 ? settings.pendingFiles : undefined,
+          permissionMode: settings.permissionMode !== "auto" ? settings.permissionMode : undefined,
+        });
+      } else {
+        // No session yet (home page) — create one via HTTP, store pending WS message, navigate
+        try {
+          const res = await apiPost<{ sessionId: string }>("/api/sessions", {});
+          session.setPendingWsMessage({
+            type: "send_message",
+            text,
+            images,
+            files: settings.pendingFiles.length > 0 ? settings.pendingFiles : undefined,
+            permissionMode: settings.permissionMode !== "auto" ? settings.permissionMode : undefined,
+          });
+          navigate(`/session/${res.sessionId}`);
+        } catch (err) {
+          console.error("[session] Failed to create session:", err);
+          session.setIsLoading(false);
+          session.setActivity(undefined);
+        }
+      }
       settings.clearPendingFiles();
     },
-    [send, requestPermission, disableAutoFix],
+    [send, requestPermission, disableAutoFix, apiPost, navigate],
   );
 
   const handleEditMessage = useCallback(
@@ -319,11 +341,10 @@ export default function App() {
       const result = await useRepoStore.getState().claimSession(repoUrl);
       if (result) {
         setNewSessionRepoUrl(repoUrl);
-        resumeSessionInternal(result.sessionId, send);
         navigate(`/session/${result.sessionId}`);
       }
     },
-    [send, navigate],
+    [navigate],
   );
 
   const handleTabChange = useCallback(
@@ -421,11 +442,9 @@ export default function App() {
   }, []);
 
   const handleFeatureStartSession = useCallback(
-    (feature: { name: string; planPath: string; checklistPath?: string }) => {
-      useSessionStore.getState().setSessionId(undefined);
+    async (feature: { name: string; planPath: string; checklistPath?: string }) => {
       resetSessionState();
       useUiStore.getState().setShowTemplates(false);
-      send({ type: "new_session" });
       let text = `Work on feature: ${feature.name}\n\nPlease read the feature plan at ${feature.planPath}`;
       if (feature.checklistPath) text += ` and the remaining work checklist at ${feature.checklistPath}`;
       text += `, then proceed with the implementation.`;
@@ -433,10 +452,24 @@ export default function App() {
       useSessionStore.getState().setMessages([{ role: "user", text }]);
       useSessionStore.getState().setIsLoading(true);
       useSessionStore.getState().setActivity({ label: "Thinking..." });
-      send({ type: "send_message", text });
       useUiStore.getState().setMobilePanel("chat");
+      // Create session via HTTP, then navigate (WS auto-connects and sends pending message)
+      try {
+        const res = await apiPost<{ sessionId: string }>("/api/sessions", { title: feature.name });
+        const pm = useSettingsStore.getState().permissionMode;
+        useSessionStore.getState().setPendingWsMessage({
+          type: "send_message",
+          text,
+          permissionMode: pm !== "auto" ? pm : undefined,
+        });
+        navigate(`/session/${res.sessionId}`);
+      } catch (err) {
+        console.error("[session] Failed to create session for feature:", err);
+        useSessionStore.getState().setIsLoading(false);
+        useSessionStore.getState().setActivity(undefined);
+      }
     },
-    [send, requestPermission],
+    [requestPermission, apiPost, navigate],
   );
 
   const handleUsageBadgeClick = useCallback(() => {
@@ -660,8 +693,8 @@ export default function App() {
           <SessionSidebar
             sessions={sessions} repos={repos} currentSessionId={sessionId} activeRunnerSessions={activeRunnerSessions}
             newSessionRepoUrl={newSessionRepoUrl}
-            onResume={(sid) => { setNewSessionRepoUrl(undefined); resumeSessionInternal(sid, send); navigate(`/session/${sid}`); }}
-            onNew={() => newSession(send, navigate)}
+            onResume={(sid) => { setNewSessionRepoUrl(undefined); handleSessionResume(sid, navigate); }}
+            onNew={() => newSession(navigate)}
             onNewSessionForRepo={handleNewSessionForRepo}
             onArchive={async (sid) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId) { useSessionStore.getState().setSessionId(undefined); navigate("/"); } }}
             onRename={(sid, title) => useSessionStore.getState().renameSession(sid, title)}

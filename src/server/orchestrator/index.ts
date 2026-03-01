@@ -34,7 +34,6 @@ import type { HandlerContext } from "./ws-handlers/types.js";
 import * as terminalHandlers from "./ws-handlers/terminal-handlers.js";
 import * as miscHandlers from "./ws-handlers/misc-handlers.js";
 import * as deployHandlers from "./ws-handlers/deploy-handlers.js";
-import * as sessionHandlers from "./ws-handlers/session-handlers.js";
 import * as threadHandlers from "./ws-handlers/thread-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
 import { registerApiRoutes } from "./api-routes.js";
@@ -353,15 +352,60 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     },
   });
 
-  // Track connected WebSocket clients so we can broadcast
-  const clients = new Set<{ readyState: number; send: (data: string) => void }>();
+  // ---- SSE (Server-Sent Events) for global push ----
+  // Delivers session_list, repo updates, auth, activity dots to all clients
+  // (home page + session page) without requiring a WebSocket connection.
+  type SSEClient = { write: (data: string) => boolean; closed: boolean };
+  const sseClients = new Set<SSEClient>();
 
-  const broadcast = (msg: WsServerMessage) => {
-    const payload = JSON.stringify(msg);
-    for (const ws of clients) {
-      if (ws.readyState === 1) ws.send(payload);
+  /** Send an SSE event to all connected SSE clients. */
+  const sseBroadcast = (event: string, data: unknown) => {
+    const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    for (const client of sseClients) {
+      if (!client.closed) client.write(payload);
     }
   };
+
+  // SSE endpoint — long-lived HTTP response with text/event-stream
+  app.get("/api/events", (request, reply) => {
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+
+    const client: SSEClient = {
+      write: (data: string) => reply.raw.write(data),
+      closed: false,
+    };
+    sseClients.add(client);
+
+    // Send initial state snapshot so the client has data immediately
+    const sessions = sessionManager.list();
+    client.write(`event: session_list\ndata: ${JSON.stringify({ sessions })}\n\n`);
+    const repos = repoStore.list();
+    client.write(`event: repo_list\ndata: ${JSON.stringify({ repos })}\n\n`);
+    const agents = agentRegistry.list().map((a) => ({
+      id: a.id, name: a.name, installed: a.installed,
+      authConfigured: a.authConfigured, models: a.capabilities.models,
+    }));
+    client.write(`event: agent_list\ndata: ${JSON.stringify({ agents, defaultAgentId })}\n\n`);
+
+    // Send active runner sessions so sidebar dots are correct on connect
+    const activeRunnerSessions: string[] = [];
+    for (const session of sessions) {
+      const runner = runnerRegistry.get(session.id);
+      if (runner?.running) activeRunnerSessions.push(session.id);
+    }
+    if (activeRunnerSessions.length > 0) {
+      client.write(`event: active_runners\ndata: ${JSON.stringify({ sessionIds: activeRunnerSessions })}\n\n`);
+    }
+
+    request.raw.on("close", () => {
+      client.closed = true;
+      sseClients.delete(client);
+    });
+  });
 
   // ---- Terminal/logs buffer ----
   const MAX_LOG_ENTRIES = 500;
@@ -378,7 +422,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     if (logBuffer.length > MAX_LOG_ENTRIES) {
       logBuffer = logBuffer.slice(-MAX_LOG_ENTRIES);
     }
-    broadcast(entry);
   };
 
   // ---- Deployment event handlers ----
@@ -387,27 +430,27 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   });
 
   deploymentManager.on("status", (status: { phase: string }) => {
-    broadcast({ type: "deploy_status", phase: status.phase as "building" | "deploying" | "complete" | "error" });
+    sseBroadcast("deploy_status", { phase: status.phase });
   });
 
   deploymentManager.on("error", (err: { message: string; phase: string }) => {
-    broadcast({ type: "deploy_error", message: err.message, phase: err.phase as "building" | "deploying" });
+    sseBroadcast("deploy_error", { message: err.message, phase: err.phase });
   });
 
 
   // ---- Auth event handlers ----
   authManager.on("auth_url", (url: string) => {
-    broadcast({ type: "auth_required", url });
+    sseBroadcast("auth_required", { url });
   });
 
   authManager.on("auth_complete", () => {
     agentRegistry.refreshAuth("claude");
-    broadcast({ type: "auth_complete" });
     const agents = agentRegistry.list().map((a) => ({
       id: a.id, name: a.name, installed: a.installed,
       authConfigured: a.authConfigured, models: a.capabilities.models,
     }));
-    broadcast({ type: "agent_list", agents, defaultAgentId });
+    sseBroadcast("auth_complete", {});
+    sseBroadcast("agent_list", { agents, defaultAgentId });
   });
 
   authManager.on("auth_failed", () => {
@@ -541,7 +584,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         repoStore.setWarmSessionId(repoUrl, appSessionId);
 
         // Broadcast so client knows the repo is ready for instant sessions
-        broadcast({ type: "repo_warm_ready", url: repoUrl, sessionId: appSessionId });
+        sseBroadcast("repo_warm_ready", { url: repoUrl, sessionId: appSessionId });
 
         console.log(`[warm] Warm session ${appSessionId} ready for ${repoUrl} (runner=${!!runner})`);
       } catch (err) {
@@ -612,8 +655,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     runnerRegistry,
     chatHistoryManager,
     authManager,
-    broadcast,
     broadcastLog,
+    sseBroadcast,
     getSharedRepoDir,
     createSessionDir,
     generateText,
@@ -649,331 +692,234 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
   }
 
-  // ---- WebSocket route ----
-  app.get("/ws", { websocket: true }, (socket) => {
-    console.log("[ws] client connected");
-    clients.add(socket);
+  // ---- Per-session WebSocket route ----
 
-    // Per-connection active session state (lightweight — which session this tab views)
-    let activeAppSessionId: string | undefined;
-    let activeSessionDir: string | null = null;
 
-    // Per-connection active agent selection (survives across runners)
-    let perConnectionAgentId: AgentId = defaultAgentId;
 
-    // Per-connection runner attachment
-    let attachedRunner: SessionRunnerInterface | null = null;
-    let runnerMessageListener: ((msg: WsServerMessage) => void) | null = null;
-
-    const send = (msg: WsServerMessage) => {
-      if (socket.readyState === 1) {
-        socket.send(JSON.stringify(msg));
-      }
-    };
-
-    // Send initial preview_status so client has a baseline state
-    send({ type: "preview_status", running: false, port: 5173, url: "http://localhost:5173" });
-
-    // ---- Runner attach/detach helpers ----
-
-    const attachToRunner = (runner: SessionRunnerInterface) => {
-      // Already attached to this runner — nothing to do
-      if (attachedRunner === runner) return;
-
-      // Detach from previous runner first
-      detachFromRunner();
-
-      attachedRunner = runner;
-      runnerMessageListener = (msg: WsServerMessage) => send(msg);
-      runner.on("message", runnerMessageListener);
-      runner.attachViewer();
-
-      // Replay buffered events from the current turn so client catches up
-      for (const buffered of runner.getTurnEventBuffer()) {
-        send(buffered);
-      }
-
-      // Send current queue state
-      if (runner.getQueueSnapshot().length > 0) {
-        send({ type: "queue_updated", queue: runner.getQueueSnapshot() });
-      }
-
-      // Send running status so client shows the right UI state
-      // (only when the runner has activity to report — avoids noise for fresh runners)
-      if (runner.running || runner.queueLength > 0 || runner.getTurnEventBuffer().length > 0) {
-        send({
-          type: "session_status",
-          sessionId: runner.sessionId,
-          running: runner.running,
-          queueLength: runner.queueLength,
-        });
-      }
-
-      // Send preview status only if the preview is already running (e.g.
-      // reconnecting a second viewer tab). When a preview was just started by
-      // attachViewer() above, the container will emit events on its own once
-      // it finishes — sending a premature "running: false" here would flash
-      // the placeholder UI unnecessarily.
-      const previewStatus = runner.buildPreviewStatus();
-      if (previewStatus.type === "preview_status" && previewStatus.running) {
-        send(previewStatus);
-      }
-    };
-
-    const detachFromRunner = () => {
-      if (attachedRunner && runnerMessageListener) {
-        attachedRunner.off("message", runnerMessageListener);
-        attachedRunner.detachViewer();
-      }
-      attachedRunner = null;
-      runnerMessageListener = null;
-    };
-
-    // ---- Auto-push (per-runner, but created here for githubAuthManager access) ----
-    const scheduleAutoPush = (git: GitManager, _sendFn: typeof send) => {
-      const runner = attachedRunner;
-      if (!runner) return;
-      runner.clearPushTimer();
-      runner.setPushTimer(setTimeout(async () => {
-        runner.setPushTimer(null);
-        try {
-          if (!githubAuthManager.authenticated) return;
-          const remotes = await git.getRemotes();
-          const origin = remotes.find((r) => r.name === "origin");
-          if (!origin) return;
-          const branch = await git.getCurrentBranch();
-          if (!branch) return;
-          await git.push("origin", branch);
-          runner.emitMessage({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
-        } catch (err) {
-          broadcastLog("server", `Auto-push failed: ${getErrorMessage(err)}`);
-        }
-      }, autoPushDebounceMs));
-    };
-
-    /** Get the effective workspace directory for file operations. */
-    const getActiveDir = (): string => activeSessionDir ?? workspaceDir;
-
-    /** Get a GitManager for the active session. Throws if no session is active. */
-    const getActiveGitManager = (): GitManager => {
-      if (!activeSessionDir) {
-        throw new Error("No active session — git operations require a session");
-      }
-      return createGitManager(activeSessionDir);
-    };
-
-    /**
-     * Activate a session by ID — sets activeSessionDir, creates a runner
-     * (which starts a container), and attaches this connection to it.
-     */
-    const activateSession = async (sessionId: string) => {
+  // ---- Per-session WebSocket route ----
+  // Session-scoped WS: auto-activates the session on connect, no activate_session needed.
+  // The session ID is in the URL path. Agent preference via ?agent= query param.
+  app.get<{ Params: { sessionId: string }; Querystring: { agent?: string } }>(
+    "/ws/sessions/:sessionId",
+    { websocket: true },
+    (socket, request) => {
+      const { sessionId } = request.params;
       const session = sessionManager.get(sessionId);
-      activeAppSessionId = sessionId;
-      const dir = session?.workspaceDir ?? null;
-
-      // Attach to an existing runner or eagerly create one for the container.
-      const existingRunner = runnerRegistry.get(sessionId);
-      console.log(`[session] Activating ${sessionId}, dir=${dir}, existingRunner=${!!existingRunner}`);
-      if (existingRunner) {
-        attachToRunner(existingRunner);
-      } else if (dir) {
-        const runner = runnerRegistry.getOrCreate(sessionId, dir, perConnectionAgentId);
-        attachToRunner(runner);
-      } else {
-        detachFromRunner();
-      }
-
-      if (dir !== activeSessionDir) {
-        const oldDir = activeSessionDir;
-        activeSessionDir = dir;
-
-        // Clear terminal logs when switching away from a previous session
-        if (oldDir !== null) {
-          logBuffer = [];
-          broadcast({ type: "clear_logs" });
-        }
-      }
-      // Check git identity for the newly activated session
-      if (dir) {
-        checkGitIdentity(dir);
-      }
-    };
-
-    // Send buffered log entries so new clients see existing terminal output
-    for (const entry of logBuffer) {
-      send(entry);
-    }
-
-    // Block the UI until the user has configured a git identity.
-    // This fires on every WS connect so new tabs see the overlay immediately.
-    if (!getGitIdentity()) {
-      send({ type: "git_identity_required" });
-    }
-
-    // Check git identity when a session becomes active.
-    // Identity lives in the global git config — all repos inherit it automatically.
-    const checkGitIdentity = async (_sessionDir: string) => {
-      if (getGitIdentity()) return;
-      send({ type: "git_identity_required" });
-    };
-
-    /** Read the system prompt file if it exists. Returns undefined when absent or empty. */
-    const readSystemPrompt = async (): Promise<string | undefined> => {
-      try {
-        const content = await fs.readFile(
-          path.join(workspaceDir, ".shipit", "system-prompt.md"),
-          "utf-8",
-        );
-        const trimmed = content.trim();
-        return trimmed || undefined;
-      } catch {
-        return undefined;
-      }
-    };
-
-    // ---- Handler context for extracted WebSocket handlers ----
-    // Agent state getters/setters delegate to the attached SessionRunnerInterface.
-    // If no runner is attached, they use safe defaults (null, false, etc.).
-    const ctx: HandlerContext = {
-      send,
-      broadcast,
-      broadcastLog,
-      getActiveDir,
-      getActiveGitManager,
-      getActiveAppSessionId: () => activeAppSessionId,
-      setActiveAppSessionId: (id) => { activeAppSessionId = id; },
-      getActiveSessionDir: () => activeSessionDir,
-      setActiveSessionDir: (dir) => { activeSessionDir = dir; },
-      activateSession,
-      agentFactory: (agentId: AgentId) => {
-        // In production, the attached runner creates a proxy agent that
-        // delegates to the session container over HTTP.
-        if (attachedRunner?.createAgent) {
-          return attachedRunner.createAgent(agentId);
-        }
-        // Test fallback — agentFactory is injected via deps in tests.
-        if (agentFactory) {
-          return agentFactory(agentId);
-        }
-        throw new Error("No agent factory available — session not activated or no runner attached");
-      },
-      // Agent state delegates to runner
-      getAgent: () => attachedRunner?.getAgent() ?? null,
-      setAgent: (a) => { if (attachedRunner) attachedRunner.setAgent(a); },
-      getActiveAgentId: () => attachedRunner?.agentId ?? perConnectionAgentId,
-      setActiveAgentId: (id) => { perConnectionAgentId = id; if (attachedRunner) attachedRunner.agentId = id; },
-      getIsClaudeRunning: () => attachedRunner?.running ?? false,
-      setIsClaudeRunning: (v) => { if (attachedRunner) attachedRunner.running = v; },
-      getWasInterrupted: () => attachedRunner?.wasInterrupted ?? false,
-      setWasInterrupted: (v) => { if (attachedRunner) attachedRunner.wasInterrupted = v; },
-      getTurnSummary: () => attachedRunner?.turnSummary ?? "",
-      setTurnSummary: (s) => { if (attachedRunner) attachedRunner.turnSummary = s; },
-      getAccumulatedText: () => attachedRunner?.accumulatedText ?? "",
-      setAccumulatedText: (s) => { if (attachedRunner) attachedRunner.accumulatedText = s; },
-      getAccumulatedToolUse: () => attachedRunner?.accumulatedToolUse ?? [],
-      setAccumulatedToolUse: (blocks) => { if (attachedRunner) attachedRunner.accumulatedToolUse = blocks; },
-      getChatMessageGroups: () => attachedRunner?.chatMessageGroups ?? [],
-      setChatMessageGroups: (groups) => { if (attachedRunner) attachedRunner.chatMessageGroups = groups; },
-      getNeedsNewMessageGroup: () => attachedRunner?.needsNewMessageGroup ?? true,
-      setNeedsNewMessageGroup: (v) => { if (attachedRunner) attachedRunner.needsNewMessageGroup = v; },
-      getMessageQueue: () => attachedRunner?.messageQueue ?? [],
-      clearMessageQueue: () => { if (attachedRunner) attachedRunner.clearQueue(); },
-      getTerminal: () => attachedRunner?.getTerminal() ?? null,
-      setTerminal: (t) => { if (attachedRunner) attachedRunner.setTerminal(t); },
-      clearLogBuffer: () => { logBuffer = []; },
-      // Session runner
-      getRunner: () => attachedRunner,
-      getRunnerRegistry: () => runnerRegistry,
-      attachToRunner,
-      detachFromRunner,
-      sessionManager,
-      chatHistoryManager,
-      createGitManager,
-      createRepoGit,
-      githubAuthManager,
-      threadManager,
-      deploymentManager,
-      deploymentStore,
-      featureManager,
-      usageManager,
-      authManager,
-      agentRegistry,
-      credentialStore,
-      repoStore,
-      warmSessionForRepo,
-      createSessionDir,
-      generateText,
-      getSharedRepoDir,
-      checkGitIdentity,
-      readSystemPrompt,
-      scheduleAutoPush,
-      workspaceDir,
-      sessionsRoot,
-      defaultAgentId,
-    };
-
-    socket.on("message", async (raw: Buffer) => {
-      let msg: WsClientMessage;
-      try {
-        msg = JSON.parse(raw.toString());
-      } catch {
-        send({ type: "error", message: "Invalid JSON" });
+      if (!session) {
+        socket.close(4004, "Session not found");
         return;
       }
+      console.log(`[ws] session client connected: ${sessionId}`);
 
-      switch (msg.type) {
-        // ---- Diff review operations ----
-        case "diff_comment": {
-          // Format comments into a prompt and send to Claude (like init_preview_config)
-          const commentLines = msg.comments.map((c: { file: string; line: number; text: string }) =>
-            `File: ${c.file}, Line ${c.line}:\n"${c.text}"`
-          ).join("\n\n");
-          const prompt = `The user has reviewed your changes and left the following inline comments:\n\n${commentLines}\n\nPlease address these comments and update the code accordingly.`;
-          sendMessageHandlers.handleSendMessage(ctx, { type: "send_message", text: prompt });
-          return;
+      // Per-connection state — initialized from URL params
+      let activeAppSessionId: string | undefined = sessionId;
+      let activeSessionDir: string | null = session.workspaceDir ?? null;
+      const requestedAgent = request.query.agent as AgentId | undefined;
+      let perConnectionAgentId: AgentId = requestedAgent ?? defaultAgentId;
+      let attachedRunner: SessionRunnerInterface | null = null;
+      let runnerMessageListener: ((msg: WsServerMessage) => void) | null = null;
+
+      const send = (msg: WsServerMessage) => {
+        if (socket.readyState === 1) {
+          socket.send(JSON.stringify(msg));
         }
+      };
 
-        // ---- Terminal operations ----
-        case "terminal_start": return terminalHandlers.handleTerminalStart(ctx);
-        case "terminal_input": return terminalHandlers.handleTerminalInput(ctx, msg);
-        case "terminal_resize": return terminalHandlers.handleTerminalResize(ctx, msg);
-        case "clear_logs": return terminalHandlers.handleClearLogs(ctx);
+      // ---- Runner attach/detach (same as /ws) ----
+      const attachToRunner = (runner: SessionRunnerInterface) => {
+        if (attachedRunner === runner) return;
+        detachFromRunner();
+        attachedRunner = runner;
+        runnerMessageListener = (msg: WsServerMessage) => { send(msg); };
+        runner.on("message", runnerMessageListener);
+        runner.attachViewer();
+        for (const msg of runner.getTurnEventBuffer()) { send(msg); }
+        if (runner.getQueueSnapshot().length > 0) {
+          send({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+        }
+        if (runner.running || runner.queueLength > 0 || runner.getTurnEventBuffer().length > 0) {
+          send({ type: "session_status", sessionId: runner.sessionId, running: runner.running, queueLength: runner.queueLength });
+        }
+        // Always send preview_status on attach so clients get initial state
+        send(runner.buildPreviewStatus());
+      };
 
-        // ---- Settings operations ----
-        case "set_agent": {
-          // Per-connection state: must stay on WS (HTTP can't set WS connection state)
-          const agentId = msg.agentId;
-          const info = agentRegistry.get(agentId);
-          if (!info) { send({ type: "error", message: `Unknown agent: ${agentId}` }); return; }
-          if (!info.installed) { send({ type: "error", message: `${info.name} CLI is not installed` }); return; }
-          if (!info.authConfigured) {
-            const envKey = agentId === "codex" ? "OPENAI_API_KEY" : "";
-            send({ type: "error", message: `${envKey || "API key"} is not set. Add it in Settings → Agents.` });
+      const detachFromRunner = () => {
+        if (attachedRunner && runnerMessageListener) {
+          attachedRunner.off("message", runnerMessageListener);
+          attachedRunner.detachViewer();
+        }
+        attachedRunner = null;
+        runnerMessageListener = null;
+      };
+
+      const scheduleAutoPush = (git: GitManager, _sendFn: typeof send) => {
+        const runner = attachedRunner;
+        if (!runner) return;
+        runner.clearPushTimer();
+        runner.setPushTimer(setTimeout(async () => {
+          runner.setPushTimer(null);
+          try {
+            if (!githubAuthManager.authenticated) return;
+            const remotes = await git.getRemotes();
+            const origin = remotes.find((r) => r.name === "origin");
+            if (!origin) return;
+            const branch = await git.getCurrentBranch();
+            if (!branch) return;
+            await git.push("origin", branch);
+            runner.emitMessage({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
+          } catch (err) {
+            const text = `Auto-push failed: ${getErrorMessage(err)}`;
+            broadcastLog("server", text);
+            runner.emitMessage({ type: "log_entry", source: "server", text, timestamp: new Date().toISOString() });
+          }
+        }, autoPushDebounceMs));
+      };
+
+      const getActiveDir = (): string => activeSessionDir ?? workspaceDir;
+      const getActiveGitManager = (): GitManager => {
+        if (!activeSessionDir) throw new Error("No active session — git operations require a session");
+        return createGitManager(activeSessionDir);
+      };
+
+      const activateSession = async (sid: string) => {
+        const s = sessionManager.get(sid);
+        activeAppSessionId = sid;
+        const dir = s?.workspaceDir ?? null;
+        const existingRunner = runnerRegistry.get(sid);
+        if (existingRunner) {
+          attachToRunner(existingRunner);
+        } else if (dir) {
+          const runner = runnerRegistry.getOrCreate(sid, dir, perConnectionAgentId);
+          attachToRunner(runner);
+        } else {
+          detachFromRunner();
+        }
+        if (dir !== activeSessionDir) {
+          activeSessionDir = dir;
+        }
+        if (dir) checkGitIdentity(dir);
+      };
+
+      const checkGitIdentity = async (_sessionDir: string) => {
+        if (getGitIdentity()) return;
+        send({ type: "git_identity_required" });
+      };
+
+      const readSystemPrompt = async (): Promise<string | undefined> => {
+        try {
+          const content = await fs.readFile(path.join(workspaceDir, ".shipit", "system-prompt.md"), "utf-8");
+          const trimmed = content.trim();
+          return trimmed || undefined;
+        } catch { return undefined; }
+      };
+
+      // Wrap broadcastLog so it both buffers globally AND sends to attached WS viewers
+      const sessionBroadcastLog: typeof broadcastLog = (source, text) => {
+        broadcastLog(source, text); // global buffer
+        const entry: WsLogEntry = { type: "log_entry", source, text, timestamp: new Date().toISOString() };
+        if (attachedRunner) {
+          attachedRunner.emitMessage(entry);
+        } else {
+          send(entry);
+        }
+      };
+
+      // ---- Handler context ----
+      const ctx: HandlerContext = {
+        send, broadcastLog: sessionBroadcastLog, sseBroadcast,
+        getActiveDir, getActiveGitManager,
+        getActiveAppSessionId: () => activeAppSessionId,
+        setActiveAppSessionId: (id) => { activeAppSessionId = id; },
+        getActiveSessionDir: () => activeSessionDir,
+        setActiveSessionDir: (dir) => { activeSessionDir = dir; },
+        activateSession,
+        agentFactory: (agentId: AgentId) => {
+          if (attachedRunner?.createAgent) return attachedRunner.createAgent(agentId);
+          if (agentFactory) return agentFactory(agentId);
+          throw new Error("No agent factory available");
+        },
+        getAgent: () => attachedRunner?.getAgent() ?? null,
+        setAgent: (a) => { if (attachedRunner) attachedRunner.setAgent(a); },
+        getActiveAgentId: () => attachedRunner?.agentId ?? perConnectionAgentId,
+        setActiveAgentId: (id) => { perConnectionAgentId = id; if (attachedRunner) attachedRunner.agentId = id; },
+        getIsClaudeRunning: () => attachedRunner?.running ?? false,
+        setIsClaudeRunning: (v) => { if (attachedRunner) attachedRunner.running = v; },
+        getWasInterrupted: () => attachedRunner?.wasInterrupted ?? false,
+        setWasInterrupted: (v) => { if (attachedRunner) attachedRunner.wasInterrupted = v; },
+        getTurnSummary: () => attachedRunner?.turnSummary ?? "",
+        setTurnSummary: (s) => { if (attachedRunner) attachedRunner.turnSummary = s; },
+        getAccumulatedText: () => attachedRunner?.accumulatedText ?? "",
+        setAccumulatedText: (s) => { if (attachedRunner) attachedRunner.accumulatedText = s; },
+        getAccumulatedToolUse: () => attachedRunner?.accumulatedToolUse ?? [],
+        setAccumulatedToolUse: (blocks) => { if (attachedRunner) attachedRunner.accumulatedToolUse = blocks; },
+        getChatMessageGroups: () => attachedRunner?.chatMessageGroups ?? [],
+        setChatMessageGroups: (groups) => { if (attachedRunner) attachedRunner.chatMessageGroups = groups; },
+        getNeedsNewMessageGroup: () => attachedRunner?.needsNewMessageGroup ?? true,
+        setNeedsNewMessageGroup: (v) => { if (attachedRunner) attachedRunner.needsNewMessageGroup = v; },
+        getMessageQueue: () => attachedRunner?.messageQueue ?? [],
+        clearMessageQueue: () => { if (attachedRunner) attachedRunner.clearQueue(); },
+        getTerminal: () => attachedRunner?.getTerminal() ?? null,
+        setTerminal: (t) => { if (attachedRunner) attachedRunner.setTerminal(t); },
+        clearLogBuffer: () => { logBuffer = []; },
+        getRunner: () => attachedRunner,
+        getRunnerRegistry: () => runnerRegistry,
+        attachToRunner, detachFromRunner,
+        sessionManager, chatHistoryManager, createGitManager, createRepoGit,
+        githubAuthManager, threadManager, deploymentManager, deploymentStore,
+        featureManager, usageManager, authManager, agentRegistry, credentialStore,
+        repoStore, warmSessionForRepo, createSessionDir, generateText,
+        getSharedRepoDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
+        workspaceDir, sessionsRoot, defaultAgentId,
+      };
+
+      // Auto-activate the session on connect
+      activateSession(sessionId);
+
+      // Send log buffer and git identity check
+      for (const entry of logBuffer) { send(entry); }
+      if (!getGitIdentity()) { send({ type: "git_identity_required" }); }
+
+      // Message dispatcher — same as /ws but without new_session and activate_session
+      socket.on("message", async (raw: Buffer) => {
+        let msg: WsClientMessage;
+        try { msg = JSON.parse(raw.toString()); } catch { send({ type: "error", message: "Invalid JSON" }); return; }
+
+        switch (msg.type) {
+          case "diff_comment": {
+            const commentLines = msg.comments.map((c: { file: string; line: number; text: string }) =>
+              `File: ${c.file}, Line ${c.line}:\n"${c.text}"`).join("\n\n");
+            sendMessageHandlers.handleSendMessage(ctx, { type: "send_message", text: `The user has reviewed your changes and left the following inline comments:\n\n${commentLines}\n\nPlease address these comments and update the code accordingly.` });
             return;
           }
-          ctx.setActiveAgentId(agentId);
-          return;
-        }
-        // ---- Session operations ----
-        case "new_session": return sessionHandlers.handleNewSession(ctx);
-        case "activate_session": return sessionHandlers.handleActivateSession(ctx, msg);
-
-        // ---- Deploy operations ----
-        case "initiate_deploy": return deployHandlers.handleInitiateDeploy(ctx, msg);
-        case "cancel_deploy": return deployHandlers.handleCancelDeploy(ctx);
-
-        // ---- Thread operations ----
-        case "fork_thread": return threadHandlers.handleForkThread(ctx, msg);
-        case "switch_thread": return threadHandlers.handleSwitchThread(ctx, msg);
-
-        // ---- Misc operations ----
-        case "cancel_queued_message": return miscHandlers.handleCancelQueuedMessage(ctx, msg);
-        case "interrupt_claude": return miscHandlers.handleInterruptClaude(ctx);
-
-        // ---- Preview config ----
-        case "init_preview_config": {
-          // Send a prompt to Claude asking it to create shipit.yaml
-          const prompt = `Analyze this project and create a shipit.yaml file at the workspace root.
+          case "terminal_start": return terminalHandlers.handleTerminalStart(ctx);
+          case "terminal_input": return terminalHandlers.handleTerminalInput(ctx, msg);
+          case "terminal_resize": return terminalHandlers.handleTerminalResize(ctx, msg);
+          case "clear_logs": return terminalHandlers.handleClearLogs(ctx);
+          case "set_agent": {
+            const agentId = msg.agentId;
+            const info = agentRegistry.get(agentId);
+            if (!info) { send({ type: "error", message: `Unknown agent: ${agentId}` }); return; }
+            if (!info.installed) { send({ type: "error", message: `${info.name} CLI is not installed` }); return; }
+            if (!info.authConfigured) {
+              const envKey = agentId === "codex" ? "OPENAI_API_KEY" : "";
+              send({ type: "error", message: `${envKey || "API key"} is not set. Add it in Settings → Agents.` });
+              return;
+            }
+            ctx.setActiveAgentId(agentId);
+            return;
+          }
+          // new_session and activate_session are NOT handled — session is implicit from URL
+          case "initiate_deploy": return deployHandlers.handleInitiateDeploy(ctx, msg);
+          case "cancel_deploy": return deployHandlers.handleCancelDeploy(ctx);
+          case "fork_thread": return threadHandlers.handleForkThread(ctx, msg);
+          case "switch_thread": return threadHandlers.handleSwitchThread(ctx, msg);
+          case "cancel_queued_message": return miscHandlers.handleCancelQueuedMessage(ctx, msg);
+          case "interrupt_claude": return miscHandlers.handleInterruptClaude(ctx);
+          case "init_preview_config": {
+            sendMessageHandlers.handleSendMessage(ctx, {
+              type: "send_message",
+              text: `Analyze this project and create a shipit.yaml file at the workspace root.
 The file configures the live preview and dependency installation.
 
 For projects with dependencies (npm, yarn, pip, etc.), include an install command:
@@ -989,29 +935,21 @@ preview:
   html: index.html
 
 Look at package.json scripts, framework config files, and project structure
-to determine the correct install command, preview mode, command, and ports.`;
-          sendMessageHandlers.handleSendMessage(ctx, {
-            type: "send_message",
-            text: prompt,
-          });
-          return;
+to determine the correct install command, preview mode, command, and ports.`,
+            });
+            return;
+          }
+          case "send_message": return sendMessageHandlers.handleSendMessage(ctx, msg);
+          case "answer_question": return sendMessageHandlers.handleAnswerQuestion(ctx, msg);
         }
+      });
 
-        // ---- Send message / answer ----
-        case "send_message": return sendMessageHandlers.handleSendMessage(ctx, msg);
-        case "answer_question": return sendMessageHandlers.handleAnswerQuestion(ctx, msg);
-      }
-    });
-
-    // ---- On disconnect: detach from runner (don't kill anything!) ----
-    socket.on("close", () => {
-      console.log("[ws] client disconnected");
-      clients.delete(socket);
-
-      // Detach from runner — runner keeps going (including its terminal)!
-      detachFromRunner();
-    });
-  });
+      socket.on("close", () => {
+        console.log(`[ws] session client disconnected: ${sessionId}`);
+        detachFromRunner();
+      });
+    },
+  );
 
   // ---- Container health monitoring ----
   // When a container dies unexpectedly (OOM, crash), notify viewers and clean up.

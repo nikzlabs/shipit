@@ -14,6 +14,8 @@ interface SessionState {
   authUrl: string | null;
   activeRunnerSessions: Set<string>;
   queuedMessages: Array<{ text: string; position: number }>;
+  /** WS message to auto-send when the next per-session WS connection opens (e.g. new session from home). */
+  pendingWsMessage: Record<string, unknown> | undefined;
 
   // Actions
   setSessionId: (id: string | undefined) => void;
@@ -40,6 +42,7 @@ interface SessionState {
           prev: Array<{ text: string; position: number }>,
         ) => Array<{ text: string; position: number }>),
   ) => void;
+  setPendingWsMessage: (message: Record<string, unknown> | undefined) => void;
   reset: () => void;
 
   // Async actions
@@ -55,6 +58,7 @@ const initialResettableState = {
   selectedRepoUrl: null as string | null,
   creatingRepo: false,
   queuedMessages: [] as Array<{ text: string; position: number }>,
+  pendingWsMessage: undefined as Record<string, unknown> | undefined,
 };
 
 export const useSessionStore = create<SessionState>((set) => ({
@@ -111,6 +115,8 @@ export const useSessionStore = create<SessionState>((set) => ({
           ? messages(state.queuedMessages)
           : messages,
     })),
+
+  setPendingWsMessage: (pendingWsMessage) => set({ pendingWsMessage }),
 
   reset: () => set(initialResettableState),
 

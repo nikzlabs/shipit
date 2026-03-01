@@ -34,8 +34,8 @@ export interface QueuedMessage {
 export interface HandlerContext {
   // === Communication ===
   send: (msg: WsServerMessage) => void;
-  broadcast: (msg: WsServerMessage) => void;
   broadcastLog: (source: WsLogEntry["source"], text: string) => void;
+  sseBroadcast: (event: string, data: unknown) => void;
 
   // === Per-connection state accessors ===
   getActiveDir: () => string;

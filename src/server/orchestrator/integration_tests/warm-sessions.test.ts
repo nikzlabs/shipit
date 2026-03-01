@@ -243,10 +243,9 @@ describe("Integration: warm session lifecycle", () => {
       });
       expect(claimRes.statusCode).toBe(200);
 
-      // Connect via WS and activate the claimed session
-      const client = await TestClient.connect(port);
+      // Connect directly to the claimed session (auto-activates)
+      const client = await TestClient.connect(port, warmSessionId);
       await client.receive(); // preview_status
-      client.send({ type: "activate_session", sessionId: warmSessionId });
       await new Promise((r) => setTimeout(r, 200));
 
       // Session should still be warm before sending a message
@@ -264,10 +263,9 @@ describe("Integration: warm session lifecycle", () => {
       const visibleSessions = sessionManager.list();
       expect(visibleSessions.find((s) => s.id === warmSessionId)).toBeDefined();
 
-      // Should receive a session_list broadcast (sidebar update)
-      const sessionList = await client.receiveType("session_list", 5000);
-      expect(sessionList.type).toBe("session_list");
-      const listed = (sessionList as any).sessions as any[];
+      // Session should be visible via HTTP bootstrap (session_list is SSE-only)
+      const bootstrapRes = await app.inject({ method: "GET", url: "/api/bootstrap" });
+      const listed = bootstrapRes.json().sessions as any[];
       expect(listed.find((s: any) => s.id === warmSessionId)).toBeDefined();
 
       lastClaude.finish("test-session");
@@ -282,9 +280,8 @@ describe("Integration: warm session lifecycle", () => {
       await git.init();
       sessionManager.track("normal-session", "Normal session", sessionDir);
 
-      const client = await TestClient.connect(port);
+      const client = await TestClient.connect(port, "normal-session");
       await client.receive(); // preview_status
-      client.send({ type: "activate_session", sessionId: "normal-session" });
       await new Promise((r) => setTimeout(r, 200));
 
       client.send({ type: "send_message", text: "Hello", sessionId: "normal-session" });

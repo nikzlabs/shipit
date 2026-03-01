@@ -2,7 +2,6 @@ import { useEffect, useRef } from "react";
 import type { WsClientMessage } from "../../server/shared/types.js";
 import type { ChatMessage } from "../components/MessageList.js";
 import type { BootstrapData } from "../../server/orchestrator/services/index.js";
-import { getSavedAgentId } from "../utils/local-storage.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useFileStore } from "../stores/file-store.js";
@@ -52,7 +51,9 @@ export function useConnectionSync(params: {
       });
   }, []);
 
-  // On WebSocket connect, restore session
+  // On per-session WS connect, fetch session history + send any pending message
+  // (No activate_session needed — the per-session WS auto-activates via URL)
+  // (No set_agent needed — passed as query param on WS URL)
   useEffect(() => {
     if (status === "open" && !historyLoadedRef.current && useSessionStore.getState().sessionId) {
       historyLoadedRef.current = true;
@@ -69,12 +70,12 @@ export function useConnectionSync(params: {
           useThreadStore.getState().setActiveThreadId(data.activeThreadId);
         })
         .catch((err) => console.error("[api] Failed to load session history:", err));
-      send({ type: "activate_session", sessionId });
-    }
-    if (status === "open") {
-      const savedAgent = getSavedAgentId();
-      if (savedAgent !== "claude") {
-        send({ type: "set_agent", agentId: savedAgent });
+
+      // If there's a pending WS message (e.g. new session from home page, feature start), send it now
+      const pending = useSessionStore.getState().pendingWsMessage;
+      if (pending) {
+        useSessionStore.getState().setPendingWsMessage(undefined);
+        send({ ...pending, sessionId } as import("../../server/shared/types.js").WsClientMessage);
       }
     }
     if (status === "closed") {

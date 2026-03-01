@@ -16,22 +16,10 @@ export interface WsSendMessage {
   permissionMode?: PermissionMode;
 }
 
-export interface WsNewSession {
-  type: "new_session";
-}
-
 export interface WsAnswerQuestion {
   type: "answer_question";
   toolUseId: string;
   answers: Record<string, string>;
-}
-
-// ---- Session activation (per-connection state — attaches runner, starts watcher) ----
-
-/** Client → Server: activate a session (attach runner, file watcher, preview). */
-export interface WsActivateSession {
-  type: "activate_session";
-  sessionId: string;
 }
 
 // ---- Agent selection (per-connection state, must stay on WS) ----
@@ -78,10 +66,8 @@ export interface WsDiffComment {
 
 export type WsClientMessage =
   | WsSendMessage
-  | WsNewSession
   | WsClearLogs
   | WsAnswerQuestion
-  | WsActivateSession
   | WsSetAgentMessage
   | WsForkThread
   | WsSwitchThread

@@ -56,6 +56,7 @@ function wireAgentListeners(
         const session = ctx.sessionManager.get(turnSessionId);
         if (session) {
           emitToViewers({ type: "session_started", session });
+          ctx.sseBroadcast("session_started", { session });
         }
         if (opts.isNewSession) {
           opts.persistUserMessage(turnSessionId);
@@ -65,6 +66,7 @@ function wireAgentListeners(
         const session = ctx.sessionManager.track(event.sessionId, title);
         ctx.setActiveAppSessionId(event.sessionId);
         emitToViewers({ type: "session_started", session });
+        ctx.sseBroadcast("session_started", { session });
         opts.persistUserMessage(event.sessionId);
       }
 
@@ -219,9 +221,9 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
   const currentAgent = ctx.agentFactory(ctx.getActiveAgentId());
   ctx.setAgent(currentAgent);
 
-  // Broadcast session_agent_started to all clients (sidebar activity)
+  // Notify via SSE for sidebar activity dots
   if (capturedSessionId) {
-    ctx.broadcast({ type: "session_agent_started", sessionId: capturedSessionId });
+    ctx.sseBroadcast("session_agent_started", { sessionId: capturedSessionId });
   }
 
   // Build images metadata for chat history persistence (inline base64)
@@ -356,9 +358,9 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
       }
     }
 
-    // Broadcast session_agent_finished to all clients (sidebar activity)
+    // Notify via SSE for sidebar activity dots
     if (capturedSessionId && !ctx.getIsClaudeRunning()) {
-      ctx.broadcast({ type: "session_agent_finished", sessionId: capturedSessionId });
+      ctx.sseBroadcast("session_agent_finished", { sessionId: capturedSessionId });
       if (runner) runner.onAgentFinished();
     }
   });
@@ -457,23 +459,26 @@ export async function handleSendMessage(ctx: HandlerContext, msg: WsSendMessage)
 
   const userText = msg.text;
 
-  // Determine session context: resume existing or create new
+  // Determine session context: resume existing or create new.
+  // Per-session WS sets activeAppSessionId from the URL, so default to it
+  // when the message doesn't include an explicit sessionId.
+  const effectiveSessionId = msg.sessionId ?? ctx.getActiveAppSessionId();
   let agentSessionId: string | undefined;
-  if (msg.sessionId) {
+  if (effectiveSessionId) {
     // Resuming an existing session
     // Clear the queue when switching to a different session
-    if (ctx.getActiveAppSessionId() && msg.sessionId !== ctx.getActiveAppSessionId() && ctx.getMessageQueue().length > 0) {
+    if (ctx.getActiveAppSessionId() && effectiveSessionId !== ctx.getActiveAppSessionId() && ctx.getMessageQueue().length > 0) {
       ctx.clearMessageQueue();
       ctx.send({ type: "queue_updated", queue: [] });
     }
-    await ctx.activateSession(msg.sessionId);
-    const session = ctx.sessionManager.get(msg.sessionId);
+    await ctx.activateSession(effectiveSessionId);
+    const session = ctx.sessionManager.get(effectiveSessionId);
     // Only resume if we have a real Claude CLI session ID
     agentSessionId = session?.agentSessionId;
 
     // Graduate warm session on first message
     if (session?.warm) {
-      ctx.sessionManager.setWarm(msg.sessionId, false);
+      ctx.sessionManager.setWarm(effectiveSessionId, false);
 
       // Generate session name from the message text
       const utilityModel = ctx.credentialStore.getUtilityModel();
@@ -486,15 +491,16 @@ export async function handleSendMessage(ctx: HandlerContext, msg: WsSendMessage)
               const newBranchName = `${currentBranch}-${nameResult.slug}`;
               const sessionGit = ctx.createGitManager(session.workspaceDir!);
               await sessionGit.renameBranch(currentBranch, newBranchName);
-              ctx.sessionManager.setWorktreeInfo(msg.sessionId!, {
+              ctx.sessionManager.setWorktreeInfo(effectiveSessionId, {
                 branch: newBranchName,
                 sessionType: session.sessionType ?? "worktree",
               });
             }
-            ctx.sessionManager.rename(msg.sessionId!, nameResult.title);
-            const updatedSession = ctx.sessionManager.get(msg.sessionId!);
+            ctx.sessionManager.rename(effectiveSessionId, nameResult.title);
+            const updatedSession = ctx.sessionManager.get(effectiveSessionId);
             if (updatedSession) {
               ctx.send({ type: "session_renamed", session: updatedSession });
+              ctx.sseBroadcast("session_renamed", { session: updatedSession });
             }
           } catch (err) {
             console.warn("[warm] Branch rename failed:", getErrorMessage(err));
@@ -504,8 +510,8 @@ export async function handleSendMessage(ctx: HandlerContext, msg: WsSendMessage)
         });
       }
 
-      // Broadcast session list so sidebar updates with the graduated session
-      ctx.broadcast({ type: "session_list", sessions: ctx.sessionManager.list() });
+      // Broadcast session list via SSE so sidebar updates with the graduated session
+      ctx.sseBroadcast("session_list", { sessions: ctx.sessionManager.list() });
 
       // Mark repo as used now that actual coding is starting
       if (session.remoteUrl) {

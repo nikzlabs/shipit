@@ -103,13 +103,13 @@ describe("Integration: Deployment", () => {
     expect(res.json().deployments).toEqual([]);
   });
 
-  it("rejects initiate_deploy without active session", async () => {
+  it("rejects initiate_deploy without deploy credentials", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     client.send({ type: "initiate_deploy", targetId: "test-target" } as any);
     const msg = await client.receiveType("error");
-    expect((msg as any).message).toMatch(/No active session/);
+    expect((msg as any).message).toMatch(/No credentials configured/);
 
     client.close();
   });

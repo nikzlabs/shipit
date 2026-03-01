@@ -10,7 +10,6 @@ import { AuthManager } from "../auth.js";
 
 import type { FastifyInstance } from "fastify";
 import {
-  TestClient,
   StubAuthManager,
   FakeClaudeProcess,
   createTestCredentialStore,
@@ -18,7 +17,6 @@ import {
 
 describe("Integration: Session management", () => {
   let app: FastifyInstance;
-  let port: number;
   let tmpDir: string;
   let sessionManager: SessionManager;
 
@@ -38,9 +36,7 @@ describe("Integration: Session management", () => {
       serveStatic: false,
     });
 
-    const address = await app.listen({ port: 0, host: "127.0.0.1" });
-    const match = address.match(/:(\d+)$/);
-    port = match ? Number(match[1]) : 0;
+    await app.listen({ port: 0, host: "127.0.0.1" });
   });
 
   afterEach(async () => {
@@ -59,16 +55,16 @@ describe("Integration: Session management", () => {
     expect(res.json().sessions).toEqual([]);
   });
 
-  it("new_session returns session list", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive();
+  it("POST /api/sessions creates a new session", async () => {
+    const res = await app.inject({ method: "POST", url: "/api/sessions", payload: { title: "Test" } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.sessionId).toBeDefined();
+    expect(body.sessionDir).toBeDefined();
 
-    client.send({ type: "new_session" });
-    const msg = await client.receive();
-
-    expect(msg.type).toBe("session_list");
-
-    client.close();
+    // Should be visible in bootstrap
+    const bootstrap = await app.inject({ method: "GET", url: "/api/bootstrap" });
+    expect(bootstrap.json().sessions.find((s: { id: string }) => s.id === body.sessionId)).toBeDefined();
   });
 
 });

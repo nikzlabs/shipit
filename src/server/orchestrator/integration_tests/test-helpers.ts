@@ -23,9 +23,10 @@ import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
  * a message (e.g. preview_status) before the test sets up a listener.
  *
  * Usage:
- *   const client = await TestClient.connect(port);
+ *   const client = await TestClient.connect(port);       // auto-creates session
+ *   const client = await TestClient.connect(port, sid);  // connect to existing session
  *   const msg = await client.receive();   // first buffered or next message
- *   client.send({ type: "list_sessions" });
+ *   client.send({ type: "send_message", text: "hello" });
  *   const resp = await client.receive();
  *   client.close();
  */
@@ -33,9 +34,12 @@ export class TestClient {
   private ws: WebSocket;
   private queue: WsServerMessage[] = [];
   private waiters: Array<(msg: WsServerMessage) => void> = [];
+  /** The session ID this client is connected to. */
+  public readonly sessionId: string;
 
-  private constructor(ws: WebSocket) {
+  private constructor(ws: WebSocket, sessionId: string) {
     this.ws = ws;
+    this.sessionId = sessionId;
     ws.on("message", (data: WebSocket.Data) => {
       const msg: WsServerMessage = JSON.parse(data.toString());
       const waiter = this.waiters.shift();
@@ -47,12 +51,37 @@ export class TestClient {
     });
   }
 
-  /** Connect to the server and start buffering messages immediately. */
-  static connect(port: number): Promise<TestClient> {
+  /**
+   * Connect to a per-session WebSocket.
+   * If sessionId is provided, connects to /ws/sessions/:id directly.
+   * If not, creates a new session via POST /api/sessions first.
+   */
+  static async connect(port: number, sessionId?: string): Promise<TestClient> {
+    if (!sessionId) {
+      // Auto-create a session via HTTP
+      const http = await import("node:http");
+      const body = JSON.stringify({ title: "Test session" });
+      const data = await new Promise<string>((resolve, reject) => {
+        const req = http.request(
+          `http://127.0.0.1:${port}/api/sessions`,
+          { method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) } },
+          (res) => {
+            let buf = "";
+            res.on("data", (chunk: Buffer) => { buf += chunk.toString(); });
+            res.on("end", () => resolve(buf));
+          },
+        );
+        req.on("error", reject);
+        req.write(body);
+        req.end();
+      });
+      const parsed = JSON.parse(data) as { sessionId: string };
+      sessionId = parsed.sessionId;
+    }
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`);
       // Create client before open so message listener is attached early
-      const client = new TestClient(ws);
+      const client = new TestClient(ws, sessionId!);
       ws.on("open", () => resolve(client));
       ws.on("error", reject);
     });
@@ -92,16 +121,14 @@ export class TestClient {
     return msgs;
   }
 
-  /** Get the next message that is NOT a log_entry, agent_event, or session runner status — useful for tests that predate the terminal, multi-agent, and persistent runner features. */
+  /** Get the next message that is NOT a log_entry or agent_event — useful for tests that predate the terminal and multi-agent features. */
   async receiveSkipLogs(timeoutMs = 3000): Promise<WsServerMessage> {
     const deadline = Date.now() + timeoutMs;
     while (true) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new Error("receiveSkipLogs() timed out");
       const msg = await this.receive(remaining);
-      if (msg.type !== "log_entry" && msg.type !== "agent_event"
-        && msg.type !== "session_status" && msg.type !== "session_agent_started"
-        && msg.type !== "session_agent_finished") return msg;
+      if (msg.type !== "log_entry" && msg.type !== "agent_event") return msg;
     }
   }
 

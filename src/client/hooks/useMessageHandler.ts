@@ -18,16 +18,14 @@ import { useThreadStore } from "../stores/thread-store.js";
 import { useDeployStore } from "../stores/deploy-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
-import { useRepoStore } from "../stores/repo-store.js";
 
 export function useMessageHandler(params: {
   lastMessage: MessageEvent | null;
   send: (msg: WsClientMessage) => void;
   terminalRef: MutableRefObject<InteractiveTerminalHandle | null>;
   notify: (msg: string) => void;
-  navigate: (path: string, opts?: { replace?: boolean }) => void;
 }): void {
-  const { lastMessage, send, terminalRef, notify, navigate } = params;
+  const { lastMessage, send, terminalRef, notify } = params;
 
   useEffect(() => {
     if (!lastMessage) return;
@@ -50,6 +48,7 @@ export function useMessageHandler(params: {
     const ui = useUiStore.getState();
 
     if (data.type === "preview_status") {
+      console.log("[preview] Received preview_status:", { running: data.running, port: data.port, url: data.url, source: data.source });
       preview.setStatus({
         running: data.running,
         port: data.port,
@@ -222,18 +221,11 @@ export function useMessageHandler(params: {
       }
     }
 
+    // auth_required, auth_complete, and agent_list are now delivered via SSE
+    // (useServerEvents hook). Only handle session-scoped auth here if needed.
     if (data.type === "auth_required") {
-      session.setAuthUrl(data.url ?? "");
       session.setIsLoading(false);
       session.setActivity(undefined);
-    }
-
-    if (data.type === "auth_complete") {
-      session.setAuthUrl(null);
-    }
-
-    if (data.type === "agent_list") {
-      ui.setAgentList(data.agents);
     }
 
     if (data.type === "global_settings") {
@@ -247,20 +239,10 @@ export function useMessageHandler(params: {
       git.setIdentityNeeded(true);
     }
 
-    if (data.type === "session_list") {
-      session.setSessions(data.sessions);
-    }
+    // session_list is now delivered via SSE (useServerEvents hook)
 
     if (data.type === "session_started") {
-      session.setSessionId(data.session.id);
-      navigate(`/session/${data.session.id}`, { replace: true });
-      session.setSessions((prev) => {
-        const exists = prev.some((s) => s.id === data.session.id);
-        if (exists) {
-          return prev.map((s) => (s.id === data.session.id ? data.session : s));
-        }
-        return [data.session, ...prev];
-      });
+      // Session list update handled by SSE; just fetch threads for this session
       fetch(`/api/sessions/${data.session.id}/threads`)
         .then((r) => r.json())
         .then((d) => {
@@ -510,25 +492,7 @@ export function useMessageHandler(params: {
       }
     }
 
-    if (data.type === "session_agent_started") {
-      session.setActiveRunnerSessions((prev) => { const next = new Set(prev); next.add(data.sessionId); return next; });
-    }
-
-    if (data.type === "session_agent_finished") {
-      session.setActiveRunnerSessions((prev) => { const next = new Set(prev); next.delete(data.sessionId); return next; });
-    }
-
-    // ---- Repo messages ----
-    if (data.type === "repo_status") {
-      useRepoStore.getState().updateRepoStatus(data.url, data.status);
-    }
-
-    if (data.type === "repo_warm_ready") {
-      useRepoStore.getState().updateRepoWarmSession(data.url, data.sessionId);
-    }
-
-    if (data.type === "repo_list") {
-      useRepoStore.getState().setRepos(data.repos);
-    }
-  }, [lastMessage, send, terminalRef, notify, navigate]);
+    // session_agent_started/finished, repo_status, repo_warm_ready, repo_list
+    // are now delivered via SSE (useServerEvents hook)
+  }, [lastMessage, send, terminalRef, notify]);
 }
