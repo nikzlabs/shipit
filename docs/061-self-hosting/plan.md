@@ -47,7 +47,7 @@ Two independent pieces: **(A)** giving sessions Docker access and **(B)** lettin
 
 ### Part A: Docker Access for Sessions
 
-#### Recommended: Docker Socket Passthrough
+#### Docker Socket Passthrough
 
 Mount the host's `/var/run/docker.sock` into the session container. The session talks to the same Docker daemon as the orchestrator.
 
@@ -99,36 +99,9 @@ Host Docker daemon
 - The `docker` wrapper filters `docker ps` output to the session's own containers by default (adds `--filter label=shipit-parent-session=$SESSION_ID`). Users can bypass with `docker --raw ps` or by calling `/usr/bin/docker` directly.
 - The wrapper sets `COMPOSE_PROJECT_NAME=shipit-{sessionId-prefix}` so multiple sessions running the same compose file don't collide on project name.
 
-#### Alternative: DinD with Sysbox (Linux-only)
+#### Not implemented: DinD with Sysbox
 
-For users who want stronger isolation on Linux, Sysbox provides a fully isolated Docker daemon per session. This is **not the default** because of platform constraints.
-
-```
-Host Docker daemon (with Sysbox runtime)
-  └── Session container (Sysbox-managed)
-        └── Inner Docker daemon (fully isolated)
-              ├── user's service-a
-              └── user's service-b
-```
-
-**Requirements:**
-- Linux host with kernel 5.12+ (or 5.4+ on Ubuntu/Debian with shiftfs)
-- `apt install sysbox-ce` on the host
-- Does NOT work on macOS Docker Desktop, Windows, or most managed container platforms
-
-**Changes (on top of the base implementation):**
-- `SessionContainerManager.create()` passes `HostConfig.Runtime: "sysbox-runc"` for Docker-enabled sessions
-- A separate image variant (`Dockerfile.session-worker.sysbox`) extends the Docker-capable image with `dockerd`, an entrypoint that starts the inner daemon and waits for readiness
-- Inner Docker uses `vfs` or `fuse-overlayfs` storage driver
-- Higher default memory (2 GB+) for the inner daemon overhead (~300 MB)
-
-**Trade-offs vs socket passthrough:**
-- True isolation (inner daemon is invisible to host) — but unnecessary for single-user
-- ~300 MB memory overhead + 5-10s startup per session
-- Image cold start unless pre-cached
-- More moving parts (daemon lifecycle, health checks, storage driver config)
-
-**When to use:** Linux servers where the operator wants defense-in-depth, or as a stepping stone to evaluate DinD before the managed model. Not the default recommendation for self-hosted.
+Sysbox (fully isolated Docker daemon per session) is deferred to [062-managed-shipit](../062-managed-shipit/plan.md) where the isolation benefit justifies the complexity. For self-hosted, socket passthrough is sufficient — the user already owns the machine. See doc 062 for the full Sysbox design.
 
 ---
 
@@ -156,7 +129,7 @@ resources:
 
 **Code changes:**
 
-1. Add `resolveSessionConfig(sessionDir: string)` to a new shared module (or extend `preview-config.ts`) — parses `resources` and `capabilities` blocks from `shipit.yaml`.
+1. Add `resolveSessionConfig(sessionDir: string)` to `preview-config.ts` — parses `resources` and `capabilities` blocks from `shipit.yaml` alongside the existing preview config parsing.
 2. In the runner factory (`index.ts` line ~308), call `resolveSessionConfig()` and pass results to `buildConfig()`.
 3. Add deployment-level cap env vars, apply in `buildConfig()`.
 4. Add `dockerAccess` to `ContainerConfig`, handle in `create()` (this bridges Parts A and B — capabilities parsing feeds into container creation).
@@ -220,7 +193,7 @@ Current patch (`preview-proxy.ts` line 57-68) rewrites WebSocket connections fro
 
 ### Phase 1: Resource configuration (~2 days)
 
-1. Add `resources` and `capabilities` parsing to `preview-config.ts` (or new `session-config.ts`).
+1. Add `resources` and `capabilities` parsing to `preview-config.ts`.
 2. Read `shipit.yaml` from session directory in the orchestrator's runner factory, before container creation.
 3. Plumb resource overrides through `buildConfig()` → `create()`.
 4. Add deployment-level cap env vars.
@@ -248,12 +221,12 @@ Current patch (`preview-proxy.ts` line 57-68) rewrites WebSocket connections fro
 
 ---
 
-## Open Questions
+## Decisions
 
-1. **Should `capabilities.docker` require user confirmation in the UI?** A project's `shipit.yaml` requesting Docker access is a privilege escalation. The UI could show a prompt: "This project requests Docker access. Allow?" Default: allow for self-hosted.
+1. **`capabilities.docker` does not require UI confirmation for self-hosted.** The user chose to run ShipIt on their machine and already has Docker access. Showing a permission prompt would add friction with no security benefit. (Managed hosting will require confirmation — see doc 062.)
 
-2. **Docker image caching across sessions.** With socket passthrough, images are shared (same daemon), which is a free advantage. No cold start penalty.
+2. **No `.dockerignore` guidance in this doc.** Docker build context size is a general Docker best practice, not a ShipIt concern. If the ShipIt repo's `docker build` is slow, we add a `.dockerignore` to the repo like any other project.
 
-3. **GPU passthrough.** Some projects (ML, CUDA) need GPU access. This is a separate capability (`capabilities.gpu: true`) with `--gpus` flag. Out of scope for this doc but worth noting as a future capability.
+## Future capabilities (out of scope)
 
-4. **Docker build context.** Building images inside a session uses the session directory. For ShipIt self-hosting, the full repo is the build context — this can be large. Consider `.dockerignore` guidance.
+- **GPU passthrough** — `capabilities.gpu: true` with `--gpus` flag. Separate feature, separate doc.
