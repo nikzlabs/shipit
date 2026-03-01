@@ -77,7 +77,7 @@ These bypass the session sandbox (doc 051) entirely. Even for a single-user self
 
 #### How the proxy works
 
-The orchestrator runs a single Docker API proxy server (`http.createServer`) on a port accessible from the Docker bridge network. It identifies which session is making the request by the source IP of the TCP connection — each session container has a unique bridge IP. Source-IP spoofing is prevented by dropping `NET_RAW` from session containers (see Security Hardening below).
+The orchestrator runs a single Docker API proxy server (`http.createServer`) on a port accessible from the Docker bridge network. It identifies which session is making the request by the source IP of the TCP connection — each session container has a unique bridge IP. Source-IP spoofing is prevented by dropping `NET_RAW` from session containers (see Security hardening below).
 
 **Request flow:**
 
@@ -160,9 +160,9 @@ The proxy's source-IP routing relies on session containers not being able to spo
    CapAdd: ["CHOWN", "SETUID", "SETGID", "FOWNER", "DAC_OVERRIDE",
             "NET_BIND_SERVICE", "KILL"]
    ```
-   This drops `NET_RAW` (raw sockets, required for IP spoofing) and `SYS_CHROOT` (unnecessary). The retained capabilities are the minimum for a Node.js session worker (package installs need `CHOWN`/`FOWNER`, dev servers need `NET_BIND_SERVICE`, process management needs `KILL`, user switching needs `SETUID`/`SETGID`).
+   This drops `NET_RAW` (raw sockets, required for IP spoofing) and `SYS_CHROOT` (unnecessary). The retained capabilities are the minimum for a Node.js session worker (package installs need `CHOWN`/`FOWNER`, workspace volume files may be owned by a non-root host UID so `DAC_OVERRIDE` is needed, dev servers need `NET_BIND_SERVICE`, process management needs `KILL`, user switching needs `SETUID`/`SETGID`).
 
-2. **This is independent of doc 061** — it's a doc 051 hardening improvement that should ship regardless. Session containers have no legitimate need for `NET_RAW`, `MKNOD`, `AUDIT_WRITE`, `FSETID`, `SETPCAP`, or `SETFCAP`.
+2. **This is a doc 051 hardening improvement** that benefits all session containers, not just Docker-enabled ones. Session containers have no legitimate need for `NET_RAW`, `MKNOD`, `AUDIT_WRITE`, `FSETID`, `SETPCAP`, or `SETFCAP`. It's listed as Phase 2 here because the proxy's source-IP security depends on it, but it could ship independently as a standalone security improvement.
 
 #### Why source-IP routing (not per-session proxy instances)
 
@@ -186,10 +186,11 @@ For the managed model (doc 062), per-pod sidecar proxies in Go make sense for cr
 
 4. **Docker API proxy** — new module `src/server/orchestrator/docker-proxy.ts`:
    - `createDockerProxy(deps: { containerManager, socketPath })` returns an `http.Server`
-   - Source IP → session ID resolution via `containerManager.getSessionByContainerIp()`
+   - Source IP → session ID resolution via `containerManager.getSessionByContainerIp()`, which returns `{ sessionId, hostWorkspaceDir }` — the workspace path is needed for `Binds` validation
    - Policy enforcement as described above
+   - Exec-to-container resolution: `POST /exec/{id}/start` and `GET /exec/{id}/json` query the Docker daemon's `GET /exec/{id}/json` to find the parent container ID, then check that container's `shipit-parent-session` label
    - Forward to Unix socket via `http.request({ socketPath })`
-   - Streaming support for `logs`, `exec`, `attach` endpoints
+   - Streaming support for `logs`, `exec/start`, `attach` endpoints
 
 5. **`SessionContainerManager.create()`** — when `dockerAccess` is true:
    - Use the Docker-capable session worker image
@@ -244,7 +245,7 @@ resources:
 
 **Code changes:**
 
-1. Add `resolveSessionConfig(sessionDir: string)` to `preview-config.ts` — parses `resources` and `capabilities` blocks from `shipit.yaml` alongside the existing preview config parsing.
+1. Add `resolveSessionConfig(sessionDir: string)` to a new `src/server/shared/session-config.ts` — parses `resources` and `capabilities` blocks from `shipit.yaml`. This lives in `shared/` (not `session/preview-config.ts`) because the orchestrator calls it before container creation while the session worker hasn't started yet. The session worker's `preview-config.ts` continues to parse preview-specific config independently.
 2. In the runner factory (`index.ts` line ~308), call `resolveSessionConfig()` and pass results to `buildConfig()`.
 3. Add deployment-level cap env vars, apply in `buildConfig()`.
 4. Add `dockerAccess` to `ContainerConfig`, handle in `create()` (this bridges Parts A and B — capabilities parsing feeds into container creation).
@@ -308,7 +309,7 @@ Current patch (`preview-proxy.ts` line 57-68) rewrites WebSocket connections fro
 
 ### Phase 1: Resource configuration (~2 days)
 
-1. Add `resources` and `capabilities` parsing to `preview-config.ts`.
+1. Add `resources` and `capabilities` parsing to `src/server/shared/session-config.ts`.
 2. Read `shipit.yaml` from session directory in the orchestrator's runner factory, before container creation.
 3. Plumb resource overrides through `buildConfig()` → `create()`.
 4. Add deployment-level cap env vars.
