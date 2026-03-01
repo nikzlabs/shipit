@@ -2,9 +2,13 @@
 status: planned
 ---
 
-# 061 — Docker-Capable Sessions
+# 061 — Self-Hosted Docker-Capable Sessions
 
-Give session containers access to Docker so users can develop projects that use Docker Compose, run containerized services, or — the motivating case — develop ShipIt itself inside ShipIt with full fidelity.
+Give session containers access to Docker so users running ShipIt locally can develop projects that use Docker Compose, run containerized services, or — the motivating case — develop ShipIt itself inside ShipIt.
+
+## Scope
+
+This doc covers **self-hosted ShipIt** — a single user running ShipIt on their own machine (macOS Docker Desktop, Linux, WSL2). The threat model is "protect the user from Claude mistakes," not "protect tenants from each other." Multi-tenant managed hosting is a separate concern with different isolation requirements — see [062-managed-shipit](../062-managed-shipit/plan.md).
 
 ## Motivation
 
@@ -14,12 +18,7 @@ The acid test is self-hosting: developing ShipIt inside ShipIt, running the full
 
 ### Why fidelity matters
 
-A simulation or broker layer that makes Docker "sort of work" inside sessions would create a divergence: code that works in ShipIt might break when deployed, and vice versa. The goal is that `docker compose up` inside a session behaves identically to running it on a developer's laptop. This rules out:
-
-- **Non-containerized fallbacks** — testing a different code path than production isn't useful for catching real bugs.
-- **Broker/proxy APIs** — an abstraction between the app and Docker means the app's Docker configuration is never truly tested.
-
-The app must talk to a real Docker daemon.
+A simulation or broker layer that makes Docker "sort of work" inside sessions would create a divergence: code that works in ShipIt might break when deployed, and vice versa. The goal is that `docker compose up` inside a session behaves identically to running it on a developer's laptop. The app must talk to a real Docker daemon.
 
 ---
 
@@ -40,13 +39,15 @@ The `ContainerConfig` interface already supports per-session `memoryLimit`, `cpu
 
 Two independent pieces: **(A)** giving sessions Docker access and **(B)** letting projects request adequate resources. Both are needed for full self-hosting, but each is useful on its own.
 
+### Key abstraction
+
+`capabilities.docker` in `shipit.yaml` is the stable API. A project declares "I need Docker"; the orchestrator decides how to provide it. This decouples projects from the host's Docker access strategy and keeps the door open for the managed deployment model (doc 062) to use a completely different backend.
+
 ---
 
 ### Part A: Docker Access for Sessions
 
-Three viable options. All give the session a real Docker daemon. They differ in isolation and deployment requirements.
-
-#### Option 1: Docker Socket Passthrough
+#### Recommended: Docker Socket Passthrough
 
 Mount the host's `/var/run/docker.sock` into the session container. The session talks to the same Docker daemon as the orchestrator.
 
@@ -59,6 +60,8 @@ Host Docker daemon
   │           └── service-b (host-level sibling container)
   └── Other session containers...
 ```
+
+**Why this is right for self-hosted:** The user already owns the machine. Their Claude process talking to their Docker daemon is no different from the user running Docker themselves. Adding a proxy or nested daemon would add complexity and failure modes with no security benefit — the "attacker" (Claude) is already trusted to run code on the user's behalf, and the container sandbox (doc 051) already constrains filesystem and resource access.
 
 **Changes required:**
 
@@ -83,70 +86,20 @@ Host Docker daemon
 **Pros:**
 - Simplest implementation. ~3 days of work.
 - Full Docker compatibility — compose, build, push, volumes, networks all work.
-- No extra runtime dependencies.
+- No extra runtime dependencies. Works everywhere Docker runs (macOS Docker Desktop, Linux, WSL2).
 - Zero performance overhead.
 
 **Cons:**
-- **No isolation from host Docker.** The session can see and control all containers on the host, including the orchestrator and other sessions. A `docker rm -f` in the session could take down ShipIt.
-- Only safe for single-user self-hosted deployments where the user already has root.
+- No isolation from host Docker. The session can see all containers on the host.
+- Only appropriate for single-user self-hosted deployments.
 
-**Mitigations (partial, not airtight):**
-- Label-based filtering: session's Docker CLI is wrapped to auto-add `--filter label=shipit-parent-session=$SESSION_ID` to `docker ps` commands. But this is cosmetic, not enforced.
-- Read-only socket mount + Docker auth plugin for stricter control. But auth plugins are complex and rarely used.
+**Mitigations (cosmetic, not security boundaries):**
+- Label-based filtering: session's Docker CLI is wrapped to auto-add `--filter label=shipit-parent-session=$SESSION_ID` to `docker ps` commands. Makes the UI cleaner but isn't enforced.
+- `COMPOSE_PROJECT_NAME={sessionId-prefix}` prevents project name collisions across sessions.
 
-#### Option 2: Docker Socket Proxy
+#### Alternative: DinD with Sysbox (Linux-only)
 
-Instead of mounting the raw socket, run a filtering proxy (e.g., [Tecnativa/docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) or a custom one) that restricts which Docker API calls the session can make.
-
-```
-Host Docker daemon
-  ← Docker socket proxy (per-session or shared)
-    ← Session container (talks to proxy, not raw socket)
-```
-
-**Changes required:**
-
-Everything from Option 1, plus:
-
-1. **Proxy sidecar** — for each Docker-enabled session, the orchestrator also starts a proxy container (or process) that:
-   - Listens on a Unix socket or TCP port
-   - Forwards allowed Docker API calls to the real daemon
-   - Rejects dangerous operations (container exec on non-child containers, image push, volume remove for non-session volumes, network connect to orchestrator network)
-   - Injects labels on `container create` to enforce session ownership
-
-2. **Session container mount** — instead of the real socket, mount the proxy's socket:
-   ```
-   /run/docker-proxy-{sessionId}.sock:/var/run/docker.sock
-   ```
-
-3. **Proxy configuration** — allowlist approach:
-   - `POST /containers/create` — allowed, proxy injects `shipit-parent-session` label
-   - `POST /containers/{id}/start` — allowed only for containers with matching label
-   - `DELETE /containers/{id}` — allowed only for containers with matching label
-   - `GET /containers/json` — filtered to only show session's containers
-   - `POST /build` — allowed (building images is safe)
-   - `GET /images/json` — allowed (read-only)
-   - Block: `POST /containers/{id}/exec` on non-owned containers, network operations on orchestrator network, volume operations on orchestrator volumes
-
-**Pros:**
-- Session only sees its own containers. Can't interfere with orchestrator or other sessions.
-- Full Docker Compose compatibility (compose uses standard Docker API).
-- No `--privileged` required. No extra daemon.
-- Enforceable isolation without trusting the session.
-
-**Cons:**
-- Proxy must be maintained — Docker API evolves, new endpoints need allowlisting.
-- Per-session proxy adds ~50 MB memory overhead.
-- Some Docker operations may break if the proxy doesn't handle them (e.g., `docker system prune`, `docker context`).
-- Custom proxy is ~1-2 weeks of work. Off-the-shelf proxies (Tecnativa) are coarse-grained (enable/disable entire endpoint categories, no per-container filtering).
-
-**Build-vs-buy for the proxy:**
-- **Tecnativa/docker-socket-proxy**: Mature, widely used (6k+ GitHub stars). Env-var based allowlist (`CONTAINERS=1`, `IMAGES=1`, etc.). But filtering is at the endpoint level, not per-container. A session could still `docker rm` another session's container.
-- **Custom proxy**: A lightweight Node.js HTTP proxy (~500 lines) that inspects request bodies and injects/validates labels. More work, but gives us per-session container isolation. Can be extracted as a standalone tool later.
-
-#### Option 3: Docker-in-Docker (DinD) with Sysbox
-
-Run a full Docker daemon inside the session container using the [Sysbox](https://github.com/nestybox/sysbox) container runtime. Each session gets its own isolated Docker environment.
+For users who want stronger isolation on Linux, Sysbox provides a fully isolated Docker daemon per session. This is **not the default** because of platform constraints.
 
 ```
 Host Docker daemon (with Sysbox runtime)
@@ -156,61 +109,24 @@ Host Docker daemon (with Sysbox runtime)
               └── user's service-b
 ```
 
-**Changes required:**
+**Requirements:**
+- Linux host with kernel 5.12+ (or 5.4+ on Ubuntu/Debian with shiftfs)
+- `apt install sysbox-ce` on the host
+- Does NOT work on macOS Docker Desktop, Windows, or most managed container platforms
 
-1. **Sysbox installed on the host** — `apt install sysbox-ce` or equivalent. Requires Linux kernel 5.12+ with user-namespace support.
+**Changes (on top of the base implementation):**
+- `SessionContainerManager.create()` passes `HostConfig.Runtime: "sysbox-runc"` for Docker-enabled sessions
+- Session worker image variant (`Dockerfile.session-worker.docker`) includes `dockerd` + CLI, entrypoint that starts the inner daemon
+- Inner Docker uses `vfs` or `fuse-overlayfs` storage driver
+- Higher default memory (2 GB+) for the inner daemon overhead (~300 MB)
 
-2. **Session container runtime override** — `SessionContainerManager.create()` passes `HostConfig.Runtime: "sysbox-runc"` for Docker-enabled sessions.
+**Trade-offs vs socket passthrough:**
+- True isolation (inner daemon is invisible to host) — but unnecessary for single-user
+- ~300 MB memory overhead + 5-10s startup per session
+- Image cold start unless pre-cached
+- More moving parts (daemon lifecycle, health checks, storage driver config)
 
-3. **Session worker image variant** — a `Dockerfile.session-worker.docker` that includes:
-   - Docker daemon (`dockerd`) + CLI
-   - An entrypoint that starts `dockerd` in the background, waits for readiness, then starts the session worker
-   - Inner Docker uses `vfs` or `fuse-overlayfs` storage driver (overlay2-in-overlay2 doesn't work without Sysbox's special handling)
-
-4. **Resource limits** — inner Docker daemon needs ~200 MB RAM overhead. Default memory for Docker-enabled sessions should be higher (2 GB+).
-
-5. **Image caching** — cold start is slow because the inner daemon has no images. Options:
-   - Pre-load common base images (node:24, python:3.12) into the session worker image
-   - Mount a shared read-only image cache volume (Docker supports `--data-root` overlay)
-   - Accept cold start penalty (~30s for first `docker pull`)
-
-6. **Networking** — inner containers live on the inner Docker's bridge network, invisible to the host. The session container acts as the gateway. Port forwarding from session container to inner containers uses standard Docker `-p` mappings inside the session.
-
-**Pros:**
-- **True isolation.** Inner Docker daemon is completely invisible to the host. Session can't see or affect other sessions or the orchestrator.
-- **Full Docker compatibility.** Inner daemon is a real Docker — compose, build, volumes, networks all work exactly as on a laptop.
-- **Safe for multi-user deployments.** No socket access, no privilege escalation beyond the Sysbox-managed namespace.
-
-**Cons:**
-- **Sysbox dependency.** Must be installed on the host. Not available on all platforms (no macOS Docker Desktop, no Windows, some cloud VMs restrict it).
-- **Performance overhead.** Nested overlay2 is slower. Inner daemon startup adds 5-10s to session activation.
-- **Memory overhead.** ~200 MB for `dockerd` + ~100 MB for containerd, per Docker-enabled session.
-- **Image cold start.** First `docker pull` in a session is slow unless images are pre-cached.
-- **Complexity.** More moving parts: session worker entrypoint manages daemon lifecycle, health checks for both worker and inner daemon, storage driver configuration.
-
----
-
-### Comparison
-
-| | Socket Passthrough | Socket Proxy | DinD + Sysbox |
-|---|---|---|---|
-| **Isolation** | None — full host access | Per-session — enforced by proxy | Full — isolated daemon |
-| **Docker compatibility** | 100% | ~95% (proxy may miss edge cases) | 100% |
-| **Performance** | Zero overhead | ~50 MB/session (proxy) | ~300 MB/session (daemon) + 5-10s startup |
-| **Host requirements** | Docker | Docker | Docker + Sysbox |
-| **Implementation effort** | ~3 days | ~8 days (custom proxy) | ~5 days |
-| **Safe for multi-user** | No | Yes (with custom proxy) | Yes |
-| **Compose support** | Full | Full | Full |
-
-### Recommendation
-
-**Start with Option 1 (socket passthrough)** for the self-hosted single-user case. It's the fastest path to full Docker support with perfect fidelity. ShipIt is currently single-user, so the "session can see all containers" concern is moot — the user already owns the machine.
-
-**Design Option 2 (socket proxy) as the upgrade path** for when multi-user matters. The proxy is a drop-in replacement: same socket mount from the session's perspective, just pointing at a proxy instead of the real daemon. No session-side changes needed.
-
-**Option 3 (Sysbox DinD)** is the cleanest isolation model but adds a host dependency that limits where ShipIt can run. Keep it as a documented alternative for deployments that already have Sysbox.
-
-The key architectural choice: **`capabilities.docker` in `shipit.yaml` is the stable API**. The backend implementation (raw socket, proxy, or DinD) is an orchestrator deployment decision, not a per-project decision. A project declares "I need Docker"; the orchestrator decides how to provide it.
+**When to use:** Linux servers where the operator wants defense-in-depth, or as a stepping stone to evaluate DinD before the managed model. Not the default recommendation for self-hosted.
 
 ---
 
@@ -273,7 +189,7 @@ preview:
 
 The Vite dev server on port 3000 serves the client and proxies `/api/*` and `/ws` to Fastify on port 3001. The outer ShipIt's preview proxy exposes port 3000 as `{sessionId}--3000.localhost`. The inner ShipIt's own session containers join a separate bridge network (`shipit-inner`), invisible to the outer orchestrator.
 
-**Container cleanup**: When the session is destroyed, the orchestrator also kills containers with label `shipit-parent-session={sessionId}` *and* any containers on the `shipit-inner` network. This handles both the inner ShipIt's orchestrator container (there isn't one — it runs directly in the session) and the inner session worker containers.
+**Container cleanup**: When the session is destroyed, the orchestrator also kills containers with label `shipit-parent-session={sessionId}` *and* any containers on the `shipit-inner` network.
 
 ---
 
@@ -296,7 +212,7 @@ The browser only talks to the outer ShipIt. The inner ShipIt's previews are acce
 
 Current patch (`preview-proxy.ts` line 57-68) rewrites *all* WebSocket connections from `localhost:*` to the page origin. This would break the inner ShipIt's application WebSocket at `/ws`.
 
-**Fix**: Only rewrite when `a.port !== location.port` AND `a.pathname` does not match known application paths. Simpler: check if the port differs from the page's port — the inner ShipIt's `/ws` uses the same port as the page (both go through the Vite proxy on 3000), so the condition `a.port !== location.port` already skips it. The current patch should actually be fine for the self-hosting case — the rewrite only triggers when the port differs, which is only true for HMR connections to the raw dev server port.
+**Fix**: Only rewrite when `a.port !== location.port` AND `a.pathname` does not match known application paths. Simpler: check if the port differs from the page's port — the inner ShipIt's `/ws` uses the same port as the page (both go through the Vite proxy on 3000), so the condition `a.port !== location.port` already skips it. The current patch should actually be fine for the self-hosting case.
 
 ---
 
@@ -329,22 +245,13 @@ Current patch (`preview-proxy.ts` line 57-68) rewrites *all* WebSocket connectio
 6. Validate: editing code in inner ShipIt, running inner Claude, seeing inner previews.
 7. Document remaining issues.
 
-### Future: Socket proxy for multi-user (~8 days, not blocking)
-
-1. Build custom Docker API proxy (Node.js HTTP proxy, ~500 lines).
-2. Label injection on `container create`.
-3. Per-container filtering on `start`, `stop`, `rm`, `exec`.
-4. Orchestrator starts proxy sidecar per Docker-enabled session.
-5. Mount proxy socket instead of real socket.
-6. Tests: proxy filtering logic, multi-session isolation.
-
 ---
 
 ## Open Questions
 
-1. **Should `capabilities.docker` require user confirmation in the UI?** A project's `shipit.yaml` requesting Docker access is a privilege escalation. The UI could show a prompt: "This project requests Docker access. Allow?" Default: allow for self-hosted, require confirmation for hosted.
+1. **Should `capabilities.docker` require user confirmation in the UI?** A project's `shipit.yaml` requesting Docker access is a privilege escalation. The UI could show a prompt: "This project requests Docker access. Allow?" Default: allow for self-hosted.
 
-2. **Docker image caching across sessions.** With socket passthrough, images are shared (same daemon). With DinD, each session has its own image store. Should we pre-pull common base images into the session worker image?
+2. **Docker image caching across sessions.** With socket passthrough, images are shared (same daemon), which is a free advantage. No cold start penalty.
 
 3. **Compose project naming.** Multiple sessions running the same compose file will collide on project name. Should we inject `COMPOSE_PROJECT_NAME={sessionId}` automatically?
 
