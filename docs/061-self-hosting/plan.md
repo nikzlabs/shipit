@@ -77,7 +77,7 @@ These bypass the session sandbox (doc 051) entirely. Even for a single-user self
 
 #### How the proxy works
 
-The orchestrator runs a single Docker API proxy server (`http.createServer`) on a port accessible from the Docker bridge network. It identifies which session is making the request by the source IP of the TCP connection — each session container has a unique bridge IP, and Docker networking prevents IP spoofing.
+The orchestrator runs a single Docker API proxy server (`http.createServer`) on a port accessible from the Docker bridge network. It identifies which session is making the request by the source IP of the TCP connection — each session container has a unique bridge IP. Source-IP spoofing is prevented by dropping `NET_RAW` from session containers (see Security Hardening below).
 
 **Request flow:**
 
@@ -91,23 +91,78 @@ The orchestrator runs a single Docker API proxy server (`http.createServer`) on 
 
 | Docker API endpoint | Policy |
 |---|---|
-| `POST /containers/create` | Reject `Privileged: true`, `NetworkMode: "host"`, `PidMode: "host"`. Reject `Binds` with host paths outside the session directory. Inject `shipit-parent-session={sessionId}` label. Inject session-specific network. |
-| `POST /build` | Allowed (image builds are safe). |
+| **Container lifecycle** | |
+| `POST /containers/create` | Sanitize body (see container create policy below). Inject `shipit-parent-session={sessionId}` label. Inject session-specific network. |
 | `GET /containers/json` | Filter response to only containers with the session's label. |
-| `DELETE /containers/{id}` | Only if container has the session's label. |
+| `GET /containers/{id}/json` | Only if container has the session's label. |
 | `POST /containers/{id}/start` | Only if container has the session's label. |
 | `POST /containers/{id}/stop` | Only if container has the session's label. |
+| `POST /containers/{id}/restart` | Only if container has the session's label. |
+| `POST /containers/{id}/kill` | Only if container has the session's label. |
+| `DELETE /containers/{id}` | Only if container has the session's label. |
+| `POST /containers/{id}/wait` | Only if container has the session's label. |
+| **Container I/O** | |
+| `GET /containers/{id}/logs` | Only if container has the session's label. Streaming. |
+| `POST /containers/{id}/attach` | Only if container has the session's label. Streaming. |
 | `POST /containers/{id}/exec` | Only if container has the session's label. |
-| `GET /containers/{id}/logs` | Only if container has the session's label. |
-| `GET /containers/{id}/json` | Only if container has the session's label. |
-| `GET /images/*`, `POST /images/*` | Allowed (image operations are safe). |
-| `POST /networks/create` | Allowed, but inject session label. |
-| `GET /networks`, `DELETE /networks/{id}` | Scoped to session-labeled networks. |
-| `POST /volumes/create` | Allowed, but inject session label. |
-| `GET /volumes`, `DELETE /volumes/{id}` | Scoped to session-labeled volumes. |
-| Everything else | Deny with 403. |
+| `POST /exec/{id}/start` | Only if parent container has the session's label. Streaming. |
+| `GET /exec/{id}/json` | Only if parent container has the session's label. |
+| **Images** | |
+| `GET /images/*` | Allowed (read-only). |
+| `POST /images/create` | Allowed (pull). |
+| `POST /build` | Allowed. |
+| `DELETE /images/{id}` | Allowed (only affects local image cache). |
+| **Networks** | |
+| `POST /networks/create` | Inject session label. |
+| `GET /networks` | Scoped to session-labeled networks. |
+| `GET /networks/{id}` | Only if network has the session's label. |
+| `DELETE /networks/{id}` | Only if network has the session's label. |
+| `POST /networks/{id}/connect` | Only if both network and container have the session's label. |
+| `POST /networks/{id}/disconnect` | Only if both network and container have the session's label. |
+| **Volumes** | |
+| `POST /volumes/create` | Inject session label. |
+| `GET /volumes` | Scoped to session-labeled volumes. |
+| `GET /volumes/{id}` | Only if volume has the session's label. |
+| `DELETE /volumes/{id}` | Only if volume has the session's label. |
+| **Everything else** | Deny with 403. |
 
-The proxy is ~200-300 lines of Node.js. It's an HTTP reverse proxy that reads the request body as JSON for `POST` endpoints, inspects/modifies it, then forwards to the Unix socket. For streaming endpoints (`logs`, `exec`, `attach`), it pipes the TCP connection through without buffering.
+**Container create sanitization** (`POST /containers/create` body inspection):
+
+| Field | Policy |
+|---|---|
+| `Privileged` | Must be `false` or absent. |
+| `CapAdd` | Must be empty or absent. Child containers get default caps only. |
+| `NetworkMode` | Must not be `host`. |
+| `PidMode` | Must be empty or absent (no `host`, no `container:{id}`). |
+| `IpcMode` | Must be empty or absent (no `host`, no `container:{id}`). |
+| `UTSMode` | Must not be `host`. |
+| `Devices` | Must be empty or absent. |
+| `Binds` | Each host path is resolved with `realpath()` and must be under the session's host-side workspace directory. Prevents symlink traversal. |
+| `Volumes` (named) | Each named volume is verified to have the session's label. Prevents cross-session volume access. |
+| `VolumesFrom` | Must be empty or absent (prevents inheriting another container's mounts). |
+| `SecurityOpt` | Stripped (prevent overriding `no-new-privileges` or AppArmor). |
+| `CgroupParent` | Stripped. |
+
+The proxy is ~300-400 lines of Node.js. It's an HTTP reverse proxy that reads the request body as JSON for mutation endpoints, inspects/modifies it, then forwards to the Unix socket. For streaming endpoints (`logs`, `exec`, `attach`), it pipes the TCP connection through without buffering.
+
+**Proxy robustness:**
+- Request body size capped at 10 MB (Docker API bodies are small; `POST /build` uses chunked streaming and is piped through without buffering).
+- Every request handler is wrapped in try/catch — malformed requests return 400, never crash the orchestrator process.
+- Node.js's built-in HTTP parser handles Content-Length/Transfer-Encoding correctly, preventing HTTP smuggling.
+
+#### Security hardening (prerequisite)
+
+The proxy's source-IP routing relies on session containers not being able to spoof their bridge IP. This requires hardening the session container config in `session-container.ts` (applies to ALL session containers, not just Docker-enabled ones):
+
+1. **Drop all capabilities, add back only what's needed:**
+   ```
+   CapDrop: ["ALL"]
+   CapAdd: ["CHOWN", "SETUID", "SETGID", "FOWNER", "DAC_OVERRIDE",
+            "NET_BIND_SERVICE", "KILL"]
+   ```
+   This drops `NET_RAW` (raw sockets, required for IP spoofing) and `SYS_CHROOT` (unnecessary). The retained capabilities are the minimum for a Node.js session worker (package installs need `CHOWN`/`FOWNER`, dev servers need `NET_BIND_SERVICE`, process management needs `KILL`, user switching needs `SETUID`/`SETGID`).
+
+2. **This is independent of doc 061** — it's a doc 051 hardening improvement that should ship regardless. Session containers have no legitimate need for `NET_RAW`, `MKNOD`, `AUDIT_WRITE`, `FSETID`, `SETPCAP`, or `SETFCAP`.
 
 #### Why source-IP routing (not per-session proxy instances)
 
@@ -259,21 +314,29 @@ Current patch (`preview-proxy.ts` line 57-68) rewrites WebSocket connections fro
 4. Add deployment-level cap env vars.
 5. Tests: unit tests for config parsing, integration test for resource override flow.
 
-### Phase 2: Docker API proxy (~5 days)
+### Phase 2: Session container hardening (~0.5 days)
+
+1. Add `CapDrop: ["ALL"]` and minimal `CapAdd` to `SessionContainerManager.create()`.
+2. Verify existing tests pass (no session worker functionality depends on dropped caps).
+3. Add test asserting container config includes capability restrictions.
+
+### Phase 3: Docker API proxy (~5 days)
 
 1. Implement `docker-proxy.ts` — `http.createServer` that proxies to Docker Unix socket.
 2. Add source IP → session ID resolution via `SessionContainerManager`.
-3. Implement policy enforcement: inspect `POST /containers/create` body, reject dangerous flags, inject labels/network.
-4. Implement label-based scoping for container operations (start, stop, rm, exec, logs).
-5. Implement streaming proxy for `exec`, `logs`, `attach` endpoints.
-6. Add `dockerAccess: boolean` to `ContainerConfig`.
-7. Build `Dockerfile.session-worker.docker` — base image + Docker CLI (no wrapper script needed — the proxy enforces everything).
-8. In `create()`, conditionally use Docker image, set `DOCKER_HOST`, create session network.
-9. Extend `destroy()` to clean up labeled containers, networks, and volumes.
-10. Start proxy in `buildApp()`, inject as dependency.
-11. Tests: unit tests for policy enforcement, integration tests for proxy routing and label scoping.
+3. Implement container create sanitization: reject `Privileged`, `CapAdd`, host `NetworkMode`/`PidMode`/`IpcMode`/`UTSMode`, `Devices`, `VolumesFrom`, `SecurityOpt`, `CgroupParent`. Validate `Binds` with `realpath()` against session's host-side directory. Validate named volumes have session label.
+4. Implement label-based scoping for container operations (start, stop, kill, rm, exec, logs, attach, wait).
+5. Implement network connect/disconnect with dual label check (network + container).
+6. Implement streaming proxy for `exec/start`, `logs`, `attach` endpoints.
+7. Add request body size limit (10 MB) and try/catch on all handlers.
+8. Add `dockerAccess: boolean` to `ContainerConfig`.
+9. Build `Dockerfile.session-worker.docker` — base image + Docker CLI (no wrapper script needed — the proxy enforces everything).
+10. In `create()`, conditionally use Docker image, set `DOCKER_HOST`, create session network.
+11. Extend `destroy()` to clean up labeled containers, networks, and volumes.
+12. Start proxy in `buildApp()`, inject as dependency.
+13. Tests: unit tests for each sanitization rule and label-scoping check, integration tests for proxy routing, test for 403 on unknown endpoints, test for request body size limit.
 
-### Phase 3: Self-hosting validation (~2 days)
+### Phase 4: Self-hosting validation (~2 days)
 
 1. Write `shipit.yaml` for the ShipIt repo.
 2. Clone ShipIt in a ShipIt session with Docker access + elevated resources.
