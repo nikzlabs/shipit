@@ -45,25 +45,79 @@ Two independent pieces: **(A)** giving sessions Docker access and **(B)** lettin
 
 ---
 
-### Part A: Docker Access for Sessions
+### Part A: Docker Access via Orchestrator Proxy
 
-#### Docker Socket Passthrough
+#### Overview
 
-Mount the host's `/var/run/docker.sock` into the session container. The session talks to the same Docker daemon as the orchestrator.
+Sessions get a real Docker CLI but **no Docker socket**. Instead, `DOCKER_HOST` points to a policy-enforcing proxy running inside the orchestrator. The proxy is the only path to the host Docker daemon — there is nothing to bypass inside the session container.
 
 ```
-Host Docker daemon
-  ├── Orchestrator container
-  ├── Session container (with docker.sock)
-  │     └── user's docker-compose up
-  │           ├── service-a (host-level sibling container)
-  │           └── service-b (host-level sibling container)
-  └── Other session containers...
+Session container (no socket, no daemon)
+  └── docker CLI (DOCKER_HOST=tcp://172.17.0.1:2375)
+        │
+        ▼
+Orchestrator
+  └── Docker API proxy (shared, source-IP routing)
+        │  - identifies session by container bridge IP
+        │  - enforces policy (no --privileged, no host mounts, etc.)
+        │  - injects labels and network
+        ▼
+Host Docker daemon (/var/run/docker.sock)
 ```
 
-**Why this is right for self-hosted:** The user already owns the machine. Their Claude process talking to their Docker daemon is no different from the user running Docker themselves. Adding a proxy or nested daemon would add complexity and failure modes with no security benefit in a single-user context. Note that mounting the Docker socket does weaken the session sandbox (doc 051) — Claude can create sibling containers outside the sandbox's filesystem and resource constraints. This is acceptable for self-hosted because the user already has full Docker access on their own machine.
+#### Why not mount the socket directly?
 
-**Changes required:**
+Docker socket access is equivalent to root on the host. A prompt injection could:
+- Mount the host filesystem: `docker run -v /:/host alpine sh`
+- Run privileged containers: `docker run --privileged`
+- Use host networking: `docker run --net=host`
+- Persist beyond session destruction by creating untracked containers
+
+These bypass the session sandbox (doc 051) entirely. Even for a single-user self-hosted deployment, this is an unnecessary risk — the proxy provides full Docker compatibility without it.
+
+#### How the proxy works
+
+The orchestrator runs a single Docker API proxy server (`http.createServer`) on a port accessible from the Docker bridge network. It identifies which session is making the request by the source IP of the TCP connection — each session container has a unique bridge IP, and Docker networking prevents IP spoofing.
+
+**Request flow:**
+
+1. Session's `docker` CLI sends HTTP request to `DOCKER_HOST=tcp://{orchestrator-bridge-ip}:{proxy-port}`
+2. Proxy resolves source IP → session ID via `SessionContainerManager`'s container metadata
+3. Proxy inspects the request and applies policy
+4. Proxy forwards allowed requests to `/var/run/docker.sock`, injecting labels and network
+5. Proxy returns the Docker daemon's response to the session
+
+**Policy enforcement on key endpoints:**
+
+| Docker API endpoint | Policy |
+|---|---|
+| `POST /containers/create` | Reject `Privileged: true`, `NetworkMode: "host"`, `PidMode: "host"`. Reject `Binds` with host paths outside the session directory. Inject `shipit-parent-session={sessionId}` label. Inject session-specific network. |
+| `POST /build` | Allowed (image builds are safe). |
+| `GET /containers/json` | Filter response to only containers with the session's label. |
+| `DELETE /containers/{id}` | Only if container has the session's label. |
+| `POST /containers/{id}/start` | Only if container has the session's label. |
+| `POST /containers/{id}/stop` | Only if container has the session's label. |
+| `POST /containers/{id}/exec` | Only if container has the session's label. |
+| `GET /containers/{id}/logs` | Only if container has the session's label. |
+| `GET /containers/{id}/json` | Only if container has the session's label. |
+| `GET /images/*`, `POST /images/*` | Allowed (image operations are safe). |
+| `POST /networks/create` | Allowed, but inject session label. |
+| `GET /networks`, `DELETE /networks/{id}` | Scoped to session-labeled networks. |
+| `POST /volumes/create` | Allowed, but inject session label. |
+| `GET /volumes`, `DELETE /volumes/{id}` | Scoped to session-labeled volumes. |
+| Everything else | Deny with 403. |
+
+The proxy is ~200-300 lines of Node.js. It's an HTTP reverse proxy that reads the request body as JSON for `POST` endpoints, inspects/modifies it, then forwards to the Unix socket. For streaming endpoints (`logs`, `exec`, `attach`), it pipes the TCP connection through without buffering.
+
+#### Why source-IP routing (not per-session proxy instances)
+
+A single proxy server handles all sessions. No additional processes, no additional memory. The orchestrator already knows which bridge IP belongs to which session container (it created them). Source IP lookup is O(1) via a Map.
+
+Per-session proxy instances would add ~30-40 MB each (Node.js V8 overhead) or require a second language (Go/Rust) in the build pipeline. Neither is justified — Docker API traffic is low-volume (tens of requests during `docker compose up`, near-zero at steady state).
+
+For the managed model (doc 062), per-pod sidecar proxies in Go make sense for crash isolation between tenants. That's a 062 decision.
+
+#### Changes required
 
 1. **`shipit.yaml` capability flag:**
    ```yaml
@@ -75,33 +129,39 @@ Host Docker daemon
 
 3. **Session worker image variant** — a `Dockerfile.session-worker.docker` that adds the Docker CLI binary (just the client, not the daemon) on top of the base session worker image. Docker-enabled sessions use this image; non-Docker sessions use the base image.
 
-4. **`SessionContainerManager.create()`** — when `dockerAccess` is true:
+4. **Docker API proxy** — new module `src/server/orchestrator/docker-proxy.ts`:
+   - `createDockerProxy(deps: { containerManager, socketPath })` returns an `http.Server`
+   - Source IP → session ID resolution via `containerManager.getSessionByContainerIp()`
+   - Policy enforcement as described above
+   - Forward to Unix socket via `http.request({ socketPath })`
+   - Streaming support for `logs`, `exec`, `attach` endpoints
+
+5. **`SessionContainerManager.create()`** — when `dockerAccess` is true:
    - Use the Docker-capable session worker image
-   - Bind-mount `/var/run/docker.sock:/var/run/docker.sock`
-   - Remove `no-new-privileges` (required for Docker socket access)
-   - Pass `DOCKER_HOST=unix:///var/run/docker.sock` env var
+   - Pass `DOCKER_HOST=tcp://{orchestrator-bridge-ip}:{proxy-port}` env var
+   - Keep `no-new-privileges` (no socket mount needed)
+   - Create session-specific bridge network `shipit-session-{sessionId}`
+   - Set `COMPOSE_PROJECT_NAME=shipit-{sessionId-prefix}` to avoid project name collisions
 
-5. **Container cleanup** — when a session is destroyed, also clean up any containers it spawned. Use label-based tracking: a `docker` wrapper script in the session worker image injects `--label shipit-parent-session={sessionId}` on `docker create` / `docker run` commands. The orchestrator's `destroy()` method queries and removes child containers by label.
+6. **Container cleanup** — when a session is destroyed, orchestrator queries Docker for containers/networks/volumes with `shipit-parent-session={sessionId}` label and removes them.
 
-6. **Network isolation** — child containers created by the session should join a session-specific network (not the orchestrator's network). The orchestrator creates a bridge network `shipit-session-{sessionId}` before starting the session container, and passes it via `DOCKER_NETWORK` env var. The session's `docker` wrapper adds `--network $DOCKER_NETWORK` to container creation commands. The orchestrator removes the network on session destroy.
+7. **Proxy lifecycle** — started in `buildApp()` alongside the Fastify server. Shut down on app close.
 
 **Pros:**
-- Simplest implementation. ~3 days of work.
-- Full Docker compatibility — compose, build, push, volumes, networks all work.
-- No extra runtime dependencies. Works everywhere Docker runs (macOS Docker Desktop, Linux, WSL2).
-- Zero performance overhead.
+- Full Docker compatibility — real CLI, real API, real responses. `docker compose up` works because compose is just an HTTP client that reads `DOCKER_HOST`.
+- No socket in the session. No bypass path. Claude cannot escalate to host root.
+- `no-new-privileges` stays in place (no socket mount to require its removal).
+- Zero per-session memory overhead (shared proxy).
+- Works everywhere Docker runs (macOS Docker Desktop, Linux, WSL2).
 
 **Cons:**
-- No isolation from host Docker. The session can see all containers on the host.
-- Only appropriate for single-user self-hosted deployments.
-
-**UX polish (cosmetic, not security boundaries):**
-- The `docker` wrapper filters `docker ps` output to the session's own containers by default (adds `--filter label=shipit-parent-session=$SESSION_ID`). Users can bypass with `docker --raw ps` or by calling `/usr/bin/docker` directly.
-- The wrapper sets `COMPOSE_PROJECT_NAME=shipit-{sessionId-prefix}` so multiple sessions running the same compose file don't collide on project name.
+- ~5 days of work (vs ~3 days for raw socket passthrough).
+- Proxy must handle Docker API evolution (new endpoints need allowlisting). Mitigated by deny-by-default — unknown endpoints return 403, which surfaces clearly.
+- Streaming endpoints (`exec`, `logs`, `attach`) need careful TCP proxying.
 
 #### Not implemented: DinD with Sysbox
 
-Sysbox (fully isolated Docker daemon per session) is deferred to [062-managed-shipit](../062-managed-shipit/plan.md) where the isolation benefit justifies the complexity. For self-hosted, socket passthrough is sufficient — the user already owns the machine. See doc 062 for the full Sysbox design.
+Sysbox (fully isolated Docker daemon per session) is deferred to [062-managed-shipit](../062-managed-shipit/plan.md) where the isolation benefit justifies the complexity. For self-hosted, the orchestrator proxy provides sufficient isolation without requiring Sysbox on the host. See doc 062 for the full Sysbox design.
 
 ---
 
@@ -164,7 +224,7 @@ preview:
 
 The Vite dev server on port 3000 serves the client and proxies `/api/*` and `/ws` to Fastify on port 3001. The outer ShipIt's preview proxy exposes port 3000 as `{sessionId}--3000.localhost`. The inner ShipIt's own session containers join a separate bridge network (`shipit-inner`), invisible to the outer orchestrator.
 
-**Container cleanup**: The general label-based cleanup (Part A, change #5) handles this automatically — the inner ShipIt's session worker containers are created via the Docker socket with the `shipit-parent-session={sessionId}` label. The `shipit-inner` bridge network is also cleaned up as the session-specific network (Part A, change #6).
+**Container cleanup**: The general label-based cleanup (Part A, change #6) handles this automatically — the inner ShipIt's session worker containers are created via the proxy with the `shipit-parent-session={sessionId}` label. The `shipit-inner` bridge network is also cleaned up as a session-labeled network.
 
 ---
 
@@ -199,15 +259,19 @@ Current patch (`preview-proxy.ts` line 57-68) rewrites WebSocket connections fro
 4. Add deployment-level cap env vars.
 5. Tests: unit tests for config parsing, integration test for resource override flow.
 
-### Phase 2: Docker socket passthrough (~3 days)
+### Phase 2: Docker API proxy (~5 days)
 
-1. Add `dockerAccess: boolean` to `ContainerConfig`.
-2. Build `Dockerfile.session-worker.docker` — base image + Docker CLI + wrapper script.
-3. In `create()`, conditionally use Docker image, mount socket, remove `no-new-privileges`.
-4. Implement `docker` wrapper script (label injection, network injection, ps filtering).
-5. Create session-specific bridge network on session start, remove on destroy.
-6. Extend `destroy()` to clean up child containers by label.
-7. Tests: unit tests for mount logic, integration test with mock Docker.
+1. Implement `docker-proxy.ts` — `http.createServer` that proxies to Docker Unix socket.
+2. Add source IP → session ID resolution via `SessionContainerManager`.
+3. Implement policy enforcement: inspect `POST /containers/create` body, reject dangerous flags, inject labels/network.
+4. Implement label-based scoping for container operations (start, stop, rm, exec, logs).
+5. Implement streaming proxy for `exec`, `logs`, `attach` endpoints.
+6. Add `dockerAccess: boolean` to `ContainerConfig`.
+7. Build `Dockerfile.session-worker.docker` — base image + Docker CLI (no wrapper script needed — the proxy enforces everything).
+8. In `create()`, conditionally use Docker image, set `DOCKER_HOST`, create session network.
+9. Extend `destroy()` to clean up labeled containers, networks, and volumes.
+10. Start proxy in `buildApp()`, inject as dependency.
+11. Tests: unit tests for policy enforcement, integration tests for proxy routing and label scoping.
 
 ### Phase 3: Self-hosting validation (~2 days)
 
@@ -226,6 +290,10 @@ Current patch (`preview-proxy.ts` line 57-68) rewrites WebSocket connections fro
 1. **`capabilities.docker` does not require UI confirmation for self-hosted.** The user chose to run ShipIt on their machine and already has Docker access. Showing a permission prompt would add friction with no security benefit. (Managed hosting will require confirmation — see doc 062.)
 
 2. **No `.dockerignore` guidance in this doc.** Docker build context size is a general Docker best practice, not a ShipIt concern. If the ShipIt repo's `docker build` is slow, we add a `.dockerignore` to the repo like any other project.
+
+3. **Orchestrator proxy over raw socket passthrough.** Raw socket gives Claude root-equivalent access to the host. The proxy adds ~2 days of work but closes this hole entirely — no socket in the session, no bypass path, `no-new-privileges` stays in place.
+
+4. **Single shared proxy (source-IP routing) over per-session instances.** Docker API traffic is low-volume. A single `http.createServer` in the orchestrator process handles all sessions with zero additional memory. Per-session Go/Rust proxies are deferred to the managed model (doc 062) where crash isolation between tenants justifies the overhead.
 
 ## Future capabilities (out of scope)
 
