@@ -61,7 +61,7 @@ Host Docker daemon
   └── Other session containers...
 ```
 
-**Why this is right for self-hosted:** The user already owns the machine. Their Claude process talking to their Docker daemon is no different from the user running Docker themselves. Adding a proxy or nested daemon would add complexity and failure modes with no security benefit — the "attacker" (Claude) is already trusted to run code on the user's behalf, and the container sandbox (doc 051) already constrains filesystem and resource access.
+**Why this is right for self-hosted:** The user already owns the machine. Their Claude process talking to their Docker daemon is no different from the user running Docker themselves. Adding a proxy or nested daemon would add complexity and failure modes with no security benefit in a single-user context. Note that mounting the Docker socket does weaken the session sandbox (doc 051) — Claude can create sibling containers outside the sandbox's filesystem and resource constraints. This is acceptable for self-hosted because the user already has full Docker access on their own machine.
 
 **Changes required:**
 
@@ -73,15 +73,17 @@ Host Docker daemon
 
 2. **`ContainerConfig` extension** — add optional `dockerAccess: boolean` field.
 
-3. **`SessionContainerManager.create()`** — when `dockerAccess` is true:
+3. **Session worker image variant** — a `Dockerfile.session-worker.docker` that adds the Docker CLI binary (just the client, not the daemon) on top of the base session worker image. Docker-enabled sessions use this image; non-Docker sessions use the base image.
+
+4. **`SessionContainerManager.create()`** — when `dockerAccess` is true:
+   - Use the Docker-capable session worker image
    - Bind-mount `/var/run/docker.sock:/var/run/docker.sock`
-   - Install Docker CLI in the session worker image (just the client binary, not the daemon)
    - Remove `no-new-privileges` (required for Docker socket access)
    - Pass `DOCKER_HOST=unix:///var/run/docker.sock` env var
 
-4. **Container cleanup** — when a session is destroyed, also clean up any containers it spawned. Use label-based tracking: the session container sets `shipit-parent-session={sessionId}` on containers it creates (via `DOCKER_DEFAULT_LABELS` env var or a wrapper script). The orchestrator's `destroy()` method queries and removes child containers.
+5. **Container cleanup** — when a session is destroyed, also clean up any containers it spawned. Use label-based tracking: a `docker` wrapper script in the session worker image injects `--label shipit-parent-session={sessionId}` on `docker create` / `docker run` commands. The orchestrator's `destroy()` method queries and removes child containers by label.
 
-5. **Network isolation** — child containers created by the session should join a session-specific network (not the orchestrator's network). The session creates its own bridge network on startup. The orchestrator doesn't need to route to these containers — the session container can reach them directly.
+6. **Network isolation** — child containers created by the session should join a session-specific network (not the orchestrator's network). The orchestrator creates a bridge network `shipit-session-{sessionId}` before starting the session container, and passes it via `DOCKER_NETWORK` env var. The session's `docker` wrapper adds `--network $DOCKER_NETWORK` to container creation commands. The orchestrator removes the network on session destroy.
 
 **Pros:**
 - Simplest implementation. ~3 days of work.
@@ -93,9 +95,9 @@ Host Docker daemon
 - No isolation from host Docker. The session can see all containers on the host.
 - Only appropriate for single-user self-hosted deployments.
 
-**Mitigations (cosmetic, not security boundaries):**
-- Label-based filtering: session's Docker CLI is wrapped to auto-add `--filter label=shipit-parent-session=$SESSION_ID` to `docker ps` commands. Makes the UI cleaner but isn't enforced.
-- `COMPOSE_PROJECT_NAME={sessionId-prefix}` prevents project name collisions across sessions.
+**UX polish (cosmetic, not security boundaries):**
+- The `docker` wrapper filters `docker ps` output to the session's own containers by default (adds `--filter label=shipit-parent-session=$SESSION_ID`). Users can bypass with `docker --raw ps` or by calling `/usr/bin/docker` directly.
+- The wrapper sets `COMPOSE_PROJECT_NAME=shipit-{sessionId-prefix}` so multiple sessions running the same compose file don't collide on project name.
 
 #### Alternative: DinD with Sysbox (Linux-only)
 
@@ -116,7 +118,7 @@ Host Docker daemon (with Sysbox runtime)
 
 **Changes (on top of the base implementation):**
 - `SessionContainerManager.create()` passes `HostConfig.Runtime: "sysbox-runc"` for Docker-enabled sessions
-- Session worker image variant (`Dockerfile.session-worker.docker`) includes `dockerd` + CLI, entrypoint that starts the inner daemon
+- A separate image variant (`Dockerfile.session-worker.sysbox`) extends the Docker-capable image with `dockerd`, an entrypoint that starts the inner daemon and waits for readiness
 - Inner Docker uses `vfs` or `fuse-overlayfs` storage driver
 - Higher default memory (2 GB+) for the inner daemon overhead (~300 MB)
 
@@ -154,10 +156,10 @@ resources:
 
 **Code changes:**
 
-1. Add `resolveResourceConfig(sessionDir: string)` to a new shared module (or extend `preview-config.ts`) — parses just the `resources` and `capabilities` blocks from `shipit.yaml`.
-2. In the runner factory (`index.ts` line ~308), call `resolveResourceConfig()` and pass results to `buildConfig()`.
-3. Add `dockerAccess` to `ContainerConfig`, handle in `create()`.
-4. Add deployment-level cap env vars, apply in `buildConfig()`.
+1. Add `resolveSessionConfig(sessionDir: string)` to a new shared module (or extend `preview-config.ts`) — parses `resources` and `capabilities` blocks from `shipit.yaml`.
+2. In the runner factory (`index.ts` line ~308), call `resolveSessionConfig()` and pass results to `buildConfig()`.
+3. Add deployment-level cap env vars, apply in `buildConfig()`.
+4. Add `dockerAccess` to `ContainerConfig`, handle in `create()` (this bridges Parts A and B — capabilities parsing feeds into container creation).
 
 ---
 
@@ -172,7 +174,7 @@ capabilities:
 resources:
   memory: 3072    # orchestrator + session workers + Claude CLI
   cpu: 2.0
-  pids: 2048      # Docker daemon overhead + many child processes
+  pids: 2048      # many child processes from compose services, session workers, etc.
 
 install: npm ci
 
@@ -189,7 +191,7 @@ preview:
 
 The Vite dev server on port 3000 serves the client and proxies `/api/*` and `/ws` to Fastify on port 3001. The outer ShipIt's preview proxy exposes port 3000 as `{sessionId}--3000.localhost`. The inner ShipIt's own session containers join a separate bridge network (`shipit-inner`), invisible to the outer orchestrator.
 
-**Container cleanup**: When the session is destroyed, the orchestrator also kills containers with label `shipit-parent-session={sessionId}` *and* any containers on the `shipit-inner` network.
+**Container cleanup**: The general label-based cleanup (Part A, change #5) handles this automatically — the inner ShipIt's session worker containers are created via the Docker socket with the `shipit-parent-session={sessionId}` label. The `shipit-inner` bridge network is also cleaned up as the session-specific network (Part A, change #6).
 
 ---
 
@@ -210,9 +212,7 @@ The browser only talks to the outer ShipIt. The inner ShipIt's previews are acce
 
 ### HMR WebSocket Patch
 
-Current patch (`preview-proxy.ts` line 57-68) rewrites *all* WebSocket connections from `localhost:*` to the page origin. This would break the inner ShipIt's application WebSocket at `/ws`.
-
-**Fix**: Only rewrite when `a.port !== location.port` AND `a.pathname` does not match known application paths. Simpler: check if the port differs from the page's port — the inner ShipIt's `/ws` uses the same port as the page (both go through the Vite proxy on 3000), so the condition `a.port !== location.port` already skips it. The current patch should actually be fine for the self-hosting case.
+Current patch (`preview-proxy.ts` line 57-68) rewrites WebSocket connections from `localhost:*` to the page origin, but only when `a.port !== location.port`. The inner ShipIt's application WebSocket at `/ws` goes through the Vite proxy on the same port as the page (3000), so this condition is false and the rewrite is skipped. The current patch should work for self-hosting without changes.
 
 ---
 
@@ -229,11 +229,12 @@ Current patch (`preview-proxy.ts` line 57-68) rewrites *all* WebSocket connectio
 ### Phase 2: Docker socket passthrough (~3 days)
 
 1. Add `dockerAccess: boolean` to `ContainerConfig`.
-2. In `create()`, conditionally mount docker socket and remove `no-new-privileges`.
-3. Install Docker CLI in session worker image (new Dockerfile layer).
-4. Add `DOCKER_DEFAULT_LABELS` env var for child container tracking.
-5. Extend `destroy()` to clean up child containers by label.
-6. Tests: unit tests for mount logic, integration test with mock Docker.
+2. Build `Dockerfile.session-worker.docker` — base image + Docker CLI + wrapper script.
+3. In `create()`, conditionally use Docker image, mount socket, remove `no-new-privileges`.
+4. Implement `docker` wrapper script (label injection, network injection, ps filtering).
+5. Create session-specific bridge network on session start, remove on destroy.
+6. Extend `destroy()` to clean up child containers by label.
+7. Tests: unit tests for mount logic, integration test with mock Docker.
 
 ### Phase 3: Self-hosting validation (~2 days)
 
@@ -253,8 +254,6 @@ Current patch (`preview-proxy.ts` line 57-68) rewrites *all* WebSocket connectio
 
 2. **Docker image caching across sessions.** With socket passthrough, images are shared (same daemon), which is a free advantage. No cold start penalty.
 
-3. **Compose project naming.** Multiple sessions running the same compose file will collide on project name. Should we inject `COMPOSE_PROJECT_NAME={sessionId}` automatically?
+3. **GPU passthrough.** Some projects (ML, CUDA) need GPU access. This is a separate capability (`capabilities.gpu: true`) with `--gpus` flag. Out of scope for this doc but worth noting as a future capability.
 
-4. **GPU passthrough.** Some projects (ML, CUDA) need GPU access. This is a separate capability (`capabilities.gpu: true`) with `--gpus` flag. Out of scope for this doc but worth noting as a future capability.
-
-5. **Docker build context.** Building images inside a session uses the session directory. For ShipIt self-hosting, the full repo is the build context — this can be large. Consider `.dockerignore` guidance.
+4. **Docker build context.** Building images inside a session uses the session directory. For ShipIt self-hosting, the full repo is the build context — this can be large. Consider `.dockerignore` guidance.
