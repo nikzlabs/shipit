@@ -77,22 +77,23 @@ These bypass the session sandbox (doc 051) entirely. Even for a single-user self
 
 #### How the proxy works
 
-The orchestrator runs a single Docker API proxy server (`http.createServer`) on a port accessible from the Docker bridge network. It identifies which session is making the request by the source IP of the TCP connection — each session container has a unique bridge IP. Source-IP spoofing is prevented by dropping `NET_RAW` from session containers (see Security hardening below).
+The orchestrator runs a single Docker API proxy server (`http.createServer`) bound to the Docker bridge gateway IP (e.g., `172.17.0.1`, resolved dynamically at startup via `docker network inspect bridge`). Binding to the bridge gateway rather than `0.0.0.0` ensures the proxy is only reachable from Docker containers, not from the host's LAN. It identifies which session is making the request by the source IP of the TCP connection — each session container has a unique bridge IP. Source-IP spoofing is prevented by dropping `NET_RAW` from session containers (see Security hardening below) and from child containers (see container create sanitization).
 
 **Request flow:**
 
 1. Session's `docker` CLI sends HTTP request to `DOCKER_HOST=tcp://{orchestrator-bridge-ip}:{proxy-port}`
 2. Proxy resolves source IP → session ID via `SessionContainerManager`'s container metadata
-3. Proxy inspects the request and applies policy
-4. Proxy forwards allowed requests to `/var/run/docker.sock`, injecting labels and network
-5. Proxy returns the Docker daemon's response to the session
+3. Proxy verifies the resolved session has `dockerAccess: true` — rejects with 403 otherwise (all session containers share the bridge network, so non-Docker sessions can technically reach the proxy)
+4. Proxy inspects the request and applies policy
+5. Proxy forwards allowed requests to `/var/run/docker.sock`, injecting labels and network
+6. Proxy returns the Docker daemon's response to the session
 
 **Policy enforcement on key endpoints:**
 
 | Docker API endpoint | Policy |
 |---|---|
 | **Container lifecycle** | |
-| `POST /containers/create` | Sanitize body (see container create policy below). Inject `shipit-parent-session={sessionId}` label. Inject session-specific network. |
+| `POST /containers/create` | Sanitize body (see container create policy below). **Overwrite** `shipit-parent-session` label with the requesting session's ID (never merge with client-supplied value — prevents a session from labeling containers as another session). Inject session-specific network. |
 | `GET /containers/json` | Filter response to only containers with the session's label. |
 | `GET /containers/{id}/json` | Only if container has the session's label. |
 | `POST /containers/{id}/start` | Only if container has the session's label. |
@@ -113,17 +114,21 @@ The orchestrator runs a single Docker API proxy server (`http.createServer`) on 
 | `POST /build` | Allowed. |
 | `DELETE /images/{id}` | Allowed (only affects local image cache). |
 | **Networks** | |
-| `POST /networks/create` | Inject session label. |
+| `POST /networks/create` | **Overwrite** `shipit-parent-session` label (same semantics as container create). |
 | `GET /networks` | Scoped to session-labeled networks. |
 | `GET /networks/{id}` | Only if network has the session's label. |
 | `DELETE /networks/{id}` | Only if network has the session's label. |
 | `POST /networks/{id}/connect` | Only if both network and container have the session's label. |
 | `POST /networks/{id}/disconnect` | Only if both network and container have the session's label. |
 | **Volumes** | |
-| `POST /volumes/create` | Inject session label. |
+| `POST /volumes/create` | **Overwrite** `shipit-parent-session` label (same semantics as container create). |
 | `GET /volumes` | Scoped to session-labeled volumes. |
 | `GET /volumes/{id}` | Only if volume has the session's label. |
 | `DELETE /volumes/{id}` | Only if volume has the session's label. |
+| **System (read-only)** | |
+| `GET /_ping` | Allowed. Required by Docker CLI and Compose to verify daemon connectivity. |
+| `GET /version` | Allowed. Required by Compose for API version negotiation. |
+| `GET /info` | Allowed. Read-only system info, no sensitive data. |
 | **Everything else** | Deny with 403. |
 
 **Container create sanitization** (`POST /containers/create` body inspection):
@@ -131,13 +136,15 @@ The orchestrator runs a single Docker API proxy server (`http.createServer`) on 
 | Field | Policy |
 |---|---|
 | `Privileged` | Must be `false` or absent. |
-| `CapAdd` | Must be empty or absent. Child containers get default caps only. |
+| `CapAdd` | Must be empty or absent. |
+| `CapDrop` | Proxy injects `NET_RAW` into `CapDrop` on every create request. Docker's default capability set includes `NET_RAW`, which would let child containers spoof source IPs at the proxy. Dropping it from child containers extends the same protection applied to session containers (Phase 2). |
 | `NetworkMode` | Must not be `host`. |
 | `PidMode` | Must be empty or absent (no `host`, no `container:{id}`). |
 | `IpcMode` | Must be empty or absent (no `host`, no `container:{id}`). |
 | `UTSMode` | Must not be `host`. |
 | `Devices` | Must be empty or absent. |
 | `Binds` | Each host path is resolved with `realpath()` and must be under the session's host-side workspace directory. Prevents symlink traversal. |
+| `Mounts` | Each entry with `Type: "bind"` has its `Source` resolved with `realpath()` and validated the same as `Binds`. Docker's create API accepts bind mounts via both `HostConfig.Binds` (legacy) and top-level `Mounts` (structured) — both must be validated or the `Binds` check is bypassable. Entries with `Type: "volume"` are validated like named `Volumes` (session label check). Entries with `Type: "tmpfs"` are allowed (no host path). |
 | `Volumes` (named) | Each named volume is verified to have the session's label. Prevents cross-session volume access. |
 | `VolumesFrom` | Must be empty or absent (prevents inheriting another container's mounts). |
 | `SecurityOpt` | Stripped (prevent overriding `no-new-privileges` or AppArmor). |
@@ -186,7 +193,7 @@ For the managed model (doc 062), per-pod sidecar proxies in Go make sense for cr
 
 4. **Docker API proxy** — new module `src/server/orchestrator/docker-proxy.ts`:
    - `createDockerProxy(deps: { containerManager, socketPath })` returns an `http.Server`
-   - Source IP → session ID resolution via `containerManager.getSessionByContainerIp()`, which returns `{ sessionId, hostWorkspaceDir }` — the workspace path is needed for `Binds` validation
+   - Source IP → session ID resolution via `containerManager.getSessionByContainerIp()`, which returns `{ sessionId, hostWorkspaceDir, dockerAccess }` — workspace path is needed for `Binds`/`Mounts` validation, `dockerAccess` is checked before any request is processed
    - Policy enforcement as described above
    - Exec-to-container resolution: `POST /exec/{id}/start` and `GET /exec/{id}/json` query the Docker daemon's `GET /exec/{id}/json` to find the parent container ID, then check that container's `shipit-parent-session` label
    - Forward to Unix socket via `http.request({ socketPath })`
@@ -323,9 +330,9 @@ Current patch (`preview-proxy.ts` line 57-68) rewrites WebSocket connections fro
 
 ### Phase 3: Docker API proxy (~5 days)
 
-1. Implement `docker-proxy.ts` — `http.createServer` that proxies to Docker Unix socket.
-2. Add source IP → session ID resolution via `SessionContainerManager`.
-3. Implement container create sanitization: reject `Privileged`, `CapAdd`, host `NetworkMode`/`PidMode`/`IpcMode`/`UTSMode`, `Devices`, `VolumesFrom`, `SecurityOpt`, `CgroupParent`. Validate `Binds` with `realpath()` against session's host-side directory. Validate named volumes have session label.
+1. Implement `docker-proxy.ts` — `http.createServer` bound to Docker bridge gateway IP (resolved via `docker network inspect bridge`), proxying to Docker Unix socket.
+2. Add source IP → session ID resolution via `SessionContainerManager`. Verify resolved session has `dockerAccess: true`.
+3. Implement container create sanitization: reject `Privileged`, `CapAdd`, host `NetworkMode`/`PidMode`/`IpcMode`/`UTSMode`, `Devices`, `VolumesFrom`, `SecurityOpt`, `CgroupParent`. Inject `CapDrop: ["NET_RAW"]`. Validate `Binds` AND `Mounts` bind entries with `realpath()` against session's host-side directory. Validate named volumes (in both `Volumes` and `Mounts` type=volume) have session label. Overwrite `shipit-parent-session` label (never merge).
 4. Implement label-based scoping for container operations (start, stop, kill, rm, exec, logs, attach, wait).
 5. Implement network connect/disconnect with dual label check (network + container).
 6. Implement streaming proxy for `exec/start`, `logs`, `attach` endpoints.
@@ -335,7 +342,7 @@ Current patch (`preview-proxy.ts` line 57-68) rewrites WebSocket connections fro
 10. In `create()`, conditionally use Docker image, set `DOCKER_HOST`, create session network.
 11. Extend `destroy()` to clean up labeled containers, networks, and volumes.
 12. Start proxy in `buildApp()`, inject as dependency.
-13. Tests: unit tests for each sanitization rule and label-scoping check, integration tests for proxy routing, test for 403 on unknown endpoints, test for request body size limit.
+13. Tests: unit tests for each sanitization rule (including `Mounts` bind validation, `CapDrop` injection, label overwrite), test for `dockerAccess` gate (non-Docker session gets 403), label-scoping checks, integration tests for proxy routing, test for 403 on unknown endpoints, test for request body size limit.
 
 ### Phase 4: Self-hosting validation (~2 days)
 
