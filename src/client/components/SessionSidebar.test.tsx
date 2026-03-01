@@ -30,17 +30,17 @@ const defaultProps = {
 };
 
 describe("SessionSidebar", () => {
-  it("renders header and New Session button", () => {
+  it("renders header and Add Repository button", () => {
     render(<SessionSidebar {...defaultProps} />);
     expect(screen.getByText("Sessions")).toBeTruthy();
-    expect(screen.getByText("New Session")).toBeTruthy();
+    expect(screen.getByText("Add Repository")).toBeTruthy();
   });
 
-  it("calls onNew when New Session is clicked", () => {
-    const onNew = vi.fn();
-    render(<SessionSidebar {...defaultProps} onNew={onNew} />);
-    fireEvent.click(screen.getByText("New Session"));
-    expect(onNew).toHaveBeenCalledTimes(1);
+  it("calls onAddRepo when Add Repository is clicked", () => {
+    const onAddRepo = vi.fn();
+    render(<SessionSidebar {...defaultProps} onAddRepo={onAddRepo} />);
+    fireEvent.click(screen.getByText("Add Repository"));
+    expect(onAddRepo).toHaveBeenCalledTimes(1);
   });
 
   it("renders session items", () => {
@@ -191,13 +191,12 @@ describe("SessionSidebar", () => {
     expect(screen.getByText("Visible session")).toBeTruthy();
   });
 
-  it("shows per-repo 'New session' button on repo groups", () => {
+  it("shows per-repo New Session button on repo groups", () => {
     const repos = [
       { url: "https://github.com/owner/repo.git", addedAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), status: "ready" as const },
     ];
     render(<SessionSidebar {...defaultProps} repos={repos} />);
-    const btn = screen.getByTitle("New session");
-    expect(btn).toBeTruthy();
+    expect(screen.getByText("New Session")).toBeTruthy();
   });
 
   it("calls onNewSessionForRepo when per-repo button is clicked", () => {
@@ -206,7 +205,7 @@ describe("SessionSidebar", () => {
       { url: "https://github.com/owner/repo.git", addedAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), status: "ready" as const },
     ];
     render(<SessionSidebar {...defaultProps} repos={repos} onNewSessionForRepo={onNewSessionForRepo} />);
-    fireEvent.click(screen.getByTitle("New session"));
+    fireEvent.click(screen.getByText("New Session"));
     expect(onNewSessionForRepo).toHaveBeenCalledWith("https://github.com/owner/repo.git");
   });
 
@@ -215,7 +214,7 @@ describe("SessionSidebar", () => {
       { url: "https://github.com/owner/repo.git", addedAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), status: "cloning" as const },
     ];
     render(<SessionSidebar {...defaultProps} repos={repos} />);
-    const btn = screen.getByTitle("New session");
+    const btn = screen.getByText("New Session");
     expect(btn).toBeDisabled();
   });
 
@@ -225,5 +224,25 @@ describe("SessionSidebar", () => {
     ];
     render(<SessionSidebar {...defaultProps} repos={repos} />);
     expect(screen.getByText("cloning")).toBeTruthy();
+  });
+
+  it("highlights New Session button when newSessionRepoUrl matches", () => {
+    const repos = [
+      { url: "https://github.com/owner/repo.git", addedAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), status: "ready" as const },
+    ];
+    render(<SessionSidebar {...defaultProps} repos={repos} newSessionRepoUrl="https://github.com/owner/repo.git" />);
+    const btn = screen.getByText("New Session").closest("button")!;
+    expect(btn.className).toContain("bg-gray-100");
+  });
+
+  it("does not highlight New Session button when newSessionRepoUrl does not match", () => {
+    const repos = [
+      { url: "https://github.com/owner/repo.git", addedAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), status: "ready" as const },
+    ];
+    render(<SessionSidebar {...defaultProps} repos={repos} newSessionRepoUrl="https://github.com/other/repo.git" />);
+    const btn = screen.getByText("New Session").closest("button")!;
+    // Split classes and check none is exactly "bg-gray-100" (excluding hover: variant)
+    const classes = btn.className.split(/\s+/);
+    expect(classes).not.toContain("bg-gray-100");
   });
 });

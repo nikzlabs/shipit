@@ -1110,7 +1110,6 @@ export async function registerApiRoutes(
             // Warm session is ready — claim it
             const sessionId = repo.warmSessionId;
             deps.repoStore.setWarmSessionId(url, undefined);
-            deps.repoStore.touch(url);
             // Start warming the next session in background
             deps.warmSessionForRepo?.(url);
             return { sessionId, sessionDir: warmSession.workspaceDir };
@@ -1162,7 +1161,6 @@ export async function registerApiRoutes(
           sessionType: isEmptyRepo ? "standalone" : "worktree",
         });
         sessionManager.setWarm(appSessionId, true);
-        deps.repoStore.touch(url);
 
         // Create a runner so preview/file watcher start immediately
         deps.runnerRegistry.getOrCreate(appSessionId, sessionDir, deps.defaultAgentId);

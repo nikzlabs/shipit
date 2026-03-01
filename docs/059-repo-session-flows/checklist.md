@@ -55,8 +55,8 @@
 ## Phase 5-6: HomeScreen simplification & cleanup
 
 - [x] HomeScreen only shows when zero repos exist (first-time user experience)
-- [ ] Remove `RepoSelector` and message input from `HomeScreen` (kept for zero-repo flow)
-- [ ] Remove `home_send_with_repo` WS message handler (kept for zero-repo flow)
+- [x] Remove `RepoSelector` and message input from `HomeScreen` — simplified to minimal "Add a repository" splash
+- [x] Remove `home_send_with_repo` WS message handler and all related code (type, dispatcher case, integration tests)
 
 ## Tests
 

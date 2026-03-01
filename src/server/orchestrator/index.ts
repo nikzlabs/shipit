@@ -997,10 +997,9 @@ to determine the correct install command, preview mode, command, and ports.`;
           return;
         }
 
-        // ---- Send message / answer / repo import ----
+        // ---- Send message / answer ----
         case "send_message": return sendMessageHandlers.handleSendMessage(ctx, msg);
         case "answer_question": return sendMessageHandlers.handleAnswerQuestion(ctx, msg);
-        case "home_send_with_repo": return sendMessageHandlers.handleHomeSendWithRepo(ctx, msg);
       }
     });
 

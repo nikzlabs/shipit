@@ -10,6 +10,7 @@ interface SessionSidebarProps {
   repos: RepoInfo[];
   currentSessionId: string | undefined;
   activeRunnerSessions?: Set<string>;
+  newSessionRepoUrl?: string;
   onResume: (sessionId: string) => void;
   onNew: () => void;
   onNewSessionForRepo: (repoUrl: string) => void;
@@ -166,6 +167,7 @@ interface GroupProps {
   sessions: SessionInfo[];
   currentSessionId: string | undefined;
   activeRunnerSessions?: Set<string>;
+  isNewSessionActive?: boolean;
   onResume: (id: string) => void;
   onArchive: (id: string) => void;
   onRename: (id: string, title: string) => void;
@@ -174,7 +176,7 @@ interface GroupProps {
   onRemove?: () => void;
 }
 
-function SessionGroup({ label, sessions, currentSessionId, activeRunnerSessions, onResume, onArchive, onRename, status, onNewSession, onRemove }: GroupProps) {
+function SessionGroup({ label, sessions, currentSessionId, activeRunnerSessions, isNewSessionActive, onResume, onArchive, onRename, status, onNewSession, onRemove }: GroupProps) {
   const [expanded, setExpanded] = useState(true);
 
   return (
@@ -193,18 +195,6 @@ function SessionGroup({ label, sessions, currentSessionId, activeRunnerSessions,
             <span className="text-gray-400 dark:text-gray-700 font-normal normal-case">({sessions.length})</span>
           )}
         </button>
-        {onNewSession && (
-          <button
-            onClick={(e) => { e.stopPropagation(); onNewSession(); }}
-            disabled={status === "cloning"}
-            className="shrink-0 p-0.5 rounded text-emerald-600 dark:text-emerald-500 opacity-0 group-hover/header:opacity-100 hover:text-emerald-400 hover:bg-gray-200 dark:hover:bg-gray-800 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-            title="New session"
-          >
-            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-            </svg>
-          </button>
-        )}
         {onRemove && (
           <button
             onClick={(e) => { e.stopPropagation(); onRemove(); }}
@@ -219,6 +209,23 @@ function SessionGroup({ label, sessions, currentSessionId, activeRunnerSessions,
       </div>
       {expanded && (
         <div>
+          {onNewSession && (
+            <button
+              onClick={onNewSession}
+              disabled={status === "cloning"}
+              className={`flex items-center gap-2 w-full px-2.5 py-1.5 mx-1 text-xs rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+                isNewSessionActive
+                  ? "bg-gray-100 dark:bg-gray-800 text-emerald-600 dark:text-emerald-400"
+                  : "text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+              }`}
+              style={{ width: "calc(100% - 0.5rem)" }}
+            >
+              <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+              New Session
+            </button>
+          )}
           {sessions.map((s) => (
             <SessionItem
               key={s.id}
@@ -241,8 +248,9 @@ export function SessionSidebar({
   repos,
   currentSessionId,
   activeRunnerSessions,
+  newSessionRepoUrl,
   onResume,
-  onNew,
+  onNew: _onNew,
   onNewSessionForRepo,
   onArchive,
   onRename,
@@ -302,13 +310,13 @@ export function SessionSidebar({
           </svg>
         </button>
         <button
-          onClick={onNew}
-          className="p-1.5 rounded text-emerald-600 dark:text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-          title="New Session"
-          aria-label="New Session"
+          onClick={onAddRepo}
+          className="p-1.5 rounded text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+          title="Add Repository"
+          aria-label="Add Repository"
         >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 10.5v6m3-3H9m4.06-7.19l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
           </svg>
         </button>
       </div>
@@ -332,17 +340,8 @@ export function SessionSidebar({
         </button>
       </div>
 
-      {/* New Session + Add Repository buttons */}
-      <div className="px-2 py-2 shrink-0 space-y-0.5">
-        <button
-          onClick={onNew}
-          className="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded transition-colors"
-        >
-          <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-          </svg>
-          New Session
-        </button>
+      {/* Add Repository button */}
+      <div className="px-2 py-2 shrink-0">
         <button
           onClick={onAddRepo}
           className="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded transition-colors"
@@ -369,6 +368,7 @@ export function SessionSidebar({
                   sessions={groupSessions}
                   currentSessionId={currentSessionId}
                   activeRunnerSessions={activeRunnerSessions}
+                  isNewSessionActive={newSessionRepoUrl === url}
                   onResume={onResume}
                   onArchive={onArchive}
                   onRename={onRename}

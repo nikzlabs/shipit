@@ -81,8 +81,6 @@ export default function App() {
   const activity = useSessionStore((s) => s.activity);
   const sessions = useSessionStore((s) => s.sessions);
   const authUrl = useSessionStore((s) => s.authUrl);
-  const selectedRepoUrl = useSessionStore((s) => s.selectedRepoUrl);
-  const creatingRepo = useSessionStore((s) => s.creatingRepo);
   const activeRunnerSessions = useSessionStore((s) => s.activeRunnerSessions);
   const queuedMessages = useSessionStore((s) => s.queuedMessages);
 
@@ -173,6 +171,7 @@ export default function App() {
   const isMobile = useIsMobile();
   const [searchOpen, setSearchOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [newSessionRepoUrl, setNewSessionRepoUrl] = useState<string>();
   const search = useSearch(messages);
   const { notify, requestPermission } = useNotification();
   const { theme, toggle: toggleTheme } = useTheme();
@@ -227,6 +226,13 @@ export default function App() {
     }
   }, [urlSessionId, send]);
 
+  // Clear newSessionRepoUrl once the claimed session graduates and appears in the list
+  useEffect(() => {
+    if (newSessionRepoUrl && sessionId && sessions.some((s) => s.id === sessionId)) {
+      setNewSessionRepoUrl(undefined);
+    }
+  }, [newSessionRepoUrl, sessionId, sessions]);
+
   // ── Callback helpers ──
   const handleSend = useCallback(
     (text: string, images?: Array<{ data: string; mediaType: string; filename: string }>) => {
@@ -273,26 +279,6 @@ export default function App() {
     [send, requestPermission, apiPost],
   );
 
-  const handleHomeSendWithRepo = useCallback(
-    (repoUrl: string, text: string, images?: Array<{ data: string; mediaType: string; filename: string }>) => {
-      requestPermission();
-      const session = useSessionStore.getState();
-      const settings = useSettingsStore.getState();
-      useUiStore.getState().setShowTemplates(false);
-      session.setMessages((prev) => [...prev, { role: "user", text }]);
-      session.setIsLoading(true);
-      session.setActivity({ label: "Setting up repository..." });
-      send({
-        type: "home_send_with_repo", repoUrl, text,
-        images: images?.map((img) => ({ data: img.data, mediaType: img.mediaType })),
-        files: settings.pendingFiles.length > 0 ? settings.pendingFiles : undefined,
-        permissionMode: settings.permissionMode !== "auto" ? settings.permissionMode : undefined,
-      });
-      settings.clearPendingFiles();
-    },
-    [send, requestPermission],
-  );
-
   const handleSendErrors = useCallback(
     (errors: PreviewError[]) => {
       const text = formatErrorForMessage(errors);
@@ -319,25 +305,11 @@ export default function App() {
     [send],
   );
 
-  const handleHomeCreateRepo = useCallback(
-    async (name: string, description: string, isPrivate: boolean, templateId: string) => {
-      useSessionStore.getState().setCreatingRepo(true);
-      try {
-        const result = await apiPost<{ success: boolean; sessionId?: string }>("/api/repos", { repoName: name, templateId, description, isPrivate });
-        useSessionStore.getState().setCreatingRepo(false);
-        if (result.success && result.sessionId) {
-          resumeSessionInternal(result.sessionId, send);
-          navigate(`/session/${result.sessionId}`);
-        }
-      } catch { useSessionStore.getState().setCreatingRepo(false); }
-    },
-    [apiPost, send, navigate],
-  );
-
   const handleNewSessionForRepo = useCallback(
     async (repoUrl: string) => {
       const result = await useRepoStore.getState().claimSession(repoUrl);
       if (result) {
+        setNewSessionRepoUrl(repoUrl);
         resumeSessionInternal(result.sessionId, send);
         navigate(`/session/${result.sessionId}`);
       }
@@ -494,7 +466,7 @@ export default function App() {
     }
     return dividers;
   }, [threads]);
-  const showHomeScreen = showTemplates && messages.length === 0 && !isLoading && repos.length === 0;
+  const showHomeScreen = showTemplates && messages.length === 0 && !isLoading;
 
   // ── Right panel ──
   const rightPanel = (
@@ -545,18 +517,7 @@ export default function App() {
     <>
       {searchOpen && <SearchBar query={search.query} onQueryChange={search.setQuery} matches={search.matches} currentMatchIndex={search.currentMatchIndex} onNext={search.goToNext} onPrev={search.goToPrev} onClose={() => { setSearchOpen(false); search.clear(); }} />}
       {showHomeScreen ? (
-        <HomeScreen
-          sessions={sessions} githubStatus={githubStatus} templates={templates}
-          onRequestTemplates={() => { apiGet<{ templates: typeof templates }>("/api/bootstrap").then((d) => useUiStore.getState().setTemplates(d.templates)).catch(() => {}); }}
-          onSendWithRepo={handleHomeSendWithRepo} onNewRepo={handleHomeCreateRepo}
-          onSearchRepos={(q) => usePrStore.getState().searchRepos(q).catch(() => {})}
-          searchResults={importSearchResults} disabled={isLoading || status !== "open"}
-          permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(m)}
-          pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)}
-          onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree}
-          creatingRepo={creatingRepo} selectedRepoUrl={selectedRepoUrl}
-          onSelectRepo={(url) => useSessionStore.getState().setSelectedRepoUrl(url)}
-        />
+        <HomeScreen onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)} hasRepos={repos.length > 0} />
       ) : (
         <MessageList messages={messages} isLoading={isLoading} activity={activity} searchMatches={search.matches} currentMatch={search.currentMatch} onEditMessage={handleEditMessage} onAnswerQuestion={handleAnswerQuestion} checkpoints={checkpointDividers} />
       )}
@@ -675,7 +636,8 @@ export default function App() {
         <div className="flex flex-1 min-h-0">
           <SessionSidebar
             sessions={sessions} repos={repos} currentSessionId={sessionId} activeRunnerSessions={activeRunnerSessions}
-            onResume={(sid) => { resumeSessionInternal(sid, send); navigate(`/session/${sid}`); }}
+            newSessionRepoUrl={newSessionRepoUrl}
+            onResume={(sid) => { setNewSessionRepoUrl(undefined); resumeSessionInternal(sid, send); navigate(`/session/${sid}`); }}
             onNew={() => newSession(send, navigate)}
             onNewSessionForRepo={handleNewSessionForRepo}
             onArchive={async (sid) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId) { useSessionStore.getState().setSessionId(undefined); navigate("/"); } }}
