@@ -37,6 +37,8 @@ interface PreviewFrameProps {
   onToggleAutoFix: () => void;
   /** Current auto-fix retry count (for display). */
   autoFixRetries: number;
+  /** Show loading spinner even without a sessionId (e.g. during session claim). */
+  loading?: boolean;
   /** Whether no preview config was found for the session. */
   configMissing?: boolean;
   /** Install command status (running, complete, or error). */
@@ -75,6 +77,7 @@ export { formatErrorForMessage };
 export function PreviewFrame({
   preview,
   sessionId,
+  loading,
   detectedPorts,
   selectedPort,
   onSelectPort,
@@ -243,7 +246,7 @@ export function PreviewFrame({
     // No status received yet but a session is active — the preview server is
     // starting up.  Show a spinner instead of the static placeholder so the
     // user doesn't think nothing is happening.
-    if (!preview && sessionId) {
+    if (!preview && (sessionId || loading)) {
       return (
         <div className="flex items-center justify-center h-full text-gray-500 text-sm">
           <div className="text-center space-y-3">

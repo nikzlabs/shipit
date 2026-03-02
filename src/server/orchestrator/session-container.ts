@@ -440,6 +440,49 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     return removed;
   }
 
+  /**
+   * Rediscover running containers from a previous orchestrator run.
+   * After restart, the in-memory containers map is empty even though Docker
+   * containers keep running. This method queries Docker for containers with
+   * the shipit-session label, and for each running container whose session ID
+   * is in the active set, populates the map so the runner factory can
+   * reconnect to them instead of creating duplicates.
+   */
+  async rediscover(activeSessionIds: Set<string>): Promise<number> {
+    let count = 0;
+    try {
+      const containers = await this.docker.listContainers({
+        all: true,
+        filters: { label: this.labelFilters() },
+      });
+      for (const ci of containers) {
+        const sessionId = ci.Labels?.[CONTAINER_SESSION_ID_LABEL];
+        if (!sessionId || !activeSessionIds.has(sessionId)) continue;
+        if (this.containers.has(sessionId)) continue;
+        if (ci.State !== "running") continue;
+        try {
+          const container = this.docker.getContainer(ci.Id);
+          const info = await container.inspect();
+          const networkInfo = info.NetworkSettings?.Networks?.[this.networkName];
+          if (!networkInfo?.IPAddress) continue;
+          this.containers.set(sessionId, {
+            id: ci.Id,
+            sessionId,
+            containerIp: networkInfo.IPAddress,
+            workerUrl: `http://${networkInfo.IPAddress}:${this.workerPort}`,
+            status: "running",
+          });
+          count++;
+        } catch {
+          // Container may have exited between list and inspect
+        }
+      }
+    } catch {
+      // Docker may not be available
+    }
+    return count;
+  }
+
   // --- Health monitoring via Docker event stream ---
 
   /**

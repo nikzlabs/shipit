@@ -15,7 +15,7 @@ interface RepoState {
   // Async actions
   addRepo: (url: string) => Promise<RepoInfo | null>;
   removeRepo: (url: string) => Promise<boolean>;
-  claimSession: (url: string) => Promise<{ sessionId: string; sessionDir: string } | null>;
+  claimSession: (url: string, signal?: AbortSignal) => Promise<{ sessionId: string; sessionDir: string } | null>;
 }
 
 export const useRepoStore = create<RepoState>((set) => ({
@@ -89,16 +89,18 @@ export const useRepoStore = create<RepoState>((set) => ({
     }
   },
 
-  claimSession: async (url) => {
+  claimSession: async (url, signal) => {
     try {
       const res = await fetch(`/api/repos/${encodeURIComponent(url)}/claim-session`, {
         method: "POST",
         headers: { Accept: "application/json" },
+        signal,
       });
       if (!res.ok) return null;
       const data = await res.json();
       return data as { sessionId: string; sessionDir: string };
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return null;
       console.error("[repo-store] claimSession failed:", err);
       return null;
     }

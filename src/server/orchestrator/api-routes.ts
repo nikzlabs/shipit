@@ -115,6 +115,8 @@ export interface ApiDeps {
   sessionsRoot: string;
   /** Warm a session for a repo (called after clone, after graduation, etc.). */
   warmSessionForRepo?: (repoUrl: string) => void;
+  /** Returns the in-flight warming promise for a repo, if any. */
+  waitForWarmSession?: (repoUrl: string) => Promise<void> | undefined;
   /** Create session dir with custom options. */
   createSessionDirFull: (title: string, opts?: { skipGitInit?: boolean }) => Promise<{ appSessionId: string; sessionDir: string }>;
 }
@@ -1161,12 +1163,21 @@ export async function registerApiRoutes(
           return;
         }
 
-        // Check if warm session exists and its runner is alive
+        // Reuse path: if a previously-claimed warm session for this repo exists
+        // (user clicked "New Session", navigated away without sending a message,
+        // then clicked "New Session" again), return it instead of claiming a new one.
+        // This avoids creating duplicate containers for sessions the user never used.
+        const reusable = sessionManager.findUngraduatedWarm(url, repo.warmSessionId ?? undefined);
+        if (reusable?.workspaceDir) {
+          return { sessionId: reusable.id, sessionDir: reusable.workspaceDir };
+        }
+
+        // Warm path: claim the pre-warmed session (worktree + metadata only).
+        // No container is created here — it will be created on-demand when
+        // the WebSocket connects and activateSession() calls getOrCreate().
         if (repo.warmSessionId) {
           const warmSession = sessionManager.get(repo.warmSessionId);
-          const warmRunner = deps.runnerRegistry.get(repo.warmSessionId);
-          if (warmSession?.workspaceDir && warmRunner) {
-            // Warm session is ready — claim it
+          if (warmSession?.workspaceDir) {
             const sessionId = repo.warmSessionId;
             deps.repoStore.setWarmSessionId(url, undefined);
             // Start warming the next session in background
@@ -1175,7 +1186,28 @@ export async function registerApiRoutes(
           }
         }
 
-        // No warm session available — create one synchronously
+        // If warming is in progress, wait for it instead of creating from scratch.
+        // This prevents cascade: rapid "New Session" clicks each falling to the
+        // slow path while the replacement warm session is still being created.
+        const warmingPromise = deps.waitForWarmSession?.(url);
+        if (warmingPromise) {
+          await warmingPromise;
+          // Re-check — the warm session should now be available
+          const freshRepo = deps.repoStore.get(url);
+          if (freshRepo?.warmSessionId) {
+            const warmSession = sessionManager.get(freshRepo.warmSessionId);
+            if (warmSession?.workspaceDir) {
+              const sessionId = freshRepo.warmSessionId;
+              deps.repoStore.setWarmSessionId(url, undefined);
+              deps.warmSessionForRepo?.(url);
+              return { sessionId, sessionDir: warmSession.workspaceDir };
+            }
+          }
+        }
+
+        // No warm session available — create one synchronously.
+        // If the client already disconnected (rapid navigation), skip the expensive work.
+        if (request.raw.destroyed) return;
         const repoDir = deps.getSharedRepoDir(url);
         const { generateBranchPrefix } = await import("./git-utils.js");
         const branchPrefix = generateBranchPrefix();
@@ -1221,10 +1253,8 @@ export async function registerApiRoutes(
         });
         sessionManager.setWarm(appSessionId, true);
 
-        // Create a runner and kick off worker resources (preview, file watcher)
-        const runner = deps.runnerRegistry.getOrCreate(appSessionId, sessionDir, deps.defaultAgentId);
-        runner.attachViewer();
-        runner.detachViewer();
+        // No container is created here — it will be created on-demand when
+        // the WebSocket connects and activateSession() calls getOrCreate().
 
         // Start warming the next session in background
         deps.warmSessionForRepo?.(url);

@@ -4,6 +4,7 @@ import fastifyStatic from "@fastify/static";
 import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { GitManager } from "../shared/git.js";
 import { AgentRegistry, ALLOWED_ENV_KEYS } from "../shared/agent-registry.js";
 import { RepoGit } from "./repo-git.js";
@@ -303,9 +304,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     const dockerAvailable = await containerManager.isAvailable();
     if (dockerAvailable) {
       await containerManager.ensureNetwork();
-      const activeIds = new Set(sessionManager.list().map((s) => s.id));
+      const activeIds = new Set(sessionManager.allIds());
       const orphans = await containerManager.cleanupOrphans(activeIds);
       if (orphans > 0) console.log(`[server] Cleaned up ${orphans} orphan container(s)`);
+      const rediscovered = await containerManager.rediscover(activeIds);
+      if (rediscovered > 0) console.log(`[server] Rediscovered ${rediscovered} container(s) from previous run`);
       await containerManager.startHealthMonitor();
       console.log("[server] Docker container mode enabled");
     } else {
@@ -541,17 +544,24 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // The warm session has a worktree, a runner, and a running preview — but
   // is not visible in the sidebar until the user sends their first message.
 
+  const warmingInProgress = new Set<string>();
+  const warmingPromises = new Map<string, Promise<void>>();
+
   const warmSessionForRepo = (repoUrl: string): void => {
     const repo = repoStore.get(repoUrl);
     if (!repo || repo.status !== "ready") return;
-    // Don't warm if already warming
+    // Don't warm if already has a warm session or is currently warming
+    if (warmingInProgress.has(repoUrl)) return;
     if (repo.warmSessionId) {
       const existing = sessionManager.get(repo.warmSessionId);
       if (existing) return;
     }
+    warmingInProgress.add(repoUrl);
 
-    // Fire-and-forget — warming runs entirely in the background
-    (async () => {
+    // Fire-and-forget — warming runs entirely in the background.
+    // The promise is stored so the claim endpoint can await it instead
+    // of falling to the expensive slow path.
+    const p = (async () => {
       try {
         const repoDir = getSharedRepoDir(repoUrl);
         // eslint-disable-next-line no-restricted-syntax -- stat existence-check idiom
@@ -614,23 +624,23 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           sessionType: isEmptyRepo ? "standalone" : "worktree",
         });
 
-        // Create a runner and kick off worker resources (preview, file watcher)
-        // so they're running before the user connects.
-        const runner = runnerRegistry.getOrCreate(appSessionId, sessionDir, defaultAgentId);
-        runner.attachViewer();
-        runner.detachViewer();
-
-        // Store the warm session ID on the repo
+        // Store the warm session ID on the repo.
+        // Container + runner are created on-demand when the user activates
+        // the session (WS connect → activateSession → getOrCreate).
         repoStore.setWarmSessionId(repoUrl, appSessionId);
 
         // Broadcast so client knows the repo is ready for instant sessions
         sseBroadcast("repo_warm_ready", { url: repoUrl, sessionId: appSessionId });
 
-        console.log(`[warm] Warm session ${appSessionId} ready for ${repoUrl} (runner=${!!runner})`);
+        console.log(`[warm] Warm session ${appSessionId} ready for ${repoUrl}`);
       } catch (err) {
         console.error(`[warm] Failed to warm session for ${repoUrl}:`, getErrorMessage(err));
+      } finally {
+        warmingInProgress.delete(repoUrl);
+        warmingPromises.delete(repoUrl);
       }
     })();
+    warmingPromises.set(repoUrl, p);
   };
 
   // ---- Migration: derive RepoStore from existing sessions ----
@@ -655,28 +665,34 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
   }
 
-  // ---- Startup re-warming ----
-  // Check each "ready" repo's warm session; re-warm if missing.
-  // Runs after HTTP routes are registered (warmSessionForRepo needs runnerRegistry).
-  // Uses setTimeout(0) to defer until after buildApp() returns.
-  const reposToWarm = [
-    ...migratedRepoUrls,
-    ...repoStore.list()
-      .filter((r) => r.status === "ready" && !migratedRepoUrls.includes(r.url))
-      .filter((r) => {
-        if (!r.warmSessionId) return true;
-        const ws = sessionManager.get(r.warmSessionId);
-        return !ws; // Re-warm if warm session no longer exists
-      })
-      .map((r) => r.url),
-  ];
-  if (reposToWarm.length > 0) {
-    setTimeout(() => {
-      for (const url of reposToWarm) {
-        warmSessionForRepo(url);
+  // ---- Startup: validate warm sessions + re-warm missing ----
+  // After restart, runners/containers are gone. We do NOT recreate them here;
+  // containers are created on-demand when a WebSocket connects (activateSession).
+  // We only validate that warm sessions' worktree dirs still exist on disk.
+  setTimeout(() => {
+    for (const repo of repoStore.list()) {
+      if (repo.warmSessionId && repo.status === "ready") {
+        const ws = sessionManager.get(repo.warmSessionId);
+        if (!ws?.workspaceDir || !existsSync(ws.workspaceDir)) {
+          console.log(`[warm] Stale warm session ${repo.warmSessionId} — worktree missing, re-warming`);
+          repoStore.setWarmSessionId(repo.url, undefined);
+          warmSessionForRepo(repo.url);
+        } else {
+          console.log(`[warm] Warm session ${repo.warmSessionId} validated (worktree exists)`);
+        }
       }
-    }, 0);
-  }
+    }
+    // Re-warm repos that have no warm session at all (+ migrated repos)
+    for (const url of migratedRepoUrls) {
+      warmSessionForRepo(url);
+    }
+    for (const repo of repoStore.list()) {
+      if (!repo.warmSessionId && repo.status === "ready"
+          && !migratedRepoUrls.includes(repo.url)) {
+        warmSessionForRepo(repo.url);
+      }
+    }
+  }, 0);
 
   // ---- HTTP API routes ----
   await registerApiRoutes(app, {
@@ -703,6 +719,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     generateText,
     sessionsRoot,
     warmSessionForRepo,
+    waitForWarmSession: (repoUrl: string) => warmingPromises.get(repoUrl),
     createSessionDirFull: createSessionDir,
   });
 
@@ -760,7 +777,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       let attachedRunner: SessionRunnerInterface | null = null;
       let runnerMessageListener: ((msg: WsServerMessage) => void) | null = null;
       let previewRetryListener: ((msg: WsServerMessage) => void) | null = null;
-      let previewRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
       const send = (msg: WsServerMessage) => {
         if (socket.readyState === 1) {
@@ -791,21 +807,19 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           send(runner.buildPreviewStatus());
         } else {
           // Preview state not yet known (SSE still connecting to worker).
-          // The normal message listener will forward the first preview_status,
-          // but React 18 batching can swallow it when many WS messages arrive
-          // in the same tick (setLastMessage keeps only the last value).
-          // Register a one-shot listener that re-sends preview_status after a
-          // short delay so it arrives in its own event-loop turn.
+          // The normal message listener already forwards preview_status, but
+          // React 18 batching can swallow it when many WS messages arrive in
+          // the same tick. Register a one-shot listener that re-sends
+          // preview_status in a separate microtask to avoid being batched.
           previewRetryListener = (msg: WsServerMessage) => {
             if (msg.type === "preview_status") {
               runner.off("message", previewRetryListener!);
               previewRetryListener = null;
-              previewRetryTimer = setTimeout(() => {
-                previewRetryTimer = null;
+              queueMicrotask(() => {
                 if (socket.readyState === 1) {
                   send(runner.buildPreviewStatus());
                 }
-              }, 300);
+              });
             }
           };
           runner.on("message", previewRetryListener);
@@ -818,7 +832,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           if (previewRetryListener) attachedRunner.off("message", previewRetryListener);
           attachedRunner.detachViewer();
         }
-        if (previewRetryTimer) { clearTimeout(previewRetryTimer); previewRetryTimer = null; }
         attachedRunner = null;
         runnerMessageListener = null;
         previewRetryListener = null;

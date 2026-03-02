@@ -46,6 +46,11 @@ describe("PreviewFrame", () => {
     expect(screen.getByText("Starting dev server...")).toBeInTheDocument();
   });
 
+  it("shows spinner when loading is true (claiming session)", () => {
+    render(<PreviewFrame preview={null} loading={true} {...defaultProps} />);
+    expect(screen.getByText("Starting dev server...")).toBeInTheDocument();
+  });
+
   it("shows placeholder when preview is not running", () => {
     const preview: PreviewStatus = { running: false, port: 5173, url: "http://localhost:5173" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
