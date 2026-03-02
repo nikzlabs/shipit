@@ -98,7 +98,6 @@ export function PreviewFrame({
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
 
   // Compute active port early so hooks can reference it (0 when not running)
-  console.log("[preview] PreviewFrame render:", { preview: preview ? { running: preview.running, port: preview.port, url: preview.url } : null, sessionId, configMissing });
   const activePort = preview?.running ? (selectedPort ?? preview.port) : 0;
 
   // API host for container-mode subdomain URLs (e.g. "localhost:3001")
