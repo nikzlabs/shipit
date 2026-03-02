@@ -265,4 +265,146 @@ describe("container lifecycle integration", () => {
     client1.close();
     client2.close();
   });
+
+  it("creates fresh container after container crash and reactivation", async () => {
+    const { id: sessionId } = await createSession(sessionManager, sessionsDir, "Crash Recovery");
+
+    const client1 = await TestClient.connect(port, sessionId);
+    await new Promise((r) => setTimeout(r, 500));
+
+    const sc1 = containerManager.get(sessionId);
+    expect(sc1).toBeDefined();
+    const originalId = sc1!.id;
+
+    // Start health monitor and simulate a Docker "die" event
+    await containerManager.startHealthMonitor();
+    fakeDocker._eventEmitter.emit("data", Buffer.from(JSON.stringify({
+      Action: "die",
+      Actor: {
+        Attributes: {
+          [CONTAINER_SESSION_ID_LABEL]: sessionId,
+          exitCode: "137",
+        },
+      },
+    })));
+
+    // Container should be removed from the manager
+    expect(containerManager.get(sessionId)).toBeUndefined();
+
+    client1.close();
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Reactivate — should create a fresh container (not crash)
+    const client2 = await TestClient.connect(port, sessionId);
+    await new Promise((r) => setTimeout(r, 500));
+
+    const sc2 = containerManager.get(sessionId);
+    expect(sc2).toBeDefined();
+    expect(sc2!.status).toBe("running");
+    // Different container — the old one was destroyed by the crash
+    expect(sc2!.id).not.toBe(originalId);
+
+    client2.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Container reconnect tests (short idle timeout)
+// ---------------------------------------------------------------------------
+
+describe("container reconnect on re-activation", () => {
+  let tmpDir: string;
+  let sessionsDir: string;
+  let app: FastifyInstance;
+  let port: number;
+  let sessionManager: SessionManager;
+  let containerManager: SessionContainerManager;
+  let fakeDocker: ReturnType<typeof createFakeDocker>;
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-container-reconnect-"));
+    sessionsDir = path.join(tmpDir, "sessions");
+    fs.mkdirSync(sessionsDir, { recursive: true });
+
+    sessionManager = new SessionManager(path.join(tmpDir, "sessions.json"));
+
+    fakeDocker = createFakeDocker();
+    containerManager = new SessionContainerManager({
+      docker: fakeDocker as any,
+      imageName: "shipit-session-worker:test",
+      networkName: "shipit-test",
+      workerPort: 9100,
+      skipHealthCheck: true,
+      stackName: "shipit-test",
+    });
+
+    app = await buildApp({
+      workspaceDir: tmpDir,
+      credentialsDir: tmpDir,
+      credentialStore: createTestCredentialStore(tmpDir),
+      createGitManager: (dir: string) => new GitManager(dir),
+      sessionManager,
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      agentFactory: () => new FakeClaudeProcess() as any,
+      serveStatic: false,
+      sessionContainerManager: containerManager,
+      defaultRunnerIdleTimeoutMs: 200, // Short timeout so idle disposal fires quickly
+    });
+
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+    const match = address.match(/:(\d+)$/);
+    port = match ? Number(match[1]) : 0;
+  });
+
+  afterEach(async () => {
+    await app.close();
+    await new Promise((r) => setTimeout(r, 50));
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch {
+      // Ignore cleanup errors
+    }
+  });
+
+  it("reconnects to existing container after runner idle disposal", async () => {
+    const { id: sessionId } = await createSession(sessionManager, sessionsDir, "Reconnect Test");
+
+    // First activation — creates container
+    const client1 = await TestClient.connect(port, sessionId);
+    await new Promise((r) => setTimeout(r, 500));
+
+    const sc = containerManager.get(sessionId);
+    expect(sc).toBeDefined();
+    expect(sc!.status).toBe("running");
+    const originalContainerId = sc!.id;
+    const originalWorkerUrl = sc!.workerUrl;
+
+    // Disconnect — viewer count drops to 0, idle timer starts
+    client1.close();
+
+    // Wait for idle timeout (200ms) + buffer for disposal to complete
+    await new Promise((r) => setTimeout(r, 600));
+
+    // Container should still exist in the manager (not destroyed by runner disposal)
+    expect(containerManager.get(sessionId)).toBeDefined();
+    expect(containerManager.get(sessionId)!.status).toBe("running");
+
+    // Second activation — should reconnect to existing container, not create a new one
+    const client2 = await TestClient.connect(port, sessionId);
+    await new Promise((r) => setTimeout(r, 500));
+
+    // Same container — reused, not destroyed and recreated
+    const sc2 = containerManager.get(sessionId);
+    expect(sc2).toBeDefined();
+    expect(sc2!.id).toBe(originalContainerId);
+    expect(sc2!.workerUrl).toBe(originalWorkerUrl);
+
+    // Only one Docker container should exist for this session
+    const matchingContainers = [...fakeDocker._containers.values()].filter(
+      (c) => c.labels[CONTAINER_SESSION_ID_LABEL] === sessionId,
+    );
+    expect(matchingContainers).toHaveLength(1);
+
+    client2.close();
+  });
 });

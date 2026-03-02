@@ -659,7 +659,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       await workerPost(this.workerUrl, "/preview/start");
       console.log(`[container-runner:${this.sessionId}] Preview started on worker`);
     } catch (err) {
-      console.error(`[container-runner:${this.sessionId}] Failed to start preview:`, err);
+      // "Preview already running" = reconnect case — SSE replay delivers current state
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("already running")) {
+        console.log(`[container-runner:${this.sessionId}] Preview already running on worker`);
+      } else {
+        console.error(`[container-runner:${this.sessionId}] Failed to start preview:`, err);
+      }
     }
   }
 
@@ -907,8 +913,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this._agent = null;
     }
 
-    // Stop worker resources (fire and forget)
-    this.stopWorkerResources().catch(() => {});
+    // Don't stop worker resources (preview, file watcher) — the container
+    // stays alive and a new runner may reconnect to it. Stopping the preview
+    // would force a full restart on reconnect.
 
     this.disconnectEventStream();
     this.clearPushTimer();
