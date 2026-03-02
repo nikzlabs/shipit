@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: planned
 ---
 
 # 061 — Self-Hosted Docker-Capable Sessions
