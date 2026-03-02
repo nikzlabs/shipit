@@ -1,5 +1,5 @@
 ---
-status: paused
+status: done
 ---
 
 # 057 — Data Manager Placement (ChatHistory, Threads, Usage)
@@ -16,27 +16,26 @@ This doc covers the placement of these three data managers. For the broader dire
 
 ## Current State
 
-The 053 refactoring places all three in `orchestrator/`. This is correct for today's call-site analysis: every caller is in `ws-handlers/*.ts`, `services/*.ts`, or `index.ts`.
+The 053 refactoring places all three in `orchestrator/`. This is correct for today's call-site analysis: every caller is in `ws-handlers/*.ts`, `services/*.ts`, `api-routes.ts`, or `index.ts`. No callers exist in `session/`.
 
 ## Callers
 
 **ChatHistoryManager**:
-- `ws-handlers/send-message.ts` — `append()` after agent turn, `load()` for resume context
-- `ws-handlers/thread-handlers.ts` — `load()` for thread fork
+- `ws-handlers/send-message.ts` — `append()` after agent turn
+- `ws-handlers/thread-handlers.ts` — `load()` for thread fork/switch, `append()` for replayed messages
 - `services/session.ts` — `load()` for session chat history API
 - `services/threads.ts` — `load()` for thread checkpoint
-- `services/misc.ts` — `delete()` during full reset
 
 **ThreadManager**:
 - `ws-handlers/send-message.ts` — `getActiveThread()`, `consumeConversationReplay()`
-- `ws-handlers/thread-handlers.ts` — `listThreads()`, `forkThread()`, `switchThread()`, `getCheckpoint()`, `restore()`
-- `services/threads.ts` — `createCheckpoint()`, `forkThread()`, `listThreads()`
-- `services/misc.ts` — `delete()` during full reset
+- `ws-handlers/thread-handlers.ts` — `listThreads()`, `forkThread()`, `switchThread()`, `getCheckpoint()`, `restore()`, `setConversationReplay()`
+- `services/threads.ts` — `createCheckpoint()`, `getActiveThread()`, `listThreads()`
+- `services/session.ts` — `init()` during session fork
+- `index.ts` — `init()` on session creation
 
 **UsageManager**:
-- `ws-handlers/send-message.ts` — `record()` after turn, `getSessionUsage()` for stats
-- `ws-handlers/deploy-handlers.ts` — `record()` after deploy
-- `services/misc.ts` — `getStats()`, `clear()`, `delete()`
+- `ws-handlers/send-message.ts` — `record()` after turn, `getSessionUsage()`, `getSessionTokenTotals()` for stats
+- `services/misc.ts` — `getStats()`, `clear()` during full reset
 
 ## Future Consideration
 
@@ -44,4 +43,4 @@ If session containers need local data persistence (e.g., to survive container re
 
 ## Decision
 
-Place in `orchestrator/` for now. Promote to `shared/` only when a concrete containerization requirement demands it.
+Place in `orchestrator/`. All callers are orchestrator code and no session-layer code imports these managers. Promote to `shared/` only when a concrete containerization requirement demands it.
