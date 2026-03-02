@@ -480,6 +480,9 @@ export async function handleSendMessage(ctx: HandlerContext, msg: WsSendMessage)
     if (session?.warm) {
       ctx.sessionManager.setWarm(effectiveSessionId, false);
 
+      // Set a placeholder title immediately (replaced async by AI-generated name below)
+      ctx.sessionManager.rename(effectiveSessionId, userText.slice(0, 60) || "New session");
+
       // Generate session name from the message text
       const utilityModel = ctx.credentialStore.getUtilityModel();
       if (utilityModel && session.workspaceDir) {

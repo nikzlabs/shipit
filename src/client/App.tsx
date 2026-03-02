@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useSessionWebSocket } from "./hooks/useSessionWebSocket.js";
 import { useServerEvents } from "./hooks/useServerEvents.js";
 import { useResizablePanel } from "./hooks/useResizablePanel.js";
@@ -62,21 +62,30 @@ import { useSettingsStore } from "./stores/settings-store.js";
 import { useUiStore } from "./stores/ui-store.js";
 import { useRepoStore } from "./stores/repo-store.js";
 import { resumeSessionInternal, handleSessionResume, newSession, resetSessionState } from "./stores/actions/session-actions.js";
+import { parseRepoLabel, repoLabelToNewPath } from "./utils/repo-label.js";
 
 export default function App() {
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // Detect /{slug}/new URL pattern (e.g. /owner/repo/new)
+  const isNewSessionRoute = location.pathname.endsWith("/new") && location.pathname.length > 4;
+  const newSessionRepoSlug = isNewSessionRoute
+    ? decodeURIComponent(location.pathname.slice(1, -4)) // strip leading "/" and trailing "/new"
+    : undefined;
 
   // SSE for global push (session list, repos, auth, activity dots) — always active
   useServerEvents();
 
-  // Per-session WS — only connected when viewing a session
-  const { send, lastMessage, status, reconnectAttempt, reconnect } = useSessionWebSocket(urlSessionId);
-  const { get: apiGet, post: apiPost, del: apiDel } = useApi();
-  const terminalRef = useRef<InteractiveTerminalHandle>(null);
-
   // ── Store selectors ──
   const sessionId = useSessionStore((s) => s.sessionId);
+
+  // Per-session WS — connects using URL param, or store sessionId when on /{slug}/new route
+  const wsSessionId = urlSessionId ?? (isNewSessionRoute ? sessionId : undefined);
+  const { send, lastMessage, status, reconnectAttempt, reconnect } = useSessionWebSocket(wsSessionId);
+  const { get: apiGet, post: apiPost, del: apiDel } = useApi();
+  const terminalRef = useRef<InteractiveTerminalHandle>(null);
   const messages = useSessionStore((s) => s.messages);
   const isLoading = useSessionStore((s) => s.isLoading);
   const activity = useSessionStore((s) => s.activity);
@@ -174,7 +183,11 @@ export default function App() {
   const isMobile = useIsMobile();
   const [searchOpen, setSearchOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [newSessionRepoUrl, setNewSessionRepoUrl] = useState<string>();
+  // Derive the repo URL from the /{slug}/new URL pattern (replaces useState)
+  const newSessionRepoUrl = useMemo(() => {
+    if (!newSessionRepoSlug) return undefined;
+    return repos.find((r) => parseRepoLabel(r.url) === newSessionRepoSlug)?.url;
+  }, [newSessionRepoSlug, repos]);
   const search = useSearch(messages);
   const { notify, requestPermission } = useNotification();
   const { theme, toggle: toggleTheme } = useTheme();
@@ -220,29 +233,42 @@ export default function App() {
     if (urlSessionId) {
       useSessionStore.getState().setSessionId(urlSessionId);
     }
-    if (!urlSessionId) {
+    if (!urlSessionId && !isNewSessionRoute) {
       useUiStore.getState().setShowTemplates(true);
     }
   }, []);
 
   // Sync session state when URL changes (back/forward navigation)
-  // WS auto-connects/disconnects via useSessionWebSocket(urlSessionId)
+  // WS auto-connects/disconnects via useSessionWebSocket(wsSessionId)
   useEffect(() => {
     if (urlSessionId && urlSessionId !== useSessionStore.getState().sessionId) {
       resumeSessionInternal(urlSessionId);
     } else if (!urlSessionId && useSessionStore.getState().sessionId) {
-      useSessionStore.getState().setSessionId(undefined);
-      resetSessionState();
-      useUiStore.getState().setShowTemplates(true);
+      if (!isNewSessionRoute) {
+        useSessionStore.getState().setSessionId(undefined);
+        resetSessionState();
+        useUiStore.getState().setShowTemplates(true);
+      }
     }
-  }, [urlSessionId]);
+  }, [urlSessionId, isNewSessionRoute]);
 
-  // Clear newSessionRepoUrl once the claimed session graduates and appears in the list
+  // Auto-claim session when landing on /{slug}/new (direct URL navigation or page refresh)
   useEffect(() => {
-    if (newSessionRepoUrl && sessionId && sessions.some((s) => s.id === sessionId)) {
-      setNewSessionRepoUrl(undefined);
+    async function claim() {
+      const result = await useRepoStore.getState().claimSession(newSessionRepoUrl!);
+      if (result) useSessionStore.getState().setSessionId(result.sessionId);
     }
-  }, [newSessionRepoUrl, sessionId, sessions]);
+    if (isNewSessionRoute && newSessionRepoUrl && !sessionId) {
+      claim();
+    }
+  }, [isNewSessionRoute, newSessionRepoUrl, sessionId]);
+
+  // Redirect to home if /{slug}/new doesn't match any known repo
+  useEffect(() => {
+    if (isNewSessionRoute && !newSessionRepoUrl && bootstrapLoaded && repos.length > 0) {
+      navigate("/", { replace: true });
+    }
+  }, [isNewSessionRoute, newSessionRepoUrl, bootstrapLoaded, repos.length, navigate]);
 
   // ── Callback helpers ──
   const handleSend = useCallback(
@@ -262,7 +288,11 @@ export default function App() {
 
       const currentSessionId = session.sessionId;
       if (currentSessionId) {
-        // Already in a session — send directly over WS
+        // On /{slug}/new route — graduate: transition URL to /session/{id}
+        if (isNewSessionRoute) {
+          navigate(`/session/${currentSessionId}`, { replace: true });
+        }
+        // Send directly over WS
         send({
           type: "send_message",
           text,
@@ -291,7 +321,7 @@ export default function App() {
       }
       settings.clearPendingFiles();
     },
-    [send, requestPermission, disableAutoFix, apiPost, navigate],
+    [send, requestPermission, disableAutoFix, apiPost, navigate, isNewSessionRoute],
   );
 
   const handleEditMessage = useCallback(
@@ -367,10 +397,18 @@ export default function App() {
 
   const handleNewSessionForRepo = useCallback(
     async (repoUrl: string) => {
+      // 1. Reset state for a fresh view
+      useSessionStore.getState().setSessionId(undefined);
+      resetSessionState();
+      useUiStore.getState().setShowTemplates(false);
+
+      // 2. Navigate instantly (before API call) — user sees /{owner}/{repo}/new
+      navigate(repoLabelToNewPath(repoUrl));
+
+      // 3. Claim session in background — sets sessionId, triggers WS connect + preview
       const result = await useRepoStore.getState().claimSession(repoUrl);
       if (result) {
-        setNewSessionRepoUrl(repoUrl);
-        navigate(`/session/${result.sessionId}`);
+        useSessionStore.getState().setSessionId(result.sessionId);
       }
     },
     [navigate],
@@ -536,7 +574,8 @@ export default function App() {
     }
     return dividers;
   }, [threads]);
-  const showHomeScreen = !sessionId || (showTemplates && messages.length === 0 && !isLoading);
+  const showNewSessionView = isNewSessionRoute && !urlSessionId;
+  const showHomeScreen = !showNewSessionView && (!sessionId || (showTemplates && messages.length === 0 && !isLoading));
 
   // ── Right panel ──
   const rightPanel = (
@@ -591,7 +630,7 @@ export default function App() {
       ) : (
         <MessageList messages={messages} isLoading={isLoading} activity={activity} searchMatches={search.matches} currentMatch={search.currentMatch} onEditMessage={handleEditMessage} onAnswerQuestion={handleAnswerQuestion} checkpoints={checkpointDividers} />
       )}
-      {!showHomeScreen && (
+      {!showHomeScreen && !showNewSessionView && (
         <div className="border-t border-gray-200 dark:border-gray-800 px-4 py-1.5 flex items-center gap-2">
           <ThreadIndicator threads={threads} activeThreadId={activeThreadId} onCreateCheckpoint={(label) => { const sid = useSessionStore.getState().sessionId; if (sid) useThreadStore.getState().createCheckpoint(sid, label).catch(() => {}); }} onForkThread={(id) => send({ type: "fork_thread", checkpointId: id })} onSwitchThread={(id) => send({ type: "switch_thread", threadId: id })} disabled={isLoading || status !== "open"} />
           <AgentPicker agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} disabled={isLoading || status !== "open"} />
@@ -600,10 +639,10 @@ export default function App() {
           </button>
         </div>
       )}
-      {!showHomeScreen && threads.length > 0 && <ThreadTimeline threads={threads} activeThreadId={activeThreadId} onForkThread={(id) => send({ type: "fork_thread", checkpointId: id })} onSwitchThread={(id) => send({ type: "switch_thread", threadId: id })} />}
-      {!showHomeScreen && <StatusBar modelInfo={modelInfo} contextTokens={contextTokens} agentName={agentList.find((a) => a.id === activeAgentId)?.name} />}
-      {!showHomeScreen && queuedMessages.length > 0 && <QueueIndicator queue={queuedMessages} onCancel={(pos) => send({ type: "cancel_queued_message", position: pos })} />}
-      {!showHomeScreen && <MessageInput onSend={handleSend} disabled={status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_claude" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} />}
+      {!showHomeScreen && !showNewSessionView && threads.length > 0 && <ThreadTimeline threads={threads} activeThreadId={activeThreadId} onForkThread={(id) => send({ type: "fork_thread", checkpointId: id })} onSwitchThread={(id) => send({ type: "switch_thread", threadId: id })} />}
+      {!showHomeScreen && !showNewSessionView && <StatusBar modelInfo={modelInfo} contextTokens={contextTokens} agentName={agentList.find((a) => a.id === activeAgentId)?.name} />}
+      {!showHomeScreen && !showNewSessionView && queuedMessages.length > 0 && <QueueIndicator queue={queuedMessages} onCancel={(pos) => send({ type: "cancel_queued_message", position: pos })} />}
+      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_claude" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} />}
     </>
   );
 
@@ -705,23 +744,23 @@ export default function App() {
         </div>
       </header>
 
-      <ConnectionBanner status={status} reconnectAttempt={reconnectAttempt} onReconnect={reconnect} />
+      {!showNewSessionView && <ConnectionBanner status={status} reconnectAttempt={reconnectAttempt} onReconnect={reconnect} />}
 
       {prStatus && <PrStatusBar baseBranch={prStatus.baseBranch} headBranch={prStatus.headBranch} insertions={prStatus.insertions} deletions={prStatus.deletions} prUrl={prStatus.url} prNumber={prStatus.number} checks={prStatus.checks} autoMergeEnabled={prStatus.autoMergeEnabled} mergeable={prStatus.mergeable} onMerge={handleMergePr} />}
 
       {isMobile ? (
         <>
           <div className="flex flex-col flex-1 min-h-0">
-            {showHomeScreen || mobilePanel === "chat" ? <div className="flex flex-col flex-1 min-h-0">{chatPanel}</div> : <div className="flex flex-col flex-1 min-h-0 bg-gray-50 dark:bg-gray-900">{rightPanel}</div>}
+            {(showHomeScreen && !showNewSessionView) || mobilePanel === "chat" ? <div className="flex flex-col flex-1 min-h-0">{chatPanel}</div> : <div className="flex flex-col flex-1 min-h-0 bg-gray-50 dark:bg-gray-900">{rightPanel}</div>}
           </div>
-          {!showHomeScreen && <MobileTabBar activePanel={mobilePanel} onChangePanel={(p) => useUiStore.getState().setMobilePanel(p)} />}
+          {(!showHomeScreen || showNewSessionView) && <MobileTabBar activePanel={mobilePanel} onChangePanel={(p) => useUiStore.getState().setMobilePanel(p)} />}
         </>
       ) : (
         <div className="flex flex-1 min-h-0">
           <SessionSidebar
             sessions={sessions} repos={repos} currentSessionId={sessionId} activeRunnerSessions={activeRunnerSessions}
             newSessionRepoUrl={newSessionRepoUrl}
-            onResume={(sid) => { setNewSessionRepoUrl(undefined); handleSessionResume(sid, navigate); }}
+            onResume={(sid) => handleSessionResume(sid, navigate)}
             onNew={() => newSession(navigate)}
             onNewSessionForRepo={handleNewSessionForRepo}
             onArchive={async (sid) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId) { useSessionStore.getState().setSessionId(undefined); navigate("/"); } }}
