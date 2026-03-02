@@ -1,11 +1,11 @@
 import type { WsClientMessage } from "../../shared/types.js";
-import type { HandlerContext } from "./types.js";
+import type { ConnectionCtx, AppCtx } from "./types.js";
 import { getErrorMessage } from "../validation.js";
 
 type WsForkThread = Extract<WsClientMessage, { type: "fork_thread" }>;
 type WsSwitchThread = Extract<WsClientMessage, { type: "switch_thread" }>;
 
-export async function handleForkThread(ctx: HandlerContext, msg: WsForkThread): Promise<void> {
+export async function handleForkThread(ctx: ConnectionCtx & AppCtx, msg: WsForkThread): Promise<void> {
   const activeAppSessionId = ctx.getActiveAppSessionId();
   if (!activeAppSessionId) {
     ctx.send({ type: "error", message: "No active session" });
@@ -82,7 +82,7 @@ export async function handleForkThread(ctx: HandlerContext, msg: WsForkThread): 
   }
 }
 
-export async function handleSwitchThread(ctx: HandlerContext, msg: WsSwitchThread): Promise<void> {
+export async function handleSwitchThread(ctx: ConnectionCtx & AppCtx, msg: WsSwitchThread): Promise<void> {
   const activeAppSessionId = ctx.getActiveAppSessionId();
   if (!activeAppSessionId) {
     ctx.send({ type: "error", message: "No active session" });

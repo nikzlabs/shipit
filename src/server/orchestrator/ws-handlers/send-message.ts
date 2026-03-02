@@ -1,7 +1,10 @@
 import fs from "node:fs/promises";
 import type { WsClientMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment, FileAttachment, FileContextRef, PermissionMode } from "../../shared/types.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
-import type { HandlerContext } from "./types.js";
+import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
+
+/** Full handler context — send-message handlers need all three sub-contexts. */
+type FullCtx = ConnectionCtx & RunnerCtx & AppCtx;
 import { getErrorMessage, validateImages, resolveFileAttachments, formatFileContext } from "../validation.js";
 import { generateSessionName } from "../session-namer.js";
 
@@ -21,7 +24,7 @@ export function getContextWindowSize(model: string): number {
  * answer_question, and the queued-message replay inside runClaudeWithMessage.
  */
 function wireAgentListeners(
-  ctx: HandlerContext,
+  ctx: FullCtx,
   agent: AgentProcess,
   opts: {
     isNewSession: boolean;
@@ -190,7 +193,7 @@ function wireAgentListeners(
  * home_send_with_repo handlers. Session state (activeAppSessionId,
  * activeSessionDir) must already be set before calling this.
  */
-async function runClaudeWithMessage(ctx: HandlerContext, opts: {
+async function runClaudeWithMessage(ctx: FullCtx, opts: {
   userText: string;
   images?: ImageAttachment[];
   validatedFiles: FileAttachment[];
@@ -406,7 +409,7 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
 // Exported handlers
 // ---------------------------------------------------------------------------
 
-export async function handleSendMessage(ctx: HandlerContext, msg: WsSendMessage): Promise<void> {
+export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promise<void> {
   // Check auth before spawning — the CLI hangs if not authenticated
   if (!ctx.authManager.authenticated) {
     ctx.authManager.checkCredentials();
@@ -580,7 +583,7 @@ export async function handleSendMessage(ctx: HandlerContext, msg: WsSendMessage)
   });
 }
 
-export async function handleAnswerQuestion(ctx: HandlerContext, msg: WsAnswerQuestion): Promise<void> {
+export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion): Promise<void> {
   const answerParts = Object.values(msg.answers);
   const answerText = answerParts.join(", ");
 
