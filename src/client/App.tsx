@@ -41,6 +41,7 @@ import { ThreadTimeline } from "./components/ThreadTimeline.js";
 import { DeployModal } from "./components/DeployModal.js";
 import { FeaturesPanel } from "./components/FeaturesPanel.js";
 
+// eslint-disable-next-line no-restricted-syntax -- lazy() named-export pattern
 const DiffPanel = lazy(() => import("./components/DiffPanel.js").then(m => ({ default: m.DiffPanel })));
 import { PullRequestModal } from "./components/PullRequestModal.js";
 import { PrStatusBar } from "./components/PrStatusBar.js";
@@ -368,8 +369,7 @@ export default function App() {
         const pair = useGitStore.getState().lastCommitPair;
         const diff = useGitStore.getState().turnDiff;
         if (pair && !diff && sid) {
-          fetch(`/api/sessions/${sid}/git/diff?from=${encodeURIComponent(pair.from)}&to=${encodeURIComponent(pair.to)}`)
-            .then((r) => r.json()).then((d) => useGitStore.getState().setTurnDiff(d)).catch(() => {});
+          useGitStore.getState().fetchDiff(sid, pair.from, pair.to).catch(() => {});
         }
       }
     },
@@ -734,6 +734,7 @@ export default function App() {
         onAdd={async (url) => { await useRepoStore.getState().addRepo(url); }}
         onCreateNew={() => {
           useRepoStore.getState().setAddRepoDialogOpen(false);
+          // eslint-disable-next-line no-restricted-syntax -- fire-and-forget one-liner
           if (templates.length === 0) apiGet<{ templates: typeof templates }>("/api/bootstrap").then((d) => useUiStore.getState().setTemplates(d.templates)).catch(() => {});
           // Navigate to HomeScreen which has the NewRepoDialog flow
           useSessionStore.getState().setSessionId(undefined);

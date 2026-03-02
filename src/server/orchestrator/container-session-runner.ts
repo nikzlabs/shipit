@@ -484,6 +484,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       // if running). startWorkerResources() triggers /preview/start which always
       // produces a definitive event (preview_ready, preview_config_missing, etc.).
       // No timer needed — the event-driven flow covers all cases.
+      // eslint-disable-next-line no-restricted-syntax -- sync method chains async operations
       this.connectEventStream().then(() => {
         if (!this._disposed) this.startWorkerResources();
       });
@@ -673,6 +674,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     });
 
     // Wait for the container to be ready before connecting
+    // eslint-disable-next-line no-restricted-syntax -- waits for container readiness in sync context
     this._workerReady.then(() => {
       if (this.sseConnection || this._disposed) return;
       this._connectEventStreamNow();
@@ -846,6 +848,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           this.emitMessage({ type: "files_changed", paths: data.paths ?? [] } as WsServerMessage);
           // Detect shipit.yaml changes and restart preview on worker
           if ((data.paths as string[])?.some((p: string) => p === "shipit.yaml" || p.endsWith("/shipit.yaml"))) {
+            // eslint-disable-next-line no-restricted-syntax -- fire-and-forget preview restart in sync handler
             workerPost(this.workerUrl, "/preview/stop")
               .then(() => workerPost(this.workerUrl, "/preview/start"))
               .catch(() => {});
@@ -868,6 +871,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     if (this._lastPreviewExitCode != null && this._lastPreviewExitCode !== 0) {
       this._lastPreviewExitCode = null;
       this._previewLogBuffer = [];
+      // eslint-disable-next-line no-restricted-syntax -- fire-and-forget preview restart
       workerPost(this.workerUrl, "/preview/stop")
         .then(() => workerPost(this.workerUrl, "/preview/start"))
         .catch(() => {});

@@ -21,6 +21,7 @@ interface GitState {
   reset: () => void;
 
   fetchLog: (sessionId: string) => Promise<void>;
+  fetchDiff: (sessionId: string, from: string, to: string) => Promise<void>;
   rollback: (sessionId: string, hash: string) => Promise<void>;
   rejectFiles: (
     sessionId: string,
@@ -65,6 +66,15 @@ export const useGitStore = create<GitState>((set, get) => ({
     }
     const data = await res.json();
     set({ commits: data.commits });
+  },
+
+  fetchDiff: async (sessionId, from, to) => {
+    const res = await fetch(`/api/sessions/${sessionId}/git/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch diff: ${res.status}`);
+    }
+    const data = await res.json();
+    set({ turnDiff: data });
   },
 
   rollback: async (sessionId, hash) => {

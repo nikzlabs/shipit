@@ -330,6 +330,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       });
 
       console.log(`[container] Creating container for session ${o.sessionId}...`);
+      // eslint-disable-next-line no-restricted-syntax -- sync factory must return runner synchronously
       mgr.create(config).then((sc) => {
         console.log(`[container] Container ready for ${o.sessionId} at ${sc.workerUrl}`);
         runner.setWorkerUrl(sc.workerUrl);
@@ -525,6 +526,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     (async () => {
       try {
         const repoDir = getSharedRepoDir(repoUrl);
+        // eslint-disable-next-line no-restricted-syntax -- stat existence-check idiom
         const repoExists = await fs.stat(repoDir).then(() => true, () => false);
         if (!repoExists) return;
 
@@ -610,6 +612,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       if (session.remoteUrl && !seenUrls.has(session.remoteUrl)) {
         seenUrls.add(session.remoteUrl);
         const repoDir = getSharedRepoDir(session.remoteUrl);
+        // eslint-disable-next-line no-restricted-syntax -- stat existence-check idiom
         const exists = await fs.stat(repoDir).then(() => true, () => false);
         if (exists) {
           repoStore.add(session.remoteUrl);

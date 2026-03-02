@@ -17,6 +17,13 @@ export default tseslint.config(
         "error",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
+      "no-restricted-syntax": [
+        "warn",
+        {
+          selector: "CallExpression > MemberExpression[property.name='then']",
+          message: "Prefer async/await over .then(). Use store methods or async helpers. Add eslint-disable if .then() is intentional (fire-and-forget in sync context, lazy(), Promise two-arg form).",
+        },
+      ],
     },
   },
   {
