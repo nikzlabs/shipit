@@ -56,6 +56,12 @@ export function useMessageHandler(params: {
         source: data.source,
         detectedPorts: data.detectedPorts,
       });
+      // Track crash info
+      if (!data.running && data.exitCode != null && data.exitCode !== 0) {
+        preview.setCrashInfo({ exitCode: data.exitCode, output: data.errorOutput ?? "" });
+      } else if (data.running) {
+        preview.setCrashInfo(null);
+      }
       const currentPort = usePreviewStore.getState().selectedPort;
       if (currentPort !== null) {
         const allAvailable = [...(data.detectedPorts ?? [])];

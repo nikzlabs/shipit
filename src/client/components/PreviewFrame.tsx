@@ -9,6 +9,10 @@ export interface PreviewStatus {
   source?: "vite" | "managed" | "detected";
   /** All ports found by port scanning (non-Vite dev servers). */
   detectedPorts?: number[];
+  /** Non-null when the preview server crashed. Contains the process exit code. */
+  exitCode?: number | null;
+  /** Last lines of preview output captured before the crash. */
+  errorOutput?: string;
 }
 
 interface PreviewFrameProps {
@@ -39,6 +43,10 @@ interface PreviewFrameProps {
   installStatus?: { status: "running" | "complete" | "error"; message?: string } | null;
   /** Called when user clicks "Set up with Claude" to generate shipit.yaml. */
   onInitPreviewConfig?: () => void;
+  /** Crash information when preview server exited with error. */
+  crashInfo?: { exitCode: number | null; output: string } | null;
+  /** Called when user clicks "Retry" to restart the preview server. */
+  onRestartPreview?: () => void;
 }
 
 function formatErrorForMessage(errors: PreviewError[]): string {
@@ -77,6 +85,8 @@ export function PreviewFrame({
   configMissing,
   installStatus,
   onInitPreviewConfig,
+  crashInfo,
+  onRestartPreview,
 }: PreviewFrameProps) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
@@ -183,6 +193,38 @@ export function PreviewFrame({
           )}
           <p className="text-xs text-gray-400 dark:text-gray-600">
             Check the terminal logs for details.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show crash state when preview server exited with error
+  if (crashInfo && (!preview || !preview.running)) {
+    return (
+      <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+        <div className="text-center space-y-3 max-w-lg px-4">
+          <div className="text-2xl text-red-500">&#9888;</div>
+          <p className="text-red-400 font-medium">
+            Preview server crashed{crashInfo.exitCode != null ? ` (exit code ${crashInfo.exitCode})` : ""}
+          </p>
+          {crashInfo.output && (
+            <pre className="text-left text-xs text-gray-400 bg-gray-900 rounded p-3 max-h-48 overflow-auto whitespace-pre-wrap border border-gray-700">
+              {crashInfo.output}
+            </pre>
+          )}
+          <div className="flex items-center justify-center gap-2">
+            {onRestartPreview && (
+              <button
+                onClick={onRestartPreview}
+                className="px-3 py-1.5 rounded bg-blue-600 text-white text-xs hover:bg-blue-500 transition-colors"
+              >
+                Retry
+              </button>
+            )}
+          </div>
+          <p className="text-xs text-gray-500">
+            Check the terminal logs for full details, or ask the agent to fix the error.
           </p>
         </div>
       </div>

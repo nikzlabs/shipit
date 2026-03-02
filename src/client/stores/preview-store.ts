@@ -6,16 +6,23 @@ interface InstallStatus {
   message?: string;
 }
 
+interface CrashInfo {
+  exitCode: number | null;
+  output: string;
+}
+
 interface PreviewState {
   status: PreviewStatus | null;
   selectedPort: number | null;
   configMissing: boolean;
   installStatus: InstallStatus | null;
+  crashInfo: CrashInfo | null;
 
   setStatus: (status: PreviewStatus | null) => void;
   setSelectedPort: (port: number | null) => void;
   setConfigMissing: (missing: boolean) => void;
   setInstallStatus: (status: InstallStatus | null) => void;
+  setCrashInfo: (info: CrashInfo | null) => void;
   reset: () => void;
 }
 
@@ -24,6 +31,7 @@ const initialState = {
   selectedPort: null as number | null,
   configMissing: false,
   installStatus: null as InstallStatus | null,
+  crashInfo: null as CrashInfo | null,
 };
 
 export const usePreviewStore = create<PreviewState>((set) => ({
@@ -36,6 +44,8 @@ export const usePreviewStore = create<PreviewState>((set) => ({
   setConfigMissing: (missing) => set({ configMissing: missing }),
 
   setInstallStatus: (installStatus) => set({ installStatus }),
+
+  setCrashInfo: (crashInfo) => set({ crashInfo }),
 
   reset: () => set({ ...initialState }),
 }));

@@ -295,6 +295,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _workerPreviewPorts: number[] = [];
   /** Set to true once we've received any preview state from the worker SSE. */
   private _previewStateReceived = false;
+  /** Rolling buffer of recent preview log lines for crash diagnostics. */
+  private _previewLogBuffer: string[] = [];
+  private static readonly MAX_PREVIEW_LOG_LINES = 50;
+  /** Exit code from the last preview process exit, or null if never exited / exited cleanly. */
+  private _lastPreviewExitCode: number | null = null;
 
   // Auto-push timer
   private _pushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -518,11 +523,16 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         detectedPorts: this._detectedPorts,
       };
     }
+    const crashed = this._lastPreviewExitCode != null && this._lastPreviewExitCode !== 0;
     return {
-      type: "preview_status",
+      type: "preview_status" as const,
       running: false,
       port: 5173,
       url: `/preview/${this.sessionId}/5173/`,
+      ...(crashed && {
+        exitCode: this._lastPreviewExitCode,
+        errorOutput: this._previewLogBuffer.join(""),
+      }),
     };
   }
 
@@ -779,12 +789,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         case "preview_ready":
           this._previewStateReceived = true;
           this._workerPreviewPorts = data.ports ?? [];
+          this._previewLogBuffer = [];
+          this._lastPreviewExitCode = null;
           this.emitMessage(this.buildPreviewStatus());
           break;
 
         case "preview_stopped":
           this._previewStateReceived = true;
           this._workerPreviewPorts = [];
+          this._lastPreviewExitCode = data.code ?? null;
           this.emitMessage(this.buildPreviewStatus());
           break;
 
@@ -812,14 +825,20 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           } as WsServerMessage);
           break;
 
-        case "preview_log":
+        case "preview_log": {
+          const text = data.text ?? "";
+          this._previewLogBuffer.push(text);
+          if (this._previewLogBuffer.length > ContainerSessionRunner.MAX_PREVIEW_LOG_LINES) {
+            this._previewLogBuffer.shift();
+          }
           this.emitMessage({
             type: "log_entry",
             source: data.source ?? "preview",
-            text: data.text ?? "",
+            text,
             timestamp: new Date().toISOString(),
           } as WsServerMessage);
           break;
+        }
 
         // --- File watcher events ---
 
@@ -844,6 +863,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     if (!this._isRunning && this._messageQueue.length === 0) {
       this.resetIdleTimer();
       this.emit("idle");
+    }
+    // Auto-restart crashed preview after agent turn ends (agent may have fixed the issue)
+    if (this._lastPreviewExitCode != null && this._lastPreviewExitCode !== 0) {
+      this._lastPreviewExitCode = null;
+      this._previewLogBuffer = [];
+      workerPost(this.workerUrl, "/preview/stop")
+        .then(() => workerPost(this.workerUrl, "/preview/start"))
+        .catch(() => {});
     }
   }
 

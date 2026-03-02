@@ -79,6 +79,11 @@ export class SessionWorker extends EventEmitter {
   private _createFileWatcher: () => FileWatcher;
   private _createTerminal: () => TerminalProcess;
 
+  // Preview crash state for SSE replay
+  private _previewLogBuffer: string[] = [];
+  private static readonly MAX_PREVIEW_LOG_LINES = 50;
+  private _lastPreviewExitCode: number | null = null;
+
   constructor(deps: SessionWorkerDeps) {
     super();
     this.agentFactory = deps.agentFactory;
@@ -288,6 +293,12 @@ export class SessionWorker extends EventEmitter {
       // Replay current state so late-connecting clients don't miss events
       if (this.preview?.running && this.preview.ports.length > 0) {
         sendEvent({ type: "preview_ready", data: { ports: this.preview.ports } });
+      } else if (this._lastPreviewExitCode != null && !this.preview?.running) {
+        // Preview crashed — replay recent logs then the stopped event
+        for (const text of this._previewLogBuffer) {
+          sendEvent({ type: "preview_log", data: { source: "preview", text } });
+        }
+        sendEvent({ type: "preview_stopped", data: { code: this._lastPreviewExitCode } });
       }
       if (this.terminal) {
         sendEvent({ type: "terminal_data", data: { data: "" } }); // Signal terminal is alive
@@ -356,10 +367,13 @@ export class SessionWorker extends EventEmitter {
   /** Wire preview manager events to the SSE stream. */
   private wirePreviewEvents(preview: PreviewManager): void {
     preview.on("ready", (ports: number[]) => {
+      this._previewLogBuffer = [];
+      this._lastPreviewExitCode = null;
       this.broadcastSSE({ type: "preview_ready", data: { ports } });
     });
 
     preview.on("stopped", (code: number | null) => {
+      this._lastPreviewExitCode = code;
       this.broadcastSSE({ type: "preview_stopped", data: { code } });
     });
 
@@ -376,6 +390,10 @@ export class SessionWorker extends EventEmitter {
     });
 
     preview.on("log", (entry: { source: string; text: string }) => {
+      this._previewLogBuffer.push(entry.text);
+      if (this._previewLogBuffer.length > SessionWorker.MAX_PREVIEW_LOG_LINES) {
+        this._previewLogBuffer.shift();
+      }
       this.broadcastSSE({ type: "preview_log", data: entry });
     });
   }

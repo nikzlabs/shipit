@@ -45,6 +45,10 @@ export interface WsPreviewStatus {
   source?: "vite" | "managed" | "detected";
   /** All ports detected by the port scanner (non-Vite dev servers). */
   detectedPorts?: number[];
+  /** Non-null when the preview server crashed. Contains the process exit code. */
+  exitCode?: number | null;
+  /** Last lines of preview output captured before the crash. */
+  errorOutput?: string;
 }
 
 export interface WsGitLog {
