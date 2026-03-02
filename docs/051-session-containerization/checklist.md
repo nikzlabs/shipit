@@ -79,7 +79,7 @@
 - [x] Update `src/client/path-utils.ts` — handle `/workspace/` prefix alongside existing `/workspace/sessions/{uuid}/` format
 - [x] Worker cleanup — `stop()` kills terminal, stops preview, stops file watcher
 - [ ] Git operations routing for worktree sessions (accepted limitation: orchestrator auto-commit works unchanged, Claude CLI git writes not available inside worktree containers until `GIT_OBJECT_DIRECTORY` optimization in post-launch)
-- [x] Integration tests (35 tests in `container-phase3.test.ts`)
+- [x] Integration tests (35 tests in `worker-terminal.test.ts`, `worker-preview.test.ts`, `worker-file-watcher.test.ts`)
   - [x] Terminal I/O round-trips through worker endpoints + SSE
   - [x] Terminal proxy via ContainerSessionRunner (start, write, resize, exit)
   - [x] Preview start/stop/status on worker + SSE events
