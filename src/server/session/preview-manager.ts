@@ -12,9 +12,45 @@ import {
   markInstallDone,
   clearInstallMarker,
   runInstallCommand,
+  deleteNodeModules,
 } from "./install-runner.js";
 
 const VITE_PORT = 5173;
+
+/**
+ * Extract missing native module name from a crash caused by a platform
+ * mismatch (e.g. @rollup/rollup-linux-arm64-gnu). Returns the npm package
+ * name or null if the crash is not a native module issue.
+ *
+ * This happens when `package-lock.json` was generated on a different OS/arch
+ * and npm didn't install the correct optional dependency for the container.
+ */
+export function extractMissingNativeModule(output: string): string | null {
+  // Match: Cannot find module '@rollup/rollup-linux-arm64-gnu'
+  // Match: Cannot find module @esbuild/linux-arm64
+  const match = output.match(/Cannot find module ['"]?(@(?:rollup|esbuild|swc|parcel)\/[a-z0-9_-]+)/i);
+  if (match) return match[1];
+  // Fallback: rollup's own error message referencing the npm optional deps bug
+  // but no parseable module name — caller should use the generic recovery path.
+  if (output.includes("npm has a bug related to optional dependencies")) return "";
+  return null;
+}
+
+/**
+ * Check if an exit code indicates a signal-killed process whose native binary
+ * is likely corrupted or built for the wrong platform (e.g. musl binary on
+ * glibc, wrong arch).  Exit code = 128 + signal number on Linux:
+ *   SIGBUS  (7)  → 135 — bad memory access (wrong libc, corrupted binary)
+ *   SIGILL  (4)  → 132 — illegal instruction (wrong arch)
+ *   SIGSEGV (11) → 139 — segfault (corrupted binary)
+ *   SIGABRT (6)  → 134 — assertion failure in native code
+ */
+export function isNativeBinarySignalCrash(exitCode: number): boolean {
+  return exitCode === 135 || exitCode === 132 || exitCode === 139 || exitCode === 134;
+}
+
+/** Max time (ms) after process start to consider a crash "immediate". */
+const QUICK_CRASH_THRESHOLD_MS = 10_000;
 
 // Resolve the vite binary from the project's own node_modules so we never
 // trigger an npx download when spawning in /workspace.
@@ -91,6 +127,13 @@ export class PreviewManager extends EventEmitter {
   private _running = false;
   private _ports: number[] = [];
   private _config: PreviewConfig | null = null;
+  private _workspaceDir: string | null = null;
+  /** Timestamp when the preview process was spawned (for quick-crash detection). */
+  private _processStartTime = 0;
+  /** Buffered process output for native module crash detection. */
+  private _processLogs: string[] = [];
+  /** Whether we've already retried once for a native module crash (prevents infinite loop). */
+  private _nativeModuleRetried = false;
 
   get running(): boolean {
     return this._running;
@@ -133,6 +176,8 @@ export class PreviewManager extends EventEmitter {
    */
   async start(workspaceDir: string): Promise<void> {
     if (this.proc) return;
+
+    this._workspaceDir = workspaceDir;
 
     let config: PreviewConfig;
     try {
@@ -207,6 +252,9 @@ export class PreviewManager extends EventEmitter {
   private startHtmlMode(workspaceDir: string): void {
     console.log("[preview-manager] starting HTML mode (bundled Vite) on port", VITE_PORT, "in", workspaceDir);
 
+    this._processStartTime = Date.now();
+    this._processLogs = [];
+
     const configPath = this.writeWrapperConfig(workspaceDir);
 
     this.proc = spawn(
@@ -221,6 +269,7 @@ export class PreviewManager extends EventEmitter {
 
     this.proc.stdout!.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
+      this._processLogs.push(text);
       console.log("[vite]", text.trim());
       this.emit("log", { source: "preview", text });
 
@@ -236,6 +285,7 @@ export class PreviewManager extends EventEmitter {
     this.proc.stderr!.on("data", (chunk: Buffer) => {
       const text = chunk.toString().trim();
       if (text) {
+        this._processLogs.push(text);
         console.error("[vite stderr]", text);
         this.emit("log", { source: "preview", text });
       }
@@ -255,6 +305,9 @@ export class PreviewManager extends EventEmitter {
       ? path.resolve(workspaceDir, mode.directory)
       : workspaceDir;
 
+    this._processStartTime = Date.now();
+    this._processLogs = [];
+
     console.log("[preview-manager] starting command mode:", mode.command, "in", cwd);
 
     this.proc = spawn("sh", ["-c", mode.command], {
@@ -269,6 +322,7 @@ export class PreviewManager extends EventEmitter {
 
     this.proc.stdout!.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
+      this._processLogs.push(text);
       console.log("[preview]", text.trim());
       this.emit("log", { source: "preview", text });
 
@@ -290,6 +344,7 @@ export class PreviewManager extends EventEmitter {
     this.proc.stderr!.on("data", (chunk: Buffer) => {
       const text = chunk.toString().trim();
       if (text) {
+        this._processLogs.push(text);
         console.error("[preview stderr]", text);
         this.emit("log", { source: "preview", text });
       }
@@ -347,6 +402,66 @@ export class PreviewManager extends EventEmitter {
     proc.on("close", (code) => {
       if (this.proc !== proc) return; // stale event from a previous process
       console.log(`[preview-manager] ${label} exited with code`, code);
+
+      // Detect native binary issues on quick crashes and auto-recover once.
+      // Two patterns:
+      //   1. "Cannot find module @rollup/..." — package missing, install it directly
+      //   2. SIGBUS/SIGILL/SIGSEGV — binary installed but corrupted or wrong
+      //      platform (e.g. musl on glibc), clean reinstall needed
+      const isQuickCrash = code !== 0 && Date.now() - this._processStartTime < QUICK_CRASH_THRESHOLD_MS;
+      if (isQuickCrash && !this._nativeModuleRetried && this._workspaceDir) {
+        const output = this._processLogs.join("\n");
+        const missingModule = extractMissingNativeModule(output);
+        const signalCrash = code !== null && isNativeBinarySignalCrash(code);
+
+        if (missingModule !== null || signalCrash) {
+          this._nativeModuleRetried = true;
+          this._running = false;
+          this._ports = [];
+          this.proc = null;
+
+          if (missingModule) {
+            // Install the specific missing package — fast and targeted
+            console.log(`[preview-manager] Installing missing native module: ${missingModule}`);
+            this.emit("install_status", {
+              status: "running",
+              message: `Installing missing native module: ${missingModule}`,
+            });
+            runInstallCommand({
+              command: `npm install --no-save ${missingModule}`,
+              cwd: this._workspaceDir,
+              onOutput: (text) => this.emit("log", { source: "install", text }),
+            }).then((exitCode) => {
+              if (exitCode !== 0) {
+                console.error(`[preview-manager] Failed to install ${missingModule} (exit ${exitCode})`);
+                this.emit("stopped", code);
+                return;
+              }
+              console.log(`[preview-manager] Installed ${missingModule}, retrying preview`);
+              return this.start(this._workspaceDir!);
+            }).catch((err) => {
+              console.error("[preview-manager] Native module recovery failed:", err);
+              this.emit("stopped", code);
+            });
+          } else {
+            // Signal crash or generic npm bug — clean reinstall
+            const reason = signalCrash ? `signal crash (exit ${code})` : "native module platform mismatch";
+            console.log(`[preview-manager] ${reason} — cleaning node_modules and retrying`);
+            deleteNodeModules(this._workspaceDir);
+            clearInstallMarker(this._workspaceDir);
+            this.emit("install_status", {
+              status: "running",
+              message: `Reinstalling — ${reason} detected`,
+            });
+            this.start(this._workspaceDir).catch((err) => {
+              console.error("[preview-manager] Recovery failed:", err);
+              this.emit("stopped", code);
+            });
+          }
+          return; // Don't emit "stopped" — we're retrying
+        }
+      }
+
       this._running = false;
       this._ports = [];
       this.proc = null;
@@ -397,6 +512,8 @@ export class PreviewManager extends EventEmitter {
     this.stop();
     // Clear install marker so install re-runs with potentially new config
     clearInstallMarker(workspaceDir);
+    // Reset native module retry flag — this is a new user-initiated cycle
+    this._nativeModuleRetried = false;
     await this.start(workspaceDir);
   }
 }
