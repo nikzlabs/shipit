@@ -201,7 +201,7 @@ When the user claims the session and sends `activate_session`, `attachToRunner` 
 2. Remove the repo from `RepoStore`
 3. Existing visible sessions for this repo remain in the session list (they have their own worktrees). The user can archive them individually.
 
-**Runner eviction:** The `SessionRunnerRegistry` has a `maxConcurrentRunners` limit (default 10). Warm session runners count toward this limit. If the limit is hit, warm runners are evicted first (they're the cheapest to recreate). The registry's existing eviction logic (`!r.running && r.viewerCount === 0`) already handles this — warm runners have 0 viewers.
+**Runner eviction:** The `SessionRunnerRegistry` has a `maxConcurrentRunners` limit (default 1000). Warm session runners count toward this limit. If the limit is hit, warm runners are evicted first (they're the cheapest to recreate). The registry's existing eviction logic (`!r.running && r.viewerCount === 0`) already handles this — warm runners have 0 viewers.
 
 **Multiple rapid "New Session" clicks:** If the user claims a warm session and immediately clicks "New Session" again before the next warm session is ready, the second claim falls through to the synchronous creation path. This is the rare case and only adds ~1-2s (worktree creation, no clone needed).
 

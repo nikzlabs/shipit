@@ -313,7 +313,7 @@ export class SessionRunnerRegistry {
      */
     sharedRepoDirResolver?: (sessionId: string) => string | undefined;
   }) {
-    this._maxConcurrentRunners = opts?.maxConcurrentRunners ?? 10;
+    this._maxConcurrentRunners = opts?.maxConcurrentRunners ?? 1000;
     this._defaultIdleTimeoutMs = opts?.defaultIdleTimeoutMs ?? 10 * 60 * 1000;
     this._runnerFactory = opts?.runnerFactory ?? ((o) => new SessionRunner(o));
     this._sharedRepoDirResolver = opts?.sharedRepoDirResolver;

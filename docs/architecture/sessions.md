@@ -277,7 +277,7 @@ The timer resets on construction and when `onAgentFinished()` fires.
 
 ### Eviction
 
-When `getOrCreate` hits the concurrent runner limit (default 10), it evicts the oldest runner that has no running agent and no viewers. Eviction calls `dispose()`, which:
+When `getOrCreate` hits the concurrent runner limit (default 1000), it evicts the oldest runner that has no running agent and no viewers. Eviction calls `dispose()`, which:
 - For `ContainerSessionRunner`: disconnects SSE, kills agent, but does NOT stop the Docker container
 - For `SessionRunner`: kills agent, terminal, clears buffers
 
@@ -698,7 +698,7 @@ User clicks "+ New Session" on a repo
 
 | Constant | Default | Location | Purpose |
 |----------|---------|----------|---------|
-| `maxConcurrentRunners` | 10 | SessionRunnerRegistry | Max runners in memory |
+| `maxConcurrentRunners` | 1000 | SessionRunnerRegistry | Max runners in memory |
 | `defaultIdleTimeoutMs` | 600,000 (10 min) | SessionRunnerRegistry | Runner auto-dispose after no activity |
 | Fresh runner idle | 10,000 (10 s) | ContainerSessionRunner | Quick dispose for runners that never had agent activity |
 | Worker port | 9100 | session-worker.ts | HTTP server inside each container |
