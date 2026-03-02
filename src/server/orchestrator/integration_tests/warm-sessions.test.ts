@@ -79,6 +79,7 @@ describe("Integration: warm session lifecycle", () => {
   let sessionManager: SessionManager;
   let repoStore: RepoStore;
   let lastClaude: FakeClaudeProcess;
+  let origGitTerminalPrompt: string | undefined;
 
   beforeEach(async () => {
     lastClaude = null as any;
@@ -87,6 +88,7 @@ describe("Integration: warm session lifecycle", () => {
     repoStore = new RepoStore(path.join(tmpDir, "repos.json"));
 
     // Prevent git from prompting for credentials (hangs in CI/test)
+    origGitTerminalPrompt = process.env.GIT_TERMINAL_PROMPT;
     process.env.GIT_TERMINAL_PROMPT = "0";
 
     const credentialStore = createTestCredentialStore(tmpDir);
@@ -122,7 +124,11 @@ describe("Integration: warm session lifecycle", () => {
   });
 
   afterEach(async () => {
-    delete process.env.GIT_TERMINAL_PROMPT;
+    if (origGitTerminalPrompt === undefined) {
+      delete process.env.GIT_TERMINAL_PROMPT;
+    } else {
+      process.env.GIT_TERMINAL_PROMPT = origGitTerminalPrompt;
+    }
     await app.close();
     await new Promise((r) => setTimeout(r, 50));
     try {
