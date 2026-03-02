@@ -762,6 +762,87 @@ describe("Phase 3: ContainerSessionRunner Preview Proxy", () => {
     runner.dispose();
   });
 
+  it("includes exitCode and errorOutput in preview_status on crash", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "preview-crash",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+      idleTimeoutMs: 60_000,
+    });
+
+    const messages: WsServerMessage[] = [];
+    runner.on("message", (msg) => messages.push(msg));
+
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Emit some preview logs followed by a non-zero exit
+    lastPreview.simulateLog("preview", "Starting server...\n");
+    lastPreview.simulateLog("preview", "Error: Cannot find module '@rollup/rollup-linux-arm64-gnu'\n");
+    lastPreview.simulateStopped(1);
+
+    await waitFor(
+      () => messages.some((m) => m.type === "preview_status" && !(m as { running: boolean }).running),
+      2000,
+      "crashed preview_status",
+    );
+
+    const status = runner.buildPreviewStatus() as { type: string; running: boolean; exitCode?: number; errorOutput?: string };
+    expect(status).toMatchObject({
+      type: "preview_status",
+      running: false,
+      exitCode: 1,
+    });
+    expect(status.errorOutput).toContain("Cannot find module");
+
+    runner.dispose();
+  });
+
+  it("clears crash info when preview becomes ready again", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "preview-recover",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+      idleTimeoutMs: 60_000,
+    });
+
+    const messages: WsServerMessage[] = [];
+    runner.on("message", (msg) => messages.push(msg));
+
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Crash first
+    lastPreview.simulateLog("preview", "Fatal error\n");
+    lastPreview.simulateStopped(1);
+    await waitFor(
+      () => messages.some((m) => m.type === "preview_status"),
+      2000,
+      "crashed status",
+    );
+
+    // Then recover
+    lastPreview.simulateReady([3000]);
+    await waitFor(
+      () => messages.filter((m) => m.type === "preview_status").length >= 2,
+      2000,
+      "recovered status",
+    );
+
+    const status = runner.buildPreviewStatus() as { type: string; running: boolean; exitCode?: number; errorOutput?: string };
+    expect(status).toMatchObject({
+      type: "preview_status",
+      running: true,
+      port: 3000,
+    });
+    expect(status.exitCode).toBeUndefined();
+    expect(status.errorOutput).toBeUndefined();
+
+    runner.dispose();
+  });
+
   it("builds proxy URLs in preview status", () => {
     const runner = new ContainerSessionRunner({
       sessionId: "my-session-123",

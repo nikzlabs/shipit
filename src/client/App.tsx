@@ -104,6 +104,7 @@ export default function App() {
   const selectedPort = usePreviewStore((s) => s.selectedPort);
   const configMissing = usePreviewStore((s) => s.configMissing);
   const installStatus = usePreviewStore((s) => s.installStatus);
+  const crashInfo = usePreviewStore((s) => s.crashInfo);
 
   const logEntries = useTerminalStore((s) => s.entries);
 
@@ -325,6 +326,14 @@ export default function App() {
     [send, requestPermission],
   );
 
+  const handleRestartPreview = useCallback(() => {
+    const sid = useSessionStore.getState().sessionId;
+    if (sid) {
+      usePreviewStore.getState().setCrashInfo(null);
+      apiPost(`/api/sessions/${sid}/preview/restart`, {}).catch(() => {});
+    }
+  }, [apiPost]);
+
   const handleAnswerQuestion = useCallback(
     (toolUseId: string, answers: Record<string, string>) => {
       send({ type: "answer_question", toolUseId, answers });
@@ -526,7 +535,7 @@ export default function App() {
       </div>
       <div className="flex-1 min-h-0">
         {rightTab === "preview" ? (
-          <PreviewFrame preview={previewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} autoFixEnabled={autoFixEnabled} onToggleAutoFix={handleToggleAutoFix} autoFixRetries={autoFixRetries} configMissing={configMissing} installStatus={installStatus} onInitPreviewConfig={() => send({ type: "init_preview_config" })} />
+          <PreviewFrame preview={previewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} autoFixEnabled={autoFixEnabled} onToggleAutoFix={handleToggleAutoFix} autoFixRetries={autoFixRetries} configMissing={configMissing} installStatus={installStatus} onInitPreviewConfig={() => send({ type: "init_preview_config" })} crashInfo={crashInfo} onRestartPreview={handleRestartPreview} />
         ) : rightTab === "docs" ? (
           <DocsViewer files={docFiles} selectedFile={selectedDoc} content={docContent} onSelectFile={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDoc(sid, f).catch(() => {}); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} />
         ) : rightTab === "terminal" ? (

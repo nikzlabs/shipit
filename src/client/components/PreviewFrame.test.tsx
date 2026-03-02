@@ -252,6 +252,77 @@ describe("PreviewFrame", () => {
     expect(screen.getByText("Deprecation warning")).toBeInTheDocument();
   });
 
+  // ---- Crash state tests ----
+
+  it("shows crash state with error output when preview crashed", () => {
+    const preview: PreviewStatus = { running: false, port: 5173, url: "http://localhost:5173" };
+    render(
+      <PreviewFrame
+        preview={preview}
+        {...defaultProps}
+        crashInfo={{ exitCode: 1, output: "Error: Cannot find module '@rollup/rollup-linux-arm64-gnu'" }}
+      />,
+    );
+    expect(screen.getByText(/Preview server crashed/)).toBeInTheDocument();
+    expect(screen.getByText(/exit code 1/)).toBeInTheDocument();
+    expect(screen.getByText(/Cannot find module/)).toBeInTheDocument();
+  });
+
+  it("shows crash state without output when output is empty", () => {
+    render(
+      <PreviewFrame
+        preview={{ running: false, port: 5173, url: "http://localhost:5173" }}
+        {...defaultProps}
+        crashInfo={{ exitCode: 137, output: "" }}
+      />,
+    );
+    expect(screen.getByText(/Preview server crashed/)).toBeInTheDocument();
+    expect(screen.getByText(/exit code 137/)).toBeInTheDocument();
+  });
+
+  it("shows Retry button that calls onRestartPreview", () => {
+    const onRestartPreview = vi.fn();
+    render(
+      <PreviewFrame
+        preview={{ running: false, port: 5173, url: "http://localhost:5173" }}
+        {...defaultProps}
+        crashInfo={{ exitCode: 1, output: "some error" }}
+        onRestartPreview={onRestartPreview}
+      />,
+    );
+    const btn = screen.getByText("Retry");
+    fireEvent.click(btn);
+    expect(onRestartPreview).toHaveBeenCalled();
+  });
+
+  it("does not show crash state when preview is running", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(
+      <PreviewFrame
+        preview={preview}
+        {...defaultProps}
+        crashInfo={{ exitCode: 1, output: "old error" }}
+      />,
+    );
+    const iframe = await screen.findByTitle("Live Preview");
+    expect(iframe).toBeInTheDocument();
+    expect(screen.queryByText(/Preview server crashed/)).not.toBeInTheDocument();
+  });
+
+  it("shows crash state over placeholder when crashInfo is set", () => {
+    render(
+      <PreviewFrame
+        preview={null}
+        sessionId="abc"
+        {...defaultProps}
+        crashInfo={{ exitCode: 1, output: "crash output" }}
+      />,
+    );
+    // Crash state should take priority over the "Starting dev server..." spinner
+    expect(screen.getByText(/Preview server crashed/)).toBeInTheDocument();
+    expect(screen.queryByText("Starting dev server...")).not.toBeInTheDocument();
+  });
+
   // ---- Config missing tests ----
 
   it("shows config missing state with setup button", () => {
