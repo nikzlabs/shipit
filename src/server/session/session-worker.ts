@@ -231,6 +231,23 @@ export class SessionWorker extends EventEmitter {
       return { stopped: true };
     });
 
+    app.post("/preview/restart", async () => {
+      if (this.preview) {
+        // restart() clears the install marker so dependencies re-install
+        await this.preview.restart(this.workspaceDir);
+      } else {
+        this.preview = this._createPreviewManager();
+        this.wirePreviewEvents(this.preview);
+        this.preview.start(this.workspaceDir).catch((err) => {
+          this.broadcastSSE({
+            type: "preview_config_error",
+            data: { message: err instanceof Error ? err.message : String(err) },
+          });
+        });
+      }
+      return { restarted: true };
+    });
+
     app.get("/preview/status", async () => ({
       running: this.preview?.running ?? false,
       ports: this.preview?.ports ?? [],

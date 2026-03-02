@@ -909,8 +909,7 @@ export async function registerApiRoutes(
       }
       try {
         const containerRunner = runner as import("./container-session-runner.js").ContainerSessionRunner;
-        await containerRunner.stopPreviewOnWorker();
-        await containerRunner.startPreviewOnWorker();
+        await containerRunner.restartPreviewOnWorker();
         return { restarted: true };
       } catch (err) {
         reply.code(500).send({ error: `Failed to restart preview: ${getErrorMessage(err)}` });
