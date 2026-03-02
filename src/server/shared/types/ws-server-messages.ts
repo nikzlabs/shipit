@@ -49,6 +49,8 @@ export interface WsPreviewStatus {
   exitCode?: number | null;
   /** Last lines of preview output captured before the crash. */
   errorOutput?: string;
+  /** Session that owns this preview — client discards stale messages during session switching. */
+  sessionId?: string;
 }
 
 export interface WsGitLog {

@@ -102,6 +102,9 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    *  When false, callers should not send buildPreviewStatus() to clients — let the
    *  runner emit the status itself when ready. */
   readonly previewStatusKnown: boolean;
+  /** Wait until preview state is known (SSE connected + worker reported). Resolves
+   *  immediately if already known. */
+  waitForPreviewStatus(): Promise<void>;
 
   // Lifecycle
   onAgentFinished(): void;
@@ -235,9 +238,10 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   attachViewer(): void { this._viewerCount++; }
   detachViewer(): void { this._viewerCount = Math.max(0, this._viewerCount - 1); }
   buildPreviewStatus(): WsServerMessage {
-    return { type: "preview_status", running: false, port: 5173, url: "http://localhost:5173" };
+    return { type: "preview_status", running: false, port: 5173, url: "http://localhost:5173", sessionId: this.sessionId };
   }
   get previewStatusKnown(): boolean { return true; }
+  async waitForPreviewStatus(): Promise<void> { /* always known */ }
 
   onAgentFinished(): void {
     if (!this._isRunning && this._messageQueue.length === 0) {

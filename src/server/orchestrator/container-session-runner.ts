@@ -319,6 +319,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _idleTimeoutMs: number;
 
   private _disposed = false;
+  /** True once an agent has been started on this runner. Used to decide idle
+   *  timer duration: fresh runners get a short timer on detach so abandoned
+   *  sessions (brief WS connect → disconnect) are cleaned up quickly. */
+  private _hasBeenUsed = false;
 
   constructor(opts: {
     sessionId: string;
@@ -496,9 +500,37 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // Don't stop worker resources or SSE — the container keeps running and
     // the viewer may reattach quickly (session switching). Cleanup happens
     // in dispose() when the runner is actually torn down.
+    //
+    // For fresh runners that were never used (no agent started), use a short
+    // idle timer so abandoned sessions (brief WS connect → disconnect during
+    // rapid session switching) are cleaned up quickly instead of lingering
+    // for the full 10-minute default.
+    if (this._viewerCount === 0 && !this._hasBeenUsed) {
+      this.resetIdleTimer(10_000); // 10 seconds
+    }
   }
 
   get previewStatusKnown(): boolean { return this._previewStateReceived; }
+
+  /** Wait until preview state is known (SSE connected + worker reported status).
+   *  Resolves immediately if already known. */
+  async waitForPreviewStatus(): Promise<void> {
+    if (this._previewStateReceived) return;
+    return new Promise<void>((resolve) => {
+      const listener = (msg: WsServerMessage) => {
+        if (msg.type === "preview_status") {
+          this.off("message", listener);
+          resolve();
+        }
+      };
+      this.on("message", listener);
+      // Re-check in case it arrived between the guard and the listener
+      if (this._previewStateReceived) {
+        this.off("message", listener);
+        resolve();
+      }
+    });
+  }
 
   buildPreviewStatus(): WsServerMessage {
     if (this._workerPreviewPorts.length > 0) {
@@ -512,6 +544,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         detectedPorts: this._workerPreviewPorts.length > 1
           ? this._workerPreviewPorts.slice(1)
           : undefined,
+        sessionId: this.sessionId,
       };
     }
     if (this._detectedPorts.length > 0) {
@@ -522,6 +555,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         url: `/preview/${this.sessionId}/${this._detectedPorts[0]}/`,
         source: "detected",
         detectedPorts: this._detectedPorts,
+        sessionId: this.sessionId,
       };
     }
     const crashed = this._lastPreviewExitCode != null && this._lastPreviewExitCode !== 0;
@@ -534,6 +568,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         exitCode: this._lastPreviewExitCode,
         errorOutput: this._previewLogBuffer.join(""),
       }),
+      sessionId: this.sessionId,
     };
   }
 
@@ -555,6 +590,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * /agent/start, and ensures the SSE stream is connected for events.
    */
   async _startAgentViaProxy(agentId: AgentId, params: AgentRunParams): Promise<void> {
+    this._hasBeenUsed = true;
     await this._workerReady;
     await workerPost(this.workerUrl, "/agent/start", { agentId, params });
     if (!this.sseConnection) {
@@ -892,13 +928,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     }
   }
 
-  private resetIdleTimer(): void {
+  private resetIdleTimer(overrideMs?: number): void {
     if (this._idleTimer) clearTimeout(this._idleTimer);
     this._idleTimer = setTimeout(() => {
       if (!this._isRunning && this._messageQueue.length === 0 && this._viewerCount === 0) {
         this.dispose();
       }
-    }, this._idleTimeoutMs);
+    }, overrideMs ?? this._idleTimeoutMs);
   }
 
   get disposed(): boolean { return this._disposed; }

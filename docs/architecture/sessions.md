@@ -48,7 +48,7 @@ This document describes the full lifecycle of sessions in ShipIt: creation, warm
 
 1. **Standalone session** — no repo, fresh git repo initialized in the session directory. Created via `POST /api/sessions`.
 2. **Worktree session** — backed by a shared repo clone. Session directory is a git worktree branching from the repo's default branch. Created via warm pool or `claim-session`.
-3. **Warm session** — a worktree session pre-created in the background with runner and preview already running. Invisible in the sidebar until the user sends their first message ("graduated").
+3. **Warm session** — a worktree session pre-created in the background (worktree + metadata only, no container). Invisible in the sidebar until the user sends their first message ("graduated"). The container is created on-demand when the WebSocket connects.
 
 ## Session Creation
 
@@ -85,26 +85,28 @@ Client                          Server
 
 ### Path B: Warm Session (repo, pool hit)
 
+The claim endpoint first checks for a **reusable** session: a previously-claimed warm session for this repo that was never graduated (user navigated away without sending a message). If found, it returns that session — reusing the existing container instead of creating a new one. Otherwise, it claims from the warm pool.
+
 ```
 Client                          Server
   │                               │
   │  navigate(/{owner}/{repo}/new)│
   ├─ POST /api/repos/:url/claim-session →│
-  │                               │  repo.warmSessionId exists?
-  │                               │  warmRunner alive?
-  │                               │  YES → return warm session
-  │                               │  clear warmSessionId
-  │                               │  start warming next session
-  │← {sessionId} ─────────────────┤
+  │                               │  1. reusable ungraduated warm session?
+  │                               │     YES → return it (no new claim)
+  │                               │  2. repo.warmSessionId exists?
+  │                               │     YES → clear warmSessionId
+  │                               │     start warming next session (lightweight)
+  │← {sessionId} ─────────────────┤  (instant — no container created)
   │                               │
   │  store pendingWsMessage       │
   │  navigate(/session/{id})      │
   │                               │
   │  WS /ws/sessions/{id} ──────→ │ activateSession(id)
-  │                               │   runnerRegistry.get() → existing runner
+  │                               │   runnerRegistry.getOrCreate()
+  │                               │     → reuse existing or create container
   │                               │   attachToRunner()
-  │                               │   runner.previewStatusKnown = true
-  │← WS preview_status ───────────┤   (preview already running)
+  │← WS preview_status ───────────┤   (once container boots + preview starts)
   │                               │
   │  send pendingWsMessage        │
   ├─ WS send_message ───────────→ │ graduates warm session
@@ -113,40 +115,55 @@ Client                          Server
 
 ### Path C: Claim Session (repo, no warm pool)
 
-Same as Path B but `claim-session` creates the session synchronously:
+Same as Path B but `claim-session` creates the worktree synchronously (~1-2s).
+If the client disconnected before work starts (`request.raw.destroyed`), the
+endpoint short-circuits to avoid creating abandoned sessions.
 
 1. `createSessionDir(title, { skipGitInit: true })`
 2. Create git worktree from shared repo clone
 3. Configure credentials
-4. `runnerRegistry.getOrCreate()` → creates runner + container
-5. `runner.attachViewer(); runner.detachViewer()` → starts preview + file watcher
-6. Return session ID to client
+4. Return session ID to client (no container created)
+
+The container is created on-demand when the WebSocket connects (`activateSession`
+→ `getOrCreate` → factory creates container).
+
+The client passes an `AbortSignal` to the claim fetch. Navigating away (clicking
+another session or "New Session" again) aborts the request, which the server
+detects via `request.raw.destroyed`.
 
 ## Warm Session Pool
 
 The warm pool pre-creates one session per repo so users get instant "New Session" with a running preview.
 
+Two mechanisms prevent cascade during rapid "New Session" clicks:
+
+1. **`warmingInProgress` set** (per repo URL) prevents concurrent `warmSessionForRepo` calls. Without this, each click triggers a replacement warm, and while those are in-flight (before `warmSessionId` is set), subsequent clicks see no warm session and fall to the slow path.
+
+2. **`warmingPromises` map** stores the in-flight warming promise. When the claim endpoint finds no warm session but warming IS in progress, it awaits the promise and re-checks — claiming the freshly created warm session instead of falling to the expensive slow path.
+
 ### Warm-Up Sequence
+
+Warm-up is **lightweight** — it creates the worktree and metadata only, with no runner or container. The container is created on-demand when a WebSocket connects to the session.
 
 ```
 warmSessionForRepo(repoUrl):
-  1. Check repo.status === "ready" and no existing warm session
+  1. Check repo.status === "ready", no existing warm session, no warming in progress
   2. createSessionDir("Warm session", { skipGitInit: true })
   3. sessionManager.setWarm(appSessionId, true)
   4. Remove empty dir (worktree add needs it absent)
   5. repoGit.createWorktree(sessionDir, branchPrefix, startPoint)
   6. Configure git credentials
-  7. runnerRegistry.getOrCreate(appSessionId, sessionDir, defaultAgentId)
-     → runner factory creates Docker container (async)
-  8. runner.attachViewer()   ← triggers SSE connect + startWorkerResources
-  9. runner.detachViewer()   ← decrements viewer count, resources keep running
- 10. repoStore.setWarmSessionId(repoUrl, appSessionId)
- 11. sseBroadcast("repo_warm_ready", ...)
+  7. repoStore.setWarmSessionId(repoUrl, appSessionId)
+  8. sseBroadcast("repo_warm_ready", ...)
 ```
 
-### Startup Re-Warming
+### Startup Validation + Re-Warm
 
-On server start, all "ready" repos whose warm sessions are missing are re-warmed via `setTimeout(0)` (deferred until after `buildApp()` returns).
+On server restart, the startup sequence (deferred via `setTimeout(0)`) validates existing warm sessions and creates new ones where needed. No containers or runners are created at startup — they are created on-demand when a WebSocket connects.
+
+1. **Validate**: For each repo with a `warmSessionId` and `status: "ready"`, check that the warm session's worktree directory still exists on disk. If missing, clear `warmSessionId` and re-warm (lightweight — worktree + metadata only).
+
+2. **Re-warm**: For repos that have no warm session at all, create a fresh warm session via `warmSessionForRepo()` (lightweight).
 
 ### Graduation
 
@@ -189,10 +206,9 @@ The client connects to `ws[s]://host/ws/sessions/{sessionId}?agent=claude`. The 
    (otherwise, the runner will emit it later when SSE delivers state)
 8. If previewStatusKnown === false:
    Register a one-shot "message" listener on the runner. When the first
-   preview_status arrives, schedule a delayed re-send (300ms) so it
-   arrives in its own event-loop turn and survives React 18 batching.
-   (useWebSocket stores messages via setLastMessage — React batches
-   rapid state updates, potentially dropping intermediate messages.)
+   preview_status arrives, re-send it in a separate microtask (queueMicrotask)
+   so it survives React 18 batching where rapid setLastMessage calls drop
+   intermediate messages.
 ```
 
 ### Client-Side (on WS open)
@@ -247,15 +263,17 @@ The factory is **synchronous** — it returns the runner immediately. Container 
 Both `SessionRunner` and `ContainerSessionRunner` implement idle disposal:
 
 ```
-resetIdleTimer():
+resetIdleTimer(overrideMs?):
   clearTimeout(existing)
   setTimeout(() => {
     if (!running && queue.length === 0 && viewerCount === 0):
       dispose()
-  }, idleTimeoutMs)  // default: 10 minutes
+  }, overrideMs ?? idleTimeoutMs)  // default: 10 minutes
 ```
 
 The timer resets on construction and when `onAgentFinished()` fires.
+
+**Short idle timer for unused runners**: `ContainerSessionRunner` tracks a `_hasBeenUsed` flag (set when an agent is started). When `detachViewer` brings viewerCount to 0 and `!_hasBeenUsed`, the idle timer is reset to **10 seconds** instead of the default 10 minutes. This ensures containers created for briefly-visited sessions (rapid "New Session" → switch away) are cleaned up quickly.
 
 ### Eviction
 
@@ -315,16 +333,31 @@ containerManager.on("container_exited", (sessionId, exitCode, error)):
   3. runner.dispose()
 ```
 
-### Orphan Cleanup
+### Orphan Cleanup + Container Rediscovery
 
-On startup:
+On startup, two phases restore the in-memory state from Docker.
+`activeSessionIds` is built from `sessionManager.allIds()` which includes warm
+and archived sessions — this is critical so warm session containers are not
+treated as orphans.
+
 ```
 containerManager.cleanupOrphans(activeSessionIds):
   1. docker.listContainers({ filters: { label: ["shipit-session-id"] } })
   2. For each container not in activeSessionIds:
      - container.stop() + container.remove()
   3. Return count of removed containers
+
+containerManager.rediscover(activeSessionIds):
+  1. docker.listContainers({ filters: { label: ["shipit-session-id"] } })
+  2. For each running container in activeSessionIds that's not already tracked:
+     - container.inspect() → get bridge IP
+     - Populate containers map with { id, workerUrl, containerIp, status }
+  3. Return count of rediscovered containers
 ```
+
+After restart, the `containers` map (in-memory) is empty even though Docker
+containers survived. `rediscover()` restores it so the runner factory can
+reconnect to existing containers instead of creating duplicates.
 
 ### Container Persistence Across Runner Disposal
 
@@ -385,6 +418,8 @@ detachViewer():
   viewerCount--
   // Does NOT disconnect SSE or stop resources
   // Container keeps running for fast re-attach
+  if (viewerCount === 0 && !_hasBeenUsed):
+    resetIdleTimer(10_000)  // 10s — quick cleanup for unused sessions
 ```
 
 ### startWorkerResources()
@@ -413,9 +448,9 @@ Container: PreviewManager emits "ready"
     → Client updates usePreviewStore
 ```
 
-### Secondary Path: Server-Side Delayed Re-send
+### Secondary Path: Server-Side Microtask Re-send
 
-When `attachToRunner` finds `previewStatusKnown === false`, it registers a one-shot listener on the runner. When the first `preview_status` message arrives (from SSE replay), the listener schedules a re-send after 300ms via `setTimeout`. This ensures the message arrives in its own event-loop turn, immune to React 18 `setLastMessage` batching where intermediate WS messages can be dropped.
+When `attachToRunner` finds `previewStatusKnown === false`, it registers a one-shot listener on the runner. When the first `preview_status` message arrives (from SSE replay), the listener re-sends it via `queueMicrotask`. This ensures the message arrives in its own event-loop turn, immune to React 18 `setLastMessage` batching where intermediate WS messages can be dropped.
 
 ### Tertiary Path: HTTP Fallback + Retry
 
@@ -437,6 +472,14 @@ After sending the log buffer to a newly connected WS client, the server re-sends
 ### SSE Replay on Reconnect
 
 When the `ContainerSessionRunner` SSE reconnects (after backoff), the worker replays current preview state. This covers the case where the runner was created and SSE connected, but the preview started between SSE connections.
+
+### Stale Message Rejection
+
+All `preview_status` WS messages include a `sessionId` field. The client's
+`useMessageHandler` compares this against the current session ID and discards
+mismatches. This prevents stale messages from a closing WS connection
+(batched by React during session switching) from overwriting the reset preview
+store with the previous session's preview state.
 
 ### Why So Many Paths?
 
@@ -564,7 +607,8 @@ User clicks "+ New Session" on a repo
   3. WS connect           │                  │                   │
         ├────────────────→│                  │                   │
         │    activateSession                 │                   │
-        │    getOrCreate → │existing runner  │                   │
+        │    getOrCreate → │                 │                   │
+        │      (reuse existing or create)    │                   │
         │    attachToRunner│                 │                   │
         │←─ preview_status┤                 │                   │
         │                 │                  │                   │
@@ -656,6 +700,7 @@ User clicks "+ New Session" on a repo
 |----------|---------|----------|---------|
 | `maxConcurrentRunners` | 10 | SessionRunnerRegistry | Max runners in memory |
 | `defaultIdleTimeoutMs` | 600,000 (10 min) | SessionRunnerRegistry | Runner auto-dispose after no activity |
+| Fresh runner idle | 10,000 (10 s) | ContainerSessionRunner | Quick dispose for runners that never had agent activity |
 | Worker port | 9100 | session-worker.ts | HTTP server inside each container |
 | Container memory | 512 MB | session-container.ts | Docker memory limit |
 | Container CPU | 0.5 (50,000 quota) | session-container.ts | Docker CPU limit |

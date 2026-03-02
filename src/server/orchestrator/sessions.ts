@@ -48,6 +48,18 @@ export class SessionManager {
       .sort((a, b) => new Date(b.lastUsedAt).getTime() - new Date(a.lastUsedAt).getTime());
   }
 
+  /** All session IDs including warm and archived — for container lifecycle decisions. */
+  allIds(): string[] {
+    return this.sessions.map((s) => s.id);
+  }
+
+  /** Find a warm (ungraduated) session for a repo URL, excluding a specific ID.
+   *  Used to reuse previously-claimed-but-unused sessions instead of creating new ones. */
+  findUngraduatedWarm(repoUrl: string, excludeId?: string): SessionInfo | undefined {
+    return this.sessions.find((s) =>
+      s.warm === true && s.remoteUrl === repoUrl && s.id !== excludeId);
+  }
+
   /** Get a session by id. Returns undefined if not found. */
   get(id: string): SessionInfo | undefined {
     return this.sessions.find((s) => s.id === id);

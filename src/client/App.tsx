@@ -85,6 +85,7 @@ export default function App() {
   const wsSessionId = urlSessionId ?? (isNewSessionRoute ? sessionId : undefined);
   const { send, lastMessage, status, reconnectAttempt, reconnect } = useSessionWebSocket(wsSessionId);
   const { get: apiGet, post: apiPost, del: apiDel } = useApi();
+  const claimAbortRef = useRef<AbortController | null>(null);
   const terminalRef = useRef<InteractiveTerminalHandle>(null);
   const messages = useSessionStore((s) => s.messages);
   const isLoading = useSessionStore((s) => s.isLoading);
@@ -244,9 +245,11 @@ export default function App() {
     if (urlSessionId && urlSessionId !== useSessionStore.getState().sessionId) {
       resumeSessionInternal(urlSessionId);
     } else if (!urlSessionId && useSessionStore.getState().sessionId) {
+      // Clear stale sessionId — prevents WS from connecting to old session.
+      // On /new route, the auto-claim effect will set the correct sessionId.
+      useSessionStore.getState().setSessionId(undefined);
+      resetSessionState();
       if (!isNewSessionRoute) {
-        useSessionStore.getState().setSessionId(undefined);
-        resetSessionState();
         useUiStore.getState().setShowTemplates(true);
       }
     }
@@ -254,13 +257,12 @@ export default function App() {
 
   // Auto-claim session when landing on /{slug}/new (direct URL navigation or page refresh)
   useEffect(() => {
-    async function claim() {
-      const result = await useRepoStore.getState().claimSession(newSessionRepoUrl!);
-      if (result) useSessionStore.getState().setSessionId(result.sessionId);
-    }
-    if (isNewSessionRoute && newSessionRepoUrl && !sessionId) {
-      claim();
-    }
+    if (!isNewSessionRoute || !newSessionRepoUrl || sessionId) return;
+    const ac = new AbortController();
+    useRepoStore.getState().claimSession(newSessionRepoUrl, ac.signal).then((result) => {
+      if (result && !ac.signal.aborted) useSessionStore.getState().setSessionId(result.sessionId);
+    });
+    return () => ac.abort();
   }, [isNewSessionRoute, newSessionRepoUrl, sessionId]);
 
   // Redirect to home if /{slug}/new doesn't match any known repo
@@ -397,6 +399,11 @@ export default function App() {
 
   const handleNewSessionForRepo = useCallback(
     async (repoUrl: string) => {
+      // Abort any in-flight claim from a previous "New Session" click
+      claimAbortRef.current?.abort();
+      const ac = new AbortController();
+      claimAbortRef.current = ac;
+
       // 1. Reset state for a fresh view
       useSessionStore.getState().setSessionId(undefined);
       resetSessionState();
@@ -406,8 +413,8 @@ export default function App() {
       navigate(repoLabelToNewPath(repoUrl));
 
       // 3. Claim session in background — sets sessionId, triggers WS connect + preview
-      const result = await useRepoStore.getState().claimSession(repoUrl);
-      if (result) {
+      const result = await useRepoStore.getState().claimSession(repoUrl, ac.signal);
+      if (result && !ac.signal.aborted) {
         useSessionStore.getState().setSessionId(result.sessionId);
       }
     },
@@ -593,7 +600,7 @@ export default function App() {
       </div>
       <div className="flex-1 min-h-0">
         {rightTab === "preview" ? (
-          <PreviewFrame preview={previewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} autoFixEnabled={autoFixEnabled} onToggleAutoFix={handleToggleAutoFix} autoFixRetries={autoFixRetries} configMissing={configMissing} installStatus={installStatus} onInitPreviewConfig={() => send({ type: "init_preview_config" })} crashInfo={crashInfo} onRestartPreview={handleRestartPreview} onSendCrashToAgent={handleSendCrashToAgent} />
+          <PreviewFrame preview={previewStatus} sessionId={sessionId} loading={isNewSessionRoute && !sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} autoFixEnabled={autoFixEnabled} onToggleAutoFix={handleToggleAutoFix} autoFixRetries={autoFixRetries} configMissing={configMissing} installStatus={installStatus} onInitPreviewConfig={() => send({ type: "init_preview_config" })} crashInfo={crashInfo} onRestartPreview={handleRestartPreview} onSendCrashToAgent={handleSendCrashToAgent} />
         ) : rightTab === "docs" ? (
           <DocsViewer files={docFiles} selectedFile={selectedDoc} content={docContent} onSelectFile={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDoc(sid, f).catch(() => {}); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} />
         ) : rightTab === "terminal" ? (

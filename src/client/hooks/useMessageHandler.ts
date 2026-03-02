@@ -48,6 +48,14 @@ export function useMessageHandler(params: {
     const ui = useUiStore.getState();
 
     if (data.type === "preview_status") {
+      // Discard stale preview_status from a previous session's WS connection.
+      // During session switching, React may batch a setLastMessage() from the
+      // closing WS and process it after stores have been reset for the new session.
+      const currentSessionId = session.sessionId;
+      if (data.sessionId && currentSessionId && data.sessionId !== currentSessionId) {
+        console.log("[preview] Discarding stale preview_status from", data.sessionId);
+        return;
+      }
       console.log("[preview] Received preview_status:", { running: data.running, port: data.port, url: data.url, source: data.source });
       preview.setStatus({
         running: data.running,
