@@ -20,6 +20,7 @@ export interface GlobalSettings {
   systemPrompt: string;
   agents: AgentInfo[];
   defaultAgentId: AgentId;
+  maxIdleContainers: number;
 }
 
 export interface GitHubStatus {

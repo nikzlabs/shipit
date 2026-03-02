@@ -12,6 +12,7 @@ import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { AgentId } from "../../shared/types.js";
 import type { UsageManager } from "../usage.js";
+import type { CredentialStore } from "../credential-store.js";
 import { FeatureManager } from "../features.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import { listTemplates } from "../templates.js";
@@ -42,6 +43,7 @@ export async function getBootstrapData(deps: {
   createGitManager: (dir: string) => GitManager;
   agentRegistry: AgentRegistry;
   githubAuthManager: GitHubAuthManager;
+  credentialStore?: CredentialStore;
   defaultAgentId: AgentId;
   workspaceDir: string;
 }): Promise<BootstrapData> {
@@ -53,13 +55,14 @@ export async function getBootstrapData(deps: {
       console.error("[bootstrap] Failed to list sessions:", err);
       return [] as Awaited<ReturnType<typeof listSessions>>;
     }),
-    getGlobalSettings(deps.agentRegistry, deps.defaultAgentId, deps.workspaceDir).catch((err) => {
+    getGlobalSettings(deps.agentRegistry, deps.defaultAgentId, deps.workspaceDir, deps.credentialStore).catch((err) => {
       console.error("[bootstrap] Failed to get global settings:", err);
       return {
         gitIdentity: { name: "", email: "" },
         systemPrompt: "",
         agents: listAgents(deps.agentRegistry),
         defaultAgentId: deps.defaultAgentId,
+        maxIdleContainers: deps.credentialStore?.getMaxIdleContainers() ?? 5,
       } as Awaited<ReturnType<typeof getGlobalSettings>>;
     }),
   ]);

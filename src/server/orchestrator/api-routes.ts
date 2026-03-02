@@ -724,13 +724,13 @@ export async function registerApiRoutes(
   );
 
   // PUT /api/settings — save global settings
-  app.put<{ Body: { gitIdentity?: { name: string; email: string }; systemPrompt?: string } }>(
+  app.put<{ Body: { gitIdentity?: { name: string; email: string }; systemPrompt?: string; maxIdleContainers?: number } }>(
     "/api/settings",
     async (request, reply) => {
       try {
         return await saveGlobalSettings(
-          deps.agentRegistry, deps.defaultAgentId, deps.workspaceDir,
-          request.body.gitIdentity, request.body.systemPrompt,
+          deps.agentRegistry, deps.defaultAgentId, deps.workspaceDir, deps.credentialStore,
+          request.body.gitIdentity, request.body.systemPrompt, request.body.maxIdleContainers,
         );
       } catch (err) {
         if (err instanceof ServiceError) {

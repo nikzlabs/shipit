@@ -143,22 +143,17 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private static readonly MAX_QUEUE_SIZE = 50;
   private _viewerCount = 0;
   private _detectedPorts: number[] = [];
-  private _idleTimer: ReturnType<typeof setTimeout> | null = null;
-  private _idleTimeoutMs: number;
   private _disposed = false;
 
   constructor(opts: {
     sessionId: string;
     sessionDir: string;
     defaultAgentId: AgentId;
-    idleTimeoutMs?: number;
   }) {
     super();
     this.sessionId = opts.sessionId;
     this.sessionDir = opts.sessionDir;
     this._agentId = opts.defaultAgentId;
-    this._idleTimeoutMs = opts.idleTimeoutMs ?? 10 * 60 * 1000;
-    this.resetIdleTimer();
   }
 
   get running(): boolean { return this._isRunning; }
@@ -245,18 +240,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
 
   onAgentFinished(): void {
     if (!this._isRunning && this._messageQueue.length === 0) {
-      this.resetIdleTimer();
       this.emit("idle");
     }
-  }
-
-  private resetIdleTimer(): void {
-    if (this._idleTimer) clearTimeout(this._idleTimer);
-    this._idleTimer = setTimeout(() => {
-      if (!this._isRunning && this._messageQueue.length === 0 && this._viewerCount === 0) {
-        this.dispose();
-      }
-    }, this._idleTimeoutMs);
   }
 
   get disposed(): boolean { return this._disposed; }
@@ -266,7 +251,6 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     if (this.agent) { this.agent.kill(); this.agent = null; }
     if (this._terminal) { this._terminal.kill(); this._terminal = null; }
     this.clearPushTimer();
-    if (this._idleTimer) { clearTimeout(this._idleTimer); this._idleTimer = null; }
     this._messageQueue.length = 0;
     this._turnEventBuffer = [];
     this._isRunning = false;
@@ -287,21 +271,17 @@ export type SessionRunnerFactory = (opts: {
   sessionId: string;
   sessionDir: string;
   defaultAgentId: AgentId;
-  idleTimeoutMs: number;
   /** Absolute path to the shared repo backing this worktree session (container mount). */
   sharedRepoDir?: string;
 }) => SessionRunnerInterface;
 
 export class SessionRunnerRegistry {
   private runners = new Map<string, SessionRunnerInterface>();
-  private _maxConcurrentRunners: number;
-  private _defaultIdleTimeoutMs: number;
   private _runnerFactory: SessionRunnerFactory;
   private _sharedRepoDirResolver?: (sessionId: string) => string | undefined;
+  private _onRunnerIdle?: (sessionId: string) => void;
 
   constructor(opts?: {
-    maxConcurrentRunners?: number;
-    defaultIdleTimeoutMs?: number;
     /**
      * Runner factory. Defaults to creating in-process SessionRunner instances
      * (used in tests). Production overrides with ContainerSessionRunner factory.
@@ -312,11 +292,15 @@ export class SessionRunnerRegistry {
      * Used in container mode to mount the parent git repo for worktree sessions.
      */
     sharedRepoDirResolver?: (sessionId: string) => string | undefined;
+    /**
+     * Called when a runner transitions to idle (agent finished, queue empty).
+     * Used by the orchestrator to enforce idle container limits.
+     */
+    onRunnerIdle?: (sessionId: string) => void;
   }) {
-    this._maxConcurrentRunners = opts?.maxConcurrentRunners ?? 1000;
-    this._defaultIdleTimeoutMs = opts?.defaultIdleTimeoutMs ?? 10 * 60 * 1000;
     this._runnerFactory = opts?.runnerFactory ?? ((o) => new SessionRunner(o));
     this._sharedRepoDirResolver = opts?.sharedRepoDirResolver;
+    this._onRunnerIdle = opts?.onRunnerIdle;
   }
 
   /** Get or create a runner for the given session. */
@@ -326,31 +310,17 @@ export class SessionRunnerRegistry {
       return runner;
     }
 
-    // Enforce concurrent runner limit — evict oldest idle runner if at capacity
-    if (this.runners.size >= this._maxConcurrentRunners) {
-      let evicted = false;
-      for (const [id, r] of this.runners) {
-        if (!r.running && r.viewerCount === 0) {
-          r.dispose();
-          this.runners.delete(id);
-          evicted = true;
-          break;
-        }
-      }
-      if (!evicted && this.runners.size >= this._maxConcurrentRunners) {
-        // All runners are active — can't create a new one
-        throw new Error("Maximum concurrent session runners reached");
-      }
-    }
-
     runner = this._runnerFactory({
       sessionId,
       sessionDir,
       defaultAgentId,
-      idleTimeoutMs: this._defaultIdleTimeoutMs,
       sharedRepoDir: this._sharedRepoDirResolver?.(sessionId),
     });
     runner.on("disposed", () => this.runners.delete(sessionId));
+    if (this._onRunnerIdle) {
+      const cb = this._onRunnerIdle;
+      runner.on("idle", () => cb(sessionId));
+    }
     this.runners.set(sessionId, runner);
     return runner;
   }

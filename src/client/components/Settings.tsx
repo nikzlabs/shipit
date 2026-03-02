@@ -26,6 +26,8 @@ export interface SettingsProps {
   onFullReset?: () => void;
   gitIdentity: { name: string; email: string };
   onGitIdentitySave: (name: string, email: string) => void;
+  maxIdleContainers: number;
+  onMaxIdleContainersSave: (n: number) => void;
   deployTargets: DeployTargetInfo[];
   deployConfigStatus: Record<string, { configured: boolean; projectName?: string }>;
   onDeployConfigure: (targetId: string, credentials: Record<string, string>, projectName?: string) => void;
@@ -52,6 +54,8 @@ export function Settings({
   onFullReset,
   gitIdentity,
   onGitIdentitySave,
+  maxIdleContainers,
+  onMaxIdleContainersSave,
   deployTargets,
   deployConfigStatus,
   onDeployConfigure,
@@ -72,6 +76,8 @@ export function Settings({
   const [gitName, setGitName] = useState(gitIdentity.name);
   const [gitEmail, setGitEmail] = useState(gitIdentity.email);
   const [gitSaved, setGitSaved] = useState(false);
+  const [idleContainers, setIdleContainers] = useState(maxIdleContainers);
+  const [idleContainersSaved, setIdleContainersSaved] = useState(false);
   const savedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -370,6 +376,32 @@ export function Settings({
 
           {activeTab === "advanced" && (
             <div className="flex-1 min-w-0 px-5 py-4 flex flex-col gap-4 overflow-y-auto">
+              <div className="space-y-3">
+                <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">Max Idle Containers</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  Maximum Docker containers kept running when not in use. Containers beyond this limit are stopped. Set to 0 to stop all idle containers immediately.
+                </p>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="number"
+                    min={0}
+                    value={idleContainers}
+                    onChange={(e) => { setIdleContainers(Math.max(0, Math.floor(Number(e.target.value) || 0))); setIdleContainersSaved(false); }}
+                    className="w-24 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:border-blue-500"
+                    data-testid="settings-max-idle-containers"
+                  />
+                  <button
+                    onClick={() => { onMaxIdleContainersSave(idleContainers); setIdleContainersSaved(true); }}
+                    className="px-3 py-2 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-500 transition-colors"
+                    data-testid="settings-max-idle-containers-save"
+                  >
+                    {idleContainersSaved ? "Saved" : "Save"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="border-t border-gray-200 dark:border-gray-700" />
+
               <div className="space-y-4">
                 <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">Reset Container</h3>
                 <p className="text-sm text-gray-600 dark:text-gray-400">

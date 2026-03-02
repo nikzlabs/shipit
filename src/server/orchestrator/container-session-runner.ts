@@ -314,10 +314,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   // Per-session detected ports
   private _detectedPorts: number[] = [];
 
-  // Idle timer
-  private _idleTimer: ReturnType<typeof setTimeout> | null = null;
-  private _idleTimeoutMs: number;
-
   private _disposed = false;
 
   constructor(opts: {
@@ -325,14 +321,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     sessionDir: string;
     defaultAgentId: AgentId;
     workerUrl: string;
-    idleTimeoutMs?: number;
   }) {
     super();
     this.sessionId = opts.sessionId;
     this.sessionDir = opts.sessionDir;
     this._agentId = opts.defaultAgentId;
     this.workerUrl = opts.workerUrl;
-    this._idleTimeoutMs = opts.idleTimeoutMs ?? 10 * 60 * 1000;
     // If workerUrl looks like a placeholder, defer readiness until setWorkerUrl() is called.
     if (opts.workerUrl === "http://0.0.0.0:0") {
       this._workerReady = new Promise<void>((resolve) => { this._resolveWorkerReady = resolve; });
@@ -340,7 +334,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this._workerReady = Promise.resolve();
       this._resolveWorkerReady = () => {};
     }
-    this.resetIdleTimer();
   }
 
   /** Update the worker URL once the container is ready. */
@@ -901,7 +894,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   onAgentFinished(): void {
     if (!this._isRunning && this._messageQueue.length === 0) {
-      this.resetIdleTimer();
       this.emit("idle");
     }
     // Auto-restart crashed preview after agent turn ends (agent may have fixed the issue)
@@ -913,15 +905,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         .then(() => workerPost(this.workerUrl, "/preview/start"))
         .catch(() => {});
     }
-  }
-
-  private resetIdleTimer(): void {
-    if (this._idleTimer) clearTimeout(this._idleTimer);
-    this._idleTimer = setTimeout(() => {
-      if (!this._isRunning && this._messageQueue.length === 0 && this._viewerCount === 0) {
-        this.dispose();
-      }
-    }, this._idleTimeoutMs);
   }
 
   get disposed(): boolean { return this._disposed; }
@@ -942,7 +925,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
     this.disconnectEventStream();
     this.clearPushTimer();
-    if (this._idleTimer) { clearTimeout(this._idleTimer); this._idleTimer = null; }
     this._messageQueue.length = 0;
     this._turnEventBuffer = [];
     this._isRunning = false;

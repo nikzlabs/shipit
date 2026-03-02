@@ -8,9 +8,11 @@ interface SettingsState {
   permissionMode: PermissionMode;
   githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
   pendingFiles: FileContextRef[];
+  maxIdleContainers: number;
 
   setHasSystemPrompt: (has: boolean) => void;
   setSystemPromptContent: (content: string) => void;
+  setMaxIdleContainers: (n: number) => void;
   setPermissionMode: (mode: PermissionMode) => void;
   setGithubStatus: (status: { authenticated: boolean; username?: string; avatarUrl?: string }) => void;
   addPendingFile: (filePath: string) => void;
@@ -38,10 +40,13 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   permissionMode: getSavedPermissionMode(),
   githubStatus: { authenticated: false },
   pendingFiles: [],
+  maxIdleContainers: 5,
 
   setHasSystemPrompt: (has) => set({ hasSystemPrompt: has }),
 
   setSystemPromptContent: (content) => set({ systemPromptContent: content }),
+
+  setMaxIdleContainers: (n) => set({ maxIdleContainers: n }),
 
   setPermissionMode: (mode) => {
     savePermissionMode(mode);

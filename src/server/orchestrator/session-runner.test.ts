@@ -12,7 +12,6 @@ describe("SessionRunner", () => {
       sessionId: "s1",
       sessionDir: "/tmp/s1",
       defaultAgentId: "claude" as AgentId,
-      idleTimeoutMs: 60_000,
     });
     expect(runner.running).toBe(false);
     runner.running = true;
@@ -25,7 +24,6 @@ describe("SessionRunner", () => {
       sessionId: "s1",
       sessionDir: "/tmp/s1",
       defaultAgentId: "claude" as AgentId,
-      idleTimeoutMs: 60_000,
     });
     expect(runner.queueLength).toBe(0);
     runner.enqueue({ text: "msg1" });
@@ -52,7 +50,6 @@ describe("SessionRunner", () => {
       sessionId: "s1",
       sessionDir: "/tmp/s1",
       defaultAgentId: "claude" as AgentId,
-      idleTimeoutMs: 60_000,
     });
 
     const received: any[] = [];
@@ -77,7 +74,6 @@ describe("SessionRunner", () => {
       sessionId: "s1",
       sessionDir: "/tmp/s1",
       defaultAgentId: "claude" as AgentId,
-      idleTimeoutMs: 60_000,
     });
     expect(runner.viewerCount).toBe(0);
     runner.attachViewer();
@@ -98,7 +94,6 @@ describe("SessionRunner", () => {
       sessionId: "s1",
       sessionDir: "/tmp/s1",
       defaultAgentId: "claude" as AgentId,
-      idleTimeoutMs: 60_000,
     });
     const idleSpy = vi.fn();
     runner.on("idle", idleSpy);
@@ -114,7 +109,6 @@ describe("SessionRunner", () => {
       sessionId: "s1",
       sessionDir: "/tmp/s1",
       defaultAgentId: "claude" as AgentId,
-      idleTimeoutMs: 60_000,
     });
     const idleSpy = vi.fn();
     runner.on("idle", idleSpy);
@@ -131,7 +125,6 @@ describe("SessionRunner", () => {
       sessionId: "s1",
       sessionDir: "/tmp/s1",
       defaultAgentId: "claude" as AgentId,
-      idleTimeoutMs: 60_000,
     });
 
     for (let i = 0; i < 50; i++) {
@@ -155,7 +148,6 @@ describe("SessionRunner", () => {
       sessionId: "s1",
       sessionDir: "/tmp/s1",
       defaultAgentId: "claude" as AgentId,
-      idleTimeoutMs: 60_000,
     });
     const fakeAgent = { kill: vi.fn() } as any;
     const fakeTerminal = { kill: vi.fn() } as any;
@@ -215,28 +207,15 @@ describe("SessionRunnerRegistry", () => {
     expect(registry.size).toBe(0);
   });
 
-  it("evicts idle runners when at capacity", () => {
-    const registry = new SessionRunnerRegistry({ maxConcurrentRunners: 2 });
+  it("calls onRunnerIdle when runner emits idle", () => {
+    const idleSpy = vi.fn();
+    const registry = new SessionRunnerRegistry({ onRunnerIdle: idleSpy });
     const r1 = registry.getOrCreate("s1", "/tmp/s1", "claude" as AgentId);
-    registry.getOrCreate("s2", "/tmp/s2", "claude" as AgentId);
 
-    const r3 = registry.getOrCreate("s3", "/tmp/s3", "claude" as AgentId);
-    expect(r3.sessionId).toBe("s3");
-    expect(r1.disposed).toBe(true);
+    r1.running = false;
+    r1.onAgentFinished();
 
-    r3.dispose();
-  });
-
-  it("throws when all runners are active and at capacity", () => {
-    const registry = new SessionRunnerRegistry({ maxConcurrentRunners: 1 });
-    const r1 = registry.getOrCreate("s1", "/tmp/s1", "claude" as AgentId);
-    r1.running = true;
-    r1.attachViewer();
-
-    expect(() => {
-      registry.getOrCreate("s2", "/tmp/s2", "claude" as AgentId);
-    }).toThrow("Maximum concurrent session runners reached");
-
+    expect(idleSpy).toHaveBeenCalledWith("s1");
     r1.dispose();
   });
 
