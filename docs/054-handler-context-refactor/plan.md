@@ -44,12 +44,9 @@ App-wide manager references, factories, and config — shared singletons that li
 - Factories: `createSessionDir`, `generateText`, `getSharedRepoDir`
 - Config: `workspaceDir`, `sessionsRoot`, `defaultAgentId`
 
-### `HandlerContext`
-Composed as `ConnectionCtx & RunnerCtx & AppCtx` — a type alias, so existing code using `HandlerContext` continues to work unchanged.
+The old `HandlerContext` type alias has been removed. Each handler file declares exactly the sub-contexts it needs via inline intersection types.
 
 ## Handler Dependencies
-
-Each handler file now declares only the sub-contexts it needs:
 
 | Handler file | Sub-contexts used |
 |---|---|
@@ -57,8 +54,8 @@ Each handler file now declares only the sub-contexts it needs:
 | `misc-handlers.ts` | `ConnectionCtx & RunnerCtx` |
 | `deploy-handlers.ts` | `ConnectionCtx & AppCtx` (or `AppCtx` alone) |
 | `thread-handlers.ts` | `ConnectionCtx & AppCtx` |
-| `send-message.ts` | `HandlerContext` (uses all three) |
+| `send-message.ts` | `ConnectionCtx & RunnerCtx & AppCtx` (local `FullCtx` alias) |
 
 ## Key Files
 
-- `src/server/orchestrator/ws-handlers/types.ts` — sub-interface definitions and `HandlerContext` type alias
+- `src/server/orchestrator/ws-handlers/types.ts` — sub-interface definitions (`ConnectionCtx`, `RunnerCtx`, `AppCtx`)

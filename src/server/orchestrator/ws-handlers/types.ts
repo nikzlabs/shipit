@@ -139,10 +139,4 @@ export interface AppCtx {
   defaultAgentId: AgentId;
 }
 
-/**
- * Full handler context — intersection of all sub-contexts.
- * Handlers that need everything can use this type directly.
- * Handlers with narrower needs should declare only the sub-contexts they use,
- * making their dependencies explicit.
- */
-export type HandlerContext = ConnectionCtx & RunnerCtx & AppCtx;
+
