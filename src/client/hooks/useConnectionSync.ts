@@ -1,15 +1,9 @@
 import { useEffect, useRef } from "react";
 import type { WsClientMessage } from "../../server/shared/types.js";
-import type { ChatMessage } from "../components/MessageList.js";
-import type { BootstrapData } from "../../server/orchestrator/services/index.js";
 import { useSessionStore } from "../stores/session-store.js";
-import { useGitStore } from "../stores/git-store.js";
-import { useFileStore } from "../stores/file-store.js";
-import { useThreadStore } from "../stores/thread-store.js";
 import { useUiStore } from "../stores/ui-store.js";
-import { useSettingsStore } from "../stores/settings-store.js";
 import { usePrStore } from "../stores/pr-store.js";
-import { useRepoStore } from "../stores/repo-store.js";
+import { loadBootstrapData, loadSessionHistory } from "../utils/session-data.js";
 
 export function useConnectionSync(params: {
   status: string;
@@ -25,30 +19,10 @@ export function useConnectionSync(params: {
     if (bootstrapFetchedRef.current) return;
     bootstrapFetchedRef.current = true;
 
-    fetch("/api/bootstrap")
-      .then((res) => {
-        if (!res.ok) throw new Error(`Bootstrap failed: ${res.status}`);
-        return res.json() as Promise<BootstrapData>;
-      })
-      .then((data) => {
-        useSessionStore.getState().setSessions(data.sessions);
-        if (data.repos) useRepoStore.getState().setRepos(data.repos);
-        useUiStore.getState().setAgentList(data.agents);
-        useUiStore.getState().setTemplates(data.templates);
-        useSettingsStore.getState().setGithubStatus({
-          authenticated: data.githubStatus.authenticated,
-          username: data.githubStatus.username,
-          avatarUrl: data.githubStatus.avatarUrl,
-        });
-        useGitStore.getState().setIdentity(data.settings.gitIdentity);
-        useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
-        useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
-        useUiStore.getState().setBootstrapLoaded(true);
-      })
-      .catch((err) => {
-        console.error("[bootstrap] Failed to fetch initial data:", err);
-        useUiStore.getState().setBootstrapLoaded(true);
-      });
+    loadBootstrapData().catch((err) => {
+      console.error("[bootstrap] Failed to fetch initial data:", err);
+      useUiStore.getState().setBootstrapLoaded(true);
+    });
   }, []);
 
   // On per-session WS connect, fetch session history + send any pending message
@@ -58,18 +32,7 @@ export function useConnectionSync(params: {
     if (status === "open" && !historyLoadedRef.current && useSessionStore.getState().sessionId) {
       historyLoadedRef.current = true;
       const sessionId = useSessionStore.getState().sessionId!;
-      fetch(`/api/sessions/${sessionId}/history`)
-        .then((res) => res.json())
-        .then((data) => {
-          useSessionStore.getState().setMessages(
-            data.messages.map((m: { role: string; text: string; toolUse?: unknown[]; images?: unknown[]; files?: unknown[]; isError?: boolean }) => ({ ...m, streaming: false } as ChatMessage)),
-          );
-          useGitStore.getState().setCommits(data.commits);
-          useFileStore.getState().setTree(data.fileTree);
-          useThreadStore.getState().setThreads(data.threads);
-          useThreadStore.getState().setActiveThreadId(data.activeThreadId);
-        })
-        .catch((err) => console.error("[api] Failed to load session history:", err));
+      loadSessionHistory(sessionId).catch((err) => console.error("[api] Failed to load session history:", err));
 
       // If there's a pending WS message (e.g. new session from home page, feature start), send it now
       const pending = useSessionStore.getState().pendingWsMessage;

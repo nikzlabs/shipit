@@ -211,18 +211,9 @@ export function useMessageHandler(params: {
       if (currentRightTab === "files" && currentSessionId) {
         const currentViewingFile = useFileStore.getState().viewingFile;
         if (currentViewingFile) {
-          fetch(`/api/sessions/${currentSessionId}/files/${currentViewingFile}?tree=true`)
-            .then((r) => r.json())
-            .then((d) => {
-              useFileStore.getState().setTree(d.tree);
-              useFileStore.getState().setViewingFileContent(d.content);
-              useFileStore.getState().setViewingFileBinary(d.isBinary ?? false);
-            }).catch(() => {});
+          useFileStore.getState().fetchFileWithTree(currentSessionId, currentViewingFile).catch(() => {});
         } else {
-          fetch(`/api/sessions/${currentSessionId}/files`)
-            .then((r) => r.json())
-            .then((d) => useFileStore.getState().setTree(d.tree))
-            .catch(() => {});
+          useFileStore.getState().fetchTree(currentSessionId).catch(() => {});
         }
       }
     }
@@ -249,13 +240,7 @@ export function useMessageHandler(params: {
 
     if (data.type === "session_started") {
       // Session list update handled by SSE; just fetch threads for this session
-      fetch(`/api/sessions/${data.session.id}/threads`)
-        .then((r) => r.json())
-        .then((d) => {
-          useThreadStore.getState().setThreads(d.threads);
-          useThreadStore.getState().setActiveThreadId(d.activeThreadId);
-        })
-        .catch(() => {});
+      useThreadStore.getState().fetchThreads(data.session.id).catch(() => {});
     }
 
     if (data.type === "file_tree") {
@@ -273,26 +258,11 @@ export function useMessageHandler(params: {
         const needsFile = currentViewingFile && paths.some((p) => currentViewingFile.endsWith(p));
 
         if (needsTree && needsFile) {
-          fetch(`/api/sessions/${sid}/files/${currentViewingFile}?tree=true`)
-            .then((r) => r.json())
-            .then((d) => {
-              useFileStore.getState().setTree(d.tree);
-              useFileStore.getState().setViewingFileContent(d.content);
-              useFileStore.getState().setViewingFileBinary(d.isBinary ?? false);
-            }).catch(() => {});
+          useFileStore.getState().fetchFileWithTree(sid, currentViewingFile).catch(() => {});
         } else if (needsTree) {
-          fetch(`/api/sessions/${sid}/files`)
-            .then((r) => r.json())
-            .then((d) => useFileStore.getState().setTree(d.tree))
-            .catch(() => {});
+          useFileStore.getState().fetchTree(sid).catch(() => {});
         } else if (needsFile) {
-          fetch(`/api/sessions/${sid}/files/${currentViewingFile}`)
-            .then((r) => r.json())
-            .then((d) => {
-              useFileStore.getState().setViewingFileContent(d.content);
-              useFileStore.getState().setViewingFileBinary(d.isBinary ?? false);
-            })
-            .catch(() => {});
+          useFileStore.getState().refreshFileContent(sid, currentViewingFile).catch(() => {});
         }
       }
 
@@ -309,10 +279,7 @@ export function useMessageHandler(params: {
       ui.setShowTemplates(false);
       const sid = useSessionStore.getState().sessionId;
       if (sid) {
-        fetch(`/api/sessions/${sid}/files`)
-          .then((r) => r.json())
-          .then((d) => useFileStore.getState().setTree(d.tree))
-          .catch(() => {});
+        useFileStore.getState().fetchTree(sid).catch(() => {});
       }
     }
 

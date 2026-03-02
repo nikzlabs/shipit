@@ -14,6 +14,7 @@ interface ThreadState {
   ) => void;
   reset: () => void;
 
+  fetchThreads: (sessionId: string) => Promise<void>;
   createCheckpoint: (sessionId: string, label?: string) => Promise<void>;
 }
 
@@ -38,6 +39,15 @@ export const useThreadStore = create<ThreadState>((set) => ({
     })),
 
   reset: () => set(initialState),
+
+  fetchThreads: async (sessionId) => {
+    const res = await fetch(`/api/sessions/${sessionId}/threads`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch threads: ${res.status}`);
+    }
+    const data = await res.json();
+    set({ threads: data.threads, activeThreadId: data.activeThreadId });
+  },
 
   createCheckpoint: async (sessionId, label) => {
     const res = await fetch(
