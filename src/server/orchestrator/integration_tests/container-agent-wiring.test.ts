@@ -112,7 +112,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     runner.attachViewer();
@@ -141,7 +140,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     runner.attachViewer();
@@ -193,7 +191,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     runner.attachViewer();
@@ -220,7 +217,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     runner.attachViewer();
@@ -247,7 +243,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     runner.attachViewer();
@@ -274,7 +269,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     runner.attachViewer();
@@ -313,7 +307,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl: "http://127.0.0.1:1", // unreachable
-      idleTimeoutMs: 60_000,
     });
 
     const proxy = runner.createAgent("claude");
@@ -338,7 +331,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     runner.attachViewer();

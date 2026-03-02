@@ -22,6 +22,8 @@ const defaultProps: SettingsProps = {
   agentList: [claudeAuthed],
   gitIdentity: { name: "", email: "" },
   onGitIdentitySave: vi.fn(),
+  maxIdleContainers: 5,
+  onMaxIdleContainersSave: vi.fn(),
   deployTargets: [],
   deployConfigStatus: {},
   onDeployConfigure: vi.fn(),
@@ -412,6 +414,22 @@ describe("Settings - Advanced tab", () => {
     fireEvent.click(btn);
     expect(btn).toHaveTextContent("Resetting...");
     expect(btn).toBeDisabled();
+  });
+
+  it("renders Max Idle Containers section", () => {
+    renderOnAdvancedTab();
+    expect(screen.getByText("Max Idle Containers")).toBeInTheDocument();
+    expect(screen.getByTestId("settings-max-idle-containers")).toHaveValue(5);
+  });
+
+  it("calls onMaxIdleContainersSave when save is clicked", () => {
+    const onMaxIdleContainersSave = vi.fn();
+    renderOnAdvancedTab({ maxIdleContainers: 3, onMaxIdleContainersSave });
+    const input = screen.getByTestId("settings-max-idle-containers");
+    expect(input).toHaveValue(3);
+    fireEvent.change(input, { target: { value: "7" } });
+    fireEvent.click(screen.getByTestId("settings-max-idle-containers-save"));
+    expect(onMaxIdleContainersSave).toHaveBeenCalledWith(7);
   });
 });
 

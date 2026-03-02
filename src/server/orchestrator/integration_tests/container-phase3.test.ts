@@ -546,7 +546,6 @@ describe("Phase 3: ContainerSessionRunner Terminal Proxy", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     const messages: WsServerMessage[] = [];
@@ -582,7 +581,6 @@ describe("Phase 3: ContainerSessionRunner Terminal Proxy", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     runner.attachViewer();
@@ -602,7 +600,6 @@ describe("Phase 3: ContainerSessionRunner Terminal Proxy", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     runner.attachViewer();
@@ -622,7 +619,6 @@ describe("Phase 3: ContainerSessionRunner Terminal Proxy", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     const messages: WsServerMessage[] = [];
@@ -689,7 +685,6 @@ describe("Phase 3: ContainerSessionRunner Preview Proxy", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     const messages: WsServerMessage[] = [];
@@ -729,7 +724,6 @@ describe("Phase 3: ContainerSessionRunner Preview Proxy", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     const messages: WsServerMessage[] = [];
@@ -768,7 +762,6 @@ describe("Phase 3: ContainerSessionRunner Preview Proxy", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     const messages: WsServerMessage[] = [];
@@ -805,7 +798,6 @@ describe("Phase 3: ContainerSessionRunner Preview Proxy", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     const messages: WsServerMessage[] = [];
@@ -849,7 +841,6 @@ describe("Phase 3: ContainerSessionRunner Preview Proxy", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     // Default (no ports)
@@ -915,7 +906,6 @@ describe("Phase 3: ContainerSessionRunner File Watcher Proxy", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     const messages: WsServerMessage[] = [];
@@ -949,7 +939,6 @@ describe("Phase 3: ContainerSessionRunner File Watcher Proxy", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     // First viewer — should start file watcher + preview
@@ -980,7 +969,6 @@ describe("Phase 3: ContainerSessionRunner File Watcher Proxy", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     expect(runner.supportsRemoteTerminal).toBe(true);

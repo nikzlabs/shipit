@@ -309,7 +309,7 @@ describe("container lifecycle integration", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Container reconnect tests (short idle timeout)
+// Container reconnect tests
 // ---------------------------------------------------------------------------
 
 describe("container reconnect on re-activation", () => {
@@ -348,7 +348,6 @@ describe("container reconnect on re-activation", () => {
       agentFactory: () => new FakeClaudeProcess() as any,
       serveStatic: false,
       sessionContainerManager: containerManager,
-      defaultRunnerIdleTimeoutMs: 200, // Short timeout so idle disposal fires quickly
     });
 
     const address = await app.listen({ port: 0, host: "127.0.0.1" });
@@ -366,7 +365,7 @@ describe("container reconnect on re-activation", () => {
     }
   });
 
-  it("reconnects to existing container after runner idle disposal", async () => {
+  it("reconnects to existing container after disconnect and reconnect", async () => {
     const { id: sessionId } = await createSession(sessionManager, sessionsDir, "Reconnect Test");
 
     // First activation — creates container
@@ -379,13 +378,11 @@ describe("container reconnect on re-activation", () => {
     const originalContainerId = sc!.id;
     const originalWorkerUrl = sc!.workerUrl;
 
-    // Disconnect — viewer count drops to 0, idle timer starts
+    // Disconnect — viewer count drops to 0
     client1.close();
+    await new Promise((r) => setTimeout(r, 200));
 
-    // Wait for idle timeout (200ms) + buffer for disposal to complete
-    await new Promise((r) => setTimeout(r, 600));
-
-    // Container should still exist in the manager (not destroyed by runner disposal)
+    // Container should still exist in the manager
     expect(containerManager.get(sessionId)).toBeDefined();
     expect(containerManager.get(sessionId)!.status).toBe("running");
 

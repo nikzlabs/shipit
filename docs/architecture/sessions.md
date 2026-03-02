@@ -7,8 +7,8 @@ This document describes the full lifecycle of sessions in ShipIt: creation, warm
 | Component | Location | Role |
 |-----------|----------|------|
 | `SessionManager` | `orchestrator/sessions.ts` | Persists session metadata (title, workspace dir, remote URL, warm flag) to JSON |
-| `SessionRunnerRegistry` | `orchestrator/session-runner.ts` | App-level map of session ID → runner. Enforces max concurrent runners (default 10) |
-| `SessionRunnerInterface` | `orchestrator/session-runner.ts` | Abstract contract: agent state, message queue, viewer count, preview, idle timer |
+| `SessionRunnerRegistry` | `orchestrator/session-runner.ts` | App-level map of session ID → runner. Fires `onRunnerIdle` callback for container cleanup |
+| `SessionRunnerInterface` | `orchestrator/session-runner.ts` | Abstract contract: agent state, message queue, viewer count, preview |
 | `SessionRunner` | `orchestrator/session-runner.ts` | In-process implementation (test-only). Spawns agent/terminal directly |
 | `ContainerSessionRunner` | `orchestrator/container-session-runner.ts` | Production implementation. Delegates to per-session Docker container via HTTP+SSE |
 | `SessionContainerManager` | `orchestrator/session-container.ts` | Docker orchestration: create, destroy, health monitor, orphan cleanup |
@@ -229,9 +229,9 @@ useConnectionSync:
 - Maintains `Map<string, SessionRunnerInterface>` (session ID → runner)
 - **`getOrCreate(sessionId, sessionDir, agentId)`**:
   1. Return existing non-disposed runner if found
-  2. If at capacity (default 10), evict oldest idle runner (not running, no viewers)
-  3. Call runner factory to create new runner
-  4. Register `"disposed"` listener for auto-cleanup from map
+  2. Call runner factory to create new runner
+  3. Register `"disposed"` listener for auto-cleanup from map
+  4. Wire `runner.on("idle")` → `onRunnerIdle(sessionId)` callback
 - **`get(sessionId)`**: Returns runner if exists and not disposed
 
 ### Runner Factory (Production)
@@ -258,26 +258,21 @@ factory(opts):
 
 The factory is **synchronous** — it returns the runner immediately. Container creation happens async; the runner queues all operations behind `_workerReady` (a promise resolved by `setWorkerUrl()`).
 
-### Idle Timer
+### Idle Container Cleanup
 
-Both `SessionRunner` and `ContainerSessionRunner` implement idle disposal:
+Instead of per-runner idle timers, ShipIt manages container lifecycle with a single `maxIdleContainers` setting (default 5, persisted in `CredentialStore`). An **idle container** is one where:
+- The runner has `viewerCount === 0` AND `!running`, OR
+- The container has no runner at all
 
-```
-resetIdleTimer(overrideMs?):
-  clearTimeout(existing)
-  setTimeout(() => {
-    if (!running && queue.length === 0 && viewerCount === 0):
-      dispose()
-  }, overrideMs ?? idleTimeoutMs)  // default: 10 minutes
-```
+`enforceIdleContainerLimit()` (in `index.ts`) scans all containers, identifies idle ones, and destroys the oldest excess beyond the limit. It fires on two triggers:
+1. **Viewer disconnects** — called in the WS close handler after `detachFromRunner()`
+2. **Agent finishes** — called via the `onRunnerIdle` registry callback when a runner emits `"idle"`
 
-The timer resets on construction and when `onAgentFinished()` fires.
+When excess idle containers are destroyed:
+- `containerManager.destroy(sessionId)` stops and removes the Docker container
+- `runnerRegistry.dispose(sessionId)` cleans up the in-memory runner
 
-### Eviction
-
-When `getOrCreate` hits the concurrent runner limit (default 1000), it evicts the oldest runner that has no running agent and no viewers. Eviction calls `dispose()`, which:
-- For `ContainerSessionRunner`: disconnects SSE, kills agent, but does NOT stop the Docker container
-- For `SessionRunner`: kills agent, terminal, clears buffers
+The `maxIdleContainers` setting is exposed via `PUT /api/settings` and the Settings UI (Advanced tab).
 
 ## Container Lifecycle
 
@@ -359,13 +354,13 @@ reconnect to existing containers instead of creating duplicates.
 
 ### Container Persistence Across Runner Disposal
 
-When a `ContainerSessionRunner` is disposed (idle timeout, eviction), the Docker container is NOT stopped. The `dispose()` method:
+When a `ContainerSessionRunner` is disposed (idle container cleanup), the Docker container is destroyed along with the runner. However, when a runner is disposed without explicit container destruction (e.g. server shutdown cleanup), the `dispose()` method:
 - Kills the agent process in the container (fire-and-forget)
 - Does NOT call `/preview/stop` or `/files/unwatch`
 - Disconnects the SSE stream
 - Emits `"disposed"` → removed from `SessionRunnerRegistry`
 
-The container keeps running with its preview server and file watcher active. This enables fast reconnection — a new runner can reconnect to the existing container without restarting anything.
+Containers that survive (e.g. after an unclean shutdown) are rediscovered on startup, enabling fast reconnection — a new runner can reconnect to the existing container without restarting anything.
 
 ## ContainerSessionRunner Internals
 
@@ -504,7 +499,7 @@ Server-side effects:
 Old WS close:
   → socket.on("close") fires
   → detachFromRunner() — decrements viewer count on old runner
-  → Old runner may start idle timer (if no other viewers)
+  → enforceIdleContainerLimit() — may clean up excess idle containers
 
 New WS open:
   → activateSession(newSessionId)
@@ -527,18 +522,19 @@ newSession(navigate):
 
 ### Disposal Trigger
 
-After `idleTimeoutMs` (default 10 minutes) with no running agent, no queued messages, and no viewers:
+When `enforceIdleContainerLimit()` fires (viewer disconnect or agent finish), it identifies containers beyond the `maxIdleContainers` limit and destroys the oldest excess:
 
 ```
-ContainerSessionRunner.dispose():
-  1. POST /agent/kill to worker (fire-and-forget)
-  2. Do NOT stop preview or file watcher
-  3. Disconnect SSE stream
-  4. Clear timers, buffers, listeners
-  5. Emit "disposed" → removed from SessionRunnerRegistry
+enforceIdleContainerLimit():
+  1. Get maxIdle from credentialStore (default 5)
+  2. Scan all containers via containerManager.getAll()
+  3. Identify idle: no runner OR (viewerCount === 0 AND !running)
+  4. If idleCount > maxIdle:
+     - Sort by age (oldest first)
+     - For each excess: containerManager.destroy() + runnerRegistry.dispose()
 ```
 
-The Docker container continues running. Preview server, file watcher, and all container state persist.
+Both the Docker container and in-memory runner are cleaned up together.
 
 ### Reconnection
 
@@ -625,14 +621,10 @@ User clicks "+ New Session" on a repo
   6. User closes tab      │                  │                   │
         │─WS close───────→│                  │                   │
         │     detachViewer │                  │                   │
-        │     idle timer starts              │                   │
+        │     enforceIdleContainerLimit()    │                   │
+        │     (if under limit: container stays running)          │
         │                 │                  │                   │
-  7. (10 min later)       │                  │                   │
-        │     runner.dispose()               │                   │
-        │     disconnect SSE                 │                   │
-        │     (container stays running)      │    ← still alive  │
-        │                 │                  │                   │
-  8. User returns         │                  │                   │
+  7. User returns (container still alive) │                   │
         ├─WS connect─────→│                  │                   │
         │     getOrCreate → │factory          │                   │
         │     mgr.get(id) → │running          │                   │
@@ -694,8 +686,7 @@ User clicks "+ New Session" on a repo
 
 | Constant | Default | Location | Purpose |
 |----------|---------|----------|---------|
-| `maxConcurrentRunners` | 1000 | SessionRunnerRegistry | Max runners in memory |
-| `defaultIdleTimeoutMs` | 600,000 (10 min) | SessionRunnerRegistry | Runner auto-dispose after no activity |
+| `maxIdleContainers` | 5 | CredentialStore | Max idle Docker containers before cleanup |
 | Worker port | 9100 | session-worker.ts | HTTP server inside each container |
 | Container memory | 512 MB | session-container.ts | Docker memory limit |
 | Container CPU | 0.5 (50,000 quota) | session-container.ts | Docker CPU limit |

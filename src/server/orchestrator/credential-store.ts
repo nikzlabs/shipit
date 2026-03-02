@@ -14,6 +14,7 @@ interface CredentialData {
   agentEnv?: Record<string, string>;
   githubToken?: string;
   utilityModel?: UtilityModelConfig;
+  maxIdleContainers?: number;
 }
 
 const DEFAULT_CREDENTIALS_DIR = "/credentials";
@@ -115,6 +116,17 @@ export class CredentialStore {
 
   clearUtilityModel(): void {
     delete this.data.utilityModel;
+    this.save();
+  }
+
+  // ---- Max idle containers ----
+
+  getMaxIdleContainers(): number {
+    return this.data.maxIdleContainers ?? 5;
+  }
+
+  setMaxIdleContainers(n: number): void {
+    this.data.maxIdleContainers = n;
     this.save();
   }
 

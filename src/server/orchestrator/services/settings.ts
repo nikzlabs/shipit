@@ -26,11 +26,12 @@ export function listAgents(agentRegistry: AgentRegistry): AgentInfo[] {
   }));
 }
 
-/** Get global settings (git identity, system prompt, agents). */
+/** Get global settings (git identity, system prompt, agents, resource limits). */
 export async function getGlobalSettings(
   agentRegistry: AgentRegistry,
   defaultAgentId: AgentId,
   workspaceDir: string,
+  credentialStore?: CredentialStore,
 ): Promise<GlobalSettings> {
   const stored = getGitIdentity();
   const gitIdentity = stored
@@ -50,7 +51,8 @@ export async function getGlobalSettings(
   }
 
   const agents = listAgents(agentRegistry);
-  return { gitIdentity, systemPrompt, agents, defaultAgentId };
+  const maxIdleContainers = credentialStore?.getMaxIdleContainers() ?? 5;
+  return { gitIdentity, systemPrompt, agents, defaultAgentId, maxIdleContainers };
 }
 
 // ---- Mutation operations ----
@@ -70,13 +72,15 @@ export function setGitIdentityService(
   return { name: trimmedName, email: trimmedEmail };
 }
 
-/** Save global settings (git identity and/or system prompt). */
+/** Save global settings (git identity, system prompt, and/or maxIdleContainers). */
 export async function saveGlobalSettings(
   agentRegistry: AgentRegistry,
   defaultAgentId: AgentId,
   workspaceDir: string,
+  credentialStore: CredentialStore,
   gitIdentity?: { name: string; email: string },
   systemPrompt?: string,
+  maxIdleContainers?: number,
 ): Promise<GlobalSettings> {
   // Save git identity if provided
   if (gitIdentity) {
@@ -104,7 +108,13 @@ export async function saveGlobalSettings(
     }
   }
 
-  return getGlobalSettings(agentRegistry, defaultAgentId, workspaceDir);
+  // Save max idle containers if provided
+  if (maxIdleContainers !== undefined) {
+    const n = Math.max(0, Math.floor(maxIdleContainers));
+    credentialStore.setMaxIdleContainers(n);
+  }
+
+  return getGlobalSettings(agentRegistry, defaultAgentId, workspaceDir, credentialStore);
 }
 
 /** Validate and set the active agent. Returns the agent ID or throws. */

@@ -84,7 +84,7 @@ export default function App() {
   // Per-session WS — connects using URL param, or store sessionId when on /{slug}/new route
   const wsSessionId = urlSessionId ?? (isNewSessionRoute ? sessionId : undefined);
   const { send, lastMessage, status, reconnectAttempt, reconnect } = useSessionWebSocket(wsSessionId);
-  const { get: apiGet, post: apiPost, del: apiDel } = useApi();
+  const { get: apiGet, post: apiPost, put: apiPut, del: apiDel } = useApi();
   const claimAbortRef = useRef<AbortController | null>(null);
   const terminalRef = useRef<InteractiveTerminalHandle>(null);
   const messages = useSessionStore((s) => s.messages);
@@ -148,6 +148,7 @@ export default function App() {
   const githubStatus = useSettingsStore((s) => s.githubStatus);
   const hasSystemPrompt = useSettingsStore((s) => s.hasSystemPrompt);
   const systemPromptContent = useSettingsStore((s) => s.systemPromptContent);
+  const maxIdleContainers = useSettingsStore((s) => s.maxIdleContainers);
 
   const rightTab = useUiStore((s) => s.rightTab);
   const mobilePanel = useUiStore((s) => s.mobilePanel);
@@ -444,10 +445,11 @@ export default function App() {
     useUiStore.getState().setInitialSettingsTab(tab);
     useUiStore.getState().setSettingsOpen(true);
     try {
-      const data = await apiGet<{ settings: { gitIdentity: { name: string; email: string }; systemPrompt: string; agents: AgentOption[]; defaultAgentId: string } }>("/api/bootstrap");
+      const data = await apiGet<{ settings: { gitIdentity: { name: string; email: string }; systemPrompt: string; agents: AgentOption[]; defaultAgentId: string; maxIdleContainers?: number } }>("/api/bootstrap");
       useGitStore.getState().setIdentity(data.settings.gitIdentity);
       useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
       useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
+      if (data.settings.maxIdleContainers != null) useSettingsStore.getState().setMaxIdleContainers(data.settings.maxIdleContainers);
       useUiStore.getState().setAgentList(data.settings.agents);
     } catch { /* ignore */ }
   }, [apiGet]);
@@ -688,6 +690,8 @@ export default function App() {
           onFullReset={async () => { try { await apiPost("/api/reset", {}); } catch { /* ignore */ } }}
           gitIdentity={gitIdentity}
           onGitIdentitySave={(name, email) => useGitStore.getState().submitGitIdentity(name, email).catch(() => {})}
+          maxIdleContainers={maxIdleContainers}
+          onMaxIdleContainersSave={(n) => { apiPut("/api/settings", { maxIdleContainers: n }).then((res: any) => { if (res.maxIdleContainers != null) useSettingsStore.getState().setMaxIdleContainers(res.maxIdleContainers); }).catch(() => {}); }}
           deployTargets={deployTargets} deployConfigStatus={deployConfigStatus}
           onDeployConfigure={(targetId, creds, projectName) => { const sid = useSessionStore.getState().sessionId; if (sid) useDeployStore.getState().configure(sid, targetId, creds, projectName).catch(() => {}); }}
           onDeployDeleteConfig={(targetId) => { const sid = useSessionStore.getState().sessionId; if (sid) useDeployStore.getState().deleteConfig(sid, targetId).catch(() => {}); }}

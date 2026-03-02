@@ -87,5 +87,6 @@ export async function loadBootstrapData(): Promise<void> {
   useGitStore.getState().setIdentity(data.settings.gitIdentity);
   useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
   useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
+  if (data.settings.maxIdleContainers != null) useSettingsStore.getState().setMaxIdleContainers(data.settings.maxIdleContainers);
   useUiStore.getState().setBootstrapLoaded(true);
 }

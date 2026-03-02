@@ -228,7 +228,6 @@ describe("Integration: Session Worker IPC", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     // Attach a viewer so the SSE connection is established
@@ -298,7 +297,6 @@ describe("Integration: Session Worker IPC", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     runner.attachViewer();
@@ -329,7 +327,6 @@ describe("Integration: Session Worker IPC", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     runner.attachViewer();
@@ -358,7 +355,6 @@ describe("Integration: Session Worker IPC", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     runner.attachViewer();
@@ -390,7 +386,6 @@ describe("Integration: Session Worker IPC", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     // Agent state
@@ -451,7 +446,6 @@ describe("Integration: Session Worker IPC", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     let disposed = false;
@@ -467,7 +461,6 @@ describe("Integration: Session Worker IPC", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     runner.attachViewer();
@@ -490,7 +483,6 @@ describe("Integration: Session Worker IPC", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     runner.attachViewer();
@@ -515,7 +507,6 @@ describe("Integration: Session Worker IPC", () => {
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
-      idleTimeoutMs: 60_000,
     });
 
     runner.attachViewer();

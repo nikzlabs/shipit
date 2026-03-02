@@ -136,11 +136,6 @@ export interface AppDeps {
   sessionContainerManager?: import("./session-container.js").SessionContainerManager;
   /** Repo store instance. Defaults to `new RepoStore()`. */
   repoStore?: RepoStore;
-  /**
-   * Default idle timeout in milliseconds for session runners.
-   * Defaults to 600000 (10 minutes). Set lower in tests.
-   */
-  defaultRunnerIdleTimeoutMs?: number;
 }
 
 /**
@@ -335,7 +330,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           sessionDir: o.sessionDir,
           defaultAgentId: o.defaultAgentId,
           workerUrl: existing.workerUrl,
-          idleTimeoutMs: o.idleTimeoutMs,
         });
       }
 
@@ -351,7 +345,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         sessionDir: o.sessionDir,
         defaultAgentId: o.defaultAgentId,
         workerUrl: "http://0.0.0.0:0", // placeholder — updated after container starts
-        idleTimeoutMs: o.idleTimeoutMs,
       });
 
       // If a stale container exists (starting/stopping/stopped), destroy it first.
@@ -372,9 +365,36 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       return runner;
     }) : undefined);
 
+  // ---- Idle container enforcement ----
+  // When more containers are idle than the configured limit, stop the oldest
+  // excess containers and dispose their runners.
+  const enforceIdleContainerLimit = () => {
+    if (!containerManager) return;
+    const maxIdle = credentialStore.getMaxIdleContainers();
+    const idleSessionIds: string[] = [];
+
+    for (const sc of containerManager.getAll()) {
+      const runner = runnerRegistry.get(sc.sessionId);
+      if (!runner || (runner.viewerCount === 0 && !runner.running)) {
+        idleSessionIds.push(sc.sessionId);
+      }
+    }
+
+    if (idleSessionIds.length > maxIdle) {
+      // Map insertion order = oldest first; slice from the front to keep the newest.
+      const excess = idleSessionIds.slice(0, idleSessionIds.length - maxIdle);
+      for (const sid of excess) {
+        console.log(`[idle-cleanup] Stopping idle container for session ${sid}`);
+        containerManager.destroy(sid).catch((err) => {
+          console.error(`[idle-cleanup] Failed to destroy container ${sid}:`, getErrorMessage(err));
+        });
+        runnerRegistry.dispose(sid);
+      }
+    }
+  };
+
   const runnerRegistry = new SessionRunnerRegistry({
     ...(effectiveRunnerFactory ? { runnerFactory: effectiveRunnerFactory } : {}),
-    ...(deps.defaultRunnerIdleTimeoutMs != null ? { defaultIdleTimeoutMs: deps.defaultRunnerIdleTimeoutMs } : {}),
     sharedRepoDirResolver: (sessionId: string) => {
       const session = sessionManager.get(sessionId);
       if (session?.remoteUrl && session?.sessionType === "worktree") {
@@ -382,6 +402,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       }
       return undefined;
     },
+    onRunnerIdle: () => enforceIdleContainerLimit(),
   });
 
   // ---- SSE (Server-Sent Events) for global push ----
@@ -1042,6 +1063,7 @@ to determine the correct install command, preview mode, command, and ports.`,
       socket.on("close", () => {
         console.log(`[ws] session client disconnected: ${sessionId}`);
         detachFromRunner();
+        enforceIdleContainerLimit();
       });
     },
   );
