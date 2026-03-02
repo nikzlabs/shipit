@@ -295,6 +295,21 @@ describe("PreviewFrame", () => {
     expect(onRestartPreview).toHaveBeenCalled();
   });
 
+  it("shows Fix with Claude button that calls onSendCrashToAgent", () => {
+    const onSendCrashToAgent = vi.fn();
+    render(
+      <PreviewFrame
+        preview={{ running: false, port: 5173, url: "http://localhost:5173" }}
+        {...defaultProps}
+        crashInfo={{ exitCode: 1, output: "some error" }}
+        onSendCrashToAgent={onSendCrashToAgent}
+      />,
+    );
+    const btn = screen.getByText("Fix with Claude");
+    fireEvent.click(btn);
+    expect(onSendCrashToAgent).toHaveBeenCalled();
+  });
+
   it("does not show crash state when preview is running", async () => {
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(

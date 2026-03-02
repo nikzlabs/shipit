@@ -334,6 +334,25 @@ export default function App() {
     }
   }, [apiPost]);
 
+  const handleSendCrashToAgent = useCallback(() => {
+    const crash = usePreviewStore.getState().crashInfo;
+    if (!crash) return;
+    const lines = ["The preview server crashed" + (crash.exitCode != null ? ` (exit code ${crash.exitCode})` : "") + ":", ""];
+    if (crash.output) {
+      lines.push("```", crash.output.trim(), "```", "");
+    }
+    lines.push("Please fix this error so the preview server can start successfully.");
+    const text = lines.join("\n");
+    requestPermission();
+    useUiStore.getState().setShowTemplates(false);
+    const session = useSessionStore.getState();
+    session.setMessages((prev) => [...prev, { role: "user", text }]);
+    session.setIsLoading(true);
+    session.setActivity({ label: "Thinking..." });
+    const pm = useSettingsStore.getState().permissionMode;
+    send({ type: "send_message", text, sessionId: session.sessionId, permissionMode: pm !== "auto" ? pm : undefined });
+  }, [send, requestPermission]);
+
   const handleAnswerQuestion = useCallback(
     (toolUseId: string, answers: Record<string, string>) => {
       send({ type: "answer_question", toolUseId, answers });
@@ -535,7 +554,7 @@ export default function App() {
       </div>
       <div className="flex-1 min-h-0">
         {rightTab === "preview" ? (
-          <PreviewFrame preview={previewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} autoFixEnabled={autoFixEnabled} onToggleAutoFix={handleToggleAutoFix} autoFixRetries={autoFixRetries} configMissing={configMissing} installStatus={installStatus} onInitPreviewConfig={() => send({ type: "init_preview_config" })} crashInfo={crashInfo} onRestartPreview={handleRestartPreview} />
+          <PreviewFrame preview={previewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} autoFixEnabled={autoFixEnabled} onToggleAutoFix={handleToggleAutoFix} autoFixRetries={autoFixRetries} configMissing={configMissing} installStatus={installStatus} onInitPreviewConfig={() => send({ type: "init_preview_config" })} crashInfo={crashInfo} onRestartPreview={handleRestartPreview} onSendCrashToAgent={handleSendCrashToAgent} />
         ) : rightTab === "docs" ? (
           <DocsViewer files={docFiles} selectedFile={selectedDoc} content={docContent} onSelectFile={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDoc(sid, f).catch(() => {}); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} />
         ) : rightTab === "terminal" ? (
