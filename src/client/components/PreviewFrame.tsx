@@ -47,6 +47,8 @@ interface PreviewFrameProps {
   crashInfo?: { exitCode: number | null; output: string } | null;
   /** Called when user clicks "Retry" to restart the preview server. */
   onRestartPreview?: () => void;
+  /** Called when user clicks "Fix with Claude" to send crash info to the agent. */
+  onSendCrashToAgent?: () => void;
 }
 
 function formatErrorForMessage(errors: PreviewError[]): string {
@@ -87,6 +89,7 @@ export function PreviewFrame({
   onInitPreviewConfig,
   crashInfo,
   onRestartPreview,
+  onSendCrashToAgent,
 }: PreviewFrameProps) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
@@ -217,15 +220,20 @@ export function PreviewFrame({
             {onRestartPreview && (
               <button
                 onClick={onRestartPreview}
-                className="px-3 py-1.5 rounded bg-blue-600 text-white text-xs hover:bg-blue-500 transition-colors"
+                className="px-3 py-1.5 rounded bg-gray-700 text-gray-200 text-xs hover:bg-gray-600 transition-colors"
               >
                 Retry
               </button>
             )}
+            {onSendCrashToAgent && (
+              <button
+                onClick={onSendCrashToAgent}
+                className="px-3 py-1.5 rounded bg-blue-600 text-white text-xs hover:bg-blue-500 transition-colors"
+              >
+                Fix with Claude
+              </button>
+            )}
           </div>
-          <p className="text-xs text-gray-500">
-            Check the terminal logs for full details, or ask the agent to fix the error.
-          </p>
         </div>
       </div>
     );
