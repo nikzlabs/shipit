@@ -157,6 +157,12 @@ describe("validateGitHubToken", () => {
     expect(result).toBeNull();
   });
 
+  it("returns null when fetch throws (network error)", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("fetch failed"));
+    const result = await validateGitHubToken("invalid_token_xxx");
+    expect(result).toBeNull();
+  });
+
   it("returns user info for valid token", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ login: "octocat", avatar_url: "https://example.com/avatar.png", id: 12345, name: "The Octocat" }), {
