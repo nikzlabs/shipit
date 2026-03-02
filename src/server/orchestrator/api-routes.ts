@@ -9,6 +9,7 @@
 
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type { SessionManager } from "./sessions.js";
+import type { RepoStore } from "./repo-store.js";
 import type { GitManager } from "../shared/git.js";
 import type { RepoGit } from "./repo-git.js";
 import type { GitHubAuthManager } from "./github-auth.js";
@@ -22,7 +23,7 @@ import type { UsageManager } from "./usage.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { AuthManager } from "./auth.js";
-import type { WsServerMessage } from "../shared/types.js";
+
 import {
   getBootstrapData,
   getFileTree,
@@ -77,6 +78,9 @@ import {
   startAuth,
   submitAuthCode,
   createRepoWithTemplate,
+  listRepos,
+  addRepo,
+  removeRepo,
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
@@ -87,6 +91,7 @@ import { getErrorMessage } from "./validation.js";
  */
 export interface ApiDeps {
   sessionManager: SessionManager;
+  repoStore: RepoStore;
   createGitManager: (dir: string) => GitManager;
   createRepoGit: (dir: string) => RepoGit;
   agentRegistry: AgentRegistry;
@@ -101,13 +106,17 @@ export interface ApiDeps {
   runnerRegistry: SessionRunnerRegistry;
   chatHistoryManager: ChatHistoryManager;
   authManager: AuthManager;
-  broadcast: (msg: WsServerMessage) => void;
   broadcastLog: (source: "stderr" | "stdout" | "server" | "preview" | "deploy" | "install", text: string) => void;
+  sseBroadcast: (event: string, data: unknown) => void;
   getSharedRepoDir: (repoUrl: string) => string;
   createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string }>;
   // Phase 3 additions
   generateText: (prompt: string, cwd?: string) => Promise<string>;
   sessionsRoot: string;
+  /** Warm a session for a repo (called after clone, after graduation, etc.). */
+  warmSessionForRepo?: (repoUrl: string) => void;
+  /** Create session dir with custom options. */
+  createSessionDirFull: (title: string, opts?: { skipGitInit?: boolean }) => Promise<{ appSessionId: string; sessionDir: string }>;
 }
 
 /**
@@ -423,6 +432,21 @@ export async function registerApiRoutes(
   // ===========================================================================
 
   // ---- Session mutations ----
+
+  // POST /api/sessions — create a new standalone session (no repo)
+  app.post<{ Body: { title?: string } }>(
+    "/api/sessions",
+    async (_request, reply) => {
+      try {
+        const title = _request.body?.title?.trim() || "New session";
+        const { appSessionId, sessionDir } = await deps.createSessionDir(title);
+        deps.sseBroadcast("session_list", { sessions: sessionManager.list() });
+        return { sessionId: appSessionId, sessionDir };
+      } catch (err) {
+        reply.code(500).send({ error: `Failed to create session: ${getErrorMessage(err)}` });
+      }
+    },
+  );
 
   // PATCH /api/sessions/:id — rename session
   app.patch<{ Params: { id: string }; Body: { title: string } }>(
@@ -782,7 +806,7 @@ export async function registerApiRoutes(
         setApiKey(request.body.key);
         deps.authManager.kill();
         deps.authManager.checkCredentials();
-        deps.broadcast({ type: "auth_complete" });
+        deps.sseBroadcast("auth_complete", {});
         return { success: true };
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -863,8 +887,8 @@ export async function registerApiRoutes(
     "/api/reset",
     async (_request, reply) => {
       try {
-        await fullReset(sessionManager, deps.usageManager, deps.runnerRegistry, deps.workspaceDir);
-        deps.broadcast({ type: "full_reset_complete" });
+        await fullReset(sessionManager, deps.usageManager, deps.runnerRegistry, deps.workspaceDir, deps.repoStore);
+        deps.sseBroadcast("full_reset_complete", {});
         return { success: true };
       } catch (err) {
         reply.code(500).send({ error: `Full reset failed: ${getErrorMessage(err)}` });
@@ -880,7 +904,13 @@ export async function registerApiRoutes(
         const validated = validatePreviewError(request.body.message, request.body.stack);
         const parts = [validated.message];
         if (validated.stack) parts.push(validated.stack);
-        deps.broadcastLog("preview", parts.join("\n"));
+        const text = parts.join("\n");
+        deps.broadcastLog("preview", text);
+        // Also emit to the session's runner so connected WS viewers receive it
+        const runner = deps.runnerRegistry.get(request.params.id);
+        if (runner) {
+          runner.emitMessage({ type: "log_entry", source: "preview", text, timestamp: new Date().toISOString() });
+        }
         reply.code(204).send();
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -929,8 +959,8 @@ export async function registerApiRoutes(
           request.params.id, dir,
           request.body.branchName, request.body.startPoint,
         );
-        // Broadcast updated session list to other connections
-        deps.broadcast({ type: "session_list", sessions: result.sessions });
+        // Broadcast updated session list via SSE
+        deps.sseBroadcast("session_list", { sessions: result.sessions });
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -962,20 +992,83 @@ export async function registerApiRoutes(
     },
   );
 
-  // POST /api/repos — create a GitHub repo with a template
-  app.post<{ Body: { repoName: string; templateId: string; description?: string; isPrivate?: boolean } }>(
+  // ===========================================================================
+  // Repo management endpoints
+  // ===========================================================================
+
+  // GET /api/repos — list all added repos
+  app.get("/api/repos", async () => {
+    return { repos: listRepos(deps.repoStore) };
+  });
+
+  // POST /api/repos — add a repo (existing) or create a new GitHub repo with template
+  app.post<{ Body: { url?: string; repoName?: string; templateId?: string; description?: string; isPrivate?: boolean } }>(
     "/api/repos",
     async (_request, reply) => {
+      const body = _request.body;
+
+      // If "url" is provided, this is an "add existing repo" flow
+      if (body.url) {
+        try {
+          const repo = addRepo(deps.repoStore, body.url);
+          // If already ready, no need to clone
+          if (repo.status === "ready") {
+            return { repo };
+          }
+          // Clone in background
+          const repoUrl = repo.url;
+          const repoDir = deps.getSharedRepoDir(repoUrl);
+          import("node:fs/promises").then(async (fsModule) => {
+            try {
+              const exists = await fsModule.stat(repoDir).then(() => true, () => false);
+              if (!exists) {
+                await fsModule.mkdir(repoDir, { recursive: true });
+                const cloneUrl = deps.githubAuthManager.getAuthenticatedCloneUrl(repoUrl);
+                const repoGit = createRepoGit(repoDir);
+                await repoGit.clone(cloneUrl);
+                console.log("[repos] Cloned repo to shared dir:", repoDir);
+              }
+              deps.repoStore.setReady(repoUrl);
+              deps.sseBroadcast("repo_status", { url: repoUrl, status: "ready" });
+              // Start warming a session
+              deps.warmSessionForRepo?.(repoUrl);
+            } catch (err) {
+              console.error("[repos] Background clone failed:", getErrorMessage(err));
+              deps.sseBroadcast("error", { message: `Failed to clone repository: ${getErrorMessage(err)}` });
+            }
+          });
+          return { repo };
+        } catch (err) {
+          if (err instanceof ServiceError) {
+            reply.code(err.statusCode).send({ error: err.message });
+            return;
+          }
+          reply.code(500).send({ error: `Failed to add repo: ${getErrorMessage(err)}` });
+          return;
+        }
+      }
+
+      // Otherwise it's a "create new repo with template" flow
+      if (!body.repoName || !body.templateId) {
+        reply.code(400).send({ error: "Either 'url' or both 'repoName' and 'templateId' are required" });
+        return;
+      }
       try {
         const result = await createRepoWithTemplate(
           sessionManager, createGitManager, createRepoGit, deps.createSessionDir,
           deps.githubAuthManager, deps.getSharedRepoDir,
-          _request.body.repoName, _request.body.templateId,
-          _request.body.description, _request.body.isPrivate,
+          body.repoName, body.templateId,
+          body.description, body.isPrivate,
         );
         if (!result.success) {
           reply.code(400).send(result);
           return;
+        }
+        // Also track in RepoStore
+        if (result.repoUrl) {
+          deps.repoStore.add(result.repoUrl);
+          deps.repoStore.setReady(result.repoUrl);
+          deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });
         }
         return result;
       } catch (err) {
@@ -984,6 +1077,125 @@ export async function registerApiRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to create repo: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // DELETE /api/repos/:url — remove a repo
+  app.delete<{ Params: { url: string } }>(
+    "/api/repos/:url",
+    async (request, reply) => {
+      try {
+        const url = decodeURIComponent(request.params.url);
+        // If there's a warm session, dispose its runner
+        const repo = deps.repoStore.get(url);
+        if (repo?.warmSessionId) {
+          const runner = deps.runnerRegistry.get(repo.warmSessionId);
+          if (runner) runner.dispose();
+          sessionManager.delete(repo.warmSessionId);
+        }
+        removeRepo(deps.repoStore, url);
+        deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });
+        return { success: true };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to remove repo: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/repos/:url/claim-session — claim the warm session for a repo
+  app.post<{ Params: { url: string } }>(
+    "/api/repos/:url/claim-session",
+    async (request, reply) => {
+      try {
+        const url = decodeURIComponent(request.params.url);
+        const repo = deps.repoStore.get(url);
+        if (!repo) {
+          reply.code(404).send({ error: "Repository not found" });
+          return;
+        }
+        if (repo.status !== "ready") {
+          reply.code(400).send({ error: "Repository is still cloning" });
+          return;
+        }
+
+        // Check if warm session exists and its runner is alive
+        if (repo.warmSessionId) {
+          const warmSession = sessionManager.get(repo.warmSessionId);
+          const warmRunner = deps.runnerRegistry.get(repo.warmSessionId);
+          if (warmSession?.workspaceDir && warmRunner) {
+            // Warm session is ready — claim it
+            const sessionId = repo.warmSessionId;
+            deps.repoStore.setWarmSessionId(url, undefined);
+            // Start warming the next session in background
+            deps.warmSessionForRepo?.(url);
+            return { sessionId, sessionDir: warmSession.workspaceDir };
+          }
+        }
+
+        // No warm session available — create one synchronously
+        const repoDir = deps.getSharedRepoDir(url);
+        const { generateBranchPrefix } = await import("./git-utils.js");
+        const branchPrefix = generateBranchPrefix();
+        const created = await deps.createSessionDirFull("Warm session", { skipGitInit: true });
+        const { appSessionId, sessionDir } = created;
+
+        // Remove the empty dir (worktree add needs it absent)
+        const fsModule = await import("node:fs/promises");
+        await fsModule.rm(sessionDir, { recursive: true, force: true });
+
+        const repoGit = createRepoGit(repoDir);
+        const isEmptyRepo = await repoGit.isEmpty();
+
+        if (isEmptyRepo) {
+          await fsModule.mkdir(sessionDir, { recursive: true });
+          const sessionGit = createGitManager(sessionDir);
+          await sessionGit.init();
+          const cloneUrl = deps.githubAuthManager.getAuthenticatedCloneUrl(url);
+          await sessionGit.addRemote("origin", cloneUrl);
+          await sessionGit.checkoutNewBranch(branchPrefix);
+        } else {
+          let startPoint: string | undefined;
+          try {
+            const defaultBranch = await repoGit.getDefaultBranch();
+            if (defaultBranch && !defaultBranch.includes("(")) {
+              startPoint = `origin/${defaultBranch}`;
+            }
+          } catch {
+            // Fallback: let git use HEAD
+          }
+          await repoGit.createWorktree(sessionDir, branchPrefix, startPoint);
+        }
+
+        // Configure credentials
+        if (deps.githubAuthManager.authenticated) {
+          deps.githubAuthManager.configureGitCredentials(sessionDir);
+        }
+
+        sessionManager.setRemoteUrl(appSessionId, url);
+        sessionManager.setWorktreeInfo(appSessionId, {
+          branch: branchPrefix,
+          sessionType: isEmptyRepo ? "standalone" : "worktree",
+        });
+        sessionManager.setWarm(appSessionId, true);
+
+        // Create a runner so preview/file watcher start immediately
+        deps.runnerRegistry.getOrCreate(appSessionId, sessionDir, deps.defaultAgentId);
+
+        // Start warming the next session in background
+        deps.warmSessionForRepo?.(url);
+
+        return { sessionId: appSessionId, sessionDir };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to claim session: ${getErrorMessage(err)}` });
       }
     },
   );

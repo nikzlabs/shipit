@@ -59,12 +59,17 @@ describe("Integration: File context attachments", () => {
     }
   });
 
-  it("sends file context prepended to the prompt", async () => {
-    // Create a file in the workspace
-    fs.writeFileSync(path.join(tmpDir, "hello.ts"), "const x = 42;");
+  /** Get the session's workspace directory (files are resolved relative to it). */
+  const getSessionDir = (client: TestClient) =>
+    path.join(tmpDir, "sessions", client.sessionId);
 
+  it("sends file context prepended to the prompt", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // initial status
+
+    // Create a file in the session's workspace directory
+    const sessionDir = getSessionDir(client);
+    fs.writeFileSync(path.join(sessionDir, "hello.ts"), "const x = 42;");
 
     client.send({
       type: "send_message",
@@ -85,11 +90,12 @@ describe("Integration: File context attachments", () => {
   });
 
   it("attaches multiple files", async () => {
-    fs.writeFileSync(path.join(tmpDir, "a.ts"), "const a = 1;");
-    fs.writeFileSync(path.join(tmpDir, "b.ts"), "const b = 2;");
-
     const client = await TestClient.connect(port);
     await client.receive();
+
+    const sessionDir = getSessionDir(client);
+    fs.writeFileSync(path.join(sessionDir, "a.ts"), "const a = 1;");
+    fs.writeFileSync(path.join(sessionDir, "b.ts"), "const b = 2;");
 
     client.send({
       type: "send_message",
@@ -140,12 +146,13 @@ describe("Integration: File context attachments", () => {
   });
 
   it("rejects files that are too large", async () => {
-    // Create a file over 100KB
-    const bigContent = "x".repeat(101 * 1024);
-    fs.writeFileSync(path.join(tmpDir, "big.ts"), bigContent);
-
     const client = await TestClient.connect(port);
     await client.receive();
+
+    // Create a file over 100KB in the session's workspace
+    const sessionDir = getSessionDir(client);
+    const bigContent = "x".repeat(101 * 1024);
+    fs.writeFileSync(path.join(sessionDir, "big.ts"), bigContent);
 
     client.send({
       type: "send_message",
@@ -160,15 +167,16 @@ describe("Integration: File context attachments", () => {
   });
 
   it("rejects more than 10 file attachments", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    const sessionDir = getSessionDir(client);
     const files = [];
     for (let i = 0; i < 11; i++) {
       const name = `file${i}.ts`;
-      fs.writeFileSync(path.join(tmpDir, name), `// file ${i}`);
+      fs.writeFileSync(path.join(sessionDir, name), `// file ${i}`);
       files.push({ path: name });
     }
-
-    const client = await TestClient.connect(port);
-    await client.receive();
 
     client.send({
       type: "send_message",

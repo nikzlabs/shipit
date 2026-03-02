@@ -3,7 +3,7 @@
  */
 
 import type { AgentId } from "../../shared/types.js";
-import type { SessionInfo, ProjectTemplate } from "../../shared/types.js";
+import type { SessionInfo, ProjectTemplate, RepoInfo } from "../../shared/types.js";
 
 // ---- Types for service function results ----
 
@@ -30,11 +30,11 @@ export interface GitHubStatus {
 
 export interface BootstrapData {
   sessions: SessionInfo[];
+  repos: RepoInfo[];
   agents: AgentInfo[];
   defaultAgentId: AgentId;
   templates: Array<Omit<ProjectTemplate, "files">>;
   githubStatus: GitHubStatus;
-  githubRepos: Array<{ fullName: string; description: string | null; private: boolean; defaultBranch: string; cloneUrl: string }>;
   settings: GlobalSettings;
 }
 

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { useWebSocket } from "./hooks/useWebSocket.js";
+import { useSessionWebSocket } from "./hooks/useSessionWebSocket.js";
+import { useServerEvents } from "./hooks/useServerEvents.js";
 import { useResizablePanel } from "./hooks/useResizablePanel.js";
 import { useSearch } from "./hooks/useSearch.js";
 import { useIsMobile } from "./hooks/useMediaQuery.js";
@@ -31,6 +32,7 @@ import { ConnectionBanner } from "./components/ConnectionBanner.js";
 import { MobileTabBar } from "./components/MobileTabBar.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
 import { HomeScreen } from "./components/HomeScreen.js";
+import { AddRepoDialog } from "./components/AddRepoDialog.js";
 import { UsageModal } from "./components/UsageModal.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { OnboardingWizard } from "./components/OnboardingWizard.js";
@@ -57,18 +59,18 @@ import { useDeployStore } from "./stores/deploy-store.js";
 import { usePrStore } from "./stores/pr-store.js";
 import { useSettingsStore } from "./stores/settings-store.js";
 import { useUiStore } from "./stores/ui-store.js";
-import { resumeSessionInternal, newSession, resetSessionState } from "./stores/actions/session-actions.js";
-
-function getWsUrl(): string {
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const host = import.meta.env.VITE_API_HOST || window.location.host;
-  return `${proto}//${host}/ws`;
-}
+import { useRepoStore } from "./stores/repo-store.js";
+import { resumeSessionInternal, handleSessionResume, newSession, resetSessionState } from "./stores/actions/session-actions.js";
 
 export default function App() {
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
-  const { send, lastMessage, status, reconnectAttempt, reconnect } = useWebSocket(getWsUrl());
+
+  // SSE for global push (session list, repos, auth, activity dots) — always active
+  useServerEvents();
+
+  // Per-session WS — only connected when viewing a session
+  const { send, lastMessage, status, reconnectAttempt, reconnect } = useSessionWebSocket(urlSessionId);
   const { get: apiGet, post: apiPost, del: apiDel } = useApi();
   const terminalRef = useRef<InteractiveTerminalHandle>(null);
 
@@ -79,8 +81,6 @@ export default function App() {
   const activity = useSessionStore((s) => s.activity);
   const sessions = useSessionStore((s) => s.sessions);
   const authUrl = useSessionStore((s) => s.authUrl);
-  const selectedRepoUrl = useSessionStore((s) => s.selectedRepoUrl);
-  const creatingRepo = useSessionStore((s) => s.creatingRepo);
   const activeRunnerSessions = useSessionStore((s) => s.activeRunnerSessions);
   const queuedMessages = useSessionStore((s) => s.queuedMessages);
 
@@ -155,6 +155,10 @@ export default function App() {
   const toast = useUiStore((s) => s.toast);
 
   const features = useUiStore((s) => s.features);
+  const bootstrapLoaded = useUiStore((s) => s.bootstrapLoaded);
+
+  const repos = useRepoStore((s) => s.repos);
+  const addRepoDialogOpen = useRepoStore((s) => s.addRepoDialogOpen);
 
   const noAgentReady = agentList.length > 0 && !agentList.some(a => a.installed && a.authConfigured);
   const showOnboarding = gitIdentityNeeded || noAgentReady;
@@ -168,6 +172,7 @@ export default function App() {
   const isMobile = useIsMobile();
   const [searchOpen, setSearchOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [newSessionRepoUrl, setNewSessionRepoUrl] = useState<string>();
   const search = useSearch(messages);
   const { notify, requestPermission } = useNotification();
   const { theme, toggle: toggleTheme } = useTheme();
@@ -193,12 +198,19 @@ export default function App() {
 
   useConnectionSync({ status, send });
 
+  // Delayed spinner for bootstrap loading gate — only show after 1s
+  const [showBootstrapSpinner, setShowBootstrapSpinner] = useState(false);
+  useEffect(() => {
+    if (bootstrapLoaded) return;
+    const timer = setTimeout(() => setShowBootstrapSpinner(true), 1000);
+    return () => clearTimeout(timer);
+  }, [bootstrapLoaded]);
+
   useMessageHandler({
     lastMessage,
     send,
     terminalRef,
     notify,
-    navigate,
   });
 
   // Initialize sessionId from URL on mount
@@ -212,19 +224,27 @@ export default function App() {
   }, []);
 
   // Sync session state when URL changes (back/forward navigation)
+  // WS auto-connects/disconnects via useSessionWebSocket(urlSessionId)
   useEffect(() => {
     if (urlSessionId && urlSessionId !== useSessionStore.getState().sessionId) {
-      resumeSessionInternal(urlSessionId, send);
+      resumeSessionInternal(urlSessionId);
     } else if (!urlSessionId && useSessionStore.getState().sessionId) {
       useSessionStore.getState().setSessionId(undefined);
       resetSessionState();
       useUiStore.getState().setShowTemplates(true);
     }
-  }, [urlSessionId, send]);
+  }, [urlSessionId]);
+
+  // Clear newSessionRepoUrl once the claimed session graduates and appears in the list
+  useEffect(() => {
+    if (newSessionRepoUrl && sessionId && sessions.some((s) => s.id === sessionId)) {
+      setNewSessionRepoUrl(undefined);
+    }
+  }, [newSessionRepoUrl, sessionId, sessions]);
 
   // ── Callback helpers ──
   const handleSend = useCallback(
-    (text: string, images?: Array<{ data: string; mediaType: string; filename: string }>) => {
+    async (text: string, images?: Array<{ data: string; mediaType: string; filename: string }>) => {
       requestPermission();
       disableAutoFix();
       const session = useSessionStore.getState();
@@ -237,17 +257,39 @@ export default function App() {
       session.setMessages((prev) => [...prev, { role: "user", text, images: messageImages, files: filesForMessage }]);
       session.setIsLoading(true);
       session.setActivity({ label: "Thinking..." });
-      send({
-        type: "send_message",
-        text,
-        sessionId: useSessionStore.getState().sessionId,
-        images,
-        files: settings.pendingFiles.length > 0 ? settings.pendingFiles : undefined,
-        permissionMode: settings.permissionMode !== "auto" ? settings.permissionMode : undefined,
-      });
+
+      const currentSessionId = session.sessionId;
+      if (currentSessionId) {
+        // Already in a session — send directly over WS
+        send({
+          type: "send_message",
+          text,
+          sessionId: currentSessionId,
+          images,
+          files: settings.pendingFiles.length > 0 ? settings.pendingFiles : undefined,
+          permissionMode: settings.permissionMode !== "auto" ? settings.permissionMode : undefined,
+        });
+      } else {
+        // No session yet (home page) — create one via HTTP, store pending WS message, navigate
+        try {
+          const res = await apiPost<{ sessionId: string }>("/api/sessions", {});
+          session.setPendingWsMessage({
+            type: "send_message",
+            text,
+            images,
+            files: settings.pendingFiles.length > 0 ? settings.pendingFiles : undefined,
+            permissionMode: settings.permissionMode !== "auto" ? settings.permissionMode : undefined,
+          });
+          navigate(`/session/${res.sessionId}`);
+        } catch (err) {
+          console.error("[session] Failed to create session:", err);
+          session.setIsLoading(false);
+          session.setActivity(undefined);
+        }
+      }
       settings.clearPendingFiles();
     },
-    [send, requestPermission, disableAutoFix],
+    [send, requestPermission, disableAutoFix, apiPost, navigate],
   );
 
   const handleEditMessage = useCallback(
@@ -266,26 +308,6 @@ export default function App() {
       send({ type: "send_message", text: newText, sessionId: sid, permissionMode: pm !== "auto" ? pm : undefined });
     },
     [send, requestPermission, apiPost],
-  );
-
-  const handleHomeSendWithRepo = useCallback(
-    (repoUrl: string, text: string, images?: Array<{ data: string; mediaType: string; filename: string }>) => {
-      requestPermission();
-      const session = useSessionStore.getState();
-      const settings = useSettingsStore.getState();
-      useUiStore.getState().setShowTemplates(false);
-      session.setMessages((prev) => [...prev, { role: "user", text }]);
-      session.setIsLoading(true);
-      session.setActivity({ label: "Setting up repository..." });
-      send({
-        type: "home_send_with_repo", repoUrl, text,
-        images: images?.map((img) => ({ data: img.data, mediaType: img.mediaType })),
-        files: settings.pendingFiles.length > 0 ? settings.pendingFiles : undefined,
-        permissionMode: settings.permissionMode !== "auto" ? settings.permissionMode : undefined,
-      });
-      settings.clearPendingFiles();
-    },
-    [send, requestPermission],
   );
 
   const handleSendErrors = useCallback(
@@ -314,19 +336,15 @@ export default function App() {
     [send],
   );
 
-  const handleHomeCreateRepo = useCallback(
-    async (name: string, description: string, isPrivate: boolean, templateId: string) => {
-      useSessionStore.getState().setCreatingRepo(true);
-      try {
-        const result = await apiPost<{ success: boolean; sessionId?: string }>("/api/repos", { repoName: name, templateId, description, isPrivate });
-        useSessionStore.getState().setCreatingRepo(false);
-        if (result.success && result.sessionId) {
-          resumeSessionInternal(result.sessionId, send);
-          navigate(`/session/${result.sessionId}`);
-        }
-      } catch { useSessionStore.getState().setCreatingRepo(false); }
+  const handleNewSessionForRepo = useCallback(
+    async (repoUrl: string) => {
+      const result = await useRepoStore.getState().claimSession(repoUrl);
+      if (result) {
+        setNewSessionRepoUrl(repoUrl);
+        navigate(`/session/${result.sessionId}`);
+      }
     },
-    [apiPost, send, navigate],
+    [navigate],
   );
 
   const handleTabChange = useCallback(
@@ -424,11 +442,9 @@ export default function App() {
   }, []);
 
   const handleFeatureStartSession = useCallback(
-    (feature: { name: string; planPath: string; checklistPath?: string }) => {
-      useSessionStore.getState().setSessionId(undefined);
+    async (feature: { name: string; planPath: string; checklistPath?: string }) => {
       resetSessionState();
       useUiStore.getState().setShowTemplates(false);
-      send({ type: "new_session" });
       let text = `Work on feature: ${feature.name}\n\nPlease read the feature plan at ${feature.planPath}`;
       if (feature.checklistPath) text += ` and the remaining work checklist at ${feature.checklistPath}`;
       text += `, then proceed with the implementation.`;
@@ -436,10 +452,24 @@ export default function App() {
       useSessionStore.getState().setMessages([{ role: "user", text }]);
       useSessionStore.getState().setIsLoading(true);
       useSessionStore.getState().setActivity({ label: "Thinking..." });
-      send({ type: "send_message", text });
       useUiStore.getState().setMobilePanel("chat");
+      // Create session via HTTP, then navigate (WS auto-connects and sends pending message)
+      try {
+        const res = await apiPost<{ sessionId: string }>("/api/sessions", { title: feature.name });
+        const pm = useSettingsStore.getState().permissionMode;
+        useSessionStore.getState().setPendingWsMessage({
+          type: "send_message",
+          text,
+          permissionMode: pm !== "auto" ? pm : undefined,
+        });
+        navigate(`/session/${res.sessionId}`);
+      } catch (err) {
+        console.error("[session] Failed to create session for feature:", err);
+        useSessionStore.getState().setIsLoading(false);
+        useSessionStore.getState().setActivity(undefined);
+      }
     },
-    [send, requestPermission],
+    [requestPermission, apiPost, navigate],
   );
 
   const handleUsageBadgeClick = useCallback(() => {
@@ -478,7 +508,7 @@ export default function App() {
     }
     return dividers;
   }, [threads]);
-  const showHomeScreen = showTemplates && messages.length === 0 && !isLoading;
+  const showHomeScreen = !sessionId || (showTemplates && messages.length === 0 && !isLoading);
 
   // ── Right panel ──
   const rightPanel = (
@@ -529,18 +559,7 @@ export default function App() {
     <>
       {searchOpen && <SearchBar query={search.query} onQueryChange={search.setQuery} matches={search.matches} currentMatchIndex={search.currentMatchIndex} onNext={search.goToNext} onPrev={search.goToPrev} onClose={() => { setSearchOpen(false); search.clear(); }} />}
       {showHomeScreen ? (
-        <HomeScreen
-          sessions={sessions} githubStatus={githubStatus} templates={templates}
-          onRequestTemplates={() => { apiGet<{ templates: typeof templates }>("/api/bootstrap").then((d) => useUiStore.getState().setTemplates(d.templates)).catch(() => {}); }}
-          onSendWithRepo={handleHomeSendWithRepo} onNewRepo={handleHomeCreateRepo}
-          onSearchRepos={(q) => usePrStore.getState().searchRepos(q).catch(() => {})}
-          searchResults={importSearchResults} disabled={isLoading || status !== "open"}
-          permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(m)}
-          pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)}
-          onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree}
-          creatingRepo={creatingRepo} selectedRepoUrl={selectedRepoUrl}
-          onSelectRepo={(url) => useSessionStore.getState().setSelectedRepoUrl(url)}
-        />
+        <HomeScreen onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)} hasRepos={repos.length > 0} />
       ) : (
         <MessageList messages={messages} isLoading={isLoading} activity={activity} searchMatches={search.matches} currentMatch={search.currentMatch} onEditMessage={handleEditMessage} onAnswerQuestion={handleAnswerQuestion} checkpoints={checkpointDividers} />
       )}
@@ -559,6 +578,20 @@ export default function App() {
       {!showHomeScreen && <MessageInput onSend={handleSend} disabled={status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_claude" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} />}
     </>
   );
+
+  // ── Bootstrap loading gate ──
+  if (!bootstrapLoaded) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-gray-950">
+        {showBootstrapSpinner && (
+          <svg className="h-6 w-6 animate-spin text-gray-600" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+          </svg>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
@@ -658,12 +691,16 @@ export default function App() {
       ) : (
         <div className="flex flex-1 min-h-0">
           <SessionSidebar
-            sessions={sessions} currentSessionId={sessionId} activeRunnerSessions={activeRunnerSessions}
-            onResume={(sid) => { resumeSessionInternal(sid, send); navigate(`/session/${sid}`); }}
-            onNew={() => newSession(send, navigate)}
+            sessions={sessions} repos={repos} currentSessionId={sessionId} activeRunnerSessions={activeRunnerSessions}
+            newSessionRepoUrl={newSessionRepoUrl}
+            onResume={(sid) => { setNewSessionRepoUrl(undefined); handleSessionResume(sid, navigate); }}
+            onNew={() => newSession(navigate)}
+            onNewSessionForRepo={handleNewSessionForRepo}
             onArchive={async (sid) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId) { useSessionStore.getState().setSessionId(undefined); navigate("/"); } }}
             onRename={(sid, title) => useSessionStore.getState().renameSession(sid, title)}
             onRefresh={() => useSessionStore.getState().refreshSessions()}
+            onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)}
+            onRemoveRepo={(url) => useRepoStore.getState().removeRepo(url)}
             collapsed={sidebarCollapsed}
             onToggleCollapse={() => useUiStore.getState().setSidebarCollapsed(!sidebarCollapsed)}
           />
@@ -682,6 +719,23 @@ export default function App() {
       )}
 
       {toast && <Toast toast={toast} onDismiss={() => useUiStore.getState().setToast(null)} />}
+      <AddRepoDialog
+        open={addRepoDialogOpen}
+        onClose={() => useRepoStore.getState().setAddRepoDialogOpen(false)}
+        onAdd={async (url) => { await useRepoStore.getState().addRepo(url); }}
+        onCreateNew={() => {
+          useRepoStore.getState().setAddRepoDialogOpen(false);
+          if (templates.length === 0) apiGet<{ templates: typeof templates }>("/api/bootstrap").then((d) => useUiStore.getState().setTemplates(d.templates)).catch(() => {});
+          // Navigate to HomeScreen which has the NewRepoDialog flow
+          useSessionStore.getState().setSessionId(undefined);
+          resetSessionState();
+          useUiStore.getState().setShowTemplates(true);
+          navigate("/");
+        }}
+        searchResults={importSearchResults}
+        onSearch={(q) => usePrStore.getState().searchRepos(q).catch(() => {})}
+        repos={repos}
+      />
     </div>
   );
 }

@@ -2,7 +2,6 @@ import { useEffect, useRef } from "react";
 import type { WsClientMessage } from "../../server/shared/types.js";
 import type { ChatMessage } from "../components/MessageList.js";
 import type { BootstrapData } from "../../server/orchestrator/services/index.js";
-import { getSavedAgentId } from "../utils/local-storage.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useFileStore } from "../stores/file-store.js";
@@ -10,6 +9,7 @@ import { useThreadStore } from "../stores/thread-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { usePrStore } from "../stores/pr-store.js";
+import { useRepoStore } from "../stores/repo-store.js";
 
 export function useConnectionSync(params: {
   status: string;
@@ -32,6 +32,7 @@ export function useConnectionSync(params: {
       })
       .then((data) => {
         useSessionStore.getState().setSessions(data.sessions);
+        if (data.repos) useRepoStore.getState().setRepos(data.repos);
         useUiStore.getState().setAgentList(data.agents);
         useUiStore.getState().setTemplates(data.templates);
         useSettingsStore.getState().setGithubStatus({
@@ -39,19 +40,20 @@ export function useConnectionSync(params: {
           username: data.githubStatus.username,
           avatarUrl: data.githubStatus.avatarUrl,
         });
-        if (data.githubRepos.length > 0) {
-          usePrStore.getState().setImportSearchResults(data.githubRepos);
-        }
         useGitStore.getState().setIdentity(data.settings.gitIdentity);
         useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
         useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
+        useUiStore.getState().setBootstrapLoaded(true);
       })
       .catch((err) => {
         console.error("[bootstrap] Failed to fetch initial data:", err);
+        useUiStore.getState().setBootstrapLoaded(true);
       });
   }, []);
 
-  // On WebSocket connect, restore session
+  // On per-session WS connect, fetch session history + send any pending message
+  // (No activate_session needed — the per-session WS auto-activates via URL)
+  // (No set_agent needed — passed as query param on WS URL)
   useEffect(() => {
     if (status === "open" && !historyLoadedRef.current && useSessionStore.getState().sessionId) {
       historyLoadedRef.current = true;
@@ -68,12 +70,12 @@ export function useConnectionSync(params: {
           useThreadStore.getState().setActiveThreadId(data.activeThreadId);
         })
         .catch((err) => console.error("[api] Failed to load session history:", err));
-      send({ type: "activate_session", sessionId });
-    }
-    if (status === "open") {
-      const savedAgent = getSavedAgentId();
-      if (savedAgent !== "claude") {
-        send({ type: "set_agent", agentId: savedAgent });
+
+      // If there's a pending WS message (e.g. new session from home page, feature start), send it now
+      const pending = useSessionStore.getState().pendingWsMessage;
+      if (pending) {
+        useSessionStore.getState().setPendingWsMessage(undefined);
+        send({ ...pending, sessionId } as import("../../server/shared/types.js").WsClientMessage);
       }
     }
     if (status === "closed") {

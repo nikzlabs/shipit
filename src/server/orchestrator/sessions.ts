@@ -41,10 +41,10 @@ export class SessionManager {
     }
   }
 
-  /** List all non-archived sessions, most recently used first. */
+  /** List all non-archived, non-warm sessions, most recently used first. */
   list(): SessionInfo[] {
     return this.sessions
-      .filter((s) => s.archived !== true)
+      .filter((s) => s.archived !== true && s.warm !== true)
       .sort((a, b) => new Date(b.lastUsedAt).getTime() - new Date(a.lastUsedAt).getTime());
   }
 
@@ -125,6 +125,19 @@ export class SessionManager {
     this.sessions.splice(idx, 1);
     this.save();
     return true;
+  }
+
+  /** Set or clear the warm flag on a session. */
+  setWarm(id: string, warm: boolean): void {
+    const session = this.sessions.find((s) => s.id === id);
+    if (session) {
+      if (warm) {
+        session.warm = true;
+      } else {
+        delete session.warm;
+      }
+      this.save();
+    }
   }
 
   /** Find all non-archived sessions with the given remote URL. */

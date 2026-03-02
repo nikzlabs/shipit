@@ -93,7 +93,8 @@ describe("Integration: Claude message flow — basics", () => {
     const sessionStarted = await client.receiveType("session_started");
     // Session ID is now an app-generated UUID (not the agent's session_id)
     expect((sessionStarted as any).session.id).toBeTruthy();
-    expect((sessionStarted as any).session.title).toBe("Hello Claude");
+    // Session title is set at creation time (auto-created by TestClient), not from prompt text
+    expect((sessionStarted as any).session.title).toBeTruthy();
     expect((sessionStarted as any).session.agentSessionId).toBe("test-session-123");
 
     client.close();

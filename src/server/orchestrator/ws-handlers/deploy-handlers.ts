@@ -32,13 +32,13 @@ export async function handleInitiateDeploy(ctx: HandlerContext, msg: WsInitiateD
   }
 
   // Detect framework and build
-  ctx.broadcast({ type: "deploy_status", phase: "building" });
+  ctx.send({ type: "deploy_status", phase: "building" });
   const framework = await ctx.deploymentManager.detectFramework(activeSessionDir);
 
   if (framework.buildCommand) {
     const buildOk = await ctx.deploymentManager.build(activeSessionDir, framework.buildCommand);
     if (!buildOk) {
-      ctx.broadcast({ type: "deploy_error", message: "Build failed", phase: "building" });
+      ctx.send({ type: "deploy_error", message: "Build failed", phase: "building" });
       return;
     }
   }
@@ -71,7 +71,7 @@ export async function handleInitiateDeploy(ctx: HandlerContext, msg: WsInitiateD
       status: "success",
     });
 
-    ctx.broadcast({
+    ctx.send({
       type: "deploy_complete",
       url: result.url,
       targetId: result.targetId,

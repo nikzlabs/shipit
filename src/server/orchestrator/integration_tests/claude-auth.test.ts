@@ -130,9 +130,9 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
       });
       expect(res.statusCode).toBe(200);
 
-      // The HTTP endpoint broadcasts auth_complete to all WS clients
-      const msg = await client.receive();
-      expect(msg).toMatchObject({ type: "auth_complete" });
+      // auth_complete is broadcast via SSE, not WS — verify the stub auth state changed
+      expect(unauthStub.authenticated).toBe(true);
+      client.close();
     } finally {
       // Restore env
       if (origKey) {

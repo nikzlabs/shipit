@@ -70,12 +70,10 @@ describe("Integration: GET /api/bootstrap", () => {
     expect(body).toHaveProperty("defaultAgentId");
     expect(body).toHaveProperty("templates");
     expect(body).toHaveProperty("githubStatus");
-    expect(body).toHaveProperty("githubRepos");
     expect(body).toHaveProperty("settings");
 
     expect(body.sessions).toEqual([]);
     expect(body.githubStatus.authenticated).toBe(false);
-    expect(body.githubRepos).toEqual([]);
     expect(Array.isArray(body.templates)).toBe(true);
     expect(body.templates.length).toBeGreaterThan(0);
   });
@@ -114,9 +112,6 @@ describe("Integration: GET /api/bootstrap", () => {
 
     expect(body.githubStatus.authenticated).toBe(true);
     expect(body.githubStatus.username).toBe("test-user");
-    expect(body.githubRepos.length).toBeGreaterThan(0);
-    expect(body.githubRepos[0]).toHaveProperty("fullName");
-    expect(body.githubRepos[0]).toHaveProperty("cloneUrl");
   });
 
   it("returns global settings with git identity", async () => {

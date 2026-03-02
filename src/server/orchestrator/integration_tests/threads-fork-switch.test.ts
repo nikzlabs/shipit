@@ -175,16 +175,16 @@ describe("Integration: Threads — fork & switch", () => {
     client.close();
   });
 
-  it("fork_thread returns error when no active session", async () => {
+  it("fork_thread returns error for unknown checkpoint", async () => {
     const client = await TestClient.connect(port);
     await drainConnect(client);
 
     client.send({
       type: "fork_thread",
-      checkpointId: "some-id",
+      checkpointId: "nonexistent-checkpoint",
     } as any);
     const msg = await client.receiveType("error");
-    expect((msg as any).message).toBe("No active session");
+    expect((msg as any).message).toBe("Checkpoint not found");
 
     client.close();
   });
@@ -243,16 +243,16 @@ describe("Integration: Threads — fork & switch", () => {
     client.close();
   });
 
-  it("switch_thread returns error when no active session", async () => {
+  it("switch_thread returns error for unknown thread", async () => {
     const client = await TestClient.connect(port);
     await drainConnect(client);
 
     client.send({
       type: "switch_thread",
-      threadId: "some-id",
+      threadId: "nonexistent-thread",
     } as any);
     const msg = await client.receiveType("error");
-    expect((msg as any).message).toBe("No active session");
+    expect((msg as any).message).toBe("Thread not found");
 
     client.close();
   });

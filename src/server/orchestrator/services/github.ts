@@ -24,12 +24,13 @@ export async function getGitHubRepos(
   return githubAuthManager.listUserRepos();
 }
 
-/** Search GitHub repos. */
+/** Search GitHub repos. Returns user's repos when query is empty. */
 export async function searchGitHubRepos(
   githubAuthManager: GitHubAuthManager,
   query: string,
 ) {
-  if (!query || query.length < 2) return [];
+  if (!githubAuthManager.authenticated) return [];
+  if (!query || query.length < 2) return githubAuthManager.listUserRepos();
   return githubAuthManager.searchRepos(query);
 }
 
