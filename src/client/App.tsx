@@ -691,7 +691,7 @@ export default function App() {
           gitIdentity={gitIdentity}
           onGitIdentitySave={(name, email) => useGitStore.getState().submitGitIdentity(name, email).catch(() => {})}
           maxIdleContainers={maxIdleContainers}
-          onMaxIdleContainersSave={(n) => { apiPut("/api/settings", { maxIdleContainers: n }).then((res: any) => { if (res.maxIdleContainers != null) useSettingsStore.getState().setMaxIdleContainers(res.maxIdleContainers); }).catch(() => {}); }}
+          onMaxIdleContainersSave={(n) => { apiPut("/api/settings", { maxIdleContainers: n }).then((raw) => { const res = raw as Record<string, unknown>; if (res.maxIdleContainers != null) useSettingsStore.getState().setMaxIdleContainers(res.maxIdleContainers as number); }).catch(() => {}); }}
           deployTargets={deployTargets} deployConfigStatus={deployConfigStatus}
           onDeployConfigure={(targetId, creds, projectName) => { const sid = useSessionStore.getState().sessionId; if (sid) useDeployStore.getState().configure(sid, targetId, creds, projectName).catch(() => {}); }}
           onDeployDeleteConfig={(targetId) => { const sid = useSessionStore.getState().sessionId; if (sid) useDeployStore.getState().deleteConfig(sid, targetId).catch(() => {}); }}
