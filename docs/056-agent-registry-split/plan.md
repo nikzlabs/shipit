@@ -1,5 +1,5 @@
 ---
-status: paused
+status: done
 ---
 
 # 056 — AgentRegistry Placement
@@ -16,10 +16,6 @@ The class straddles both layers.
 ## Scope
 
 This doc covers AgentRegistry placement. For the broader directory restructure, see [053-server-code-separation](../053-server-code-separation/plan.md).
-
-## Current State
-
-The 053 refactoring moves the entire `agents/` directory to `session/agents/`. The orchestrator imports `AgentRegistry` from `session/agents/agent-registry.ts` for the detection step at startup. This means the orchestrator imports a class from the session layer — the reverse of the usual dependency direction.
 
 ## Possible Directions
 
@@ -45,4 +41,10 @@ The registry is a lookup table. The session worker could receive agent config vi
 
 ## Decision
 
-Option A for now. The orchestrator → session direction for type/class imports is already established. If agent detection grows complex (e.g., remote agent discovery), revisit with Option B.
+Option A, implemented. The canonical implementation lives in `src/server/shared/agent-registry.ts`. `src/server/session/agents/agent-registry.ts` is a thin re-export shim for backwards compatibility. `orchestrator/index.ts` imports directly from `../shared/agent-registry.js`.
+
+This placement means the orchestrator → session import direction is avoided: both sides import from `shared/`, which is the neutral layer.
+
+## Conflict with 051 (Session Containerization)
+
+**No conflict.** 051's remaining phases (Phase 4 pre-warming, Phase 5 cross-platform validation, post-launch hardening) are entirely about Docker container lifecycle, standby sessions, and security hardening. None of them touch `AgentRegistry` or its placement. The `session-worker.ts` already spawns agents via the adapters in `session/agents/` independently of where `AgentRegistry` lives in the orchestrator layer.
