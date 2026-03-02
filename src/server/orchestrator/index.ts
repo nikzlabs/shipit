@@ -895,6 +895,17 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       for (const entry of logBuffer) { send(entry); }
       if (!getGitIdentity()) { send({ type: "git_identity_required" }); }
 
+      // Re-send preview_status after the log buffer so it isn't lost if the
+      // browser batches rapid WS messages (React 18 automatic batching can
+      // cause intermediate setLastMessage() calls to be skipped when many
+      // frames arrive within a single rendering cycle).
+      if (logBuffer.length > 0) {
+        const runner = runnerRegistry.get(sessionId);
+        if (runner?.previewStatusKnown) {
+          send(runner.buildPreviewStatus());
+        }
+      }
+
       // Message dispatcher — same as /ws but without new_session and activate_session
       socket.on("message", async (raw: Buffer) => {
         let msg: WsClientMessage;

@@ -3,6 +3,7 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useThreadStore } from "../stores/thread-store.js";
+import { usePreviewStore } from "../stores/preview-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
@@ -21,6 +22,27 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   useFileStore.getState().setTree(data.fileTree);
   useThreadStore.getState().setThreads(data.threads);
   useThreadStore.getState().setActiveThreadId(data.activeThreadId);
+
+  // Fetch preview status via HTTP — reliable fallback in case the WS
+  // preview_status message is lost during the initial connection burst.
+  try {
+    const previewRes = await fetch(`/api/sessions/${sessionId}/preview-status`);
+    if (previewRes.ok) {
+      const ps = await previewRes.json();
+      // Only apply if the store still has no status (WS message may have arrived first)
+      if (ps.known && !usePreviewStore.getState().status) {
+        usePreviewStore.getState().setStatus({
+          running: ps.running,
+          port: ps.port,
+          url: ps.url,
+          source: ps.source,
+          detectedPorts: ps.detectedPorts,
+        });
+      }
+    }
+  } catch {
+    // Non-critical — WS will deliver the status eventually
+  }
 }
 
 /**
