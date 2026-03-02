@@ -1,5 +1,5 @@
 import type { WsClientMessage } from "../../shared/types.js";
-import type { HandlerContext } from "./types.js";
+import type { ConnectionCtx, RunnerCtx } from "./types.js";
 import type { ContainerSessionRunner } from "../container-session-runner.js";
 
 type WsTerminalInput = Extract<WsClientMessage, { type: "terminal_input" }>;
@@ -9,7 +9,7 @@ function isContainerRunner(runner: unknown): runner is ContainerSessionRunner {
   return !!runner && typeof (runner as ContainerSessionRunner).startTerminalOnWorker === "function";
 }
 
-export async function handleTerminalStart(ctx: HandlerContext): Promise<void> {
+export async function handleTerminalStart(ctx: ConnectionCtx & RunnerCtx): Promise<void> {
   const runner = ctx.getRunner();
   if (!runner) return;
 
@@ -29,14 +29,14 @@ export async function handleTerminalStart(ctx: HandlerContext): Promise<void> {
   }
 }
 
-export async function handleTerminalInput(ctx: HandlerContext, msg: WsTerminalInput): Promise<void> {
+export async function handleTerminalInput(ctx: RunnerCtx, msg: WsTerminalInput): Promise<void> {
   const runner = ctx.getRunner();
   if (!runner || !isContainerRunner(runner)) return;
 
   await runner.writeTerminalOnWorker(msg.data);
 }
 
-export async function handleTerminalResize(ctx: HandlerContext, msg: WsTerminalResize): Promise<void> {
+export async function handleTerminalResize(ctx: RunnerCtx, msg: WsTerminalResize): Promise<void> {
   const runner = ctx.getRunner();
   if (!runner || !isContainerRunner(runner)) return;
 
@@ -45,7 +45,7 @@ export async function handleTerminalResize(ctx: HandlerContext, msg: WsTerminalR
   await runner.resizeTerminalOnWorker(cols, rows);
 }
 
-export function handleClearLogs(ctx: HandlerContext): void {
+export function handleClearLogs(ctx: ConnectionCtx & RunnerCtx): void {
   ctx.clearLogBuffer();
   // Also clear the runner's terminal output buffer
   const runner = ctx.getRunner();

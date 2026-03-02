@@ -1,62 +1,61 @@
 ---
-status: paused
+status: done
 ---
 
 # 054 — HandlerContext Refactor
 
 ## Problem
 
-`HandlerContext` (in `ws-handlers/types.ts`) is a ~40-method interface that mixes three distinct concerns:
+`HandlerContext` (in `ws-handlers/types.ts`) was a ~40-method interface that mixed three distinct concerns:
 
-1. **Per-connection state** — `getActiveAppSessionId()`, `setActiveSessionDir()`, `getPerConnectionAgentId()`, etc.
-2. **Per-session runner delegation** — `isRunning()`, `getQueueSnapshot()`, `emitMessage()`, `attachToRunner()`, etc.
-3. **App-wide manager references** — `sessionManager`, `chatHistoryManager`, `threadManager`, `usageManager`, `deploymentManager`, `githubAuthManager`, etc.
+1. **Per-connection state** — `getActiveAppSessionId()`, `setActiveSessionDir()`, etc.
+2. **Per-session runner delegation** — `getRunner()`, `getAgent()`, `setIsClaudeRunning()`, etc.
+3. **App-wide manager references** — `sessionManager`, `chatHistoryManager`, `threadManager`, etc.
 
-This makes it the biggest coupling surface between orchestrator and session layers. Any new feature that touches WebSocket handling must navigate this god object.
+This made it the biggest coupling surface between orchestrator and session layers. Any new feature that touched WebSocket handling had to navigate this god object.
 
 ## Scope
 
 This doc covers HandlerContext only. For the broader directory restructure, see [053-server-code-separation](../053-server-code-separation/plan.md).
 
-## Current State
+## Solution
 
-HandlerContext is an orchestrator concept — it exists per WebSocket connection in the main process. The 053 refactoring moves it to `orchestrator/ws-handlers/types.ts` without changing its structure. This is intentional: splitting HandlerContext is a separate, larger change that can happen independently.
+Split the monolith into three focused sub-interfaces:
 
-## Possible Directions
+### `ConnectionCtx`
+Per-connection state and communication, scoped to a single WebSocket connection's lifecycle:
+- Communication: `send`, `broadcastLog`, `sseBroadcast`
+- Session accessors: `getActiveDir`, `getActiveGitManager`, `getActiveAppSessionId`, `getActiveSessionDir`, `activateSession`
+- Per-connection helpers: `checkGitIdentity`, `readSystemPrompt`, `scheduleAutoPush`, `clearLogBuffer`
 
-### Option A: Split into typed sub-contexts
+### `RunnerCtx`
+Per-session runner delegation — agent/claude state accessors that delegate to the attached `SessionRunner`:
+- Agent management: `agentFactory`, `getAgent`, `setAgent`, `getActiveAgentId`, `setActiveAgentId`
+- Running state: `getIsClaudeRunning`, `setIsClaudeRunning`, `getWasInterrupted`, `setWasInterrupted`
+- Turn accumulation: `getTurnSummary`, `getAccumulatedText`, `getAccumulatedToolUse`, `getChatMessageGroups`, `getNeedsNewMessageGroup`
+- Message queue: `getMessageQueue`, `clearMessageQueue`
+- Terminal: `getTerminal`, `setTerminal`
+- Runner lifecycle: `getRunner`, `getRunnerRegistry`, `attachToRunner`, `detachFromRunner`
 
-Break the monolith into focused interfaces passed to handlers:
+### `AppCtx`
+App-wide manager references, factories, and config — shared singletons that live for the lifetime of the server process:
+- All manager references (`sessionManager`, `chatHistoryManager`, `threadManager`, etc.)
+- Repo management: `repoStore`, `warmSessionForRepo`
+- Factories: `createSessionDir`, `generateText`, `getSharedRepoDir`
+- Config: `workspaceDir`, `sessionsRoot`, `defaultAgentId`
 
-```typescript
-interface ConnectionCtx {
-  getActiveAppSessionId(): string | null;
-  setActiveSessionDir(dir: string): void;
-  getPerConnectionAgentId(): AgentId | null;
-  sendMessage(msg: WsServerMessage): void;
-  // ...per-connection state
-}
+The old `HandlerContext` type alias has been removed. Each handler file declares exactly the sub-contexts it needs via inline intersection types.
 
-interface RunnerCtx {
-  isRunning(): boolean;
-  emitMessage(msg: WsServerMessage): void;
-  getQueueSnapshot(): QueuedMessage[];
-  // ...runner delegation
-}
+## Handler Dependencies
 
-interface AppCtx {
-  sessionManager: SessionManager;
-  chatHistoryManager: ChatHistoryManager;
-  // ...app-wide singletons
-}
-```
+| Handler file | Sub-contexts used |
+|---|---|
+| `terminal-handlers.ts` | `ConnectionCtx & RunnerCtx` (or `RunnerCtx` alone) |
+| `misc-handlers.ts` | `ConnectionCtx & RunnerCtx` |
+| `deploy-handlers.ts` | `ConnectionCtx & AppCtx` (or `AppCtx` alone) |
+| `thread-handlers.ts` | `ConnectionCtx & AppCtx` |
+| `send-message.ts` | `ConnectionCtx & RunnerCtx & AppCtx` (local `FullCtx` alias) |
 
-Handlers declare which sub-contexts they need, making dependencies explicit.
+## Key Files
 
-### Option B: Keep as-is
-
-HandlerContext works. It's verbose but not broken. The 053 directory split already prevents the worst outcome (session code accidentally importing it). Further decomposition can wait until HandlerContext grows painful.
-
-## Decision
-
-Deferred. The 053 refactoring does not change HandlerContext — it stays in `orchestrator/ws-handlers/types.ts`. Revisit if the interface grows beyond ~50 methods or if new handler categories emerge.
+- `src/server/orchestrator/ws-handlers/types.ts` — sub-interface definitions (`ConnectionCtx`, `RunnerCtx`, `AppCtx`)

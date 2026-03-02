@@ -30,7 +30,7 @@ import { registerPreviewProxy } from "./preview-proxy.js";
 import type { AgentId, AgentEvent, AgentProcess } from "../shared/types.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry } from "../shared/types.js";
 import { getErrorMessage } from "./validation.js";
-import type { HandlerContext } from "./ws-handlers/types.js";
+import type { ConnectionCtx, RunnerCtx, AppCtx } from "./ws-handlers/types.js";
 import * as terminalHandlers from "./ws-handlers/terminal-handlers.js";
 import * as miscHandlers from "./ws-handlers/misc-handlers.js";
 import * as deployHandlers from "./ws-handlers/deploy-handlers.js";
@@ -897,7 +897,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       };
 
       // ---- Handler context ----
-      const ctx: HandlerContext = {
+      const ctx: ConnectionCtx & RunnerCtx & AppCtx = {
         send, broadcastLog: sessionBroadcastLog, sseBroadcast,
         getActiveDir, getActiveGitManager,
         getActiveAppSessionId: () => activeAppSessionId,

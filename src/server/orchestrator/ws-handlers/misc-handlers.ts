@@ -1,9 +1,9 @@
 import type { WsClientMessage } from "../../shared/types.js";
-import type { HandlerContext } from "./types.js";
+import type { ConnectionCtx, RunnerCtx } from "./types.js";
 
 type WsCancelQueuedMessage = Extract<WsClientMessage, { type: "cancel_queued_message" }>;
 
-export function handleCancelQueuedMessage(ctx: HandlerContext, msg: WsCancelQueuedMessage): void {
+export function handleCancelQueuedMessage(ctx: ConnectionCtx & RunnerCtx, msg: WsCancelQueuedMessage): void {
   const queue = ctx.getMessageQueue();
   if (msg.position === "all") {
     queue.length = 0;
@@ -19,7 +19,7 @@ export function handleCancelQueuedMessage(ctx: HandlerContext, msg: WsCancelQueu
   });
 }
 
-export function handleInterruptClaude(ctx: HandlerContext): void {
+export function handleInterruptClaude(ctx: ConnectionCtx & RunnerCtx): void {
   const agent = ctx.getAgent();
   if (agent) {
     ctx.setWasInterrupted(true);
