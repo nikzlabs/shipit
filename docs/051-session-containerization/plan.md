@@ -970,7 +970,9 @@ ShipIt does not install Docker — it expects Docker to be available. The auto-d
 | `src/server/index.ts` | AppDeps wiring: useContainers, containerManager, runner factory, preview proxy registration |
 | `src/server/types/ws-server-messages.ts` | WsSessionStatus — added optional `error` field |
 | `src/server/integration_tests/container-lifecycle.test.ts` | Integration tests for container lifecycle (5 tests) |
-| `src/server/integration_tests/container-phase3.test.ts` | Phase 3 — integration tests for terminal/preview/file watcher (35 tests) |
+| `src/server/integration_tests/worker-terminal.test.ts` | Integration tests for worker terminal endpoints + CSR terminal proxy |
+| `src/server/integration_tests/worker-preview.test.ts` | Integration tests for worker preview endpoints + CSR preview proxy + reverse proxy |
+| `src/server/integration_tests/worker-file-watcher.test.ts` | Integration tests for worker file watcher endpoints + CSR file watcher proxy + cleanup |
 | `src/client/path-utils.ts` | Phase 3 — handle `/workspace/` prefix (containerized) alongside existing format |
 | `src/client/path-utils.test.ts` | Phase 3 — unit tests for path normalization (7 tests) |
 | `src/server/ws-handlers/types.ts` | No changes (HandlerContext unchanged) |
