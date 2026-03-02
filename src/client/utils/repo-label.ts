@@ -19,3 +19,8 @@ export function parseRepoLabel(remoteUrl: string): string {
     return remoteUrl.replace(/\.git$/, "");
   }
 }
+
+/** Build the "new session" URL path for a repo: `/{label}/new`. */
+export function repoLabelToNewPath(repoUrl: string): string {
+  return `/${parseRepoLabel(repoUrl)}/new`;
+}
