@@ -20,9 +20,9 @@ function backoffMs(attempt: number): number {
   return Math.min(2000 * Math.pow(2, attempt), 30_000);
 }
 
-export function useWebSocket(url: string): UseWebSocketReturn {
+export function useWebSocket(url: string | null): UseWebSocketReturn {
   const wsRef = useRef<WebSocket | null>(null);
-  const [status, setStatus] = useState<WsStatus>("connecting");
+  const [status, setStatus] = useState<WsStatus>(url ? "connecting" : "closed");
   const [lastMessage, setLastMessage] = useState<MessageEvent | null>(null);
   const [connectAttempt, setConnectAttempt] = useState(0);
   const reconnectAttemptRef = useRef(0);
@@ -30,6 +30,11 @@ export function useWebSocket(url: string): UseWebSocketReturn {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    if (!url) {
+      setStatus("closed");
+      return;
+    }
+
     // Guard against React StrictMode double-mount: when cleanup closes the WS,
     // onclose must NOT schedule a reconnect (the remounted effect will open a
     // fresh connection).

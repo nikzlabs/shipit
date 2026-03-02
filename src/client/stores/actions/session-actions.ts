@@ -8,7 +8,7 @@ import { usePreviewStore } from "../preview-store.js";
 import { useDeployStore } from "../deploy-store.js";
 import { usePrStore } from "../pr-store.js";
 import { useSettingsStore } from "../settings-store.js";
-import type { WsClientMessage } from "../../../server/shared/types.js";
+import { useRepoStore } from "../repo-store.js";
 import type { ChatMessage } from "../../components/MessageList.js";
 import type { GitCommit } from "../../components/GitHistory.js";
 import type { FileTreeNode } from "../../components/FileTree.js";
@@ -29,13 +29,10 @@ export function resetSessionState() {
 }
 
 /**
- * Internal session resume — resets state, fetches history via HTTP, activates via WS.
- * Used by popstate/URL changes and public resume.
+ * Internal session resume — resets state, fetches history via HTTP.
+ * WS connects automatically via the per-session WS URL; no activate_session needed.
  */
-export function resumeSessionInternal(
-  sessionId: string,
-  send: (msg: WsClientMessage) => void,
-) {
+export function resumeSessionInternal(sessionId: string) {
   const session = useSessionStore.getState();
   session.setSessionId(sessionId);
   session.setMessages([]);
@@ -49,8 +46,9 @@ export function resumeSessionInternal(
   useThreadStore.getState().reset();
   useTerminalStore.getState().reset();
   useUiStore.getState().reset();
+  usePreviewStore.getState().reset();
 
-  // 1. Fetch session data via HTTP
+  // Fetch session data via HTTP
   fetch(`/api/sessions/${sessionId}/history`)
     .then((res) => res.json())
     .then((data: {
@@ -69,35 +67,31 @@ export function resumeSessionInternal(
       useThreadStore.getState().setActiveThreadId(data.activeThreadId);
     })
     .catch((err) => console.error("[api] Failed to load session history:", err));
-
-  // 2. Activate session over WS
-  send({ type: "activate_session", sessionId });
 }
 
 /**
  * Public session resume — also navigates to update the URL.
+ * WS connects automatically when React re-renders with the new session ID.
  */
 export function handleSessionResume(
   sessionId: string,
-  send: (msg: WsClientMessage) => void,
   navigate: (path: string) => void,
 ) {
-  resumeSessionInternal(sessionId, send);
+  resumeSessionInternal(sessionId);
   navigate(`/session/${sessionId}`);
 }
 
 /**
- * Start a new session — resets state, navigates to /, sends new_session WS.
+ * Start a new session — resets state and navigates to /.
+ * No WS message needed; the WS disconnects when leaving a session URL.
  */
 export function newSession(
-  send: (msg: WsClientMessage) => void,
   navigate: (path: string) => void,
 ) {
   useSessionStore.getState().setSessionId(undefined);
   resetSessionState();
   useUiStore.getState().setShowTemplates(true);
   navigate("/");
-  send({ type: "new_session" });
 }
 
 /**
@@ -114,4 +108,5 @@ export function fullResetAllStores() {
   useDeployStore.getState().reset();
   usePrStore.getState().reset();
   useSettingsStore.getState().reset();
+  useRepoStore.getState().reset();
 }

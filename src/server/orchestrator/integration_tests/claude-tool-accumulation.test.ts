@@ -128,7 +128,8 @@ describe("Integration: Claude tool use accumulation", () => {
 
     // Complete the turn and wait for persistence to finish
     lastClaude.finish("tool-accum-session");
-    await client.receiveType("session_agent_finished");
+    // Drain remaining WS messages (session_agent_finished is SSE-only)
+    try { for (let i = 0; i < 20; i++) await client.receive(300); } catch { /* timeout expected */ }
 
     // Verify persisted chat history has ALL tool calls, not just the last one
     const messages = chatHistoryManager.load(appSessionId);

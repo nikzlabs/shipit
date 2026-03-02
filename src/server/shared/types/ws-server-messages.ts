@@ -1,6 +1,6 @@
 import type { ClaudeEvent } from "./claude-types.js";
 import type { AgentId, AgentEvent } from "./agent-types.js";
-import type { GitCommitInfo, SessionInfo, FeatureInfo, FileTreeNode, WsChatHistoryMessage, FileDiff } from "./domain-types.js";
+import type { GitCommitInfo, SessionInfo, FeatureInfo, FileTreeNode, WsChatHistoryMessage, FileDiff, RepoInfo } from "./domain-types.js";
 import type {
   WsGitHubStatus,
   WsGitHubPushResult,
@@ -271,6 +271,28 @@ export interface WsSessionAgentFinished {
   sessionId: string;
 }
 
+// ---- Repo messages (server → client) ----
+
+/** Server → Client: repo clone status changed. */
+export interface WsRepoStatus {
+  type: "repo_status";
+  url: string;
+  status: "cloning" | "ready";
+}
+
+/** Server → Client: a warm session is ready for a repo. */
+export interface WsRepoWarmReady {
+  type: "repo_warm_ready";
+  url: string;
+  sessionId: string;
+}
+
+/** Server → Client: full repo list update. */
+export interface WsRepoList {
+  type: "repo_list";
+  repos: RepoInfo[];
+}
+
 export type WsServerMessage =
   | WsClaudeEvent
   | WsAgentEvent
@@ -327,4 +349,7 @@ export type WsServerMessage =
   | WsTurnDiff
   | WsSessionStatus
   | WsSessionAgentStarted
-  | WsSessionAgentFinished;
+  | WsSessionAgentFinished
+  | WsRepoStatus
+  | WsRepoWarmReady
+  | WsRepoList;

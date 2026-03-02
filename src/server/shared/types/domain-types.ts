@@ -26,6 +26,23 @@ export interface SessionInfo {
   branch?: string;
   /** Session type: "standalone" (default) or "worktree". */
   sessionType?: "standalone" | "worktree";
+  /** If true, this is a pre-created warm session not yet visible in the sidebar. */
+  warm?: boolean;
+}
+
+// ---- Repo types ----
+
+export interface RepoInfo {
+  /** Canonical remote URL, e.g. "https://github.com/owner/repo.git". */
+  url: string;
+  /** When the repo was added. */
+  addedAt: string;
+  /** Last time any session was created for this repo. */
+  lastUsedAt: string;
+  /** Clone status. "cloning" while initial clone is in progress. */
+  status: "cloning" | "ready";
+  /** Session ID of the current warm (pre-created) session, if any. */
+  warmSessionId?: string;
 }
 
 // ---- Feature types ----

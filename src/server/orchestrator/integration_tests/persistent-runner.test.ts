@@ -99,6 +99,7 @@ describe("Integration: persistent session runners", () => {
   it("reconnecting to a session with a running agent sends session_status", async () => {
     const client1 = await TestClient.connect(port);
     await client1.receive(); // preview_status
+    const sessionId = client1.sessionId;
 
     // Start Claude
     client1.send({ type: "send_message", text: "Hello" });
@@ -107,20 +108,15 @@ describe("Integration: persistent session runners", () => {
     // Emit init event to trigger session_started
     claude.emit("event", { type: "system", subtype: "init", session_id: "agent-session-1" });
 
-    // Get the session ID from session_started
-    const sessionStarted = await drainUntil(client1, (m) => m.type === "session_started");
-    expect(sessionStarted).toBeTruthy();
-    const sessionId = sessionStarted!.session.id;
+    // Drain session_started
+    await drainUntil(client1, (m) => m.type === "session_started");
 
     // Disconnect
     client1.close();
     await new Promise((r) => setTimeout(r, 50));
 
-    // Connect a new client and activate the session (triggers activateSession)
-    const client2 = await TestClient.connect(port);
-    await client2.receive(); // preview_status
-
-    client2.send({ type: "activate_session", sessionId });
+    // Reconnect to the same session (auto-activates)
+    const client2 = await TestClient.connect(port, sessionId);
 
     // Should receive session_status showing running=true
     const statusMsg = await drainUntil(client2, (m) => m.type === "session_status");
@@ -133,26 +129,30 @@ describe("Integration: persistent session runners", () => {
     client2.close();
   });
 
-  it("session_agent_started and session_agent_finished are broadcast", async () => {
+  it("reconnecting to same session sees running status", async () => {
     const client1 = await TestClient.connect(port);
     await client1.receive(); // preview_status
-
-    const client2 = await TestClient.connect(port);
-    await client2.receive(); // preview_status
+    const sessionId = client1.sessionId;
 
     // Client1 starts Claude
     client1.send({ type: "send_message", text: "Hello" });
     const claude = await waitForClaude(() => lastClaude);
+    claude.emit("event", { type: "system", subtype: "init", session_id: "agent-bc" });
+    await drainUntil(client1, (m) => m.type === "session_started");
 
-    // Client2 should receive session_agent_started (broadcast)
-    const started = await drainUntil(client2, (m) => m.type === "session_agent_started");
-    expect(started).toBeTruthy();
+    // Client2 connects to the same session — sees running status
+    const client2 = await TestClient.connect(port, sessionId);
+    const statusMsg = await drainUntil(client2, (m) => m.type === "session_status");
+    expect(statusMsg).toBeTruthy();
+    expect(statusMsg!.running).toBe(true);
 
     // Finish Claude
     claude.finish("test-session-id");
 
-    // Client2 should receive session_agent_finished
-    const finished = await drainUntil(client2, (m) => m.type === "session_agent_finished");
+    // Client2 should receive the exit log entry (session_agent_finished is SSE-only)
+    const finished = await drainUntil(client2, (m) =>
+      m.type === "log_entry" && (m as any).text?.includes("exited"),
+    );
     expect(finished).toBeTruthy();
 
     client1.close();
@@ -162,6 +162,7 @@ describe("Integration: persistent session runners", () => {
   it("reconnecting replays buffered turn events", async () => {
     const client1 = await TestClient.connect(port);
     await client1.receive(); // preview_status
+    const sessionId = client1.sessionId;
 
     // Start Claude
     client1.send({ type: "send_message", text: "Hello" });
@@ -170,9 +171,8 @@ describe("Integration: persistent session runners", () => {
     // Emit init event to trigger session_started
     claude.emit("event", { type: "system", subtype: "init", session_id: "agent-session-2" });
 
-    // Get session ID
-    const sessionStarted = await drainUntil(client1, (m) => m.type === "session_started");
-    const sessionId = sessionStarted!.session.id;
+    // Drain session_started
+    await drainUntil(client1, (m) => m.type === "session_started");
 
     // Emit assistant event in Claude format (FakeClaudeProcess is wrapped by ClaudeAdapter)
     claude.emit("event", {
@@ -188,11 +188,8 @@ describe("Integration: persistent session runners", () => {
     client1.close();
     await new Promise((r) => setTimeout(r, 50));
 
-    // Reconnect as client2 and activate the same session
-    const client2 = await TestClient.connect(port);
-    await client2.receive(); // preview_status
-
-    client2.send({ type: "activate_session", sessionId });
+    // Reconnect to the same session (auto-activates, replays turn buffer)
+    const client2 = await TestClient.connect(port, sessionId);
 
     // Client2 should receive replayed events from the turn buffer
     // The buffer includes agent_event from the assistant message
@@ -229,8 +226,9 @@ describe("Integration: persistent session runners", () => {
     // Finish Claude
     claude.finish("test-session-id");
 
-    // Wait for finish broadcast
-    await drainUntil(client, (m) => m.type === "session_agent_finished");
+    // Drain all remaining messages (exit log, git_committed, etc.)
+    // then wait for async done handler to complete (setIsClaudeRunning)
+    try { for (let i = 0; i < 20; i++) await client.receive(300); } catch { /* timeout expected */ }
 
     // Ask again — should be not running
     const statusRes2 = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/status` });
@@ -240,11 +238,11 @@ describe("Integration: persistent session runners", () => {
     client.close();
   });
 
-  it("session switch does not kill previous session's agent", async () => {
+  it("disconnecting from session does not kill its agent", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    // Start Claude in session 1
+    // Start Claude
     client.send({ type: "send_message", text: "Hello" });
     const claude1 = await waitForClaude(() => lastClaude);
 
@@ -252,23 +250,16 @@ describe("Integration: persistent session runners", () => {
     claude1.emit("event", { type: "system", subtype: "init", session_id: "agent-session-s1" });
     await drainUntil(client, (m) => m.type === "session_started");
 
-    // Create a second session manually
-    const session2Id = "session-2-" + Date.now();
-    const session2Dir = path.join(tmpDir, "sessions", session2Id);
-    fs.mkdirSync(session2Dir, { recursive: true });
-    sessionManager.track(session2Id, "Session 2", session2Dir);
+    // Disconnect (simulates navigating to another session)
+    client.close();
+    await new Promise((r) => setTimeout(r, 100));
 
-    // Switch to session 2 via activate_session
-    client.send({ type: "activate_session", sessionId: session2Id });
-    await new Promise((r) => setTimeout(r, 100)); // Wait for activation
-
-    // Claude in session 1 should still be alive
+    // Claude should still be alive (persistent runner)
     expect(claude1.killed).toBe(false);
     expect(claude1.interrupted).toBe(false);
 
     // Finish session 1's agent
     claude1.finish("test-session-id");
-    client.close();
   });
 
   it("interrupt works via runner", async () => {
@@ -317,15 +308,15 @@ describe("Integration: persistent session runners", () => {
   it("queue persists across connection drops", async () => {
     const client1 = await TestClient.connect(port);
     await client1.receive(); // preview_status
+    const sessionId = client1.sessionId;
 
     // Start Claude
     client1.send({ type: "send_message", text: "Hello" });
     const claude = await waitForClaude(() => lastClaude);
 
-    // Emit init event to get session ID
+    // Emit init event
     claude.emit("event", { type: "system", subtype: "init", session_id: "agent-session-q" });
-    const sessionStarted = await drainUntil(client1, (m) => m.type === "session_started");
-    const sessionId = sessionStarted!.session.id;
+    await drainUntil(client1, (m) => m.type === "session_started");
 
     // Send another message while agent is running — should be queued
     client1.send({ type: "send_message", text: "Second message" });
@@ -336,12 +327,8 @@ describe("Integration: persistent session runners", () => {
     client1.close();
     await new Promise((r) => setTimeout(r, 50));
 
-    // Reconnect
-    const client2 = await TestClient.connect(port);
-    await client2.receive(); // preview_status
-
-    // Activate the same session
-    client2.send({ type: "activate_session", sessionId });
+    // Reconnect to the same session (auto-activates, replays queue)
+    const client2 = await TestClient.connect(port, sessionId);
 
     // Should receive queue_updated showing the queued message
     const queueMsg = await drainUntil(client2, (m) => m.type === "queue_updated");
@@ -376,14 +363,11 @@ describe("Integration: persistent session runners", () => {
     fs.mkdirSync(session2Dir, { recursive: true });
     sessionManager.track(session2Id, "Session 2", session2Dir);
 
-    // Client 2 connects and switches to session 2
-    const client2 = await TestClient.connect(port);
+    // Client 2 connects directly to session 2
+    const client2 = await TestClient.connect(port, session2Id);
     await client2.receive(); // preview_status
 
-    client2.send({ type: "activate_session", sessionId: session2Id });
-    await new Promise((r) => setTimeout(r, 100)); // Wait for activation
-
-    // Client 2 starts a second agent in session 2 (must specify sessionId)
+    // Client 2 starts a second agent in session 2
     const prevClaude = lastClaude;
     client2.send({ type: "send_message", text: "Task for session 2", sessionId: session2Id });
     const claude2 = await waitForClaude(() => lastClaude, prevClaude);
@@ -406,7 +390,8 @@ describe("Integration: persistent session runners", () => {
 
     // Finish session 1 — session 2 should still be running
     claude1.finish("test-session-1");
-    await drainUntil(client1, (m) => m.type === "session_agent_finished");
+    // Drain all remaining messages and wait for async done handler to complete
+    try { for (let i = 0; i < 20; i++) await client1.receive(300); } catch { /* timeout expected */ }
 
     expect(claude2.killed).toBe(false);
     expect(claude2.interrupted).toBe(false);

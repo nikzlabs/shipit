@@ -55,6 +55,7 @@ interface UiState {
   sidebarCollapsed: boolean;
   toast: ToastData | null;
   features: FeatureInfo[];
+  bootstrapLoaded: boolean;
 
   // Actions
   setRightTab: (tab: RightTab) => void;
@@ -77,6 +78,7 @@ interface UiState {
   setSidebarCollapsed: (collapsed: boolean) => void;
   setToast: (toast: ToastData | null) => void;
   setFeatures: (features: FeatureInfo[]) => void;
+  setBootstrapLoaded: (loaded: boolean) => void;
   reset: () => void;
 
   // Async actions
@@ -102,6 +104,7 @@ const initialState = {
   sidebarCollapsed: getSavedSidebarCollapsed(),
   toast: null as ToastData | null,
   features: [] as FeatureInfo[],
+  bootstrapLoaded: false,
 };
 
 export const useUiStore = create<UiState>((set, get) => ({
@@ -156,6 +159,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   setToast: (toast) => set({ toast }),
 
   setFeatures: (features) => set({ features }),
+
+  setBootstrapLoaded: (bootstrapLoaded) => set({ bootstrapLoaded }),
 
   reset: () =>
     set({

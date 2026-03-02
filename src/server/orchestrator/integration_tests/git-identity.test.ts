@@ -84,7 +84,11 @@ describe("Integration: git identity flow", () => {
     // GIT_CONFIG_GLOBAL to an empty config — no identity
     port = await startApp();
 
-    const client = await TestClient.connect(port);
+    // Pre-create a session directory (bypasses git identity check)
+    fs.mkdirSync(sessionDir, { recursive: true });
+    sessionManager.track(sessionId, "Test session", sessionDir);
+
+    const client = await TestClient.connect(port, sessionId);
 
     // Should receive git_identity_required on connect (no global identity set)
     const identityMsg = await client.receiveType("git_identity_required");
@@ -104,13 +108,12 @@ describe("Integration: git identity flow", () => {
     // Now set the identity in the global config (GIT_CONFIG_GLOBAL is already set by buildApp)
     setGitIdentity("Test User", "test@example.com");
 
-    // Also init the session repo so activate_session works
+    // Also init the session repo so activation works
     await initSessionRepo();
+    sessionManager.track(sessionId, "Test session", sessionDir);
 
-    const client = await TestClient.connect(port);
-
-    // Activate the session
-    client.send({ type: "activate_session", sessionId });
+    // Connect directly to the session (auto-activates)
+    const client = await TestClient.connect(port, sessionId);
 
     // Should not receive git_identity_required — wait briefly to confirm
     try {
@@ -140,10 +143,8 @@ describe("Integration: git identity flow", () => {
     expect(log).toHaveLength(1);
     expect(log[0].author).toBe("Global User");
 
-    const client = await TestClient.connect(port);
-
-    // Activate session — should NOT prompt for identity
-    client.send({ type: "activate_session", sessionId });
+    sessionManager.track(sessionId, "Test session", sessionDir);
+    const client = await TestClient.connect(port, sessionId);
 
     try {
       while (true) {

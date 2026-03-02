@@ -3,12 +3,10 @@ import type { WsClientMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { HandlerContext } from "./types.js";
 import { getErrorMessage, validateImages, resolveFileAttachments, formatFileContext } from "../validation.js";
-import { generateBranchPrefix } from "../git-utils.js";
 import { generateSessionName } from "../session-namer.js";
 
 type WsSendMessage = Extract<WsClientMessage, { type: "send_message" }>;
 type WsAnswerQuestion = Extract<WsClientMessage, { type: "answer_question" }>;
-type WsHomeSendWithRepo = Extract<WsClientMessage, { type: "home_send_with_repo" }>;
 
 /** Map model identifiers to context window sizes. */
 export function getContextWindowSize(model: string): number {
@@ -58,6 +56,7 @@ function wireAgentListeners(
         const session = ctx.sessionManager.get(turnSessionId);
         if (session) {
           emitToViewers({ type: "session_started", session });
+          ctx.sseBroadcast("session_started", { session });
         }
         if (opts.isNewSession) {
           opts.persistUserMessage(turnSessionId);
@@ -67,6 +66,7 @@ function wireAgentListeners(
         const session = ctx.sessionManager.track(event.sessionId, title);
         ctx.setActiveAppSessionId(event.sessionId);
         emitToViewers({ type: "session_started", session });
+        ctx.sseBroadcast("session_started", { session });
         opts.persistUserMessage(event.sessionId);
       }
 
@@ -221,9 +221,9 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
   const currentAgent = ctx.agentFactory(ctx.getActiveAgentId());
   ctx.setAgent(currentAgent);
 
-  // Broadcast session_agent_started to all clients (sidebar activity)
+  // Notify via SSE for sidebar activity dots
   if (capturedSessionId) {
-    ctx.broadcast({ type: "session_agent_started", sessionId: capturedSessionId });
+    ctx.sseBroadcast("session_agent_started", { sessionId: capturedSessionId });
   }
 
   // Build images metadata for chat history persistence (inline base64)
@@ -358,9 +358,9 @@ async function runClaudeWithMessage(ctx: HandlerContext, opts: {
       }
     }
 
-    // Broadcast session_agent_finished to all clients (sidebar activity)
+    // Notify via SSE for sidebar activity dots
     if (capturedSessionId && !ctx.getIsClaudeRunning()) {
-      ctx.broadcast({ type: "session_agent_finished", sessionId: capturedSessionId });
+      ctx.sseBroadcast("session_agent_finished", { sessionId: capturedSessionId });
       if (runner) runner.onAgentFinished();
     }
   });
@@ -459,19 +459,70 @@ export async function handleSendMessage(ctx: HandlerContext, msg: WsSendMessage)
 
   const userText = msg.text;
 
-  // Determine session context: resume existing or create new
+  // Determine session context: resume existing or create new.
+  // Per-session WS sets activeAppSessionId from the URL, so default to it
+  // when the message doesn't include an explicit sessionId.
+  const effectiveSessionId = msg.sessionId ?? ctx.getActiveAppSessionId();
   let agentSessionId: string | undefined;
-  if (msg.sessionId) {
+  if (effectiveSessionId) {
     // Resuming an existing session
     // Clear the queue when switching to a different session
-    if (ctx.getActiveAppSessionId() && msg.sessionId !== ctx.getActiveAppSessionId() && ctx.getMessageQueue().length > 0) {
+    if (ctx.getActiveAppSessionId() && effectiveSessionId !== ctx.getActiveAppSessionId() && ctx.getMessageQueue().length > 0) {
       ctx.clearMessageQueue();
       ctx.send({ type: "queue_updated", queue: [] });
     }
-    await ctx.activateSession(msg.sessionId);
-    const session = ctx.sessionManager.get(msg.sessionId);
+    await ctx.activateSession(effectiveSessionId);
+    const session = ctx.sessionManager.get(effectiveSessionId);
     // Only resume if we have a real Claude CLI session ID
     agentSessionId = session?.agentSessionId;
+
+    // Graduate warm session on first message
+    if (session?.warm) {
+      ctx.sessionManager.setWarm(effectiveSessionId, false);
+
+      // Generate session name from the message text
+      const utilityModel = ctx.credentialStore.getUtilityModel();
+      if (utilityModel && session.workspaceDir) {
+        generateSessionName(userText, utilityModel).then(async (nameResult) => {
+          if (!nameResult) return;
+          try {
+            const currentBranch = session.branch;
+            if (currentBranch) {
+              const newBranchName = `${currentBranch}-${nameResult.slug}`;
+              const sessionGit = ctx.createGitManager(session.workspaceDir!);
+              await sessionGit.renameBranch(currentBranch, newBranchName);
+              ctx.sessionManager.setWorktreeInfo(effectiveSessionId, {
+                branch: newBranchName,
+                sessionType: session.sessionType ?? "worktree",
+              });
+            }
+            ctx.sessionManager.rename(effectiveSessionId, nameResult.title);
+            const updatedSession = ctx.sessionManager.get(effectiveSessionId);
+            if (updatedSession) {
+              ctx.send({ type: "session_renamed", session: updatedSession });
+              ctx.sseBroadcast("session_renamed", { session: updatedSession });
+            }
+          } catch (err) {
+            console.warn("[warm] Branch rename failed:", getErrorMessage(err));
+          }
+        }).catch((err) => {
+          console.warn("[warm] Session naming failed:", err);
+        });
+      }
+
+      // Broadcast session list via SSE so sidebar updates with the graduated session
+      ctx.sseBroadcast("session_list", { sessions: ctx.sessionManager.list() });
+
+      // Mark repo as used now that actual coding is starting
+      if (session.remoteUrl) {
+        ctx.repoStore.touch(session.remoteUrl);
+      }
+
+      // Start warming the next session for this repo in the background
+      if (session.remoteUrl) {
+        ctx.warmSessionForRepo(session.remoteUrl);
+      }
+    }
 
     // If session has a workspaceDir but it was deleted, handle recovery
     if (session?.workspaceDir) {
@@ -624,208 +675,4 @@ export async function handleAnswerQuestion(ctx: HandlerContext, msg: WsAnswerQue
     cwd: capturedSessionDir ?? ctx.workspaceDir,
   });
   ctx.broadcastLog("server", "Agent process started");
-}
-
-export async function handleHomeSendWithRepo(ctx: HandlerContext, msg: WsHomeSendWithRepo): Promise<void> {
-  // Check auth before spawning
-  if (!ctx.authManager.authenticated) {
-    ctx.authManager.checkCredentials();
-  }
-  if (!ctx.authManager.authenticated) {
-    ctx.send({ type: "auth_required" });
-    ctx.authManager.startOAuthFlow();
-    return;
-  }
-
-  const staleAgent = ctx.getAgent();
-  if (staleAgent) {
-    staleAgent.kill();
-  }
-
-  let repoUrl = typeof msg.repoUrl === "string" ? msg.repoUrl.trim() : "";
-  const text = typeof msg.text === "string" ? msg.text.trim() : "";
-  if (!repoUrl) {
-    ctx.send({ type: "error", message: "Repository URL is required" });
-    return;
-  }
-  if (!text) {
-    ctx.send({ type: "error", message: "Message text is required" });
-    return;
-  }
-  if (text.length > 10000) {
-    ctx.send({ type: "error", message: "Message too long (max 10000 characters)" });
-    return;
-  }
-
-  // Support owner/repo shorthand
-  if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(repoUrl)) {
-    repoUrl = `https://github.com/${repoUrl}.git`;
-  }
-
-  // Validate images if provided
-  const images: ImageAttachment[] | undefined = msg.images && msg.images.length > 0 ? msg.images : undefined;
-  if (images) {
-    const imageError = validateImages(images);
-    if (imageError) {
-      ctx.send({ type: "error", message: imageError });
-      return;
-    }
-  }
-
-  // Validate file attachments
-  const fileRefs: FileContextRef[] | undefined = msg.files && msg.files.length > 0 ? msg.files : undefined;
-  let validatedFiles: FileAttachment[] = [];
-  if (fileRefs) {
-    const dir = ctx.getActiveSessionDir() ?? ctx.workspaceDir;
-    const result = await resolveFileAttachments(fileRefs, dir);
-    if (result.error) {
-      ctx.send({ type: "error", message: result.error });
-      return;
-    }
-    validatedFiles = result.files;
-  }
-
-  try {
-    // Shared repo dir — one clone per repo URL, all sessions are worktrees
-    const repoDir = ctx.getSharedRepoDir(repoUrl);
-    const repoExists = await fs.stat(repoDir).then(() => true, () => false);
-
-    if (!repoExists) {
-      // First time: clone into shared repo dir
-      await fs.mkdir(repoDir, { recursive: true });
-      const cloneUrl = ctx.githubAuthManager.getAuthenticatedCloneUrl(repoUrl);
-      const repoGit = ctx.createRepoGit(repoDir);
-      await repoGit.clone(cloneUrl);
-      console.log("[home] Cloned repo to shared dir:", repoDir);
-    } else {
-      // Fetch latest from remote so the worktree starts up-to-date
-      try {
-        const repoGit = ctx.createRepoGit(repoDir);
-        await repoGit.fetch("origin");
-      } catch (err) {
-        console.warn("[home] Fetch in shared repo failed (continuing):", getErrorMessage(err));
-      }
-    }
-
-    // Create session dir (skip git init — worktree handles this)
-    const branchPrefix = generateBranchPrefix();
-    const created = await ctx.createSessionDir(text.slice(0, 80), { skipGitInit: true });
-    const appSessionId = created.appSessionId;
-    const sessionDir = created.sessionDir;
-
-    // Remove the empty dir (worktree add needs it absent)
-    await fs.rm(sessionDir, { recursive: true, force: true });
-
-    // Create worktree from shared repo, starting from latest remote default branch
-    const repoGit = ctx.createRepoGit(repoDir);
-
-    // Detect empty repo (no commits yet — HEAD is invalid, can't create worktree)
-    const isEmptyRepo = await repoGit.isEmpty();
-
-    if (isEmptyRepo) {
-      // Empty repo: can't use worktrees. Init a fresh repo with remote configured.
-      // Identity is inherited from global git config (GIT_CONFIG_GLOBAL).
-      await fs.mkdir(sessionDir, { recursive: true });
-      const sessionGit = ctx.createGitManager(sessionDir);
-      await sessionGit.init();
-      const cloneUrl = ctx.githubAuthManager.getAuthenticatedCloneUrl(repoUrl);
-      await sessionGit.addRemote("origin", cloneUrl);
-      // Create feature branch so Claude's work doesn't go directly to main
-      await sessionGit.checkoutNewBranch(branchPrefix);
-    } else {
-      let startPoint: string | undefined;
-      try {
-        const defaultBranch = await repoGit.getDefaultBranch();
-        if (defaultBranch && !defaultBranch.includes("(")) {
-          startPoint = `origin/${defaultBranch}`;
-        }
-      } catch {
-        // Fallback: let git use HEAD
-      }
-      // Retry worktree creation — another session's done handler may briefly
-      // hold a git lock on the shared repo (auto-commit, ref update, etc.).
-      let worktreeCreated = false;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          await repoGit.createWorktree(sessionDir, branchPrefix, startPoint);
-          worktreeCreated = true;
-          break;
-        } catch (wtErr) {
-          if (attempt < 2) {
-            console.warn(`[home] Worktree creation attempt ${attempt + 1} failed, retrying:`, getErrorMessage(wtErr));
-            await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
-          } else {
-            throw wtErr;
-          }
-        }
-      }
-      if (!worktreeCreated) {
-        throw new Error("Worktree creation failed after retries");
-      }
-    }
-
-    // Configure GitHub credentials in the worktree
-    // (identity is inherited from global git config automatically)
-    if (ctx.githubAuthManager.authenticated) {
-      ctx.githubAuthManager.configureGitCredentials(sessionDir);
-    }
-
-    // Store metadata and activate session
-    ctx.sessionManager.setRemoteUrl(appSessionId, repoUrl);
-    ctx.sessionManager.setWorktreeInfo(appSessionId, {
-      branch: branchPrefix,
-      sessionType: isEmptyRepo ? "standalone" : "worktree",
-    });
-    ctx.setActiveAppSessionId(appSessionId);
-    ctx.setActiveSessionDir(sessionDir);
-
-    const session = ctx.sessionManager.get(appSessionId);
-    if (session) {
-      ctx.send({ type: "session_started", session });
-    }
-
-    // Fire non-blocking utility model call to generate session name + branch slug
-    const utilityModel = ctx.credentialStore.getUtilityModel();
-    if (utilityModel) generateSessionName(text, utilityModel).then(async (nameResult) => {
-      if (!nameResult) return;
-      try {
-        const newBranchName = `${branchPrefix}-${nameResult.slug}`;
-        const sessionGit = ctx.createGitManager(sessionDir);
-        await sessionGit.renameBranch(branchPrefix, newBranchName);
-        ctx.sessionManager.rename(appSessionId, nameResult.title);
-        const currentSession = ctx.sessionManager.get(appSessionId);
-        ctx.sessionManager.setWorktreeInfo(appSessionId, {
-          branch: newBranchName,
-          sessionType: currentSession?.sessionType === "standalone" ? "standalone" : "worktree",
-        });
-        const finalSession = ctx.sessionManager.get(appSessionId);
-        if (finalSession) {
-          ctx.send({ type: "session_renamed", session: finalSession });
-        }
-      } catch (err) {
-        console.warn("[home] Branch rename failed:", getErrorMessage(err));
-      }
-    }).catch((err) => {
-      console.warn("[home] Session naming failed:", err);
-    });
-
-    // Ensure a runner exists for this session and attach to it
-    {
-      const registry = ctx.getRunnerRegistry();
-      const homeRunner = registry.getOrCreate(appSessionId, sessionDir, ctx.getActiveAgentId());
-      ctx.attachToRunner(homeRunner);
-    }
-
-    // Run Claude with the user's message
-    ctx.setIsClaudeRunning(true);
-    await runClaudeWithMessage(ctx, {
-      userText: text,
-      images,
-      validatedFiles,
-      permissionMode: msg.permissionMode,
-      isNewSession: true,
-    });
-  } catch (err) {
-    ctx.send({ type: "error", message: `Failed to setup repo: ${getErrorMessage(err)}` });
-  }
 }

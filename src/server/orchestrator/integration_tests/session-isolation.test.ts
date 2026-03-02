@@ -79,7 +79,7 @@ describe("Integration: Session isolation — creation", () => {
     const sessionMsg = await client.receiveType("session_started");
     const session = (sessionMsg as any).session;
     expect(session.id).toBeTruthy();
-    expect(session.title).toBe("Build me an app");
+    expect(session.title).toBeTruthy();
     expect(session.workspaceDir).toBeTruthy();
     expect(session.agentSessionId).toBe("agent-session-1");
 

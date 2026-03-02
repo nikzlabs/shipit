@@ -159,12 +159,8 @@ describe("container lifecycle integration", () => {
   it("creates a Docker container when a session is activated", async () => {
     const { id: sessionId } = await createSession(sessionManager, sessionsDir, "Container Test");
 
-    const client = await TestClient.connect(port);
-    // Drain initial messages
-    try { while (true) await client.receive(200); } catch { /* done */ }
-
-    // Activate the session — this should trigger runner creation → container creation
-    client.send({ type: "activate_session", sessionId });
+    // Connect directly to the session — auto-activates and triggers container creation
+    const client = await TestClient.connect(port, sessionId);
     // Wait for activation + async container creation
     await new Promise((r) => setTimeout(r, 500));
 
@@ -188,10 +184,7 @@ describe("container lifecycle integration", () => {
   it("destroys containers when app shuts down", async () => {
     const { id: sessionId } = await createSession(sessionManager, sessionsDir, "Shutdown Test");
 
-    const client = await TestClient.connect(port);
-    try { while (true) await client.receive(200); } catch { /* done */ }
-
-    client.send({ type: "activate_session", sessionId });
+    const client = await TestClient.connect(port, sessionId);
     await new Promise((r) => setTimeout(r, 500));
 
     expect(containerManager.size).toBeGreaterThanOrEqual(1);
@@ -225,10 +218,7 @@ describe("container lifecycle integration", () => {
   it("emits container_exited when Docker reports a die event", async () => {
     const { id: sessionId } = await createSession(sessionManager, sessionsDir, "Health Test");
 
-    const client = await TestClient.connect(port);
-    try { while (true) await client.receive(200); } catch { /* done */ }
-
-    client.send({ type: "activate_session", sessionId });
+    const client = await TestClient.connect(port, sessionId);
     await new Promise((r) => setTimeout(r, 500));
 
     expect(containerManager.get(sessionId)).toBeDefined();
@@ -257,15 +247,11 @@ describe("container lifecycle integration", () => {
     const { id: session1 } = await createSession(sessionManager, sessionsDir, "Session 1");
     const { id: session2 } = await createSession(sessionManager, sessionsDir, "Session 2");
 
-    const client = await TestClient.connect(port);
-    try { while (true) await client.receive(200); } catch { /* done */ }
-
-    // Activate session 1
-    client.send({ type: "activate_session", sessionId: session1 });
+    // Each session gets its own WS connection (per-session WS model)
+    const client1 = await TestClient.connect(port, session1);
     await new Promise((r) => setTimeout(r, 500));
 
-    // Activate session 2
-    client.send({ type: "activate_session", sessionId: session2 });
+    const client2 = await TestClient.connect(port, session2);
     await new Promise((r) => setTimeout(r, 500));
 
     const sc1 = containerManager.get(session1);
@@ -276,6 +262,7 @@ describe("container lifecycle integration", () => {
     expect(sc1!.containerIp).not.toBe(sc2!.containerIp);
     expect(sc1!.id).not.toBe(sc2!.id);
 
-    client.close();
+    client1.close();
+    client2.close();
   });
 });

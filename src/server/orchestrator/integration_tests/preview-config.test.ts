@@ -61,41 +61,37 @@ describe("Integration: Preview config and session-switch cleanup", () => {
     client.close();
   });
 
-  it("session switch broadcasts clear_logs and preview_status", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // initial preview_status
+  it("two sessions get independent preview state", async () => {
+    // Session A
+    const clientA = await TestClient.connect(port);
+    await clientA.receive(); // initial preview_status
 
-    // Create two sessions
-    const sessionsDir = path.join(tmpDir, "sessions");
-    fs.mkdirSync(sessionsDir, { recursive: true });
-
-    // Start session via send_message (creates session A)
-    client.send({ type: "send_message", text: "hello" });
+    // Start agent in session A
+    clientA.send({ type: "send_message", text: "hello" });
     const claude1 = await waitForClaude(() => lastClaude);
     claude1.finish();
 
     // Drain messages to settle
     try {
-      while (true) await client.receive(200);
+      while (true) await clientA.receive(200);
     } catch { /* done */ }
 
-    // Create a second session
-    client.send({ type: "new_session" });
-    try {
-      while (true) await client.receive(200);
-    } catch { /* done */ }
+    // Session B — new connection to a new session
+    const clientB = await TestClient.connect(port);
+    await clientB.receive(); // initial preview_status
 
-    // Start session B
-    client.send({ type: "send_message", text: "world" });
+    // Start agent in session B
+    clientB.send({ type: "send_message", text: "world" });
     const claude2 = await waitForClaude(() => lastClaude, claude1);
     claude2.finish();
 
     // Drain all messages from session B
     try {
-      while (true) await client.receive(200);
+      while (true) await clientB.receive(200);
     } catch { /* done */ }
 
-    client.close();
+    clientA.close();
+    clientB.close();
   });
 
   it("init_preview_config sends a message to Claude", async () => {

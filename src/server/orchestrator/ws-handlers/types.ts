@@ -12,6 +12,7 @@ import type { UsageManager } from "../usage.js";
 import type { AuthManager } from "../auth.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
+import type { RepoStore } from "../repo-store.js";
 import type { AgentId, AgentProcess, TerminalProcess } from "../../shared/types.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
 
@@ -33,8 +34,8 @@ export interface QueuedMessage {
 export interface HandlerContext {
   // === Communication ===
   send: (msg: WsServerMessage) => void;
-  broadcast: (msg: WsServerMessage) => void;
   broadcastLog: (source: WsLogEntry["source"], text: string) => void;
+  sseBroadcast: (event: string, data: unknown) => void;
 
   // === Per-connection state accessors ===
   getActiveDir: () => string;
@@ -105,6 +106,11 @@ export interface HandlerContext {
   authManager: AuthManager;
   agentRegistry: AgentRegistry;
   credentialStore: CredentialStore;
+
+  // === Repo management ===
+  repoStore: RepoStore;
+  /** Warm a session for a repo (called after graduation). */
+  warmSessionForRepo: (repoUrl: string) => void;
 
   // === Factories ===
   createSessionDir: (title: string, opts?: { skipGitInit?: boolean }) => Promise<{ appSessionId: string; sessionDir: string }>;
