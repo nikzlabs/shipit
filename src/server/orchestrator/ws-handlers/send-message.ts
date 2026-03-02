@@ -483,6 +483,7 @@ export async function handleSendMessage(ctx: HandlerContext, msg: WsSendMessage)
       // Generate session name from the message text
       const utilityModel = ctx.credentialStore.getUtilityModel();
       if (utilityModel && session.workspaceDir) {
+        // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget session naming
         generateSessionName(userText, utilityModel).then(async (nameResult) => {
           if (!nameResult) return;
           try {

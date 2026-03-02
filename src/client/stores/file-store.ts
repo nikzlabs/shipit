@@ -22,6 +22,8 @@ interface FileState {
 
   fetchTree: (sessionId: string) => Promise<void>;
   fetchFile: (sessionId: string, filePath: string) => Promise<void>;
+  fetchFileWithTree: (sessionId: string, filePath: string) => Promise<void>;
+  refreshFileContent: (sessionId: string, filePath: string) => Promise<void>;
   fetchDocs: (sessionId: string) => Promise<void>;
   fetchDoc: (sessionId: string, filePath: string) => Promise<void>;
 }
@@ -75,6 +77,24 @@ export const useFileStore = create<FileState>((set) => ({
     }
     const data = await res.json();
     set({ viewingFileContent: data.content, viewingFileBinary: data.isBinary });
+  },
+
+  fetchFileWithTree: async (sessionId, filePath) => {
+    const res = await fetch(`/api/sessions/${sessionId}/files/${filePath}?tree=true`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch file with tree: ${res.status}`);
+    }
+    const data = await res.json();
+    set({ tree: data.tree, viewingFileContent: data.content, viewingFileBinary: data.isBinary ?? false });
+  },
+
+  refreshFileContent: async (sessionId, filePath) => {
+    const res = await fetch(`/api/sessions/${sessionId}/files/${filePath}`);
+    if (!res.ok) {
+      throw new Error(`Failed to refresh file content: ${res.status}`);
+    }
+    const data = await res.json();
+    set({ viewingFileContent: data.content, viewingFileBinary: data.isBinary ?? false });
   },
 
   fetchDocs: async (sessionId) => {

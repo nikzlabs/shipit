@@ -9,10 +9,7 @@ import { useDeployStore } from "../deploy-store.js";
 import { usePrStore } from "../pr-store.js";
 import { useSettingsStore } from "../settings-store.js";
 import { useRepoStore } from "../repo-store.js";
-import type { ChatMessage } from "../../components/MessageList.js";
-import type { GitCommit } from "../../components/GitHistory.js";
-import type { FileTreeNode } from "../../components/FileTree.js";
-import type { ThreadInfo } from "../../components/ThreadIndicator.js";
+import { loadSessionHistory } from "../../utils/session-data.js";
 
 /**
  * Resets all session-specific state across all stores.
@@ -49,24 +46,7 @@ export function resumeSessionInternal(sessionId: string) {
   usePreviewStore.getState().reset();
 
   // Fetch session data via HTTP
-  fetch(`/api/sessions/${sessionId}/history`)
-    .then((res) => res.json())
-    .then((data: {
-      messages: Array<{ role: "user" | "assistant"; text: string; toolUse?: unknown[]; images?: unknown[]; files?: unknown[]; isError?: boolean }>;
-      commits: GitCommit[];
-      fileTree: FileTreeNode[];
-      threads: ThreadInfo[];
-      activeThreadId: string;
-    }) => {
-      useSessionStore.getState().setMessages(
-        data.messages.map((m) => ({ ...m, streaming: false } as ChatMessage)),
-      );
-      useGitStore.getState().setCommits(data.commits);
-      useFileStore.getState().setTree(data.fileTree);
-      useThreadStore.getState().setThreads(data.threads);
-      useThreadStore.getState().setActiveThreadId(data.activeThreadId);
-    })
-    .catch((err) => console.error("[api] Failed to load session history:", err));
+  loadSessionHistory(sessionId).catch((err) => console.error("[api] Failed to load session history:", err));
 }
 
 /**

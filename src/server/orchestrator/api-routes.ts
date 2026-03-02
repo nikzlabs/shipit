@@ -1040,8 +1040,10 @@ export async function registerApiRoutes(
           // Clone in background
           const repoUrl = repo.url;
           const repoDir = deps.getSharedRepoDir(repoUrl);
+          // eslint-disable-next-line no-restricted-syntax -- fire-and-forget background clone
           import("node:fs/promises").then(async (fsModule) => {
             try {
+              // eslint-disable-next-line no-restricted-syntax -- stat existence-check idiom
               const exists = await fsModule.stat(repoDir).then(() => true, () => false);
               if (!exists) {
                 await fsModule.mkdir(repoDir, { recursive: true });

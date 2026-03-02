@@ -30,6 +30,7 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, searchResults
       // Lazy-load the user's GitHub repos on first open
       if (searchResults.length === 0) {
         setLoadingRepos(true);
+        // eslint-disable-next-line no-restricted-syntax -- Promise two-arg form for loading state
         Promise.resolve(onSearch("")).then(
           () => setLoadingRepos(false),
           () => setLoadingRepos(false),
