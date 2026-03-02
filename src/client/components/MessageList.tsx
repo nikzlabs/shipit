@@ -639,7 +639,7 @@ export function MessageList({
   }, [isLoading]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    bottomRef.current?.scrollIntoView({ behavior: "instant" });
   }, [messages, isLoading]);
 
   // Scroll to the current search match when it changes
