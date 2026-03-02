@@ -91,11 +91,23 @@ src/
 
 ## Architecture
 
+Three-layer system: browser (React SPA) → orchestrator (Fastify) → session workers (Docker containers). Comprehensive architecture documentation lives in `docs/architecture/`:
+
+- **[overview.md](docs/architecture/overview.md)** — system layers, communication patterns, dependency injection, state scopes, persistence
+- **[server.md](docs/architecture/server.md)** — orchestrator: `buildApp()`, HTTP routes, services layer, WebSocket handlers, SSE broadcast, type system
+- **[client.md](docs/architecture/client.md)** — React SPA: Zustand stores, communication hooks, components, data flow, local storage
+- **[sessions.md](docs/architecture/sessions.md)** — session lifecycle: creation, warm pool, activation, runners, containers, idle disposal, reconnection
+- **[processes.md](docs/architecture/processes.md)** — session workers, Claude CLI, preview manager, file watcher, terminal, agent abstraction, resource limits
+- **[git.md](docs/architecture/git.md)** — GitManager (per-session), RepoGit (shared repo), worktrees, credentials, auto-commit flow
+- **[deployment.md](docs/architecture/deployment.md)** — deploy targets, framework detection, deploy flow
+
+Quick summary:
+
 - **Server**: Fastify with HTTP REST API (`/api/*`) and WebSocket (`/ws`). Most operations use HTTP (reads, mutations). WebSocket is reserved for streaming events (Claude output, file changes, preview status), per-connection state (session activation, agent selection), and real-time push (agent events, notifications). Business logic lives in `src/server/orchestrator/services/` — pure functions consumed by both HTTP routes and WS handlers.
-- **Client**: React 19 SPA. State lives in `App.tsx`. HTTP via `useApi` hook (`src/client/hooks/useApi.ts`), WebSocket via `useWebSocket` hook.
+- **Client**: React 19 SPA. State in Zustand stores (`src/client/stores/`). HTTP via `useApi` hook, WebSocket via `useSessionWebSocket` hook, SSE via `useServerEvents` hook.
 - **Dependency injection**: `buildApp()` accepts an `AppDeps` object so tests can inject stubs/fakes instead of real processes. All external dependencies (git, Claude CLI, Vite, port scanner, file watcher) are injectable.
-- **Process management**: Claude CLI, Vite, and git are managed via child processes. Claude and Vite managers extend `EventEmitter`.
-- **Session isolation**: Each session gets its own workspace directory (`/workspace/sessions/{uuid}/`) with independent git repo. Per-connection state tracks `activeSessionDir`.
+- **Process management**: Each session runs in a Docker container. The orchestrator communicates with session workers via HTTP (commands) and SSE (events). Claude CLI, Vite, and git are managed via child processes inside containers.
+- **Session isolation**: Each session gets its own workspace directory (`/workspace/sessions/{uuid}/`) with independent git repo and Docker container.
 - **Per-session GitManager**: `AppDeps.createGitManager` is a factory `(dir: string) => GitManager`. Each session gets its own instance. A separate `createRepoGit` factory provides `RepoGit` instances for shared-repo operations (clone, worktree lifecycle).
 
 For feature-specific details, see `docs/NNN-feature/plan.md`.
@@ -202,10 +214,20 @@ Every new feature must satisfy these before it's considered complete:
 
 ```
 docs/
+  architecture/
+    overview.md    — System layers, communication, DI, state scopes
+    server.md      — Orchestrator, routes, services, WS handlers
+    client.md      — React SPA, Zustand stores, hooks, components
+    sessions.md    — Session lifecycle, warm pool, containers
+    processes.md   — Session workers, Claude CLI, preview, agents
+    git.md         — GitManager, RepoGit, worktrees, credentials
+    deployment.md  — Deploy targets, framework detection, deploy flow
   NNN-feature-name/
     plan.md        — How the feature works, key files, patterns
     checklist.md   — Remaining work (only exists if there's open work)
 ```
+
+Architecture docs describe the implemented system — read these first when working on cross-cutting changes. Feature docs describe individual features and may include planned-but-not-implemented designs.
 
 Features are numbered by creation order. When implementing or modifying a feature, read its `plan.md` first. When a feature has remaining work, check its `checklist.md`. When adding a new feature, create `docs/NNN-new-feature/plan.md`.
 
