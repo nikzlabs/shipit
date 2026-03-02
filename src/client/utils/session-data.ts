@@ -39,6 +39,29 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
           detectedPorts: ps.detectedPorts,
         });
       }
+      // If preview state is not yet known (runner SSE still connecting),
+      // retry once after a delay. By then the runner should have received
+      // state from the worker and the HTTP endpoint will return known: true.
+      if (!ps.known) {
+        setTimeout(async () => {
+          if (usePreviewStore.getState().status) return; // WS delivered it in the meantime
+          try {
+            const retryRes = await fetch(`/api/sessions/${sessionId}/preview-status`);
+            if (retryRes.ok) {
+              const retry = await retryRes.json();
+              if (retry.known && !usePreviewStore.getState().status) {
+                usePreviewStore.getState().setStatus({
+                  running: retry.running,
+                  port: retry.port,
+                  url: retry.url,
+                  source: retry.source,
+                  detectedPorts: retry.detectedPorts,
+                });
+              }
+            }
+          } catch { /* non-critical */ }
+        }, 3000);
+      }
     }
   } catch {
     // Non-critical — WS will deliver the status eventually

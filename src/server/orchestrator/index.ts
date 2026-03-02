@@ -135,6 +135,11 @@ export interface AppDeps {
   sessionContainerManager?: import("./session-container.js").SessionContainerManager;
   /** Repo store instance. Defaults to `new RepoStore()`. */
   repoStore?: RepoStore;
+  /**
+   * Default idle timeout in milliseconds for session runners.
+   * Defaults to 600000 (10 minutes). Set lower in tests.
+   */
+  defaultRunnerIdleTimeoutMs?: number;
 }
 
 /**
@@ -315,6 +320,23 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const effectiveRunnerFactory: import("./session-runner.js").SessionRunnerFactory | undefined =
     deps.runnerFactory ?? (containerManager ? ((o: Parameters<import("./session-runner.js").SessionRunnerFactory>[0]) => {
       const mgr = containerManager!;
+
+      // Check for an existing container (runner was disposed but container kept running).
+      const existing = mgr.get(o.sessionId);
+
+      // Reconnect to running container — avoids expensive container restart cycle.
+      if (existing && existing.status === "running") {
+        console.log(`[container] Reconnecting to existing container for ${o.sessionId} at ${existing.workerUrl}`);
+        return new ContainerSessionRunner({
+          sessionId: o.sessionId,
+          sessionDir: o.sessionDir,
+          defaultAgentId: o.defaultAgentId,
+          workerUrl: existing.workerUrl,
+          idleTimeoutMs: o.idleTimeoutMs,
+        });
+      }
+
+      // Build config for fresh container creation.
       const config = mgr.buildConfig({
         sessionId: o.sessionId,
         sessionDir: o.sessionDir,
@@ -329,9 +351,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         idleTimeoutMs: o.idleTimeoutMs,
       });
 
-      console.log(`[container] Creating container for session ${o.sessionId}...`);
+      // If a stale container exists (starting/stopping/stopped), destroy it first.
+      const createPromise = existing
+        ? mgr.destroy(o.sessionId).then(() => mgr.create(config))
+        : mgr.create(config);
+
+      console.log(`[container] ${existing ? "Replacing stale" : "Creating"} container for session ${o.sessionId}...`);
       // eslint-disable-next-line no-restricted-syntax -- sync factory must return runner synchronously
-      mgr.create(config).then((sc) => {
+      createPromise.then((sc) => {
         console.log(`[container] Container ready for ${o.sessionId} at ${sc.workerUrl}`);
         runner.setWorkerUrl(sc.workerUrl);
       }).catch((err) => {
@@ -344,6 +371,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   const runnerRegistry = new SessionRunnerRegistry({
     ...(effectiveRunnerFactory ? { runnerFactory: effectiveRunnerFactory } : {}),
+    ...(deps.defaultRunnerIdleTimeoutMs != null ? { defaultIdleTimeoutMs: deps.defaultRunnerIdleTimeoutMs } : {}),
     sharedRepoDirResolver: (sessionId: string) => {
       const session = sessionManager.get(sessionId);
       if (session?.remoteUrl && session?.sessionType === "worktree") {
@@ -586,8 +614,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           sessionType: isEmptyRepo ? "standalone" : "worktree",
         });
 
-        // Create a runner (starts container, preview, file watcher, install)
+        // Create a runner and kick off worker resources (preview, file watcher)
+        // so they're running before the user connects.
         const runner = runnerRegistry.getOrCreate(appSessionId, sessionDir, defaultAgentId);
+        runner.attachViewer();
+        runner.detachViewer();
 
         // Store the warm session ID on the repo
         repoStore.setWarmSessionId(repoUrl, appSessionId);
@@ -728,6 +759,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       let perConnectionAgentId: AgentId = requestedAgent ?? defaultAgentId;
       let attachedRunner: SessionRunnerInterface | null = null;
       let runnerMessageListener: ((msg: WsServerMessage) => void) | null = null;
+      let previewRetryListener: ((msg: WsServerMessage) => void) | null = null;
+      let previewRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
       const send = (msg: WsServerMessage) => {
         if (socket.readyState === 1) {
@@ -756,16 +789,39 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         // stays at preview=null (shows a loading spinner).
         if (runner.previewStatusKnown) {
           send(runner.buildPreviewStatus());
+        } else {
+          // Preview state not yet known (SSE still connecting to worker).
+          // The normal message listener will forward the first preview_status,
+          // but React 18 batching can swallow it when many WS messages arrive
+          // in the same tick (setLastMessage keeps only the last value).
+          // Register a one-shot listener that re-sends preview_status after a
+          // short delay so it arrives in its own event-loop turn.
+          previewRetryListener = (msg: WsServerMessage) => {
+            if (msg.type === "preview_status") {
+              runner.off("message", previewRetryListener!);
+              previewRetryListener = null;
+              previewRetryTimer = setTimeout(() => {
+                previewRetryTimer = null;
+                if (socket.readyState === 1) {
+                  send(runner.buildPreviewStatus());
+                }
+              }, 300);
+            }
+          };
+          runner.on("message", previewRetryListener);
         }
       };
 
       const detachFromRunner = () => {
-        if (attachedRunner && runnerMessageListener) {
-          attachedRunner.off("message", runnerMessageListener);
+        if (attachedRunner) {
+          if (runnerMessageListener) attachedRunner.off("message", runnerMessageListener);
+          if (previewRetryListener) attachedRunner.off("message", previewRetryListener);
           attachedRunner.detachViewer();
         }
+        if (previewRetryTimer) { clearTimeout(previewRetryTimer); previewRetryTimer = null; }
         attachedRunner = null;
         runnerMessageListener = null;
+        previewRetryListener = null;
       };
 
       const scheduleAutoPush = (git: GitManager, _sendFn: typeof send) => {

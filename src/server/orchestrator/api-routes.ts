@@ -1221,8 +1221,10 @@ export async function registerApiRoutes(
         });
         sessionManager.setWarm(appSessionId, true);
 
-        // Create a runner so preview/file watcher start immediately
-        deps.runnerRegistry.getOrCreate(appSessionId, sessionDir, deps.defaultAgentId);
+        // Create a runner and kick off worker resources (preview, file watcher)
+        const runner = deps.runnerRegistry.getOrCreate(appSessionId, sessionDir, deps.defaultAgentId);
+        runner.attachViewer();
+        runner.detachViewer();
 
         // Start warming the next session in background
         deps.warmSessionForRepo?.(url);
