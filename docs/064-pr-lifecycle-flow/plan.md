@@ -4,9 +4,31 @@ status: planned
 
 # 064 — PR Lifecycle Flow
 
-The full PR lifecycle — create, monitor CI, fix failures, merge — should happen inline in the chat, not scattered across modals and status bars. Claude Code Web shows the right direction with its inline "Create pull request" button after code is written, but stops short: it doesn't show CI status, can't fix CI failures, and can't merge. This plan extends that pattern into a complete inline PR lifecycle.
+The full PR lifecycle — create, monitor CI, fix failures, merge — should happen inline in the chat, not scattered across modals and status bars. Claude Code Desktop already ships the most complete version of this: after opening a PR, a CI status bar appears with **Auto-fix** and **Auto-merge** toggles. Auto-fix automatically reads failure output and iterates; Auto-merge squash-merges once checks pass. This plan brings that same capability to ShipIt's inline card UI.
 
 See [competitors.md](./competitors.md) for detailed research on how GitHub Copilot, OpenAI Codex, Devin, Cursor, and others handle this lifecycle.
+
+### Reference: Claude Code Desktop (the bar to clear)
+
+From [Claude Code Desktop docs](https://code.claude.com/docs/en/desktop):
+
+> After you open a pull request, a CI status bar appears in the session. Claude Code uses the GitHub CLI to poll check results and surface failures.
+> - **Auto-fix**: when enabled, Claude automatically attempts to fix failing CI checks by reading the failure output and iterating.
+> - **Auto-merge**: when enabled, Claude merges the PR once all checks pass. The merge method is squash.
+> Use the Auto-fix and Auto-merge toggles in the CI status bar to enable either option. Claude Code also sends a desktop notification when CI finishes.
+
+Key features to match:
+1. CI status bar appears automatically after PR creation
+2. Auto-fix toggle — Claude reads CI failure output, fixes, pushes, re-runs (loop until green)
+3. Auto-merge toggle — squash-merge once all checks pass
+4. Desktop notification when CI finishes
+
+Where ShipIt should go further:
+1. **Inline in chat** (not just a status bar) — the card is part of the conversation narrative
+2. **One-click PR creation** with smart defaults (Desktop still requires `gh pr create` or a modal)
+3. **Per-check failure breakdown** visible in the card (not just "CI failed")
+4. **Merge method selection** (squash/merge/rebase, not squash-only)
+5. **Post-merge flow** ("Start Next Task" → new session on updated default branch)
 
 ## Problem
 
@@ -69,10 +91,12 @@ Claude writes code → auto-commit
 │    ✗ lint — Process completed with exit code 1            │
 │    ✗ test — 3 tests failed                                │
 │                                                           │
+│  Auto-fix ○  Auto-merge ○                                │
 │  [Fix CI Issues]  [View on GitHub]                        │
 └──────────────────────────────────────────────────────────┘
         │
         │ user clicks "Fix CI Issues"
+        │ (or auto-fix is ON → triggers automatically)
         ▼
 Claude receives: "CI failed on PR #42. Failures:
   lint: ... (logs)
@@ -91,8 +115,12 @@ Claude fixes → auto-commit → auto-push (PR exists)
 │                                                           │
 │  ✓ CI passed  5/5 checks                                 │
 │                                                           │
-│  [Merge ▾]  [View on GitHub]                              │
+│  Auto-fix ○  Auto-merge ○                                │
+│  [Squash and merge ▾]  [View on GitHub]                   │
 └──────────────────────────────────────────────────────────┘
+        │
+        │ (if auto-merge is ON → merges automatically)
+        ▼
         │
         │ user clicks "Merge"
         ▼
@@ -128,19 +156,18 @@ Clicking the button immediately creates a PR with:
 
 No modal. No form fields. The user can always edit title/description on GitHub afterward. For users who want control, a small "..." menu on the button offers "Create with options..." which opens the existing modal.
 
-**4. "Fix CI Issues" sends failure context to Claude automatically.**
+**4. Auto-fix and Auto-merge toggles (matching Claude Code Desktop).**
 
-One click:
-1. Fetches failed check run logs from GitHub API
-2. Sends a structured prompt to Claude with the failure details
-3. Claude fixes the issues, auto-commits, auto-pushes
-4. Card updates as CI re-runs
+The card includes two toggles, modeled directly on Claude Code Desktop's CI status bar:
 
-Optional: "Auto-fix CI" toggle that does this automatically when CI fails, without user clicking. Off by default.
+- **Auto-fix** (off by default): When CI fails, Claude automatically reads the failure output, fixes the issues, commits, and pushes. This loops until CI passes or a retry limit (3 attempts) is hit. When off, a manual "Fix CI Issues" button appears instead.
+- **Auto-merge** (off by default): When all CI checks pass, automatically squash-merges the PR. Requires auto-merge to be enabled in the GitHub repository settings. When off, a manual "Merge" button appears instead.
+
+Both toggles are per-session and persist until the session ends or the PR is merged. They're visible directly on the card (not buried in a menu), because they're the primary actions.
 
 **5. Merge dropdown matches GitHub's merge options.**
 
-The merge button has a dropdown caret for merge method (merge commit, squash, rebase). Defaults to squash. If CI is pending, clicking Merge enables auto-merge instead (existing behavior).
+The merge button has a dropdown caret for merge method (merge commit, squash, rebase). Defaults to squash (matching Desktop). Persists the user's last choice. If CI is pending, clicking Merge enables GitHub auto-merge instead (existing behavior). This goes beyond Desktop, which only supports squash.
 
 **6. The status bar becomes optional/minimal.**
 
@@ -148,15 +175,17 @@ With the inline cards handling the full lifecycle, `PrStatusBar` becomes redunda
 
 ## What Exists Today vs. What's New
 
-| Capability | Today | After |
-|---|---|---|
-| PR creation | Modal with form fields, triggered from toast | One-click inline button, smart defaults |
-| PR status | Status bar at page top | Live-updating inline card in chat |
-| CI monitoring | Polling badge in status bar | Inline card with per-check breakdown |
-| CI failure action | None (manual copy-paste) | "Fix CI Issues" button → Claude fixes |
-| Merge | Button in status bar | Button in inline card |
-| Post-merge | Nothing | "Merged" card + "Start Next Task" |
-| Auto-push | Always on (5s debounce) | Conditional: off until first explicit push |
+| Capability | Today | After | Claude Code Desktop |
+|---|---|---|---|
+| PR creation | Modal with form fields | One-click inline button | `gh pr create` or similar |
+| PR status | Status bar at page top | Live-updating inline card | CI status bar |
+| CI monitoring | Polling badge, no details | Per-check breakdown in card | Polls via `gh` CLI |
+| Auto-fix CI | None | Toggle on card (loop until green) | Toggle in status bar |
+| Manual fix CI | None (copy-paste) | "Fix CI Issues" button | N/A (auto-fix only) |
+| Auto-merge | None | Toggle on card (squash/merge/rebase) | Toggle in status bar (squash only) |
+| Manual merge | Button in status bar | Button in card with method dropdown | N/A (auto-merge only) |
+| Post-merge | Nothing | "Merged" card + "Start Next Task" | None documented |
+| Auto-push | Always on (5s debounce) | Conditional: off until PR exists | Not documented |
 
 ## Changes Required
 
@@ -245,7 +274,9 @@ When user clicks the button:
 
 Small "..." menu or secondary text link on the card opens the existing `PullRequestModal` for users who want to customize title, description, base branch, or draft status. The modal works exactly as today.
 
-### Phase 2: CI Failure Details + Fix CI
+### Phase 2: CI Failure Details + Auto-Fix
+
+This is the highest-value phase after the card itself — it's what makes the PR lifecycle truly autonomous. Claude Code Desktop already ships this as an "Auto-fix" toggle; we need feature parity plus better failure visibility.
 
 #### Fetch CI failure logs
 
@@ -274,9 +305,9 @@ interface CIFailureLog {
 }
 ```
 
-#### "Fix CI Issues" button
+#### Manual fix: "Fix CI Issues" button
 
-When clicked:
+When auto-fix is off, a "Fix CI Issues" button appears on the card. Clicking it:
 
 1. Fetches `GET /api/sessions/:id/pr/ci-logs`
 2. Constructs a prompt:
@@ -303,15 +334,26 @@ Please fix these CI failures. After fixing, the changes will be automatically pu
 4. Claude fixes → auto-commit → auto-push (PR exists, so auto-push is on)
 5. Card auto-updates as new CI runs start
 
-#### Auto-fix CI (optional, off by default)
+#### Auto-fix toggle
 
-A session-level toggle: when CI fails, automatically trigger the fix flow without user clicking. Useful for iterative development where the user trusts Claude to fix lint/test issues. Stored in session settings, surfaced as a toggle in the card's "..." menu.
+Matches Claude Code Desktop's behavior. When the toggle is ON:
 
-### Phase 3: One-Click Merge + Post-Merge
+1. CI polling detects failure state
+2. Automatically fetches CI logs (same as manual flow)
+3. Sends the fix prompt to Claude without user intervention
+4. Claude fixes → commits → pushes → CI re-runs
+5. If CI fails again, retry up to 3 times (prevent infinite loops)
+6. After 3 failed attempts, card shows "Auto-fix exhausted — manual intervention needed" and disables auto-fix
 
-#### Merge button
+The toggle is visible on the card itself (not hidden in a menu). Default: off. When turned on, it persists for the session.
 
-Appears in the card when CI passes. Split button with dropdown:
+**How Claude Code Desktop does it**: Desktop uses `gh` CLI to poll check results. When auto-fix is enabled and checks fail, Claude "automatically attempts to fix failing CI checks by reading the failure output and iterating." We replicate this via the GitHub API instead of `gh` CLI (we already have GitHub auth integration).
+
+### Phase 3: Merge + Auto-Merge + Post-Merge
+
+#### Manual merge button
+
+Appears in the card when CI passes and auto-merge is off. Split button with dropdown:
 
 ```
 [Squash and merge ▾]
@@ -320,11 +362,24 @@ Appears in the card when CI passes. Split button with dropdown:
   └─ Rebase and merge
 ```
 
-Default: squash (most common for feature branches). Persists the user's last choice.
+Default: squash (matching Claude Code Desktop). Persists the user's last choice. Goes beyond Desktop, which only supports squash.
 
 When CI is pending: button label becomes "Auto-merge when CI passes" and enables GitHub auto-merge.
 
 Implementation reuses existing `POST /api/sessions/:id/pr/merge` endpoint.
+
+#### Auto-merge toggle
+
+Matches Claude Code Desktop's behavior. When the toggle is ON:
+
+1. CI polling detects all checks passing
+2. Automatically calls merge endpoint with the selected merge method (default: squash)
+3. Card transitions to "merged" state
+4. Requires [auto-merge to be enabled in the GitHub repository settings](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-auto-merge-for-pull-requests-in-your-repository)
+
+The toggle is visible on the card alongside auto-fix. Default: off.
+
+**Combined auto-fix + auto-merge**: When both toggles are on, the full autonomous loop runs: CI fails → Claude fixes → pushes → CI re-runs → CI passes → auto-merge. This is the "fire and forget" mode for confident vibe-coding.
 
 #### Post-merge card state
 
