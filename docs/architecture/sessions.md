@@ -273,8 +273,6 @@ resetIdleTimer(overrideMs?):
 
 The timer resets on construction and when `onAgentFinished()` fires.
 
-**Short idle timer for unused runners**: `ContainerSessionRunner` tracks a `_hasBeenUsed` flag (set when an agent is started). When `detachViewer` brings viewerCount to 0 and `!_hasBeenUsed`, the idle timer is reset to **10 seconds** instead of the default 10 minutes. This ensures containers created for briefly-visited sessions (rapid "New Session" → switch away) are cleaned up quickly.
-
 ### Eviction
 
 When `getOrCreate` hits the concurrent runner limit (default 1000), it evicts the oldest runner that has no running agent and no viewers. Eviction calls `dispose()`, which:
@@ -418,8 +416,6 @@ detachViewer():
   viewerCount--
   // Does NOT disconnect SSE or stop resources
   // Container keeps running for fast re-attach
-  if (viewerCount === 0 && !_hasBeenUsed):
-    resetIdleTimer(10_000)  // 10s — quick cleanup for unused sessions
 ```
 
 ### startWorkerResources()
@@ -700,7 +696,6 @@ User clicks "+ New Session" on a repo
 |----------|---------|----------|---------|
 | `maxConcurrentRunners` | 1000 | SessionRunnerRegistry | Max runners in memory |
 | `defaultIdleTimeoutMs` | 600,000 (10 min) | SessionRunnerRegistry | Runner auto-dispose after no activity |
-| Fresh runner idle | 10,000 (10 s) | ContainerSessionRunner | Quick dispose for runners that never had agent activity |
 | Worker port | 9100 | session-worker.ts | HTTP server inside each container |
 | Container memory | 512 MB | session-container.ts | Docker memory limit |
 | Container CPU | 0.5 (50,000 quota) | session-container.ts | Docker CPU limit |

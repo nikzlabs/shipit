@@ -319,10 +319,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _idleTimeoutMs: number;
 
   private _disposed = false;
-  /** True once an agent has been started on this runner. Used to decide idle
-   *  timer duration: fresh runners get a short timer on detach so abandoned
-   *  sessions (brief WS connect → disconnect) are cleaned up quickly. */
-  private _hasBeenUsed = false;
 
   constructor(opts: {
     sessionId: string;
@@ -500,14 +496,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // Don't stop worker resources or SSE — the container keeps running and
     // the viewer may reattach quickly (session switching). Cleanup happens
     // in dispose() when the runner is actually torn down.
-    //
-    // For fresh runners that were never used (no agent started), use a short
-    // idle timer so abandoned sessions (brief WS connect → disconnect during
-    // rapid session switching) are cleaned up quickly instead of lingering
-    // for the full 10-minute default.
-    if (this._viewerCount === 0 && !this._hasBeenUsed) {
-      this.resetIdleTimer(10_000); // 10 seconds
-    }
   }
 
   get previewStatusKnown(): boolean { return this._previewStateReceived; }
@@ -590,7 +578,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * /agent/start, and ensures the SSE stream is connected for events.
    */
   async _startAgentViaProxy(agentId: AgentId, params: AgentRunParams): Promise<void> {
-    this._hasBeenUsed = true;
     await this._workerReady;
     await workerPost(this.workerUrl, "/agent/start", { agentId, params });
     if (!this.sseConnection) {
@@ -928,13 +915,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     }
   }
 
-  private resetIdleTimer(overrideMs?: number): void {
+  private resetIdleTimer(): void {
     if (this._idleTimer) clearTimeout(this._idleTimer);
     this._idleTimer = setTimeout(() => {
       if (!this._isRunning && this._messageQueue.length === 0 && this._viewerCount === 0) {
         this.dispose();
       }
-    }, overrideMs ?? this._idleTimeoutMs);
+    }, this._idleTimeoutMs);
   }
 
   get disposed(): boolean { return this._disposed; }
