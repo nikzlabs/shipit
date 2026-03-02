@@ -53,10 +53,8 @@ export function useMessageHandler(params: {
       // closing WS and process it after stores have been reset for the new session.
       const currentSessionId = session.sessionId;
       if (data.sessionId && currentSessionId && data.sessionId !== currentSessionId) {
-        console.log("[preview] Discarding stale preview_status from", data.sessionId);
         return;
       }
-      console.log("[preview] Received preview_status:", { running: data.running, port: data.port, url: data.url, source: data.source });
       preview.setStatus({
         running: data.running,
         port: data.port,
