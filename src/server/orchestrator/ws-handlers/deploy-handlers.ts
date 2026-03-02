@@ -1,11 +1,11 @@
 import crypto from "node:crypto";
 import path from "node:path";
 import type { WsClientMessage } from "../../shared/types.js";
-import type { HandlerContext } from "./types.js";
+import type { ConnectionCtx, AppCtx } from "./types.js";
 
 type WsInitiateDeploy = Extract<WsClientMessage, { type: "initiate_deploy" }>;
 
-export async function handleInitiateDeploy(ctx: HandlerContext, msg: WsInitiateDeploy): Promise<void> {
+export async function handleInitiateDeploy(ctx: ConnectionCtx & AppCtx, msg: WsInitiateDeploy): Promise<void> {
   const activeSessionDir = ctx.getActiveSessionDir();
   if (!activeSessionDir) {
     ctx.send({ type: "error", message: "No active session" });
@@ -97,7 +97,7 @@ export async function handleInitiateDeploy(ctx: HandlerContext, msg: WsInitiateD
   }
 }
 
-export function handleCancelDeploy(ctx: HandlerContext): void {
+export function handleCancelDeploy(ctx: AppCtx): void {
   ctx.deploymentManager.cancel();
 }
 

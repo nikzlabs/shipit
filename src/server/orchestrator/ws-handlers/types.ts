@@ -24,20 +24,21 @@ export interface QueuedMessage {
   permissionMode?: PermissionMode;
 }
 
+// ---------------------------------------------------------------------------
+// Sub-context interfaces — see docs/054-handler-context-refactor/plan.md
+// ---------------------------------------------------------------------------
+
 /**
- * Context bag passed to every extracted WebSocket handler function.
- * Provides access to per-connection state (via getters/setters) and
- * app-level managers (via direct references).
- *
- * Agent/claude state accessors now delegate to the active SessionRunner.
+ * Per-connection state and communication.
+ * Scoped to a single WebSocket connection's lifecycle.
  */
-export interface HandlerContext {
-  // === Communication ===
+export interface ConnectionCtx {
+  // Communication
   send: (msg: WsServerMessage) => void;
   broadcastLog: (source: WsLogEntry["source"], text: string) => void;
   sseBroadcast: (event: string, data: unknown) => void;
 
-  // === Per-connection state accessors ===
+  // Active session accessors
   getActiveDir: () => string;
   getActiveGitManager: () => GitManager;
   getActiveAppSessionId: () => string | undefined;
@@ -46,7 +47,19 @@ export interface HandlerContext {
   setActiveSessionDir: (dir: string | null) => void;
   activateSession: (sessionId: string) => void | Promise<void>;
 
-  // Agent/claude state (delegates to attached runner)
+  // Per-connection helpers
+  checkGitIdentity: (dir: string) => void;
+  readSystemPrompt: () => Promise<string | undefined>;
+  scheduleAutoPush: (git: GitManager, sendFn: (msg: WsServerMessage) => void) => void;
+  clearLogBuffer: () => void;
+}
+
+/**
+ * Per-session runner delegation.
+ * Agent/claude state accessors delegate to the attached SessionRunner.
+ */
+export interface RunnerCtx {
+  // Agent management
   agentFactory: (agentId: AgentId) => AgentProcess;
   getAgent: () => AgentProcess | null;
   setAgent: (a: AgentProcess | null) => void;
@@ -57,7 +70,7 @@ export interface HandlerContext {
   getWasInterrupted: () => boolean;
   setWasInterrupted: (v: boolean) => void;
 
-  // Accumulated turn state (delegates to attached runner)
+  // Accumulated turn state
   getTurnSummary: () => string;
   setTurnSummary: (s: string) => void;
   getAccumulatedText: () => string;
@@ -71,7 +84,7 @@ export interface HandlerContext {
   getNeedsNewMessageGroup: () => boolean;
   setNeedsNewMessageGroup: (v: boolean) => void;
 
-  // Message queue (delegates to attached runner)
+  // Message queue
   getMessageQueue: () => QueuedMessage[];
   clearMessageQueue: () => void;
 
@@ -79,10 +92,7 @@ export interface HandlerContext {
   getTerminal: () => TerminalProcess | null;
   setTerminal: (t: TerminalProcess | null) => void;
 
-  // Log buffer
-  clearLogBuffer: () => void;
-
-  // === Session runner ===
+  // Runner lifecycle
   /** Get the runner attached to this connection (if any). */
   getRunner: () => SessionRunnerInterface | null;
   /** Get the app-level runner registry. */
@@ -91,8 +101,14 @@ export interface HandlerContext {
   attachToRunner: (runner: SessionRunnerInterface) => void;
   /** Detach this connection from its current runner. */
   detachFromRunner: () => void;
+}
 
-  // === App-level managers ===
+/**
+ * App-wide manager references, factories, and config.
+ * Shared singletons that live for the lifetime of the server process.
+ */
+export interface AppCtx {
+  // Managers
   sessionManager: SessionManager;
   chatHistoryManager: ChatHistoryManager;
   createGitManager: (dir: string) => GitManager;
@@ -107,23 +123,26 @@ export interface HandlerContext {
   agentRegistry: AgentRegistry;
   credentialStore: CredentialStore;
 
-  // === Repo management ===
+  // Repo management
   repoStore: RepoStore;
   /** Warm a session for a repo (called after graduation). */
   warmSessionForRepo: (repoUrl: string) => void;
 
-  // === Factories ===
+  // Factories
   createSessionDir: (title: string, opts?: { skipGitInit?: boolean }) => Promise<{ appSessionId: string; sessionDir: string }>;
   generateText: (prompt: string, cwd?: string) => Promise<string>;
   getSharedRepoDir: (repoUrl: string) => string;
 
-  // === Per-connection helpers ===
-  checkGitIdentity: (dir: string) => void;
-  readSystemPrompt: () => Promise<string | undefined>;
-  scheduleAutoPush: (git: GitManager, sendFn: (msg: WsServerMessage) => void) => void;
-
-  // === Config ===
+  // Config
   workspaceDir: string;
   sessionsRoot: string;
   defaultAgentId: AgentId;
 }
+
+/**
+ * Full handler context — intersection of all sub-contexts.
+ * Handlers that need everything can use this type directly.
+ * Handlers with narrower needs should declare only the sub-contexts they use,
+ * making their dependencies explicit.
+ */
+export type HandlerContext = ConnectionCtx & RunnerCtx & AppCtx;
