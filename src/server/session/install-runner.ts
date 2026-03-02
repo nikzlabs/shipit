@@ -57,6 +57,21 @@ export function clearInstallMarker(workspaceDir: string): void {
   }
 }
 
+/**
+ * Delete node_modules in the given workspace directory.
+ * Used for native module crash recovery — a fresh install ensures the
+ * correct platform-specific binaries are resolved.
+ */
+export function deleteNodeModules(workspaceDir: string): void {
+  const nodeModulesDir = path.join(workspaceDir, "node_modules");
+  try {
+    fs.rmSync(nodeModulesDir, { recursive: true, force: true });
+    console.log("[install-runner] Deleted node_modules for clean reinstall");
+  } catch {
+    // May not exist — that's fine
+  }
+}
+
 export interface RunInstallOptions {
   /** Shell command to run (e.g. "npm install"). */
   command: string;

@@ -8,6 +8,7 @@ import {
   markInstallDone,
   clearInstallMarker,
   runInstallCommand,
+  deleteNodeModules,
 } from "./install-runner.js";
 
 describe("install-runner", () => {
@@ -133,6 +134,26 @@ describe("install-runner", () => {
         cwd: dir,
       });
       expect(fs.existsSync(path.join(dir, "installed.txt"))).toBe(true);
+    });
+
+  });
+
+  // --- deleteNodeModules ---
+
+  describe("deleteNodeModules", () => {
+    it("removes node_modules directory", () => {
+      const dir = setup();
+      const nmDir = path.join(dir, "node_modules");
+      fs.mkdirSync(path.join(nmDir, "some-package"), { recursive: true });
+      fs.writeFileSync(path.join(nmDir, "some-package", "index.js"), "", "utf-8");
+
+      deleteNodeModules(dir);
+      expect(fs.existsSync(nmDir)).toBe(false);
+    });
+
+    it("does not throw when node_modules does not exist", () => {
+      const dir = setup();
+      expect(() => deleteNodeModules(dir)).not.toThrow();
     });
   });
 });
