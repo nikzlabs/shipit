@@ -147,9 +147,24 @@ describe("GitHubAuthManager", () => {
 });
 
 describe("validateGitHubToken", () => {
-  it("returns null for invalid token (network)", async () => {
-    // Use a definitely-invalid token — the API will reject it
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns null for invalid token", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Unauthorized", { status: 401 }));
     const result = await validateGitHubToken("invalid_token_xxx");
     expect(result).toBeNull();
+  });
+
+  it("returns user info for valid token", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ login: "octocat", avatar_url: "https://example.com/avatar.png", id: 12345, name: "The Octocat" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const result = await validateGitHubToken("ghp_valid_token");
+    expect(result).toEqual({ username: "octocat", avatarUrl: "https://example.com/avatar.png", id: 12345, displayName: "The Octocat" });
   });
 });
