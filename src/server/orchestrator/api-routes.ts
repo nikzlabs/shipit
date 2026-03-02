@@ -308,6 +308,21 @@ export async function registerApiRoutes(
     };
   });
 
+  // GET /api/sessions/:id/preview-status — current preview state
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/preview-status", async (request, reply) => {
+    const session = sessionManager.get(request.params.id);
+    if (!session) {
+      reply.code(404).send({ error: "Session not found" });
+      return;
+    }
+    const runner = deps.runnerRegistry.get(request.params.id);
+    if (!runner?.previewStatusKnown) {
+      return { known: false };
+    }
+    const status = runner.buildPreviewStatus();
+    return { known: true, ...status };
+  });
+
   // GET /api/sessions/:id/deploy/history — deployment history
   app.get<{ Params: { id: string } }>("/api/sessions/:id/deploy/history", async (request, reply) => {
     const session = sessionManager.get(request.params.id);
