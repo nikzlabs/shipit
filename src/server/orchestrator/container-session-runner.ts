@@ -628,6 +628,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._workerPreviewPorts = [];
   }
 
+  /** Restart preview with a fresh install (clears install marker). */
+  async restartPreviewOnWorker(): Promise<void> {
+    this._lastPreviewExitCode = null;
+    this._previewLogBuffer = [];
+    this._workerPreviewPorts = [];
+    await workerPost(this.workerUrl, "/preview/restart");
+  }
+
   /** Get the file tree from the container's workspace. */
   async getFileTreeFromWorker(): Promise<unknown> {
     return workerGet(this.workerUrl, "/files/tree");
