@@ -747,8 +747,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         if (runner.running || runner.queueLength > 0 || runner.getTurnEventBuffer().length > 0) {
           send({ type: "session_status", sessionId: runner.sessionId, running: runner.running, queueLength: runner.queueLength });
         }
-        // Always send preview_status on attach so clients get initial state
-        send(runner.buildPreviewStatus());
+        // Send preview_status on attach only if the runner has definitive state.
+        // For container runners waiting on SSE, the runner will emit the status
+        // itself once the worker reports its preview state. Until then, the client
+        // stays at preview=null (shows a loading spinner).
+        if (runner.previewStatusKnown) {
+          send(runner.buildPreviewStatus());
+        }
       };
 
       const detachFromRunner = () => {

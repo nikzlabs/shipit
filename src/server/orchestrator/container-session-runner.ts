@@ -293,6 +293,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   // Preview (remote — runs inside container)
   private _workerPreviewPorts: number[] = [];
+  /** Set to true once we've received any preview state from the worker SSE. */
+  private _previewStateReceived = false;
 
   // Auto-push timer
   private _pushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -472,7 +474,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     console.log(`[container-runner:${this.sessionId}] attachViewer (count=${this._viewerCount}, disposed=${this._disposed})`);
     if (!this._workerResourcesStarted && !this._disposed) {
       this._workerResourcesStarted = true;
-      // Connect SSE first, then start resources so we don't miss events
+      // Connect SSE first, then start resources so we don't miss events.
+      // The worker replays current preview state on SSE connect (preview_ready
+      // if running). startWorkerResources() triggers /preview/start which always
+      // produces a definitive event (preview_ready, preview_config_missing, etc.).
+      // No timer needed — the event-driven flow covers all cases.
       this.connectEventStream().then(() => {
         if (!this._disposed) this.startWorkerResources();
       });
@@ -485,6 +491,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // the viewer may reattach quickly (session switching). Cleanup happens
     // in dispose() when the runner is actually torn down.
   }
+
+  get previewStatusKnown(): boolean { return this._previewStateReceived; }
 
   buildPreviewStatus(): WsServerMessage {
     if (this._workerPreviewPorts.length > 0) {
@@ -769,16 +777,19 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         // --- Preview events ---
 
         case "preview_ready":
+          this._previewStateReceived = true;
           this._workerPreviewPorts = data.ports ?? [];
           this.emitMessage(this.buildPreviewStatus());
           break;
 
         case "preview_stopped":
+          this._previewStateReceived = true;
           this._workerPreviewPorts = [];
           this.emitMessage(this.buildPreviewStatus());
           break;
 
         case "preview_config_missing":
+          this._previewStateReceived = true;
           this.emitMessage({
             type: "preview_config_missing",
             checked: data.checked ?? [],
@@ -786,6 +797,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           break;
 
         case "preview_config_error":
+          this._previewStateReceived = true;
           this.emitMessage({
             type: "preview_config_error",
             message: data.message ?? "",
@@ -793,6 +805,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           break;
 
         case "preview_install_status":
+          this._previewStateReceived = true;
           this.emitMessage({
             type: "install_status",
             ...data,
