@@ -86,6 +86,9 @@ describe("Integration: warm session lifecycle", () => {
     sessionManager = new SessionManager(path.join(tmpDir, "sessions.json"));
     repoStore = new RepoStore(path.join(tmpDir, "repos.json"));
 
+    // Prevent git from prompting for credentials (hangs in CI/test)
+    process.env.GIT_TERMINAL_PROMPT = "0";
+
     const credentialStore = createTestCredentialStore(tmpDir);
 
     // Create the shared repo directory BEFORE buildApp — warmSessionForRepo
@@ -119,6 +122,7 @@ describe("Integration: warm session lifecycle", () => {
   });
 
   afterEach(async () => {
+    delete process.env.GIT_TERMINAL_PROMPT;
     await app.close();
     await new Promise((r) => setTimeout(r, 50));
     try {
@@ -149,7 +153,7 @@ describe("Integration: warm session lifecycle", () => {
       // Warm sessions are invisible in the normal session list
       const visibleSessions = sessionManager.list();
       expect(visibleSessions.find((s) => s.id === repo.warmSessionId)).toBeUndefined();
-    });
+    }, 15000);
 
     it("warm session has a worktree directory with repo files", async () => {
       await waitFor(
@@ -168,7 +172,7 @@ describe("Integration: warm session lifecycle", () => {
       const readme = path.join(session.workspaceDir!, "README.md");
       const content = await fsp.readFile(readme, "utf-8");
       expect(content).toBe("# test\n");
-    });
+    }, 15000);
   });
 
   describe("claim-session with warm session", () => {
@@ -193,7 +197,7 @@ describe("Integration: warm session lifecycle", () => {
 
       // The repo's warmSessionId should be cleared after claiming
       expect(repoStore.get(REPO_URL)!.warmSessionId).toBeUndefined();
-    });
+    }, 15000);
 
     it("triggers re-warming after claim", async () => {
       await waitFor(
@@ -223,7 +227,7 @@ describe("Integration: warm session lifecycle", () => {
       const newSession = sessionManager.get(newWarmId);
       expect(newSession).toBeDefined();
       expect(newSession!.warm).toBe(true);
-    });
+    }, 25000);
   });
 
   describe("graduation on first message", () => {
@@ -270,7 +274,7 @@ describe("Integration: warm session lifecycle", () => {
 
       lastClaude.finish("test-session");
       client.close();
-    });
+    }, 15000);
 
     it("does not trigger graduation for non-warm sessions", async () => {
       // Create a normal (non-warm) session

@@ -32,8 +32,20 @@ export class RepoGit {
 
   /**
    * Get the default branch name from a remote (e.g., "main" or "master").
+   * Tries local refs first to avoid network calls and credential prompts,
+   * then falls back to querying the remote.
    */
   async getDefaultBranch(remote = "origin"): Promise<string> {
+    // Try local symbolic-ref first (set by git clone, no network call)
+    try {
+      const head = await this.git.raw(["symbolic-ref", `refs/remotes/${remote}/HEAD`]);
+      const match = head.trim().match(/refs\/remotes\/[^/]+\/(.+)/);
+      if (match) return match[1];
+    } catch {
+      // symbolic-ref not set — fall through
+    }
+
+    // Fall back to remote query (requires network + credentials)
     const result = await this.git.remote(["show", remote]);
     const match = (result ?? "").match(/HEAD branch:\s*(\S+)/);
     return match?.[1] ?? "main";
