@@ -368,11 +368,18 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // SSE endpoint — long-lived HTTP response with text/event-stream
   app.get("/api/events", (request, reply) => {
-    reply.raw.writeHead(200, {
+    const origin = request.headers.origin;
+    const headers: Record<string, string> = {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
-    });
+    };
+    // Allow cross-origin requests in dev (client on different port)
+    if (origin) {
+      headers["Access-Control-Allow-Origin"] = origin;
+      headers["Access-Control-Allow-Credentials"] = "true";
+    }
+    reply.raw.writeHead(200, headers);
 
     const client: SSEClient = {
       write: (data: string) => reply.raw.write(data),

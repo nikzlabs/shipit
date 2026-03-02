@@ -95,10 +95,24 @@ export function useServerEvents(): void {
       fullResetAllStores();
     });
 
-    es.addEventListener("error", (e: MessageEvent) => {
-      const data = JSON.parse(e.data) as { message: string };
-      console.error("[sse] Server error:", data.message);
+    // Native EventSource "error" fires on connection drop — no data to parse.
+    // Custom server-sent "server_error" events carry a JSON payload.
+    es.addEventListener("server_error", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as { message: string };
+        console.error("[sse] Server error:", data.message);
+      } catch {
+        // Malformed data — ignore
+      }
     });
+
+    es.onerror = () => {
+      // Connection lost — EventSource auto-reconnects.
+      // Only log if the connection was previously open.
+      if (es.readyState === EventSource.CLOSED) {
+        console.warn("[sse] Connection closed");
+      }
+    };
 
     return () => {
       es.close();
