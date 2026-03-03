@@ -153,6 +153,7 @@ describe("standby container pre-warming", () => {
   let containerManager: SessionContainerManager;
   let fakeDocker: ReturnType<typeof createFakeDocker>;
   let origGitTerminalPrompt: string | undefined;
+  let origGitConfigGlobal: string | undefined;
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-standby-"));
@@ -161,6 +162,8 @@ describe("standby container pre-warming", () => {
 
     origGitTerminalPrompt = process.env.GIT_TERMINAL_PROMPT;
     process.env.GIT_TERMINAL_PROMPT = "0";
+
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
 
     fakeDocker = createFakeDocker();
     containerManager = new SessionContainerManager({
@@ -172,6 +175,10 @@ describe("standby container pre-warming", () => {
       stackName: "shipit-test",
     });
 
+    // Set up credential store (and GIT_CONFIG_GLOBAL) BEFORE creating the
+    // shared repo — git commit needs a valid identity config.
+    const credentialStore = createTestCredentialStore(tmpDir);
+
     // Create shared repo
     const repoDir = getSharedRepoDirForUrl(tmpDir, REPO_URL);
     createSharedRepo(repoDir);
@@ -179,8 +186,6 @@ describe("standby container pre-warming", () => {
     // Add repo before buildApp so startup warming fires
     repoStore.add(REPO_URL);
     repoStore.setReady(REPO_URL);
-
-    const credentialStore = createTestCredentialStore(tmpDir);
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
@@ -206,6 +211,11 @@ describe("standby container pre-warming", () => {
       delete process.env.GIT_TERMINAL_PROMPT;
     } else {
       process.env.GIT_TERMINAL_PROMPT = origGitTerminalPrompt;
+    }
+    if (origGitConfigGlobal === undefined) {
+      delete process.env.GIT_CONFIG_GLOBAL;
+    } else {
+      process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
     }
     await app.close();
     await new Promise((r) => setTimeout(r, 50));
@@ -310,7 +320,6 @@ describe("standby container pre-warming", () => {
       "standby ready",
     );
 
-    const containersBeforeActivation = fakeDocker._containers.size;
     const standbyContainerId = containerManager.get(standbySessionId)!.id;
 
     // Claim the standby session
@@ -324,11 +333,12 @@ describe("standby container pre-warming", () => {
     const client = await TestClient.connect(port, standbySessionId);
     await new Promise((r) => setTimeout(r, 500));
 
-    // Same container reused — no new container created
+    // Same container reused — no new container created for this session.
+    // (Total container count may increase because the claim fires off
+    // re-warming with a new standby for the next warm session.)
     const sc = containerManager.get(standbySessionId);
     expect(sc).toBeDefined();
     expect(sc!.id).toBe(standbyContainerId);
-    expect(fakeDocker._containers.size).toBe(containersBeforeActivation);
 
     // Standby flag should be cleared after claiming
     expect(containerManager.isStandby(standbySessionId)).toBe(false);
