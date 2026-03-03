@@ -3,12 +3,15 @@ import type { LogEntry } from "../components/TerminalPanel.js";
 
 export type TerminalMode = "logs" | "shell";
 
+/** Monotonically increasing ID counter for log entries. */
+let nextEntryId = 1;
+
 export interface TerminalState {
   entries: LogEntry[];
   mode: TerminalMode;
   shellStarted: boolean;
 
-  addEntry: (entry: LogEntry) => void;
+  addEntry: (entry: Omit<LogEntry, "id">) => void;
   clearEntries: () => void;
   setMode: (mode: TerminalMode) => void;
   setShellStarted: (started: boolean) => void;
@@ -26,7 +29,7 @@ export const useTerminalStore = create<TerminalState>((set) => ({
 
   addEntry: (entry) =>
     set((state) => ({
-      entries: [...state.entries, entry].slice(-500),
+      entries: [...state.entries, { ...entry, id: nextEntryId++ }].slice(-500),
     })),
 
   clearEntries: () =>

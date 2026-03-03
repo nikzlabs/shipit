@@ -9,7 +9,9 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
+let nextId = 1;
 const entry = (source: LogEntry["source"], text: string): LogEntry => ({
+  id: nextId++,
   source,
   text,
   timestamp: "2025-01-15T12:00:00.000Z",
@@ -269,6 +271,45 @@ describe("TerminalPanel", () => {
       fireEvent.click(errButton);
 
       expect(screen.getByText(/No logs match the current filter/)).toBeInTheDocument();
+    });
+  });
+
+  describe("shell tab persistence", () => {
+    it("keeps shell content mounted when switching to logs mode", () => {
+      const { rerender } = render(
+        <TerminalPanel
+          entries={[]}
+          {...defaultProps}
+          terminalMode="shell"
+          shellContent={<div data-testid="shell-content">Shell here</div>}
+        />,
+      );
+
+      expect(screen.getByTestId("shell-content")).toBeInTheDocument();
+
+      // Switch to logs — shell content should still be in the DOM (hidden)
+      rerender(
+        <TerminalPanel
+          entries={[]}
+          {...defaultProps}
+          terminalMode="logs"
+          shellContent={<div data-testid="shell-content">Shell here</div>}
+        />,
+      );
+
+      expect(screen.getByTestId("shell-content")).toBeInTheDocument();
+    });
+  });
+
+  describe("auto-scroll", () => {
+    it("uses instant scroll behavior for new entries", () => {
+      const entries = [entry("server", "line 1")];
+      const { rerender } = render(<TerminalPanel entries={entries} {...defaultProps} />);
+
+      const newEntries = [...entries, entry("server", "line 2")];
+      rerender(<TerminalPanel entries={newEntries} {...defaultProps} />);
+
+      expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ behavior: "instant" });
     });
   });
 });
