@@ -320,7 +320,6 @@ describe("standby container pre-warming", () => {
       "standby ready",
     );
 
-    const containersBeforeActivation = fakeDocker._containers.size;
     const standbyContainerId = containerManager.get(standbySessionId)!.id;
 
     // Claim the standby session
@@ -334,11 +333,12 @@ describe("standby container pre-warming", () => {
     const client = await TestClient.connect(port, standbySessionId);
     await new Promise((r) => setTimeout(r, 500));
 
-    // Same container reused — no new container created
+    // Same container reused — no new container created for this session.
+    // (Total container count may increase because the claim fires off
+    // re-warming with a new standby for the next warm session.)
     const sc = containerManager.get(standbySessionId);
     expect(sc).toBeDefined();
     expect(sc!.id).toBe(standbyContainerId);
-    expect(fakeDocker._containers.size).toBe(containersBeforeActivation);
 
     // Standby flag should be cleared after claiming
     expect(containerManager.isStandby(standbySessionId)).toBe(false);
