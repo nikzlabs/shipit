@@ -18,6 +18,7 @@ import { useThreadStore } from "../stores/thread-store.js";
 import { useDeployStore } from "../stores/deploy-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { usePrStore } from "../stores/pr-store.js";
 
 export function useMessageHandler(params: {
   lastMessage: MessageEvent | null;
@@ -469,6 +470,19 @@ export function useMessageHandler(params: {
       if (data.sessionId === useSessionStore.getState().sessionId) {
         session.setIsLoading(data.running);
       }
+    }
+
+    if (data.type === "pr_lifecycle_update") {
+      usePrStore.getState().updateCard(data.sessionId, {
+        cardId: data.cardId,
+        phase: data.phase,
+        files: data.files,
+        totalInsertions: data.totalInsertions,
+        totalDeletions: data.totalDeletions,
+        pr: data.pr,
+        checks: data.checks,
+        errorMessage: data.errorMessage,
+      });
     }
 
     // session_agent_started/finished, repo_status, repo_warm_ready, repo_list

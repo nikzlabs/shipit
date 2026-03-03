@@ -8,6 +8,7 @@ import type {
   WsGitHubBranches,
   WsGitHubSearchResults,
   WsPrStatus,
+  WsPrLifecycleUpdate,
 } from "./github-types.js";
 import type { WsTerminalOutput, WsTerminalExit, WsTerminalReconnecting, WsLogEntry, WsClearLogs } from "./terminal-types.js";
 import type { WsThreadList, WsThreadSwitched, WsThreadForked } from "./thread-types.js";
@@ -359,4 +360,5 @@ export type WsServerMessage =
   | WsSessionAgentFinished
   | WsRepoStatus
   | WsRepoWarmReady
-  | WsRepoList;
+  | WsRepoList
+  | WsPrLifecycleUpdate;

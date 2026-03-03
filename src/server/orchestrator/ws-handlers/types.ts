@@ -13,6 +13,7 @@ import type { AuthManager } from "../auth.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { RepoStore } from "../repo-store.js";
+import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { AgentId, AgentProcess, TerminalProcess } from "../../shared/types.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
 
@@ -132,6 +133,9 @@ export interface AppCtx {
   createSessionDir: (title: string, opts?: { skipGitInit?: boolean }) => Promise<{ appSessionId: string; sessionDir: string }>;
   generateText: (prompt: string, cwd?: string) => Promise<string>;
   getSharedRepoDir: (repoUrl: string) => string;
+
+  // PR lifecycle
+  prStatusPoller: PrStatusPoller;
 
   // Config
   workspaceDir: string;

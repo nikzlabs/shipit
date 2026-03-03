@@ -45,7 +45,7 @@ import { FeaturesPanel } from "./components/FeaturesPanel.js";
 // eslint-disable-next-line no-restricted-syntax -- lazy() named-export pattern
 const DiffPanel = lazy(() => import("./components/DiffPanel.js").then(m => ({ default: m.DiffPanel })));
 import { PullRequestModal } from "./components/PullRequestModal.js";
-import { PrStatusBar } from "./components/PrStatusBar.js";
+import { PrLifecycleCard } from "./components/PrLifecycleCard.js";
 import { Toast } from "./components/Toast.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentPicker, type AgentOption } from "./components/AgentPicker.js";
@@ -140,7 +140,6 @@ export default function App() {
   const prDescError = usePrStore((s) => s.descError);
   const prGeneratedDesc = usePrStore((s) => s.generatedDesc);
   const importSearchResults = usePrStore((s) => s.importSearchResults);
-  const prStatus = usePrStore((s) => s.status);
 
   const permissionMode = useSettingsStore((s) => s.permissionMode);
   const pendingFiles = useSettingsStore((s) => s.pendingFiles);
@@ -574,15 +573,6 @@ export default function App() {
     send({ type: "set_agent", agentId });
   }, [send]);
 
-  const handleMergePr = useCallback(async (method: "merge" | "squash" | "rebase") => {
-    const sid = useSessionStore.getState().sessionId;
-    if (!sid) return;
-    const result = await usePrStore.getState().mergePr(sid, method);
-    if (result?.success && !result.autoMergeEnabled) {
-      useUiStore.getState().setToast({ message: "Pull request merged" });
-    }
-  }, []);
-
   const handleInstructionsSave = useCallback(async (content: string) => {
     await useSettingsStore.getState().saveInstructions(content).catch(() => {});
     useUiStore.getState().setSettingsOpen(false);
@@ -653,7 +643,10 @@ export default function App() {
       {showHomeScreen ? (
         <HomeScreen onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)} hasRepos={repos.length > 0} />
       ) : (
-        <MessageList messages={messages} isLoading={isLoading} activity={activity} searchMatches={search.matches} currentMatch={search.currentMatch} onEditMessage={handleEditMessage} onAnswerQuestion={handleAnswerQuestion} checkpoints={checkpointDividers} />
+        <>
+          <MessageList messages={messages} isLoading={isLoading} activity={activity} searchMatches={search.matches} currentMatch={search.currentMatch} onEditMessage={handleEditMessage} onAnswerQuestion={handleAnswerQuestion} checkpoints={checkpointDividers} />
+          {wsSessionId && <PrLifecycleCard sessionId={wsSessionId} />}
+        </>
       )}
       {!showHomeScreen && !showNewSessionView && (
         <div className="border-t border-gray-200 dark:border-gray-800 px-4 py-1.5 flex items-center gap-2">
@@ -773,7 +766,7 @@ export default function App() {
 
       {!showNewSessionView && wsSessionId && <ConnectionBanner status={status} reconnectAttempt={reconnectAttempt} onReconnect={reconnect} />}
 
-      {prStatus && <PrStatusBar baseBranch={prStatus.baseBranch} headBranch={prStatus.headBranch} insertions={prStatus.insertions} deletions={prStatus.deletions} prUrl={prStatus.url} prNumber={prStatus.number} checks={prStatus.checks} autoMergeEnabled={prStatus.autoMergeEnabled} mergeable={prStatus.mergeable} onMerge={handleMergePr} />}
+      {/* PR lifecycle card is rendered inline in the message list via PrLifecycleCard */}
 
       {isMobile ? (
         <>

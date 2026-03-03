@@ -124,3 +124,68 @@ export interface WsMergePrResult {
   message: string;
   autoMergeEnabled?: boolean;
 }
+
+// ---- PR lifecycle types ----
+
+/** Summary of a PR's current status, used by both the inline card and sidebar icons. */
+export interface PrStatusSummary {
+  sessionId: string;
+  prNumber: number;
+  prUrl: string;
+  prTitle: string;
+  prState: "open" | "merged";
+  baseBranch: string;
+  headBranch: string;
+  insertions: number;
+  deletions: number;
+  checks: {
+    state: "pending" | "success" | "failure" | "none";
+    total: number;
+    passed: number;
+    failed: number;
+    pending: number;
+  };
+  mergeable: boolean;
+  autoMergeEnabled: boolean;
+}
+
+/** File stat for the "ready" phase of the PR lifecycle card. */
+export interface PrFileStat {
+  path: string;
+  status: string; // M, A, D, R, etc.
+  insertions: number;
+  deletions: number;
+}
+
+/** Inline PR lifecycle card state, sent as a WS message. */
+export interface WsPrLifecycleUpdate {
+  type: "pr_lifecycle_update";
+  sessionId: string;
+  /** Stable card ID — used to update the card in place. */
+  cardId: string;
+  phase: "ready" | "creating" | "open" | "merged" | "error";
+  /** Present in "ready" phase — files changed by the agent turn. */
+  files?: PrFileStat[];
+  totalInsertions?: number;
+  totalDeletions?: number;
+  /** Present in "open" and "merged" phases — PR info. */
+  pr?: {
+    number: number;
+    title: string;
+    url: string;
+    baseBranch: string;
+    headBranch: string;
+    insertions: number;
+    deletions: number;
+  };
+  /** Present in "open" phase — CI check status. */
+  checks?: {
+    state: "pending" | "success" | "failure" | "none";
+    total: number;
+    passed: number;
+    failed: number;
+    pending: number;
+  };
+  /** Present in "error" phase — error message. */
+  errorMessage?: string;
+}

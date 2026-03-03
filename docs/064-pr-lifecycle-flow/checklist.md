@@ -3,30 +3,30 @@
 ## Phase 1: Inline Card + CI Status Infrastructure
 
 ### Server
-- [ ] Add `PrStatusSummary` type to `github-types.ts`
-- [ ] Add `pr_lifecycle_update` message type to `ws-server-messages.ts`
-- [ ] Create `PrStatusPoller` class (`pr-status-poller.ts`) — GraphQL query, per-repo polling, SSE broadcast
-- [ ] Add `POST /api/sessions/:id/pr/quick` endpoint — push, generate description, create PR
-- [ ] Add `quickCreatePr()` service function with conversation-aware description generation
-- [ ] Emit `pr_lifecycle_update` after agent turn with diff stats (`send-message.ts`)
-- [ ] Wire `PrStatusPoller` into `buildApp()` / `index.ts` — instantiate, start/stop with sessions
-- [ ] Add `pr_status` SSE event, send snapshot on SSE connect
-- [ ] Remove per-session HTTP polling endpoint usage (keep endpoint for backward compat)
+- [x] Add `PrStatusSummary` type to `github-types.ts`
+- [x] Add `pr_lifecycle_update` message type to `ws-server-messages.ts`
+- [x] Create `PrStatusPoller` class (`pr-status-poller.ts`) — GraphQL query, per-repo polling, SSE broadcast
+- [x] Add `POST /api/sessions/:id/pr/quick` endpoint — push, generate description, create PR
+- [x] Add `quickCreatePr()` service function with conversation-aware description generation
+- [x] Emit `pr_lifecycle_update` after agent turn with diff stats (`send-message.ts`)
+- [x] Wire `PrStatusPoller` into `buildApp()` / `index.ts` — instantiate, start/stop with sessions
+- [x] Add `pr_status` SSE event, send snapshot on SSE connect
+- [x] Remove per-session HTTP polling endpoint usage (keep endpoint for backward compat)
 
 ### Client
-- [ ] Create `PrLifecycleCard` component — renders all phases (ready, creating, open, merged, error)
-- [ ] Render `PrLifecycleCard` in `MessageList` for `pr_lifecycle_update` messages
-- [ ] Rewrite `pr-store` — SSE-driven state, `quickCreate()` action, per-session status map
-- [ ] Handle `pr_status` SSE event in `useServerEvents`
-- [ ] Handle `pr_lifecycle_update` in `useMessageHandler`
-- [ ] Remove PR status polling from `useConnectionSync`
-- [ ] Add PR status icons to sidebar session cards
-- [ ] Remove `PrStatusBar` component and its rendering in `App.tsx`
+- [x] Create `PrLifecycleCard` component — renders all phases (ready, creating, open, merged, error)
+- [x] Render `PrLifecycleCard` in `MessageList` for `pr_lifecycle_update` messages
+- [x] Rewrite `pr-store` — SSE-driven state, `quickCreate()` action, per-session status map
+- [x] Handle `pr_status` SSE event in `useServerEvents`
+- [x] Handle `pr_lifecycle_update` in `useMessageHandler`
+- [x] Remove PR status polling from `useConnectionSync`
+- [x] Add PR status icons to sidebar session cards
+- [x] Remove `PrStatusBar` component and its rendering in `App.tsx`
 
 ### Tests
-- [ ] `PrLifecycleCard.test.tsx` — all phases, button callbacks, CI status variants
-- [ ] `pr-status-poller.test.ts` — GraphQL parsing, session matching, change detection, start/stop
-- [ ] `pr-lifecycle.test.ts` — integration tests for quick-create endpoint, poller SSE broadcast
+- [x] `PrLifecycleCard.test.tsx` — all phases, button callbacks, CI status variants
+- [x] `pr-status-poller.test.ts` — GraphQL parsing, session matching, change detection, start/stop
+- [x] `pr-lifecycle.test.ts` — integration tests for quick-create endpoint, poller SSE broadcast
 
 ## Phase 2: CI Failure Details + Server-Driven Auto-Fix
 

@@ -1,31 +1,13 @@
 import { create } from "zustand";
+import type { PrStatusSummary, PrFileStat } from "../../server/shared/types/github-types.js";
+
+// ---- Types ----
 
 interface PrResult {
   success: boolean;
   url?: string;
   number?: number;
   message?: string;
-}
-
-interface PrChecks {
-  state: "pending" | "success" | "failure" | "none";
-  total: number;
-  passed: number;
-  failed: number;
-  pending: number;
-}
-
-interface PrStatus {
-  url: string;
-  number: number;
-  title: string;
-  baseBranch: string;
-  headBranch: string;
-  insertions: number;
-  deletions: number;
-  checks: PrChecks;
-  autoMergeEnabled: boolean;
-  mergeable: boolean;
 }
 
 interface ImportSearchResult {
@@ -36,7 +18,44 @@ interface ImportSearchResult {
   cloneUrl: string;
 }
 
+/** PR lifecycle card state for a single session. */
+export interface PrCardState {
+  cardId: string;
+  phase: "ready" | "creating" | "open" | "merged" | "error";
+  /** Files changed (ready phase). */
+  files?: PrFileStat[];
+  totalInsertions?: number;
+  totalDeletions?: number;
+  /** PR info (open/merged phases). */
+  pr?: {
+    number: number;
+    title: string;
+    url: string;
+    baseBranch: string;
+    headBranch: string;
+    insertions: number;
+    deletions: number;
+  };
+  /** CI check status (open phase). */
+  checks?: {
+    state: "pending" | "success" | "failure" | "none";
+    total: number;
+    passed: number;
+    failed: number;
+    pending: number;
+  };
+  /** Error message (error phase). */
+  errorMessage?: string;
+}
+
 interface PrState {
+  // ---- PR lifecycle card state (SSE-driven) ----
+  /** sessionId → PrStatusSummary from the poller. */
+  statusBySession: Record<string, PrStatusSummary>;
+  /** sessionId → PrCardState for inline card rendering. */
+  cardBySession: Record<string, PrCardState>;
+
+  // ---- Legacy modal state (kept for "Create with options..." escape hatch) ----
   showModal: boolean;
   currentBranch: string;
   remoteBranches: string[];
@@ -45,13 +64,26 @@ interface PrState {
   descError: string | null;
   generatedDesc: string | null;
   importSearchResults: ImportSearchResult[];
-  status: PrStatus | null;
 
-  // Actions
+  // SSE-driven actions
+  /** Bulk update from pr_status SSE event. */
+  applyPrStatusUpdates: (updates: PrStatusSummary[]) => void;
+  /** Update inline card from pr_lifecycle_update WS message. */
+  updateCard: (sessionId: string, card: PrCardState) => void;
+  /** Set card to "creating" phase. */
+  setCardCreating: (sessionId: string) => void;
+  /** Set card to "open" phase from quick-create response. */
+  setCardOpen: (sessionId: string, pr: PrCardState["pr"]) => void;
+  /** Set card to "error" phase. */
+  setCardError: (sessionId: string, message: string) => void;
+
+  // Quick PR creation
+  quickCreate: (sessionId: string) => Promise<void>;
+
+  // Legacy modal actions
   openModal: () => void;
   closeModal: () => void;
   setResult: (result: PrResult | null) => void;
-  setStatus: (status: PrStatus | null) => void;
   setImportSearchResults: (results: ImportSearchResult[]) => void;
   setCurrentBranch: (branch: string) => void;
   setRemoteBranches: (branches: string[]) => void;
@@ -60,7 +92,7 @@ interface PrState {
   setGeneratedDesc: (desc: string | null) => void;
   reset: () => void;
 
-  // Async actions
+  // Legacy async actions (kept for modal + sidebar)
   submit: (
     sessionId: string,
     data: { title: string; body: string; base: string; draft: boolean },
@@ -76,6 +108,8 @@ interface PrState {
 }
 
 const initialState = {
+  statusBySession: {} as Record<string, PrStatusSummary>,
+  cardBySession: {} as Record<string, PrCardState>,
   showModal: false,
   currentBranch: "",
   remoteBranches: [] as string[],
@@ -84,11 +118,142 @@ const initialState = {
   descError: null as string | null,
   generatedDesc: null as string | null,
   importSearchResults: [] as ImportSearchResult[],
-  status: null as PrStatus | null,
 };
 
-export const usePrStore = create<PrState>((set) => ({
+export const usePrStore = create<PrState>((set, get) => ({
   ...initialState,
+
+  // ---- SSE-driven actions ----
+
+  applyPrStatusUpdates: (updates) => {
+    set((state) => {
+      const nextStatus = { ...state.statusBySession };
+      const nextCards = { ...state.cardBySession };
+
+      for (const update of updates) {
+        nextStatus[update.sessionId] = update;
+
+        // Update the inline card to reflect poller data
+        const existing = nextCards[update.sessionId];
+        if (update.prState === "merged") {
+          nextCards[update.sessionId] = {
+            cardId: existing?.cardId ?? `pr-card-${update.sessionId}`,
+            phase: "merged",
+            pr: {
+              number: update.prNumber,
+              title: update.prTitle,
+              url: update.prUrl,
+              baseBranch: update.baseBranch,
+              headBranch: update.headBranch,
+              insertions: update.insertions,
+              deletions: update.deletions,
+            },
+          };
+        } else {
+          nextCards[update.sessionId] = {
+            cardId: existing?.cardId ?? `pr-card-${update.sessionId}`,
+            phase: "open",
+            pr: {
+              number: update.prNumber,
+              title: update.prTitle,
+              url: update.prUrl,
+              baseBranch: update.baseBranch,
+              headBranch: update.headBranch,
+              insertions: update.insertions,
+              deletions: update.deletions,
+            },
+            checks: update.checks,
+          };
+        }
+      }
+
+      return { statusBySession: nextStatus, cardBySession: nextCards };
+    });
+  },
+
+  updateCard: (sessionId, card) => {
+    set((state) => ({
+      cardBySession: { ...state.cardBySession, [sessionId]: card },
+    }));
+  },
+
+  setCardCreating: (sessionId) => {
+    set((state) => {
+      const existing = state.cardBySession[sessionId];
+      return {
+        cardBySession: {
+          ...state.cardBySession,
+          [sessionId]: {
+            ...existing,
+            cardId: existing?.cardId ?? `pr-card-${sessionId}`,
+            phase: "creating" as const,
+          },
+        },
+      };
+    });
+  },
+
+  setCardOpen: (sessionId, pr) => {
+    set((state) => ({
+      cardBySession: {
+        ...state.cardBySession,
+        [sessionId]: {
+          cardId: state.cardBySession[sessionId]?.cardId ?? `pr-card-${sessionId}`,
+          phase: "open" as const,
+          pr,
+        },
+      },
+    }));
+  },
+
+  setCardError: (sessionId, message) => {
+    set((state) => {
+      const existing = state.cardBySession[sessionId];
+      return {
+        cardBySession: {
+          ...state.cardBySession,
+          [sessionId]: {
+            ...existing,
+            cardId: existing?.cardId ?? `pr-card-${sessionId}`,
+            phase: "error" as const,
+            errorMessage: message,
+          },
+        },
+      };
+    });
+  },
+
+  quickCreate: async (sessionId) => {
+    get().setCardCreating(sessionId);
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/pr/quick`, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        get().setCardError(sessionId, data.error || "Failed to create pull request");
+        return;
+      }
+      const data = await res.json();
+      get().setCardOpen(sessionId, {
+        number: data.number,
+        title: data.title,
+        url: data.url,
+        baseBranch: data.baseBranch,
+        headBranch: data.headBranch,
+        insertions: data.insertions,
+        deletions: data.deletions,
+      });
+    } catch (err) {
+      get().setCardError(
+        sessionId,
+        err instanceof Error ? err.message : "Failed to create pull request",
+      );
+    }
+  },
+
+  // ---- Legacy modal actions ----
 
   openModal: () =>
     set({
@@ -104,8 +269,6 @@ export const usePrStore = create<PrState>((set) => ({
   closeModal: () => set({ showModal: false }),
 
   setResult: (result) => set({ result }),
-
-  setStatus: (status) => set({ status }),
 
   setImportSearchResults: (importSearchResults) => set({ importSearchResults }),
 
@@ -207,6 +370,26 @@ export const usePrStore = create<PrState>((set) => ({
       headers: { Accept: "application/json" },
     });
     const data = await res.json();
-    set({ status: data.pr });
+    if (data.pr) {
+      set((state) => ({
+        statusBySession: {
+          ...state.statusBySession,
+          [sessionId]: {
+            sessionId,
+            prNumber: data.pr.number,
+            prUrl: data.pr.url,
+            prTitle: data.pr.title,
+            prState: "open" as const,
+            baseBranch: data.pr.baseBranch,
+            headBranch: data.pr.headBranch,
+            insertions: data.pr.insertions,
+            deletions: data.pr.deletions,
+            checks: data.pr.checks,
+            mergeable: data.pr.mergeable,
+            autoMergeEnabled: data.pr.autoMergeEnabled,
+          },
+        },
+      }));
+    }
   },
 }));

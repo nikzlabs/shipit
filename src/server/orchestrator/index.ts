@@ -28,6 +28,7 @@ import type { SessionRunnerInterface } from "./session-runner.js";
 import { SessionContainerManager } from "./session-container.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import { registerPreviewProxy } from "./preview-proxy.js";
+import { PrStatusPoller } from "./pr-status-poller.js";
 import type { AgentId, AgentEvent, AgentProcess } from "../shared/types.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry } from "../shared/types.js";
 import { getErrorMessage } from "./validation.js";
@@ -509,10 +510,23 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       client.write(`event: active_runners\ndata: ${JSON.stringify({ sessionIds: activeRunnerSessions })}\n\n`);
     }
 
+    // Send current PR statuses so inline cards and sidebar icons are correct on connect
+    const prStatuses = prStatusPoller.getAllStatuses();
+    if (prStatuses.length > 0) {
+      client.write(`event: pr_status\ndata: ${JSON.stringify({ updates: prStatuses })}\n\n`);
+    }
+
     request.raw.on("close", () => {
       client.closed = true;
       sseClients.delete(client);
     });
+  });
+
+  // ---- PR Status Poller ----
+  const prStatusPoller = new PrStatusPoller({
+    githubAuth: githubAuthManager,
+    sessionManager,
+    sseBroadcast,
   });
 
   // ---- Terminal/logs buffer ----
@@ -854,6 +868,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     waitForWarmSession: (repoUrl: string) => warmingPromises.get(repoUrl),
     createSessionDirFull: createSessionDir,
     containerManager: containerManager ?? undefined,
+    prStatusPoller,
   });
 
   // ---- Preview reverse proxy (container mode) ----
@@ -1087,6 +1102,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         featureManager, usageManager, authManager, agentRegistry, credentialStore,
         repoStore, warmSessionForRepo, createSessionDir, generateText,
         getSharedRepoDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
+        prStatusPoller,
         workspaceDir, sessionsRoot, defaultAgentId,
       };
 
