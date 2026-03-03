@@ -126,7 +126,7 @@ export interface AppCtx {
   // Repo management
   repoStore: RepoStore;
   /** Warm a session for a repo (called after graduation). */
-  warmSessionForRepo: (repoUrl: string) => void;
+  warmSessionForRepo: (repoUrl: string, opts?: { withStandby?: boolean }) => void;
 
   // Factories
   createSessionDir: (title: string, opts?: { skipGitInit?: boolean }) => Promise<{ appSessionId: string; sessionDir: string }>;

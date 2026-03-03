@@ -7,6 +7,8 @@
  * Phase 2: POST/PATCH/DELETE endpoints for Tier 2 mutations.
  */
 
+import { existsSync } from "node:fs";
+import path from "node:path";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
@@ -114,11 +116,13 @@ export interface ApiDeps {
   generateText: (prompt: string, cwd?: string) => Promise<string>;
   sessionsRoot: string;
   /** Warm a session for a repo (called after clone, after graduation, etc.). */
-  warmSessionForRepo?: (repoUrl: string) => void;
+  warmSessionForRepo?: (repoUrl: string, opts?: { withStandby?: boolean }) => void;
   /** Returns the in-flight warming promise for a repo, if any. */
   waitForWarmSession?: (repoUrl: string) => Promise<void> | undefined;
   /** Create session dir with custom options. */
   createSessionDirFull: (title: string, opts?: { skipGitInit?: boolean }) => Promise<{ appSessionId: string; sessionDir: string }>;
+  /** Container manager — needed for standby cleanup on repo delete. */
+  containerManager?: import("./session-container.js").SessionContainerManager;
 }
 
 /**
@@ -1127,9 +1131,12 @@ export async function registerApiRoutes(
     async (request, reply) => {
       try {
         const url = decodeURIComponent(request.params.url);
-        // If there's a warm session, dispose its runner
+        // If there's a warm session, destroy its standby container + dispose runner
         const repo = deps.repoStore.get(url);
         if (repo?.warmSessionId) {
+          if (deps.containerManager?.isStandby(repo.warmSessionId)) {
+            await deps.containerManager.destroy(repo.warmSessionId);
+          }
           const runner = deps.runnerRegistry.get(repo.warmSessionId);
           if (runner) runner.dispose();
           sessionManager.delete(repo.warmSessionId);
@@ -1167,8 +1174,12 @@ export async function registerApiRoutes(
         // (user clicked "New Session", navigated away without sending a message,
         // then clicked "New Session" again), return it instead of claiming a new one.
         // This avoids creating duplicate containers for sessions the user never used.
+        // We check for .git (file for worktrees, dir for standalone repos) to ensure
+        // the worktree/repo is fully initialized — the session directory is created
+        // early (mkdir) but the git worktree is created later, so an in-progress
+        // warm session would have the dir but no .git yet.
         const reusable = sessionManager.findUngraduatedWarm(url, repo.warmSessionId ?? undefined);
-        if (reusable?.workspaceDir) {
+        if (reusable?.workspaceDir && existsSync(path.join(reusable.workspaceDir, ".git"))) {
           return { sessionId: reusable.id, sessionDir: reusable.workspaceDir };
         }
 
@@ -1180,8 +1191,8 @@ export async function registerApiRoutes(
           if (warmSession?.workspaceDir) {
             const sessionId = repo.warmSessionId;
             deps.repoStore.setWarmSessionId(url, undefined);
-            // Start warming the next session in background
-            deps.warmSessionForRepo?.(url);
+            // Start warming the next session in background (with standby container)
+            deps.warmSessionForRepo?.(url, { withStandby: true });
             return { sessionId, sessionDir: warmSession.workspaceDir };
           }
         }
@@ -1199,7 +1210,7 @@ export async function registerApiRoutes(
             if (warmSession?.workspaceDir) {
               const sessionId = freshRepo.warmSessionId;
               deps.repoStore.setWarmSessionId(url, undefined);
-              deps.warmSessionForRepo?.(url);
+              deps.warmSessionForRepo?.(url, { withStandby: true });
               return { sessionId, sessionDir: warmSession.workspaceDir };
             }
           }

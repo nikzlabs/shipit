@@ -527,7 +527,7 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
 
       // Start warming the next session for this repo in the background
       if (session.remoteUrl) {
-        ctx.warmSessionForRepo(session.remoteUrl);
+        ctx.warmSessionForRepo(session.remoteUrl, { withStandby: true });
       }
     }
 

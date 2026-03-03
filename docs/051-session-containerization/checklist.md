@@ -90,27 +90,53 @@
   - [x] Worker cleanup of all resources on stop
 - [x] Client path-utils tests (7 tests in `path-utils.test.ts`)
 
-## Phase 4: Speculative Container Pre-warming
+## Phase 4: Session Pre-warming
 
-- [ ] Track last active repo per user (by GitHub remote URL or local repo hash)
-- [ ] `SessionContainerManager.createStandby()` — speculatively create container for predicted next session
-  - [ ] Create new session directory (worktree from shared repo or shallow clone)
-  - [ ] Bind-mount and boot session worker in background
-  - [ ] Label with `shipit-standby=true` for cleanup identification
-- [ ] `SessionContainerManager.claimStandby(repoId, sessionId)` — claim standby container when user creates matching session
-  - [ ] Reassign session ID, update labels
-  - [ ] Return claimed container (skip cold start)
-- [ ] `SessionContainerManager.reclaimStandby()` — tear down unclaimed standby container
-  - [ ] Auto-reclaim after 5-minute timeout
-  - [ ] Auto-reclaim when user creates session on a different repo
-  - [ ] Clean up speculative session directory
-- [ ] `SessionRunnerRegistry.getOrCreate()` — check for claimable standby before creating new container
-- [ ] Respect max container cap — don't pre-warm if all 10 slots are occupied by real sessions
-- [ ] Integration tests
-  - [ ] Standby container claimed successfully → zero cold start
-  - [ ] Standby container reclaimed on timeout
-  - [ ] Standby container reclaimed on repo mismatch
-  - [ ] No pre-warm when at container cap
+### 4a: Worktree-level warm pool (done)
+
+- [x] Track last active repo per user (`RepoStore.warmSessionId` keyed by GitHub remote URL)
+- [x] `warmSessionForRepo()` in `index.ts` — create worktree session in background when repo reaches "ready"
+  - [x] Create worktree from shared repo (or bare clone if repo is empty)
+  - [x] Mark session `warm: true` via `SessionManager.setWarm()`
+  - [x] Store warm session ID in `RepoStore.setWarmSessionId()`
+  - [x] Cache warming promise to prevent duplicate work
+- [x] Claim warm session on "New Session" — `findUngraduatedWarm()` in `SessionManager`
+  - [x] Claim endpoint in `api-routes.ts` reuses warm session (no container created yet)
+  - [x] Triggers re-warming for next session after claim
+- [x] Graduation on first message — `send-message.ts` removes `warm: true`, triggers AI naming, re-warms
+- [x] Startup validation — verify warm sessions exist after restart, re-warm missing ones
+- [x] Integration tests (`warm-sessions.test.ts`, 309 lines)
+  - [x] Warm session creation on startup
+  - [x] Worktree directory verification
+  - [x] Claim endpoint claiming pre-created session
+  - [x] Re-warming triggered after claim
+  - [x] Graduation on first message
+
+### 4b: Container-level standby pre-warming (done)
+
+- [x] `SessionContainerManager.createStandby()` — boot container for warm session during re-warming
+  - [x] Reuses `create()` with `extraLabels` + `CONTAINER_STANDBY_LABEL`
+  - [x] Label with `shipit-standby=true` for cleanup identification
+- [x] `SessionContainerManager.claimStandby(sessionId)` — claim standby container when user activates warm session
+  - [x] Remove standby tracking, return container for runner factory reconnect
+- [x] `SessionContainerManager.isStandby()` / `standbyCount` — query standby state
+- [x] Standby tracking restored on `rediscover()` after restart
+- [x] `warmSessionForRepo(url, { withStandby })` — conditionally boot standby after worktree creation
+  - [x] Fetch origin before worktree creation when `withStandby: true`
+  - [x] Respect max container cap — skip standby if real containers >= maxIdleContainers
+- [x] Runner factory `claimStandby()` on reconnect path — zero cold start for standby containers
+- [x] Standby containers excluded from idle cleanup (`enforceIdleContainerLimit`)
+- [x] Claim endpoint and graduation pass `{ withStandby: true }` to re-warming
+- [x] Startup warming — worktree only, no containers (first "New Session" per repo cold-starts, triggers standby for next)
+- [x] Standby destroyed on repo delete and stale startup validation
+- [x] Integration tests (7 tests in `standby-container.test.ts`)
+  - [x] Startup warming does NOT create standby
+  - [x] Claim triggers re-warming with standby container
+  - [x] Standby reused on activation (zero cold start)
+  - [x] Standby protected from idle cleanup
+  - [x] Standby destroyed on repo delete
+  - [x] Rediscover restores standby state after restart
+  - [x] No standby when at container cap
 
 ## Phase 5: Cross-Platform Validation
 
