@@ -26,6 +26,40 @@ export default tseslint.config(
       ],
     },
   },
+  // ── Layer boundary enforcement ──────────────────────────────────────────
+  // orchestrator/ and session/ must not import from each other (even type
+  // imports). Shared types belong in shared/types/. Integration tests are
+  // excluded because they deliberately cross the boundary to test the
+  // session-worker IPC layer.
+  {
+    files: ["src/server/orchestrator/**/*.ts"],
+    ignores: ["src/server/orchestrator/integration_tests/**"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [{
+            group: ["**/session/**"],
+            message: "Orchestrator must not import from session/. Move shared types to shared/types/.",
+          }],
+        },
+      ],
+    },
+  },
+  {
+    files: ["src/server/session/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [{
+            group: ["**/orchestrator/**"],
+            message: "Session must not import from orchestrator/. Move shared types to shared/types/.",
+          }],
+        },
+      ],
+    },
+  },
   {
     files: ["**/*.test.ts", "**/*.test.tsx"],
     rules: {
