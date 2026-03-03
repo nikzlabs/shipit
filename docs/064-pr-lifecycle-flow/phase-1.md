@@ -144,28 +144,28 @@ Write a concise GitHub PR description in markdown:
 ### What happens after creation
 
 1. Card transitions to `open` phase with the returned PR data
-2. The PR status poller picks up the new PR on its next tick (within 10s)
+2. The PR status poller picks up the new PR on its next tick (within 3s)
 3. Card begins showing live CI status
 
 ## PR status poller (server-side)
 
 ### Architecture
 
-One poller per repo, not per session. All sessions sharing a repo share one polling loop.
+One poller per repo, not per session. All sessions sharing a repo share one polling loop. Polls every **3 seconds** — fast enough that CI updates feel real-time. This is one GraphQL call per repo regardless of how many sessions exist, so the rate limit cost is trivial (~1,200 calls/hr out of 5,000/hr budget).
 
 ```
 PrStatusPoller (orchestrator)
   │
-  │ every 10s (pending checks) / 60s (settled)
+  │ every 3s
   ▼
-GitHub GraphQL API (one query per repo)
+GitHub GraphQL API (one query per repo, OPEN PRs only)
   │
-  │ returns PR status for all open PRs in the repo
+  │ returns CI status for all open PRs in the repo
   ▼
 Match PRs to sessions by branch name
   │
   ▼
-sseBroadcast("pr_status", { updates: [...] })
+sseBroadcast("pr_status", { updates: [...] })   (only if something changed)
   │
   ▼
 All connected clients
@@ -176,7 +176,7 @@ All connected clients
 ```graphql
 query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
-    pullRequests(first: 50, states: [OPEN, MERGED]) {
+    pullRequests(first: 50, states: [OPEN]) {
       nodes {
         number
         title
@@ -216,7 +216,9 @@ query($owner: String!, $name: String!) {
 }
 ```
 
-One call returns CI status for all open PRs. Cost: ~241 GraphQL points for 20 PRs with 10 checks each, out of 5,000/hr budget. Polling at 10s = 360 calls/hr = well within limits even for multiple repos.
+One call returns CI status for all open PRs. Cost: ~241 GraphQL points for 20 PRs with 10 checks each, out of 5,000/hr budget. At 3s intervals that's ~1,200 calls/hr per repo — well within limits.
+
+**Only OPEN PRs are queried.** Once a PR is merged, the poller detects this via the PR disappearing from the OPEN results (or via the merge endpoint response) and marks it as merged locally. Merged sessions are excluded from future queries.
 
 ### `PrStatusPoller` class
 
@@ -244,11 +246,12 @@ interface PrStatusSummary {
 ```
 
 **Responsibilities:**
-- Maintains a map of `repoUrl → pollingInterval`
-- On each tick: runs the GraphQL query, matches PRs to sessions by branch name, diffs against last known state
+- Maintains a map of `repoUrl → intervalTimer`
+- On each tick: runs the GraphQL query (OPEN PRs only), matches PRs to sessions by branch name, diffs against last known state
 - If any PR status changed: calls `sseBroadcast("pr_status", { updates })` with only the changed entries
-- Adaptive intervals: 10s while any PR in the repo has pending checks, 60s when all settled
-- Starts polling for a repo when any session on that repo has a PR. Stops when none do.
+- Fixed 3s interval — simple, fast, one call per repo regardless of session count
+- Starts polling for a repo when any session on that repo has an open PR. Stops when all PRs on that repo are merged or sessions are archived.
+- Sessions with merged PRs are excluded — once a PR disappears from the OPEN query results, it's marked merged locally and never queried again
 
 ### SSE integration
 
@@ -334,7 +337,8 @@ The `PrStatusBar` component and its rendering in `App.tsx` are removed. All its 
 - `POST /api/sessions/:id/pr/quick` — error: no GitHub auth → 401
 - `POST /api/sessions/:id/pr/quick` — error: branch already has PR → returns existing PR info
 - PR status poller: mock GraphQL response, verify SSE broadcast fires with correct data
-- PR status poller: adaptive interval — pending checks → 10s, settled → 60s
+- PR status poller: merged PR disappears from OPEN results → marked merged locally, excluded from future queries
+- PR status poller: no open PRs for a repo → polling stops for that repo
 
 ### Component tests (`PrLifecycleCard.test.tsx`)
 
@@ -353,7 +357,7 @@ The `PrStatusBar` component and its rendering in `App.tsx` are removed. All its 
 - Parses GraphQL response into `PrStatusSummary` entries
 - Matches PRs to sessions by branch name
 - Detects state changes and only broadcasts diffs
-- Adapts polling interval based on pending checks
+- Stops polling for a repo when all its PRs are merged/archived
 - Starts/stops polling when sessions are added/removed
 
 ## What this phase does NOT include
