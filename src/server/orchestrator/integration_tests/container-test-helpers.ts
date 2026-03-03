@@ -49,6 +49,7 @@ export class StubTerminal extends EventEmitter {
   writtenData: string[] = [];
   resizedTo: { cols: number; rows: number }[] = [];
   killed = false;
+  paused = false;
 
   start(cwd: string, cols: number, rows: number): void {
     this.startCalled = true;
@@ -59,6 +60,8 @@ export class StubTerminal extends EventEmitter {
 
   write(data: string): void { this.writtenData.push(data); }
   resize(cols: number, rows: number): void { this.resizedTo.push({ cols, rows }); }
+  pause(): void { this.paused = true; }
+  resume(): void { this.paused = false; }
   kill(): void { this.killed = true; }
   get running(): boolean { return this.startCalled; }
 }
