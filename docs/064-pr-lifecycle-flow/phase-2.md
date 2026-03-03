@@ -434,5 +434,4 @@ Both are thin wrappers around `apiPost()`. The store state updates come from SSE
 
 - Auto-merge toggle (phase 3)
 - Merge button / merge method dropdown (phase 3)
-- Post-merge "Start Next Task" flow (phase 3)
-- Conditional auto-push (phase 4 — but auto-push after PR exists is assumed)
+- Post-merge session archive (phase 3)

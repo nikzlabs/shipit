@@ -343,6 +343,4 @@ None — all changes fit into existing files.
 
 ## What this phase does NOT include
 
-- "Start Next Task" button (future — may reuse archived session context)
-- Conditional auto-push (phase 4)
-- Conversation-aware PR description (phase 5)
+- "Start Next Task" button (future — may reuse archived session context in a new session)

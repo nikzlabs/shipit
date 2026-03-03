@@ -28,7 +28,7 @@ Where ShipIt should go further:
 2. **One-click PR creation** with smart defaults (Desktop still requires `gh pr create` or a modal)
 3. **Per-check failure breakdown** visible in the card (not just "CI failed")
 4. **Merge method selection** (squash/merge/rebase, not squash-only)
-5. **Post-merge flow** ("Start Next Task" → new session on updated default branch)
+5. **Post-merge archive** — session auto-archived, context preserved for future reuse
 
 ## Problem
 
@@ -37,7 +37,6 @@ Today ShipIt has all the PR building blocks — but they're scattered:
 1. **PR creation** lives in a modal (`PullRequestModal`) triggered from a toast notification after push. It's a multi-field form that interrupts the flow.
 2. **PR status** lives in a thin status bar (`PrStatusBar`) at the top of the page. It shows CI state and has a merge button, but it's easy to miss and disconnected from the conversation.
 3. **CI failures** show a red badge in the status bar with no action. The user must manually copy failure details into chat.
-4. **Auto-push** fires silently 5 seconds after commit — code reaches the remote before the user has reviewed it.
 
 The result: the user is constantly context-switching between chat, toasts, modals, and the status bar to manage what should be a linear flow.
 
@@ -129,7 +128,7 @@ Claude fixes → auto-commit → auto-push (PR exists)
 │                                                           │
 │  ✓ PR #42 merged into main                               │
 │                                                           │
-│  [Start Next Task]  [View on GitHub]                      │
+│  [View on GitHub]                                         │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -167,11 +166,11 @@ Both toggles are per-session and persist until the session ends or the PR is mer
 
 **5. Merge dropdown matches GitHub's merge options.**
 
-The merge button has a dropdown caret for merge method (merge commit, squash, rebase). Defaults to squash (matching Desktop). Persists the user's last choice. If CI is pending, clicking Merge enables GitHub auto-merge instead (existing behavior). This goes beyond Desktop, which only supports squash.
+The merge button has a dropdown caret for merge method (merge commit, squash, rebase). Defaults to squash (matching Desktop). Persists the user's last choice server-side (needed for auto-merge without a client connected). If CI is pending, clicking Merge enables GitHub native auto-merge. This goes beyond Desktop, which only supports squash.
 
-**6. The status bar becomes optional/minimal.**
+**6. `PrStatusBar` is removed.**
 
-With the inline cards handling the full lifecycle, `PrStatusBar` becomes redundant for the primary flow. It can remain as a compact persistent indicator (branch name + CI badge) for quick reference, but the actionable UI moves into the cards.
+With the inline cards handling the full lifecycle, `PrStatusBar` is removed entirely. Its functionality (branch display, CI status, merge button, view PR link) moves into the inline card.
 
 ## What Exists Today vs. What's New
 
@@ -180,12 +179,11 @@ With the inline cards handling the full lifecycle, `PrStatusBar` becomes redunda
 | PR creation | Modal with form fields | One-click inline button | `gh pr create` or similar |
 | PR status | Status bar at page top | Live-updating inline card | CI status bar |
 | CI monitoring | Polling badge, no details | Per-check breakdown in card | Polls via `gh` CLI |
-| Auto-fix CI | None | Toggle on card (loop until green) | Toggle in status bar |
-| Manual fix CI | None (copy-paste) | "Fix CI Issues" button | N/A (auto-fix only) |
-| Auto-merge | None | Toggle on card (squash/merge/rebase) | Toggle in status bar (squash only) |
+| Auto-fix CI | None | Server-driven toggle (loop until green) | Toggle in status bar |
+| Manual fix CI | None (copy-paste) | "Fix CI Issues" button (server-driven) | N/A (auto-fix only) |
+| Auto-merge | None | GitHub native auto-merge (squash/merge/rebase) | Toggle in status bar (squash only) |
 | Manual merge | Button in status bar | Button in card with method dropdown | N/A (auto-merge only) |
-| Post-merge | Nothing | "Merged" card + "Start Next Task" | None documented |
-| Auto-push | Always on (5s debounce) | Conditional: off until PR exists | Not documented |
+| Post-merge | Nothing | "Merged" card + session auto-archived | None documented |
 
 ## Changes Required
 
@@ -232,7 +230,7 @@ interface ChecksInfo {
 - **`open` + checks pending**: PR info + animated CI progress
 - **`open` + checks success**: PR info + green checkmark + "Merge" button
 - **`open` + checks failure**: PR info + red X + per-check failure summaries + "Fix CI Issues" button
-- **`merged`**: Green "Merged" badge + "Start Next Task" button
+- **`merged`**: Green "Merged" badge + session auto-archived
 - **`error`**: Red error message + retry option
 
 #### How the card appears
@@ -268,7 +266,7 @@ When user clicks the button:
    d. Creates PR via GitHub API
    e. Returns PR info
 3. Client transitions card to `phase: "open"` with the PR data
-4. CI polling starts (reuses existing 30s polling from `pr-store`)
+4. PR status poller picks up the new PR on its next tick (within 3s via SSE)
 
 #### "Create with options..." flow (escape hatch)
 
@@ -278,209 +276,27 @@ Small "..." menu or secondary text link on the card opens the existing `PullRequ
 
 This is the highest-value phase after the card itself — it's what makes the PR lifecycle truly autonomous. Claude Code Desktop already ships this as an "Auto-fix" toggle; we need feature parity plus better failure visibility.
 
-#### Fetch CI failure logs
+Both the manual "Fix CI Issues" button and auto-fix are **server-driven**. The client never constructs prompts or fetches CI logs directly. The server fetches logs, constructs the fix prompt, and sends it to Claude via the existing message queue. If Claude is mid-turn, the fix prompt queues behind the current work.
 
-New endpoint: `GET /api/sessions/:id/pr/ci-logs`
+See [phase-2.md](./phase-2.md) for the full design: `POST /api/sessions/:id/pr/fix-ci` endpoint, `sendSystemMessage()` for tab-less operation, attempt tracking per head SHA, and the auto-fix loop inside the PR status poller.
 
-Calls GitHub API to get:
-- List of check runs for the PR's head SHA
-- For each failed check: name, conclusion, output summary, and annotations
-- If available: the full log text (GitHub API `GET /repos/:owner/:repo/actions/jobs/:id/logs`)
+### Phase 3: Merge + Auto-Merge + Post-Merge Archive
 
-Returns structured data:
+Merge button with method dropdown (squash/merge/rebase), auto-merge via GitHub's native `enableAutoMerge` GraphQL mutation (works without a browser tab), and post-merge session archival.
 
-```typescript
-interface CIFailureLog {
-  checkName: string;
-  conclusion: string;
-  summary: string;       // check run output summary
-  annotations: Array<{   // inline annotations from the check
-    path: string;
-    startLine: number;
-    endLine: number;
-    message: string;
-    annotationLevel: "failure" | "warning" | "notice";
-  }>;
-  logExcerpt: string;    // last N lines of the log (truncated to keep prompt reasonable)
-}
-```
-
-#### Manual fix: "Fix CI Issues" button
-
-When auto-fix is off, a "Fix CI Issues" button appears on the card. Clicking it:
-
-1. Fetches `GET /api/sessions/:id/pr/ci-logs`
-2. Constructs a prompt:
-
-```
-CI checks failed on PR #{number}. Here are the failures:
-
-## {checkName}
-{summary}
-
-Log output:
-```
-{logExcerpt}
-```
-
-{annotations as inline code references}
-
----
-
-Please fix these CI failures. After fixing, the changes will be automatically pushed.
-```
-
-3. Sends as a regular `send_message` via WebSocket
-4. Claude fixes → auto-commit → auto-push (PR exists, so auto-push is on)
-5. Card auto-updates as new CI runs start
-
-#### Auto-fix toggle
-
-Matches Claude Code Desktop's behavior. When the toggle is ON:
-
-1. CI polling detects failure state
-2. Automatically fetches CI logs (same as manual flow)
-3. Sends the fix prompt to Claude without user intervention
-4. Claude fixes → commits → pushes → CI re-runs
-5. If CI fails again, retry up to 3 times (prevent infinite loops)
-6. After 3 failed attempts, card shows "Auto-fix exhausted — manual intervention needed" and disables auto-fix
-
-The toggle is visible on the card itself (not hidden in a menu). Default: off. When turned on, it persists for the session.
-
-**How Claude Code Desktop does it**: Desktop uses `gh` CLI to poll check results. When auto-fix is enabled and checks fail, Claude "automatically attempts to fix failing CI checks by reading the failure output and iterating." We replicate this via the GitHub API instead of `gh` CLI (we already have GitHub auth integration).
-
-### Phase 3: Merge + Auto-Merge + Post-Merge
-
-#### Manual merge button
-
-Appears in the card when CI passes and auto-merge is off. Split button with dropdown:
-
-```
-[Squash and merge ▾]
-  ├─ Squash and merge ✓
-  ├─ Merge commit
-  └─ Rebase and merge
-```
-
-Default: squash (matching Claude Code Desktop). Persists the user's last choice. Goes beyond Desktop, which only supports squash.
-
-When CI is pending: button label becomes "Auto-merge when CI passes" and enables GitHub auto-merge.
-
-Implementation reuses existing `POST /api/sessions/:id/pr/merge` endpoint.
-
-#### Auto-merge toggle
-
-Matches Claude Code Desktop's behavior. When the toggle is ON:
-
-1. CI polling detects all checks passing
-2. Automatically calls merge endpoint with the selected merge method (default: squash)
-3. Card transitions to "merged" state
-4. Requires [auto-merge to be enabled in the GitHub repository settings](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-auto-merge-for-pull-requests-in-your-repository)
-
-The toggle is visible on the card alongside auto-fix. Default: off.
-
-**Combined auto-fix + auto-merge**: When both toggles are on, the full autonomous loop runs: CI fails → Claude fixes → pushes → CI re-runs → CI passes → auto-merge. This is the "fire and forget" mode for confident vibe-coding.
-
-#### Post-merge card state
-
-After successful merge:
-
-1. Card transitions to `phase: "merged"`
-2. Shows: "PR #42 merged into main" with green checkmark
-3. Shows "Start Next Task" button
-
-**"Start Next Task"** creates a new session on the same repo:
-- Fresh worktree from the updated default branch (includes the just-merged changes)
-- Navigates to the new session
-- Clean slate for the next piece of work
-
-### Phase 4: Conditional Auto-Push
-
-#### Behavior change
-
-Today `scheduleAutoPush()` fires unconditionally 5 seconds after commit. Change to:
-
-- **No remote**: no push (already the case)
-- **Has remote, no PR exists**: do not auto-push. The inline card's "Create Pull Request" handles the first push.
-- **Has remote, PR exists**: auto-push resumes. Once a PR is open, the user has opted into the push flow. Changes flow to the PR automatically.
-
-This means:
-- Before PR creation: changes accumulate locally. The user decides when to push (via "Create Pull Request").
-- After PR creation: auto-push resumes. Each Claude turn's changes flow to the PR and trigger CI.
-
-No `manualPushMode` flag needed — the logic is simply: `autoPush = hasRemote && prExists`.
-
-### Phase 5: Conversation-Aware PR Description
-
-#### Problem
-
-The current PR description generator uses `git log` + `diffStatVsBranch()` — mechanical descriptions like "Added api-routes.ts, modified App.tsx." The conversation is a much richer source.
-
-#### Approach
-
-The `POST /api/sessions/:id/pr/quick` endpoint (from Phase 1) generates the description at PR creation time. It:
-
-1. Reads the chat history for this session (via `ChatHistoryManager`)
-2. Extracts the user's initial prompt and key exchanges
-3. Gets git diff stats vs base branch
-4. Sends a one-shot Claude prompt:
-
-```
-Generate a pull request description for the following changes.
-
-## What the user asked for
-"{first user message}"
-
-## Key conversation exchanges
-{last N user/assistant message pairs, summarized}
-
-## Code changes
-{git diff stat vs base branch}
-{commit log — last 20 commits}
-
-Write a concise GitHub PR description in markdown with:
-1. A "## Summary" section (2-3 sentences explaining why these changes were made)
-2. A "## Changes" section (bullet list of key changes)
-3. A "## Test plan" section (how to verify the changes work)
-```
-
-5. Returns the generated description as part of the PR creation response
-
-The existing `POST /api/sessions/:id/pr/description` endpoint is updated to also accept conversation context, so the modal flow (escape hatch) benefits too.
+See [phase-3.md](./phase-3.md) for the full design: split button, `PrAutomationState`, error handling for missing repo settings, merge detection via poller, and session archive flow.
 
 ## Implementation Order
 
-1. **Phase 1** (inline card) — the foundation. Changes the entire interaction model.
-2. **Phase 4** (conditional auto-push) — pairs with Phase 1, simple server change.
-3. **Phase 5** (conversation-aware descriptions) — enhances Phase 1's "quick create" endpoint.
-4. **Phase 2** (CI failure + fix) — the biggest value-add after the card itself.
-5. **Phase 3** (merge + post-merge) — completes the lifecycle.
+1. **Phase 1** (inline card + CI status poller + conversation-aware descriptions) — the foundation. See [phase-1.md](./phase-1.md).
+2. **Phase 2** (CI failure details + server-driven auto-fix) — the biggest value-add after the card. See [phase-2.md](./phase-2.md).
+3. **Phase 3** (merge + auto-merge + post-merge archive) — completes the lifecycle. See [phase-3.md](./phase-3.md).
 
-Phases 1 + 4 should ship together. Phase 5 is a small addition to Phase 1's endpoint. Phases 2 and 3 are independent.
+Phases 2 and 3 are independent of each other but both depend on Phase 1.
 
 ## Files Changed (All Phases)
 
-### New files
-
-| File | Description |
-|---|---|
-| `src/client/components/PrLifecycleCard.tsx` | Inline PR lifecycle card component |
-| `src/client/components/PrLifecycleCard.test.tsx` | Component tests |
-| `src/server/orchestrator/integration_tests/pr-lifecycle.test.ts` | Integration tests |
-
-### Modified files
-
-| File | Change |
-|---|---|
-| `src/server/shared/types/ws-server-messages.ts` | Add `pr_lifecycle_update` message type |
-| `src/server/orchestrator/api-routes.ts` | Add `POST .../pr/quick`, `GET .../pr/ci-logs` |
-| `src/server/orchestrator/services/github.ts` | Add `quickCreatePr()`, `getCIFailureLogs()`, conversation-aware description |
-| `src/server/orchestrator/ws-handlers/send-message.ts` | Send `pr_lifecycle_update` after agent turn, conditional auto-push |
-| `src/client/components/MessageList.tsx` | Render `PrLifecycleCard` for `pr_lifecycle_update` messages |
-| `src/client/stores/pr-store.ts` | Add `quickCreate()`, `fetchCILogs()`, card state management |
-| `src/client/hooks/useMessageHandler.ts` | Handle `pr_lifecycle_update` messages, update card in place |
-| `src/client/components/PrStatusBar.tsx` | Simplify to compact indicator (branch + CI badge only) |
-| `src/client/App.tsx` | Wire "Start Next Task" to session creation |
+See each phase doc for the detailed file lists: [phase-1.md](./phase-1.md), [phase-2.md](./phase-2.md), [phase-3.md](./phase-3.md).
 
 ## Non-Goals
 
