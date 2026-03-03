@@ -5,11 +5,13 @@
  * Tests cover:
  * 1. Worker terminal HTTP endpoints (start, input, resize) + SSE events
  * 2. ContainerSessionRunner terminal proxy (SSE → emitMessage)
+ * 3. SSE backpressure → PTY pause/resume
  *
  * Uses in-process Fastify with stubs — no Docker or real processes.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import http from "node:http";
 import { SessionWorker } from "../../session/session-worker.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import type { WsServerMessage } from "../../shared/types.js";
@@ -298,5 +300,79 @@ describe("ContainerSessionRunner Terminal Proxy", () => {
     expect(runner.remoteTerminalRunning).toBe(false);
 
     runner.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Terminal Backpressure
+// ---------------------------------------------------------------------------
+
+describe("Terminal SSE Backpressure", () => {
+  let worker: SessionWorker;
+  let lastTerminal: StubTerminal;
+
+  beforeEach(async () => {
+    lastTerminal = null as unknown as StubTerminal;
+
+    worker = new SessionWorker({
+      agentFactory: () => new FakeWorkerAgent(),
+      port: 0,
+      host: "127.0.0.1",
+      createTerminal: () => {
+        lastTerminal = new StubTerminal();
+        return lastTerminal as unknown as import("../../session/terminal.js").TerminalProcess;
+      },
+    });
+
+    await worker.start();
+  });
+
+  afterEach(async () => {
+    await worker.stop();
+  });
+
+  it("pauses PTY when SSE client write buffer is full and resumes on drain", async () => {
+    const address = worker.getApp().server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+
+    // Connect an SSE client that pauses reading to simulate backpressure
+    const connected = new Promise<http.IncomingMessage>((resolve) => {
+      const req = http.request(
+        { hostname: "127.0.0.1", port, path: "/events", method: "GET", headers: { Accept: "text/event-stream" } },
+        (res) => resolve(res),
+      );
+      req.end();
+    });
+
+    const res = await connected;
+
+    // Give SSE time to connect
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Start terminal
+    await worker.getApp().inject({ method: "POST", url: "/terminal/start", payload: {} });
+    expect(lastTerminal.paused).toBe(false);
+
+    // Pause the response stream to stop draining the server's write buffer.
+    // This causes reply.raw.write() to eventually return false.
+    res.pause();
+
+    // Flood terminal data until the server-side write buffer fills up.
+    // Node.js default highWaterMark is 16KB, so 64KB of data should trigger it.
+    const chunk = "x".repeat(1024);
+    for (let i = 0; i < 128; i++) {
+      lastTerminal.emit("data", chunk);
+    }
+
+    // The PTY should be paused due to backpressure
+    await waitFor(() => lastTerminal.paused, 2000, "terminal paused");
+
+    // Resume reading on the client side — this drains the buffer
+    res.resume();
+
+    // The PTY should resume once the buffer drains
+    await waitFor(() => !lastTerminal.paused, 2000, "terminal resumed");
+
+    res.destroy();
   });
 });
