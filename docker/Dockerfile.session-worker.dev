@@ -2,12 +2,12 @@ FROM node:24-slim
 
 RUN apt-get update && apt-get install -y git curl python3 make g++ && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g @anthropic-ai/claude-code @openai/codex
+RUN --mount=type=cache,target=/root/.npm npm install -g @anthropic-ai/claude-code @openai/codex
 
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci
 
 COPY tsconfig.json ./
 # Only copy code the session-worker actually needs — session + shared layers.
