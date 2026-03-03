@@ -1,3 +1,8 @@
+---
+description: "ShipIt server/orchestrator architecture: buildApp(), HTTP API routes, services layer, WebSocket handler dispatch, SSE broadcasts, dependency injection, state scopes, manager initialization, type system. Load when working on orchestrator code, routes, services, or WebSocket handlers."
+user-invocable: true
+---
+
 # Server Architecture
 
 The server is a single Fastify process (the orchestrator) that handles HTTP, WebSocket, and SSE connections from the browser. It delegates session-scoped work to Docker containers running session workers.
@@ -19,6 +24,26 @@ The server is a single Fastify process (the orchestrator) that handles HTTP, Web
 
 The function returns the app without calling `listen()`, so integration tests can use `app.inject()` without binding a port.
 
+## Dependency Injection
+
+`buildApp()` accepts an `AppDeps` object where every field is optional. Production uses real implementations; tests supply mocks/stubs. This is the foundation of testability — integration tests never spawn real Docker containers, Claude CLI processes, or Vite servers.
+
+Key injectable dependencies:
+
+| Dependency | Type | Purpose |
+|------------|------|---------|
+| `createGitManager` | `(dir) => GitManager` | Per-session git operations |
+| `createRepoGit` | `(dir) => RepoGit` | Shared-repo and worktree ops |
+| `sessionManager` | `SessionManager` | Session metadata persistence |
+| `authManager` | `AuthManager` | Claude CLI OAuth |
+| `githubAuthManager` | `GitHubAuthManager` | GitHub token + API |
+| `credentialStore` | `CredentialStore` | Unified credentials |
+| `agentFactory` | `(agentId) => AgentProcess` | Agent process creation (test-only) |
+| `runnerFactory` | `SessionRunnerFactory` | Session runner creation |
+| `sessionContainerManager` | `SessionContainerManager` | Docker orchestration |
+
+In production, agents live inside session containers — the orchestrator never spawns them directly. The `agentFactory` dependency exists only for integration tests.
+
 ## Manager Initialization Order
 
 ```
@@ -39,6 +64,45 @@ FeatureManager                    (scan docs/)
 SessionContainerManager           (Docker, production only)
 SessionRunnerRegistry             (active runners)
 ```
+
+## State Scopes
+
+State is managed at three scopes:
+
+### App-Level (server lifetime)
+
+Singleton managers created in `buildApp()`. Shared across all connections.
+
+- `SessionManager` — session metadata (title, workspace dir, remote URL, warm flag)
+- `RepoStore` — imported repos, clone status, warm session IDs
+- `SessionRunnerRegistry` — active runners (max 10 concurrent)
+- `SessionContainerManager` — Docker containers
+- `CredentialStore` — git identity, GitHub token, agent API keys
+- `AuthManager` / `GitHubAuthManager` — authentication state
+- `DeploymentManager` / `DeploymentStore` — deployment targets and history
+- `AgentRegistry` — detected agent CLIs
+
+### Per-Connection (WebSocket lifetime)
+
+State bound to a single browser tab's WebSocket connection, tracked in closure variables inside the WS handler.
+
+- Active session ID and directory
+- Active agent ID
+- Attached runner reference
+- Log buffer
+- Auto-push timer
+
+### Per-Session (runner lifetime)
+
+State on the `SessionRunnerInterface`, shared across all connections viewing the same session.
+
+- Agent process and running state
+- Message queue (queued prompts waiting for current turn to finish)
+- Turn event buffer (replayed to new viewers)
+- Terminal process
+- Preview status
+- Viewer count
+- Idle timer
 
 ## HTTP API (`api-routes.ts`)
 
@@ -211,3 +275,39 @@ All types live in `src/server/shared/types/`:
 | `attachment-types.ts` | `ImageAttachment`, `FileContextRef` |
 
 Types are shared between server and client (client imports from `../../server/shared/types.js`).
+
+## Persistence
+
+| Data | Storage | Location |
+|------|---------|----------|
+| Session metadata | JSON file | `SessionManager` (`/workspace/.vibe-sessions.json`) |
+| Chat history | Per-session JSON | `ChatHistoryManager` (`/workspace/sessions/{id}/.chat-history.json`) |
+| Git identity | Global git config | `CredentialStore` (`/credentials/.gitconfig`) |
+| GitHub token | File | `CredentialStore` (`/credentials/.github-token`) |
+| Agent API keys | File | `CredentialStore` (`/credentials/.agent-env`) |
+| Usage stats | JSON file | `UsageManager` (`/workspace/.shipit-usage.json`) |
+| Deploy history | JSON file | `DeploymentStore` (`/workspace/.deploy-history.json`) |
+| Threads | Directory of JSON | `ThreadManager` (`/workspace/.vibe-threads/`) |
+| Repos | JSON file | `RepoStore` (`/workspace/.vibe-repos.json`) |
+| Session code | Git repo | `/workspace/sessions/{uuid}/` |
+
+## Key Files
+
+| File | Role |
+|------|------|
+| `src/server/orchestrator/index.ts` | `buildApp()` — app factory, DI setup, WS dispatcher |
+| `src/server/orchestrator/api-routes.ts` | HTTP REST API routes |
+| `src/server/orchestrator/services/*.ts` | Business logic (pure functions) |
+| `src/server/orchestrator/ws-handlers/*.ts` | WebSocket message handlers |
+| `src/server/orchestrator/ws-handlers/types.ts` | `ConnectionCtx`, `RunnerCtx`, `AppCtx` interfaces |
+| `src/server/orchestrator/session-runner.ts` | `SessionRunnerInterface`, `SessionRunnerRegistry` |
+| `src/server/orchestrator/container-session-runner.ts` | `ContainerSessionRunner` (production runner) |
+| `src/server/orchestrator/session-container.ts` | Docker container management |
+| `src/server/session/session-worker.ts` | In-container Fastify server |
+| `src/server/session/claude.ts` | `ClaudeProcess` — spawns CLI, parses NDJSON |
+| `src/server/session/preview-manager.ts` | `PreviewManager` — Vite dev server |
+| `src/server/shared/git.ts` | `GitManager` — per-session git |
+| `src/server/orchestrator/repo-git.ts` | `RepoGit` — shared-repo and worktree ops |
+| `src/client/App.tsx` | Main React component |
+| `src/client/stores/*.ts` | Zustand stores |
+| `src/client/hooks/*.ts` | Custom hooks (WebSocket, API, message handling) |

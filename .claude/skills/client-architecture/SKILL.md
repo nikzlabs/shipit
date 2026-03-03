@@ -1,3 +1,8 @@
+---
+description: "ShipIt React client architecture: Zustand stores, communication hooks (useApi, useSessionWebSocket, useServerEvents, useMessageHandler), component inventory, data flow patterns. Load when working on frontend components, stores, hooks, or client state."
+user-invocable: true
+---
+
 # Client Architecture
 
 The client is a React 19 SPA built with Vite and Tailwind CSS v4. State management uses Zustand stores. Communication with the server uses three channels: HTTP for reads/mutations, per-session WebSocket for streaming and real-time interaction, and SSE for global broadcasts.
@@ -53,7 +58,7 @@ The client is a React 19 SPA built with Vite and Tailwind CSS v4. State manageme
 `src/client/hooks/useWebSocket.ts` — generic WebSocket hook.
 
 - Connects when URL is provided, disconnects when URL is null
-- Auto-reconnect with exponential backoff: 2s → 4s → 8s → 16s → 30s cap
+- Auto-reconnect with exponential backoff: 2s -> 4s -> 8s -> 16s -> 30s cap
 - Returns `{ send, lastMessage, status, reconnectAttempt, reconnect }`
 - `status`: `"connecting"` | `"open"` | `"closed"`
 
@@ -63,7 +68,7 @@ The client is a React 19 SPA built with Vite and Tailwind CSS v4. State manageme
 
 - Connects to `/ws/sessions/{sessionId}?agent={savedAgent}` when sessionId is defined
 - Returns null URL (disconnects) when sessionId is undefined
-- Session switching triggers URL change → old socket closes, new one opens
+- Session switching triggers URL change -> old socket closes, new one opens
 
 ### `useApi`
 
@@ -95,8 +100,8 @@ The client is a React 19 SPA built with Vite and Tailwind CSS v4. State manageme
 
 `src/client/hooks/useConnectionSync.ts` — initialization on mount and WS connect.
 
-- On mount: `GET /api/bootstrap` → populates session, repo, UI, settings stores
-- On WS open: `GET /api/sessions/{id}/history` → loads messages, commits, threads
+- On mount: `GET /api/bootstrap` -> populates session, repo, UI, settings stores
+- On WS open: `GET /api/sessions/{id}/history` -> loads messages, commits, threads
 - HTTP fallback: `GET /api/sessions/{id}/preview-status` (retries once after 3s if unknown)
 - Sends pending WS message if stored
 
@@ -163,27 +168,27 @@ The client is a React 19 SPA built with Vite and Tailwind CSS v4. State manageme
 ## Data Flow: Sending a Message
 
 ```
-User types in MessageInput → handleSend() callback in App.tsx
-  │
-  ├─ If session exists:
-  │    Add user message to session store
-  │    Set isLoading
-  │    WS send: { type: "send_message", text, sessionId, images?, files?, permissionMode? }
-  │
-  └─ If no session (home page):
+User types in MessageInput -> handleSend() callback in App.tsx
+  |
+  +- If session exists:
+  |    Add user message to session store
+  |    Set isLoading
+  |    WS send: { type: "send_message", text, sessionId, images?, files?, permissionMode? }
+  |
+  +- If no session (home page):
        POST /api/sessions { title }
        Store pending WS message
        Navigate to /session/{id}
-       → WS auto-connects → useConnectionSync sends pending message
-  │
-  ▼
+       -> WS auto-connects -> useConnectionSync sends pending message
+  |
+  v
 useMessageHandler receives WS responses:
-  agent_event (assistant) → append text to messages, update activity
-  agent_event (tool_use)  → show tool activity label
-  agent_event (result)    → mark complete, clear loading
-  git_committed           → update git store
-  files_changed           → refresh file tree
-  preview_status          → update preview store
+  agent_event (assistant) -> append text to messages, update activity
+  agent_event (tool_use)  -> show tool activity label
+  agent_event (result)    -> mark complete, clear loading
+  git_committed           -> update git store
+  files_changed           -> refresh file tree
+  preview_status          -> update preview store
 ```
 
 ## Local Storage
