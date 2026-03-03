@@ -298,19 +298,66 @@ async function runClaudeWithMessage(ctx: FullCtx, opts: {
 
     // Auto-commit after agent turn using the session dir captured at turn start.
     // Do NOT use ctx.getActiveGitManager() — the user may have switched sessions.
+    let commitHash: string | null = null;
     try {
       if (capturedSessionDir) {
         const git = ctx.createGitManager(capturedSessionDir);
         const firstLine = ctx.getTurnSummary().split("\n")[0]?.slice(0, 120) || "Agent turn";
-        const hash = await git.autoCommit(firstLine);
-        if (hash) {
-          emitDone({ type: "git_committed", hash, message: firstLine });
+        commitHash = await git.autoCommit(firstLine);
+        if (commitHash) {
+          emitDone({ type: "git_committed", hash: commitHash, message: firstLine });
           // Schedule auto-push (debounced)
           ctx.scheduleAutoPush(git, ctx.send);
         }
       }
     } catch (err) {
       console.error("[git] auto-commit failed:", getErrorMessage(err));
+    }
+
+    // Emit PR lifecycle card after commit if the session has a remote
+    if (commitHash && capturedSessionId && capturedSessionDir) {
+      try {
+        const session = ctx.sessionManager.get(capturedSessionId);
+        if (session?.remoteUrl) {
+          const git = ctx.createGitManager(capturedSessionDir);
+
+          // Check if a PR already exists for this branch
+          const prStatus = ctx.prStatusPoller.getStatus(capturedSessionId);
+          if (prStatus) {
+            // PR already exists — the poller handles updates via SSE
+          } else {
+            // No PR yet — send a "ready" card with diff stats
+            const parentCommit = `${commitHash}~1`;
+            const files = await git.diffNameStatus(parentCommit, commitHash);
+            const diffSummary = await git.diffSummary();
+
+            let totalInsertions = 0;
+            let totalDeletions = 0;
+            const fileStats = files.map((f) => {
+              const fileDiff = diffSummary.find((d) => d.file === f.path);
+              const ins = fileDiff?.insertions ?? 0;
+              const del = fileDiff?.deletions ?? 0;
+              totalInsertions += ins;
+              totalDeletions += del;
+              return { path: f.path, status: f.status, insertions: ins, deletions: del };
+            });
+
+            const headBranch = session.branch || await git.getCurrentBranch();
+            emitDone({
+              type: "pr_lifecycle_update",
+              sessionId: capturedSessionId,
+              cardId: `pr-card-${capturedSessionId}`,
+              phase: "ready",
+              headBranch,
+              files: fileStats,
+              totalInsertions,
+              totalDeletions,
+            });
+          }
+        }
+      } catch (err) {
+        console.error("[pr-lifecycle] Failed to compute diff stats:", getErrorMessage(err));
+      }
     }
 
     // Mark Claude as no longer running, then process the next queued message

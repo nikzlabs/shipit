@@ -1,10 +1,11 @@
 /**
  * GitHub services — reads (status, repos, search, PR status) and mutations
- * (PR create/merge, token, logout).
+ * (PR create/merge, token, logout, quick PR creation).
  */
 
 import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
+import type { ChatHistoryManager } from "../chat-history.js";
 import { parseGitHubRemote } from "../git-utils.js";
 import { ServiceError } from "./types.js";
 import type { GitHubStatus } from "./types.js";
@@ -172,6 +173,172 @@ export async function generatePrDescription(
 
   const description = await generateText(prompt, sessionDir);
   return { description: description.trim() };
+}
+
+/** One-click PR creation — push, generate description, create PR. */
+export async function quickCreatePr(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  chatHistoryManager: ChatHistoryManager,
+  generateText: (prompt: string, cwd?: string) => Promise<string>,
+  sessionId: string,
+  sessionTitle: string,
+  sessionDir?: string,
+): Promise<{
+  number: number;
+  url: string;
+  title: string;
+  baseBranch: string;
+  headBranch: string;
+  insertions: number;
+  deletions: number;
+}> {
+  if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
+
+  const remotes = await git.getRemotes();
+  const origin = remotes.find((r) => r.name === "origin");
+  if (!origin) throw new ServiceError(400, "No 'origin' remote configured");
+
+  const parsed = parseGitHubRemote(origin.url);
+  if (!parsed) throw new ServiceError(400, "Remote URL is not a GitHub repository");
+
+  const head = await git.getCurrentBranch();
+
+  // Check if there's already a PR for this branch
+  const existingPr = await githubAuthManager.findPullRequest(parsed.owner, parsed.repo, head);
+  if (existingPr) {
+    const stats = await git.diffStatVsBranch(existingPr.base);
+    return {
+      number: existingPr.number,
+      url: existingPr.url,
+      title: existingPr.title,
+      baseBranch: existingPr.base,
+      headBranch: head,
+      insertions: stats.insertions,
+      deletions: stats.deletions,
+    };
+  }
+
+  // Push the branch
+  await git.push("origin", head);
+
+  // Detect base branch (main or master)
+  const remoteBranches = await git.listRemoteBranches();
+  const baseBranch = remoteBranches.includes("main") ? "main" :
+    remoteBranches.includes("master") ? "master" :
+    remoteBranches[0] ?? "main";
+
+  // Generate title from session title
+  const title = sessionTitle || head;
+
+  // Generate description from conversation context
+  const description = await generatePrDescriptionFromContext(
+    git, chatHistoryManager, generateText, sessionId, baseBranch, sessionDir,
+  );
+
+  // Create PR
+  const result = await githubAuthManager.createPullRequest({
+    owner: parsed.owner,
+    repo: parsed.repo,
+    title,
+    body: description,
+    head,
+    base: baseBranch,
+  });
+
+  if (!result.success || !result.url || !result.number) {
+    throw new ServiceError(500, result.message ?? "Failed to create pull request");
+  }
+
+  const stats = await git.diffStatVsBranch(baseBranch);
+
+  return {
+    number: result.number,
+    url: result.url,
+    title,
+    baseBranch,
+    headBranch: head,
+    insertions: stats.insertions,
+    deletions: stats.deletions,
+  };
+}
+
+/** Generate a conversation-aware PR description. */
+async function generatePrDescriptionFromContext(
+  git: GitManager,
+  chatHistoryManager: ChatHistoryManager,
+  generateText: (prompt: string, cwd?: string) => Promise<string>,
+  sessionId: string,
+  baseBranch: string,
+  sessionDir?: string,
+): Promise<string> {
+  try {
+    const messages = chatHistoryManager.load(sessionId);
+    const firstUserMsg = messages.find((m) => m.role === "user")?.text ?? "";
+
+    // Build conversation excerpt (last N exchanges, ~2000 chars)
+    const exchanges: string[] = [];
+    let charCount = 0;
+    for (let i = messages.length - 1; i >= 0 && charCount < 2000; i--) {
+      const msg = messages[i];
+      const prefix = msg.role === "user" ? "User" : "Assistant";
+      const text = msg.text.slice(0, 500);
+      exchanges.unshift(`${prefix}: ${text}`);
+      charCount += text.length;
+    }
+
+    const log = await git.log(20);
+    const diff = await git.diffSummary();
+
+    // Get diff stat vs base branch
+    let diffStatLine = "";
+    try {
+      const stats = await git.diffStatVsBranch(baseBranch);
+      diffStatLine = `+${stats.insertions} -${stats.deletions}`;
+    } catch { /* ignore */ }
+
+    const prompt = [
+      "Generate a pull request description for the following changes.",
+      "",
+      "## What the user asked for",
+      `"${firstUserMsg.slice(0, 300)}"`,
+      "",
+      "## Key conversation exchanges",
+      ...exchanges,
+      "",
+      "## Code changes",
+      ...(diff.length > 0
+        ? diff.map((f) => `- ${f.file} (+${f.insertions} -${f.deletions})`)
+        : ["(no file-level diff available)"]),
+      diffStatLine ? `Total: ${diffStatLine}` : "",
+      "",
+      "## Commit log",
+      ...log.map((c) => `- ${c.message}`),
+      "",
+      "Write a concise GitHub PR description in markdown:",
+      '1. A "## Summary" section (2-3 sentences explaining why)',
+      '2. A "## Changes" section (bullet list of key changes)',
+      '3. A "## Test plan" section (how to verify)',
+      "Return ONLY the markdown description, no extra commentary.",
+    ].join("\n");
+
+    return await generateText(prompt, sessionDir);
+  } catch (err) {
+    console.warn("[pr] Failed to generate description:", err);
+    // Fallback to basic description
+    try {
+      const log = await git.log(5);
+      return [
+        "## Summary",
+        "Changes from ShipIt session.",
+        "",
+        "## Changes",
+        ...log.map((c) => `- ${c.message}`),
+      ].join("\n");
+    } catch {
+      return "Changes from ShipIt session.";
+    }
+  }
 }
 
 /** Set GitHub token. Returns status and repos. */

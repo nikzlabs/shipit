@@ -304,6 +304,17 @@ export class StubGitHubAuthManager extends EventEmitter {
   setCheckStatus(status: { state: "pending" | "success" | "failure" | "none"; total: number; passed: number; failed: number; pending: number } | null) {
     this._checkStatus = status;
   }
+
+  async graphqlQuery<T>(_query: string, _variables: Record<string, unknown>): Promise<T> {
+    return this._graphqlResult as T;
+  }
+
+  private _graphqlResult: unknown = null;
+
+  /** Set what graphqlQuery returns for tests. */
+  setGraphqlResult(result: unknown) {
+    this._graphqlResult = result;
+  }
 }
 
 /**

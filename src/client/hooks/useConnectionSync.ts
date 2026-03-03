@@ -2,7 +2,6 @@ import { useEffect, useRef } from "react";
 import type { WsClientMessage } from "../../server/shared/types.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
-import { usePrStore } from "../stores/pr-store.js";
 import { loadBootstrapData, loadSessionHistory } from "../utils/session-data.js";
 
 export function useConnectionSync(params: {
@@ -46,31 +45,7 @@ export function useConnectionSync(params: {
     }
   }, [status, send]);
 
-  // Fetch PR status on session load
-  const prStatusFetchedRef = useRef(false);
-  useEffect(() => {
-    if (status === "open" && useSessionStore.getState().sessionId) {
-      if (prStatusFetchedRef.current) return;
-      prStatusFetchedRef.current = true;
-      const sid = useSessionStore.getState().sessionId!;
-      usePrStore.getState().fetchStatus(sid).catch(() => { /* session may not have a PR */ });
-    }
-    if (status === "closed") {
-      prStatusFetchedRef.current = false;
-    }
-  }, [status]);
-
-  // Poll PR status while CI is pending
-  const prChecksState = usePrStore((s) => s.status?.checks.state);
-  useEffect(() => {
-    if (prChecksState === "pending" && useSessionStore.getState().sessionId) {
-      const sid = useSessionStore.getState().sessionId!;
-      const interval = setInterval(() => {
-        usePrStore.getState().fetchStatus(sid).catch(() => {});
-      }, 30_000);
-      return () => clearInterval(interval);
-    }
-  }, [prChecksState]);
+  // PR status is now delivered via SSE (pr_status event) — no HTTP polling needed.
 
   // Handle WebSocket disconnection during streaming
   const prevStatusRef = useRef(status);

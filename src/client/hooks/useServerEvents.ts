@@ -2,8 +2,9 @@ import { useEffect, useRef } from "react";
 import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { usePrStore } from "../stores/pr-store.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, PrStatusSummary } from "../../server/shared/types.js";
 
 /**
  * SSE hook for global push events — session list, repo updates, auth, activity dots.
@@ -89,6 +90,11 @@ export function useServerEvents(): void {
     es.addEventListener("agent_list", (e: MessageEvent) => {
       const data = JSON.parse(e.data) as { agents: Array<{ id: string; name: string; installed: boolean; authConfigured: boolean; models?: string[] }> };
       useUiStore.getState().setAgentList(data.agents.map((a) => ({ ...a, models: a.models ?? [] })));
+    });
+
+    es.addEventListener("pr_status", (e: MessageEvent) => {
+      const data = JSON.parse(e.data) as { updates: PrStatusSummary[] };
+      usePrStore.getState().applyPrStatusUpdates(data.updates);
     });
 
     es.addEventListener("full_reset_complete", () => {

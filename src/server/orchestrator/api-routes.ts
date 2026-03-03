@@ -25,6 +25,7 @@ import type { UsageManager } from "./usage.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { AuthManager } from "./auth.js";
+import type { PrStatusPoller } from "./pr-status-poller.js";
 
 import {
   getBootstrapData,
@@ -56,6 +57,7 @@ import {
   gitPush,
   gitPull,
   createPullRequest,
+  quickCreatePr,
   mergePullRequest,
   saveDeployConfig,
   deleteDeployConfig,
@@ -123,6 +125,8 @@ export interface ApiDeps {
   createSessionDirFull: (title: string, opts?: { skipGitInit?: boolean }) => Promise<{ appSessionId: string; sessionDir: string }>;
   /** Container manager — needed for standby cleanup on repo delete. */
   containerManager?: import("./session-container.js").SessionContainerManager;
+  /** PR status poller — needed for tracking new PRs. */
+  prStatusPoller?: PrStatusPoller;
 }
 
 /**
@@ -609,6 +613,45 @@ export async function registerApiRoutes(
   );
 
   // ---- PR mutations ----
+
+  // POST /api/sessions/:id/pr/quick — one-click PR creation
+  app.post<{ Params: { id: string } }>(
+    "/api/sessions/:id/pr/quick",
+    async (request, reply) => {
+      const session = sessionManager.get(request.params.id);
+      if (!session) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      try {
+        const git = createGitManager(dir);
+        const result = await quickCreatePr(
+          git,
+          deps.githubAuthManager,
+          deps.chatHistoryManager,
+          deps.generateText,
+          request.params.id,
+          session.title,
+          dir,
+        );
+
+        // Track the new PR in the poller
+        if (deps.prStatusPoller && session.remoteUrl) {
+          deps.prStatusPoller.trackSession(request.params.id, session.remoteUrl);
+        }
+
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to create PR: ${getErrorMessage(err)}` });
+      }
+    },
+  );
 
   // POST /api/sessions/:id/pr — create pull request
   app.post<{ Params: { id: string }; Body: { title: string; body: string; base: string; draft?: boolean } }>(

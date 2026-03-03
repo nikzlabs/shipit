@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { formatRelativeDate } from "../utils/dates.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
+import { PrStatusIcon } from "./PrLifecycleCard.js";
 import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
 
 export type { SessionInfo };
@@ -133,7 +134,10 @@ function SessionItem({ session, isCurrent, isRunning, onResume, onArchive, onRen
           onClick={() => { if (!isCurrent) onResume(session.id); }}
           className="flex-1 min-w-0 text-left"
         >
-          <p className="truncate leading-snug">{session.title}</p>
+          <div className="flex items-center gap-1">
+            <p className="truncate leading-snug flex-1">{session.title}</p>
+            <PrStatusIcon sessionId={session.id} />
+          </div>
           <p className="text-gray-500 dark:text-gray-600 text-[10px] mt-0.5">{formatRelativeDate(session.lastUsedAt)}</p>
         </button>
       )}
