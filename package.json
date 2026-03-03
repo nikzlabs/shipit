@@ -8,6 +8,8 @@
     "build": "vite build",
     "start": "node dist/server/index.js",
     "test": "vitest run",
+    "test:dev": "tsx scripts/test-dev.ts",
+    "test:smoke": "tsx scripts/test-dev.ts --smoke",
     "test:watch": "vitest",
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit"
