@@ -6,13 +6,15 @@ interface AddRepoDialogProps {
   onClose: () => void;
   onAdd: (url: string) => Promise<void>;
   onCreateNew: () => void;
+  /** Called when a newly-added repo finishes cloning and is ready. */
+  onRepoReady?: (url: string) => void;
   searchResults: Array<{ fullName: string; description: string | null; private: boolean; cloneUrl: string }>;
   onSearch: (query: string) => void | Promise<void>;
   /** Current repos from the store — used to track clone progress. */
   repos: RepoInfo[];
 }
 
-export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, searchResults, onSearch, repos }: AddRepoDialogProps) {
+export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, searchResults, onSearch, repos }: AddRepoDialogProps) {
   const [query, setQuery] = useState("");
   const [submitting, setSubmitting] = useState(false);
   /** URL of the repo we just added — tracked for clone progress. */
@@ -39,14 +41,16 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, searchResults
     }
   }, [open]);
 
-  // Auto-close when the pending repo becomes ready
+  // Auto-close and navigate when the pending repo becomes ready
   const pendingRepo = pendingUrl ? repos.find((r) => r.url === pendingUrl) : null;
   useEffect(() => {
-    if (pendingRepo?.status === "ready") {
+    if (pendingRepo?.status === "ready" && pendingUrl) {
+      const url = pendingUrl;
       setPendingUrl(null);
       onClose();
+      onRepoReady?.(url);
     }
-  }, [pendingRepo?.status, onClose]);
+  }, [pendingRepo?.status, pendingUrl, onClose, onRepoReady]);
 
   if (!open) return null;
 

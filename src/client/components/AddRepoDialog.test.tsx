@@ -125,6 +125,38 @@ describe("AddRepoDialog", () => {
     // In a real scenario, the useEffect would fire. For this test, we just verify the repo list renders.
   });
 
+  it("calls onRepoReady and closes when pending repo becomes ready", async () => {
+    const onClose = vi.fn();
+    const onRepoReady = vi.fn();
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    const cloningRepos: RepoInfo[] = [
+      { url: "https://github.com/test/repo.git", addedAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), status: "cloning" },
+    ];
+    const readyRepos: RepoInfo[] = [
+      { url: "https://github.com/test/repo.git", addedAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), status: "ready" },
+    ];
+
+    const { rerender } = render(
+      <AddRepoDialog {...defaultProps} onAdd={onAdd} onClose={onClose} onRepoReady={onRepoReady} repos={cloningRepos} />,
+    );
+
+    // Simulate adding the repo so pendingUrl is set
+    const input = screen.getByPlaceholderText("Search GitHub repos or paste a URL...");
+    fireEvent.change(input, { target: { value: "https://github.com/test/repo.git" } });
+    fireEvent.click(screen.getByText("Add"));
+    await waitFor(() => expect(onAdd).toHaveBeenCalled());
+
+    // Repo transitions from cloning to ready
+    rerender(
+      <AddRepoDialog {...defaultProps} onAdd={onAdd} onClose={onClose} onRepoReady={onRepoReady} repos={readyRepos} />,
+    );
+
+    await waitFor(() => {
+      expect(onClose).toHaveBeenCalled();
+      expect(onRepoReady).toHaveBeenCalledWith("https://github.com/test/repo.git");
+    });
+  });
+
   it("debounces search calls", async () => {
     vi.useFakeTimers();
     const onSearch = vi.fn();
