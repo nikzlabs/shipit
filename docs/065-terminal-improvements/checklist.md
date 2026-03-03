@@ -1,0 +1,52 @@
+# 065 — Terminal Improvements Checklist
+
+## Part 1 — UI Component Fixes
+
+### P0 — Correctness
+- [ ] Debounce `ResizeObserver` callback in `InteractiveTerminal` (~150ms)
+- [ ] Add tests verifying resize messages are debounced
+- [ ] Send initial `cols`/`rows` as part of `terminal_start` message
+- [ ] Update `WsTerminalStart` type to include optional `cols`/`rows`
+- [ ] Update `handleTerminalStart` handler to forward dimensions
+- [ ] Remove the `setTimeout(100)` for initial resize
+- [ ] Add integration test for `terminal_start` with dimensions
+
+### P1 — Robustness
+- [ ] Keep shell tab mounted (hidden) to preserve xterm.js instance across tab switches
+- [ ] Remove or repurpose `startedRef` guard
+- [ ] Add component test for tab switching preserving terminal state
+- [ ] Switch log auto-scroll from `smooth` to `instant` (or rate-adaptive)
+- [ ] Add component test for auto-scroll behavior during rapid entry bursts
+
+### P2 — Performance
+- [ ] Add monotonic ID to `LogEntry` (assign in store on receipt)
+- [ ] Use entry ID as React key instead of array index
+- [ ] Evaluate virtualized list for logs (`@tanstack/react-virtual`)
+- [ ] Implement virtualization if log volume warrants it
+
+## Part 2 — Architecture Fixes
+
+### P0 — Correctness
+- [ ] Add output rate tracking in session worker SSE broadcast
+- [ ] Implement PTY pause/resume when SSE buffer exceeds threshold
+- [ ] Add test for backpressure behavior under fast PTY output
+- [ ] Evaluate persistent connection (WS or Unix socket) for orchestrator↔worker terminal I/O
+- [ ] Implement persistent connection if latency measurements justify it
+- [ ] Remove HTTP POST path for `terminal_input` once persistent connection is in place
+
+### P1 — Robustness
+- [ ] Detect SSE disconnection in `ContainerSessionRunner`
+- [ ] Add reconnection with exponential backoff (3 retries)
+- [ ] Send `terminal_reconnecting` status to client during recovery
+- [ ] Add integration test for SSE disconnect → reconnect flow
+- [ ] Prepend terminal reset sequence (`\x1bc`) to replayed buffer on reconnect
+- [ ] Truncate output buffer at last complete line or reset sequence, not arbitrary byte
+- [ ] Add test for buffer truncation producing valid terminal output
+- [ ] Document relationship between server buffer (10KB) and client scrollback (1000 lines)
+- [ ] Consider increasing server buffer to ~80KB to approximate client scrollback
+
+### P2 — Future
+- [ ] Design multi-terminal protocol (terminalId on all messages)
+- [ ] Update `TerminalProcess` management to `Map<string, TerminalProcess>` in worker
+- [ ] Update `ContainerSessionRunner` to track per-terminal output buffers
+- [ ] Add client UI for multiple terminal tabs
