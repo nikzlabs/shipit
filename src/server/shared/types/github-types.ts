@@ -164,6 +164,8 @@ export interface WsPrLifecycleUpdate {
   /** Stable card ID — used to update the card in place. */
   cardId: string;
   phase: "ready" | "creating" | "open" | "merged" | "error";
+  /** Current branch name (present in "ready" phase). */
+  headBranch?: string;
   /** Present in "ready" phase — files changed by the agent turn. */
   files?: PrFileStat[];
   totalInsertions?: number;

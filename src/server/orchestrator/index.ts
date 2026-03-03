@@ -1131,6 +1131,43 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         }
       }
 
+      // Always send PR lifecycle card for sessions with a remote.
+      // The SSE pr_status snapshot handles open/merged PRs; this covers the
+      // "ready" phase (branch info + diff stats, no PR created yet).
+      {
+        const session = sessionManager.get(sessionId);
+        if (session?.remoteUrl && session.workspaceDir) {
+          const prStatus = prStatusPoller.getStatus(sessionId);
+          if (!prStatus) {
+            // No open/merged PR — send branch info and diff stats
+            (async () => {
+              try {
+                const git = createGitManager(session.workspaceDir!);
+                const headBranch = session.branch || await git.getCurrentBranch();
+                const { insertions, deletions } = await git.diffStatVsBranch("main");
+                send({
+                  type: "pr_lifecycle_update",
+                  sessionId,
+                  cardId: `pr-card-${sessionId}`,
+                  phase: "ready",
+                  headBranch,
+                  totalInsertions: insertions,
+                  totalDeletions: deletions,
+                });
+              } catch (err) {
+                send({
+                  type: "pr_lifecycle_update",
+                  sessionId,
+                  cardId: `pr-card-${sessionId}`,
+                  phase: "error",
+                  errorMessage: err instanceof Error ? err.message : "Failed to read git status",
+                });
+              }
+            })();
+          }
+        }
+      }
+
       // Message dispatcher — same as /ws but without new_session and activate_session
       socket.on("message", async (raw: Buffer) => {
         let msg: WsClientMessage;

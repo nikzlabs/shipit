@@ -476,6 +476,7 @@ export function useMessageHandler(params: {
       usePrStore.getState().updateCard(data.sessionId, {
         cardId: data.cardId,
         phase: data.phase,
+        headBranch: data.headBranch,
         files: data.files,
         totalInsertions: data.totalInsertions,
         totalDeletions: data.totalDeletions,

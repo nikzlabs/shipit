@@ -15,6 +15,8 @@ interface ImportSearchResult {
 export interface PrCardState {
   cardId: string;
   phase: "ready" | "creating" | "open" | "merged" | "error";
+  /** Current branch name (ready phase). */
+  headBranch?: string;
   /** Files changed (ready phase). */
   files?: PrFileStat[];
   totalInsertions?: number;

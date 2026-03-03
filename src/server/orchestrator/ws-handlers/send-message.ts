@@ -342,11 +342,13 @@ async function runClaudeWithMessage(ctx: FullCtx, opts: {
               return { path: f.path, status: f.status, insertions: ins, deletions: del };
             });
 
+            const headBranch = session.branch || await git.getCurrentBranch();
             emitDone({
               type: "pr_lifecycle_update",
               sessionId: capturedSessionId,
               cardId: `pr-card-${capturedSessionId}`,
               phase: "ready",
+              headBranch,
               files: fileStats,
               totalInsertions,
               totalDeletions,
