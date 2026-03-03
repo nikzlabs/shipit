@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, useMemo } from "react";
 export type LogSource = "stderr" | "stdout" | "server" | "preview" | "deploy" | "install";
 
 export interface LogEntry {
+  id: number;
   source: LogSource;
   text: string;
   timestamp: string;
@@ -102,7 +103,7 @@ export function TerminalPanel({ entries, onClear, terminalMode, onTerminalModeCh
   // Auto-scroll when new entries arrive
   useEffect(() => {
     if (autoScrollRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+      bottomRef.current?.scrollIntoView({ behavior: "instant" });
     }
   }, [filteredEntries.length]);
 
@@ -171,40 +172,37 @@ export function TerminalPanel({ entries, onClear, terminalMode, onTerminalModeCh
         )}
       </div>
 
-      {/* Tab content */}
-      {terminalMode === "logs" ? (
-        <div
-          ref={containerRef}
-          className="flex-1 overflow-auto bg-white dark:bg-gray-950 font-mono text-xs leading-5 p-2"
-        >
-          {filteredEntries.length === 0 ? (
-            <div className="flex items-center justify-center h-full text-gray-400 dark:text-gray-600 text-sm font-sans">
-              {entries.length === 0
-                ? "No output yet. Agent logs will appear here."
-                : "No logs match the current filter."}
+      {/* Tab content — both tabs stay mounted to preserve xterm.js state */}
+      <div
+        ref={containerRef}
+        className={`flex-1 overflow-auto bg-white dark:bg-gray-950 font-mono text-xs leading-5 p-2 ${terminalMode !== "logs" ? "hidden" : ""}`}
+      >
+        {filteredEntries.length === 0 ? (
+          <div className="flex items-center justify-center h-full text-gray-400 dark:text-gray-600 text-sm font-sans">
+            {entries.length === 0
+              ? "No output yet. Agent logs will appear here."
+              : "No logs match the current filter."}
+          </div>
+        ) : (
+          filteredEntries.map((entry) => (
+            <div key={entry.id} className="flex gap-2 hover:bg-gray-100/50 dark:hover:bg-gray-900/50">
+              <span className="text-gray-400 dark:text-gray-600 shrink-0 select-none">
+                {formatTime(entry.timestamp)}
+              </span>
+              <span className={`shrink-0 select-none ${SOURCE_COLORS[entry.source]}`}>
+                [{SOURCE_LABELS[entry.source]}]
+              </span>
+              <span className="text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-all">
+                {entry.text}
+              </span>
             </div>
-          ) : (
-            filteredEntries.map((entry, i) => (
-              <div key={i} className="flex gap-2 hover:bg-gray-100/50 dark:hover:bg-gray-900/50">
-                <span className="text-gray-400 dark:text-gray-600 shrink-0 select-none">
-                  {formatTime(entry.timestamp)}
-                </span>
-                <span className={`shrink-0 select-none ${SOURCE_COLORS[entry.source]}`}>
-                  [{SOURCE_LABELS[entry.source]}]
-                </span>
-                <span className="text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-all">
-                  {entry.text}
-                </span>
-              </div>
-            ))
-          )}
-          <div ref={bottomRef} />
-        </div>
-      ) : (
-        <div className="flex-1 min-h-0">
-          {shellContent}
-        </div>
-      )}
+          ))
+        )}
+        <div ref={bottomRef} />
+      </div>
+      <div className={`flex-1 min-h-0 ${terminalMode !== "shell" ? "hidden" : ""}`}>
+        {shellContent}
+      </div>
     </div>
   );
 }

@@ -55,13 +55,16 @@ vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 const observerInstances: Array<{
   observe: ReturnType<typeof vi.fn>;
   disconnect: ReturnType<typeof vi.fn>;
+  callback: () => void;
 }> = [];
 
 vi.stubGlobal("ResizeObserver", class MockResizeObserver {
   observe = vi.fn();
   disconnect = vi.fn();
   unobserve = vi.fn();
-  constructor() {
+  callback: () => void;
+  constructor(cb: () => void) {
+    this.callback = cb;
     observerInstances.push(this);
   }
 });
@@ -190,5 +193,55 @@ describe("InteractiveTerminal", () => {
 
     expect(term.dispose).toHaveBeenCalledOnce();
     expect(observer.disconnect).toHaveBeenCalledOnce();
+  });
+
+  it("calls onStart with initial cols and rows", () => {
+    const onStart = vi.fn();
+    const onInput = vi.fn();
+    const onResize = vi.fn();
+
+    render(
+      <InteractiveTerminal
+        onStart={onStart}
+        onInput={onInput}
+        onResize={onResize}
+      />,
+    );
+
+    expect(onStart).toHaveBeenCalledWith(80, 24);
+  });
+
+  it("debounces resize observer callbacks", async () => {
+    const onStart = vi.fn();
+    const onInput = vi.fn();
+    const onResize = vi.fn();
+
+    vi.useFakeTimers();
+
+    render(
+      <InteractiveTerminal
+        onStart={onStart}
+        onInput={onInput}
+        onResize={onResize}
+      />,
+    );
+
+    const observer = observerInstances[0];
+
+    // Simulate rapid resize events
+    observer.callback();
+    observer.callback();
+    observer.callback();
+
+    // onResize should not have been called yet (debounced)
+    expect(onResize).not.toHaveBeenCalled();
+
+    // Advance timer past the debounce period (150ms)
+    vi.advanceTimersByTime(150);
+
+    // Now it should have been called exactly once
+    expect(onResize).toHaveBeenCalledOnce();
+
+    vi.useRealTimers();
   });
 });
