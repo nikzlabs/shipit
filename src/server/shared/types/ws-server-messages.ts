@@ -9,7 +9,7 @@ import type {
   WsGitHubSearchResults,
   WsPrStatus,
 } from "./github-types.js";
-import type { WsTerminalOutput, WsTerminalExit, WsLogEntry, WsClearLogs } from "./terminal-types.js";
+import type { WsTerminalOutput, WsTerminalExit, WsTerminalReconnecting, WsLogEntry, WsClearLogs } from "./terminal-types.js";
 import type { WsThreadList, WsThreadSwitched, WsThreadForked } from "./thread-types.js";
 import type {
   WsDeployTargets,
@@ -343,6 +343,7 @@ export type WsServerMessage =
   | WsModelInfo
   | WsTerminalOutput
   | WsTerminalExit
+  | WsTerminalReconnecting
   | WsMessageQueued
   | WsQueueUpdated
   | WsAgentListMessage
