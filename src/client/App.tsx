@@ -33,6 +33,7 @@ import { MobileTabBar } from "./components/MobileTabBar.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
 import { HomeScreen } from "./components/HomeScreen.js";
 import { AddRepoDialog } from "./components/AddRepoDialog.js";
+import { NewRepoDialog } from "./components/NewRepoDialog.js";
 import { UsageModal } from "./components/UsageModal.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { OnboardingWizard } from "./components/OnboardingWizard.js";
@@ -172,6 +173,9 @@ export default function App() {
 
   const repos = useRepoStore((s) => s.repos);
   const addRepoDialogOpen = useRepoStore((s) => s.addRepoDialogOpen);
+  const newRepoDialogOpen = useRepoStore((s) => s.newRepoDialogOpen);
+
+  const creatingRepo = useSessionStore((s) => s.creatingRepo);
 
   const noAgentReady = agentList.length > 0 && !agentList.some(a => a.installed && a.authConfigured);
   const showOnboarding = gitIdentityNeeded || noAgentReady;
@@ -806,16 +810,39 @@ export default function App() {
           useRepoStore.getState().setAddRepoDialogOpen(false);
           // eslint-disable-next-line no-restricted-syntax -- fire-and-forget one-liner
           if (templates.length === 0) apiGet<{ templates: typeof templates }>("/api/bootstrap").then((d) => useUiStore.getState().setTemplates(d.templates)).catch(() => {});
-          // Navigate to HomeScreen which has the NewRepoDialog flow
-          useSessionStore.getState().setSessionId(undefined);
-          resetSessionState();
-          useUiStore.getState().setShowTemplates(true);
-          navigate("/");
+          useRepoStore.getState().setNewRepoDialogOpen(true);
         }}
         searchResults={importSearchResults}
         onSearch={(q) => usePrStore.getState().searchRepos(q).catch(() => {})}
         repos={repos}
       />
+      {newRepoDialogOpen && (
+        <NewRepoDialog
+          username={githubStatus.username ?? ""}
+          templates={templates}
+          creating={creatingRepo}
+          onClose={() => useRepoStore.getState().setNewRepoDialogOpen(false)}
+          onSubmit={async (name, description, isPrivate, templateId) => {
+            useSessionStore.getState().setCreatingRepo(true);
+            try {
+              const res = await apiPost<{ success: boolean; repoUrl?: string; sessionId?: string; message?: string }>(
+                "/api/repos",
+                { repoName: name, description, isPrivate, templateId },
+              );
+              if (res.success && res.sessionId) {
+                useRepoStore.getState().setNewRepoDialogOpen(false);
+                navigate(`/session/${res.sessionId}`);
+              } else {
+                useUiStore.getState().setToast({ type: "error", message: res.message || "Failed to create repository" });
+              }
+            } catch {
+              useUiStore.getState().setToast({ type: "error", message: "Failed to create repository" });
+            } finally {
+              useSessionStore.getState().setCreatingRepo(false);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
