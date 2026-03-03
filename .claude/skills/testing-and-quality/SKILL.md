@@ -5,6 +5,24 @@ user-invocable: true
 
 # Testing Conventions & Quality Checklist
 
+## Progressive Testing
+
+During development, use `npm run test:dev` instead of `npm test`. This runs:
+1. **Affected tests** — tests co-located with files you've changed (uncommitted + staged)
+2. **Smoke tests** — a small set of critical-path tests that always run
+
+The full suite (`npm test`) runs in CI on every PR. Only run it locally if you suspect wide-reaching breakage.
+
+| Command | When to use |
+|---------|-------------|
+| `npm run test:dev` | Default for development — fast, targeted |
+| `npm run test:dev -- --list` | Dry run — see which files would run |
+| `npm run test:smoke` | Smoke tests only |
+| `npm test` | Full suite — CI runs this, rarely needed locally |
+| `npx vitest run path/to/file.test.ts` | Run a single specific test file |
+
+Smoke tests are defined in `scripts/test-dev.ts` (the `SMOKE_TESTS` array). Keep the list small (~4-6 files).
+
 ## Test Configuration
 
 Tests use Vitest with two project configs in `vitest.config.ts`:
