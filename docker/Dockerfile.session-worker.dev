@@ -7,7 +7,7 @@ RUN npm install -g @anthropic-ai/claude-code @openai/codex
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm npm install --prefer-offline --loglevel=verbose
+RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline --loglevel=verbose
 
 COPY tsconfig.json ./
 # Only copy code the session-worker actually needs — session + shared layers.

@@ -8,7 +8,7 @@ WORKDIR /app
 
 # Install dependencies — source code is bind-mounted at runtime
 COPY package.json package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm npm install --prefer-offline --loglevel=verbose
+RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline --loglevel=verbose
 
 # Workspace for user projects — each session creates its own git repo
 RUN mkdir -p /workspace /credentials && ln -s /credentials/.claude /root/.claude && ln -sf /credentials/.claude.json /root/.claude.json
