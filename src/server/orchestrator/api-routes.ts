@@ -85,6 +85,7 @@ import {
   listRepos,
   addRepo,
   removeRepo,
+  triggerCIFix,
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
@@ -690,6 +691,82 @@ export async function registerApiRoutes(
           return;
         }
         return { success: false, message: `Merge failed: ${getErrorMessage(err)}` };
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/pr/fix-ci — manually trigger CI fix
+  app.post<{ Params: { id: string } }>(
+    "/api/sessions/:id/pr/fix-ci",
+    async (request, reply) => {
+      try {
+        if (!deps.prStatusPoller) {
+          reply.code(500).send({ error: "PR status poller not available" });
+          return;
+        }
+        return await triggerCIFix(
+          deps.githubAuthManager,
+          deps.prStatusPoller,
+          deps.runnerRegistry,
+          request.params.id,
+        );
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Fix CI failed: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/pr/auto-fix — toggle auto-fix on/off
+  app.post<{ Params: { id: string }; Body: { enabled: boolean } }>(
+    "/api/sessions/:id/pr/auto-fix",
+    async (request, reply) => {
+      try {
+        if (!deps.prStatusPoller) {
+          reply.code(500).send({ error: "PR status poller not available" });
+          return;
+        }
+        if (typeof request.body?.enabled !== "boolean") {
+          reply.code(400).send({ error: "\"enabled\" field is required (boolean)" });
+          return;
+        }
+
+        const state = deps.prStatusPoller.setAutoFixEnabled(
+          request.params.id,
+          request.body.enabled,
+        );
+
+        // If enabling and CI is currently failed, trigger a fix immediately
+        if (request.body.enabled) {
+          const prStatus = deps.prStatusPoller.getStatus(request.params.id);
+          if (prStatus?.checks.state === "failure") {
+            try {
+              await triggerCIFix(
+                deps.githubAuthManager,
+                deps.prStatusPoller,
+                deps.runnerRegistry,
+                request.params.id,
+              );
+            } catch {
+              // Non-fatal — the toggle still worked, fix just didn't trigger
+            }
+          }
+        }
+
+        return {
+          enabled: state.enabled,
+          attemptCount: state.attemptCount,
+          status: state.status,
+        };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Auto-fix toggle failed: ${getErrorMessage(err)}` });
       }
     },
   );

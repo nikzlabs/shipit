@@ -49,6 +49,20 @@ function setStatus(sessionId: string, prState: "open" | "merged", checksState?: 
   });
 }
 
+const openPrCard: PrCardState = {
+  cardId: "c1",
+  phase: "open",
+  pr: {
+    number: 42,
+    title: "Add feature",
+    url: "https://github.com/o/r/pull/42",
+    baseBranch: "main",
+    headBranch: "feature-branch",
+    insertions: 100,
+    deletions: 20,
+  },
+};
+
 // ---- PrLifecycleCard ----
 
 describe("PrLifecycleCard", () => {
@@ -82,17 +96,7 @@ describe("PrLifecycleCard", () => {
 
   it("renders open phase with branch flow and diff stats", () => {
     setCard("s1", {
-      cardId: "c1",
-      phase: "open",
-      pr: {
-        number: 42,
-        title: "Add feature",
-        url: "https://github.com/o/r/pull/42",
-        baseBranch: "main",
-        headBranch: "feature-branch",
-        insertions: 100,
-        deletions: 20,
-      },
+      ...openPrCard,
       checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
     });
 
@@ -105,23 +109,112 @@ describe("PrLifecycleCard", () => {
 
   it("renders open phase with failing checks", () => {
     setCard("s1", {
-      cardId: "c1",
-      phase: "open",
-      pr: {
-        number: 42,
-        title: "Add feature",
-        url: "https://github.com/o/r/pull/42",
-        baseBranch: "main",
-        headBranch: "feature-branch",
-        insertions: 100,
-        deletions: 20,
-      },
+      ...openPrCard,
       checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
     });
 
     render(<PrLifecycleCard sessionId="s1" />);
 
     expect(screen.getByTitle(/CI failed/)).toBeInTheDocument();
+  });
+
+  // ---- Phase 2: per-check failure list ----
+
+  it("renders failed checks list when CI fails with failedChecks details", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: {
+        state: "failure",
+        total: 3,
+        passed: 1,
+        failed: 2,
+        pending: 0,
+        failedChecks: [
+          { name: "lint", summary: "ESLint errors" },
+          { name: "test", summary: "3 tests failed" },
+        ],
+      },
+    });
+
+    const { container } = render(<PrLifecycleCard sessionId="s1" />);
+
+    // Check names and summaries appear in the rendered output
+    expect(container.textContent).toContain("lint");
+    expect(container.textContent).toContain("ESLint errors");
+    expect(container.textContent).toContain("test");
+    expect(container.textContent).toContain("3 tests failed");
+  });
+
+  it("shows Fix CI Issues button when CI fails and auto-fix is off", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    expect(screen.getByText("Fix CI Issues")).toBeInTheDocument();
+  });
+
+  it("shows auto-fix toggle when CI fails", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    expect(screen.getByText("Auto-fix")).toBeInTheDocument();
+  });
+
+  it("shows auto-fix running state with attempt counter", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
+      autoFix: { enabled: true, status: "running", attemptCount: 2, maxAttempts: 3 },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    expect(screen.getByText(/Auto-fixing \(attempt 2\/3\)/)).toBeInTheDocument();
+  });
+
+  it("shows auto-fix exhausted state", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
+      autoFix: { enabled: true, status: "exhausted", attemptCount: 3, maxAttempts: 3 },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    expect(screen.getByText(/Auto-fix exhausted/)).toBeInTheDocument();
+    // Should show Fix CI Issues button as fallback
+    expect(screen.getByText("Fix CI Issues")).toBeInTheDocument();
+  });
+
+  it("hides Fix CI button when auto-fix is enabled and running", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
+      autoFix: { enabled: true, status: "running", attemptCount: 1, maxAttempts: 3 },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    expect(screen.queryByText("Fix CI Issues")).toBeNull();
+  });
+
+  it("does not show failure list or fix button when CI passes", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    expect(screen.queryByText("Fix CI Issues")).toBeNull();
+    expect(screen.queryByText("Auto-fix")).toBeNull();
   });
 
   it("renders merged phase", () => {

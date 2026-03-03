@@ -127,6 +127,29 @@ export interface WsMergePrResult {
 
 // ---- PR lifecycle types ----
 
+/** CI failure log for a single check run — used by the fix-ci flow. */
+export interface CIFailureLog {
+  checkName: string;
+  conclusion: string;         // "failure", "cancelled", "timed_out"
+  summary: string;            // one-line from CheckRun.title
+  annotations: Array<{
+    path: string;
+    startLine: number;
+    endLine: number;
+    message: string;
+    annotationLevel: "failure" | "warning" | "notice";
+  }>;
+  logExcerpt: string;         // last 100 lines of raw log (fallback)
+}
+
+/** Auto-fix state for a session's PR, managed by the poller. */
+export interface AutoFixState {
+  enabled: boolean;
+  attemptCount: number;       // resets when head SHA changes
+  lastHeadSha: string;        // tracks which commit's CI we're fixing
+  status: "idle" | "running" | "exhausted";
+}
+
 /** Summary of a PR's current status, used by both the inline card and sidebar icons. */
 export interface PrStatusSummary {
   sessionId: string;
@@ -144,9 +167,18 @@ export interface PrStatusSummary {
     passed: number;
     failed: number;
     pending: number;
+    /** Per-check failure details (populated when state is "failure"). */
+    failedChecks?: Array<{ name: string; summary: string }>;
   };
   mergeable: boolean;
   autoMergeEnabled: boolean;
+  /** Auto-fix state — present when auto-fix has been interacted with. */
+  autoFix?: {
+    enabled: boolean;
+    status: "idle" | "running" | "exhausted";
+    attemptCount: number;
+    maxAttempts: number;       // always 3
+  };
 }
 
 /** File stat for the "ready" phase of the PR lifecycle card. */

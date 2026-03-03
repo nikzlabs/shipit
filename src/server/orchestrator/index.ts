@@ -137,6 +137,11 @@ export interface AppDeps {
   sessionContainerManager?: import("./session-container.js").SessionContainerManager;
   /** Repo store instance. Defaults to `new RepoStore()`. */
   repoStore?: RepoStore;
+  /**
+   * Pre-configured PrStatusPoller instance. When provided, the internally created
+   * one is replaced. Useful for testing auto-fix flows.
+   */
+  prStatusPoller?: PrStatusPoller;
 }
 
 /**
@@ -523,7 +528,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   });
 
   // ---- PR Status Poller ----
-  const prStatusPoller = new PrStatusPoller({
+  const prStatusPoller = deps.prStatusPoller ?? new PrStatusPoller({
     githubAuth: githubAuthManager,
     sessionManager,
     sseBroadcast,
