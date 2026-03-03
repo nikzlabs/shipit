@@ -6,14 +6,14 @@ RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci
 
 COPY tsconfig.json ./
 COPY src/server/session/ ./src/server/session/
 COPY src/server/shared/ ./src/server/shared/
 
 # Prune devDependencies so we can copy a clean node_modules to prod
-RUN npm prune --omit=dev && npm install tsx
+RUN --mount=type=cache,target=/root/.npm npm prune --omit=dev && npm install tsx
 
 # ---- Production image ----
 FROM node:24-slim
@@ -22,7 +22,7 @@ FROM node:24-slim
 # in user sessions (npm install inside /user may compile C/C++ addons).
 RUN apt-get update && apt-get install -y git curl python3 make g++ && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g @anthropic-ai/claude-code @openai/codex
+RUN --mount=type=cache,target=/root/.npm npm install -g @anthropic-ai/claude-code @openai/codex
 
 WORKDIR /app
 
