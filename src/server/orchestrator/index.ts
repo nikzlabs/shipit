@@ -323,7 +323,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       const existing = mgr.get(o.sessionId);
 
       // Reconnect to running container — avoids expensive container restart cycle.
+      // If this is a standby container, claim it (removes standby tracking).
       if (existing && existing.status === "running") {
+        mgr.claimStandby(o.sessionId);
         console.log(`[container] Reconnecting to existing container for ${o.sessionId} at ${existing.workerUrl}`);
         return new ContainerSessionRunner({
           sessionId: o.sessionId,
@@ -331,6 +333,52 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           defaultAgentId: o.defaultAgentId,
           workerUrl: existing.workerUrl,
         });
+      }
+
+      // Wait for in-progress container creation (e.g., standby being built).
+      // The standby `create()` call updates the SessionContainer object in-place
+      // when finished, so polling `mgr.get()` will see the updated status/URL.
+      if (existing && existing.status === "starting") {
+        console.log(`[container] Waiting for in-progress container creation for ${o.sessionId}...`);
+        const runner = new ContainerSessionRunner({
+          sessionId: o.sessionId,
+          sessionDir: o.sessionDir,
+          defaultAgentId: o.defaultAgentId,
+          workerUrl: "http://0.0.0.0:0",
+        });
+
+        void (async () => {
+          try {
+            const deadline = Date.now() + 30_000;
+            while (Date.now() < deadline) {
+              const sc = mgr.get(o.sessionId);
+              if (sc && sc.status === "running") {
+                mgr.claimStandby(o.sessionId);
+                console.log(`[container] Standby container ready for ${o.sessionId} at ${sc.workerUrl}`);
+                runner.setWorkerUrl(sc.workerUrl);
+                return;
+              }
+              if (!sc) break; // Creation failed and entry was removed
+              await new Promise((r) => setTimeout(r, 500));
+            }
+            // Standby creation failed or timed out — create fresh container.
+            console.log(`[container] Standby not ready, creating fresh container for ${o.sessionId}...`);
+            const config = mgr.buildConfig({
+              sessionId: o.sessionId,
+              sessionDir: o.sessionDir,
+              credentialsDir,
+              sharedRepoDir: o.sharedRepoDir,
+            });
+            const sc = await mgr.create(config);
+            console.log(`[container] Container ready for ${o.sessionId} at ${sc.workerUrl}`);
+            runner.setWorkerUrl(sc.workerUrl);
+          } catch (err) {
+            console.error(`[container] Failed to start container for ${o.sessionId}:`, getErrorMessage(err));
+            runner.dispose();
+          }
+        })();
+
+        return runner;
       }
 
       // Build config for fresh container creation.
@@ -347,7 +395,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         workerUrl: "http://0.0.0.0:0", // placeholder — updated after container starts
       });
 
-      // If a stale container exists (starting/stopping/stopped), destroy it first.
+      // If a stale container exists (stopping/stopped), destroy it first.
       console.log(`[container] ${existing ? "Replacing stale" : "Creating"} container for session ${o.sessionId}...`);
       void (async () => {
         try {
@@ -373,6 +421,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     const idleSessionIds: string[] = [];
 
     for (const sc of containerManager.getAll()) {
+      if (containerManager.isStandby(sc.sessionId)) continue;
       const runner = runnerRegistry.get(sc.sessionId);
       if (!runner || (runner.viewerCount === 0 && !runner.running)) {
         idleSessionIds.push(sc.sessionId);
@@ -567,7 +616,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const warmingInProgress = new Set<string>();
   const warmingPromises = new Map<string, Promise<void>>();
 
-  const warmSessionForRepo = (repoUrl: string): void => {
+  const warmSessionForRepo = (repoUrl: string, opts?: { withStandby?: boolean }): void => {
     const repo = repoStore.get(repoUrl);
     if (!repo || repo.status !== "ready") return;
     // Don't warm if already has a warm session or is currently warming
@@ -596,10 +645,20 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         sessionManager.setWarm(appSessionId, true);
         sessionManager.setRemoteUrl(appSessionId, repoUrl);
 
+        const repoGit = createRepoGit(repoDir);
+
+        // Fetch latest from origin when re-warming after user interaction
+        if (opts?.withStandby) {
+          try {
+            await repoGit.fetch("origin");
+          } catch (err) {
+            console.error(`[warm] Fetch origin failed for ${repoUrl}:`, getErrorMessage(err));
+          }
+        }
+
         // Remove the empty dir (worktree add needs it absent)
         await fs.rm(sessionDir, { recursive: true, force: true });
 
-        const repoGit = createRepoGit(repoDir);
         const isEmptyRepo = await repoGit.isEmpty();
 
         if (isEmptyRepo) {
@@ -649,6 +708,28 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         // the session (WS connect → activateSession → getOrCreate).
         repoStore.setWarmSessionId(repoUrl, appSessionId);
 
+        // Boot a standby container so the next activation is instant
+        if (opts?.withStandby && containerManager) {
+          const session = sessionManager.get(appSessionId);
+          const sharedRepoDir = session?.sessionType === "worktree" ? repoDir : undefined;
+          const realCount = containerManager.size - containerManager.standbyCount;
+          const maxIdle = credentialStore.getMaxIdleContainers();
+          if (realCount < maxIdle) {
+            const config = containerManager.buildConfig({
+              sessionId: appSessionId,
+              sessionDir,
+              credentialsDir,
+              sharedRepoDir,
+            });
+            // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget in sync warming callback
+            containerManager.createStandby(config).then((sc) => {
+              console.log(`[warm] Standby container ready for ${appSessionId} at ${sc.workerUrl}`);
+            }).catch((err) => {
+              console.error(`[warm] Standby container failed for ${appSessionId}:`, getErrorMessage(err));
+            });
+          }
+        }
+
         // Broadcast so client knows the repo is ready for instant sessions
         sseBroadcast("repo_warm_ready", { url: repoUrl, sessionId: appSessionId });
 
@@ -686,15 +767,46 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   }
 
   // ---- Startup: validate warm sessions + re-warm missing ----
-  // After restart, runners/containers are gone. We do NOT recreate them here;
-  // containers are created on-demand when a WebSocket connects (activateSession).
-  // We only validate that warm sessions' worktree dirs still exist on disk.
+  // After restart, runners/containers are gone. We intentionally do NOT boot
+  // standby containers here — that would start containers for every repo the
+  // user has cloned. Instead, the first "New Session" per repo cold-starts
+  // (~1-2s), which triggers re-warming with a standby container so that
+  // subsequent "New Session" clicks for the same repo are instant.
   setTimeout(() => {
+    // Collect current warm session IDs so we can clean up zombies.
+    const activeWarmIds = new Set<string>();
+    for (const repo of repoStore.list()) {
+      if (repo.warmSessionId) activeWarmIds.add(repo.warmSessionId);
+    }
+
+    // Delete zombie warm sessions — previously-claimed warm sessions that were
+    // never graduated (user clicked "New Session" but never sent a message).
+    // Without this, `findUngraduatedWarm()` returns these zombies instead of
+    // claiming from the warm pool, preventing re-warming + standby.
+    // Also cleans up already-unflagged zombies (title "Warm session", no messages).
+    let zombieCount = 0;
+    for (const id of sessionManager.allIds()) {
+      if (activeWarmIds.has(id)) continue;
+      const s = sessionManager.get(id);
+      if (s?.warm || (s?.title === "Warm session" && !s.archived)) {
+        sessionManager.delete(id);
+        zombieCount++;
+      }
+    }
+    if (zombieCount > 0) {
+      console.log(`[warm] Deleted ${zombieCount} stale ungraduated warm session(s)`);
+    }
+
     for (const repo of repoStore.list()) {
       if (repo.warmSessionId && repo.status === "ready") {
         const ws = sessionManager.get(repo.warmSessionId);
         if (!ws?.workspaceDir || !existsSync(ws.workspaceDir)) {
           console.log(`[warm] Stale warm session ${repo.warmSessionId} — worktree missing, re-warming`);
+          if (containerManager?.isStandby(repo.warmSessionId)) {
+            containerManager.destroy(repo.warmSessionId).catch((err) => {
+              console.error(`[warm] Failed to destroy stale standby:`, getErrorMessage(err));
+            });
+          }
           repoStore.setWarmSessionId(repo.url, undefined);
           warmSessionForRepo(repo.url);
         } else {
@@ -741,6 +853,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     warmSessionForRepo,
     waitForWarmSession: (repoUrl: string) => warmingPromises.get(repoUrl),
     createSessionDirFull: createSessionDir,
+    containerManager: containerManager ?? undefined,
   });
 
   // ---- Preview reverse proxy (container mode) ----

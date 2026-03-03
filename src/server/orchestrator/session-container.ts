@@ -35,6 +35,8 @@ export interface ContainerConfig {
   pidsLimit: number;
   /** Environment variables to pass to the container. */
   env?: Record<string, string>;
+  /** Additional Docker labels to apply to the container. */
+  extraLabels?: Record<string, string>;
 }
 
 export interface SessionContainer {
@@ -107,6 +109,7 @@ export const CONTAINER_LABEL_KEY = "shipit-session";
 export const CONTAINER_LABEL_VALUE = "true";
 export const CONTAINER_SESSION_ID_LABEL = "shipit-session-id";
 export const CONTAINER_STACK_LABEL = "shipit-stack";
+export const CONTAINER_STANDBY_LABEL = "shipit-standby";
 
 // ---------------------------------------------------------------------------
 // SessionContainerManager
@@ -125,6 +128,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private workspaceVolume?: string;
   private credentialsVolume?: string;
   private stackName?: string;
+  private standbySessionIds = new Set<string>();
   private eventStream: (NodeJS.ReadableStream & { destroy?: () => void }) | null = null;
   private _disposed = false;
 
@@ -285,6 +289,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         Labels: {
           ...this.baseLabels(),
           [CONTAINER_SESSION_ID_LABEL]: config.sessionId,
+          ...config.extraLabels,
         },
         HostConfig: {
           Binds: binds.length > 0 ? binds : undefined,
@@ -355,6 +360,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * Gracefully stops with a 5-second timeout before force-killing.
    */
   async destroy(sessionId: string): Promise<void> {
+    this.standbySessionIds.delete(sessionId);
     const sc = this.containers.get(sessionId);
     if (!sc) return;
 
@@ -400,6 +406,41 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   /** Number of active containers. */
   get size(): number {
     return this.containers.size;
+  }
+
+  // --- Standby container support ---
+
+  /**
+   * Create a standby container for a warm session. Identical to `create()` but
+   * labels the container with `shipit-standby=true` and tracks it as standby.
+   */
+  async createStandby(config: ContainerConfig): Promise<SessionContainer> {
+    const sc = await this.create({
+      ...config,
+      extraLabels: { ...config.extraLabels, [CONTAINER_STANDBY_LABEL]: "true" },
+    });
+    this.standbySessionIds.add(config.sessionId);
+    return sc;
+  }
+
+  /** Check whether a session's container is a standby (not yet claimed by a user). */
+  isStandby(sessionId: string): boolean {
+    return this.standbySessionIds.has(sessionId);
+  }
+
+  /**
+   * Claim a standby container — removes the standby flag and returns the
+   * container so the runner factory can reuse it instead of creating a new one.
+   */
+  claimStandby(sessionId: string): SessionContainer | undefined {
+    if (!this.standbySessionIds.has(sessionId)) return undefined;
+    this.standbySessionIds.delete(sessionId);
+    return this.containers.get(sessionId);
+  }
+
+  /** Number of standby containers currently tracked. */
+  get standbyCount(): number {
+    return this.standbySessionIds.size;
   }
 
   // --- Orphan cleanup ---
@@ -472,6 +513,9 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
             workerUrl: `http://${networkInfo.IPAddress}:${this.workerPort}`,
             status: "running",
           });
+          if (ci.Labels?.[CONTAINER_STANDBY_LABEL] === "true") {
+            this.standbySessionIds.add(sessionId);
+          }
           count++;
         } catch {
           // Container may have exited between list and inspect
