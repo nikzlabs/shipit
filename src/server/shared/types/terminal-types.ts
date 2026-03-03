@@ -56,6 +56,20 @@ export interface WsTerminalExit {
   exitCode: number | null;
 }
 
+/**
+ * Server → Client: the SSE connection to the terminal worker dropped.
+ * The orchestrator is attempting to reconnect. The client should display
+ * a "reconnecting" indicator and expect buffered output to be replayed
+ * once the connection is restored.
+ */
+export interface WsTerminalReconnecting {
+  type: "terminal_reconnecting";
+  /** Which reconnection attempt this is (1-based). */
+  attempt: number;
+  /** Maximum attempts before giving up. */
+  maxAttempts: number;
+}
+
 // ---- Terminal/logs types ----
 
 export interface WsLogEntry {

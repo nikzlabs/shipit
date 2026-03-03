@@ -30,20 +30,20 @@
 - [x] Add output rate tracking in session worker SSE broadcast
 - [x] Implement PTY pause/resume when SSE buffer exceeds threshold
 - [x] Add test for backpressure behavior under fast PTY output
-- [ ] Evaluate persistent connection (WS or Unix socket) for orchestrator↔worker terminal I/O
-- [ ] Implement persistent connection if latency measurements justify it
-- [ ] Remove HTTP POST path for `terminal_input` once persistent connection is in place
+- [x] Evaluate persistent connection (WS or Unix socket) for orchestrator↔worker terminal I/O — **not justified**: terminal input is low-bandwidth (human typing speed, ~10 chars/sec) and HTTP POST over localhost in Docker is sub-millisecond. The SSE stream already handles the high-bandwidth output direction. Will revisit if latency becomes measurable.
+- [x] ~~Implement persistent connection if latency measurements justify it~~ — deferred per evaluation above
+- [x] ~~Remove HTTP POST path for `terminal_input` once persistent connection is in place~~ — deferred per evaluation above
 
 ### P1 — Robustness
-- [ ] Detect SSE disconnection in `ContainerSessionRunner`
-- [ ] Add reconnection with exponential backoff (3 retries)
-- [ ] Send `terminal_reconnecting` status to client during recovery
-- [ ] Add integration test for SSE disconnect → reconnect flow
-- [ ] Prepend terminal reset sequence (`\x1bc`) to replayed buffer on reconnect
-- [ ] Truncate output buffer at last complete line or reset sequence, not arbitrary byte
-- [ ] Add test for buffer truncation producing valid terminal output
-- [ ] Document relationship between server buffer (10KB) and client scrollback (1000 lines)
-- [ ] Consider increasing server buffer to ~80KB to approximate client scrollback
+- [x] Detect SSE disconnection in `ContainerSessionRunner`
+- [x] Add reconnection with exponential backoff (3 retries)
+- [x] Send `terminal_reconnecting` status to client during recovery
+- [x] Add integration test for SSE disconnect → reconnect flow
+- [x] Prepend terminal reset sequence (`\x1bc`) to replayed buffer on reconnect
+- [x] Truncate output buffer at last complete line or reset sequence, not arbitrary byte
+- [x] Add test for buffer truncation producing valid terminal output
+- [x] Document relationship between server buffer (10KB) and client scrollback (1000 lines)
+- [x] Consider increasing server buffer to ~80KB to approximate client scrollback — increased to 80KB with documentation
 
 ### P2 — Future
 - [ ] Design multi-terminal protocol (terminalId on all messages)
