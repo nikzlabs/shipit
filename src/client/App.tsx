@@ -62,18 +62,16 @@ import { useSettingsStore } from "./stores/settings-store.js";
 import { useUiStore } from "./stores/ui-store.js";
 import { useRepoStore } from "./stores/repo-store.js";
 import { resumeSessionInternal, handleSessionResume, newSession, resetSessionState } from "./stores/actions/session-actions.js";
-import { parseRepoLabel, repoLabelToNewPath } from "./utils/repo-label.js";
+import { parseRepoLabel, repoLabelToNewPath, parseNewSessionSlug } from "./utils/repo-label.js";
 
 export default function App() {
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
   const location = useLocation();
 
-  // Detect /{slug}/new URL pattern (e.g. /owner/repo/new)
-  const isNewSessionRoute = location.pathname.endsWith("/new") && location.pathname.length > 4;
-  const newSessionRepoSlug = isNewSessionRoute
-    ? decodeURIComponent(location.pathname.slice(1, -4)) // strip leading "/" and trailing "/new"
-    : undefined;
+  // Detect /repo/{slug}/new URL pattern (e.g. /repo/owner/repo/new)
+  const newSessionRepoSlug = parseNewSessionSlug(location.pathname);
+  const isNewSessionRoute = newSessionRepoSlug !== undefined;
 
   // SSE for global push (session list, repos, auth, activity dots) — always active
   useServerEvents();
