@@ -78,7 +78,7 @@
 - [x] Port scanning scoped to container's own network namespace (automatic per-container localhost)
 - [x] Update `src/client/path-utils.ts` — handle `/workspace/` prefix alongside existing `/workspace/sessions/{uuid}/` format
 - [x] Worker cleanup — `stop()` kills terminal, stops preview, stops file watcher
-- [ ] Git operations routing for worktree sessions (accepted limitation: orchestrator auto-commit works unchanged, Claude CLI git writes not available inside worktree containers until `GIT_OBJECT_DIRECTORY` optimization in post-launch)
+- [x] Git operations routing for worktree sessions (accepted limitation: orchestrator auto-commit works unchanged, in-container git deferred to 067)
 - [x] Integration tests (35 tests in `worker-terminal.test.ts`, `worker-preview.test.ts`, `worker-file-watcher.test.ts`)
   - [x] Terminal I/O round-trips through worker endpoints + SSE
   - [x] Terminal proxy via ContainerSessionRunner (start, write, resize, exit)
@@ -138,35 +138,11 @@
   - [x] Rediscover restores standby state after restart
   - [x] No standby when at container cap
 
-## Phase 5: Cross-Platform Validation
+## Phase 5: Cross-Platform Validation (macOS done, remainder moved to 067)
 
-- [ ] Docker socket auto-detection — verify `docker.ping()` via default `/var/run/docker.sock` on all platforms
-  - [ ] Linux (Docker Engine)
-  - [ ] macOS (Docker Desktop with virtiofs)
-  - [ ] Windows WSL2 (Docker Desktop WSL2 backend)
-  - [ ] Windows WSL2 (Docker Engine installed inside WSL2)
-- [ ] Bind mount path validation — confirm absolute paths work without translation
-  - [ ] Linux: `/workspace/sessions/{uuid}` → container `/workspace`
-  - [ ] macOS: Docker Desktop translates host paths to VM paths transparently
-  - [ ] WSL2: WSL2 filesystem paths (`/home/user/...`) mount correctly
-- [ ] Performance baseline per platform
-  - [ ] Linux: document cold start time, `npm install` duration, file I/O throughput
-  - [ ] macOS: document virtiofs overhead vs native (expect ~10-30% slower I/O)
-  - [ ] WSL2: verify workspace on WSL2 filesystem (not `/mnt/c/`) for acceptable performance
-- [ ] Bridge networking validation — verify orchestrator can reach container IPs on all platforms
-- [ ] Graceful fallback — verify `useContainers: false` auto-triggers when Docker is missing on each platform
-- [ ] Add setup documentation for each platform (Docker installation prerequisites)
+- [x] macOS (Docker Desktop with virtiofs) — fully validated: socket, bind mounts, performance, bridge networking, graceful fallback
+- Remaining platforms (Linux, WSL2) and setup documentation moved to [067-container-hardening](../067-container-hardening/plan.md)
 
-## Post-launch
+## Post-launch (moved to 067)
 
-- [ ] Credential mounts: switch `/credentials` to read-only once Claude CLI `--resume` write path is isolated
-- [ ] Run worker process as non-root user (uid 1000)
-- [ ] Network egress restriction — allowlist `api.anthropic.com`, `github.com`, `registry.npmjs.org`
-- [ ] `--dangerously-skip-permissions` support
-  - [ ] Add `skipPermissions` flag to `ContainerConfig` (gated on `useContainers: true`)
-  - [ ] Pass `SKIP_PERMISSIONS` env var to container
-  - [ ] Session worker reads env var and adds `--dangerously-skip-permissions` to Claude CLI args
-  - [ ] **Prerequisite:** credential read-only mount + network egress allowlist must be done first
-  - [ ] Default to opt-in initially, flip to default-on after egress restrictions are validated
-- [ ] `GIT_OBJECT_DIRECTORY` optimization — allow in-container commits for worktree sessions (skip orchestrator round-trip)
-- [ ] Update doc 048 status to superseded by 051 session-ID routing
+All post-launch items (credential mounts, non-root worker, network egress, `--dangerously-skip-permissions`, `GIT_OBJECT_DIRECTORY`, doc 048 update) moved to [067-container-hardening](../067-container-hardening/plan.md).
