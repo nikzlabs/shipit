@@ -4,10 +4,12 @@ import type { RepoInfo } from "../../server/shared/types.js";
 interface RepoState {
   repos: RepoInfo[];
   addRepoDialogOpen: boolean;
+  newRepoDialogOpen: boolean;
 
   // Actions
   setRepos: (repos: RepoInfo[]) => void;
   setAddRepoDialogOpen: (open: boolean) => void;
+  setNewRepoDialogOpen: (open: boolean) => void;
   updateRepoStatus: (url: string, status: "cloning" | "ready") => void;
   updateRepoWarmSession: (url: string, sessionId: string) => void;
   reset: () => void;
@@ -21,10 +23,13 @@ interface RepoState {
 export const useRepoStore = create<RepoState>((set) => ({
   repos: [],
   addRepoDialogOpen: false,
+  newRepoDialogOpen: false,
 
   setRepos: (repos) => set({ repos }),
 
   setAddRepoDialogOpen: (open) => set({ addRepoDialogOpen: open }),
+
+  setNewRepoDialogOpen: (open) => set({ newRepoDialogOpen: open }),
 
   updateRepoStatus: (url, status) =>
     set((state) => ({
@@ -38,7 +43,7 @@ export const useRepoStore = create<RepoState>((set) => ({
       ),
     })),
 
-  reset: () => set({ repos: [], addRepoDialogOpen: false }),
+  reset: () => set({ repos: [], addRepoDialogOpen: false, newRepoDialogOpen: false }),
 
   addRepo: async (url) => {
     try {
