@@ -559,6 +559,27 @@ export class GitHubAuthManager extends EventEmitter {
   }
 
   /**
+   * Run a GraphQL query against the GitHub API.
+   * Returns the parsed JSON response body, or null if not authenticated.
+   */
+  async graphqlQuery<T = unknown>(query: string, variables?: Record<string, unknown>): Promise<T | null> {
+    if (!this._token) return null;
+
+    const res = await fetch("https://api.github.com/graphql", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this._token}`,
+        "Content-Type": "application/json",
+        "User-Agent": "ShipIt",
+      },
+      body: JSON.stringify({ query, variables }),
+    });
+
+    if (!res.ok) return null;
+    return (await res.json()) as T;
+  }
+
+  /**
    * Load cached user info from GitHub API using stored token.
    * Called on startup when checkCredentials() finds a token file.
    */

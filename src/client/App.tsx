@@ -44,8 +44,7 @@ import { FeaturesPanel } from "./components/FeaturesPanel.js";
 
 // eslint-disable-next-line no-restricted-syntax -- lazy() named-export pattern
 const DiffPanel = lazy(() => import("./components/DiffPanel.js").then(m => ({ default: m.DiffPanel })));
-import { PullRequestModal } from "./components/PullRequestModal.js";
-import { PrStatusBar } from "./components/PrStatusBar.js";
+import { PrLifecycleCard } from "./components/PrLifecycleCard.js";
 import { Toast } from "./components/Toast.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentPicker, type AgentOption } from "./components/AgentPicker.js";
@@ -132,15 +131,7 @@ export default function App() {
   const lastDeployError = useDeployStore((s) => s.lastError);
   const deployHistory = useDeployStore((s) => s.history);
 
-  const showPRModal = usePrStore((s) => s.showModal);
-  const prCurrentBranch = usePrStore((s) => s.currentBranch);
-  const prRemoteBranches = usePrStore((s) => s.remoteBranches);
-  const prResult = usePrStore((s) => s.result);
-  const prDescGenerating = usePrStore((s) => s.descGenerating);
-  const prDescError = usePrStore((s) => s.descError);
-  const prGeneratedDesc = usePrStore((s) => s.generatedDesc);
   const importSearchResults = usePrStore((s) => s.importSearchResults);
-  const prStatus = usePrStore((s) => s.status);
 
   const permissionMode = useSettingsStore((s) => s.permissionMode);
   const pendingFiles = useSettingsStore((s) => s.pendingFiles);
@@ -574,15 +565,6 @@ export default function App() {
     send({ type: "set_agent", agentId });
   }, [send]);
 
-  const handleMergePr = useCallback(async (method: "merge" | "squash" | "rebase") => {
-    const sid = useSessionStore.getState().sessionId;
-    if (!sid) return;
-    const result = await usePrStore.getState().mergePr(sid, method);
-    if (result?.success && !result.autoMergeEnabled) {
-      useUiStore.getState().setToast({ message: "Pull request merged" });
-    }
-  }, []);
-
   const handleInstructionsSave = useCallback(async (content: string) => {
     await useSettingsStore.getState().saveInstructions(content).catch(() => {});
     useUiStore.getState().setSettingsOpen(false);
@@ -653,7 +635,10 @@ export default function App() {
       {showHomeScreen ? (
         <HomeScreen onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)} hasRepos={repos.length > 0} />
       ) : (
-        <MessageList messages={messages} isLoading={isLoading} activity={activity} searchMatches={search.matches} currentMatch={search.currentMatch} onEditMessage={handleEditMessage} onAnswerQuestion={handleAnswerQuestion} checkpoints={checkpointDividers} />
+        <>
+          <MessageList messages={messages} isLoading={isLoading} activity={activity} searchMatches={search.matches} currentMatch={search.currentMatch} onEditMessage={handleEditMessage} onAnswerQuestion={handleAnswerQuestion} checkpoints={checkpointDividers} />
+          {wsSessionId && <PrLifecycleCard sessionId={wsSessionId} />}
+        </>
       )}
       {!showHomeScreen && !showNewSessionView && (
         <div className="border-t border-gray-200 dark:border-gray-800 px-4 py-1.5 flex items-center gap-2">
@@ -724,15 +709,6 @@ export default function App() {
           onClose={() => useDeployStore.getState().closeModal()}
         />
       )}
-      {showPRModal && (
-        <PullRequestModal currentBranch={prCurrentBranch} remoteBranches={prRemoteBranches}
-          onSubmit={(data) => { const sid = useSessionStore.getState().sessionId; if (sid) usePrStore.getState().submit(sid, data).catch(() => {}); }}
-          onRequestBranches={() => { const sid = useSessionStore.getState().sessionId; if (sid) usePrStore.getState().requestBranches(sid).catch(() => {}); }}
-          onGenerateDescription={() => { const sid = useSessionStore.getState().sessionId; if (sid) usePrStore.getState().generateDescription(sid).catch(() => {}); }}
-          onClose={() => usePrStore.getState().closeModal()} result={prResult}
-          isGeneratingDescription={prDescGenerating} generateDescriptionError={prDescError} generatedDescription={prGeneratedDesc}
-        />
-      )}
       {showUsageModal && <UsageModal currentSessionUsage={currentSessionUsage} allUsage={allUsageStats} sessions={sessions} onClose={() => useUiStore.getState().setShowUsageModal(false)} modelInfo={modelInfo} contextTokens={contextTokens} turnTokens={turnTokens} />}
 
       <header className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-gray-200 dark:border-gray-800">
@@ -743,12 +719,6 @@ export default function App() {
           </h1>
         </div>
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-          {githubStatus.authenticated && (
-            <button onClick={() => usePrStore.getState().openModal()} className="hidden sm:inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800 transition-colors font-medium" title="Create pull request" aria-label="Create PR">
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" /></svg>
-              PR
-            </button>
-          )}
           <button onClick={handleDeployOpen} className="hidden sm:inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-cyan-100 dark:bg-cyan-900 text-cyan-700 dark:text-cyan-300 hover:bg-cyan-200 dark:hover:bg-cyan-800 transition-colors font-medium" title="Deploy to production" aria-label="Deploy">
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 10.5L12 3m0 0l7.5 7.5M12 3v18" /></svg>
             Deploy
@@ -773,7 +743,7 @@ export default function App() {
 
       {!showNewSessionView && wsSessionId && <ConnectionBanner status={status} reconnectAttempt={reconnectAttempt} onReconnect={reconnect} />}
 
-      {prStatus && <PrStatusBar baseBranch={prStatus.baseBranch} headBranch={prStatus.headBranch} insertions={prStatus.insertions} deletions={prStatus.deletions} prUrl={prStatus.url} prNumber={prStatus.number} checks={prStatus.checks} autoMergeEnabled={prStatus.autoMergeEnabled} mergeable={prStatus.mergeable} onMerge={handleMergePr} />}
+      {/* PR lifecycle card is rendered inline in the message list via PrLifecycleCard */}
 
       {isMobile ? (
         <>

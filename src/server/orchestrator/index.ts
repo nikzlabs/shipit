@@ -28,6 +28,7 @@ import type { SessionRunnerInterface } from "./session-runner.js";
 import { SessionContainerManager } from "./session-container.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import { registerPreviewProxy } from "./preview-proxy.js";
+import { PrStatusPoller } from "./pr-status-poller.js";
 import type { AgentId, AgentEvent, AgentProcess } from "../shared/types.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry } from "../shared/types.js";
 import { getErrorMessage } from "./validation.js";
@@ -509,11 +510,31 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       client.write(`event: active_runners\ndata: ${JSON.stringify({ sessionIds: activeRunnerSessions })}\n\n`);
     }
 
+    // Send current PR statuses so inline cards and sidebar icons are correct on connect
+    const prStatuses = prStatusPoller.getAllStatuses();
+    if (prStatuses.length > 0) {
+      client.write(`event: pr_status\ndata: ${JSON.stringify({ updates: prStatuses })}\n\n`);
+    }
+
     request.raw.on("close", () => {
       client.closed = true;
       sseClients.delete(client);
     });
   });
+
+  // ---- PR Status Poller ----
+  const prStatusPoller = new PrStatusPoller({
+    githubAuth: githubAuthManager,
+    sessionManager,
+    sseBroadcast,
+  });
+
+  // Auto-track sessions with remoteUrl so PR status survives server restart
+  for (const session of sessionManager.list()) {
+    if (session.remoteUrl) {
+      prStatusPoller.trackSession(session.id, session.remoteUrl);
+    }
+  }
 
   // ---- Terminal/logs buffer ----
   const MAX_LOG_ENTRIES = 500;
@@ -854,6 +875,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     waitForWarmSession: (repoUrl: string) => warmingPromises.get(repoUrl),
     createSessionDirFull: createSessionDir,
     containerManager: containerManager ?? undefined,
+    prStatusPoller,
   });
 
   // ---- Preview reverse proxy (container mode) ----
@@ -1087,6 +1109,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         featureManager, usageManager, authManager, agentRegistry, credentialStore,
         repoStore, warmSessionForRepo, createSessionDir, generateText,
         getSharedRepoDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
+        prStatusPoller,
         workspaceDir, sessionsRoot, defaultAgentId,
       };
 
@@ -1105,6 +1128,43 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         const runner = runnerRegistry.get(sessionId);
         if (runner?.previewStatusKnown) {
           send(runner.buildPreviewStatus());
+        }
+      }
+
+      // Always send PR lifecycle card for sessions with a remote.
+      // The SSE pr_status snapshot handles open/merged PRs; this covers the
+      // "ready" phase (branch info + diff stats, no PR created yet).
+      {
+        const session = sessionManager.get(sessionId);
+        if (session?.remoteUrl && session.workspaceDir) {
+          const prStatus = prStatusPoller.getStatus(sessionId);
+          if (!prStatus) {
+            // No open/merged PR — send branch info and diff stats
+            (async () => {
+              try {
+                const git = createGitManager(session.workspaceDir!);
+                const headBranch = session.branch || await git.getCurrentBranch();
+                const { insertions, deletions } = await git.diffStatVsBranch("main");
+                send({
+                  type: "pr_lifecycle_update",
+                  sessionId,
+                  cardId: `pr-card-${sessionId}`,
+                  phase: "ready",
+                  headBranch,
+                  totalInsertions: insertions,
+                  totalDeletions: deletions,
+                });
+              } catch (err) {
+                send({
+                  type: "pr_lifecycle_update",
+                  sessionId,
+                  cardId: `pr-card-${sessionId}`,
+                  phase: "error",
+                  errorMessage: err instanceof Error ? err.message : "Failed to read git status",
+                });
+              }
+            })();
+          }
         }
       }
 
