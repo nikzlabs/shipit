@@ -1,3 +1,8 @@
+---
+description: "ShipIt deployment architecture: DeployTarget interface, DeploymentManager, framework detection, deploy flow (build -> deploy -> stream events), Vercel and Cloudflare targets. Load when working on deployment features or deploy targets."
+user-invocable: true
+---
+
 # Deployment Architecture
 
 ShipIt supports deploying user projects to external hosting platforms. The system uses a plugin-based architecture where deploy targets implement a common interface, and the UI is automatically generated from target metadata.

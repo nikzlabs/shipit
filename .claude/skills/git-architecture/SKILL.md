@@ -1,3 +1,8 @@
+---
+description: "ShipIt git architecture: GitManager (per-session), RepoGit (shared repo clones and worktrees), credential setup, auto-commit flow, worktree lifecycle, branch naming. Load when working on git operations, worktrees, credentials, or repo management."
+user-invocable: true
+---
+
 # Git Architecture
 
 ShipIt uses git for version control at two levels: per-session workspace repos managed by `GitManager`, and shared repo clones with worktrees managed by `RepoGit`. Both use the `simple-git` library.
@@ -47,7 +52,7 @@ No remote repo. A fresh git repo is initialized in the session directory:
 
 ```
 /workspace/sessions/{uuid}/
-  .git/              ← independent repo
+  .git/              <- independent repo
   (user's code)
 ```
 
@@ -58,11 +63,11 @@ No remote repo. A fresh git repo is initialized in the session directory:
 Backed by a shared repo clone. The session directory is a git worktree:
 
 ```
-/workspace/.vibe-repos/{encoded-url}/    ← shared clone
+/workspace/.vibe-repos/{encoded-url}/    <- shared clone
   .git/
   (full repo)
 
-/workspace/sessions/{uuid}/              ← worktree
+/workspace/sessions/{uuid}/              <- worktree
   .git  (file, points to shared clone)
   (checked out on a unique branch)
 ```
