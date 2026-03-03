@@ -20,7 +20,21 @@ export function parseRepoLabel(remoteUrl: string): string {
   }
 }
 
-/** Build the "new session" URL path for a repo: `/{label}/new`. */
+/** URL prefix for repo-scoped new-session routes. */
+export const REPO_ROUTE_PREFIX = "/repo/";
+
+const REPO_NEW_SUFFIX = "/new";
+
+/** Build the "new session" URL path for a repo: `/repo/{label}/new`. */
 export function repoLabelToNewPath(repoUrl: string): string {
-  return `/${parseRepoLabel(repoUrl)}/new`;
+  return `${REPO_ROUTE_PREFIX}${parseRepoLabel(repoUrl)}${REPO_NEW_SUFFIX}`;
+}
+
+/** Parse a new-session route from a pathname. Returns the repo slug or undefined. */
+export function parseNewSessionSlug(pathname: string): string | undefined {
+  if (pathname.startsWith(REPO_ROUTE_PREFIX) && pathname.endsWith(REPO_NEW_SUFFIX)) {
+    const slug = pathname.slice(REPO_ROUTE_PREFIX.length, -REPO_NEW_SUFFIX.length);
+    return slug.length > 0 ? decodeURIComponent(slug) : undefined;
+  }
+  return undefined;
 }
