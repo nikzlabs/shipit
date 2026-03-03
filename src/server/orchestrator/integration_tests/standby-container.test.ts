@@ -153,6 +153,7 @@ describe("standby container pre-warming", () => {
   let containerManager: SessionContainerManager;
   let fakeDocker: ReturnType<typeof createFakeDocker>;
   let origGitTerminalPrompt: string | undefined;
+  let origGitConfigGlobal: string | undefined;
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-standby-"));
@@ -161,6 +162,8 @@ describe("standby container pre-warming", () => {
 
     origGitTerminalPrompt = process.env.GIT_TERMINAL_PROMPT;
     process.env.GIT_TERMINAL_PROMPT = "0";
+
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
 
     fakeDocker = createFakeDocker();
     containerManager = new SessionContainerManager({
@@ -172,6 +175,10 @@ describe("standby container pre-warming", () => {
       stackName: "shipit-test",
     });
 
+    // Set up credential store (and GIT_CONFIG_GLOBAL) BEFORE creating the
+    // shared repo — git commit needs a valid identity config.
+    const credentialStore = createTestCredentialStore(tmpDir);
+
     // Create shared repo
     const repoDir = getSharedRepoDirForUrl(tmpDir, REPO_URL);
     createSharedRepo(repoDir);
@@ -179,8 +186,6 @@ describe("standby container pre-warming", () => {
     // Add repo before buildApp so startup warming fires
     repoStore.add(REPO_URL);
     repoStore.setReady(REPO_URL);
-
-    const credentialStore = createTestCredentialStore(tmpDir);
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
@@ -206,6 +211,11 @@ describe("standby container pre-warming", () => {
       delete process.env.GIT_TERMINAL_PROMPT;
     } else {
       process.env.GIT_TERMINAL_PROMPT = origGitTerminalPrompt;
+    }
+    if (origGitConfigGlobal === undefined) {
+      delete process.env.GIT_CONFIG_GLOBAL;
+    } else {
+      process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
     }
     await app.close();
     await new Promise((r) => setTimeout(r, 50));
