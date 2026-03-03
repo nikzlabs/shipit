@@ -529,6 +529,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     sseBroadcast,
   });
 
+  // Auto-track sessions with remoteUrl so PR status survives server restart
+  for (const session of sessionManager.list()) {
+    if (session.remoteUrl) {
+      prStatusPoller.trackSession(session.id, session.remoteUrl);
+    }
+  }
+
   // ---- Terminal/logs buffer ----
   const MAX_LOG_ENTRIES = 500;
   let logBuffer: WsLogEntry[] = [];

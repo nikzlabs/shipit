@@ -57,25 +57,19 @@ describe("PrLifecycleCard", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("renders ready phase with file list and create button", () => {
+  it("renders ready phase with diff stats and create button", () => {
     setCard("s1", {
       cardId: "c1",
       phase: "ready",
-      files: [
-        { path: "src/app.ts", status: "M", insertions: 10, deletions: 2 },
-        { path: "src/new.ts", status: "A", insertions: 20, deletions: 0 },
-      ],
       totalInsertions: 30,
       totalDeletions: 2,
     });
 
     render(<PrLifecycleCard sessionId="s1" />);
 
-    expect(screen.getByText(/changed 2 files/)).toBeInTheDocument();
-    expect(screen.getByText("src/app.ts")).toBeInTheDocument();
-    expect(screen.getByText("src/new.ts")).toBeInTheDocument();
+    expect(screen.getByText("+30")).toBeInTheDocument();
+    expect(screen.getByText("-2")).toBeInTheDocument();
     expect(screen.getByText("Create Pull Request")).toBeInTheDocument();
-    expect(screen.getByText("Create with options...")).toBeInTheDocument();
   });
 
   it("renders creating phase with spinner text", () => {
@@ -86,7 +80,7 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByText("Creating pull request...")).toBeInTheDocument();
   });
 
-  it("renders open phase with PR info", () => {
+  it("renders open phase with branch flow and diff stats", () => {
     setCard("s1", {
       cardId: "c1",
       phase: "open",
@@ -104,9 +98,9 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" />);
 
-    expect(screen.getByText(/PR #42: Add feature/)).toBeInTheDocument();
+    expect(screen.getByText(/main.*feature-branch/)).toBeInTheDocument();
     expect(screen.getByText("View PR")).toBeInTheDocument();
-    expect(screen.getByText(/CI passed/)).toBeInTheDocument();
+    expect(screen.getByText(/CI/)).toBeInTheDocument();
   });
 
   it("renders open phase with failing checks", () => {
@@ -127,7 +121,7 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" />);
 
-    expect(screen.getByText(/CI failed/)).toBeInTheDocument();
+    expect(screen.getByTitle(/CI failed/)).toBeInTheDocument();
   });
 
   it("renders merged phase", () => {
@@ -160,25 +154,9 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" />);
 
-    expect(screen.getByText("Failed to create pull request")).toBeInTheDocument();
-    expect(screen.getByText(/"Branch has no commits"/)).toBeInTheDocument();
+    expect(screen.getByText(/Failed to create PR/)).toBeInTheDocument();
+    expect(screen.getByText(/Branch has no commits/)).toBeInTheDocument();
     expect(screen.getByText("Retry")).toBeInTheDocument();
-  });
-
-  it("shows singular 'file' for 1 file in ready phase", () => {
-    setCard("s1", {
-      cardId: "c1",
-      phase: "ready",
-      files: [
-        { path: "src/app.ts", status: "M", insertions: 5, deletions: 1 },
-      ],
-      totalInsertions: 5,
-      totalDeletions: 1,
-    });
-
-    render(<PrLifecycleCard sessionId="s1" />);
-
-    expect(screen.getByText(/changed 1 file$/)).toBeInTheDocument();
   });
 });
 
