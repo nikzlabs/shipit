@@ -1,8 +1,9 @@
 # 015 — GitHub Auth: Remaining Work
 
-Core auth (PAT entry, token storage, validation, status indicator, repo creation) is fully implemented and tested. The one missing piece is the manual push/pull UI that the plan describes.
+Core auth (PAT entry, token storage, validation, repo creation, PR management) and auto-push are fully implemented. All remaining items are superseded by doc 064 (PR Lifecycle Flow).
 
-## Remaining
+## Superseded by 064
 
-- [ ] Add push/pull buttons to `GitHistory.tsx` — the server-side `github_push` and `github_pull` handlers already exist in `index.ts`; no client UI sends them manually
-- [ ] Add component tests for the push/pull buttons in `GitHistory.test.tsx`
+- [x] ~~Add push/pull buttons to `GitHistory.tsx`~~ — superseded by 064's inline PR lifecycle cards (one-click push + PR creation)
+- [x] ~~Add component tests for the push/pull buttons in `GitHistory.test.tsx`~~ — moot
+- [x] ~~Add GitHub status indicator to the header/navigation~~ — superseded by 064's inline cards (064 removes `PrStatusBar` entirely)
