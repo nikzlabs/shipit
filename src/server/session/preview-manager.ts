@@ -427,22 +427,25 @@ export class PreviewManager extends EventEmitter {
               status: "running",
               message: `Installing missing native module: ${missingModule}`,
             });
-            runInstallCommand({
-              command: `npm install --no-save ${missingModule}`,
-              cwd: this._workspaceDir,
-              onOutput: (text) => this.emit("log", { source: "install", text }),
-            }).then((exitCode) => {
-              if (exitCode !== 0) {
-                console.error(`[preview-manager] Failed to install ${missingModule} (exit ${exitCode})`);
+            void (async () => {
+              try {
+                const exitCode = await runInstallCommand({
+                  command: `npm install --no-save ${missingModule}`,
+                  cwd: this._workspaceDir!,
+                  onOutput: (text) => this.emit("log", { source: "install", text }),
+                });
+                if (exitCode !== 0) {
+                  console.error(`[preview-manager] Failed to install ${missingModule} (exit ${exitCode})`);
+                  this.emit("stopped", code);
+                  return;
+                }
+                console.log(`[preview-manager] Installed ${missingModule}, retrying preview`);
+                await this.start(this._workspaceDir!);
+              } catch (err) {
+                console.error("[preview-manager] Native module recovery failed:", err);
                 this.emit("stopped", code);
-                return;
               }
-              console.log(`[preview-manager] Installed ${missingModule}, retrying preview`);
-              return this.start(this._workspaceDir!);
-            }).catch((err) => {
-              console.error("[preview-manager] Native module recovery failed:", err);
-              this.emit("stopped", code);
-            });
+            })();
           } else {
             // Signal crash or generic npm bug — clean reinstall
             const reason = signalCrash ? `signal crash (exit ${code})` : "native module platform mismatch";
