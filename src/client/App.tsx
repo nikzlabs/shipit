@@ -833,10 +833,10 @@ export default function App() {
                 useRepoStore.getState().setNewRepoDialogOpen(false);
                 navigate(`/session/${res.sessionId}`);
               } else {
-                useUiStore.getState().setToast({ type: "error", message: res.message || "Failed to create repository" });
+                useUiStore.getState().setToast({ message: res.message || "Failed to create repository" });
               }
             } catch {
-              useUiStore.getState().setToast({ type: "error", message: "Failed to create repository" });
+              useUiStore.getState().setToast({ message: "Failed to create repository" });
             } finally {
               useSessionStore.getState().setCreatingRepo(false);
             }
