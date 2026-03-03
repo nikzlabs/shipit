@@ -348,19 +348,18 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       });
 
       // If a stale container exists (starting/stopping/stopped), destroy it first.
-      const createPromise = existing
-        ? mgr.destroy(o.sessionId).then(() => mgr.create(config))
-        : mgr.create(config);
-
       console.log(`[container] ${existing ? "Replacing stale" : "Creating"} container for session ${o.sessionId}...`);
-      // eslint-disable-next-line no-restricted-syntax -- sync factory must return runner synchronously
-      createPromise.then((sc) => {
-        console.log(`[container] Container ready for ${o.sessionId} at ${sc.workerUrl}`);
-        runner.setWorkerUrl(sc.workerUrl);
-      }).catch((err) => {
-        console.error(`[container] Failed to start container for ${o.sessionId}:`, getErrorMessage(err));
-        runner.dispose();
-      });
+      void (async () => {
+        try {
+          if (existing) await mgr.destroy(o.sessionId);
+          const sc = await mgr.create(config);
+          console.log(`[container] Container ready for ${o.sessionId} at ${sc.workerUrl}`);
+          runner.setWorkerUrl(sc.workerUrl);
+        } catch (err) {
+          console.error(`[container] Failed to start container for ${o.sessionId}:`, getErrorMessage(err));
+          runner.dispose();
+        }
+      })();
 
       return runner;
     }) : undefined);

@@ -260,9 +260,10 @@ export default function App() {
   useEffect(() => {
     if (!isNewSessionRoute || !newSessionRepoUrl || sessionId) return;
     const ac = new AbortController();
-    useRepoStore.getState().claimSession(newSessionRepoUrl, ac.signal).then((result) => {
+    void (async () => {
+      const result = await useRepoStore.getState().claimSession(newSessionRepoUrl, ac.signal);
       if (result && !ac.signal.aborted) useSessionStore.getState().setSessionId(result.sessionId);
-    });
+    })();
     return () => ac.abort();
   }, [isNewSessionRoute, newSessionRepoUrl, sessionId]);
 
@@ -691,7 +692,7 @@ export default function App() {
           gitIdentity={gitIdentity}
           onGitIdentitySave={(name, email) => useGitStore.getState().submitGitIdentity(name, email).catch(() => {})}
           maxIdleContainers={maxIdleContainers}
-          onMaxIdleContainersSave={(n) => { apiPut("/api/settings", { maxIdleContainers: n }).then((raw) => { const res = raw as Record<string, unknown>; if (res.maxIdleContainers != null) useSettingsStore.getState().setMaxIdleContainers(res.maxIdleContainers as number); }).catch(() => {}); }}
+          onMaxIdleContainersSave={async (n) => { try { const raw = await apiPut("/api/settings", { maxIdleContainers: n }); const res = raw as Record<string, unknown>; if (res.maxIdleContainers != null) useSettingsStore.getState().setMaxIdleContainers(res.maxIdleContainers as number); } catch { /* ignore */ } }}
           deployTargets={deployTargets} deployConfigStatus={deployConfigStatus}
           onDeployConfigure={(targetId, creds, projectName) => { const sid = useSessionStore.getState().sessionId; if (sid) useDeployStore.getState().configure(sid, targetId, creds, projectName).catch(() => {}); }}
           onDeployDeleteConfig={(targetId) => { const sid = useSessionStore.getState().sessionId; if (sid) useDeployStore.getState().deleteConfig(sid, targetId).catch(() => {}); }}
