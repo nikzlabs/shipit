@@ -160,7 +160,7 @@ No modal. No form fields. The user can always edit title/description on GitHub a
 The card includes two toggles, modeled directly on Claude Code Desktop's CI status bar:
 
 - **Auto-fix** (off by default): When CI fails, Claude automatically reads the failure output, fixes the issues, commits, and pushes. This loops until CI passes or a retry limit (3 attempts) is hit. When off, a manual "Fix CI Issues" button appears instead.
-- **Auto-merge** (off by default): When all CI checks pass, automatically squash-merges the PR. Requires auto-merge to be enabled in the GitHub repository settings. When off, a manual "Merge" button appears instead.
+- **Auto-merge** (off by default): When all CI checks pass, merges the PR using the selected method (default: squash). Uses GitHub's native auto-merge. Requires auto-merge to be enabled in the GitHub repository settings. When off, a manual "Merge" button appears instead.
 
 Both toggles are per-session and persist until the session ends or the PR is merged. They're visible directly on the card (not buried in a menu), because they're the primary actions.
 
@@ -197,7 +197,7 @@ A single component that renders differently based on PR state:
 
 ```typescript
 type PrCardState =
-  | { phase: "unpushed"; files: FileStat[]; insertions: number; deletions: number }
+  | { phase: "ready"; files: FileStat[]; insertions: number; deletions: number }
   | { phase: "creating" }
   | { phase: "open"; pr: PrInfo; checks: ChecksInfo }
   | { phase: "merged"; pr: PrInfo }
@@ -225,7 +225,7 @@ interface ChecksInfo {
 
 **Rendering by phase:**
 
-- **`unpushed`**: File list + stats, "Review Changes" and "Create Pull Request" buttons
+- **`ready`**: File list + stats, "Review Changes" and "Create Pull Request" buttons
 - **`creating`**: Spinner + "Creating pull request..."
 - **`open` + checks pending**: PR info + animated CI progress
 - **`open` + checks success**: PR info + green checkmark + "Merge" button
@@ -238,17 +238,17 @@ interface ChecksInfo {
 After Claude's turn completes (agent_finished + git_committed), if the session has a remote:
 
 1. Server computes diff summary (file names, stats) — reuses existing `diffNameStatus`
-2. Server sends a `pr_lifecycle_update` message with `phase: "unpushed"` and the file stats
+2. Server sends a `pr_lifecycle_update` message with `phase: "ready"` and the file stats
 3. Client renders `PrLifecycleCard` inline in the message list
 
-This replaces both the auto-push and the post-push toast.
+This replaces the post-push toast and the PR creation modal. Auto-push continues to work independently — the branch may already be on the remote by the time the user sees the card.
 
 #### How the card evolves
 
 The card message has a stable ID. State transitions:
 
 ```
-unpushed → creating → open (pending) → open (success) → merged
+ready → creating → open (pending) → open (success) → merged
                                       → open (failure) → [user fixes] → open (pending) → ...
 ```
 

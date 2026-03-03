@@ -126,7 +126,26 @@ The session runner already has an `agent` and can spawn Claude directly. The app
 
 ### Extending the GraphQL query
 
-Phase 1's GraphQL query for the PR status poller returns `CheckRun { name, status, conclusion }`. Phase 2 adds `databaseId` to enable REST log fetching:
+Phase 1's GraphQL query for the PR status poller returns `CheckRun { name, status, conclusion }`. Phase 2 extends the query in two places:
+
+**1. Add `oid` to the commit node** (needed for attempt tracking):
+
+```graphql
+commits(last: 1) {
+  nodes {
+    commit {
+      oid             # NEW — head SHA for attempt reset detection
+      additions
+      deletions
+      statusCheckRollup { ... }
+    }
+  }
+}
+```
+
+`AutoFixState.lastHeadSha` uses this to detect when new code is pushed and reset the attempt counter.
+
+**2. Add fields to CheckRun nodes** (needed for failure details + REST log fetching):
 
 ```graphql
 ... on CheckRun {

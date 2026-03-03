@@ -24,8 +24,8 @@ If a PR already exists for this session's branch (e.g. session resumed, or PR cr
 
 ```typescript
 type PrCardPhase =
-  | "unpushed"   // files changed, no PR yet
-  | "creating"   // push + PR creation in progress
+  | "ready"      // files changed, no PR yet (branch may already be pushed via auto-push)
+  | "creating"   // PR creation in progress
   | "open"       // PR exists, shows CI status
   | "merged"     // PR merged (rendered but non-actionable in phase 1)
   | "error";     // creation failed
@@ -33,7 +33,7 @@ type PrCardPhase =
 
 ### Rendering by phase
 
-**`unpushed`** — after Claude's turn:
+**`ready`** — after Claude's turn (branch may already be on remote via auto-push):
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -342,7 +342,7 @@ The `PrStatusBar` component and its rendering in `App.tsx` are removed. All its 
 
 ### Component tests (`PrLifecycleCard.test.tsx`)
 
-- Renders `unpushed` phase with file list and stats
+- Renders `ready` phase with file list and stats
 - Renders `creating` phase with spinner
 - Renders `open` phase with PR info and CI status variants (pending, success, failure, none)
 - Renders `merged` phase
@@ -365,5 +365,5 @@ The `PrStatusBar` component and its rendering in `App.tsx` are removed. All its 
 - Merge button / merge dropdown (phase 3)
 - Auto-fix toggle / Fix CI button (phase 2)
 - Auto-merge toggle (phase 3)
-- Post-merge "Start Next Task" flow (phase 3)
+- Post-merge session archive (phase 3)
 - Per-check failure breakdown with log excerpts (phase 2)
