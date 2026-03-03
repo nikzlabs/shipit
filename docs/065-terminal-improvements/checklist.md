@@ -3,24 +3,24 @@
 ## Part 1 — UI Component Fixes
 
 ### P0 — Correctness
-- [ ] Debounce `ResizeObserver` callback in `InteractiveTerminal` (~150ms)
-- [ ] Add tests verifying resize messages are debounced
-- [ ] Send initial `cols`/`rows` as part of `terminal_start` message
-- [ ] Update `WsTerminalStart` type to include optional `cols`/`rows`
-- [ ] Update `handleTerminalStart` handler to forward dimensions
-- [ ] Remove the `setTimeout(100)` for initial resize
-- [ ] Add integration test for `terminal_start` with dimensions
+- [x] Debounce `ResizeObserver` callback in `InteractiveTerminal` (~150ms)
+- [x] Add tests verifying resize messages are debounced
+- [x] Send initial `cols`/`rows` as part of `terminal_start` message
+- [x] Update `WsTerminalStart` type to include optional `cols`/`rows`
+- [x] Update `handleTerminalStart` handler to forward dimensions
+- [x] Remove the `setTimeout(100)` for initial resize
+- [x] Add integration test for `terminal_start` with dimensions
 
 ### P1 — Robustness
-- [ ] Keep shell tab mounted (hidden) to preserve xterm.js instance across tab switches
-- [ ] Remove or repurpose `startedRef` guard
-- [ ] Add component test for tab switching preserving terminal state
-- [ ] Switch log auto-scroll from `smooth` to `instant` (or rate-adaptive)
-- [ ] Add component test for auto-scroll behavior during rapid entry bursts
+- [x] Keep shell tab mounted (hidden) to preserve xterm.js instance across tab switches
+- [x] Remove or repurpose `startedRef` guard
+- [x] Add component test for tab switching preserving terminal state
+- [x] Switch log auto-scroll from `smooth` to `instant` (or rate-adaptive)
+- [x] Add component test for auto-scroll behavior during rapid entry bursts
 
 ### P2 — Performance
-- [ ] Add monotonic ID to `LogEntry` (assign in store on receipt)
-- [ ] Use entry ID as React key instead of array index
+- [x] Add monotonic ID to `LogEntry` (assign in store on receipt)
+- [x] Use entry ID as React key instead of array index
 - [ ] Evaluate virtualized list for logs (`@tanstack/react-virtual`)
 - [ ] Implement virtualization if log volume warrants it
 

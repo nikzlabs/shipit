@@ -2,6 +2,7 @@ import type { WsClientMessage } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx } from "./types.js";
 import type { ContainerSessionRunner } from "../container-session-runner.js";
 
+type WsTerminalStart = Extract<WsClientMessage, { type: "terminal_start" }>;
 type WsTerminalInput = Extract<WsClientMessage, { type: "terminal_input" }>;
 type WsTerminalResize = Extract<WsClientMessage, { type: "terminal_resize" }>;
 
@@ -9,7 +10,7 @@ function isContainerRunner(runner: unknown): runner is ContainerSessionRunner {
   return !!runner && typeof (runner as ContainerSessionRunner).startTerminalOnWorker === "function";
 }
 
-export async function handleTerminalStart(ctx: ConnectionCtx & RunnerCtx): Promise<void> {
+export async function handleTerminalStart(ctx: ConnectionCtx & RunnerCtx, msg: WsTerminalStart): Promise<void> {
   const runner = ctx.getRunner();
   if (!runner) return;
 
@@ -19,7 +20,7 @@ export async function handleTerminalStart(ctx: ConnectionCtx & RunnerCtx): Promi
   }
 
   if (!runner.remoteTerminalRunning) {
-    await runner.startTerminalOnWorker();
+    await runner.startTerminalOnWorker(msg.cols, msg.rows);
   } else {
     // Terminal already running — replay buffered output for this viewer
     const buffered = runner.getTerminalOutputBuffer();

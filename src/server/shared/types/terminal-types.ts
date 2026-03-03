@@ -17,6 +17,8 @@ export interface TerminalProcess extends EventEmitter {
 
 export interface WsTerminalStart {
   type: "terminal_start";
+  cols?: number;
+  rows?: number;
 }
 
 export interface WsTerminalInput {

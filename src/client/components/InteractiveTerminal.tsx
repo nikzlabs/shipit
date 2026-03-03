@@ -9,8 +9,8 @@ export interface InteractiveTerminalProps {
   onInput: (data: string) => void;
   /** Notify server of terminal size changes. */
   onResize: (cols: number, rows: number) => void;
-  /** Request the server to start the shell (called on mount). */
-  onStart: () => void;
+  /** Request the server to start the shell (called on mount). Receives initial dimensions. */
+  onStart: (cols: number, rows: number) => void;
 }
 
 export interface InteractiveTerminalHandle {
@@ -97,29 +97,30 @@ export const InteractiveTerminal = forwardRef<InteractiveTerminalHandle, Interac
         onInputRef.current(data);
       });
 
-      // Request terminal start on first mount
+      // Request terminal start on first mount, sending initial dimensions
       if (!startedRef.current) {
         startedRef.current = true;
-        onStartRef.current();
-
-        // Send initial dimensions after a short delay to let the server start
-        setTimeout(() => {
-          onResizeRef.current(term.cols, term.rows);
-        }, 100);
+        onStartRef.current(term.cols, term.rows);
       }
 
-      // Observe container resize to re-fit
+      // Observe container resize to re-fit (debounced to avoid flooding
+      // the server with resize messages while the user drags a divider)
+      let resizeTimer: ReturnType<typeof setTimeout> | null = null;
       const observer = new ResizeObserver(() => {
-        try {
-          fitAddon.fit();
-          onResizeRef.current(term.cols, term.rows);
-        } catch {
-          // Ignore — container may have been removed
-        }
+        if (resizeTimer) clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          try {
+            fitAddon.fit();
+            onResizeRef.current(term.cols, term.rows);
+          } catch {
+            // Ignore — container may have been removed
+          }
+        }, 150);
       });
       observer.observe(container);
 
       return () => {
+        if (resizeTimer) clearTimeout(resizeTimer);
         observer.disconnect();
         term.dispose();
         termRef.current = null;
