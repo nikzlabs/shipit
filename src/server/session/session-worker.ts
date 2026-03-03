@@ -84,6 +84,10 @@ export class SessionWorker extends EventEmitter {
   private static readonly MAX_PREVIEW_LOG_LINES = 50;
   private _lastPreviewExitCode: number | null = null;
 
+  // Terminal backpressure state
+  private _sseBackpressured = new Set<import("node:http").ServerResponse>();
+  private _terminalPaused = false;
+
   constructor(deps: SessionWorkerDeps) {
     super();
     this.agentFactory = deps.agentFactory;
@@ -297,10 +301,20 @@ export class SessionWorker extends EventEmitter {
 
       const sendEvent = (event: WorkerSSEEvent) => {
         try {
-          reply.raw.write(`event: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`);
+          const chunk = `event: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`;
+          const ok = reply.raw.write(chunk);
+          if (!ok && event.type === "terminal_data" && !this._sseBackpressured.has(reply.raw)) {
+            this._sseBackpressured.add(reply.raw);
+            this.applyTerminalBackpressure();
+            reply.raw.once("drain", () => {
+              this._sseBackpressured.delete(reply.raw);
+              this.applyTerminalBackpressure();
+            });
+          }
         } catch {
           // Client disconnected
           this.sseClients.delete(sendEvent);
+          this._sseBackpressured.delete(reply.raw);
         }
       };
 
@@ -336,6 +350,9 @@ export class SessionWorker extends EventEmitter {
         clearInterval(keepalive);
         this.sseClients.delete(sendEvent);
         this.sseRawResponses.delete(reply.raw);
+        if (this._sseBackpressured.delete(reply.raw)) {
+          this.applyTerminalBackpressure();
+        }
       });
     });
 
@@ -376,6 +393,7 @@ export class SessionWorker extends EventEmitter {
     });
 
     terminal.on("exit", (exitCode: number | null) => {
+      this._terminalPaused = false;
       this.broadcastSSE({ type: "terminal_exit", data: { exitCode } });
       this.terminal = null;
     });
@@ -429,6 +447,26 @@ export class SessionWorker extends EventEmitter {
     }
   }
 
+  /**
+   * Pause or resume the terminal PTY based on SSE backpressure state.
+   * When any SSE client can't keep up with terminal output, the PTY is
+   * paused to prevent unbounded buffering. It resumes once all clients
+   * have drained.
+   */
+  private applyTerminalBackpressure(): void {
+    if (this._sseBackpressured.size > 0) {
+      if (!this._terminalPaused && this.terminal) {
+        this.terminal.pause();
+        this._terminalPaused = true;
+      }
+    } else {
+      if (this._terminalPaused && this.terminal) {
+        this.terminal.resume();
+        this._terminalPaused = false;
+      }
+    }
+  }
+
   /** Start the worker server. Returns the address it's listening on. */
   async start(): Promise<string> {
     const address = await this.app.listen({ port: this.port, host: this.host });
@@ -446,6 +484,7 @@ export class SessionWorker extends EventEmitter {
     if (this.terminal) {
       this.terminal.kill();
       this.terminal = null;
+      this._terminalPaused = false;
     }
     // Stop preview
     if (this.preview) {

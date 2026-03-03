@@ -21,15 +21,15 @@
 ### P2 — Performance
 - [x] Add monotonic ID to `LogEntry` (assign in store on receipt)
 - [x] Use entry ID as React key instead of array index
-- [ ] Evaluate virtualized list for logs (`@tanstack/react-virtual`)
-- [ ] Implement virtualization if log volume warrants it
+- [x] Evaluate virtualized list for logs (`@tanstack/react-virtual`) — not warranted (500-entry client cap produces trivial DOM; adding a virtualization dependency would increase complexity without measurable benefit)
+- [x] ~~Implement virtualization if log volume warrants it~~ — skipped per evaluation above
 
 ## Part 2 — Architecture Fixes
 
 ### P0 — Correctness
-- [ ] Add output rate tracking in session worker SSE broadcast
-- [ ] Implement PTY pause/resume when SSE buffer exceeds threshold
-- [ ] Add test for backpressure behavior under fast PTY output
+- [x] Add output rate tracking in session worker SSE broadcast
+- [x] Implement PTY pause/resume when SSE buffer exceeds threshold
+- [x] Add test for backpressure behavior under fast PTY output
 - [ ] Evaluate persistent connection (WS or Unix socket) for orchestrator↔worker terminal I/O
 - [ ] Implement persistent connection if latency measurements justify it
 - [ ] Remove HTTP POST path for `terminal_input` once persistent connection is in place

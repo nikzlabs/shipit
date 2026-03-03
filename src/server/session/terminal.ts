@@ -49,6 +49,16 @@ export class TerminalProcess extends EventEmitter {
     }
   }
 
+  /** Pause reading from the PTY (backpressure flow control). */
+  pause(): void {
+    this.proc?.pause();
+  }
+
+  /** Resume reading from the PTY after a pause. */
+  resume(): void {
+    this.proc?.resume();
+  }
+
   /** Kill the shell process. */
   kill(): void {
     if (this.proc) {
