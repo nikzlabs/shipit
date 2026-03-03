@@ -756,7 +756,7 @@ export default function App() {
         </div>
       </header>
 
-      {!showNewSessionView && <ConnectionBanner status={status} reconnectAttempt={reconnectAttempt} onReconnect={reconnect} />}
+      {!showNewSessionView && wsSessionId && <ConnectionBanner status={status} reconnectAttempt={reconnectAttempt} onReconnect={reconnect} />}
 
       {prStatus && <PrStatusBar baseBranch={prStatus.baseBranch} headBranch={prStatus.headBranch} insertions={prStatus.insertions} deletions={prStatus.deletions} prUrl={prStatus.url} prNumber={prStatus.number} checks={prStatus.checks} autoMergeEnabled={prStatus.autoMergeEnabled} mergeable={prStatus.mergeable} onMerge={handleMergePr} />}
 
