@@ -28,6 +28,8 @@ export interface SessionInfo {
   sessionType?: "standalone" | "worktree";
   /** If true, this is a pre-created warm session not yet visible in the sidebar. */
   warm?: boolean;
+  /** True once the branch has been renamed with a descriptive slug after graduation. */
+  branchRenamed?: boolean;
 }
 
 // ---- Repo types ----

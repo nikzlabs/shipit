@@ -131,6 +131,7 @@ export async function forkSession(
     branch: trimmed,
     sessionType: "worktree",
   });
+  sessionManager.setBranchRenamed(newSessionId, true);
   if (activeSession?.remoteUrl) {
     sessionManager.setRemoteUrl(newSessionId, activeSession.remoteUrl);
   }

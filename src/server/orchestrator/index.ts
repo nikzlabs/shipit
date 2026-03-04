@@ -1200,7 +1200,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       // "ready" phase (branch info + diff stats, no PR created yet).
       {
         const session = sessionManager.get(sessionId);
-        if (session?.remoteUrl && session.workspaceDir) {
+        if (session?.remoteUrl && session.workspaceDir && session.branchRenamed) {
           const prStatus = prStatusPoller.getStatus(sessionId);
           if (!prStatus) {
             // No open/merged PR — send branch info and diff stats

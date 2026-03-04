@@ -79,6 +79,7 @@ export async function createRepoWithTemplate(
     branch: branchPrefix,
     sessionType: "worktree",
   });
+  sessionManager.setBranchRenamed(appSessionId, true);
 
   return {
     success: true,
