@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { PrStatusPoller, parsePrNode } from "./pr-status-poller.js";
+import { PrStatusPoller, parsePrNode, extractHeadSha, extractFailedCheckRuns } from "./pr-status-poller.js";
 import type { SessionManager } from "./sessions.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 
@@ -330,5 +330,174 @@ describe("PrStatusPoller", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(githubAuth.graphqlQuery).not.toHaveBeenCalled();
     expect(sseBroadcast).not.toHaveBeenCalled();
+  });
+});
+
+// ---- Phase 2: failedChecks and auto-fix ----
+
+describe("parsePrNode — failedChecks details", () => {
+  it("populates failedChecks array from failing CheckRun nodes", () => {
+    const node = makeGraphQLPrNode({
+      commits: {
+        nodes: [{
+          commit: {
+            oid: "abc123",
+            statusCheckRollup: {
+              state: "FAILURE",
+              contexts: {
+                nodes: [
+                  { databaseId: 1, name: "test", status: "COMPLETED", conclusion: "FAILURE", title: "3 tests failed", detailsUrl: "https://example.com" },
+                  { databaseId: 2, name: "lint", status: "COMPLETED", conclusion: "SUCCESS", title: "OK" },
+                  { databaseId: 3, name: "build", status: "COMPLETED", conclusion: "CANCELLED", title: null },
+                ],
+              },
+            },
+          },
+        }],
+      },
+    });
+
+    const result = parsePrNode(node as never, "session-1");
+    expect(result.checks.failedChecks).toEqual([
+      { name: "test", summary: "3 tests failed" },
+      { name: "build", summary: "CANCELLED" },
+    ]);
+  });
+
+  it("does not include failedChecks when all pass", () => {
+    const node = makeGraphQLPrNode();
+    const result = parsePrNode(node as never, "session-1");
+    expect(result.checks.failedChecks).toBeUndefined();
+  });
+
+  it("includes StatusContext failures in failedChecks", () => {
+    const node = makeGraphQLPrNode({
+      commits: {
+        nodes: [{
+          commit: {
+            oid: "abc123",
+            statusCheckRollup: {
+              state: "FAILURE",
+              contexts: {
+                nodes: [
+                  { context: "ci/circleci", state: "FAILURE" },
+                ],
+              },
+            },
+          },
+        }],
+      },
+    });
+
+    const result = parsePrNode(node as never, "session-1");
+    expect(result.checks.failedChecks).toEqual([
+      { name: "ci/circleci", summary: "failure" },
+    ]);
+  });
+});
+
+describe("extractHeadSha", () => {
+  it("returns oid from the commit node", () => {
+    const node = makeGraphQLPrNode({
+      commits: {
+        nodes: [{ commit: { oid: "abc123def", statusCheckRollup: null } }],
+      },
+    });
+    expect(extractHeadSha(node as never)).toBe("abc123def");
+  });
+
+  it("returns undefined when no commits", () => {
+    const node = makeGraphQLPrNode({ commits: { nodes: [] } });
+    expect(extractHeadSha(node as never)).toBeUndefined();
+  });
+});
+
+describe("extractFailedCheckRuns", () => {
+  it("extracts failed check runs with databaseId", () => {
+    const node = makeGraphQLPrNode({
+      commits: {
+        nodes: [{
+          commit: {
+            oid: "abc",
+            statusCheckRollup: {
+              state: "FAILURE",
+              contexts: {
+                nodes: [
+                  { databaseId: 101, name: "test", status: "COMPLETED", conclusion: "FAILURE", title: "3 tests failed" },
+                  { databaseId: 102, name: "lint", status: "COMPLETED", conclusion: "SUCCESS", title: "OK" },
+                  { databaseId: 103, name: "build", status: "COMPLETED", conclusion: "TIMED_OUT", title: null },
+                ],
+              },
+            },
+          },
+        }],
+      },
+    });
+
+    const result = extractFailedCheckRuns(node as never);
+    expect(result).toEqual([
+      { databaseId: 101, name: "test", conclusion: "FAILURE", title: "3 tests failed" },
+      { databaseId: 103, name: "build", conclusion: "TIMED_OUT", title: "TIMED_OUT" },
+    ]);
+  });
+
+  it("returns empty array when no failures", () => {
+    const node = makeGraphQLPrNode();
+    expect(extractFailedCheckRuns(node as never)).toEqual([]);
+  });
+});
+
+describe("PrStatusPoller — auto-fix state", () => {
+  let pollerAF: PrStatusPoller;
+  let sseBroadcastAF: ReturnType<typeof vi.fn<(event: string, data: unknown) => void>>;
+
+  beforeEach(() => {
+    sseBroadcastAF = vi.fn<(event: string, data: unknown) => void>();
+    pollerAF = new PrStatusPoller({
+      githubAuth: { authenticated: false, graphqlQuery: vi.fn() } as unknown as GitHubAuthManager,
+      sessionManager: makeSessionManager([]),
+      sseBroadcast: sseBroadcastAF,
+    });
+  });
+
+  afterEach(() => {
+    pollerAF.destroy();
+  });
+
+  it("setAutoFixEnabled creates state", () => {
+    const state = pollerAF.setAutoFixEnabled("s1", true);
+    expect(state).toMatchObject({ enabled: true, attemptCount: 0, status: "idle" });
+  });
+
+  it("markAutoFixRunning increments count and sets running", () => {
+    pollerAF.setAutoFixEnabled("s1", true);
+    pollerAF.markAutoFixRunning("s1");
+    const state = pollerAF.getAutoFixState("s1");
+    expect(state).toMatchObject({ enabled: true, attemptCount: 1, status: "running" });
+  });
+
+  it("getAllStatuses includes autoFix state", async () => {
+    // Create poller with real auth and data
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+    };
+    const githubAuth = makeGitHubAuth(graphqlResult);
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+
+    vi.useFakeTimers();
+    const poller2 = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast: sseBroadcastAF });
+    poller2.trackSession("s1", "https://github.com/owner/repo");
+    poller2.setAutoFixEnabled("s1", true);
+
+    // Need to poll to populate lastKnown
+    await vi.advanceTimersByTimeAsync(0);
+
+    const statuses = poller2.getAllStatuses();
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0].autoFix).toMatchObject({ enabled: true, attemptCount: 0 });
+    poller2.destroy();
+    vi.useRealTimers();
   });
 });

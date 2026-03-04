@@ -6,6 +6,10 @@
 import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { ChatHistoryManager } from "../chat-history.js";
+import type { PrStatusPoller } from "../pr-status-poller.js";
+import type { SessionRunnerRegistry } from "../session-runner.js";
+import type { CIFailureLog } from "../../shared/types/github-types.js";
+import { extractFailedCheckRuns } from "../pr-status-poller.js";
 import { parseGitHubRemote } from "../git-utils.js";
 import { ServiceError } from "./types.js";
 import type { GitHubStatus } from "./types.js";
@@ -339,6 +343,117 @@ async function generatePrDescriptionFromContext(
       return "Changes from ShipIt session.";
     }
   }
+}
+
+// ---- CI fix operations ----
+
+/** Fetch CI failure logs for each failed check run. */
+export async function fetchCIFailureLogs(
+  githubAuth: GitHubAuthManager,
+  owner: string,
+  repo: string,
+  failedChecks: Array<{ databaseId: number; name: string; conclusion: string; title: string }>,
+): Promise<CIFailureLog[]> {
+  const logs: CIFailureLog[] = [];
+
+  for (const check of failedChecks) {
+    // Try annotations first (structured, smaller)
+    const annotations = await githubAuth.getCheckRunAnnotations(owner, repo, check.databaseId);
+
+    let logExcerpt = "";
+    if (annotations.length === 0) {
+      // Fall back to raw job logs (last 100 lines)
+      logExcerpt = await githubAuth.getJobLogs(owner, repo, check.databaseId);
+    }
+
+    logs.push({
+      checkName: check.name,
+      conclusion: check.conclusion,
+      summary: check.title,
+      annotations,
+      logExcerpt,
+    });
+  }
+
+  return logs;
+}
+
+/** Build a fix prompt from CI failure logs. */
+export function buildCIFixPrompt(
+  prNumber: number,
+  logs: CIFailureLog[],
+): string {
+  const sections = logs.map((log) => {
+    const parts: string[] = [`## ${log.checkName}`, log.summary];
+
+    if (log.annotations.length > 0) {
+      parts.push("", "### Annotations");
+      for (const a of log.annotations) {
+        parts.push(`${a.path}:${a.startLine} — ${a.message}`);
+      }
+    }
+
+    if (log.logExcerpt) {
+      parts.push("", "### Log output", "```", log.logExcerpt, "```");
+    }
+
+    return parts.join("\n");
+  });
+
+  return [
+    `CI checks failed on PR #${prNumber}. Here are the failures:`,
+    "",
+    ...sections,
+    "",
+    "---",
+    "",
+    "Please fix these CI failures. After fixing, the changes will be automatically committed and pushed to the PR branch.",
+  ].join("\n");
+}
+
+/**
+ * Trigger a CI fix — fetch logs, build prompt, send to Claude.
+ * Returns whether the message was sent immediately or queued.
+ */
+export async function triggerCIFix(
+  githubAuth: GitHubAuthManager,
+  prStatusPoller: PrStatusPoller,
+  runnerRegistry: SessionRunnerRegistry,
+  sessionId: string,
+): Promise<{ status: "sent" | "queued"; attemptNumber: number }> {
+  if (!githubAuth.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
+
+  const prStatus = prStatusPoller.getStatus(sessionId);
+  if (!prStatus) throw new ServiceError(404, "No PR status found for this session");
+
+  const prNode = prStatusPoller.getLastPrNode(sessionId);
+  if (!prNode) throw new ServiceError(404, "No PR data cached for this session");
+
+  const failedChecks = extractFailedCheckRuns(prNode);
+  if (failedChecks.length === 0) throw new ServiceError(400, "No failed checks to fix");
+
+  // Get repo info from the PR URL
+  const urlMatch = prStatus.prUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
+  if (!urlMatch) throw new ServiceError(400, "Cannot parse repository from PR URL");
+  const [, owner, repo] = urlMatch;
+
+  // Fetch CI failure logs
+  const logs = await fetchCIFailureLogs(githubAuth, owner, repo, failedChecks);
+  const prompt = buildCIFixPrompt(prStatus.prNumber, logs);
+
+  // Update auto-fix state
+  prStatusPoller.markAutoFixRunning(sessionId);
+  const autoFixState = prStatusPoller.getAutoFixState(sessionId);
+  const attemptNumber = autoFixState?.attemptCount ?? 1;
+
+  // Send to Claude via the runner
+  const runner = runnerRegistry.get(sessionId);
+  if (!runner) throw new ServiceError(404, "No active session runner");
+
+  // sendSystemMessage handles both cases: enqueues when busy,
+  // emits system_turn event for WS handler pickup when idle.
+  runner.sendSystemMessage(prompt);
+  return { status: runner.running ? "queued" : "sent", attemptNumber };
 }
 
 /** Set GitHub token. Returns status and repos. */

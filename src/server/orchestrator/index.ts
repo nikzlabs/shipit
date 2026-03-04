@@ -39,6 +39,7 @@ import * as deployHandlers from "./ws-handlers/deploy-handlers.js";
 import * as threadHandlers from "./ws-handlers/thread-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
 import { registerApiRoutes } from "./api-routes.js";
+import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
 export { getContextWindowSize } from "./ws-handlers/send-message.js";
 
 const WORKSPACE = "/workspace";
@@ -137,6 +138,11 @@ export interface AppDeps {
   sessionContainerManager?: import("./session-container.js").SessionContainerManager;
   /** Repo store instance. Defaults to `new RepoStore()`. */
   repoStore?: RepoStore;
+  /**
+   * Pre-configured PrStatusPoller instance. When provided, the internally created
+   * one is replaced. Useful for testing auto-fix flows.
+   */
+  prStatusPoller?: PrStatusPoller;
 }
 
 /**
@@ -452,6 +458,39 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       return undefined;
     },
     onRunnerIdle: () => enforceIdleContainerLimit(),
+    onRunnerCreated: (runner) => {
+      runner.setSystemTurnDeps({
+        agentFactory: (agentId) => {
+          if (runner.createAgent) return runner.createAgent(agentId);
+          if (agentFactory) return agentFactory(agentId);
+          throw new Error("No agent factory available for system turn");
+        },
+        autoCommit: async (sessionDir, summary) => {
+          const git = createGitManager(sessionDir);
+          return git.autoCommit(summary);
+        },
+        scheduleAutoPush: (sessionDir) => {
+          if (!githubAuthManager.authenticated) return;
+          runner.clearPushTimer();
+          runner.setPushTimer(setTimeout(async () => {
+            runner.setPushTimer(null);
+            try {
+              const git = createGitManager(sessionDir);
+              const remotes = await git.getRemotes();
+              const origin = remotes.find((r) => r.name === "origin");
+              if (!origin) return;
+              const branch = await git.getCurrentBranch();
+              if (!branch) return;
+              await git.push("origin", branch);
+              runner.emitMessage({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
+            } catch (err) {
+              console.error("[system-turn] auto-push failed:", getErrorMessage(err));
+            }
+          }, autoPushDebounceMs));
+        },
+        sseBroadcast,
+      });
+    },
   });
 
   // ---- SSE (Server-Sent Events) for global push ----
@@ -523,10 +562,23 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   });
 
   // ---- PR Status Poller ----
-  const prStatusPoller = new PrStatusPoller({
+  const prStatusPoller = deps.prStatusPoller ?? new PrStatusPoller({
     githubAuth: githubAuthManager,
     sessionManager,
     sseBroadcast,
+    runnerRegistry,
+    fetchAndFixCb: async (sessionId, owner, repo, failedChecks) => {
+      const logs = await fetchCIFailureLogs(githubAuthManager, owner, repo, failedChecks);
+      const prStatus = prStatusPoller.getStatus(sessionId);
+      if (!prStatus) return;
+      const prompt = buildCIFixPrompt(prStatus.prNumber, logs);
+
+      prStatusPoller.markAutoFixRunning(sessionId);
+
+      const runner = runnerRegistry.get(sessionId);
+      if (!runner) return;
+      runner.sendSystemMessage(prompt);
+    },
   });
 
   // Auto-track sessions with remoteUrl so PR status survives server restart

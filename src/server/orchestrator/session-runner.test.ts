@@ -120,6 +120,53 @@ describe("SessionRunner", () => {
     runner.dispose();
   });
 
+  it("sendSystemMessage enqueues when agent is running", () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    runner.running = true;
+    runner.sendSystemMessage("fix ci");
+    expect(runner.queueLength).toBe(1);
+    expect(runner.dequeue()?.text).toBe("fix ci");
+    runner.dispose();
+  });
+
+  it("sendSystemMessage starts agent turn when idle with deps set", () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    const fakeAgent = { on: vi.fn(), run: vi.fn(), kill: vi.fn() } as any;
+    runner.setSystemTurnDeps({
+      agentFactory: () => fakeAgent,
+      autoCommit: vi.fn().mockResolvedValue(null),
+      scheduleAutoPush: vi.fn(),
+      sseBroadcast: vi.fn(),
+    });
+
+    runner.sendSystemMessage("fix ci");
+    // Should start a turn directly — not enqueue
+    expect(runner.queueLength).toBe(0);
+    expect(runner.running).toBe(true);
+    expect(fakeAgent.run).toHaveBeenCalledWith(expect.objectContaining({ prompt: "fix ci" }));
+    runner.dispose();
+  });
+
+  it("sendSystemMessage falls back to enqueue when idle with no deps", () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    // No system turn deps set
+    runner.sendSystemMessage("fix ci");
+    expect(runner.queueLength).toBe(1);
+    runner.dispose();
+  });
+
   it("enforces message queue cap of 50", () => {
     const runner = new SessionRunner({
       sessionId: "s1",
