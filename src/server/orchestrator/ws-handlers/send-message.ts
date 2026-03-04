@@ -318,7 +318,7 @@ async function runClaudeWithMessage(ctx: FullCtx, opts: {
     if (commitHash && capturedSessionId && capturedSessionDir) {
       try {
         const session = ctx.sessionManager.get(capturedSessionId);
-        if (session?.remoteUrl) {
+        if (session?.remoteUrl && session.branchRenamed !== false) {
           const git = ctx.createGitManager(capturedSessionDir);
 
           // Check if a PR already exists for this branch
@@ -522,9 +522,36 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
       // Generate session name from the message text
       const utilityModel = ctx.credentialStore.getUtilityModel();
       if (utilityModel && session.workspaceDir) {
+        // Helper: mark branch as renamed and emit PR "ready" card
+        const finalizeBranchRenamed = async () => {
+          ctx.sessionManager.setBranchRenamed(effectiveSessionId, true);
+          const s = ctx.sessionManager.get(effectiveSessionId);
+          if (!s?.remoteUrl || !s.workspaceDir) return;
+          if (ctx.prStatusPoller.getStatus(effectiveSessionId)) return; // PR already exists
+          try {
+            const git = ctx.createGitManager(s.workspaceDir);
+            const headBranch = s.branch || await git.getCurrentBranch();
+            const { insertions, deletions } = await git.diffStatVsBranch("main");
+            ctx.send({
+              type: "pr_lifecycle_update",
+              sessionId: effectiveSessionId,
+              cardId: `pr-card-${effectiveSessionId}`,
+              phase: "ready",
+              headBranch,
+              totalInsertions: insertions,
+              totalDeletions: deletions,
+            });
+          } catch {
+            // Diff stats may fail if no commits yet — that's fine, post-commit will retry
+          }
+        };
+
         // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget session naming
         generateSessionName(userText, utilityModel).then(async (nameResult) => {
-          if (!nameResult) return;
+          if (!nameResult) {
+            await finalizeBranchRenamed();
+            return;
+          }
           try {
             const currentBranch = session.branch;
             if (currentBranch) {
@@ -545,12 +572,18 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
               ctx.send({ type: "session_renamed", session: updatedSession });
               ctx.sseBroadcast("session_renamed", { session: updatedSession });
             }
+            await finalizeBranchRenamed();
           } catch (err) {
             console.warn("[warm] Branch rename failed:", getErrorMessage(err));
+            await finalizeBranchRenamed();
           }
-        }).catch((err) => {
+        }).catch(async (err) => {
           console.warn("[warm] Session naming failed:", err);
+          await finalizeBranchRenamed();
         });
+      } else {
+        // No utility model configured — unblock PR card immediately
+        ctx.sessionManager.setBranchRenamed(effectiveSessionId, true);
       }
 
       // Broadcast session list via SSE so sidebar updates with the graduated session

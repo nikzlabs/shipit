@@ -159,6 +159,19 @@ export class SessionManager {
     );
   }
 
+  /** Mark a session's branch as renamed (descriptive slug applied). */
+  setBranchRenamed(id: string, renamed: boolean): void {
+    const session = this.sessions.find((s) => s.id === id);
+    if (session) {
+      if (renamed) {
+        session.branchRenamed = true;
+      } else {
+        delete session.branchRenamed;
+      }
+      this.save();
+    }
+  }
+
   /** Set branch and session type on a session. */
   setWorktreeInfo(
     id: string,
