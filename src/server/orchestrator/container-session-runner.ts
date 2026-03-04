@@ -989,6 +989,20 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     }
   }
 
+  // --- System-initiated turns ---
+
+  sendSystemMessage(text: string): void {
+    if (this._isRunning) {
+      this.enqueue({ text });
+      return;
+    }
+    if (this.listenerCount("system_turn") > 0) {
+      this.emit("system_turn", { text });
+    } else {
+      this.enqueue({ text });
+    }
+  }
+
   // --- Lifecycle ---
 
   onAgentFinished(): void {

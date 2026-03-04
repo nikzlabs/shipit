@@ -32,6 +32,8 @@ export interface SessionRunnerEvents {
   message: [WsServerMessage];
   idle: [];
   disposed: [];
+  /** Emitted when the runner wants to start a system-initiated agent turn (e.g., CI auto-fix). */
+  system_turn: [{ text: string }];
 }
 
 /**
@@ -105,6 +107,12 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   /** Wait until preview state is known (SSE connected + worker reported). Resolves
    *  immediately if already known. */
   waitForPreviewStatus(): Promise<void>;
+
+  // System-initiated turns
+  /** Request a new agent turn from the server side (e.g., CI auto-fix).
+   *  If running, enqueues. If idle, emits system_turn for a connected
+   *  WS handler to pick up (falls back to enqueue if nobody is listening). */
+  sendSystemMessage(text: string): void;
 
   // Lifecycle
   onAgentFinished(): void;
@@ -237,6 +245,20 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   }
   get previewStatusKnown(): boolean { return true; }
   async waitForPreviewStatus(): Promise<void> { /* always known */ }
+
+  sendSystemMessage(text: string): void {
+    if (this._isRunning) {
+      this.enqueue({ text });
+      return;
+    }
+    // Emit system_turn so a connected WS handler can start the turn.
+    // If no listener is attached, enqueue as fallback (will drain next turn).
+    if (this.listenerCount("system_turn") > 0) {
+      this.emit("system_turn", { text });
+    } else {
+      this.enqueue({ text });
+    }
+  }
 
   onAgentFinished(): void {
     if (!this._isRunning && this._messageQueue.length === 0) {

@@ -120,6 +120,46 @@ describe("SessionRunner", () => {
     runner.dispose();
   });
 
+  it("sendSystemMessage enqueues when agent is running", () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    runner.running = true;
+    runner.sendSystemMessage("fix ci");
+    expect(runner.queueLength).toBe(1);
+    expect(runner.dequeue()?.text).toBe("fix ci");
+    runner.dispose();
+  });
+
+  it("sendSystemMessage emits system_turn when idle and listener attached", () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    const turnSpy = vi.fn();
+    runner.on("system_turn", turnSpy);
+
+    runner.sendSystemMessage("fix ci");
+    expect(turnSpy).toHaveBeenCalledWith({ text: "fix ci" });
+    expect(runner.queueLength).toBe(0); // not enqueued
+    runner.dispose();
+  });
+
+  it("sendSystemMessage falls back to enqueue when idle with no listener", () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    // No system_turn listener attached
+    runner.sendSystemMessage("fix ci");
+    expect(runner.queueLength).toBe(1);
+    runner.dispose();
+  });
+
   it("enforces message queue cap of 50", () => {
     const runner = new SessionRunner({
       sessionId: "s1",

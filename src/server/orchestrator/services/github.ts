@@ -450,15 +450,10 @@ export async function triggerCIFix(
   const runner = runnerRegistry.get(sessionId);
   if (!runner) throw new ServiceError(404, "No active session runner");
 
-  if (runner.running) {
-    // Agent is busy — queue the message
-    runner.enqueue({ text: prompt });
-    return { status: "queued", attemptNumber };
-  } else {
-    // Agent is idle — enqueue and it will be picked up by the drain loop
-    runner.enqueue({ text: prompt });
-    return { status: "sent", attemptNumber };
-  }
+  // sendSystemMessage handles both cases: enqueues when busy,
+  // emits system_turn event for WS handler pickup when idle.
+  runner.sendSystemMessage(prompt);
+  return { status: runner.running ? "queued" : "sent", attemptNumber };
 }
 
 /** Set GitHub token. Returns status and repos. */

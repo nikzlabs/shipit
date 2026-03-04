@@ -39,6 +39,7 @@ import * as deployHandlers from "./ws-handlers/deploy-handlers.js";
 import * as threadHandlers from "./ws-handlers/thread-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
 import { registerApiRoutes } from "./api-routes.js";
+import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
 export { getContextWindowSize } from "./ws-handlers/send-message.js";
 
 const WORKSPACE = "/workspace";
@@ -532,6 +533,19 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     githubAuth: githubAuthManager,
     sessionManager,
     sseBroadcast,
+    runnerRegistry,
+    fetchAndFixCb: async (sessionId, owner, repo, failedChecks) => {
+      const logs = await fetchCIFailureLogs(githubAuthManager, owner, repo, failedChecks);
+      const prStatus = prStatusPoller.getStatus(sessionId);
+      if (!prStatus) return;
+      const prompt = buildCIFixPrompt(prStatus.prNumber, logs);
+
+      prStatusPoller.markAutoFixRunning(sessionId);
+
+      const runner = runnerRegistry.get(sessionId);
+      if (!runner) return;
+      runner.sendSystemMessage(prompt);
+    },
   });
 
   // Auto-track sessions with remoteUrl so PR status survives server restart
@@ -937,6 +951,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       let attachedRunner: SessionRunnerInterface | null = null;
       let runnerMessageListener: ((msg: WsServerMessage) => void) | null = null;
       let previewRetryListener: ((msg: WsServerMessage) => void) | null = null;
+      let systemTurnListener: ((payload: { text: string }) => void) | null = null;
 
       const send = (msg: WsServerMessage) => {
         if (socket.readyState === 1) {
@@ -951,6 +966,18 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         attachedRunner = runner;
         runnerMessageListener = (msg: WsServerMessage) => { send(msg); };
         runner.on("message", runnerMessageListener);
+        // Listen for server-initiated turns (e.g., CI auto-fix when agent is idle)
+        systemTurnListener = (payload: { text: string }) => {
+          // Lazy-reference ctx — it's defined later but stable by the time this fires
+          sendMessageHandlers.handleSendMessage(ctx, {
+            type: "send_message",
+            text: payload.text,
+            sessionId: runner.sessionId,
+          }).catch((err) => {
+            console.error("[system_turn] Failed to process:", getErrorMessage(err));
+          });
+        };
+        runner.on("system_turn", systemTurnListener);
         runner.attachViewer();
         for (const msg of runner.getTurnEventBuffer()) { send(msg); }
         if (runner.getQueueSnapshot().length > 0) {
@@ -990,11 +1017,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         if (attachedRunner) {
           if (runnerMessageListener) attachedRunner.off("message", runnerMessageListener);
           if (previewRetryListener) attachedRunner.off("message", previewRetryListener);
+          if (systemTurnListener) attachedRunner.off("system_turn", systemTurnListener);
           attachedRunner.detachViewer();
         }
         attachedRunner = null;
         runnerMessageListener = null;
         previewRetryListener = null;
+        systemTurnListener = null;
       };
 
       const scheduleAutoPush = (git: GitManager, _sendFn: typeof send) => {
