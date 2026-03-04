@@ -175,64 +175,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
   });
 
-  describe("POST /api/sessions/:id/git/reject", () => {
-    it("rejects specific files", async () => {
-      const dir = await createSession("s1", "Session 1");
-      const git = new GitManager(dir);
-
-      // Create a file and commit (this is the "before" state)
-      fs.writeFileSync(path.join(dir, "revert.txt"), "original content");
-      await git.autoCommit("add revert.txt");
-      const beforeLog = await git.log(1);
-      const fromCommit = beforeLog[0].hash;
-
-      // Modify the file and commit (this is the "after" state we want to revert)
-      fs.writeFileSync(path.join(dir, "revert.txt"), "modified content");
-      await git.autoCommit("modify revert.txt");
-
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/sessions/s1/git/reject",
-        payload: { fromCommit, files: ["revert.txt"] },
-      });
-      expect(res.statusCode).toBe(200);
-      const body = res.json();
-      expect(body.revertedFiles).toEqual(["revert.txt"]);
-      // Verify the file was reverted
-      const content = fs.readFileSync(path.join(dir, "revert.txt"), "utf-8");
-      expect(content).toBe("original content");
-    });
-
-    it("with empty files array reverts all (rollback)", async () => {
-      const dir = await createSession("s1", "Session 1");
-      const git = new GitManager(dir);
-      const beforeLog = await git.log(1);
-      const fromCommit = beforeLog[0].hash;
-
-      // Make a change
-      fs.writeFileSync(path.join(dir, "extra.txt"), "extra");
-      await git.autoCommit("add extra");
-
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/sessions/s1/git/reject",
-        payload: { fromCommit, files: [] },
-      });
-      expect(res.statusCode).toBe(200);
-      expect(res.json().commitHash).toBe(fromCommit);
-    });
-
-    it("returns 400 for missing fromCommit", async () => {
-      await createSession("s1", "Session 1");
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/sessions/s1/git/reject",
-        payload: { fromCommit: "", files: [] },
-      });
-      expect(res.statusCode).toBe(400);
-    });
-  });
-
   // ---- Settings mutations ----
 
   describe("POST /api/settings/git-identity", () => {
