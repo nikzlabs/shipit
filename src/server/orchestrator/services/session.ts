@@ -177,6 +177,25 @@ export async function mergeSession(
   };
 }
 
+/** List all sessions (active + archived, excluding warm). */
+export function listAllSessions(
+  sessionManager: SessionManager,
+): SessionInfo[] {
+  return sessionManager.listAll();
+}
+
+/** Unarchive (restore) a session. Returns the updated active session list. */
+export function unarchiveSession(
+  sessionManager: SessionManager,
+  sessionId: string,
+): { session: SessionInfo; sessions: SessionInfo[] } {
+  const ok = sessionManager.unarchive(sessionId);
+  if (!ok) throw new ServiceError(404, "Session not found or not archived");
+  const session = sessionManager.get(sessionId);
+  if (!session) throw new ServiceError(404, "Session not found");
+  return { session, sessions: sessionManager.list() };
+}
+
 // ---- Mutation operations ----
 
 /** Rename a session. Returns the updated session or throws ServiceError. */

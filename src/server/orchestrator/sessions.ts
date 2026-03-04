@@ -125,6 +125,29 @@ export class SessionManager {
     return true;
   }
 
+  /** Unarchive a session (restore to active list). */
+  unarchive(id: string): boolean {
+    const session = this.sessions.find((s) => s.id === id);
+    if (!session || !session.archived) return false;
+    delete session.archived;
+    this.save();
+    return true;
+  }
+
+  /** List all archived sessions, most recently used first. */
+  listArchived(): SessionInfo[] {
+    return this.sessions
+      .filter((s) => s.archived === true)
+      .sort((a, b) => new Date(b.lastUsedAt).getTime() - new Date(a.lastUsedAt).getTime());
+  }
+
+  /** List all non-warm sessions (active + archived), most recently used first. */
+  listAll(): SessionInfo[] {
+    return this.sessions
+      .filter((s) => s.warm !== true)
+      .sort((a, b) => new Date(b.lastUsedAt).getTime() - new Date(a.lastUsedAt).getTime());
+  }
+
   /** Clear all in-memory session data (used by full reset). */
   clear(): void {
     this.sessions = [];
