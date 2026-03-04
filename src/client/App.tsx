@@ -33,7 +33,7 @@ import { MobileTabBar } from "./components/MobileTabBar.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
 import { HomeScreen } from "./components/HomeScreen.js";
 import { AddRepoDialog } from "./components/AddRepoDialog.js";
-import { ArchivedSessionsDialog } from "./components/ArchivedSessionsDialog.js";
+import { AllSessionsDialog } from "./components/AllSessionsDialog.js";
 import { NewRepoDialog } from "./components/NewRepoDialog.js";
 import { UsageModal } from "./components/UsageModal.js";
 import { StatusBar } from "./components/StatusBar.js";
@@ -166,8 +166,12 @@ export default function App() {
   const newRepoDialogOpen = useRepoStore((s) => s.newRepoDialogOpen);
 
   const creatingRepo = useSessionStore((s) => s.creatingRepo);
-  const archivedDialogOpen = useSessionStore((s) => s.archivedDialogOpen);
-  const archivedSessions = useSessionStore((s) => s.archivedSessions);
+  const allSessionsDialogOpen = useSessionStore((s) => s.allSessionsDialogOpen);
+  const allSessions = useSessionStore((s) => s.allSessions);
+  const currentRepoUrl = useMemo(
+    () => sessions.find((s) => s.id === sessionId)?.remoteUrl,
+    [sessions, sessionId],
+  );
 
   const noAgentReady = agentList.length > 0 && !agentList.some(a => a.installed && a.authConfigured);
   const needsOnboarding = gitIdentityNeeded || noAgentReady;
@@ -751,7 +755,7 @@ export default function App() {
             onRefresh={() => useSessionStore.getState().refreshSessions()}
             onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)}
             onRemoveRepo={(url) => useRepoStore.getState().removeRepo(url)}
-            onViewArchived={() => useSessionStore.getState().setArchivedDialogOpen(true)}
+            onViewAll={() => useSessionStore.getState().setAllSessionsDialogOpen(true)}
             collapsed={sidebarCollapsed}
             onToggleCollapse={() => useUiStore.getState().setSidebarCollapsed(!sidebarCollapsed)}
           />
@@ -785,12 +789,16 @@ export default function App() {
         onSearch={(q) => usePrStore.getState().searchRepos(q).catch(() => {})}
         repos={repos}
       />
-      <ArchivedSessionsDialog
-        open={archivedDialogOpen}
-        onClose={() => useSessionStore.getState().setArchivedDialogOpen(false)}
-        sessions={archivedSessions}
-        onFetch={() => useSessionStore.getState().fetchArchivedSessions()}
+      <AllSessionsDialog
+        open={allSessionsDialogOpen}
+        onClose={() => useSessionStore.getState().setAllSessionsDialogOpen(false)}
+        sessions={allSessions}
+        repos={repos}
+        currentRepoUrl={currentRepoUrl}
+        onFetch={() => useSessionStore.getState().fetchAllSessions()}
+        onResume={(sid) => handleSessionResume(sid, navigate)}
         onUnarchive={(sid) => useSessionStore.getState().unarchiveSession(sid)}
+        onArchive={(sid) => useSessionStore.getState().archiveSession(sid)}
       />
       {newRepoDialogOpen && (
         <NewRepoDialog

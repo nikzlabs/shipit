@@ -20,7 +20,7 @@ interface SessionSidebarProps {
   onRefresh: () => void;
   onAddRepo: () => void;
   onRemoveRepo: (url: string) => void;
-  onViewArchived: () => void;
+  onViewAll: () => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
 }
@@ -262,7 +262,7 @@ export function SessionSidebar({
   onRefresh: _onRefresh,
   onAddRepo,
   onRemoveRepo,
-  onViewArchived,
+  onViewAll,
   collapsed,
   onToggleCollapse,
 }: SessionSidebarProps) {
@@ -399,14 +399,16 @@ export function SessionSidebar({
         )}
       </div>
 
-      {/* View archived sessions */}
+      {/* View all sessions */}
       <div className="shrink-0 border-t border-gray-200 dark:border-gray-800 px-2 py-2">
         <button
-          onClick={onViewArchived}
+          onClick={onViewAll}
           className="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs text-gray-500 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded transition-colors"
         >
-          <ArchiveIcon />
-          View Archived
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" />
+          </svg>
+          View All
         </button>
       </div>
     </div>

@@ -141,6 +141,13 @@ export class SessionManager {
       .sort((a, b) => new Date(b.lastUsedAt).getTime() - new Date(a.lastUsedAt).getTime());
   }
 
+  /** List all non-warm sessions (active + archived), most recently used first. */
+  listAll(): SessionInfo[] {
+    return this.sessions
+      .filter((s) => s.warm !== true)
+      .sort((a, b) => new Date(b.lastUsedAt).getTime() - new Date(a.lastUsedAt).getTime());
+  }
+
   /** Clear all in-memory session data (used by full reset). */
   clear(): void {
     this.sessions = [];

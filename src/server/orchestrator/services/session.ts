@@ -176,11 +176,11 @@ export async function mergeSession(
   };
 }
 
-/** List archived sessions. */
-export function listArchivedSessions(
+/** List all sessions (active + archived, excluding warm). */
+export function listAllSessions(
   sessionManager: SessionManager,
 ): SessionInfo[] {
-  return sessionManager.listArchived();
+  return sessionManager.listAll();
 }
 
 /** Unarchive (restore) a session. Returns the updated active session list. */

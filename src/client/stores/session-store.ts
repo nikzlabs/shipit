@@ -45,11 +45,11 @@ interface SessionState {
   setPendingWsMessage: (message: Record<string, unknown> | undefined) => void;
   reset: () => void;
 
-  // Archived sessions
-  archivedSessions: SessionInfo[];
-  archivedDialogOpen: boolean;
-  setArchivedDialogOpen: (open: boolean) => void;
-  fetchArchivedSessions: () => Promise<void>;
+  // All sessions dialog
+  allSessions: SessionInfo[];
+  allSessionsDialogOpen: boolean;
+  setAllSessionsDialogOpen: (open: boolean) => void;
+  fetchAllSessions: () => Promise<void>;
   unarchiveSession: (sessionId: string) => Promise<void>;
 
   // Async actions
@@ -74,8 +74,8 @@ export const useSessionStore = create<SessionState>((set) => ({
   sessions: [] as SessionInfo[],
   authUrl: null,
   activeRunnerSessions: new Set<string>(),
-  archivedSessions: [] as SessionInfo[],
-  archivedDialogOpen: false,
+  allSessions: [] as SessionInfo[],
+  allSessionsDialogOpen: false,
 
   setSessionId: (sessionId) => set({ sessionId }),
 
@@ -129,14 +129,14 @@ export const useSessionStore = create<SessionState>((set) => ({
 
   reset: () => set(initialResettableState),
 
-  setArchivedDialogOpen: (archivedDialogOpen) => set({ archivedDialogOpen }),
+  setAllSessionsDialogOpen: (allSessionsDialogOpen) => set({ allSessionsDialogOpen }),
 
-  fetchArchivedSessions: async () => {
-    const res = await fetch("/api/sessions/archived", {
+  fetchAllSessions: async () => {
+    const res = await fetch("/api/sessions/all", {
       headers: { Accept: "application/json" },
     });
     const data = await res.json();
-    set({ archivedSessions: data.sessions });
+    set({ allSessions: data.sessions });
   },
 
   unarchiveSession: async (sessionId) => {
@@ -145,12 +145,12 @@ export const useSessionStore = create<SessionState>((set) => ({
       headers: { Accept: "application/json" },
     });
     const result = await res.json();
-    set({
+    set((state) => ({
       sessions: result.sessions,
-      archivedSessions: useSessionStore
-        .getState()
-        .archivedSessions.filter((s) => s.id !== sessionId),
-    });
+      allSessions: state.allSessions.map((s) =>
+        s.id === sessionId ? { ...s, archived: undefined } : s,
+      ),
+    }));
   },
 
   archiveSession: async (sessionId) => {
@@ -159,7 +159,12 @@ export const useSessionStore = create<SessionState>((set) => ({
       headers: { Accept: "application/json" },
     });
     const result = await res.json();
-    set({ sessions: result.sessions });
+    set((state) => ({
+      sessions: result.sessions,
+      allSessions: state.allSessions.map((s) =>
+        s.id === sessionId ? { ...s, archived: true } : s,
+      ),
+    }));
   },
 
   renameSession: async (sessionId, title) => {

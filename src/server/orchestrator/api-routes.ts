@@ -49,7 +49,7 @@ import {
   getWorkspaceState,
   getChatHistory,
   // Phase 2: mutation service functions
-  listArchivedSessions,
+  listAllSessions,
   unarchiveSession,
   renameSession,
   archiveSession,
@@ -460,9 +460,9 @@ export async function registerApiRoutes(
   // Phase 2: POST/PATCH/DELETE endpoints (mutations)
   // ===========================================================================
 
-  // GET /api/sessions/archived — list archived sessions
-  app.get("/api/sessions/archived", async () => {
-    return { sessions: listArchivedSessions(sessionManager) };
+  // GET /api/sessions/all — list all sessions (active + archived)
+  app.get("/api/sessions/all", async () => {
+    return { sessions: listAllSessions(sessionManager) };
   });
 
   // POST /api/sessions/:id/unarchive — restore an archived session
