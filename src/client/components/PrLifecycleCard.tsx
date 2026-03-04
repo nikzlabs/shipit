@@ -165,7 +165,7 @@ function ReadyPhase({ card, sessionId }: { card: PrCardState; sessionId: string 
   const quickCreate = usePrStore((s) => s.quickCreate);
   const ins = card.totalInsertions ?? 0;
   const del = card.totalDeletions ?? 0;
-  const hasChanges = ins > 0 || del > 0;
+  const hasDiffStats = ins > 0 || del > 0;
 
   return (
     <div className="flex items-center gap-3">
@@ -175,8 +175,8 @@ function ReadyPhase({ card, sessionId }: { card: PrCardState; sessionId: string 
           main {"\u2190"} {card.headBranch}
         </span>
       )}
-      {hasChanges && <DiffStats ins={ins} del={del} />}
-      {hasChanges && (
+      {hasDiffStats && <DiffStats ins={ins} del={del} />}
+      {(card.headBranch || hasDiffStats) && (
         <button
           onClick={() => quickCreate(sessionId)}
           className="px-3 py-1 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded-md transition-colors"
