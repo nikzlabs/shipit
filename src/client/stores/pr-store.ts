@@ -14,7 +14,7 @@ interface ImportSearchResult {
 /** PR lifecycle card state for a single session. */
 export interface PrCardState {
   cardId: string;
-  phase: "ready" | "creating" | "open" | "merged" | "error";
+  phase: "ready" | "creating" | "open" | "merged" | "closed" | "error";
   /** Current branch name (ready phase). */
   headBranch?: string;
   /** Files changed (ready phase). */
@@ -126,10 +126,10 @@ export const usePrStore = create<PrState>((set, get) => ({
 
         // Update the inline card to reflect poller data
         const existing = nextCards[update.sessionId];
-        if (update.prState === "merged") {
+        if (update.prState === "merged" || update.prState === "closed") {
           nextCards[update.sessionId] = {
             cardId: existing?.cardId ?? `pr-card-${update.sessionId}`,
-            phase: "merged",
+            phase: update.prState,
             pr: {
               number: update.prNumber,
               title: update.prTitle,

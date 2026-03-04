@@ -308,6 +308,29 @@ function MergedPhase({ card }: { card: PrCardState }) {
   );
 }
 
+function ClosedPhase({ card }: { card: PrCardState }) {
+  const pr = card.pr;
+
+  return (
+    <div className="flex items-center gap-3">
+      <span className="text-gray-400 text-sm shrink-0">{"\u2442"}</span>
+      <span className="text-xs text-gray-400">
+        PR #{pr?.number} closed
+      </span>
+      {pr && (
+        <a
+          href={pr.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={linkClass}
+        >
+          View PR
+        </a>
+      )}
+    </div>
+  );
+}
+
 function ErrorPhase({ card, sessionId }: { card: PrCardState; sessionId: string }) {
   const quickCreate = usePrStore((s) => s.quickCreate);
 
@@ -339,6 +362,7 @@ export function PrLifecycleCard({ sessionId }: { sessionId: string }) {
       {card.phase === "creating" && <CreatingPhase />}
       {card.phase === "open" && <OpenPhase card={card} sessionId={sessionId} />}
       {card.phase === "merged" && <MergedPhase card={card} />}
+      {card.phase === "closed" && <ClosedPhase card={card} />}
       {card.phase === "error" && <ErrorPhase card={card} sessionId={sessionId} />}
     </div>
   );
@@ -350,14 +374,17 @@ export function PrStatusIcon({ sessionId }: { sessionId: string }) {
   const status = usePrStore((s) => s.statusBySession[sessionId]);
   const card = usePrStore((s) => s.cardBySession[sessionId]);
 
-  const prState = status?.prState ?? (card?.phase === "merged" ? "merged" : card?.phase === "open" ? "open" : null);
+  const prState = status?.prState ?? (card?.phase === "merged" ? "merged" : card?.phase === "closed" ? "closed" : card?.phase === "open" ? "open" : null);
   const checksState = status?.checks?.state ?? card?.checks?.state;
 
   if (!prState && !card) return null;
-  if (prState !== "open" && prState !== "merged") return null;
+  if (prState !== "open" && prState !== "merged" && prState !== "closed") return null;
 
   if (prState === "merged") {
     return <span className="text-purple-400 text-[10px]" title="PR merged">{"\u2442"}</span>;
+  }
+  if (prState === "closed") {
+    return <span className="text-gray-500 text-[10px]" title="PR closed">{"\u2442"}</span>;
   }
 
   if (checksState === "success") {

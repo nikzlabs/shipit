@@ -170,7 +170,7 @@ export interface PrStatusSummary {
   prNumber: number;
   prUrl: string;
   prTitle: string;
-  prState: "open" | "merged";
+  prState: "open" | "merged" | "closed";
   baseBranch: string;
   headBranch: string;
   insertions: number;

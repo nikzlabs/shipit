@@ -221,8 +221,10 @@ export class PrStatusPoller {
   private lastKnown = new Map<string, PrStatusSummary>();
   /** sessionId → repo key tracking */
   private sessionRepos = new Map<string, string>();
-  /** Sessions whose PRs have been merged — excluded from future queries. */
+  /** Sessions whose PRs have been merged or closed — excluded from future queries. */
   private mergedSessions = new Set<string>();
+  /** Sessions needing a one-time REST probe to check if a PR already exists (post-restart catch-up). */
+  private pendingCatchUp = new Set<string>();
 
   /** sessionId → auto-fix state */
   private autoFixStates = new Map<string, AutoFixState>();
@@ -263,6 +265,7 @@ export class PrStatusPoller {
     const repoKey = `${parsed.owner}/${parsed.repo}`;
     this.sessionRepos.set(sessionId, repoKey);
     this.mergedSessions.delete(sessionId);
+    this.pendingCatchUp.add(sessionId);
 
     if (!this.repoTimers.has(repoKey)) {
       this.startPolling(repoKey, parsed.owner, parsed.repo);
@@ -277,6 +280,7 @@ export class PrStatusPoller {
     this.autoFixStates.delete(sessionId);
     this.autoMergeStates.delete(sessionId);
     this.lastPrNodes.delete(sessionId);
+    this.pendingCatchUp.delete(sessionId);
 
     if (repoKey) {
       this.maybeStopPolling(repoKey);
@@ -523,6 +527,13 @@ export class PrStatusPoller {
               console.error(`[pr-poller] Post-merge archive error for ${session.id}:`, err);
             });
           }
+        } else if (this.pendingCatchUp.has(session.id)) {
+          // First poll with no prior state — fire a one-time REST probe to check
+          // if a PR already exists (e.g., merged before server restart).
+          this.pendingCatchUp.delete(session.id);
+          this.catchUpProbe(session.id, owner, repo, session.branch).catch((err) => {
+            console.error(`[pr-poller] Catch-up probe error for ${session.id}:`, err);
+          });
         }
       }
     }
@@ -530,6 +541,48 @@ export class PrStatusPoller {
     // Broadcast only if there are changes
     if (updates.length > 0) {
       this.sseBroadcast("pr_status", { updates });
+    }
+  }
+
+  /**
+   * One-time REST probe to check if a PR already exists for a session's branch.
+   * Handles the case where a PR was merged/closed before the poller had any prior state
+   * (e.g., after a server restart).
+   */
+  private async catchUpProbe(sessionId: string, owner: string, repo: string, branch: string): Promise<void> {
+    const pr = await this.githubAuth.findPullRequestAnyState(owner, repo, branch);
+    if (!pr) return; // No PR found — session stays in "ready" phase
+
+    const isMerged = pr.merged_at !== null;
+    const prState = isMerged ? "merged" as const : pr.state === "closed" ? "closed" as const : "open" as const;
+
+    // If the PR is still open, the next GraphQL poll will pick it up — skip
+    if (prState === "open") return;
+
+    const summary: PrStatusSummary = {
+      sessionId,
+      prNumber: pr.number,
+      prUrl: pr.url,
+      prTitle: pr.title,
+      prState,
+      baseBranch: pr.base,
+      headBranch: branch,
+      insertions: pr.additions,
+      deletions: pr.deletions,
+      checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 },
+      mergeable: false,
+      autoMergeEnabled: false,
+    };
+
+    this.lastKnown.set(sessionId, summary);
+    this.mergedSessions.add(sessionId);
+    this.sseBroadcast("pr_status", { updates: [summary] });
+
+    // Trigger post-merge archive for merged PRs (not for closed-without-merge)
+    if (isMerged && this.onMergeDetectedCb) {
+      this.onMergeDetectedCb(sessionId).catch((err) => {
+        console.error(`[pr-poller] Post-merge archive error for ${sessionId}:`, err);
+      });
     }
   }
 

@@ -395,6 +395,53 @@ export class GitHubAuthManager extends EventEmitter {
   }
 
   /**
+   * Check if a PR exists for the given head branch in any state (open, closed, merged).
+   * Used as a one-time catch-up probe after server restart to detect already-merged PRs.
+   */
+  async findPullRequestAnyState(
+    owner: string,
+    repo: string,
+    head: string,
+  ): Promise<{
+    url: string; number: number; base: string; title: string;
+    state: "open" | "closed"; merged_at: string | null;
+    additions: number; deletions: number;
+  } | null> {
+    if (!this._token) return null;
+
+    const res = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/pulls?head=${owner}:${head}&state=all&sort=updated&direction=desc&per_page=1`,
+      {
+        headers: {
+          Authorization: `Bearer ${this._token}`,
+          Accept: "application/vnd.github+json",
+          "User-Agent": "ShipIt",
+        },
+      },
+    );
+
+    if (!res.ok) return null;
+    const prs = (await res.json()) as Array<{
+      html_url: string; number: number; base: { ref: string }; title: string;
+      state: "open" | "closed"; merged_at: string | null;
+      additions: number; deletions: number;
+    }>;
+    if (prs.length === 0) return null;
+
+    const pr = prs[0];
+    return {
+      url: pr.html_url,
+      number: pr.number,
+      base: pr.base.ref,
+      title: pr.title,
+      state: pr.state,
+      merged_at: pr.merged_at,
+      additions: pr.additions,
+      deletions: pr.deletions,
+    };
+  }
+
+  /**
    * Merge a pull request.
    */
   async mergePullRequest(
