@@ -300,6 +300,12 @@ export interface WsRepoList {
   repos: RepoInfo[];
 }
 
+/** Server → Client: a server-initiated user message (e.g. CI fix prompt). */
+export interface WsSystemUserMessage {
+  type: "system_user_message";
+  text: string;
+}
+
 export type WsServerMessage =
   | WsClaudeEvent
   | WsAgentEvent
@@ -361,4 +367,5 @@ export type WsServerMessage =
   | WsRepoStatus
   | WsRepoWarmReady
   | WsRepoList
-  | WsPrLifecycleUpdate;
+  | WsPrLifecycleUpdate
+  | WsSystemUserMessage;

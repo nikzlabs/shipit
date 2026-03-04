@@ -490,6 +490,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           }, autoPushDebounceMs));
         },
         sseBroadcast,
+        persistMessage: (sessionId, msg) => chatHistoryManager.append(sessionId, msg),
       });
     },
   });

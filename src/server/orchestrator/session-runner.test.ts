@@ -145,6 +145,7 @@ describe("SessionRunner", () => {
       autoCommit: vi.fn().mockResolvedValue(null),
       scheduleAutoPush: vi.fn(),
       sseBroadcast: vi.fn(),
+      persistMessage: vi.fn(),
     });
 
     runner.sendSystemMessage("fix ci");

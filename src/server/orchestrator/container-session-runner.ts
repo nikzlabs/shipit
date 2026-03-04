@@ -1018,13 +1018,18 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._needsNewMessageGroup = true;
     this.clearTurnEventBuffer();
 
+    // Emit the prompt as a user message so viewers see what Claude was asked
+    this.emitMessage({ type: "system_user_message", text });
+    deps.persistMessage(this.sessionId, { role: "user", text });
+
     deps.sseBroadcast("session_agent_started", { sessionId: this.sessionId });
 
-    // Forward agent events to viewers (SSE already forwards via handleSSEEvent,
-    // but we also track turn summary for auto-commit)
+    // Forward agent events to viewers and track turn summary for auto-commit.
+    // handleSSEEvent re-emits SSE data to this._agent, so this listener
+    // receives them — but we must call emitMessage to push to WS viewers.
     agent.on("event", (event: AgentEvent) => {
-      // emitMessage is already called by handleSSEEvent for container runners,
-      // but we need to capture the turn summary here.
+      this.emitMessage({ type: "agent_event", event });
+
       if (event.type === "agent_assistant") {
         const contentArr = (event as { content?: Array<{ type: string; text?: string }> }).content ?? [];
         const agentText = contentArr

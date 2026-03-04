@@ -223,7 +223,7 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
         </span>
         <DiffStats ins={pr.insertions} del={pr.deletions} />
         <CiIndicator checks={card.checks} />
-        {isCiFailed && !isAutoFixRunning && (
+        {isCiFailed && (
           <AutoFixToggle sessionId={sessionId} autoFix={autoFix} />
         )}
         {showAutoMergeToggle && (

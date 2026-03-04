@@ -369,6 +369,10 @@ export function useMessageHandler(params: {
       deploy.setLastError(data.message);
     }
 
+    if (data.type === "system_user_message") {
+      session.setMessages((prev) => [...prev, { role: "user" as const, text: data.text }]);
+    }
+
     if (data.type === "message_queued") {
       const queued = data as WsMessageQueued;
       session.setQueuedMessages((prev) => [...prev, { text: queued.text, position: queued.position }]);
