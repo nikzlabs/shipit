@@ -4,14 +4,19 @@
  * One poller per repo, not per session. All sessions sharing a repo share
  * one polling loop. Polls every 3 seconds using a single GitHub GraphQL
  * query per repo (OPEN PRs only). Broadcasts changes via SSE.
+ *
+ * Phase 2 additions: auto-fix state management, per-check failure details,
+ * server-driven auto-fix loop.
  */
 
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { SessionManager } from "./sessions.js";
-import type { PrStatusSummary } from "../shared/types/github-types.js";
+import type { SessionRunnerRegistry } from "./session-runner.js";
+import type { PrStatusSummary, AutoFixState } from "../shared/types/github-types.js";
 import { parseGitHubRemote } from "./git-utils.js";
 
 const POLL_INTERVAL_MS = 3_000;
+const MAX_AUTO_FIX_ATTEMPTS = 3;
 
 /** GraphQL query: fetch all open PRs for a repo with CI status. */
 const PR_STATUS_QUERY = `
@@ -32,14 +37,18 @@ query($owner: String!, $name: String!) {
         commits(last: 1) {
           nodes {
             commit {
+              oid
               statusCheckRollup {
                 state
                 contexts(first: 25) {
                   nodes {
                     ... on CheckRun {
+                      databaseId
                       name
                       status
                       conclusion
+                      title
+                      detailsUrl
                     }
                     ... on StatusContext {
                       context
@@ -72,11 +81,12 @@ interface GraphQLPrNode {
   commits: {
     nodes: Array<{
       commit: {
+        oid?: string;
         statusCheckRollup: {
           state: string; // SUCCESS, FAILURE, PENDING, EXPECTED, ERROR
           contexts: {
             nodes: Array<
-              | { name: string; status: string; conclusion: string | null }
+              | { databaseId?: number; name: string; status: string; conclusion: string | null; title?: string | null; detailsUrl?: string | null }
               | { context: string; state: string }
             >;
           };
@@ -106,17 +116,29 @@ export function parsePrNode(
   const rollup = commit?.statusCheckRollup;
 
   let passed = 0, failed = 0, pending = 0;
+  const failedChecks: Array<{ name: string; summary: string }> = [];
+
   if (rollup?.contexts?.nodes) {
     for (const ctx of rollup.contexts.nodes) {
-      if ("conclusion" in ctx) {
+      if ("conclusion" in ctx && "name" in ctx && !("context" in ctx)) {
         // CheckRun
         if (ctx.conclusion === "SUCCESS") passed++;
-        else if (ctx.conclusion === "FAILURE" || ctx.conclusion === "CANCELLED" || ctx.conclusion === "TIMED_OUT") failed++;
+        else if (ctx.conclusion === "FAILURE" || ctx.conclusion === "CANCELLED" || ctx.conclusion === "TIMED_OUT") {
+          failed++;
+          failedChecks.push({
+            name: ctx.name,
+            summary: (ctx as { title?: string | null }).title ?? ctx.conclusion ?? "failed",
+          });
+        }
         else if (ctx.status !== "COMPLETED") pending++;
-      } else {
+      } else if ("context" in ctx) {
         // StatusContext
-        if (ctx.state === "SUCCESS") passed++;
-        else if (ctx.state === "FAILURE" || ctx.state === "ERROR") failed++;
+        const sc = ctx as { context: string; state: string };
+        if (sc.state === "SUCCESS") passed++;
+        else if (sc.state === "FAILURE" || sc.state === "ERROR") {
+          failed++;
+          failedChecks.push({ name: sc.context, summary: sc.state.toLowerCase() });
+        }
         else pending++;
       }
     }
@@ -139,10 +161,53 @@ export function parsePrNode(
     headBranch: node.headRefName,
     insertions: node.additions,
     deletions: node.deletions,
-    checks: { state: checksState, total, passed, failed, pending },
+    checks: {
+      state: checksState,
+      total,
+      passed,
+      failed,
+      pending,
+      failedChecks: failedChecks.length > 0 ? failedChecks : undefined,
+    },
     mergeable: node.mergeable === "MERGEABLE",
     autoMergeEnabled: node.autoMergeRequest !== null,
   };
+}
+
+/** Extract the head SHA from a GraphQL PR node. */
+export function extractHeadSha(node: GraphQLPrNode): string | undefined {
+  return node.commits.nodes[0]?.commit?.oid;
+}
+
+/** Extract failed check run database IDs from a GraphQL PR node. */
+export function extractFailedCheckRuns(node: GraphQLPrNode): Array<{
+  databaseId: number;
+  name: string;
+  conclusion: string;
+  title: string;
+}> {
+  const commit = node.commits.nodes[0]?.commit;
+  const rollup = commit?.statusCheckRollup;
+  if (!rollup?.contexts?.nodes) return [];
+
+  const failed: Array<{ databaseId: number; name: string; conclusion: string; title: string }> = [];
+  for (const ctx of rollup.contexts.nodes) {
+    if ("conclusion" in ctx && "name" in ctx && !("context" in ctx)) {
+      const checkCtx = ctx as { databaseId?: number; name: string; status: string; conclusion: string | null; title?: string | null };
+      if (
+        checkCtx.databaseId &&
+        (checkCtx.conclusion === "FAILURE" || checkCtx.conclusion === "CANCELLED" || checkCtx.conclusion === "TIMED_OUT")
+      ) {
+        failed.push({
+          databaseId: checkCtx.databaseId,
+          name: checkCtx.name,
+          conclusion: checkCtx.conclusion,
+          title: checkCtx.title ?? checkCtx.conclusion,
+        });
+      }
+    }
+  }
+  return failed;
 }
 
 export class PrStatusPoller {
@@ -159,14 +224,29 @@ export class PrStatusPoller {
   /** Sessions whose PRs have been merged — excluded from future queries. */
   private mergedSessions = new Set<string>();
 
+  /** sessionId → auto-fix state */
+  private autoFixStates = new Map<string, AutoFixState>();
+
+  /** Optional: runner registry for server-initiated fix prompts. */
+  private runnerRegistry?: SessionRunnerRegistry;
+  /** Optional: function to fetch CI failure logs and construct a fix prompt. */
+  private fetchAndFixCb?: (sessionId: string, owner: string, repo: string, failedChecks: Array<{ databaseId: number; name: string; conclusion: string; title: string }>) => Promise<void>;
+
+  /** sessionId → last known GraphQL PR node (cached for extracting check details). */
+  private lastPrNodes = new Map<string, GraphQLPrNode>();
+
   constructor(opts: {
     githubAuth: GitHubAuthManager;
     sessionManager: SessionManager;
     sseBroadcast: (event: string, data: unknown) => void;
+    runnerRegistry?: SessionRunnerRegistry;
+    fetchAndFixCb?: (sessionId: string, owner: string, repo: string, failedChecks: Array<{ databaseId: number; name: string; conclusion: string; title: string }>) => Promise<void>;
   }) {
     this.githubAuth = opts.githubAuth;
     this.sessionManager = opts.sessionManager;
     this.sseBroadcast = opts.sseBroadcast;
+    this.runnerRegistry = opts.runnerRegistry;
+    this.fetchAndFixCb = opts.fetchAndFixCb;
   }
 
   /** Register a session as having an open PR. Starts polling for its repo. */
@@ -188,6 +268,8 @@ export class PrStatusPoller {
     const repoKey = this.sessionRepos.get(sessionId);
     this.sessionRepos.delete(sessionId);
     this.lastKnown.delete(sessionId);
+    this.autoFixStates.delete(sessionId);
+    this.lastPrNodes.delete(sessionId);
 
     if (repoKey) {
       this.maybeStopPolling(repoKey);
@@ -201,7 +283,55 @@ export class PrStatusPoller {
 
   /** Get all current PR statuses (for SSE snapshot on connect). */
   getAllStatuses(): PrStatusSummary[] {
-    return [...this.lastKnown.values()];
+    return [...this.lastKnown.values()].map((s) => this.attachAutoFixState(s));
+  }
+
+  /** Get auto-fix state for a session. */
+  getAutoFixState(sessionId: string): AutoFixState | undefined {
+    return this.autoFixStates.get(sessionId);
+  }
+
+  /** Set auto-fix enabled/disabled for a session. Returns the updated state. */
+  setAutoFixEnabled(sessionId: string, enabled: boolean): AutoFixState {
+    let state = this.autoFixStates.get(sessionId);
+    if (!state) {
+      state = { enabled, attemptCount: 0, lastHeadSha: "", status: "idle" };
+      this.autoFixStates.set(sessionId, state);
+    } else {
+      state.enabled = enabled;
+      if (!enabled && state.status === "running") {
+        state.status = "idle";
+      }
+    }
+
+    // Broadcast the updated state
+    const status = this.lastKnown.get(sessionId);
+    if (status) {
+      const updated = this.attachAutoFixState(status);
+      this.sseBroadcast("pr_status", { updates: [updated] });
+    }
+
+    return state;
+  }
+
+  /** Get the cached GraphQL PR node for a session (for extracting check details). */
+  getLastPrNode(sessionId: string): GraphQLPrNode | undefined {
+    return this.lastPrNodes.get(sessionId);
+  }
+
+  /** Increment attempt count for auto-fix and set status to running. */
+  markAutoFixRunning(sessionId: string): void {
+    const state = this.autoFixStates.get(sessionId);
+    if (!state) return;
+    state.attemptCount++;
+    state.status = "running";
+
+    // Broadcast the updated state
+    const status = this.lastKnown.get(sessionId);
+    if (status) {
+      const updated = this.attachAutoFixState(status);
+      this.sseBroadcast("pr_status", { updates: [updated] });
+    }
   }
 
   /** Clean up all timers. */
@@ -210,6 +340,21 @@ export class PrStatusPoller {
       clearInterval(timer);
     }
     this.repoTimers.clear();
+  }
+
+  /** Attach auto-fix state to a PrStatusSummary for SSE broadcast. */
+  private attachAutoFixState(summary: PrStatusSummary): PrStatusSummary {
+    const state = this.autoFixStates.get(summary.sessionId);
+    if (!state) return summary;
+    return {
+      ...summary,
+      autoFix: {
+        enabled: state.enabled,
+        status: state.status,
+        attemptCount: state.attemptCount,
+        maxAttempts: MAX_AUTO_FIX_ATTEMPTS,
+      },
+    };
   }
 
   private startPolling(repoKey: string, owner: string, repo: string): void {
@@ -275,13 +420,22 @@ export class PrStatusPoller {
       const prNode = prByBranch.get(session.branch);
 
       if (prNode) {
+        // Cache the PR node for extracting check details later
+        this.lastPrNodes.set(session.id, prNode);
+
         const summary = parsePrNode(prNode, session.id);
         const prev = this.lastKnown.get(session.id);
+
+        // Handle auto-fix state transitions
+        this.handleAutoFixTransition(session.id, prev, summary, prNode, owner, repo);
+
+        // Attach auto-fix state before comparison and broadcast
+        const withAutoFix = this.attachAutoFixState(summary);
 
         // Only include in broadcast if something changed
         if (!prev || !prStatusEqual(prev, summary)) {
           this.lastKnown.set(session.id, summary);
-          updates.push(summary);
+          updates.push(withAutoFix);
         }
       } else {
         // PR disappeared from OPEN results — it may have been merged
@@ -290,6 +444,7 @@ export class PrStatusPoller {
           const mergedSummary: PrStatusSummary = { ...prev, prState: "merged" };
           this.lastKnown.set(session.id, mergedSummary);
           this.mergedSessions.add(session.id);
+          this.lastPrNodes.delete(session.id);
           updates.push(mergedSummary);
         }
       }
@@ -298,6 +453,57 @@ export class PrStatusPoller {
     // Broadcast only if there are changes
     if (updates.length > 0) {
       this.sseBroadcast("pr_status", { updates });
+    }
+  }
+
+  /** Handle auto-fix state transitions when CI status changes. */
+  private handleAutoFixTransition(
+    sessionId: string,
+    prev: PrStatusSummary | undefined,
+    current: PrStatusSummary,
+    prNode: GraphQLPrNode,
+    owner: string,
+    repo: string,
+  ): void {
+    const state = this.autoFixStates.get(sessionId);
+    if (!state || !state.enabled) return;
+
+    const headSha = extractHeadSha(prNode);
+
+    // Reset attempt counter when head SHA changes (new code pushed)
+    if (headSha && state.lastHeadSha && headSha !== state.lastHeadSha) {
+      state.attemptCount = 0;
+      state.status = "idle";
+    }
+    if (headSha) {
+      state.lastHeadSha = headSha;
+    }
+
+    // CI now success — auto-fix loop is done
+    if (current.checks.state === "success" && state.status === "running") {
+      state.status = "idle";
+      return;
+    }
+
+    // CI now failure — trigger auto-fix if not exhausted
+    if (
+      current.checks.state === "failure" &&
+      state.status !== "running" &&
+      state.status !== "exhausted" &&
+      state.attemptCount < MAX_AUTO_FIX_ATTEMPTS
+    ) {
+      const failedChecks = extractFailedCheckRuns(prNode);
+      if (failedChecks.length > 0 && this.fetchAndFixCb) {
+        // Trigger the fix asynchronously
+        this.fetchAndFixCb(sessionId, owner, repo, failedChecks).catch((err) => {
+          console.error(`[pr-poller] Auto-fix error for ${sessionId}:`, err);
+        });
+      }
+    }
+
+    // Check exhaustion
+    if (state.attemptCount >= MAX_AUTO_FIX_ATTEMPTS) {
+      state.status = "exhausted";
     }
   }
 }

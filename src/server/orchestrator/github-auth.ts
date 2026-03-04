@@ -559,6 +559,92 @@ export class GitHubAuthManager extends EventEmitter {
   }
 
   /**
+   * Get check run annotations (structured failure details with file paths and line numbers).
+   * Returns empty array if not authenticated or if the API call fails.
+   */
+  async getCheckRunAnnotations(
+    owner: string,
+    repo: string,
+    checkRunId: number,
+  ): Promise<Array<{
+    path: string;
+    startLine: number;
+    endLine: number;
+    message: string;
+    annotationLevel: "failure" | "warning" | "notice";
+  }>> {
+    if (!this._token) return [];
+
+    try {
+      const res = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/check-runs/${checkRunId}/annotations`,
+        {
+          headers: {
+            Authorization: `Bearer ${this._token}`,
+            Accept: "application/vnd.github+json",
+            "User-Agent": "ShipIt",
+          },
+        },
+      );
+
+      if (!res.ok) return [];
+
+      const data = (await res.json()) as Array<{
+        path: string;
+        start_line: number;
+        end_line: number;
+        message: string;
+        annotation_level: string;
+      }>;
+      return data.map((a) => ({
+        path: a.path,
+        startLine: a.start_line,
+        endLine: a.end_line,
+        message: a.message,
+        annotationLevel: a.annotation_level as "failure" | "warning" | "notice",
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Get raw job logs for a check run (fallback when annotations aren't available).
+   * Returns the last 100 lines of the log, or empty string on failure.
+   * Note: the check run databaseId maps to the job ID for GitHub Actions.
+   */
+  async getJobLogs(
+    owner: string,
+    repo: string,
+    jobId: number,
+  ): Promise<string> {
+    if (!this._token) return "";
+
+    try {
+      const res = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/actions/jobs/${jobId}/logs`,
+        {
+          headers: {
+            Authorization: `Bearer ${this._token}`,
+            Accept: "application/vnd.github+json",
+            "User-Agent": "ShipIt",
+          },
+          redirect: "follow",
+        },
+      );
+
+      if (!res.ok) return "";
+
+      const text = await res.text();
+      // Return last 100 lines to keep prompt size reasonable
+      const lines = text.split("\n");
+      return lines.slice(-100).join("\n");
+    } catch {
+      return "";
+    }
+  }
+
+  /**
    * Run a GraphQL query against the GitHub API.
    * Returns the parsed JSON response body, or null if not authenticated.
    */

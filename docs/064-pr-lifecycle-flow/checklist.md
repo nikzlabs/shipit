@@ -31,28 +31,28 @@
 ## Phase 2: CI Failure Details + Server-Driven Auto-Fix
 
 ### Server
-- [ ] Extend GraphQL query with `oid` on commit node and `databaseId`, `title`, `detailsUrl` on CheckRun
-- [ ] Add `CIFailureLog` type to `github-types.ts`
-- [ ] Add `getCheckRunAnnotations()` and `getJobLogs()` to `github-auth.ts`
-- [ ] Add `fetchCIFailureLogs()` service function
-- [ ] Add `POST /api/sessions/:id/pr/fix-ci` endpoint — fetch logs, construct prompt, send/enqueue
-- [ ] Add `POST /api/sessions/:id/pr/auto-fix` endpoint — toggle state, trigger if CI failed
-- [ ] Add `AutoFixState` map to `PrStatusPoller` — manage enabled, attempts, lastHeadSha
-- [ ] Add auto-fix loop in poller tick handler — detect failure, fetch logs, enqueue fix prompt
-- [ ] Add `sendSystemMessage()` to `SessionRunnerInterface` — server-initiated prompts without WS context
-- [ ] Extend `PrStatusSummary` SSE shape with `failedChecks` and `autoFix`
+- [x] Extend GraphQL query with `oid` on commit node and `databaseId`, `title`, `detailsUrl` on CheckRun
+- [x] Add `CIFailureLog` type to `github-types.ts`
+- [x] Add `getCheckRunAnnotations()` and `getJobLogs()` to `github-auth.ts`
+- [x] Add `fetchCIFailureLogs()` service function
+- [x] Add `POST /api/sessions/:id/pr/fix-ci` endpoint — fetch logs, construct prompt, send/enqueue
+- [x] Add `POST /api/sessions/:id/pr/auto-fix` endpoint — toggle state, trigger if CI failed
+- [x] Add `AutoFixState` map to `PrStatusPoller` — manage enabled, attempts, lastHeadSha
+- [x] Add auto-fix loop in poller tick handler — detect failure, fetch logs, enqueue fix prompt
+- [x] Server-initiated prompts use `runner.enqueue()` — no new interface method needed
+- [x] Extend `PrStatusSummary` SSE shape with `failedChecks` and `autoFix`
 
 ### Client
-- [ ] Add per-check failure list to `PrLifecycleCard` (truncate to 5 with "and N more...")
-- [ ] Add auto-fix toggle to card
-- [ ] Add "Fix CI Issues" button (visible when auto-fix off or exhausted)
-- [ ] Add auto-fix running state (`⟳ Auto-fixing (attempt N/3)...`)
-- [ ] Add auto-fix exhausted state
-- [ ] Add `fixCI()` and `toggleAutoFix()` to `pr-store`
+- [x] Add per-check failure list to `PrLifecycleCard` (truncate to 5 with "and N more...")
+- [x] Add auto-fix toggle to card
+- [x] Add "Fix CI Issues" button (visible when auto-fix off or exhausted)
+- [x] Add auto-fix running state (`Auto-fixing (attempt N/3)...`)
+- [x] Add auto-fix exhausted state
+- [x] Add `fixCI()` and `toggleAutoFix()` to `pr-store`
 
 ### Tests
-- [ ] `PrLifecycleCard.test.tsx` — failure list, auto-fix toggle, running/exhausted states
-- [ ] `pr-ci-fix.test.ts` — integration tests for fix-ci, auto-fix toggle, agent-busy queueing, exhaustion
+- [x] `PrLifecycleCard.test.tsx` — failure list, auto-fix toggle, running/exhausted states
+- [x] `pr-ci-fix.test.ts` — integration tests for fix-ci, auto-fix toggle, agent-busy queueing, exhaustion
 
 ## Phase 3: Merge + Auto-Merge + Post-Merge Archive
 

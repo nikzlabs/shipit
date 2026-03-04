@@ -38,6 +38,15 @@ export interface PrCardState {
     passed: number;
     failed: number;
     pending: number;
+    /** Per-check failure details. */
+    failedChecks?: Array<{ name: string; summary: string }>;
+  };
+  /** Auto-fix state (open phase). */
+  autoFix?: {
+    enabled: boolean;
+    status: "idle" | "running" | "exhausted";
+    attemptCount: number;
+    maxAttempts: number;
   };
   /** Error message (error phase). */
   errorMessage?: string;
@@ -67,6 +76,12 @@ interface PrState {
 
   // Quick PR creation
   quickCreate: (sessionId: string) => Promise<void>;
+
+  // CI fix actions
+  /** Trigger manual CI fix. */
+  fixCI: (sessionId: string) => Promise<void>;
+  /** Toggle auto-fix on/off. */
+  toggleAutoFix: (sessionId: string, enabled: boolean) => Promise<void>;
 
   // Repo import actions
   setImportSearchResults: (results: ImportSearchResult[]) => void;
@@ -125,6 +140,7 @@ export const usePrStore = create<PrState>((set, get) => ({
               deletions: update.deletions,
             },
             checks: update.checks,
+            autoFix: update.autoFix,
           };
         }
       }
@@ -212,6 +228,42 @@ export const usePrStore = create<PrState>((set, get) => ({
         sessionId,
         err instanceof Error ? err.message : "Failed to create pull request",
       );
+    }
+  },
+
+  fixCI: async (sessionId) => {
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/pr/fix-ci`, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        console.error("[pr-store] Fix CI failed:", data.error);
+      }
+      // State updates come from SSE, not from the POST response
+    } catch (err) {
+      console.error("[pr-store] Fix CI failed:", err);
+    }
+  },
+
+  toggleAutoFix: async (sessionId, enabled) => {
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/pr/auto-fix`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ enabled }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        console.error("[pr-store] Auto-fix toggle failed:", data.error);
+      }
+      // State updates come from SSE, not from the POST response
+    } catch (err) {
+      console.error("[pr-store] Auto-fix toggle failed:", err);
     }
   },
 

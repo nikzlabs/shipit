@@ -3,6 +3,8 @@
  *
  * Single-line design for each phase: ready, creating, open, merged, error.
  * Updates in place when the store state changes.
+ *
+ * Phase 2 additions: per-check failure list, auto-fix toggle, Fix CI button.
  */
 
 import { usePrStore } from "../stores/pr-store.js";
@@ -11,6 +13,7 @@ import type { PrCardState } from "../stores/pr-store.js";
 // ---- Shared ----
 
 const linkClass = "text-xs text-gray-400 hover:text-gray-200 transition-colors";
+const MAX_VISIBLE_FAILURES = 5;
 
 function Spinner() {
   return (
@@ -38,13 +41,58 @@ function CiIndicator({ checks }: { checks: PrCardState["checks"] }) {
     return <span className="text-emerald-400 text-xs" title={`CI passed  ${checks.total}/${checks.total} checks`}>{"\u2713"} CI</span>;
   }
   if (checks.state === "failure") {
-    return <span className="text-red-400 text-xs" title={`CI failed  ${checks.failed} of ${checks.total}`}>{"\u2717"} CI</span>;
+    return (
+      <span className="text-red-400 text-xs" title={`CI failed  ${checks.failed} of ${checks.total}`}>
+        {"\u2717"} CI {checks.passed}/{checks.total}
+      </span>
+    );
   }
   // pending
   return <span className="text-amber-400 text-xs animate-pulse" title={`CI running  ${checks.passed}/${checks.total}`}>{"\u25D0"} CI</span>;
 }
 
-// ---- Phase renderers (all single-line) ----
+function FailedChecksList({ checks }: { checks: PrCardState["checks"] }) {
+  const failedChecks = checks?.failedChecks;
+  if (!failedChecks || failedChecks.length === 0) return null;
+
+  const visible = failedChecks.slice(0, MAX_VISIBLE_FAILURES);
+  const remaining = failedChecks.length - visible.length;
+
+  return (
+    <div className="mt-1 space-y-0.5">
+      {visible.map((check) => (
+        <div key={check.name} className="text-xs text-gray-400 pl-5">
+          <span className="text-red-400">{"\u2717"}</span> {check.name} — <span className="text-gray-500">{check.summary}</span>
+        </div>
+      ))}
+      {remaining > 0 && (
+        <div className="text-xs text-gray-500 pl-5">
+          and {remaining} more...
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AutoFixToggle({ sessionId, autoFix }: { sessionId: string; autoFix?: PrCardState["autoFix"] }) {
+  const toggleAutoFix = usePrStore((s) => s.toggleAutoFix);
+  const enabled = autoFix?.enabled ?? false;
+
+  return (
+    <button
+      onClick={() => toggleAutoFix(sessionId, !enabled)}
+      className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+      title={enabled ? "Disable auto-fix" : "Enable auto-fix"}
+    >
+      Auto-fix
+      <span className={`inline-block w-6 h-3.5 rounded-full transition-colors ${enabled ? "bg-emerald-600" : "bg-gray-600"}`}>
+        <span className={`block w-2.5 h-2.5 mt-0.5 rounded-full bg-white transition-transform ${enabled ? "translate-x-3" : "translate-x-0.5"}`} />
+      </span>
+    </button>
+  );
+}
+
+// ---- Phase renderers ----
 
 function ReadyPhase({ card, sessionId }: { card: PrCardState; sessionId: string }) {
   const quickCreate = usePrStore((s) => s.quickCreate);
@@ -82,26 +130,60 @@ function CreatingPhase() {
   );
 }
 
-function OpenPhase({ card }: { card: PrCardState }) {
+function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }) {
   const pr = card.pr;
+  const fixCI = usePrStore((s) => s.fixCI);
   if (!pr) return null;
 
+  const autoFix = card.autoFix;
+  const isAutoFixRunning = autoFix?.status === "running";
+  const isAutoFixExhausted = autoFix?.status === "exhausted";
+  const isCiFailed = card.checks?.state === "failure";
+  const showFixButton = isCiFailed && !isAutoFixRunning && (!autoFix?.enabled || isAutoFixExhausted);
+
   return (
-    <div className="flex items-center gap-3 flex-wrap">
-      <span className="text-purple-400 text-sm shrink-0">{"\u2442"}</span>
-      <span className="text-xs text-gray-300 truncate">
-        {pr.baseBranch} {"\u2190"} {pr.headBranch}
-      </span>
-      <DiffStats ins={pr.insertions} del={pr.deletions} />
-      <CiIndicator checks={card.checks} />
-      <a
-        href={pr.url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className={linkClass}
-      >
-        View PR
-      </a>
+    <div>
+      <div className="flex items-center gap-3 flex-wrap">
+        <span className="text-purple-400 text-sm shrink-0">{"\u2442"}</span>
+        <span className="text-xs text-gray-300 truncate">
+          {pr.baseBranch} {"\u2190"} {pr.headBranch}
+        </span>
+        <DiffStats ins={pr.insertions} del={pr.deletions} />
+        <CiIndicator checks={card.checks} />
+        {isCiFailed && !isAutoFixRunning && (
+          <AutoFixToggle sessionId={sessionId} autoFix={autoFix} />
+        )}
+        {showFixButton && (
+          <button
+            onClick={() => fixCI(sessionId)}
+            className="px-2 py-0.5 text-xs font-medium bg-red-600/80 hover:bg-red-500 text-white rounded transition-colors"
+          >
+            Fix CI Issues
+          </button>
+        )}
+        <a
+          href={pr.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={linkClass}
+        >
+          View PR
+        </a>
+      </div>
+      {isAutoFixRunning && (
+        <div className="mt-1 flex items-center gap-2 pl-5">
+          <Spinner />
+          <span className="text-xs text-amber-400">
+            Auto-fixing (attempt {autoFix.attemptCount}/{autoFix.maxAttempts})...
+          </span>
+        </div>
+      )}
+      {isAutoFixExhausted && (
+        <div className="mt-1 text-xs text-gray-500 pl-5">
+          Auto-fix exhausted ({autoFix.maxAttempts}/{autoFix.maxAttempts} attempts)
+        </div>
+      )}
+      {isCiFailed && !isAutoFixRunning && <FailedChecksList checks={card.checks} />}
     </div>
   );
 }
@@ -158,7 +240,7 @@ export function PrLifecycleCard({ sessionId }: { sessionId: string }) {
     <div className="mx-4 my-2 rounded-lg border border-gray-800 bg-gray-900/60 px-4 py-2">
       {card.phase === "ready" && <ReadyPhase card={card} sessionId={sessionId} />}
       {card.phase === "creating" && <CreatingPhase />}
-      {card.phase === "open" && <OpenPhase card={card} />}
+      {card.phase === "open" && <OpenPhase card={card} sessionId={sessionId} />}
       {card.phase === "merged" && <MergedPhase card={card} />}
       {card.phase === "error" && <ErrorPhase card={card} sessionId={sessionId} />}
     </div>
