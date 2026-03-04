@@ -153,18 +153,26 @@ export class GitManager {
 
   /**
    * Get total insertions/deletions between the current branch and a base branch.
-   * Used for the PR status bar diff stats.
+   * Tries origin/<branch>, then local <branch>, then common fallbacks.
    */
   async diffStatVsBranch(baseBranch: string): Promise<{ insertions: number; deletions: number }> {
-    try {
-      const result = await this.git.diffSummary([`origin/${baseBranch}...HEAD`]);
-      return {
-        insertions: result.insertions,
-        deletions: result.deletions,
-      };
-    } catch {
-      return { insertions: 0, deletions: 0 };
+    const refs = [
+      `origin/${baseBranch}`,
+      baseBranch,
+      ...(baseBranch !== "master" ? ["origin/master", "master"] : []),
+    ];
+    for (const ref of refs) {
+      try {
+        const result = await this.git.diffSummary([`${ref}...HEAD`]);
+        return {
+          insertions: result.insertions,
+          deletions: result.deletions,
+        };
+      } catch {
+        // try next ref
+      }
     }
+    return { insertions: 0, deletions: 0 };
   }
 
   /**

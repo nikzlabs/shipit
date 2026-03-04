@@ -8,7 +8,7 @@ import type { GitHubAuthManager } from "../github-auth.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
-import type { CIFailureLog } from "../../shared/types/github-types.js";
+import type { CIFailureLog, PrAutoMergeError } from "../../shared/types/github-types.js";
 import { extractFailedCheckRuns } from "../pr-status-poller.js";
 import { parseGitHubRemote } from "../git-utils.js";
 import { ServiceError } from "./types.js";
@@ -454,6 +454,78 @@ export async function triggerCIFix(
   // emits system_turn event for WS handler pickup when idle.
   runner.sendSystemMessage(prompt);
   return { status: runner.running ? "queued" : "sent", attemptNumber };
+}
+
+// ---- Auto-merge operations ----
+
+/** Toggle auto-merge on/off for a session's PR. */
+export async function toggleAutoMerge(
+  githubAuth: GitHubAuthManager,
+  prStatusPoller: PrStatusPoller,
+  sessionId: string,
+  enabled: boolean,
+): Promise<{ enabled: boolean; mergeMethod: "squash" | "merge" | "rebase" } | { error: PrAutoMergeError }> {
+  if (!githubAuth.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
+
+  const prStatus = prStatusPoller.getStatus(sessionId);
+  if (!prStatus) throw new ServiceError(404, "No PR status found for this session");
+
+  const urlMatch = prStatus.prUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
+  if (!urlMatch) throw new ServiceError(400, "Cannot parse repository from PR URL");
+  const [, owner, repo] = urlMatch;
+
+  const autoMergeState = prStatusPoller.getAutoMergeState(sessionId);
+  const mergeMethod = autoMergeState?.mergeMethod ?? "squash";
+
+  if (enabled) {
+    const graphqlMethod = mergeMethod === "merge" ? "MERGE" as const : mergeMethod === "squash" ? "SQUASH" as const : "REBASE" as const;
+    const result = await githubAuth.enableAutoMerge(owner, repo, prStatus.prNumber, graphqlMethod);
+
+    if (!result.success) {
+      const settingsUrl = `https://github.com/${owner}/${repo}/settings`;
+      const error: PrAutoMergeError = result.message.includes("auto-merge") || result.message.includes("auto merge")
+        ? { code: "auto_merge_not_enabled", message: "Auto-merge is not enabled for this repository.", settingsUrl }
+        : { code: "no_branch_protection", message: "Auto-merge requires branch protection rules.", settingsUrl: `${settingsUrl}/branches` };
+
+      prStatusPoller.setAutoMergeEnabled(sessionId, false);
+      prStatusPoller.setAutoMergeError(sessionId, error);
+      return { error };
+    }
+
+    prStatusPoller.setAutoMergeEnabled(sessionId, true);
+    return { enabled: true, mergeMethod };
+  } else {
+    await githubAuth.disableAutoMerge(owner, repo, prStatus.prNumber);
+    prStatusPoller.setAutoMergeEnabled(sessionId, false);
+    return { enabled: false, mergeMethod };
+  }
+}
+
+/** Update the preferred merge method for a session. */
+export async function updateMergeMethod(
+  githubAuth: GitHubAuthManager,
+  prStatusPoller: PrStatusPoller,
+  sessionId: string,
+  method: "squash" | "merge" | "rebase",
+): Promise<{ mergeMethod: "squash" | "merge" | "rebase" }> {
+  const autoMergeState = prStatusPoller.getAutoMergeState(sessionId);
+  prStatusPoller.setMergeMethod(sessionId, method);
+
+  // If auto-merge is active, re-enable with the new method
+  if (autoMergeState?.enabled) {
+    const prStatus = prStatusPoller.getStatus(sessionId);
+    if (prStatus) {
+      const urlMatch = prStatus.prUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
+      if (urlMatch) {
+        const [, owner, repo] = urlMatch;
+        await githubAuth.disableAutoMerge(owner, repo, prStatus.prNumber);
+        const graphqlMethod = method === "merge" ? "MERGE" as const : method === "squash" ? "SQUASH" as const : "REBASE" as const;
+        await githubAuth.enableAutoMerge(owner, repo, prStatus.prNumber, graphqlMethod);
+      }
+    }
+  }
+
+  return { mergeMethod: method };
 }
 
 /** Set GitHub token. Returns status and repos. */

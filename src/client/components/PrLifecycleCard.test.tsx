@@ -217,6 +217,130 @@ describe("PrLifecycleCard", () => {
     expect(screen.queryByText("Auto-fix")).toBeNull();
   });
 
+  // ---- Phase 3: merge button, auto-merge toggle, error messages ----
+
+  it("renders merge button when CI passed", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    expect(screen.getByText("Squash and merge")).toBeInTheDocument();
+  });
+
+  it("does not render merge button when CI is pending", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "pending", total: 3, passed: 1, failed: 0, pending: 2 },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    expect(screen.queryByText("Squash and merge")).toBeNull();
+  });
+
+  it("does not render merge button when CI has failed", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    expect(screen.queryByText("Squash and merge")).toBeNull();
+  });
+
+  it("renders merge button with selected method label", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+      autoMerge: { enabled: false, mergeMethod: "rebase" },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    expect(screen.getByText("Rebase and merge")).toBeInTheDocument();
+  });
+
+  it("renders auto-merge toggle when CI passed", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    expect(screen.getByText("Auto-merge")).toBeInTheDocument();
+  });
+
+  it("hides merge button when auto-merge is enabled", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+      autoMerge: { enabled: true, mergeMethod: "squash" },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    expect(screen.queryByText("Squash and merge")).toBeNull();
+  });
+
+  it("shows 'Will merge when CI passes' when auto-merge enabled and CI pending", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "pending", total: 3, passed: 1, failed: 0, pending: 2 },
+      autoMerge: { enabled: true, mergeMethod: "squash" },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    expect(screen.getByText("Will merge when CI passes")).toBeInTheDocument();
+  });
+
+  it("renders auto-merge error with settings link", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+      autoMerge: {
+        enabled: false,
+        mergeMethod: "squash",
+        error: {
+          code: "auto_merge_not_enabled",
+          message: "Auto-merge is not enabled for this repository.",
+          settingsUrl: "https://github.com/owner/repo/settings",
+        },
+      },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    expect(screen.getByText(/Auto-merge is not enabled/)).toBeInTheDocument();
+    expect(screen.getByText("Enable in repository settings")).toBeInTheDocument();
+  });
+
+  it("renders auto-merge error for missing branch protection", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+      autoMerge: {
+        enabled: false,
+        mergeMethod: "squash",
+        error: {
+          code: "no_branch_protection",
+          message: "Auto-merge requires branch protection rules.",
+          settingsUrl: "https://github.com/owner/repo/settings/branches",
+        },
+      },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    expect(screen.getByText(/Auto-merge requires branch protection/)).toBeInTheDocument();
+    expect(screen.getByText("Configure branch protection")).toBeInTheDocument();
+  });
+
   it("renders merged phase", () => {
     setCard("s1", {
       cardId: "c1",

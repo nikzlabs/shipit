@@ -5,8 +5,10 @@
  * Updates in place when the store state changes.
  *
  * Phase 2 additions: per-check failure list, auto-fix toggle, Fix CI button.
+ * Phase 3 additions: merge split button, auto-merge toggle, error messages.
  */
 
+import { useState } from "react";
 import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
 
@@ -92,13 +94,78 @@ function AutoFixToggle({ sessionId, autoFix }: { sessionId: string; autoFix?: Pr
   );
 }
 
+function AutoMergeToggle({ sessionId, autoMerge }: { sessionId: string; autoMerge?: PrCardState["autoMerge"] }) {
+  const toggleAutoMerge = usePrStore((s) => s.toggleAutoMerge);
+  const enabled = autoMerge?.enabled ?? false;
+
+  return (
+    <button
+      onClick={() => toggleAutoMerge(sessionId, !enabled)}
+      className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+      title={enabled ? "Disable auto-merge" : "Enable auto-merge"}
+    >
+      Auto-merge
+      <span className={`inline-block w-6 h-3.5 rounded-full transition-colors ${enabled ? "bg-emerald-600" : "bg-gray-600"}`}>
+        <span className={`block w-2.5 h-2.5 mt-0.5 rounded-full bg-white transition-transform ${enabled ? "translate-x-3" : "translate-x-0.5"}`} />
+      </span>
+    </button>
+  );
+}
+
+const MERGE_METHOD_LABELS: Record<string, string> = {
+  squash: "Squash and merge",
+  merge: "Create a merge commit",
+  rebase: "Rebase and merge",
+};
+
+function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: PrCardState["autoMerge"] }) {
+  const merge = usePrStore((s) => s.merge);
+  const setMergeMethod = usePrStore((s) => s.setMergeMethod);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+
+  const method = autoMerge?.mergeMethod ?? "squash";
+  const label = MERGE_METHOD_LABELS[method] ?? "Squash and merge";
+
+  return (
+    <div className="relative inline-flex">
+      <button
+        onClick={() => merge(sessionId, method)}
+        className="px-2 py-0.5 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded-l transition-colors"
+      >
+        {label}
+      </button>
+      <button
+        onClick={() => setDropdownOpen(!dropdownOpen)}
+        className="px-1 py-0.5 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded-r border-l border-emerald-700 transition-colors"
+        aria-label="Select merge method"
+      >
+        {"\u25BE"}
+      </button>
+      {dropdownOpen && (
+        <div className="absolute top-full right-0 mt-1 bg-gray-800 border border-gray-700 rounded-md shadow-lg z-10 min-w-45">
+          {(["squash", "merge", "rebase"] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => { setMergeMethod(sessionId, m); setDropdownOpen(false); }}
+              className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700 transition-colors text-left"
+            >
+              <span className="w-3 text-emerald-400">{m === method ? "\u2713" : ""}</span>
+              {MERGE_METHOD_LABELS[m]}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- Phase renderers ----
 
 function ReadyPhase({ card, sessionId }: { card: PrCardState; sessionId: string }) {
   const quickCreate = usePrStore((s) => s.quickCreate);
   const ins = card.totalInsertions ?? 0;
   const del = card.totalDeletions ?? 0;
-  const hasChanges = ins > 0 || del > 0;
+  const hasDiffStats = ins > 0 || del > 0;
 
   return (
     <div className="flex items-center gap-3">
@@ -108,8 +175,8 @@ function ReadyPhase({ card, sessionId }: { card: PrCardState; sessionId: string 
           main {"\u2190"} {card.headBranch}
         </span>
       )}
-      {hasChanges && <DiffStats ins={ins} del={del} />}
-      {hasChanges && (
+      {hasDiffStats && <DiffStats ins={ins} del={del} />}
+      {(card.headBranch || hasDiffStats) && (
         <button
           onClick={() => quickCreate(sessionId)}
           className="px-3 py-1 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded-md transition-colors"
@@ -136,10 +203,16 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
   if (!pr) return null;
 
   const autoFix = card.autoFix;
+  const autoMerge = card.autoMerge;
   const isAutoFixRunning = autoFix?.status === "running";
   const isAutoFixExhausted = autoFix?.status === "exhausted";
   const isCiFailed = card.checks?.state === "failure";
+  const isCiPassed = card.checks?.state === "success";
+  const isCiNone = !card.checks || card.checks.state === "none";
+  const canMerge = isCiPassed || isCiNone;
   const showFixButton = isCiFailed && !isAutoFixRunning && (!autoFix?.enabled || isAutoFixExhausted);
+  const showMergeButton = canMerge && !autoMerge?.enabled;
+  const showAutoMergeToggle = !isCiFailed || isCiPassed;
 
   return (
     <div>
@@ -152,6 +225,12 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
         <CiIndicator checks={card.checks} />
         {isCiFailed && !isAutoFixRunning && (
           <AutoFixToggle sessionId={sessionId} autoFix={autoFix} />
+        )}
+        {showAutoMergeToggle && (
+          <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />
+        )}
+        {showMergeButton && (
+          <MergeButton sessionId={sessionId} autoMerge={autoMerge} />
         )}
         {showFixButton && (
           <button
@@ -170,6 +249,24 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
           View PR
         </a>
       </div>
+      {autoMerge?.enabled && !isCiPassed && !isCiNone && (
+        <div className="mt-1 text-xs text-gray-400 pl-5">
+          Will merge when CI passes
+        </div>
+      )}
+      {autoMerge?.error && (
+        <div className="mt-1 text-xs text-amber-400 pl-5">
+          {"\u26A0"} {autoMerge.error.message}{" "}
+          <a
+            href={autoMerge.error.settingsUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline hover:text-amber-300"
+          >
+            {autoMerge.error.code === "auto_merge_not_enabled" ? "Enable in repository settings" : "Configure branch protection"}
+          </a>
+        </div>
+      )}
       {isAutoFixRunning && (
         <div className="mt-1 flex items-center gap-2 pl-5">
           <Spinner />
@@ -196,6 +293,29 @@ function MergedPhase({ card }: { card: PrCardState }) {
       <span className="text-purple-400 text-sm shrink-0">{"\u2713"}</span>
       <span className="text-xs text-gray-300">
         PR #{pr?.number} merged into {pr?.baseBranch}
+      </span>
+      {pr && (
+        <a
+          href={pr.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={linkClass}
+        >
+          View PR
+        </a>
+      )}
+    </div>
+  );
+}
+
+function ClosedPhase({ card }: { card: PrCardState }) {
+  const pr = card.pr;
+
+  return (
+    <div className="flex items-center gap-3">
+      <span className="text-gray-400 text-sm shrink-0">{"\u2442"}</span>
+      <span className="text-xs text-gray-400">
+        PR #{pr?.number} closed
       </span>
       {pr && (
         <a
@@ -242,6 +362,7 @@ export function PrLifecycleCard({ sessionId }: { sessionId: string }) {
       {card.phase === "creating" && <CreatingPhase />}
       {card.phase === "open" && <OpenPhase card={card} sessionId={sessionId} />}
       {card.phase === "merged" && <MergedPhase card={card} />}
+      {card.phase === "closed" && <ClosedPhase card={card} />}
       {card.phase === "error" && <ErrorPhase card={card} sessionId={sessionId} />}
     </div>
   );
@@ -253,14 +374,17 @@ export function PrStatusIcon({ sessionId }: { sessionId: string }) {
   const status = usePrStore((s) => s.statusBySession[sessionId]);
   const card = usePrStore((s) => s.cardBySession[sessionId]);
 
-  const prState = status?.prState ?? (card?.phase === "merged" ? "merged" : card?.phase === "open" ? "open" : null);
+  const prState = status?.prState ?? (card?.phase === "merged" ? "merged" : card?.phase === "closed" ? "closed" : card?.phase === "open" ? "open" : null);
   const checksState = status?.checks?.state ?? card?.checks?.state;
 
   if (!prState && !card) return null;
-  if (prState !== "open" && prState !== "merged") return null;
+  if (prState !== "open" && prState !== "merged" && prState !== "closed") return null;
 
   if (prState === "merged") {
     return <span className="text-purple-400 text-[10px]" title="PR merged">{"\u2442"}</span>;
+  }
+  if (prState === "closed") {
+    return <span className="text-gray-500 text-[10px]" title="PR closed">{"\u2442"}</span>;
   }
 
   if (checksState === "success") {
