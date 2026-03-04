@@ -137,22 +137,6 @@ export async function gitRollback(
   return { commitHash };
 }
 
-/** Reject (revert) changes, either all files or specific ones. */
-export async function rejectChanges(
-  git: GitManager,
-  fromCommit: string,
-  files: string[],
-): Promise<{ revertedFiles: string[]; commitHash: string }> {
-  if (!fromCommit) throw new ServiceError(400, "fromCommit is required");
-  if (files.length === 0) {
-    await git.rollback(fromCommit);
-    return { revertedFiles: [], commitHash: fromCommit };
-  }
-  await git.checkoutFiles(fromCommit, files);
-  const hash = await git.autoCommit(`Revert ${files.length} file(s)`);
-  return { revertedFiles: files, commitHash: hash ?? fromCommit };
-}
-
 /** Add or update a git remote. Returns the updated remotes list. */
 export async function setGitRemote(
   git: GitManager,

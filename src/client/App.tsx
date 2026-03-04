@@ -472,23 +472,6 @@ export default function App() {
     handleSend(`The deployment failed with this error:\n\n${errorMessage}\n\nPlease fix the issue and explain what went wrong.`);
   }, [handleSend]);
 
-  const handleDiffAcceptAll = useCallback(() => {
-    useGitStore.getState().setTurnDiff(null);
-    useGitStore.getState().setLastCommitPair(null);
-    useUiStore.getState().setRightTab("preview");
-  }, []);
-
-  const handleDiffRejectFiles = useCallback(async (files: string[]) => {
-    const sid = useSessionStore.getState().sessionId;
-    if (!sid) return;
-    const result = await useGitStore.getState().rejectFiles(sid, files);
-    useUiStore.getState().setRightTab("preview");
-    if (result) {
-      if (result.gitLog) useGitStore.getState().setCommits(result.gitLog);
-      if (result.fileTree) useFileStore.getState().setTree(result.fileTree);
-    }
-  }, []);
-
   const GIT_EMPTY_TREE = "4b825dc642cb6404f32168ace2c04d9f6e8f59b6";
 
   const handleViewDiff = useCallback(async (commitHash: string, parentHash: string | null) => {
@@ -612,7 +595,7 @@ export default function App() {
         ) : rightTab === "changes" ? (
           turnDiff ? (
             <Suspense fallback={<div className="flex items-center justify-center h-full text-gray-500 text-sm">Loading diff viewer...</div>}>
-              <DiffPanel diff={turnDiff} onAcceptAll={handleDiffAcceptAll} onRejectFiles={handleDiffRejectFiles} onClose={historyDiffMode ? handleHistoryDiffClose : () => useUiStore.getState().setRightTab("preview")} readOnly={historyDiffMode} commitMessage={historyDiffMode ? gitCommits.find((c) => c.hash === turnDiff.toCommit)?.message : undefined} />
+              <DiffPanel diff={turnDiff} onClose={historyDiffMode ? handleHistoryDiffClose : () => useUiStore.getState().setRightTab("preview")} commitMessage={historyDiffMode ? gitCommits.find((c) => c.hash === turnDiff.toCommit)?.message : undefined} />
             </Suspense>
           ) : <div className="flex items-center justify-center h-full text-gray-500 text-sm">Loading diff...</div>
         ) : rightTab === "features" ? (

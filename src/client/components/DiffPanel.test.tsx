@@ -39,8 +39,6 @@ function makeDiff(overrides?: Partial<TurnDiffData>): TurnDiffData {
 describe("DiffPanel", () => {
   const defaultProps = () => ({
     diff: makeDiff(),
-    onAcceptAll: vi.fn(),
-    onRejectFiles: vi.fn(),
     onClose: vi.fn(),
   });
 
@@ -140,13 +138,6 @@ describe("DiffPanel", () => {
   });
 
   describe("actions", () => {
-    it("calls onAcceptAll when Accept All is clicked", () => {
-      const props = defaultProps();
-      render(<DiffPanel {...props} />);
-      fireEvent.click(screen.getByText("Accept All"));
-      expect(props.onAcceptAll).toHaveBeenCalledOnce();
-    });
-
     it("calls onClose when close button is clicked", () => {
       const props = defaultProps();
       render(<DiffPanel {...props} />);
@@ -154,53 +145,21 @@ describe("DiffPanel", () => {
       expect(props.onClose).toHaveBeenCalledOnce();
     });
 
-    it("shows reject button when files are checked", () => {
+    it("calls onClose when Close button in footer is clicked", () => {
       const props = defaultProps();
-      props.diff = makeDiff({
-        files: [makeFile({ path: "src/foo.ts" })],
-      });
       render(<DiffPanel {...props} />);
-
-      // Initially no reject button
-      expect(screen.queryByText(/Reject Selected/)).not.toBeInTheDocument();
-
-      // Check the file
-      const checkbox = screen.getByRole("checkbox");
-      fireEvent.click(checkbox);
-
-      // Reject button appears
-      expect(screen.getByText("Reject Selected (1)")).toBeInTheDocument();
+      fireEvent.click(screen.getByText("Close"));
+      expect(props.onClose).toHaveBeenCalledOnce();
     });
 
-    it("calls onRejectFiles with checked files", () => {
+    it("does not render any checkboxes", () => {
       const props = defaultProps();
       props.diff = makeDiff({
-        files: [
-          makeFile({ path: "src/foo.ts" }),
-          makeFile({ path: "src/bar.ts" }),
-        ],
+        files: [makeFile({ path: "src/foo.ts" }), makeFile({ path: "src/bar.ts" })],
         stats: { totalInsertions: 10, totalDeletions: 4, filesChanged: 2 },
       });
       render(<DiffPanel {...props} />);
-
-      // Check the first file
-      const checkboxes = screen.getAllByRole("checkbox");
-      fireEvent.click(checkboxes[0]);
-
-      fireEvent.click(screen.getByText("Reject Selected (1)"));
-      expect(props.onRejectFiles).toHaveBeenCalledWith(["src/foo.ts"]);
-    });
-
-    it("toggles checkbox on re-click", () => {
-      const props = defaultProps();
-      render(<DiffPanel {...props} />);
-
-      const checkbox = screen.getByRole("checkbox");
-      fireEvent.click(checkbox);
-      expect(screen.getByText("Reject Selected (1)")).toBeInTheDocument();
-
-      fireEvent.click(checkbox);
-      expect(screen.queryByText(/Reject Selected/)).not.toBeInTheDocument();
+      expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
     });
   });
 
@@ -250,47 +209,17 @@ describe("DiffPanel", () => {
     });
   });
 
-  describe("read-only mode", () => {
-    it("hides checkboxes when readOnly is true", () => {
-      const props = defaultProps();
-      props.diff = makeDiff({
-        files: [makeFile({ path: "src/foo.ts" }), makeFile({ path: "src/bar.ts" })],
-        stats: { totalInsertions: 10, totalDeletions: 4, filesChanged: 2 },
-      });
-      render(<DiffPanel {...props} readOnly />);
-      expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
-    });
-
-    it("hides Accept All and shows Close button when readOnly is true", () => {
-      const props = defaultProps();
-      render(<DiffPanel {...props} readOnly />);
-      expect(screen.queryByText("Accept All")).not.toBeInTheDocument();
-      expect(screen.getByText("Close")).toBeInTheDocument();
-    });
-
-    it("calls onClose when Close button is clicked in read-only mode", () => {
-      const props = defaultProps();
-      render(<DiffPanel {...props} readOnly />);
-      fireEvent.click(screen.getByText("Close"));
-      expect(props.onClose).toHaveBeenCalledOnce();
-    });
-
+  describe("commit message display", () => {
     it("shows commit message in header when provided", () => {
       const props = defaultProps();
-      render(<DiffPanel {...props} readOnly commitMessage="feat: add new feature" />);
+      render(<DiffPanel {...props} commitMessage="feat: add new feature" />);
       expect(screen.getByText("feat: add new feature")).toBeInTheDocument();
     });
 
     it("shows 'Changes' in header when no commit message provided", () => {
       const props = defaultProps();
-      render(<DiffPanel {...props} readOnly />);
+      render(<DiffPanel {...props} />);
       expect(screen.getByText("Changes")).toBeInTheDocument();
-    });
-
-    it("still shows the close X button in header in read-only mode", () => {
-      const props = defaultProps();
-      render(<DiffPanel {...props} readOnly />);
-      expect(screen.getByLabelText("Close diff panel")).toBeInTheDocument();
     });
   });
 });

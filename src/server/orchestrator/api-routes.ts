@@ -52,7 +52,6 @@ import {
   renameSession,
   archiveSession,
   gitRollback,
-  rejectChanges,
   setGitRemote,
   gitPush,
   gitPull,
@@ -532,26 +531,6 @@ export async function registerApiRoutes(
           return;
         }
         reply.code(500).send({ error: `Rollback failed: ${getErrorMessage(err)}` });
-      }
-    },
-  );
-
-  // POST /api/sessions/:id/git/reject — reject (revert) changes
-  app.post<{ Params: { id: string }; Body: { fromCommit: string; files: string[] } }>(
-    "/api/sessions/:id/git/reject",
-    async (request, reply) => {
-      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
-      if (!dir) return;
-      try {
-        const git = createGitManager(dir);
-        const result = await rejectChanges(git, request.body.fromCommit, request.body.files ?? []);
-        return result;
-      } catch (err) {
-        if (err instanceof ServiceError) {
-          reply.code(err.statusCode).send({ error: err.message });
-          return;
-        }
-        reply.code(500).send({ error: `Failed to reject changes: ${getErrorMessage(err)}` });
       }
     },
   );
