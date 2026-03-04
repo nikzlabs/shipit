@@ -18,7 +18,6 @@ import type { GitHubAuthManager } from "./github-auth.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { AgentId } from "../shared/types.js";
-import type { ThreadManager } from "./threads.js";
 import type { DeploymentManager } from "./deployment-manager.js";
 import type { DeploymentStore } from "./deployment-store.js";
 import type { UsageManager } from "./usage.js";
@@ -42,7 +41,6 @@ import {
   getDeploySetup,
   getUsageStats,
   getPrStatus,
-  listThreads,
   listWorktrees,
   listFeatures,
   searchGitHubRepos,
@@ -62,7 +60,6 @@ import {
   mergePullRequest,
   saveDeployConfig,
   deleteDeployConfig,
-  createCheckpoint,
   setGitIdentityService,
   saveGlobalSettings,
   setAgent,
@@ -107,7 +104,6 @@ export interface ApiDeps {
   credentialStore: CredentialStore;
   defaultAgentId: AgentId;
   workspaceDir: string;
-  threadManager: ThreadManager;
   deploymentManager: DeploymentManager;
   deploymentStore: DeploymentStore;
   usageManager: UsageManager;
@@ -377,7 +373,6 @@ export async function registerApiRoutes(
       return;
     }
     const messages = getChatHistory(deps.chatHistoryManager, request.params.id);
-    const { threads, activeThreadId } = listThreads(deps.threadManager, request.params.id);
 
     // Also return git log and file tree for the session workspace (if it exists)
     let commits: Awaited<ReturnType<typeof getGitLog>> = [];
@@ -396,7 +391,7 @@ export async function registerApiRoutes(
       }
     }
 
-    return { messages, commits, fileTree, threads, activeThreadId };
+    return { messages, commits, fileTree };
   });
 
   // GET /api/sessions/:id/usage — usage stats
@@ -419,16 +414,6 @@ export async function registerApiRoutes(
     } catch (err) {
       reply.code(500).send({ error: `Failed to get PR status: ${getErrorMessage(err)}` });
     }
-  });
-
-  // GET /api/sessions/:id/threads — thread list
-  app.get<{ Params: { id: string } }>("/api/sessions/:id/threads", async (request, reply) => {
-    const session = sessionManager.get(request.params.id);
-    if (!session) {
-      reply.code(404).send({ error: "Session not found" });
-      return;
-    }
-    return listThreads(deps.threadManager, request.params.id);
   });
 
   // GET /api/sessions/:id/worktrees — sibling worktrees
@@ -872,30 +857,6 @@ export async function registerApiRoutes(
     },
   );
 
-  // ---- Thread mutations ----
-
-  // POST /api/sessions/:id/threads/checkpoint — create checkpoint
-  app.post<{ Params: { id: string }; Body: { label?: string } }>(
-    "/api/sessions/:id/threads/checkpoint",
-    async (request, reply) => {
-      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
-      if (!dir) return;
-      try {
-        const git = createGitManager(dir);
-        return await createCheckpoint(
-          git, deps.threadManager, deps.chatHistoryManager,
-          request.params.id, request.body?.label,
-        );
-      } catch (err) {
-        if (err instanceof ServiceError) {
-          reply.code(err.statusCode).send({ error: err.message });
-          return;
-        }
-        reply.code(500).send({ error: `Failed to create checkpoint: ${getErrorMessage(err)}` });
-      }
-    },
-  );
-
   // ---- Settings mutations ----
 
   // POST /api/settings/git-identity — set git identity (global)
@@ -1184,7 +1145,7 @@ export async function registerApiRoutes(
       try {
         const result = await forkSession(
           sessionManager, createRepoGit, deps.getSharedRepoDir, deps.sessionsRoot,
-          deps.githubAuthManager, deps.threadManager,
+          deps.githubAuthManager, { init: () => {} },
           request.params.id, dir,
           request.body.branchName, request.body.startPoint,
         );

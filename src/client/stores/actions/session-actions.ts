@@ -1,7 +1,6 @@
 import { useSessionStore } from "../session-store.js";
 import { useGitStore } from "../git-store.js";
 import { useFileStore } from "../file-store.js";
-import { useThreadStore } from "../thread-store.js";
 import { useTerminalStore } from "../terminal-store.js";
 import { useUiStore } from "../ui-store.js";
 import { usePreviewStore } from "../preview-store.js";
@@ -19,7 +18,6 @@ export function resetSessionState() {
   useSessionStore.getState().reset();
   useGitStore.getState().reset();
   useFileStore.getState().reset();
-  useThreadStore.getState().reset();
   useTerminalStore.getState().reset();
   useUiStore.getState().reset();
   usePreviewStore.getState().reset();
@@ -40,7 +38,6 @@ export function resumeSessionInternal(sessionId: string) {
   // Reset session-specific UI state
   useFileStore.getState().reset();
   useGitStore.getState().reset();
-  useThreadStore.getState().reset();
   useTerminalStore.getState().reset();
   useUiStore.getState().reset();
   usePreviewStore.getState().reset();
@@ -81,7 +78,6 @@ export function fullResetAllStores() {
   useSessionStore.getState().reset();
   useGitStore.getState().reset();
   useFileStore.getState().reset();
-  useThreadStore.getState().reset();
   useTerminalStore.getState().reset();
   useUiStore.getState().reset();
   usePreviewStore.getState().reset();

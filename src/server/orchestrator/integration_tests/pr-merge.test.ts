@@ -25,7 +25,6 @@ import {
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
-import { ThreadManager } from "../threads.js";
 import { FeatureManager } from "../features.js";
 import type { FastifyInstance } from "fastify";
 
@@ -85,7 +84,6 @@ beforeEach(async () => {
     sessionManager,
     chatHistoryManager: new ChatHistoryManager(path.join(tmpDir, "chat")),
     usageManager: new UsageManager(path.join(tmpDir, "usage.json")),
-    threadManager: new ThreadManager(path.join(tmpDir, "threads")),
     serveStatic: false,
     deploymentManager: new StubDeploymentManager() as any,
     deploymentStore: new StubDeploymentStore() as any,

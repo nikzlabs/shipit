@@ -555,42 +555,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
   });
 
-  // ---- Thread mutations ----
-
-  describe("POST /api/sessions/:id/threads/checkpoint", () => {
-    it("creates a checkpoint on active thread", async () => {
-      await createSession("s1", "Session 1");
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/sessions/s1/threads/checkpoint",
-        payload: { label: "before refactor" },
-      });
-      expect(res.statusCode).toBe(200);
-      const body = res.json();
-      expect(body.checkpoint).toBeDefined();
-      expect(body.threadId).toBeTruthy();
-    });
-
-    it("returns 400 for label over 200 characters", async () => {
-      await createSession("s1", "Session 1");
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/sessions/s1/threads/checkpoint",
-        payload: { label: "x".repeat(201) },
-      });
-      expect(res.statusCode).toBe(400);
-    });
-
-    it("returns 404 for non-existent session", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/sessions/nonexistent/threads/checkpoint",
-        payload: {},
-      });
-      expect(res.statusCode).toBe(404);
-    });
-  });
-
   // ---- Preview error ----
 
   describe("POST /api/sessions/:id/preview-errors", () => {

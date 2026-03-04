@@ -83,10 +83,8 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
     return sessionDir;
   }
 
-  // ---- GET /api/sessions/:id/history (enhanced with threads) ----
-
   describe("GET /api/sessions/:id/history", () => {
-    it("returns messages, commits, fileTree, and threads", async () => {
+    it("returns messages, commits, and fileTree", async () => {
       const dir = await createSession("s1", "Session 1");
       // Add some chat history
       chatHistoryManager.append("s1", {
@@ -109,8 +107,6 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
       expect(body.commits.length).toBeGreaterThanOrEqual(1);
       expect(body.commits.some((c: any) => c.message === "initial commit")).toBe(true);
       expect(body.fileTree.length).toBeGreaterThan(0);
-      expect(body.threads).toBeDefined();
-      expect(body.activeThreadId).toBeDefined();
     });
 
     it("returns 404 for non-existent session", async () => {

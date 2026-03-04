@@ -30,6 +30,8 @@ export interface SessionInfo {
   warm?: boolean;
   /** True once the branch has been renamed with a descriptive slug after graduation. */
   branchRenamed?: boolean;
+  /** Conversation replay text injected as system prompt context after a rollback. */
+  conversationReplay?: string;
 }
 
 // ---- Repo types ----
@@ -128,4 +130,8 @@ export interface WsChatHistoryMessage {
     endLine?: number;
   }>;
   isError?: boolean;
+  /** Git commit hash produced by auto-commit after this assistant message. */
+  commitHash?: string;
+  /** Parent commit hash (HEAD before the auto-commit). Used for rollback. */
+  parentCommitHash?: string;
 }

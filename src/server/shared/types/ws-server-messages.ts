@@ -11,7 +11,6 @@ import type {
   WsPrLifecycleUpdate,
 } from "./github-types.js";
 import type { WsTerminalOutput, WsTerminalExit, WsTerminalReconnecting, WsLogEntry, WsClearLogs } from "./terminal-types.js";
-import type { WsThreadList, WsThreadSwitched, WsThreadForked } from "./thread-types.js";
 import type {
   WsDeployTargets,
   WsProjectSettings,
@@ -306,6 +305,31 @@ export interface WsSystemUserMessage {
   text: string;
 }
 
+// ---- Rollback messages (server → client) ----
+
+/** Server → Client: a commit was linked to an assistant message. */
+export interface WsCommitLinked {
+  type: "commit_linked";
+  messageIndex: number;
+  commitHash: string;
+  parentCommitHash: string;
+}
+
+/** Server → Client: rollback completed. */
+export interface WsRollbackComplete {
+  type: "rollback_complete";
+  messageIndex: number;
+  mode: "code" | "code_and_chat";
+  parentCommitHash: string;
+}
+
+/** Server → Client: a new session was forked from a rollback point. */
+export interface WsSessionForked {
+  type: "session_forked";
+  sessionId: string;
+  sessionName: string;
+}
+
 export type WsServerMessage =
   | WsClaudeEvent
   | WsAgentEvent
@@ -336,9 +360,6 @@ export type WsServerMessage =
   | WsGitHubBranches
   | WsGitIdentityRequired
   | WsGitIdentitySet
-  | WsThreadList
-  | WsThreadSwitched
-  | WsThreadForked
   | WsDeployTargets
   | WsProjectSettings
   | WsDeployStatus
@@ -368,4 +389,7 @@ export type WsServerMessage =
   | WsRepoWarmReady
   | WsRepoList
   | WsPrLifecycleUpdate
-  | WsSystemUserMessage;
+  | WsSystemUserMessage
+  | WsCommitLinked
+  | WsRollbackComplete
+  | WsSessionForked;

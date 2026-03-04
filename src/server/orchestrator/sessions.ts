@@ -98,6 +98,36 @@ export class SessionManager {
     }
   }
 
+  /** Store conversation replay text for injection after a rollback. */
+  setConversationReplay(id: string, replay: string): void {
+    const session = this.sessions.find((s) => s.id === id);
+    if (session) {
+      session.conversationReplay = replay;
+      this.save();
+    }
+  }
+
+  /** Consume (read + clear) conversation replay for a session. */
+  consumeConversationReplay(id: string): string | undefined {
+    const session = this.sessions.find((s) => s.id === id);
+    if (session?.conversationReplay) {
+      const replay = session.conversationReplay;
+      delete session.conversationReplay;
+      this.save();
+      return replay;
+    }
+    return undefined;
+  }
+
+  /** Clear the agent session ID for a session (forces fresh CLI session on next message). */
+  clearAgentSessionId(id: string): void {
+    const session = this.sessions.find((s) => s.id === id);
+    if (session) {
+      delete session.agentSessionId;
+      this.save();
+    }
+  }
+
   /** Cache the origin remote URL for a session. */
   setRemoteUrl(id: string, remoteUrl: string | undefined): void {
     const session = this.sessions.find((s) => s.id === id);

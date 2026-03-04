@@ -1,58 +1,61 @@
 ---
 status: done
 ---
-# Conversation Threads & Checkpoints
+# Rollback System
 
-Users can create checkpoints (snapshots of conversation + git state) and fork from them to explore alternative approaches.
+Replaced the old threads/checkpoints system with a simpler rollback UX. Each assistant message that created a git auto-commit gets a rollback dropdown with three options.
 
-## Concepts
+## Options
 
-- **Checkpoint**: Captures current conversation message index and git commit hash. Stored within parent thread's data.
-- **Thread**: A conversation branch with its own chat history and git state. Each thread may have a parent checkpoint.
-- **Default thread**: "Main" thread created when a session starts.
+1. **Rollback code** — `git reset --hard <parentCommit>`. Chat stays as-is. A visual divider + system note injected so Claude knows code was rolled back.
+2. **Rollback code + chat** — Same git reset. Old messages stay visible but dimmed/read-only above a divider. Fresh CLI session with conversation replay in system prompt.
+3. **Fork as new session** — New session (worktree) at that commit, with truncated chat history and conversation replay for Claude.
 
 ## How it works
 
-### Creating checkpoints
+### Commit linking
 
-User clicks flag button in `ThreadIndicator`. Checkpoint captures `{ messageIndex, commitHash, label? }`.
+After each auto-commit, the server captures the parent commit hash (HEAD before commit) and the new commit hash. These are linked to the last assistant message via a `commit_linked` WS event and persisted in chat history.
 
-### Forking from a checkpoint
+### Rollback code
 
-1. Snapshot current thread data in memory (critical — see below)
-2. Roll back git to checkpoint's commit via `git reset --hard`
-3. Restore thread data from snapshot
-4. Create new thread record with checkpoint as parent
-5. Truncate chat history to checkpoint's message index
-6. New thread becomes active
+1. Server runs `git reset --hard <parentCommitHash>`
+2. Refreshes file tree and git log
+3. Sends `rollback_complete` with `mode: "code"`
+4. Client inserts a divider message: "Code rolled back to \<hash\>"
+5. A system note is prepended to the next message sent to Claude
 
-### Switching threads
+### Rollback code + chat
 
-Roll back git to target thread's parent checkpoint commit and restore corresponding chat history.
+1. Server runs `git reset --hard <parentCommitHash>`
+2. Builds conversation replay from chat history up to the rollback point
+3. Stores replay on session, clears agent session ID (forces fresh CLI session)
+4. Sends `rollback_complete` with `mode: "code_and_chat"`
+5. Client marks messages after rollback point as `rolledBack: true` (dimmed/read-only)
+6. Next CLI session receives the conversation replay as system prompt
 
-## Critical pattern: snapshot-before-rollback
+### Fork as new session
 
-Thread data files (`/workspace/.vibe-threads/{sessionId}.json`) live inside the git working tree. `git reset --hard` reverts them to committed state. The solution:
-
-```
-1. Snapshot thread data in memory
-2. git reset --hard
-3. ThreadManager.restore(snapshot)
-4. Continue with thread creation/switch
-```
-
-Used in both `fork_thread` and `switch_thread` handlers in `index.ts`.
-
-## Storage
-
-- **Location**: `/workspace/.vibe-threads/{sessionId}.json`
-- **Format**: JSON with `threads[]` and `activeThreadId`
-- **Session ID sanitization**: Same pattern as `ChatHistoryManager`
+1. Truncates chat history to the rollback point
+2. Creates new session via `forkSession()` with `startPoint: parentCommitHash`
+3. Saves truncated history and conversation replay to the new session
+4. Sends `session_forked` with new session info
+5. Client shows notification in current chat
 
 ## Key files
 
-- `src/server/threads.ts` — `ThreadManager` class: init, listThreads, createCheckpoint, forkThread, switchThread, restore, delete
-- `src/server/types.ts` — `ThreadInfo`, `CheckpointInfo` types; all thread WS messages
-- `src/server/index.ts` — WS handlers with snapshot-before-rollback pattern
-- `src/client/components/ThreadIndicator.tsx` — Thread dropdown, checkpoint creation, fork buttons
-- `src/client/App.tsx` — Thread state management
+- `src/server/orchestrator/ws-handlers/rollback-handlers.ts` — Three server-side handlers
+- `src/server/orchestrator/services/replay.ts` — `buildConversationReplay()` utility
+- `src/server/orchestrator/sessions.ts` — Replay storage/consumption on SessionManager
+- `src/server/shared/types/ws-server-messages.ts` — `WsCommitLinked`, `WsRollbackComplete`, `WsSessionForked`
+- `src/server/shared/types/ws-client-messages.ts` — `WsRollbackCode`, `WsRollbackCodeAndChat`, `WsForkSessionFromMessage`
+- `src/client/components/RollbackDropdown.tsx` — Dropdown UI component
+- `src/client/components/MessageList.tsx` — Renders rollback button on qualifying messages
+- `src/client/hooks/useMessageHandler.ts` — Handles `commit_linked`, `rollback_complete`, `session_forked`
+
+## Edge cases
+
+- **During streaming**: Rollback button disabled while any message is streaming
+- **Multiple rollbacks**: Each message tracks its own `parentCommitHash`, so sequential rollbacks work correctly
+- **Chat history safety**: `.vibe-chat-history/` must be in `.gitignore` so `git reset --hard` doesn't clobber it
+- **Stale context after code rollback**: System note injected into Claude's next prompt so it knows code was reverted
