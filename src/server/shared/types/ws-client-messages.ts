@@ -1,7 +1,6 @@
 import type { ImageAttachment, FileContextRef, PermissionMode } from "./attachment-types.js";
 import type { AgentId } from "../../session/agents/agent-process.js";
 import type { WsTerminalStart, WsTerminalInput, WsTerminalResize, WsClearLogs } from "./terminal-types.js";
-import type { WsForkThread, WsSwitchThread } from "./thread-types.js";
 import type {
   WsInitiateDeploy,
   WsCancelDeploy,
@@ -53,13 +52,34 @@ export interface WsCancelQueuedMessage {
   position: number | "all";
 }
 
+// ---- Rollback messages (client → server) ----
+
+/** Client → Server: rollback code only (git reset, chat stays). */
+export interface WsRollbackCode {
+  type: "rollback_code";
+  messageIndex: number;
+  parentCommitHash: string;
+}
+
+/** Client → Server: rollback code + chat (git reset, fresh CLI session). */
+export interface WsRollbackCodeAndChat {
+  type: "rollback_code_and_chat";
+  messageIndex: number;
+  parentCommitHash: string;
+}
+
+/** Client → Server: fork as a new session from a rollback point. */
+export interface WsForkSessionFromMessage {
+  type: "fork_session_from_message";
+  messageIndex: number;
+  parentCommitHash: string;
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsClearLogs
   | WsAnswerQuestion
   | WsSetAgentMessage
-  | WsForkThread
-  | WsSwitchThread
   | WsInitiateDeploy
   | WsCancelDeploy
   | WsTerminalStart
@@ -67,4 +87,7 @@ export type WsClientMessage =
   | WsTerminalResize
   | WsCancelQueuedMessage
   | WsInterruptClaude
-  | WsInitPreviewConfig;
+  | WsInitPreviewConfig
+  | WsRollbackCode
+  | WsRollbackCodeAndChat
+  | WsForkSessionFromMessage;

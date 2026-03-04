@@ -302,12 +302,28 @@ async function runClaudeWithMessage(ctx: FullCtx, opts: {
     try {
       if (capturedSessionDir) {
         const git = ctx.createGitManager(capturedSessionDir);
+        const parentHash = await git.getHeadHash();
         const firstLine = ctx.getTurnSummary().split("\n")[0]?.slice(0, 120) || "Agent turn";
         commitHash = await git.autoCommit(firstLine);
         if (commitHash) {
           emitDone({ type: "git_committed", hash: commitHash, message: firstLine });
           // Schedule auto-push (debounced)
           ctx.scheduleAutoPush(git, ctx.send);
+
+          // Link commit to the last assistant message in chat history
+          if (capturedSessionId && parentHash) {
+            ctx.chatHistoryManager.updateLastMessage(capturedSessionId, {
+              commitHash,
+              parentCommitHash: parentHash,
+            });
+            const messages = ctx.chatHistoryManager.load(capturedSessionId);
+            emitDone({
+              type: "commit_linked",
+              messageIndex: messages.length - 1,
+              commitHash,
+              parentCommitHash: parentHash,
+            });
+          }
         }
       }
     } catch (err) {
@@ -401,23 +417,16 @@ async function runClaudeWithMessage(ctx: FullCtx, opts: {
     }
   });
 
-  // Build the system prompt, incorporating conversation replay for forked threads
+  // Build the system prompt, incorporating conversation replay (from rollback/fork)
   let systemPrompt = await ctx.readSystemPrompt();
   const activeAppSessionId = ctx.getActiveAppSessionId();
   if (activeAppSessionId) {
-    const activeThread = ctx.threadManager.getActiveThread(activeAppSessionId);
-    if (activeThread) {
-      const replay = ctx.threadManager.consumeConversationReplay(
-        activeAppSessionId,
-        activeThread.id,
-      );
-      if (replay) {
-        // On a forked thread with replay context, start a fresh session
-        agentSessionId = undefined;
-        systemPrompt = systemPrompt
-          ? `${systemPrompt}\n\n${replay}`
-          : replay;
-      }
+    const sessionReplay = ctx.sessionManager.consumeConversationReplay(activeAppSessionId);
+    if (sessionReplay) {
+      agentSessionId = undefined;
+      systemPrompt = systemPrompt
+        ? `${systemPrompt}\n\n${sessionReplay}`
+        : sessionReplay;
     }
   }
   // Prepend file context to the prompt if files are attached
@@ -725,12 +734,28 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     try {
       if (capturedSessionDir) {
         const git = ctx.createGitManager(capturedSessionDir);
+        const parentHash = await git.getHeadHash();
         const firstLine = ctx.getTurnSummary().split("\n")[0]?.slice(0, 120) || "Agent turn";
         const hash = await git.autoCommit(firstLine);
         if (hash) {
           ctx.send({ type: "git_committed", hash, message: firstLine });
           // Schedule auto-push (debounced)
           ctx.scheduleAutoPush(git, ctx.send);
+
+          // Link commit to the last assistant message in chat history
+          if (capturedSessionId && parentHash) {
+            ctx.chatHistoryManager.updateLastMessage(capturedSessionId, {
+              commitHash: hash,
+              parentCommitHash: parentHash,
+            });
+            const messages = ctx.chatHistoryManager.load(capturedSessionId);
+            ctx.send({
+              type: "commit_linked",
+              messageIndex: messages.length - 1,
+              commitHash: hash,
+              parentCommitHash: parentHash,
+            });
+          }
         }
       }
     } catch (err) {

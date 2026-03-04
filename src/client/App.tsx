@@ -14,7 +14,7 @@ import { useMessageHandler } from "./hooks/useMessageHandler.js";
 import { useApi } from "./hooks/useApi.js";
 import { formatErrorForMessage } from "./components/PreviewFrame.js";
 import { MessageInput } from "./components/MessageInput.js";
-import { MessageList, type CheckpointDivider } from "./components/MessageList.js";
+import { MessageList } from "./components/MessageList.js";
 import { PreviewFrame } from "./components/PreviewFrame.js";
 import { usePreviewErrors, type PreviewError } from "./hooks/usePreviewErrors.js";
 import { GitHistory } from "./components/GitHistory.js";
@@ -38,8 +38,6 @@ import { NewRepoDialog } from "./components/NewRepoDialog.js";
 import { UsageModal } from "./components/UsageModal.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { OnboardingWizard } from "./components/OnboardingWizard.js";
-import { ThreadIndicator } from "./components/ThreadIndicator.js";
-import { ThreadTimeline } from "./components/ThreadTimeline.js";
 import { DeployModal } from "./components/DeployModal.js";
 import { FeaturesPanel } from "./components/FeaturesPanel.js";
 
@@ -56,7 +54,6 @@ import { useGitStore } from "./stores/git-store.js";
 import { useFileStore } from "./stores/file-store.js";
 import { usePreviewStore } from "./stores/preview-store.js";
 import { useTerminalStore } from "./stores/terminal-store.js";
-import { useThreadStore } from "./stores/thread-store.js";
 import { useDeployStore } from "./stores/deploy-store.js";
 import { usePrStore } from "./stores/pr-store.js";
 import { useSettingsStore } from "./stores/settings-store.js";
@@ -120,9 +117,6 @@ export default function App() {
 
   const terminalMode = useTerminalStore((s) => s.mode);
   const shellStarted = useTerminalStore((s) => s.shellStarted);
-
-  const threads = useThreadStore((s) => s.threads);
-  const activeThreadId = useThreadStore((s) => s.activeThreadId);
 
   const showDeployModal = useDeployStore((s) => s.showModal);
   const deployTargets = useDeployStore((s) => s.targets);
@@ -345,10 +339,6 @@ export default function App() {
     (messageIndex: number, newText: string) => {
       requestPermission();
       const sid = useSessionStore.getState().sessionId;
-      const tid = useThreadStore.getState().activeThreadId;
-      if (sid && tid) {
-        apiPost(`/api/sessions/${sid}/threads/checkpoint`, { label: "Before edit" }).catch(() => {});
-      }
       const session = useSessionStore.getState();
       session.setMessages((prev) => [...prev.slice(0, messageIndex), { role: "user" as const, text: newText }]);
       session.setIsLoading(true);
@@ -408,6 +398,19 @@ export default function App() {
       session.setMessages((prev) => [...prev, { role: "user", text: Object.values(answers).join(", ") }]);
       session.setIsLoading(true);
       session.setActivity({ label: "Thinking..." });
+    },
+    [send],
+  );
+
+  const handleRollback = useCallback(
+    (messageIndex: number, mode: "code" | "code_and_chat" | "fork", parentCommitHash: string) => {
+      if (mode === "code") {
+        send({ type: "rollback_code", messageIndex, parentCommitHash });
+      } else if (mode === "code_and_chat") {
+        send({ type: "rollback_code_and_chat", messageIndex, parentCommitHash });
+      } else {
+        send({ type: "fork_session_from_message", messageIndex, parentCommitHash });
+      }
     },
     [send],
   );
@@ -562,15 +565,6 @@ export default function App() {
 
   // ── Computed values ──
   const detectedPorts = previewStatus?.detectedPorts ?? [];
-  const checkpointDividers: CheckpointDivider[] = useMemo(() => {
-    const dividers: CheckpointDivider[] = [];
-    for (const thread of threads) {
-      for (const cp of thread.checkpoints) {
-        dividers.push({ id: cp.id, messageIndex: cp.messageIndex, label: cp.label });
-      }
-    }
-    return dividers;
-  }, [threads]);
   const showNewSessionView = isNewSessionRoute && !urlSessionId;
   const showHomeScreen = !showNewSessionView && (!sessionId || (showTemplates && messages.length === 0 && !isLoading));
 
@@ -626,20 +620,18 @@ export default function App() {
         <HomeScreen onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)} hasRepos={repos.length > 0} />
       ) : (
         <>
-          <MessageList messages={messages} isLoading={isLoading} activity={activity} searchMatches={search.matches} currentMatch={search.currentMatch} onEditMessage={handleEditMessage} onAnswerQuestion={handleAnswerQuestion} checkpoints={checkpointDividers} />
+          <MessageList messages={messages} isLoading={isLoading} activity={activity} searchMatches={search.matches} currentMatch={search.currentMatch} onEditMessage={handleEditMessage} onAnswerQuestion={handleAnswerQuestion} onRollback={handleRollback} />
           {wsSessionId && <PrLifecycleCard sessionId={wsSessionId} />}
         </>
       )}
       {!showHomeScreen && !showNewSessionView && (
         <div className="border-t border-gray-200 dark:border-gray-800 px-4 py-1.5 flex items-center gap-2">
-          <ThreadIndicator threads={threads} activeThreadId={activeThreadId} onCreateCheckpoint={(label) => { const sid = useSessionStore.getState().sessionId; if (sid) useThreadStore.getState().createCheckpoint(sid, label).catch(() => {}); }} onForkThread={(id) => send({ type: "fork_thread", checkpointId: id })} onSwitchThread={(id) => send({ type: "switch_thread", threadId: id })} disabled={isLoading || status !== "open"} />
           <AgentPicker agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} disabled={isLoading || status !== "open"} />
           <button onClick={handleDownloadChat} className="ml-auto p-1 rounded text-gray-500 hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" title="Download chat history" aria-label="Download chat history">
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>
           </button>
         </div>
       )}
-      {!showHomeScreen && !showNewSessionView && threads.length > 0 && <ThreadTimeline threads={threads} activeThreadId={activeThreadId} onForkThread={(id) => send({ type: "fork_thread", checkpointId: id })} onSwitchThread={(id) => send({ type: "switch_thread", threadId: id })} />}
       {!showHomeScreen && !showNewSessionView && <StatusBar modelInfo={modelInfo} contextTokens={contextTokens} agentName={agentList.find((a) => a.id === activeAgentId)?.name} />}
       {!showHomeScreen && !showNewSessionView && queuedMessages.length > 0 && <QueueIndicator queue={queuedMessages} onCancel={(pos) => send({ type: "cancel_queued_message", position: pos })} />}
       {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_claude" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} />}

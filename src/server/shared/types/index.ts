@@ -4,7 +4,6 @@ export * from "./domain-types.js";
 export * from "./attachment-types.js";
 export * from "./github-types.js";
 export * from "./terminal-types.js";
-export * from "./thread-types.js";
 export * from "./deployment-types.js";
 export * from "./usage-types.js";
 export * from "./ws-client-messages.js";

@@ -27,6 +27,10 @@ export interface PersistedMessage {
     endLine?: number;
   }>;
   isError?: boolean;
+  /** Git commit hash produced by auto-commit after this assistant message. */
+  commitHash?: string;
+  /** Parent commit hash (HEAD before the auto-commit). Used for rollback. */
+  parentCommitHash?: string;
 }
 
 const DEFAULT_HISTORY_DIR = path.join("/workspace", ".vibe-chat-history");
@@ -83,6 +87,27 @@ export class ChatHistoryManager {
       // Corrupted file — return empty
     }
     return [];
+  }
+
+  /** Update the last message in a session's history by merging fields. */
+  updateLastMessage(sessionId: string, update: Partial<PersistedMessage>): void {
+    const messages = this.load(sessionId);
+    if (messages.length === 0) return;
+    Object.assign(messages[messages.length - 1], update);
+    this.save(sessionId, messages);
+  }
+
+  /** Truncate a session's history to the first `count` messages. */
+  truncate(sessionId: string, count: number): PersistedMessage[] {
+    const messages = this.load(sessionId);
+    const truncated = messages.slice(0, count);
+    this.save(sessionId, truncated);
+    return truncated;
+  }
+
+  /** Save messages for a session (overwriting existing history). */
+  saveMessages(sessionId: string, messages: PersistedMessage[]): void {
+    this.save(sessionId, messages);
   }
 
   /** Delete a session's chat history. */

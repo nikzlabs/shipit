@@ -25,6 +25,16 @@ export class GitManager {
     this.git = simpleGit(workspaceDir ?? DEFAULT_WORKSPACE_DIR);
   }
 
+  /** Get the current HEAD commit hash. Returns null if no commits exist. */
+  async getHeadHash(): Promise<string | null> {
+    try {
+      const hash = await this.git.revparse(["HEAD"]);
+      return hash.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Ensure the workspace is a git repo with at least one commit.
    * Identity and commit.gpgsign are inherited from the global git config

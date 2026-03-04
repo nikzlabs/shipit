@@ -89,7 +89,7 @@ export async function forkSession(
   getSharedRepoDir: (repoUrl: string) => string,
   sessionsRoot: string,
   githubAuthManager: { authenticated: boolean; configureGitCredentials: (dir: string) => void },
-  threadManager: { init: (sessionId: string) => void },
+  _threadManager: { init: (sessionId: string) => void },
   activeSessionId: string,
   activeSessionDir: string,
   branchName: string,
@@ -135,8 +135,6 @@ export async function forkSession(
   if (activeSession?.remoteUrl) {
     sessionManager.setRemoteUrl(newSessionId, activeSession.remoteUrl);
   }
-
-  threadManager.init(newSessionId);
 
   const newSession = sessionManager.get(newSessionId)!;
   console.log("[server] Forked session:", newSessionId, "branch:", trimmed);

@@ -2,7 +2,6 @@ import type { ChatMessage } from "../components/MessageList.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useFileStore } from "../stores/file-store.js";
-import { useThreadStore } from "../stores/thread-store.js";
 import { usePreviewStore } from "../stores/preview-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
@@ -20,8 +19,6 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   );
   useGitStore.getState().setCommits(data.commits);
   useFileStore.getState().setTree(data.fileTree);
-  useThreadStore.getState().setThreads(data.threads);
-  useThreadStore.getState().setActiveThreadId(data.activeThreadId);
 
   // Fetch preview status via HTTP — reliable fallback in case the WS
   // preview_status message is lost during the initial connection burst.
