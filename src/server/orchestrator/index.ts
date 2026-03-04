@@ -1072,7 +1072,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             await git.push("origin", branch);
             runner.emitMessage({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
           } catch (err) {
-            const text = `Auto-push failed: ${getErrorMessage(err)}`;
+            const errMsg = getErrorMessage(err);
+            const text = errMsg.includes("workflow")
+              ? "Auto-push failed: your GitHub token needs the `workflow` scope to push changes to GitHub Actions workflow files. Update your token at https://github.com/settings/tokens."
+              : `Auto-push failed: ${errMsg}`;
             broadcastLog("server", text);
             runner.emitMessage({ type: "log_entry", source: "server", text, timestamp: new Date().toISOString() });
           }

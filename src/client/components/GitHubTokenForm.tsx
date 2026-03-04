@@ -83,6 +83,7 @@ export function GitHubTokenForm({ onSubmit }: GitHubTokenFormProps) {
           classic Personal Access Token
         </a>{" "}
         with the <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded">repo</code> scope.
+        Add <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded">workflow</code> too if your project uses GitHub Actions.
       </p>
     </div>
   );

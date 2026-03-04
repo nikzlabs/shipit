@@ -331,14 +331,35 @@ function ClosedPhase({ card }: { card: PrCardState }) {
   );
 }
 
+/** Render error text with inline links (https://...) and backtick-highlighted terms (`word`). */
+function RichErrorText({ text }: { text: string }) {
+  const parts = text.split(/(https:\/\/\S+|`[^`]+`)/).map((part, i) => {
+    if (part.startsWith("https://")) {
+      return <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline">{part}</a>;
+    }
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return <code key={i} className="text-xs bg-gray-800 px-1 py-0.5 rounded text-gray-200">{part.slice(1, -1)}</code>;
+    }
+    return part;
+  });
+  return <>{parts}</>;
+}
+
 function ErrorPhase({ card, sessionId }: { card: PrCardState; sessionId: string }) {
   const quickCreate = usePrStore((s) => s.quickCreate);
+  const lines = card.errorMessage?.split("\n") ?? [];
 
   return (
-    <div className="flex items-center gap-3">
-      <span className="text-red-400 text-xs shrink-0">{"\u2717"}</span>
-      <span className="text-xs text-gray-300 truncate">
-        Failed to create PR{card.errorMessage ? `: ${card.errorMessage}` : ""}
+    <div className="flex items-start gap-3">
+      <span className="text-red-400 text-xs shrink-0 mt-0.5">{"\u2717"}</span>
+      <span className="text-xs text-gray-300 wrap-break-word min-w-0">
+        Failed to create PR{lines.length > 0 && ": "}
+        {lines.map((line, i) => (
+          <span key={i}>
+            {i > 0 && <br />}
+            <RichErrorText text={line} />
+          </span>
+        ))}
       </span>
       <button
         onClick={() => quickCreate(sessionId)}
