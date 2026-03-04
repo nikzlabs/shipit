@@ -5,7 +5,7 @@ status: done
 
 ## Summary
 
-Add a dedicated diff review panel that aggregates all file changes from a Claude turn, presents them in a side-by-side or unified diff view, and lets users accept/reject changes per file and leave inline comments that are sent back to Claude as structured feedback.
+A read-only diff review panel that aggregates all file changes from a Claude turn and presents them in a side-by-side diff view. Users inspect changes here; undo is handled via git rollback in the commit history panel. Per-file accept/reject and inline commenting were removed — in a vibe coding workflow, most code isn't manually reviewed, and per-file granularity doesn't match how changes are interdependent.
 
 ## Motivation
 

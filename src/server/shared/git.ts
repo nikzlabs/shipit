@@ -234,10 +234,4 @@ export class GitManager {
     }
   }
 
-  /**
-   * Checkout specific files from a commit, reverting them.
-   */
-  async checkoutFiles(commitHash: string, files: string[]): Promise<void> {
-    await this.git.checkout([commitHash, "--", ...files]);
-  }
 }
