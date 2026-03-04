@@ -40,7 +40,7 @@ function CiIndicator({ checks }: { checks: PrCardState["checks"] }) {
   if (!checks || checks.state === "none") return null;
 
   if (checks.state === "success") {
-    return <span className="text-emerald-400 text-xs" title={`CI passed  ${checks.total}/${checks.total} checks`}>{"\u2713"} CI</span>;
+    return <span className="text-emerald-400 text-xs" title={`CI passed  ${checks.total}/${checks.total} checks`}>{"\u2713"} CI {checks.total}/{checks.total}</span>;
   }
   if (checks.state === "failure") {
     return (
@@ -50,7 +50,7 @@ function CiIndicator({ checks }: { checks: PrCardState["checks"] }) {
     );
   }
   // pending
-  return <span className="text-amber-400 text-xs animate-pulse" title={`CI running  ${checks.passed}/${checks.total}`}>{"\u25D0"} CI</span>;
+  return <span className="text-amber-400 text-xs animate-pulse" title={`CI running  ${checks.passed}/${checks.total}`}>{"\u25D0"} CI {checks.passed}/{checks.total}</span>;
 }
 
 function FailedChecksList({ checks }: { checks: PrCardState["checks"] }) {
