@@ -48,6 +48,12 @@ export interface PrCardState {
     attemptCount: number;
     maxAttempts: number;
   };
+  /** Auto-merge state (open phase). */
+  autoMerge?: {
+    enabled: boolean;
+    mergeMethod: "squash" | "merge" | "rebase";
+    error?: { code: string; message: string; settingsUrl: string };
+  };
   /** Error message (error phase). */
   errorMessage?: string;
 }
@@ -82,6 +88,14 @@ interface PrState {
   fixCI: (sessionId: string) => Promise<void>;
   /** Toggle auto-fix on/off. */
   toggleAutoFix: (sessionId: string, enabled: boolean) => Promise<void>;
+
+  // Merge actions
+  /** Merge the PR with the given method. */
+  merge: (sessionId: string, method?: string) => Promise<void>;
+  /** Toggle auto-merge on/off. */
+  toggleAutoMerge: (sessionId: string, enabled: boolean) => Promise<void>;
+  /** Update the preferred merge method. */
+  setMergeMethod: (sessionId: string, method: "squash" | "merge" | "rebase") => Promise<void>;
 
   // Repo import actions
   setImportSearchResults: (results: ImportSearchResult[]) => void;
@@ -141,6 +155,7 @@ export const usePrStore = create<PrState>((set, get) => ({
             },
             checks: update.checks,
             autoFix: update.autoFix,
+            autoMerge: update.autoMerge,
           };
         }
       }
@@ -264,6 +279,68 @@ export const usePrStore = create<PrState>((set, get) => ({
       // State updates come from SSE, not from the POST response
     } catch (err) {
       console.error("[pr-store] Auto-fix toggle failed:", err);
+    }
+  },
+
+  // ---- Merge actions ----
+
+  merge: async (sessionId, method) => {
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/pr/merge`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ method }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        console.error("[pr-store] Merge failed:", data.message || data.error);
+      }
+      // State updates come from SSE (merged detection)
+    } catch (err) {
+      console.error("[pr-store] Merge failed:", err);
+    }
+  },
+
+  toggleAutoMerge: async (sessionId, enabled) => {
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/pr/auto-merge`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ enabled }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        console.error("[pr-store] Auto-merge toggle failed:", data.error);
+      }
+      // State updates come from SSE
+    } catch (err) {
+      console.error("[pr-store] Auto-merge toggle failed:", err);
+    }
+  },
+
+  setMergeMethod: async (sessionId, method) => {
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/pr/merge-method`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ method }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        console.error("[pr-store] Set merge method failed:", data.error);
+      }
+      // State updates come from SSE
+    } catch (err) {
+      console.error("[pr-store] Set merge method failed:", err);
     }
   },
 

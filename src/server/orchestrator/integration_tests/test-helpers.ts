@@ -280,6 +280,10 @@ export class StubGitHubAuthManager extends EventEmitter {
     return { success: true, message: "Auto-merge enabled — PR will merge when checks pass" };
   }
 
+  async disableAutoMerge(_owner: string, _repo: string, _pullNumber: number) {
+    return { success: true, message: "Auto-merge disabled" };
+  }
+
   async getCheckStatus(_owner: string, _repo: string, _ref: string) {
     return this._checkStatus ?? { state: "none" as const, total: 0, passed: 0, failed: 0, pending: 0 };
   }

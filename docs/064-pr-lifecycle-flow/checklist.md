@@ -57,23 +57,23 @@
 ## Phase 3: Merge + Auto-Merge + Post-Merge Archive
 
 ### Server
-- [ ] Add `disableAutoMerge()` GraphQL mutation to `github-auth.ts`
-- [ ] Add `PrAutomationState` type (wraps autoFix + autoMerge) to `github-types.ts`
-- [ ] Add `POST /api/sessions/:id/pr/auto-merge` endpoint — enable/disable GitHub native auto-merge
-- [ ] Add `POST /api/sessions/:id/pr/merge-method` endpoint — persist merge method preference
-- [ ] Extend `POST /api/sessions/:id/pr/merge` with optional `method` field
-- [ ] Add `PrAutoMergeError` type with `settingsUrl` for clear error messages
-- [ ] Detect merged PRs in poller (missing from OPEN results) → trigger session archive
-- [ ] Extend `PrStatusSummary` SSE shape with `autoMerge`
+- [x] Add `disableAutoMerge()` GraphQL mutation to `github-auth.ts`
+- [x] Add `PrAutomationState` type (wraps autoFix + autoMerge) to `github-types.ts`
+- [x] Add `POST /api/sessions/:id/pr/auto-merge` endpoint — enable/disable GitHub native auto-merge
+- [x] Add `POST /api/sessions/:id/pr/merge-method` endpoint — persist merge method preference
+- [x] Extend `POST /api/sessions/:id/pr/merge` with optional `method` field
+- [x] Add `PrAutoMergeError` type with `settingsUrl` for clear error messages
+- [x] Detect merged PRs in poller (missing from OPEN results) → trigger session archive
+- [x] Extend `PrStatusSummary` SSE shape with `autoMerge`
 
 ### Client
-- [ ] Add merge split button with method dropdown to `PrLifecycleCard`
-- [ ] Add auto-merge toggle to card
-- [ ] Add "Will merge when CI passes" state
-- [ ] Add auto-merge error messages with repo settings links
-- [ ] Add merged card state (`✓ PR #42 merged into main`)
-- [ ] Add `merge()`, `toggleAutoMerge()`, `setMergeMethod()` to `pr-store`
+- [x] Add merge split button with method dropdown to `PrLifecycleCard`
+- [x] Add auto-merge toggle to card
+- [x] Add "Will merge when CI passes" state
+- [x] Add auto-merge error messages with repo settings links
+- [x] Add merged card state (`✓ PR #42 merged into main`)
+- [x] Add `merge()`, `toggleAutoMerge()`, `setMergeMethod()` to `pr-store`
 
 ### Tests
-- [ ] `PrLifecycleCard.test.tsx` — merge button, dropdown, auto-merge toggle, error states, merged state
-- [ ] Integration tests — auto-merge enable/disable, error cases, merge-method update, post-merge archive
+- [x] `PrLifecycleCard.test.tsx` — merge button, dropdown, auto-merge toggle, error states, merged state
+- [x] Integration tests — auto-merge enable/disable, error cases, merge-method update, post-merge archive

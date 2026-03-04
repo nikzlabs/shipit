@@ -491,6 +491,60 @@ export class GitHubAuthManager extends EventEmitter {
   }
 
   /**
+   * Disable auto-merge on a pull request.
+   * Uses the GraphQL API (`disablePullRequestAutoMerge` mutation).
+   */
+  async disableAutoMerge(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+  ): Promise<{ success: boolean; message: string }> {
+    if (!this._token) return { success: false, message: "Not authenticated" };
+
+    // Get the PR's node ID
+    const prRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
+      {
+        headers: {
+          Authorization: `Bearer ${this._token}`,
+          Accept: "application/vnd.github+json",
+          "User-Agent": "ShipIt",
+        },
+      },
+    );
+
+    if (!prRes.ok) return { success: false, message: "Failed to fetch PR details" };
+    const prData = (await prRes.json()) as { node_id: string };
+    const nodeId = prData.node_id;
+
+    const graphqlRes = await fetch("https://api.github.com/graphql", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this._token}`,
+        "Content-Type": "application/json",
+        "User-Agent": "ShipIt",
+      },
+      body: JSON.stringify({
+        query: `mutation DisableAutoMerge($prId: ID!) {
+          disablePullRequestAutoMerge(input: { pullRequestId: $prId }) {
+            pullRequest { autoMergeRequest { enabledAt } }
+          }
+        }`,
+        variables: { prId: nodeId },
+      }),
+    });
+
+    if (!graphqlRes.ok) return { success: false, message: "Failed to disable auto-merge" };
+    const graphqlData = (await graphqlRes.json()) as { errors?: Array<{ message: string }> };
+
+    if (graphqlData.errors) {
+      return { success: false, message: graphqlData.errors[0]?.message ?? "Unknown error" };
+    }
+
+    return { success: true, message: "Auto-merge disabled" };
+  }
+
+  /**
    * Get CI check status for a PR's head commit.
    */
   async getCheckStatus(

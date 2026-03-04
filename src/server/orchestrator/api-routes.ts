@@ -86,6 +86,8 @@ import {
   addRepo,
   removeRepo,
   triggerCIFix,
+  toggleAutoMerge,
+  updateMergeMethod,
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
@@ -767,6 +769,67 @@ export async function registerApiRoutes(
           return;
         }
         reply.code(500).send({ error: `Auto-fix toggle failed: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/pr/auto-merge — toggle auto-merge on/off
+  app.post<{ Params: { id: string }; Body: { enabled: boolean } }>(
+    "/api/sessions/:id/pr/auto-merge",
+    async (request, reply) => {
+      try {
+        if (!deps.prStatusPoller) {
+          reply.code(500).send({ error: "PR status poller not available" });
+          return;
+        }
+        if (typeof request.body?.enabled !== "boolean") {
+          reply.code(400).send({ error: "\"enabled\" field is required (boolean)" });
+          return;
+        }
+
+        return await toggleAutoMerge(
+          deps.githubAuthManager,
+          deps.prStatusPoller,
+          request.params.id,
+          request.body.enabled,
+        );
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Auto-merge toggle failed: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/pr/merge-method — update preferred merge method
+  app.post<{ Params: { id: string }; Body: { method: string } }>(
+    "/api/sessions/:id/pr/merge-method",
+    async (request, reply) => {
+      try {
+        if (!deps.prStatusPoller) {
+          reply.code(500).send({ error: "PR status poller not available" });
+          return;
+        }
+        const method = request.body?.method;
+        if (method !== "squash" && method !== "merge" && method !== "rebase") {
+          reply.code(400).send({ error: "\"method\" must be \"squash\", \"merge\", or \"rebase\"" });
+          return;
+        }
+
+        return await updateMergeMethod(
+          deps.githubAuthManager,
+          deps.prStatusPoller,
+          request.params.id,
+          method,
+        );
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Merge method update failed: ${getErrorMessage(err)}` });
       }
     },
   );

@@ -150,6 +150,20 @@ export interface AutoFixState {
   status: "idle" | "running" | "exhausted";
 }
 
+/** Auto-merge error from GitHub — missing repo settings or branch protection. */
+export interface PrAutoMergeError {
+  code: "auto_merge_not_enabled" | "no_branch_protection";
+  message: string;
+  settingsUrl: string;
+}
+
+/** Auto-merge state for a session's PR, managed by the poller. */
+export interface AutoMergeState {
+  enabled: boolean;
+  mergeMethod: "squash" | "merge" | "rebase";
+  error?: PrAutoMergeError;
+}
+
 /** Summary of a PR's current status, used by both the inline card and sidebar icons. */
 export interface PrStatusSummary {
   sessionId: string;
@@ -178,6 +192,12 @@ export interface PrStatusSummary {
     status: "idle" | "running" | "exhausted";
     attemptCount: number;
     maxAttempts: number;       // always 3
+  };
+  /** Auto-merge state — present when auto-merge has been interacted with. */
+  autoMerge?: {
+    enabled: boolean;
+    mergeMethod: "squash" | "merge" | "rebase";
+    error?: PrAutoMergeError;
   };
 }
 
