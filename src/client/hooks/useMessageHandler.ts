@@ -394,6 +394,10 @@ export function useMessageHandler(params: {
 
     if (data.type === "system_user_message") {
       session.setMessages((prev) => [...prev, { role: "user" as const, text: data.text }]);
+      session.setIsLoading(true);
+      if (data.activity) {
+        session.setActivity({ label: data.activity });
+      }
     }
 
     if (data.type === "message_queued") {

@@ -139,7 +139,9 @@ export interface CIFailureLog {
     message: string;
     annotationLevel: "failure" | "warning" | "notice";
   }>;
-  logExcerpt: string;         // last 100 lines of raw log (fallback)
+  errorLines: string[];       // extracted error-like lines (most actionable)
+  logExcerpt: string;         // last 20 lines of cleaned log (fallback)
+  logFilePath?: string;       // absolute path to full log file on disk
 }
 
 /** Auto-fix state for a session's PR, managed by the poller. */

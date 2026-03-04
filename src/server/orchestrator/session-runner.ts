@@ -36,6 +36,8 @@ export interface SystemTurnDeps {
   sseBroadcast: (event: string, data: unknown) => void;
   /** Persist a chat message to history. */
   persistMessage: (sessionId: string, msg: { role: "user" | "assistant"; text: string }) => void;
+  /** Resolve the Claude CLI session ID for --resume (returns undefined for fresh sessions). */
+  resolveAgentSessionId: (sessionId: string) => string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -128,8 +130,9 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   setSystemTurnDeps(deps: SystemTurnDeps): void;
   /** Start a server-initiated agent turn (e.g., CI auto-fix).
    *  If running, enqueues. If idle and deps are set, starts a turn directly.
-   *  Falls back to enqueue if deps aren't configured. */
-  sendSystemMessage(text: string): void;
+   *  Falls back to enqueue if deps aren't configured.
+   *  @param activity Optional activity label shown in the UI (e.g. "Auto-fixing CI..."). */
+  sendSystemMessage(text: string, activity?: string): void;
 
   // Lifecycle
   onAgentFinished(): void;
@@ -269,7 +272,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     this._systemTurnDeps = deps;
   }
 
-  sendSystemMessage(text: string): void {
+  sendSystemMessage(text: string, activity?: string): void {
     if (this._isRunning) {
       this.enqueue({ text });
       return;
@@ -279,14 +282,14 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
       this.enqueue({ text });
       return;
     }
-    this._runSystemTurn(text);
+    this._runSystemTurn(text, activity);
   }
 
   /**
    * Start an agent turn directly on the runner, without WS context.
    * Handles event forwarding, auto-commit, auto-push, and queue drain.
    */
-  private _runSystemTurn(text: string): void {
+  private _runSystemTurn(text: string, activity?: string): void {
     const deps = this._systemTurnDeps!;
     const agent = deps.agentFactory(this._agentId);
     this.setAgent(agent);
@@ -297,10 +300,10 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     this.clearTurnEventBuffer();
 
     // Emit the prompt as a user message so viewers see what Claude was asked
-    this.emitMessage({ type: "system_user_message", text });
+    this.emitMessage({ type: "system_user_message", text, activity });
     deps.persistMessage(this.sessionId, { role: "user", text });
 
-    deps.sseBroadcast("session_agent_started", { sessionId: this.sessionId });
+    deps.sseBroadcast("session_agent_started", { sessionId: this.sessionId, activity });
 
     // Forward agent events to viewers
     agent.on("event", (event: AgentEvent) => {
@@ -359,9 +362,9 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
       this.onAgentFinished();
     });
 
-    // Get agent session ID from session manager if available
     agent.run({
       prompt: text,
+      sessionId: deps.resolveAgentSessionId(this.sessionId),
       cwd: this.sessionDir,
     } as AgentRunParams);
   }
