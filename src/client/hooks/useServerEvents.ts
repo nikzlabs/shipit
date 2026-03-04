@@ -47,6 +47,11 @@ export function useServerEvents(): void {
         next.add(data.sessionId);
         return next;
       });
+      // Show stop button for system-initiated turns (e.g. CI auto-fix)
+      if (data.sessionId === useSessionStore.getState().sessionId) {
+        useSessionStore.getState().setIsLoading(true);
+        useSessionStore.getState().setActivity({ label: "Auto-fixing CI..." });
+      }
     });
 
     es.addEventListener("session_agent_finished", (e: MessageEvent) => {
@@ -56,6 +61,12 @@ export function useServerEvents(): void {
         next.delete(data.sessionId);
         return next;
       });
+      // Clear loading state for system-initiated turns. For user-initiated turns
+      // this is already cleared by agent_result/claude_interrupted WS events.
+      if (data.sessionId === useSessionStore.getState().sessionId) {
+        useSessionStore.getState().setIsLoading(false);
+        useSessionStore.getState().setActivity(undefined);
+      }
     });
 
     es.addEventListener("active_runners", (e: MessageEvent) => {

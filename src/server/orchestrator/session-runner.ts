@@ -34,6 +34,8 @@ export interface SystemTurnDeps {
   scheduleAutoPush: (sessionDir: string) => void;
   /** Broadcast to SSE clients. */
   sseBroadcast: (event: string, data: unknown) => void;
+  /** Persist a chat message to history. */
+  persistMessage: (sessionId: string, msg: { role: "user" | "assistant"; text: string }) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -293,6 +295,10 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     this._turnSummary = "";
     this._needsNewMessageGroup = true;
     this.clearTurnEventBuffer();
+
+    // Emit the prompt as a user message so viewers see what Claude was asked
+    this.emitMessage({ type: "system_user_message", text });
+    deps.persistMessage(this.sessionId, { role: "user", text });
 
     deps.sseBroadcast("session_agent_started", { sessionId: this.sessionId });
 
