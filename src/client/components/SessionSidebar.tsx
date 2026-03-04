@@ -20,6 +20,7 @@ interface SessionSidebarProps {
   onRefresh: () => void;
   onAddRepo: () => void;
   onRemoveRepo: (url: string) => void;
+  onViewArchived: () => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
 }
@@ -261,6 +262,7 @@ export function SessionSidebar({
   onRefresh: _onRefresh,
   onAddRepo,
   onRemoveRepo,
+  onViewArchived,
   collapsed,
   onToggleCollapse,
 }: SessionSidebarProps) {
@@ -395,6 +397,17 @@ export function SessionSidebar({
             )}
           </>
         )}
+      </div>
+
+      {/* View archived sessions */}
+      <div className="shrink-0 border-t border-gray-200 dark:border-gray-800 px-2 py-2">
+        <button
+          onClick={onViewArchived}
+          className="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs text-gray-500 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded transition-colors"
+        >
+          <ArchiveIcon />
+          View Archived
+        </button>
       </div>
     </div>
   );

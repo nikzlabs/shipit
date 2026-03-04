@@ -45,6 +45,13 @@ interface SessionState {
   setPendingWsMessage: (message: Record<string, unknown> | undefined) => void;
   reset: () => void;
 
+  // Archived sessions
+  archivedSessions: SessionInfo[];
+  archivedDialogOpen: boolean;
+  setArchivedDialogOpen: (open: boolean) => void;
+  fetchArchivedSessions: () => Promise<void>;
+  unarchiveSession: (sessionId: string) => Promise<void>;
+
   // Async actions
   archiveSession: (sessionId: string) => Promise<void>;
   renameSession: (sessionId: string, title: string) => Promise<void>;
@@ -67,6 +74,8 @@ export const useSessionStore = create<SessionState>((set) => ({
   sessions: [] as SessionInfo[],
   authUrl: null,
   activeRunnerSessions: new Set<string>(),
+  archivedSessions: [] as SessionInfo[],
+  archivedDialogOpen: false,
 
   setSessionId: (sessionId) => set({ sessionId }),
 
@@ -119,6 +128,30 @@ export const useSessionStore = create<SessionState>((set) => ({
   setPendingWsMessage: (pendingWsMessage) => set({ pendingWsMessage }),
 
   reset: () => set(initialResettableState),
+
+  setArchivedDialogOpen: (archivedDialogOpen) => set({ archivedDialogOpen }),
+
+  fetchArchivedSessions: async () => {
+    const res = await fetch("/api/sessions/archived", {
+      headers: { Accept: "application/json" },
+    });
+    const data = await res.json();
+    set({ archivedSessions: data.sessions });
+  },
+
+  unarchiveSession: async (sessionId) => {
+    const res = await fetch(`/api/sessions/${sessionId}/unarchive`, {
+      method: "POST",
+      headers: { Accept: "application/json" },
+    });
+    const result = await res.json();
+    set({
+      sessions: result.sessions,
+      archivedSessions: useSessionStore
+        .getState()
+        .archivedSessions.filter((s) => s.id !== sessionId),
+    });
+  },
 
   archiveSession: async (sessionId) => {
     const res = await fetch(`/api/sessions/${sessionId}`, {
