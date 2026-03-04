@@ -12,7 +12,7 @@
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { SessionManager } from "./sessions.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
-import type { PrStatusSummary, AutoFixState } from "../shared/types/github-types.js";
+import type { PrStatusSummary, AutoFixState, AutoMergeState, PrAutoMergeError } from "../shared/types/github-types.js";
 import { parseGitHubRemote } from "./git-utils.js";
 
 const POLL_INTERVAL_MS = 3_000;
@@ -221,16 +221,22 @@ export class PrStatusPoller {
   private lastKnown = new Map<string, PrStatusSummary>();
   /** sessionId → repo key tracking */
   private sessionRepos = new Map<string, string>();
-  /** Sessions whose PRs have been merged — excluded from future queries. */
+  /** Sessions whose PRs have been merged or closed — excluded from future queries. */
   private mergedSessions = new Set<string>();
+  /** Sessions needing a one-time REST probe to check if a PR already exists (post-restart catch-up). */
+  private pendingCatchUp = new Set<string>();
 
   /** sessionId → auto-fix state */
   private autoFixStates = new Map<string, AutoFixState>();
+  /** sessionId → auto-merge state */
+  private autoMergeStates = new Map<string, AutoMergeState>();
 
   /** Optional: runner registry for server-initiated fix prompts. */
   private runnerRegistry?: SessionRunnerRegistry;
   /** Optional: function to fetch CI failure logs and construct a fix prompt. */
   private fetchAndFixCb?: (sessionId: string, owner: string, repo: string, failedChecks: Array<{ databaseId: number; name: string; conclusion: string; title: string }>) => Promise<void>;
+  /** Optional: called when a merged PR is detected — used to archive the session. */
+  private onMergeDetectedCb?: (sessionId: string) => Promise<void>;
 
   /** sessionId → last known GraphQL PR node (cached for extracting check details). */
   private lastPrNodes = new Map<string, GraphQLPrNode>();
@@ -241,12 +247,14 @@ export class PrStatusPoller {
     sseBroadcast: (event: string, data: unknown) => void;
     runnerRegistry?: SessionRunnerRegistry;
     fetchAndFixCb?: (sessionId: string, owner: string, repo: string, failedChecks: Array<{ databaseId: number; name: string; conclusion: string; title: string }>) => Promise<void>;
+    onMergeDetectedCb?: (sessionId: string) => Promise<void>;
   }) {
     this.githubAuth = opts.githubAuth;
     this.sessionManager = opts.sessionManager;
     this.sseBroadcast = opts.sseBroadcast;
     this.runnerRegistry = opts.runnerRegistry;
     this.fetchAndFixCb = opts.fetchAndFixCb;
+    this.onMergeDetectedCb = opts.onMergeDetectedCb;
   }
 
   /** Register a session as having an open PR. Starts polling for its repo. */
@@ -257,6 +265,7 @@ export class PrStatusPoller {
     const repoKey = `${parsed.owner}/${parsed.repo}`;
     this.sessionRepos.set(sessionId, repoKey);
     this.mergedSessions.delete(sessionId);
+    this.pendingCatchUp.add(sessionId);
 
     if (!this.repoTimers.has(repoKey)) {
       this.startPolling(repoKey, parsed.owner, parsed.repo);
@@ -269,7 +278,9 @@ export class PrStatusPoller {
     this.sessionRepos.delete(sessionId);
     this.lastKnown.delete(sessionId);
     this.autoFixStates.delete(sessionId);
+    this.autoMergeStates.delete(sessionId);
     this.lastPrNodes.delete(sessionId);
+    this.pendingCatchUp.delete(sessionId);
 
     if (repoKey) {
       this.maybeStopPolling(repoKey);
@@ -283,7 +294,7 @@ export class PrStatusPoller {
 
   /** Get all current PR statuses (for SSE snapshot on connect). */
   getAllStatuses(): PrStatusSummary[] {
-    return [...this.lastKnown.values()].map((s) => this.attachAutoFixState(s));
+    return [...this.lastKnown.values()].map((s) => this.attachAutomationState(s));
   }
 
   /** Get auto-fix state for a session. */
@@ -304,13 +315,7 @@ export class PrStatusPoller {
       }
     }
 
-    // Broadcast the updated state
-    const status = this.lastKnown.get(sessionId);
-    if (status) {
-      const updated = this.attachAutoFixState(status);
-      this.sseBroadcast("pr_status", { updates: [updated] });
-    }
-
+    this.broadcastSessionStatus(sessionId);
     return state;
   }
 
@@ -326,12 +331,58 @@ export class PrStatusPoller {
     state.attemptCount++;
     state.status = "running";
 
-    // Broadcast the updated state
-    const status = this.lastKnown.get(sessionId);
-    if (status) {
-      const updated = this.attachAutoFixState(status);
-      this.sseBroadcast("pr_status", { updates: [updated] });
+    this.broadcastSessionStatus(sessionId);
+  }
+
+  // ---- Auto-merge state management ----
+
+  /** Get auto-merge state for a session. */
+  getAutoMergeState(sessionId: string): AutoMergeState | undefined {
+    return this.autoMergeStates.get(sessionId);
+  }
+
+  /** Set auto-merge enabled/disabled for a session. */
+  setAutoMergeEnabled(sessionId: string, enabled: boolean): AutoMergeState {
+    let state = this.autoMergeStates.get(sessionId);
+    if (!state) {
+      state = { enabled, mergeMethod: "squash" };
+      this.autoMergeStates.set(sessionId, state);
+    } else {
+      state.enabled = enabled;
+      if (enabled) {
+        // Clear any previous error when re-enabling
+        delete state.error;
+      }
     }
+
+    this.broadcastSessionStatus(sessionId);
+    return state;
+  }
+
+  /** Set an auto-merge error (toggle reverts to OFF). */
+  setAutoMergeError(sessionId: string, error: PrAutoMergeError): void {
+    let state = this.autoMergeStates.get(sessionId);
+    if (!state) {
+      state = { enabled: false, mergeMethod: "squash", error };
+      this.autoMergeStates.set(sessionId, state);
+    } else {
+      state.error = error;
+    }
+
+    this.broadcastSessionStatus(sessionId);
+  }
+
+  /** Set the preferred merge method for a session. */
+  setMergeMethod(sessionId: string, method: "squash" | "merge" | "rebase"): void {
+    let state = this.autoMergeStates.get(sessionId);
+    if (!state) {
+      state = { enabled: false, mergeMethod: method };
+      this.autoMergeStates.set(sessionId, state);
+    } else {
+      state.mergeMethod = method;
+    }
+
+    this.broadcastSessionStatus(sessionId);
   }
 
   /** Clean up all timers. */
@@ -342,19 +393,42 @@ export class PrStatusPoller {
     this.repoTimers.clear();
   }
 
-  /** Attach auto-fix state to a PrStatusSummary for SSE broadcast. */
-  private attachAutoFixState(summary: PrStatusSummary): PrStatusSummary {
-    const state = this.autoFixStates.get(summary.sessionId);
-    if (!state) return summary;
-    return {
-      ...summary,
-      autoFix: {
-        enabled: state.enabled,
-        status: state.status,
-        attemptCount: state.attemptCount,
-        maxAttempts: MAX_AUTO_FIX_ATTEMPTS,
-      },
-    };
+  /** Broadcast current status for a single session. */
+  private broadcastSessionStatus(sessionId: string): void {
+    const status = this.lastKnown.get(sessionId);
+    if (status) {
+      const updated = this.attachAutomationState(status);
+      this.sseBroadcast("pr_status", { updates: [updated] });
+    }
+  }
+
+  /** Attach auto-fix and auto-merge state to a PrStatusSummary for SSE broadcast. */
+  private attachAutomationState(summary: PrStatusSummary): PrStatusSummary {
+    let result = summary;
+    const fixState = this.autoFixStates.get(summary.sessionId);
+    if (fixState) {
+      result = {
+        ...result,
+        autoFix: {
+          enabled: fixState.enabled,
+          status: fixState.status,
+          attemptCount: fixState.attemptCount,
+          maxAttempts: MAX_AUTO_FIX_ATTEMPTS,
+        },
+      };
+    }
+    const mergeState = this.autoMergeStates.get(summary.sessionId);
+    if (mergeState) {
+      result = {
+        ...result,
+        autoMerge: {
+          enabled: mergeState.enabled,
+          mergeMethod: mergeState.mergeMethod,
+          error: mergeState.error,
+        },
+      };
+    }
+    return result;
   }
 
   private startPolling(repoKey: string, owner: string, repo: string): void {
@@ -429,13 +503,13 @@ export class PrStatusPoller {
         // Handle auto-fix state transitions
         this.handleAutoFixTransition(session.id, prev, summary, prNode, owner, repo);
 
-        // Attach auto-fix state before comparison and broadcast
-        const withAutoFix = this.attachAutoFixState(summary);
+        // Attach automation state before comparison and broadcast
+        const withAutomation = this.attachAutomationState(summary);
 
         // Only include in broadcast if something changed
         if (!prev || !prStatusEqual(prev, summary)) {
           this.lastKnown.set(session.id, summary);
-          updates.push(withAutoFix);
+          updates.push(withAutomation);
         }
       } else {
         // PR disappeared from OPEN results — it may have been merged
@@ -446,6 +520,20 @@ export class PrStatusPoller {
           this.mergedSessions.add(session.id);
           this.lastPrNodes.delete(session.id);
           updates.push(mergedSummary);
+
+          // Trigger post-merge archive
+          if (this.onMergeDetectedCb) {
+            this.onMergeDetectedCb(session.id).catch((err) => {
+              console.error(`[pr-poller] Post-merge archive error for ${session.id}:`, err);
+            });
+          }
+        } else if (this.pendingCatchUp.has(session.id)) {
+          // First poll with no prior state — fire a one-time REST probe to check
+          // if a PR already exists (e.g., merged before server restart).
+          this.pendingCatchUp.delete(session.id);
+          this.catchUpProbe(session.id, owner, repo, session.branch).catch((err) => {
+            console.error(`[pr-poller] Catch-up probe error for ${session.id}:`, err);
+          });
         }
       }
     }
@@ -453,6 +541,48 @@ export class PrStatusPoller {
     // Broadcast only if there are changes
     if (updates.length > 0) {
       this.sseBroadcast("pr_status", { updates });
+    }
+  }
+
+  /**
+   * One-time REST probe to check if a PR already exists for a session's branch.
+   * Handles the case where a PR was merged/closed before the poller had any prior state
+   * (e.g., after a server restart).
+   */
+  private async catchUpProbe(sessionId: string, owner: string, repo: string, branch: string): Promise<void> {
+    const pr = await this.githubAuth.findPullRequestAnyState(owner, repo, branch);
+    if (!pr) return; // No PR found — session stays in "ready" phase
+
+    const isMerged = pr.merged_at !== null;
+    const prState = isMerged ? "merged" as const : pr.state === "closed" ? "closed" as const : "open" as const;
+
+    // If the PR is still open, the next GraphQL poll will pick it up — skip
+    if (prState === "open") return;
+
+    const summary: PrStatusSummary = {
+      sessionId,
+      prNumber: pr.number,
+      prUrl: pr.url,
+      prTitle: pr.title,
+      prState,
+      baseBranch: pr.base,
+      headBranch: branch,
+      insertions: pr.additions,
+      deletions: pr.deletions,
+      checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 },
+      mergeable: false,
+      autoMergeEnabled: false,
+    };
+
+    this.lastKnown.set(sessionId, summary);
+    this.mergedSessions.add(sessionId);
+    this.sseBroadcast("pr_status", { updates: [summary] });
+
+    // Trigger post-merge archive for merged PRs (not for closed-without-merge)
+    if (isMerged && this.onMergeDetectedCb) {
+      this.onMergeDetectedCb(sessionId).catch((err) => {
+        console.error(`[pr-poller] Post-merge archive error for ${sessionId}:`, err);
+      });
     }
   }
 

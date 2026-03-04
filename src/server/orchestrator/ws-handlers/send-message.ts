@@ -326,30 +326,16 @@ async function runClaudeWithMessage(ctx: FullCtx, opts: {
           if (prStatus) {
             // PR already exists — the poller handles updates via SSE
           } else {
-            // No PR yet — send a "ready" card with diff stats
-            const parentCommit = `${commitHash}~1`;
-            const files = await git.diffNameStatus(parentCommit, commitHash);
-            const diffSummary = await git.diffSummary();
-
-            let totalInsertions = 0;
-            let totalDeletions = 0;
-            const fileStats = files.map((f) => {
-              const fileDiff = diffSummary.find((d) => d.file === f.path);
-              const ins = fileDiff?.insertions ?? 0;
-              const del = fileDiff?.deletions ?? 0;
-              totalInsertions += ins;
-              totalDeletions += del;
-              return { path: f.path, status: f.status, insertions: ins, deletions: del };
-            });
-
+            // No PR yet — send a "ready" card with diff stats vs base branch
             const headBranch = session.branch || await git.getCurrentBranch();
+            const { insertions: totalInsertions, deletions: totalDeletions } = await git.diffStatVsBranch("main");
+
             emitDone({
               type: "pr_lifecycle_update",
               sessionId: capturedSessionId,
               cardId: `pr-card-${capturedSessionId}`,
               phase: "ready",
               headBranch,
-              files: fileStats,
               totalInsertions,
               totalDeletions,
             });

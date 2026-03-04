@@ -40,6 +40,7 @@ import * as threadHandlers from "./ws-handlers/thread-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
 import { registerApiRoutes } from "./api-routes.js";
 import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
+import { archiveSession } from "./services/session.js";
 export { getContextWindowSize } from "./ws-handlers/send-message.js";
 
 const WORKSPACE = "/workspace";
@@ -578,6 +579,17 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       const runner = runnerRegistry.get(sessionId);
       if (!runner) return;
       runner.sendSystemMessage(prompt);
+    },
+    onMergeDetectedCb: async (sessionId) => {
+      try {
+        const result = await archiveSession(
+          sessionManager, runnerRegistry, createRepoGit, getSharedRepoDir, sessionId,
+        );
+        sseBroadcast("session_list", { sessions: result.sessions });
+        console.log(`[pr-poller] Post-merge archive complete for ${sessionId}`);
+      } catch (err) {
+        console.error(`[pr-poller] Post-merge archive failed for ${sessionId}:`, err);
+      }
     },
   });
 

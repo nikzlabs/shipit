@@ -50,10 +50,11 @@ function makeSessionManager(sessions: Array<{ id: string; branch?: string; remot
   } as unknown as SessionManager;
 }
 
-function makeGitHubAuth(graphqlResult: unknown = null): GitHubAuthManager {
+function makeGitHubAuth(graphqlResult: unknown = null, restProbeResult: unknown = null): GitHubAuthManager {
   return {
     authenticated: true,
     graphqlQuery: vi.fn().mockResolvedValue(graphqlResult),
+    findPullRequestAnyState: vi.fn().mockResolvedValue(restProbeResult),
   } as unknown as GitHubAuthManager;
 }
 
@@ -499,5 +500,136 @@ describe("PrStatusPoller — auto-fix state", () => {
     expect(statuses[0].autoFix).toMatchObject({ enabled: true, attemptCount: 0 });
     poller2.destroy();
     vi.useRealTimers();
+  });
+});
+
+// ---- Phase 3: Catch-up probe for already-merged PRs ----
+
+describe("PrStatusPoller — catch-up probe", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("detects merged PR via catch-up probe when no prior state exists", async () => {
+    const noPrs = { data: { repository: { pullRequests: { nodes: [] } } } };
+    const mergedProbe = {
+      url: "https://github.com/owner/repo/pull/99",
+      number: 99,
+      base: "main",
+      title: "Merged feature",
+      state: "closed" as const,
+      merged_at: "2024-01-01T00:00:00Z",
+      additions: 50,
+      deletions: 10,
+    };
+
+    const githubAuth = makeGitHubAuth(noPrs, mergedProbe);
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/merged-branch", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const sseBroadcast = vi.fn();
+    const onMergeDetected = vi.fn().mockResolvedValue(undefined);
+
+    const poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, onMergeDetectedCb: onMergeDetected });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    // First poll: no open PR → triggers catch-up probe
+    await vi.advanceTimersByTimeAsync(0);
+    // Allow catch-up probe promise to resolve
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The probe should have broadcast a merged status
+    expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
+      updates: [expect.objectContaining({ sessionId: "s1", prState: "merged", prNumber: 99 })],
+    }));
+
+    // Should trigger post-merge archive
+    expect(onMergeDetected).toHaveBeenCalledWith("s1");
+
+    poller.destroy();
+  });
+
+  it("detects closed (not merged) PR via catch-up probe", async () => {
+    const noPrs = { data: { repository: { pullRequests: { nodes: [] } } } };
+    const closedProbe = {
+      url: "https://github.com/owner/repo/pull/88",
+      number: 88,
+      base: "main",
+      title: "Closed feature",
+      state: "closed" as const,
+      merged_at: null,
+      additions: 30,
+      deletions: 5,
+    };
+
+    const githubAuth = makeGitHubAuth(noPrs, closedProbe);
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/closed-branch", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const sseBroadcast = vi.fn();
+    const onMergeDetected = vi.fn().mockResolvedValue(undefined);
+
+    const poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, onMergeDetectedCb: onMergeDetected });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Should broadcast closed status
+    expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
+      updates: [expect.objectContaining({ sessionId: "s1", prState: "closed", prNumber: 88 })],
+    }));
+
+    // Should NOT trigger archive for closed (not merged) PRs
+    expect(onMergeDetected).not.toHaveBeenCalled();
+
+    poller.destroy();
+  });
+
+  it("fires catch-up probe only once per session", async () => {
+    const noPrs = { data: { repository: { pullRequests: { nodes: [] } } } };
+    const githubAuth = makeGitHubAuth(noPrs, null); // probe returns null (no PR found)
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/no-pr-branch", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const sseBroadcast = vi.fn();
+
+    const poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    // First poll — triggers catch-up
+    await vi.advanceTimersByTimeAsync(0);
+    expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledTimes(1);
+
+    // Second poll — no catch-up (already consumed)
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledTimes(1);
+
+    poller.destroy();
+  });
+
+  it("skips catch-up probe when session has matching open PR", async () => {
+    const withPr = {
+      data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+    };
+    const githubAuth = makeGitHubAuth(withPr);
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const sseBroadcast = vi.fn();
+
+    const poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Probe should NOT have been called since the GraphQL query found an open PR
+    expect(githubAuth.findPullRequestAnyState).not.toHaveBeenCalled();
+
+    poller.destroy();
   });
 });
