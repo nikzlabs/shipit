@@ -528,7 +528,10 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
           try {
             const currentBranch = session.branch;
             if (currentBranch) {
-              const newBranchName = `${currentBranch}-${nameResult.slug}`;
+              // Extract the random slug from the prefix (e.g. "shipit/abc123" → "abc123")
+              // and rebuild as shipit/<descriptive-name>-<random-slug>
+              const randomSlug = currentBranch.replace(/^shipit\//, "");
+              const newBranchName = `shipit/${nameResult.slug}-${randomSlug}`;
               const sessionGit = ctx.createGitManager(session.workspaceDir!);
               await sessionGit.renameBranch(currentBranch, newBranchName);
               ctx.sessionManager.setWorktreeInfo(effectiveSessionId, {
