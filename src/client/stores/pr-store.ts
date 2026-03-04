@@ -84,14 +84,14 @@ interface PrState {
   quickCreate: (sessionId: string) => Promise<void>;
 
   // CI fix actions
-  /** Trigger manual CI fix. */
-  fixCI: (sessionId: string) => Promise<void>;
+  /** Trigger manual CI fix. Returns error message on failure, null on success. */
+  fixCI: (sessionId: string) => Promise<string | null>;
   /** Toggle auto-fix on/off. */
   toggleAutoFix: (sessionId: string, enabled: boolean) => Promise<void>;
 
   // Merge actions
-  /** Merge the PR with the given method. */
-  merge: (sessionId: string, method?: string) => Promise<void>;
+  /** Merge the PR with the given method. Returns error message on failure, null on success. */
+  merge: (sessionId: string, method?: string) => Promise<string | null>;
   /** Toggle auto-merge on/off. */
   toggleAutoMerge: (sessionId: string, enabled: boolean) => Promise<void>;
   /** Update the preferred merge method. */
@@ -254,11 +254,12 @@ export const usePrStore = create<PrState>((set, get) => ({
       });
       if (!res.ok) {
         const data = await res.json();
-        console.error("[pr-store] Fix CI failed:", data.error);
+        return data.error || "Failed to fix CI issues";
       }
       // State updates come from SSE, not from the POST response
+      return null;
     } catch (err) {
-      console.error("[pr-store] Fix CI failed:", err);
+      return err instanceof Error ? err.message : "Failed to fix CI issues";
     }
   },
 
@@ -296,11 +297,12 @@ export const usePrStore = create<PrState>((set, get) => ({
       });
       if (!res.ok) {
         const data = await res.json();
-        console.error("[pr-store] Merge failed:", data.message || data.error);
+        return data.message || data.error || "Failed to merge pull request";
       }
       // State updates come from SSE (merged detection)
+      return null;
     } catch (err) {
-      console.error("[pr-store] Merge failed:", err);
+      return err instanceof Error ? err.message : "Failed to merge pull request";
     }
   },
 

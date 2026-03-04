@@ -11,6 +11,7 @@
 import { useState } from "react";
 import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
+import { useUiStore } from "../stores/ui-store.js";
 
 // ---- Shared ----
 
@@ -121,22 +122,35 @@ const MERGE_METHOD_LABELS: Record<string, string> = {
 function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: PrCardState["autoMerge"] }) {
   const merge = usePrStore((s) => s.merge);
   const setMergeMethod = usePrStore((s) => s.setMergeMethod);
+  const setToast = useUiStore((s) => s.setToast);
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [merging, setMerging] = useState(false);
 
   const method = autoMerge?.mergeMethod ?? "squash";
   const label = MERGE_METHOD_LABELS[method] ?? "Squash and merge";
 
+  const handleMerge = async () => {
+    setMerging(true);
+    const error = await merge(sessionId, method);
+    if (error) {
+      setToast({ message: `Merge failed: ${error}` });
+    }
+    setMerging(false);
+  };
+
   return (
     <div className="relative inline-flex">
       <button
-        onClick={() => merge(sessionId, method)}
-        className="px-2 py-0.5 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded-l transition-colors"
+        onClick={handleMerge}
+        disabled={merging}
+        className="px-2 py-0.5 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded-l transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        {label}
+        {merging ? "Merging..." : label}
       </button>
       <button
         onClick={() => setDropdownOpen(!dropdownOpen)}
-        className="px-1 py-0.5 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded-r border-l border-emerald-700 transition-colors"
+        disabled={merging}
+        className="px-1 py-0.5 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded-r border-l border-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         aria-label="Select merge method"
       >
         {"\u25BE"}
@@ -163,9 +177,16 @@ function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: 
 
 function ReadyPhase({ card, sessionId }: { card: PrCardState; sessionId: string }) {
   const quickCreate = usePrStore((s) => s.quickCreate);
+  const [creating, setCreating] = useState(false);
   const ins = card.totalInsertions ?? 0;
   const del = card.totalDeletions ?? 0;
   const hasDiffStats = ins > 0 || del > 0;
+
+  const handleCreate = async () => {
+    setCreating(true);
+    await quickCreate(sessionId);
+    setCreating(false);
+  };
 
   return (
     <div className="flex items-center gap-3">
@@ -178,10 +199,11 @@ function ReadyPhase({ card, sessionId }: { card: PrCardState; sessionId: string 
       {hasDiffStats && <DiffStats ins={ins} del={del} />}
       {(card.headBranch || hasDiffStats) && (
         <button
-          onClick={() => quickCreate(sessionId)}
-          className="px-3 py-1 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded-md transition-colors"
+          onClick={handleCreate}
+          disabled={creating}
+          className="px-3 py-1 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Create Pull Request
+          {creating ? "Creating..." : "Create Pull Request"}
         </button>
       )}
     </div>
@@ -200,6 +222,8 @@ function CreatingPhase() {
 function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }) {
   const pr = card.pr;
   const fixCI = usePrStore((s) => s.fixCI);
+  const setToast = useUiStore((s) => s.setToast);
+  const [fixingCI, setFixingCI] = useState(false);
   if (!pr) return null;
 
   const autoFix = card.autoFix;
@@ -213,6 +237,15 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
   const showFixButton = isCiFailed && !isAutoFixRunning && (!autoFix?.enabled || isAutoFixExhausted);
   const showMergeButton = canMerge && !autoMerge?.enabled;
   const showAutoMergeToggle = !isCiFailed || isCiPassed;
+
+  const handleFixCI = async () => {
+    setFixingCI(true);
+    const error = await fixCI(sessionId);
+    if (error) {
+      setToast({ message: `Fix CI failed: ${error}` });
+    }
+    setFixingCI(false);
+  };
 
   return (
     <div>
@@ -234,10 +267,11 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
         )}
         {showFixButton && (
           <button
-            onClick={() => fixCI(sessionId)}
-            className="px-2 py-0.5 text-xs font-medium bg-red-600/80 hover:bg-red-500 text-white rounded transition-colors"
+            onClick={handleFixCI}
+            disabled={fixingCI}
+            className="px-2 py-0.5 text-xs font-medium bg-red-600/80 hover:bg-red-500 text-white rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Fix CI Issues
+            {fixingCI ? "Fixing..." : "Fix CI Issues"}
           </button>
         )}
         <a
@@ -347,7 +381,14 @@ function RichErrorText({ text }: { text: string }) {
 
 function ErrorPhase({ card, sessionId }: { card: PrCardState; sessionId: string }) {
   const quickCreate = usePrStore((s) => s.quickCreate);
+  const [retrying, setRetrying] = useState(false);
   const lines = card.errorMessage?.split("\n") ?? [];
+
+  const handleRetry = async () => {
+    setRetrying(true);
+    await quickCreate(sessionId);
+    setRetrying(false);
+  };
 
   return (
     <div className="flex items-start gap-3">
@@ -362,10 +403,11 @@ function ErrorPhase({ card, sessionId }: { card: PrCardState; sessionId: string 
         ))}
       </span>
       <button
-        onClick={() => quickCreate(sessionId)}
-        className="text-xs text-gray-400 hover:text-gray-200 transition-colors shrink-0"
+        onClick={handleRetry}
+        disabled={retrying}
+        className="text-xs text-gray-400 hover:text-gray-200 transition-colors shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        Retry
+        {retrying ? "Retrying..." : "Retry"}
       </button>
     </div>
   );
