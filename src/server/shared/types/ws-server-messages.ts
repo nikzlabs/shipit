@@ -269,6 +269,8 @@ export interface WsSessionStatus {
 export interface WsSessionAgentStarted {
   type: "session_agent_started";
   sessionId: string;
+  /** Optional activity label for system-initiated turns (e.g. "Auto-fixing CI..."). */
+  activity?: string;
 }
 
 /** Server → Client: agent finished in a session (broadcast to all clients). */
@@ -303,6 +305,8 @@ export interface WsRepoList {
 export interface WsSystemUserMessage {
   type: "system_user_message";
   text: string;
+  /** Activity label for the UI (e.g. "Auto-fixing CI..."). */
+  activity?: string;
 }
 
 // ---- Rollback messages (server → client) ----

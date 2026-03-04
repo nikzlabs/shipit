@@ -737,9 +737,7 @@ export class GitHubAuthManager extends EventEmitter {
       if (!res.ok) return "";
 
       const text = await res.text();
-      // Return last 100 lines to keep prompt size reasonable
-      const lines = text.split("\n");
-      return lines.slice(-100).join("\n");
+      return text;
     } catch {
       return "";
     }

@@ -480,6 +480,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         },
         sseBroadcast,
         persistMessage: (sessionId, msg) => chatHistoryManager.append(sessionId, msg),
+        resolveAgentSessionId: (sessionId) => sessionManager.get(sessionId)?.agentSessionId,
       });
     },
   });
@@ -559,16 +560,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     sseBroadcast,
     runnerRegistry,
     fetchAndFixCb: async (sessionId, owner, repo, failedChecks) => {
-      const logs = await fetchCIFailureLogs(githubAuthManager, owner, repo, failedChecks);
-      const prStatus = prStatusPoller.getStatus(sessionId);
-      if (!prStatus) return;
-      const prompt = buildCIFixPrompt(prStatus.prNumber, logs);
-
-      prStatusPoller.markAutoFixRunning(sessionId);
-
       const runner = runnerRegistry.get(sessionId);
       if (!runner) return;
-      runner.sendSystemMessage(prompt);
+
+      const logs = await fetchCIFailureLogs(githubAuthManager, owner, repo, failedChecks, runner.sessionDir);
+      if (logs.length === 0) return;
+      const prompt = buildCIFixPrompt(logs);
+
+      prStatusPoller.markAutoFixRunning(sessionId);
+      runner.sendSystemMessage(prompt, "Auto-fixing CI...");
     },
     onMergeDetectedCb: async (sessionId) => {
       try {

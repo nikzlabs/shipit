@@ -146,6 +146,7 @@ describe("SessionRunner", () => {
       scheduleAutoPush: vi.fn(),
       sseBroadcast: vi.fn(),
       persistMessage: vi.fn(),
+      resolveAgentSessionId: vi.fn().mockReturnValue("agent-session-123"),
     });
 
     runner.sendSystemMessage("fix ci");
