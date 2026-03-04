@@ -1,8 +1,6 @@
 import { create } from "zustand";
 import type { GitCommit } from "../components/GitHistory.js";
 import type { TurnDiffData } from "../components/DiffPanel.js";
-import type { FileTreeNode } from "../components/FileTree.js";
-
 interface GitState {
   commits: GitCommit[];
   identityNeeded: boolean;
@@ -23,10 +21,6 @@ interface GitState {
   fetchLog: (sessionId: string) => Promise<void>;
   fetchDiff: (sessionId: string, from: string, to: string) => Promise<void>;
   rollback: (sessionId: string, hash: string) => Promise<void>;
-  rejectFiles: (
-    sessionId: string,
-    files: string[],
-  ) => Promise<{ gitLog?: GitCommit[]; fileTree?: FileTreeNode[] } | null>;
   submitGitIdentity: (name: string, email: string) => Promise<void>;
 }
 
@@ -87,28 +81,6 @@ export const useGitStore = create<GitState>((set, get) => ({
       throw new Error(`Failed to rollback: ${res.status}`);
     }
     await get().fetchLog(sessionId);
-  },
-
-  rejectFiles: async (sessionId, files) => {
-    const res = await fetch(`/api/sessions/${sessionId}/git/reject`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fromCommit: get().lastCommitPair?.from, files }),
-    });
-    if (!res.ok) {
-      throw new Error(`Failed to reject files: ${res.status}`);
-    }
-
-    set({ turnDiff: null, lastCommitPair: null });
-
-    const stateRes = await fetch(
-      `/api/sessions/${sessionId}/workspace-state`,
-    );
-    if (!stateRes.ok) {
-      return null;
-    }
-    const result = await stateRes.json();
-    return result as { gitLog?: GitCommit[]; fileTree?: FileTreeNode[] };
   },
 
   submitGitIdentity: async (name, email) => {

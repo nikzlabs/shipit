@@ -1226,12 +1226,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         try { msg = JSON.parse(raw.toString()); } catch { send({ type: "error", message: "Invalid JSON" }); return; }
 
         switch (msg.type) {
-          case "diff_comment": {
-            const commentLines = msg.comments.map((c: { file: string; line: number; text: string }) =>
-              `File: ${c.file}, Line ${c.line}:\n"${c.text}"`).join("\n\n");
-            sendMessageHandlers.handleSendMessage(ctx, { type: "send_message", text: `The user has reviewed your changes and left the following inline comments:\n\n${commentLines}\n\nPlease address these comments and update the code accordingly.` });
-            return;
-          }
           case "terminal_start": return terminalHandlers.handleTerminalStart(ctx, msg);
           case "terminal_input": return terminalHandlers.handleTerminalInput(ctx, msg);
           case "terminal_resize": return terminalHandlers.handleTerminalResize(ctx, msg);

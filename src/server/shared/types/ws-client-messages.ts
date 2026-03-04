@@ -53,17 +53,6 @@ export interface WsCancelQueuedMessage {
   position: number | "all";
 }
 
-// ---- Diff review messages (client → server) ----
-
-export interface WsDiffComment {
-  type: "diff_comment";
-  comments: Array<{
-    file: string;
-    line: number;
-    text: string;
-  }>;
-}
-
 export type WsClientMessage =
   | WsSendMessage
   | WsClearLogs
@@ -78,5 +67,4 @@ export type WsClientMessage =
   | WsTerminalResize
   | WsCancelQueuedMessage
   | WsInterruptClaude
-  | WsInitPreviewConfig
-  | WsDiffComment;
+  | WsInitPreviewConfig;
