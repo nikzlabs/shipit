@@ -458,6 +458,39 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       return undefined;
     },
     onRunnerIdle: () => enforceIdleContainerLimit(),
+    onRunnerCreated: (runner) => {
+      runner.setSystemTurnDeps({
+        agentFactory: (agentId) => {
+          if (runner.createAgent) return runner.createAgent(agentId);
+          if (agentFactory) return agentFactory(agentId);
+          throw new Error("No agent factory available for system turn");
+        },
+        autoCommit: async (sessionDir, summary) => {
+          const git = createGitManager(sessionDir);
+          return git.autoCommit(summary);
+        },
+        scheduleAutoPush: (sessionDir) => {
+          if (!githubAuthManager.authenticated) return;
+          runner.clearPushTimer();
+          runner.setPushTimer(setTimeout(async () => {
+            runner.setPushTimer(null);
+            try {
+              const git = createGitManager(sessionDir);
+              const remotes = await git.getRemotes();
+              const origin = remotes.find((r) => r.name === "origin");
+              if (!origin) return;
+              const branch = await git.getCurrentBranch();
+              if (!branch) return;
+              await git.push("origin", branch);
+              runner.emitMessage({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
+            } catch (err) {
+              console.error("[system-turn] auto-push failed:", getErrorMessage(err));
+            }
+          }, autoPushDebounceMs));
+        },
+        sseBroadcast,
+      });
+    },
   });
 
   // ---- SSE (Server-Sent Events) for global push ----
@@ -951,7 +984,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       let attachedRunner: SessionRunnerInterface | null = null;
       let runnerMessageListener: ((msg: WsServerMessage) => void) | null = null;
       let previewRetryListener: ((msg: WsServerMessage) => void) | null = null;
-      let systemTurnListener: ((payload: { text: string }) => void) | null = null;
 
       const send = (msg: WsServerMessage) => {
         if (socket.readyState === 1) {
@@ -966,18 +998,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         attachedRunner = runner;
         runnerMessageListener = (msg: WsServerMessage) => { send(msg); };
         runner.on("message", runnerMessageListener);
-        // Listen for server-initiated turns (e.g., CI auto-fix when agent is idle)
-        systemTurnListener = (payload: { text: string }) => {
-          // Lazy-reference ctx — it's defined later but stable by the time this fires
-          sendMessageHandlers.handleSendMessage(ctx, {
-            type: "send_message",
-            text: payload.text,
-            sessionId: runner.sessionId,
-          }).catch((err) => {
-            console.error("[system_turn] Failed to process:", getErrorMessage(err));
-          });
-        };
-        runner.on("system_turn", systemTurnListener);
         runner.attachViewer();
         for (const msg of runner.getTurnEventBuffer()) { send(msg); }
         if (runner.getQueueSnapshot().length > 0) {
@@ -1017,13 +1037,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         if (attachedRunner) {
           if (runnerMessageListener) attachedRunner.off("message", runnerMessageListener);
           if (previewRetryListener) attachedRunner.off("message", previewRetryListener);
-          if (systemTurnListener) attachedRunner.off("system_turn", systemTurnListener);
           attachedRunner.detachViewer();
         }
         attachedRunner = null;
         runnerMessageListener = null;
         previewRetryListener = null;
-        systemTurnListener = null;
       };
 
       const scheduleAutoPush = (git: GitManager, _sendFn: typeof send) => {

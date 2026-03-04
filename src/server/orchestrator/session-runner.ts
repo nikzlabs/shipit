@@ -7,7 +7,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import type { AgentProcess, AgentId, TerminalProcess } from "../shared/types.js";
+import type { AgentProcess, AgentId, AgentEvent, TerminalProcess, AgentRunParams } from "../shared/types.js";
 import type { WsServerMessage, ImageAttachment, FileContextRef, PermissionMode, ClaudeContentBlockToolUse } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
@@ -21,6 +21,21 @@ export interface QueuedMessage {
   permissionMode?: PermissionMode;
 }
 
+/**
+ * Dependencies for server-initiated (system) turns. Injected once after the
+ * runner is created. Without these, sendSystemMessage() falls back to enqueue.
+ */
+export interface SystemTurnDeps {
+  /** Create an AgentProcess for the given agent ID. */
+  agentFactory: (agentId: AgentId) => AgentProcess;
+  /** Auto-commit working tree changes. Returns commit hash or null. */
+  autoCommit: (sessionDir: string, summary: string) => Promise<string | null>;
+  /** Schedule a debounced auto-push after a commit. */
+  scheduleAutoPush: (sessionDir: string) => void;
+  /** Broadcast to SSE clients. */
+  sseBroadcast: (event: string, data: unknown) => void;
+}
+
 // ---------------------------------------------------------------------------
 // SessionRunnerInterface — shared contract for direct and container runners
 // ---------------------------------------------------------------------------
@@ -32,8 +47,6 @@ export interface SessionRunnerEvents {
   message: [WsServerMessage];
   idle: [];
   disposed: [];
-  /** Emitted when the runner wants to start a system-initiated agent turn (e.g., CI auto-fix). */
-  system_turn: [{ text: string }];
 }
 
 /**
@@ -109,9 +122,11 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   waitForPreviewStatus(): Promise<void>;
 
   // System-initiated turns
-  /** Request a new agent turn from the server side (e.g., CI auto-fix).
-   *  If running, enqueues. If idle, emits system_turn for a connected
-   *  WS handler to pick up (falls back to enqueue if nobody is listening). */
+  /** Inject dependencies needed for server-initiated agent turns. */
+  setSystemTurnDeps(deps: SystemTurnDeps): void;
+  /** Start a server-initiated agent turn (e.g., CI auto-fix).
+   *  If running, enqueues. If idle and deps are set, starts a turn directly.
+   *  Falls back to enqueue if deps aren't configured. */
   sendSystemMessage(text: string): void;
 
   // Lifecycle
@@ -246,18 +261,103 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   get previewStatusKnown(): boolean { return true; }
   async waitForPreviewStatus(): Promise<void> { /* always known */ }
 
+  private _systemTurnDeps: SystemTurnDeps | null = null;
+
+  setSystemTurnDeps(deps: SystemTurnDeps): void {
+    this._systemTurnDeps = deps;
+  }
+
   sendSystemMessage(text: string): void {
     if (this._isRunning) {
       this.enqueue({ text });
       return;
     }
-    // Emit system_turn so a connected WS handler can start the turn.
-    // If no listener is attached, enqueue as fallback (will drain next turn).
-    if (this.listenerCount("system_turn") > 0) {
-      this.emit("system_turn", { text });
-    } else {
+    if (!this._systemTurnDeps) {
+      // No deps — fall back to enqueue (will drain on next WS-initiated turn)
       this.enqueue({ text });
+      return;
     }
+    this._runSystemTurn(text);
+  }
+
+  /**
+   * Start an agent turn directly on the runner, without WS context.
+   * Handles event forwarding, auto-commit, auto-push, and queue drain.
+   */
+  private _runSystemTurn(text: string): void {
+    const deps = this._systemTurnDeps!;
+    const agent = deps.agentFactory(this._agentId);
+    this.setAgent(agent);
+    this._isRunning = true;
+    this._accumulatedText = "";
+    this._turnSummary = "";
+    this._needsNewMessageGroup = true;
+    this.clearTurnEventBuffer();
+
+    deps.sseBroadcast("session_agent_started", { sessionId: this.sessionId });
+
+    // Forward agent events to viewers
+    agent.on("event", (event: AgentEvent) => {
+      this.emitMessage({ type: "agent_event", event });
+
+      if (event.type === "agent_assistant") {
+        const contentArr = (event as { content?: Array<{ type: string; text?: string }> }).content ?? [];
+        const text = contentArr
+          .filter((b): b is { type: "text"; text: string } => b.type === "text")
+          .map((b) => b.text)
+          .join("");
+        if (text) {
+          this._turnSummary = text;
+          this._accumulatedText += text;
+        }
+      }
+    });
+
+    agent.on("error", (err: Error) => {
+      console.error("[system-turn] agent error:", err.message);
+      this.emitMessage({ type: "error", message: `Agent process error: ${err.message}` });
+      this.setAgent(null);
+    });
+
+    agent.on("done", async (code: number | null) => {
+      console.log("[system-turn] agent exited with code", code);
+      this.setAgent(null);
+
+      // Auto-commit
+      try {
+        const summary = this._turnSummary.split("\n")[0]?.slice(0, 120) || "CI fix";
+        const hash = await deps.autoCommit(this.sessionDir, summary);
+        if (hash) {
+          this.emitMessage({ type: "git_committed", hash, message: summary });
+          deps.scheduleAutoPush(this.sessionDir);
+        }
+      } catch (err) {
+        console.error("[system-turn] auto-commit failed:", err);
+      }
+
+      // Queue drain
+      this._isRunning = false;
+      if (this._messageQueue.length > 0) {
+        const next = this.dequeue();
+        if (next) {
+          this.emitMessage({
+            type: "queue_updated",
+            queue: this._messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 })),
+          });
+          this._runSystemTurn(next.text);
+          return;
+        }
+      }
+
+      deps.sseBroadcast("session_agent_finished", { sessionId: this.sessionId });
+      this.onAgentFinished();
+    });
+
+    // Get agent session ID from session manager if available
+    agent.run({
+      prompt: text,
+      cwd: this.sessionDir,
+    } as AgentRunParams);
   }
 
   onAgentFinished(): void {
@@ -302,6 +402,7 @@ export class SessionRunnerRegistry {
   private _runnerFactory: SessionRunnerFactory;
   private _sharedRepoDirResolver?: (sessionId: string) => string | undefined;
   private _onRunnerIdle?: (sessionId: string) => void;
+  private _onRunnerCreated?: (runner: SessionRunnerInterface) => void;
 
   constructor(opts?: {
     /**
@@ -319,10 +420,16 @@ export class SessionRunnerRegistry {
      * Used by the orchestrator to enforce idle container limits.
      */
     onRunnerIdle?: (sessionId: string) => void;
+    /**
+     * Called after a runner is created. Used to inject SystemTurnDeps so
+     * server-initiated turns (e.g., CI auto-fix) work without WS context.
+     */
+    onRunnerCreated?: (runner: SessionRunnerInterface) => void;
   }) {
     this._runnerFactory = opts?.runnerFactory ?? ((o) => new SessionRunner(o));
     this._sharedRepoDirResolver = opts?.sharedRepoDirResolver;
     this._onRunnerIdle = opts?.onRunnerIdle;
+    this._onRunnerCreated = opts?.onRunnerCreated;
   }
 
   /** Get or create a runner for the given session. */
@@ -343,6 +450,7 @@ export class SessionRunnerRegistry {
       const cb = this._onRunnerIdle;
       runner.on("idle", () => cb(sessionId));
     }
+    this._onRunnerCreated?.(runner);
     this.runners.set(sessionId, runner);
     return runner;
   }

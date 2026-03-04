@@ -133,28 +133,35 @@ describe("SessionRunner", () => {
     runner.dispose();
   });
 
-  it("sendSystemMessage emits system_turn when idle and listener attached", () => {
+  it("sendSystemMessage starts agent turn when idle with deps set", () => {
     const runner = new SessionRunner({
       sessionId: "s1",
       sessionDir: "/tmp/s1",
       defaultAgentId: "claude" as AgentId,
     });
-    const turnSpy = vi.fn();
-    runner.on("system_turn", turnSpy);
+    const fakeAgent = { on: vi.fn(), run: vi.fn(), kill: vi.fn() } as any;
+    runner.setSystemTurnDeps({
+      agentFactory: () => fakeAgent,
+      autoCommit: vi.fn().mockResolvedValue(null),
+      scheduleAutoPush: vi.fn(),
+      sseBroadcast: vi.fn(),
+    });
 
     runner.sendSystemMessage("fix ci");
-    expect(turnSpy).toHaveBeenCalledWith({ text: "fix ci" });
-    expect(runner.queueLength).toBe(0); // not enqueued
+    // Should start a turn directly — not enqueue
+    expect(runner.queueLength).toBe(0);
+    expect(runner.running).toBe(true);
+    expect(fakeAgent.run).toHaveBeenCalledWith(expect.objectContaining({ prompt: "fix ci" }));
     runner.dispose();
   });
 
-  it("sendSystemMessage falls back to enqueue when idle with no listener", () => {
+  it("sendSystemMessage falls back to enqueue when idle with no deps", () => {
     const runner = new SessionRunner({
       sessionId: "s1",
       sessionDir: "/tmp/s1",
       defaultAgentId: "claude" as AgentId,
     });
-    // No system_turn listener attached
+    // No system turn deps set
     runner.sendSystemMessage("fix ci");
     expect(runner.queueLength).toBe(1);
     runner.dispose();
