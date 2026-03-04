@@ -66,7 +66,7 @@ export function AuthOverlay({ url, onPasteCode, onApiKey }: AuthOverlayProps) {
               Open Authentication Page
             </a>
 
-            <div className="pt-4 border-t border-gray-200 dark:border-gray-800">
+            <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
               <form onSubmit={handleCodeSubmit} className="space-y-3">
                 <label htmlFor="auth-code" className="block text-sm text-gray-500 dark:text-gray-400">
                   After signing in, paste the authorization code below
@@ -102,7 +102,7 @@ export function AuthOverlay({ url, onPasteCode, onApiKey }: AuthOverlayProps) {
         )}
 
         {showApiKey ? (
-          <div className="pt-2 border-t border-gray-200 dark:border-gray-800">
+          <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
             <form onSubmit={handleApiKeySubmit} className="space-y-3">
               <label htmlFor="api-key" className="block text-sm text-gray-500 dark:text-gray-400">
                 Enter your Anthropic API key
