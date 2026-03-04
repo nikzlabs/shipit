@@ -12,6 +12,7 @@ import type { CIFailureLog, PrAutoMergeError } from "../../shared/types/github-t
 import { extractFailedCheckRuns } from "../pr-status-poller.js";
 import { parseGitHubRemote } from "../git-utils.js";
 import { ServiceError } from "./types.js";
+import { getErrorMessage } from "../validation.js";
 import type { GitHubStatus } from "./types.js";
 
 // ---- Read operations ----
@@ -224,7 +225,17 @@ export async function quickCreatePr(
   }
 
   // Push the branch
-  await git.push("origin", head);
+  try {
+    await git.push("origin", head);
+  } catch (err) {
+    const msg = getErrorMessage(err);
+    if (msg.includes("workflow")) {
+      throw new ServiceError(403,
+        "Your GitHub token is missing the `workflow` scope, which is required because this branch modifies GitHub Actions workflow files.\n" +
+        "Please update your token at https://github.com/settings/tokens to include the `workflow` scope, then reconnect.");
+    }
+    throw new ServiceError(500, `Push failed: ${msg}`);
+  }
 
   // Detect base branch (main or master)
   const remoteBranches = await git.listRemoteBranches();
