@@ -15,6 +15,7 @@ import { TodoPanel, type TodoItem } from "./TodoPanel.js";
 import { sessionRelativePath } from "../path-utils.js";
 import type { SearchMatch } from "../hooks/useSearch.js";
 import { buildVisualElements } from "./visual-elements.js";
+import { RollbackDropdown, type RollbackMode } from "./RollbackDropdown.js";
 
 export interface ToolUseBlock {
   type: "tool_use";
@@ -55,6 +56,12 @@ export interface ChatMessage {
   queued?: boolean;
   /** 1-indexed position in the queue, shown as a badge. */
   queuePosition?: number;
+  /** Git commit hash produced by auto-commit after this assistant message. */
+  commitHash?: string;
+  /** Parent commit hash (HEAD before the auto-commit). Used for rollback. */
+  parentCommitHash?: string;
+  /** When true, this message was rolled back and should appear dimmed. */
+  rolledBack?: boolean;
 }
 
 /** Scrollable container for consecutive tool calls. Max 5 lines, auto-scrolls during streaming. */
@@ -584,12 +591,6 @@ function MessageImages({ images, isUserMessage }: { images: ChatMessageImage[]; 
   );
 }
 
-export interface CheckpointDivider {
-  id: string;
-  messageIndex: number;
-  label?: string;
-}
-
 export function MessageList({
   messages,
   isLoading,
@@ -598,7 +599,7 @@ export function MessageList({
   currentMatch,
   onEditMessage,
   onAnswerQuestion,
-  checkpoints,
+  onRollback,
 }: {
   messages: ChatMessage[];
   isLoading: boolean;
@@ -607,7 +608,7 @@ export function MessageList({
   currentMatch?: SearchMatch;
   onEditMessage?: (messageIndex: number, newText: string) => void;
   onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void;
-  checkpoints?: CheckpointDivider[];
+  onRollback?: (messageIndex: number, mode: RollbackMode, parentCommitHash: string) => void;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const currentMatchRef = useRef<HTMLElement | null>(null);
@@ -662,16 +663,6 @@ export function MessageList({
   // Whether edit/retry actions are available (not loading, handler provided)
   const canEdit = !isLoading && !!onEditMessage;
 
-  // Build a map of messageIndex → checkpoint dividers for rendering
-  const checkpointsByIndex = new Map<number, CheckpointDivider[]>();
-  if (checkpoints) {
-    for (const cp of checkpoints) {
-      const arr = checkpointsByIndex.get(cp.messageIndex) ?? [];
-      arr.push(cp);
-      checkpointsByIndex.set(cp.messageIndex, arr);
-    }
-  }
-
   return (
     <div className="flex-1 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-4">
       {messages.length === 0 && !isLoading && (
@@ -685,26 +676,6 @@ export function MessageList({
         if (el.kind === "tool-group") {
           return (
             <div key={`tg-${el.messageIndices[0]}`}>
-              {/* Checkpoint dividers for messages in this group */}
-              {el.messageIndices.flatMap((idx) => {
-                const cps = checkpointsByIndex.get(idx);
-                return cps ? cps.map((cp) => (
-                  <div
-                    key={cp.id}
-                    className="flex items-center gap-3 py-1.5 my-1"
-                    data-testid="checkpoint-divider"
-                  >
-                    <div className="flex-1 h-px bg-amber-500/30" />
-                    <span className="flex items-center gap-1.5 text-[11px] text-amber-600 dark:text-amber-400 font-medium shrink-0">
-                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6h-8.5l-1-1H5a2 2 0 00-2 2z" />
-                      </svg>
-                      {cp.label || "Checkpoint"}
-                    </span>
-                    <div className="flex-1 h-px bg-amber-500/30" />
-                  </div>
-                )) : [];
-              })}
               <ToolCallGroup items={el.items} isStreaming={el.streaming} />
             </div>
           );
@@ -748,7 +719,6 @@ export function MessageList({
         const i = el.index;
         const hideTools = el.hideTools;
         const msg = messages[i];
-        const cpDividers = checkpointsByIndex.get(i);
         const msgMatches = matchesByMessage.get(i) ?? [];
         const segments = parseMessageSegments(msg.text);
         const hasCodeBlocks = segments.some((s) => s.type === "code");
@@ -763,25 +733,8 @@ export function MessageList({
 
         return (
           <div key={i}>
-            {/* Checkpoint dividers that fall at this message index */}
-            {cpDividers && cpDividers.map((cp) => (
-              <div
-                key={cp.id}
-                className="flex items-center gap-3 py-1.5 my-1"
-                data-testid="checkpoint-divider"
-              >
-                <div className="flex-1 h-px bg-amber-500/30" />
-                <span className="flex items-center gap-1.5 text-[11px] text-amber-600 dark:text-amber-400 font-medium shrink-0">
-                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6h-8.5l-1-1H5a2 2 0 00-2 2z" />
-                  </svg>
-                  {cp.label || "Checkpoint"}
-                </span>
-                <div className="flex-1 h-px bg-amber-500/30" />
-              </div>
-            ))}
             {!hideBubble && (
-            <div className={`group flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+            <div className={`group flex ${msg.role === "user" ? "justify-end" : "justify-start"} ${msg.rolledBack ? "opacity-40" : ""}`}>
             {/* Edit/Retry buttons — shown on hover for user messages */}
             {showEditActions && (
               <div className="hidden group-hover:flex items-center gap-1 mr-2 shrink-0">
@@ -911,6 +864,17 @@ export function MessageList({
                 </span>
               )}
             </div>
+            )}
+            {/* Rollback button — shown on hover for assistant messages with a linked commit */}
+            {msg.role === "assistant" && msg.commitHash && msg.parentCommitHash && !msg.rolledBack && onRollback && (
+              <div className="hidden group-hover:flex items-center ml-2 shrink-0">
+                <RollbackDropdown
+                  messageIndex={i}
+                  parentCommitHash={msg.parentCommitHash}
+                  disabled={isLoading}
+                  onRollback={onRollback}
+                />
+              </div>
             )}
             </div>
             )}

@@ -4,7 +4,6 @@ import type { RepoGit } from "../repo-git.js";
 import type { SessionManager } from "../sessions.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { GitHubAuthManager } from "../github-auth.js";
-import type { ThreadManager } from "../threads.js";
 import type { DeploymentManager } from "../deployment-manager.js";
 import type { DeploymentStore } from "../deployment-store.js";
 import type { FeatureManager } from "../features.js";
@@ -115,7 +114,6 @@ export interface AppCtx {
   createGitManager: (dir: string) => GitManager;
   createRepoGit: (dir: string) => RepoGit;
   githubAuthManager: GitHubAuthManager;
-  threadManager: ThreadManager;
   deploymentManager: DeploymentManager;
   deploymentStore: DeploymentStore;
   featureManager: FeatureManager;

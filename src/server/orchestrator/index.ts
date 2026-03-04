@@ -16,7 +16,6 @@ import { generateBranchPrefix } from "./git-utils.js";
 import { ChatHistoryManager } from "./chat-history.js";
 import { UsageManager } from "./usage.js";
 import { FeatureManager } from "./features.js";
-import { ThreadManager } from "./threads.js";
 import { DeploymentManager } from "./deployment-manager.js";
 import { DeploymentStore } from "./deployment-store.js";
 import { CredentialStore } from "./credential-store.js";
@@ -36,7 +35,7 @@ import type { ConnectionCtx, RunnerCtx, AppCtx } from "./ws-handlers/types.js";
 import * as terminalHandlers from "./ws-handlers/terminal-handlers.js";
 import * as miscHandlers from "./ws-handlers/misc-handlers.js";
 import * as deployHandlers from "./ws-handlers/deploy-handlers.js";
-import * as threadHandlers from "./ws-handlers/thread-handlers.js";
+import * as rollbackHandlers from "./ws-handlers/rollback-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
 import { registerApiRoutes } from "./api-routes.js";
 import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
@@ -86,11 +85,6 @@ export interface AppDeps {
   credentialsDir?: string;
   /** Whether to serve static files from dist/client. Defaults to true. */
   serveStatic?: boolean;
-  /**
-   * Thread manager instance. Defaults to `new ThreadManager()`.
-   * Manages conversation threads and checkpoints.
-   */
-  threadManager?: ThreadManager;
   /**
    * Deployment manager instance. Defaults to a new manager with Vercel and
    * Cloudflare targets registered.
@@ -239,11 +233,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       console.error("[server] Failed to load GitHub user info:", err);
     });
   }
-
-  // ---- Thread manager ----
-  const threadManager = deps.threadManager ?? new ThreadManager(
-    path.join(workspaceDir, ".vibe-threads")
-  );
 
   // ---- Deployment manager ----
   const deploymentManager = deps.deploymentManager ?? (() => {
@@ -680,7 +669,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
 
     sessionManager.track(appSessionId, title, sessionDir);
-    threadManager.init(appSessionId);
     console.log("[server] Created session directory:", sessionDir);
 
     return { appSessionId, sessionDir };
@@ -923,7 +911,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     credentialStore,
     defaultAgentId,
     workspaceDir,
-    threadManager,
     deploymentManager,
     deploymentStore,
     usageManager,
@@ -1173,7 +1160,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         getRunnerRegistry: () => runnerRegistry,
         attachToRunner, detachFromRunner,
         sessionManager, chatHistoryManager, createGitManager, createRepoGit,
-        githubAuthManager, threadManager, deploymentManager, deploymentStore,
+        githubAuthManager, deploymentManager, deploymentStore,
         featureManager, usageManager, authManager, agentRegistry, credentialStore,
         repoStore, warmSessionForRepo, createSessionDir, generateText,
         getSharedRepoDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
@@ -1262,8 +1249,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           // new_session and activate_session are NOT handled — session is implicit from URL
           case "initiate_deploy": return deployHandlers.handleInitiateDeploy(ctx, msg);
           case "cancel_deploy": return deployHandlers.handleCancelDeploy(ctx);
-          case "fork_thread": return threadHandlers.handleForkThread(ctx, msg);
-          case "switch_thread": return threadHandlers.handleSwitchThread(ctx, msg);
+          case "rollback_code": return rollbackHandlers.handleRollbackCode(ctx, msg);
+          case "rollback_code_and_chat": return rollbackHandlers.handleRollbackCodeAndChat(ctx, msg);
+          case "fork_session_from_message": return rollbackHandlers.handleForkSessionFromMessage(ctx, msg);
           case "cancel_queued_message": return miscHandlers.handleCancelQueuedMessage(ctx, msg);
           case "interrupt_claude": return miscHandlers.handleInterruptClaude(ctx);
           case "init_preview_config": {

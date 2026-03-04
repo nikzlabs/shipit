@@ -287,18 +287,6 @@ describe("Integration: Phase 1 GET endpoints", () => {
     expect(body.pr).toBeNull();
   });
 
-  // ---- Threads ----
-
-  it("GET /api/sessions/:id/threads returns thread list", async () => {
-    await createSession("s1", "Session 1");
-
-    const res = await app.inject({ method: "GET", url: "/api/sessions/s1/threads" });
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body).toHaveProperty("threads");
-    expect(body).toHaveProperty("activeThreadId");
-  });
-
   // ---- Worktrees ----
 
   it("GET /api/sessions/:id/worktrees returns worktree list", async () => {

@@ -14,7 +14,6 @@ import { useGitStore } from "../stores/git-store.js";
 import { useFileStore } from "../stores/file-store.js";
 import { usePreviewStore } from "../stores/preview-store.js";
 import { useTerminalStore } from "../stores/terminal-store.js";
-import { useThreadStore } from "../stores/thread-store.js";
 import { useDeployStore } from "../stores/deploy-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -43,7 +42,6 @@ export function useMessageHandler(params: {
     const file = useFileStore.getState();
     const preview = usePreviewStore.getState();
     const terminal = useTerminalStore.getState();
-    const thread = useThreadStore.getState();
     const deploy = useDeployStore.getState();
     const settings = useSettingsStore.getState();
     const ui = useUiStore.getState();
@@ -225,6 +223,56 @@ export function useMessageHandler(params: {
       }
     }
 
+    if (data.type === "commit_linked") {
+      session.setMessages((prev) => prev.map((m, i) =>
+        i === data.messageIndex
+          ? { ...m, commitHash: data.commitHash, parentCommitHash: data.parentCommitHash }
+          : m
+      ));
+    }
+
+    if (data.type === "rollback_complete") {
+      const { messageIndex, mode, parentCommitHash } = data as { messageIndex: number; mode: string; parentCommitHash: string };
+      if (mode === "code") {
+        // Code-only rollback: insert a divider after the rolled-back message
+        session.setMessages((prev) => {
+          const updated = [...prev];
+          // Insert a system-style divider message after the target
+          const divider = {
+            role: "assistant" as const,
+            text: `Code rolled back to ${parentCommitHash.slice(0, 7)}. The changes from the previous response have been reverted.`,
+            isError: false,
+            streaming: false,
+          };
+          updated.splice(messageIndex + 1, 0, divider);
+          return updated;
+        });
+      } else {
+        // Code + chat rollback: mark messages after messageIndex as rolled back
+        session.setMessages((prev) => prev.map((m, i) =>
+          i > messageIndex ? { ...m, rolledBack: true } : m
+        ));
+      }
+      // Refresh git history and file tree
+      const currentSessionId = useSessionStore.getState().sessionId;
+      if (currentSessionId) {
+        useFileStore.getState().fetchTree(currentSessionId).catch(() => {});
+      }
+    }
+
+    if (data.type === "session_forked") {
+      const { sessionName } = data as { sessionId: string; sessionName: string };
+      // Add a notification-style message in current chat
+      session.setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant" as const,
+          text: `Session forked as "${sessionName}". Switch to it from the sidebar.`,
+          streaming: false,
+        },
+      ]);
+    }
+
     // auth_required, auth_complete, and agent_list are now delivered via SSE
     // (useServerEvents hook). Only handle session-scoped auth here if needed.
     if (data.type === "auth_required") {
@@ -246,8 +294,7 @@ export function useMessageHandler(params: {
     // session_list is now delivered via SSE (useServerEvents hook)
 
     if (data.type === "session_started") {
-      // Session list update handled by SSE; just fetch threads for this session
-      useThreadStore.getState().fetchThreads(data.session.id).catch(() => {});
+      // No-op: handled elsewhere
     }
 
     if (data.type === "file_tree") {
@@ -278,6 +325,7 @@ export function useMessageHandler(params: {
     if (data.type === "chat_history") {
       const loaded: ChatMessage[] = data.messages.map((m: WsChatHistoryMessage) => ({
         role: m.role, text: m.text, toolUse: m.toolUse, images: m.images, files: m.files, isError: m.isError, streaming: false,
+        commitHash: m.commitHash, parentCommitHash: m.parentCommitHash,
       }));
       session.setMessages(loaded);
     }
@@ -325,31 +373,6 @@ export function useMessageHandler(params: {
           },
         ]);
       }
-    }
-
-    if (data.type === "thread_list") {
-      thread.setThreads(data.threads);
-      thread.setActiveThreadId(data.activeThreadId);
-    }
-
-    if (data.type === "thread_forked") {
-      const currentThreads = useThreadStore.getState().threads;
-      thread.setThreads([...currentThreads.map((t) => ({ ...t, isActive: false })), data.thread]);
-      thread.setActiveThreadId(data.thread.id);
-      const loaded: ChatMessage[] = data.messages.map((m: WsChatHistoryMessage) => ({
-        role: m.role, text: m.text, toolUse: m.toolUse, images: m.images, isError: m.isError, streaming: false,
-      }));
-      session.setMessages(loaded);
-    }
-
-    if (data.type === "thread_switched") {
-      const currentThreads = useThreadStore.getState().threads;
-      thread.setThreads(currentThreads.map((t) => ({ ...t, isActive: t.id === data.thread.id })));
-      thread.setActiveThreadId(data.thread.id);
-      const loaded: ChatMessage[] = data.messages.map((m: WsChatHistoryMessage) => ({
-        role: m.role, text: m.text, toolUse: m.toolUse, images: m.images, isError: m.isError, streaming: false,
-      }));
-      session.setMessages(loaded);
     }
 
     if (data.type === "deploy_status") {

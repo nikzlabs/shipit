@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, beforeAll, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
-import { MessageList, ImageLightbox, parseMessageSegments, type ChatMessage, type ChatMessageImage, type ToolUseBlock, type ToolResultBlock, type CheckpointDivider } from "./MessageList.js";
+import { MessageList, ImageLightbox, parseMessageSegments, type ChatMessage, type ChatMessageImage, type ToolUseBlock, type ToolResultBlock } from "./MessageList.js";
 
 // jsdom doesn't implement scrollIntoView
 beforeAll(() => {
@@ -1067,84 +1067,6 @@ describe("MessageList", () => {
       expect(lightboxImg.src).toContain("data:image/png;base64,");
       // The lightbox image should have larger max dimensions
       expect(lightboxImg.className).toContain("max-w-[90vw]");
-    });
-  });
-
-  describe("checkpoint dividers", () => {
-    it("renders checkpoint dividers at the correct message index", () => {
-      const checkpoints: CheckpointDivider[] = [
-        { id: "cp-1", messageIndex: 1, label: "Before refactor" },
-      ];
-      const { getByTestId, getByText } = render(
-        <MessageList
-          messages={[
-            msg("user", "Hello"),
-            msg("assistant", "Hi there"),
-            msg("user", "Do something"),
-          ]}
-          isLoading={false}
-          checkpoints={checkpoints}
-        />,
-      );
-      expect(getByTestId("checkpoint-divider")).toBeInTheDocument();
-      expect(getByText("Before refactor")).toBeInTheDocument();
-    });
-
-    it("renders default label when checkpoint has no label", () => {
-      const checkpoints: CheckpointDivider[] = [
-        { id: "cp-1", messageIndex: 0 },
-      ];
-      const { getByText } = render(
-        <MessageList
-          messages={[msg("user", "Hello")]}
-          isLoading={false}
-          checkpoints={checkpoints}
-        />,
-      );
-      expect(getByText("Checkpoint")).toBeInTheDocument();
-    });
-
-    it("renders multiple checkpoint dividers", () => {
-      const checkpoints: CheckpointDivider[] = [
-        { id: "cp-1", messageIndex: 0, label: "v1" },
-        { id: "cp-2", messageIndex: 2, label: "v2" },
-      ];
-      const { getAllByTestId, getByText } = render(
-        <MessageList
-          messages={[
-            msg("user", "First"),
-            msg("assistant", "Reply"),
-            msg("user", "Second"),
-          ]}
-          isLoading={false}
-          checkpoints={checkpoints}
-        />,
-      );
-      const dividers = getAllByTestId("checkpoint-divider");
-      expect(dividers).toHaveLength(2);
-      expect(getByText("v1")).toBeInTheDocument();
-      expect(getByText("v2")).toBeInTheDocument();
-    });
-
-    it("renders no dividers when checkpoints prop is empty", () => {
-      const { queryByTestId } = render(
-        <MessageList
-          messages={[msg("user", "Hello")]}
-          isLoading={false}
-          checkpoints={[]}
-        />,
-      );
-      expect(queryByTestId("checkpoint-divider")).not.toBeInTheDocument();
-    });
-
-    it("renders no dividers when checkpoints prop is undefined", () => {
-      const { queryByTestId } = render(
-        <MessageList
-          messages={[msg("user", "Hello")]}
-          isLoading={false}
-        />,
-      );
-      expect(queryByTestId("checkpoint-divider")).not.toBeInTheDocument();
     });
   });
 
