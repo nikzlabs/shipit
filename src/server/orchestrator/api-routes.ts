@@ -49,6 +49,8 @@ import {
   getWorkspaceState,
   getChatHistory,
   // Phase 2: mutation service functions
+  listAllSessions,
+  unarchiveSession,
   renameSession,
   archiveSession,
   gitRollback,
@@ -457,6 +459,29 @@ export async function registerApiRoutes(
   // ===========================================================================
   // Phase 2: POST/PATCH/DELETE endpoints (mutations)
   // ===========================================================================
+
+  // GET /api/sessions/all — list all sessions (active + archived)
+  app.get("/api/sessions/all", async () => {
+    return { sessions: listAllSessions(sessionManager) };
+  });
+
+  // POST /api/sessions/:id/unarchive — restore an archived session
+  app.post<{ Params: { id: string } }>(
+    "/api/sessions/:id/unarchive",
+    async (request, reply) => {
+      try {
+        const result = unarchiveSession(sessionManager, request.params.id);
+        deps.sseBroadcast("session_list", { sessions: result.sessions });
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to unarchive session: ${getErrorMessage(err)}` });
+      }
+    },
+  );
 
   // ---- Session mutations ----
 

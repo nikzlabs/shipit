@@ -25,6 +25,7 @@ const defaultProps = {
   onRefresh: vi.fn(),
   onAddRepo: vi.fn(),
   onRemoveRepo: vi.fn(),
+  onViewAll: vi.fn(),
   collapsed: false,
   onToggleCollapse: vi.fn(),
 };

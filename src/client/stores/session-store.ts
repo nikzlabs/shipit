@@ -45,6 +45,13 @@ interface SessionState {
   setPendingWsMessage: (message: Record<string, unknown> | undefined) => void;
   reset: () => void;
 
+  // All sessions dialog
+  allSessions: SessionInfo[];
+  allSessionsDialogOpen: boolean;
+  setAllSessionsDialogOpen: (open: boolean) => void;
+  fetchAllSessions: () => Promise<void>;
+  unarchiveSession: (sessionId: string) => Promise<void>;
+
   // Async actions
   archiveSession: (sessionId: string) => Promise<void>;
   renameSession: (sessionId: string, title: string) => Promise<void>;
@@ -67,6 +74,8 @@ export const useSessionStore = create<SessionState>((set) => ({
   sessions: [] as SessionInfo[],
   authUrl: null,
   activeRunnerSessions: new Set<string>(),
+  allSessions: [] as SessionInfo[],
+  allSessionsDialogOpen: false,
 
   setSessionId: (sessionId) => set({ sessionId }),
 
@@ -120,13 +129,42 @@ export const useSessionStore = create<SessionState>((set) => ({
 
   reset: () => set(initialResettableState),
 
+  setAllSessionsDialogOpen: (allSessionsDialogOpen) => set({ allSessionsDialogOpen }),
+
+  fetchAllSessions: async () => {
+    const res = await fetch("/api/sessions/all", {
+      headers: { Accept: "application/json" },
+    });
+    const data = await res.json();
+    set({ allSessions: data.sessions });
+  },
+
+  unarchiveSession: async (sessionId) => {
+    const res = await fetch(`/api/sessions/${sessionId}/unarchive`, {
+      method: "POST",
+      headers: { Accept: "application/json" },
+    });
+    const result = await res.json();
+    set((state) => ({
+      sessions: result.sessions,
+      allSessions: state.allSessions.map((s) =>
+        s.id === sessionId ? { ...s, archived: undefined } : s,
+      ),
+    }));
+  },
+
   archiveSession: async (sessionId) => {
     const res = await fetch(`/api/sessions/${sessionId}`, {
       method: "DELETE",
       headers: { Accept: "application/json" },
     });
     const result = await res.json();
-    set({ sessions: result.sessions });
+    set((state) => ({
+      sessions: result.sessions,
+      allSessions: state.allSessions.map((s) =>
+        s.id === sessionId ? { ...s, archived: true } : s,
+      ),
+    }));
   },
 
   renameSession: async (sessionId, title) => {
