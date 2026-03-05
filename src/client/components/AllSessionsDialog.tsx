@@ -110,7 +110,11 @@ export function AllSessionsDialog({
     }
   };
 
-  const handleResume = (sessionId: string) => {
+  const handleResume = async (sessionId: string) => {
+    const session = sessions.find((s) => s.id === sessionId);
+    if (session?.archived) {
+      await onUnarchive(sessionId);
+    }
     onResume(sessionId);
     onClose();
   };
