@@ -1,5 +1,7 @@
 /** Icon sizes — use these instead of magic numbers in Phosphor icon props. */
 export const ICON_SIZE = {
+  /** Compact badges (12px) */
+  XS: 12,
   /** Inline with text (16px) */
   SM: 16,
   /** Buttons, nav items (20px) */

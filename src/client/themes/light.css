@@ -30,6 +30,7 @@
   /* Status */
   --color-success: #16a34a;
   --color-success-subtle: rgba(22, 163, 74, 0.1);
+  --color-success-border: rgba(22, 163, 74, 0.3);
   --color-error: #dc2626;
   --color-error-subtle: rgba(220, 38, 38, 0.1);
   --color-warning: #d97706;
@@ -39,6 +40,8 @@
 
   /* Domain-specific */
   --color-pr: #7c3aed;
+  --color-pr-subtle: rgba(124, 58, 237, 0.1);
+  --color-pr-border: rgba(124, 58, 237, 0.3);
   --color-folder: #eab308;
   --color-autofix: #f97316;
 
