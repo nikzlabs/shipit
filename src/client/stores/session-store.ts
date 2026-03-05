@@ -144,6 +144,10 @@ export const useSessionStore = create<SessionState>((set) => ({
       method: "POST",
       headers: { Accept: "application/json" },
     });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: "Unknown error" }));
+      throw new Error((err as { error?: string }).error ?? `Failed to unarchive session (${res.status})`);
+    }
     const result = await res.json() as { sessions: SessionInfo[] };
     set((state) => ({
       sessions: result.sessions,
@@ -158,6 +162,10 @@ export const useSessionStore = create<SessionState>((set) => ({
       method: "DELETE",
       headers: { Accept: "application/json" },
     });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: "Unknown error" }));
+      throw new Error((err as { error?: string }).error ?? `Failed to archive session (${res.status})`);
+    }
     const result = await res.json() as { sessions: SessionInfo[] };
     set((state) => ({
       sessions: result.sessions,

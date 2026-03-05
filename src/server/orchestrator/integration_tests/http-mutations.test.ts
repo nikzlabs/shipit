@@ -141,6 +141,50 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
   });
 
+  describe("POST /api/sessions/:id/unarchive", () => {
+    it("unarchives a session and returns updated list", async () => {
+      await createSession("s1", "Session 1");
+      await createSession("s2", "Session 2");
+      // Archive s1 first
+      const archiveRes = await app.inject({
+        method: "DELETE",
+        url: "/api/sessions/s1",
+      });
+      expect(archiveRes.statusCode).toBe(200);
+      expect(archiveRes.json().sessions.map((s: any) => s.id)).not.toContain("s1");
+
+      // Unarchive s1
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/sessions/s1/unarchive",
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.session.id).toBe("s1");
+      expect(body.session.archived).toBeUndefined();
+      const ids = body.sessions.map((s: any) => s.id);
+      expect(ids).toContain("s1");
+      expect(ids).toContain("s2");
+    });
+
+    it("returns 404 for non-existent session", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/sessions/nonexistent/unarchive",
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("returns 404 for session that is not archived", async () => {
+      await createSession("s1", "Session 1");
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/sessions/s1/unarchive",
+      });
+      expect(res.statusCode).toBe(404);
+    });
+  });
+
   // ---- Git mutations ----
 
   describe("POST /api/sessions/:id/git/rollback", () => {
