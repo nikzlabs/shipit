@@ -100,12 +100,12 @@ export function runInstallCommand(opts: RunInstallOptions): Promise<number> {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    proc.stdout!.on("data", (chunk: Buffer) => {
+    proc.stdout.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
       if (onOutput) onOutput(text);
     });
 
-    proc.stderr!.on("data", (chunk: Buffer) => {
+    proc.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
       if (onOutput) onOutput(text);
     });

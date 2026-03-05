@@ -280,13 +280,13 @@ export default function App() {
   // Redirect to home if /{slug}/new doesn't match any known repo
   useEffect(() => {
     if (isNewSessionRoute && !newSessionRepoUrl && bootstrapLoaded && repos.length > 0) {
-      navigate("/", { replace: true });
+      void navigate("/", { replace: true });
     }
   }, [isNewSessionRoute, newSessionRepoUrl, bootstrapLoaded, repos.length, navigate]);
 
   // ── Callback helpers ──
   const handleSend = useCallback(
-    async (text: string, images?: Array<{ data: string; mediaType: string; filename: string }>) => {
+    async (text: string, images?: { data: string; mediaType: string; filename: string }[]) => {
       requestPermission();
       disableAutoFix();
       const session = useSessionStore.getState();
@@ -304,7 +304,7 @@ export default function App() {
       if (currentSessionId) {
         // On /{slug}/new route — graduate: transition URL to /session/{id}
         if (isNewSessionRoute) {
-          navigate(`/session/${currentSessionId}`, { replace: true });
+          void navigate(`/session/${currentSessionId}`, { replace: true });
         }
         // Send directly over WS
         send({
@@ -326,7 +326,7 @@ export default function App() {
             files: settings.pendingFiles.length > 0 ? settings.pendingFiles : undefined,
             permissionMode: settings.permissionMode !== "auto" ? settings.permissionMode : undefined,
           });
-          navigate(`/session/${res.sessionId}`);
+          void navigate(`/session/${res.sessionId}`);
         } catch (err) {
           console.error("[session] Failed to create session:", err);
           session.setIsLoading(false);
@@ -378,7 +378,7 @@ export default function App() {
   const handleSendCrashToAgent = useCallback(() => {
     const crash = usePreviewStore.getState().crashInfo;
     if (!crash) return;
-    const lines = ["The preview server crashed" + (crash.exitCode != null ? ` (exit code ${crash.exitCode})` : "") + ":", ""];
+    const lines = [`The preview server crashed${  crash.exitCode !== null ? ` (exit code ${crash.exitCode})` : ""  }:`, ""];
     if (crash.output) {
       lines.push("```", crash.output.trim(), "```", "");
     }
@@ -431,7 +431,7 @@ export default function App() {
       useUiStore.getState().setShowTemplates(false);
 
       // 2. Navigate instantly (before API call) — user sees /{owner}/{repo}/new
-      navigate(repoLabelToNewPath(repoUrl));
+      void navigate(repoLabelToNewPath(repoUrl));
 
       // 3. Claim session in background — sets sessionId, triggers WS connect + preview
       const result = await useRepoStore.getState().claimSession(repoUrl, ac.signal);
@@ -469,7 +469,7 @@ export default function App() {
       useGitStore.getState().setIdentity(data.settings.gitIdentity);
       useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
       useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
-      if (data.settings.maxIdleContainers != null) useSettingsStore.getState().setMaxIdleContainers(data.settings.maxIdleContainers);
+      if (data.settings.maxIdleContainers !== null && data.settings.maxIdleContainers !== undefined) useSettingsStore.getState().setMaxIdleContainers(data.settings.maxIdleContainers);
       useUiStore.getState().setAgentList(data.settings.agents);
     } catch { /* ignore */ }
   }, [apiGet]);
@@ -482,7 +482,7 @@ export default function App() {
 
   const handleDeploySendError = useCallback((errorMessage: string) => {
     useDeployStore.getState().closeModal();
-    handleSend(`The deployment failed with this error:\n\n${errorMessage}\n\nPlease fix the issue and explain what went wrong.`);
+    void handleSend(`The deployment failed with this error:\n\n${errorMessage}\n\nPlease fix the issue and explain what went wrong.`);
   }, [handleSend]);
 
   const GIT_EMPTY_TREE = "4b825dc642cb6404f32168ace2c04d9f6e8f59b6";
@@ -540,7 +540,7 @@ export default function App() {
           text,
           permissionMode: pm !== "auto" ? pm : undefined,
         });
-        navigate(`/session/${res.sessionId}`);
+        void navigate(`/session/${res.sessionId}`);
       } catch (err) {
         console.error("[session] Failed to create session for feature:", err);
         useSessionStore.getState().setIsLoading(false);
@@ -579,7 +579,7 @@ export default function App() {
         <button onClick={() => handleTabChange("docs")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "docs" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Docs</button>
         <button onClick={() => handleTabChange("files")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "files" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Files</button>
         <button onClick={() => handleTabChange("terminal")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "terminal" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Terminal</button>
-        {(lastCommitPair || historyDiffMode) && (
+        {(lastCommitPair ?? historyDiffMode) && (
           <button onClick={() => handleTabChange("changes")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "changes" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Changes</button>
         )}
         <button onClick={() => handleTabChange("features")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "features" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Features</button>
@@ -674,7 +674,7 @@ export default function App() {
           gitIdentity={gitIdentity}
           onGitIdentitySave={(name, email) => useGitStore.getState().submitGitIdentity(name, email).catch(() => {})}
           maxIdleContainers={maxIdleContainers}
-          onMaxIdleContainersSave={async (n) => { try { const raw = await apiPut("/api/settings", { maxIdleContainers: n }); const res = raw as Record<string, unknown>; if (res.maxIdleContainers != null) useSettingsStore.getState().setMaxIdleContainers(res.maxIdleContainers as number); } catch (err) { console.error("[settings] Failed to save max idle containers:", err); } }}
+          onMaxIdleContainersSave={async (n) => { try { const raw = await apiPut("/api/settings", { maxIdleContainers: n }); const res = raw as Record<string, unknown>; if (res.maxIdleContainers !== null && res.maxIdleContainers !== undefined) useSettingsStore.getState().setMaxIdleContainers(res.maxIdleContainers as number); } catch (err) { console.error("[settings] Failed to save max idle containers:", err); } }}
           deployTargets={deployTargets} deployConfigStatus={deployConfigStatus}
           onDeployConfigure={(targetId, creds, projectName) => { const sid = useSessionStore.getState().sessionId; if (sid) useDeployStore.getState().configure(sid, targetId, creds, projectName).catch(() => {}); }}
           onDeployDeleteConfig={(targetId) => { const sid = useSessionStore.getState().sessionId; if (sid) useDeployStore.getState().deleteConfig(sid, targetId).catch(() => {}); }}
@@ -742,7 +742,7 @@ export default function App() {
             onResume={(sid) => handleSessionResume(sid, navigate)}
             onNew={() => newSession(navigate)}
             onNewSessionForRepo={handleNewSessionForRepo}
-            onArchive={async (sid) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId) { useSessionStore.getState().setSessionId(undefined); navigate("/"); } }}
+            onArchive={async (sid) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId) { useSessionStore.getState().setSessionId(undefined); void navigate("/"); } }}
             onRename={(sid, title) => useSessionStore.getState().renameSession(sid, title)}
             onRefresh={() => useSessionStore.getState().refreshSessions()}
             onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)}
@@ -807,7 +807,7 @@ export default function App() {
               );
               if (res.success && res.sessionId) {
                 useRepoStore.getState().setNewRepoDialogOpen(false);
-                navigate(`/session/${res.sessionId}`);
+                void navigate(`/session/${res.sessionId}`);
               } else {
                 useUiStore.getState().setToast({ message: res.message || "Failed to create repository" });
               }

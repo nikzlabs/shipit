@@ -10,7 +10,7 @@ export function generateBranchSlug(): string {
 
 /** Generate a branch name in the "shipit/" namespace with only the random slug. */
 export function generateBranchPrefix(): string {
-  return "shipit/" + generateBranchSlug();
+  return `shipit/${  generateBranchSlug()}`;
 }
 
 /** Hash a repo URL to a short 16-char hex string for use as a directory name. */
@@ -35,10 +35,10 @@ export async function pushToOrigin(git: GitManager): Promise<string | null> {
 /** Parse owner/repo from a GitHub remote URL. */
 export function parseGitHubRemote(url: string): { owner: string; repo: string } | null {
   // Handle HTTPS: https://github.com/owner/repo.git
-  const httpsMatch = url.match(/github\.com\/([^/]+)\/([^/.]+)/);
+  const httpsMatch = /github\.com\/([^/]+)\/([^/.]+)/.exec(url);
   if (httpsMatch) return { owner: httpsMatch[1], repo: httpsMatch[2] };
   // Handle SSH: git@github.com:owner/repo.git
-  const sshMatch = url.match(/github\.com:([^/]+)\/([^/.]+)/);
+  const sshMatch = /github\.com:([^/]+)\/([^/.]+)/.exec(url);
   if (sshMatch) return { owner: sshMatch[1], repo: sshMatch[2] };
   return null;
 }

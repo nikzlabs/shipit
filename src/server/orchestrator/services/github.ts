@@ -27,7 +27,7 @@ export function getGitHubStatus(githubAuthManager: GitHubAuthManager): GitHubSta
 /** Get user's GitHub repos (empty array if not authenticated). */
 export async function getGitHubRepos(
   githubAuthManager: GitHubAuthManager,
-): Promise<Array<{ fullName: string; description: string | null; private: boolean; defaultBranch: string; cloneUrl: string }>> {
+): Promise<{ fullName: string; description: string | null; private: boolean; defaultBranch: string; cloneUrl: string }[]> {
   if (!githubAuthManager.authenticated) return [];
   return githubAuthManager.listUserRepos();
 }
@@ -369,7 +369,7 @@ export async function fetchCIFailureLogs(
   githubAuth: GitHubAuthManager,
   owner: string,
   repo: string,
-  failedChecks: Array<{ databaseId: number; name: string; conclusion: string; title: string }>,
+  failedChecks: { databaseId: number; name: string; conclusion: string; title: string }[],
   sessionDir?: string,
 ): Promise<CIFailureLog[]> {
   // Prepare log directory and ensure .shipit is gitignored
@@ -390,7 +390,7 @@ export async function fetchCIFailureLogs(
 
     // Filter out unhelpful annotations that just say "process completed"
     const usefulAnnotations = annotations.filter(
-      (a) => !a.message.match(/^Process completed with exit code \d+\.?$/i),
+      (a) => !(/^Process completed with exit code \d+\.?$/i.exec(a.message)),
     );
 
     // Strip GitHub Actions noise, extract errors, write to disk
@@ -585,7 +585,7 @@ export async function triggerCIFix(
   if (failedChecks.length === 0) throw new ServiceError(400, "No failed checks to fix");
 
   // Get repo info from the PR URL
-  const urlMatch = prStatus.prUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
+  const urlMatch = /github\.com\/([^/]+)\/([^/]+)/.exec(prStatus.prUrl);
   if (!urlMatch) throw new ServiceError(400, "Cannot parse repository from PR URL");
   const [, owner, repo] = urlMatch;
 
@@ -622,7 +622,7 @@ export async function toggleAutoMerge(
   const prStatus = prStatusPoller.getStatus(sessionId);
   if (!prStatus) throw new ServiceError(404, "No PR status found for this session");
 
-  const urlMatch = prStatus.prUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
+  const urlMatch = /github\.com\/([^/]+)\/([^/]+)/.exec(prStatus.prUrl);
   if (!urlMatch) throw new ServiceError(400, "Cannot parse repository from PR URL");
   const [, owner, repo] = urlMatch;
 
@@ -667,7 +667,7 @@ export async function updateMergeMethod(
   if (autoMergeState?.enabled) {
     const prStatus = prStatusPoller.getStatus(sessionId);
     if (prStatus) {
-      const urlMatch = prStatus.prUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
+      const urlMatch = /github\.com\/([^/]+)\/([^/]+)/.exec(prStatus.prUrl);
       if (urlMatch) {
         const [, owner, repo] = urlMatch;
         await githubAuth.disableAutoMerge(owner, repo, prStatus.prNumber);
@@ -686,7 +686,7 @@ export async function setGitHubToken(
   token: string,
 ): Promise<{
   status: GitHubStatus;
-  repos: Array<{ fullName: string; description: string | null; private: boolean; defaultBranch: string; cloneUrl: string }>;
+  repos: { fullName: string; description: string | null; private: boolean; defaultBranch: string; cloneUrl: string }[];
 }> {
   const trimmed = typeof token === "string" ? token.trim() : "";
   if (!trimmed) throw new ServiceError(400, "GitHub token cannot be empty");

@@ -19,7 +19,7 @@ export interface InteractiveTerminalHandle {
 }
 
 export const InteractiveTerminal = forwardRef<InteractiveTerminalHandle, InteractiveTerminalProps>(
-  function InteractiveTerminal({ onInput, onResize, onStart }, ref) {
+  ({ onInput, onResize, onStart }, ref) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const termRef = useRef<Terminal | null>(null);
     const fitRef = useRef<FitAddon | null>(null);

@@ -43,7 +43,7 @@ export function QueueIndicator({ queue, onCancel }: QueueIndicatorProps) {
               {item.position}
             </span>
             <span className="flex-1 text-xs text-(--color-text-secondary) truncate">
-              {item.text.length > 80 ? item.text.slice(0, 80) + "\u2026" : item.text}
+              {item.text.length > 80 ? `${item.text.slice(0, 80)  }\u2026` : item.text}
             </span>
             <button
               onClick={() => onCancel(item.position - 1)}

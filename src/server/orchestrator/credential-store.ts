@@ -70,9 +70,7 @@ export class CredentialStore {
   }
 
   setAgentEnv(key: string, value: string): void {
-    if (!this.data.agentEnv) {
-      this.data.agentEnv = {};
-    }
+    this.data.agentEnv ??= {};
     this.data.agentEnv[key] = value;
     this.save();
   }

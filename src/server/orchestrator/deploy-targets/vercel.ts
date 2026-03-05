@@ -41,11 +41,11 @@ export class VercelTarget implements DeployTarget {
 
       let stdoutBuf = "";
 
-      proc.stdout!.on("data", (chunk: Buffer) => {
+      proc.stdout.on("data", (chunk: Buffer) => {
         stdoutBuf += chunk.toString();
       });
 
-      proc.stderr!.on("data", (chunk: Buffer) => {
+      proc.stderr.on("data", (chunk: Buffer) => {
         for (const line of chunk.toString().split("\n").filter(Boolean)) {
           ctx.log(line);
         }

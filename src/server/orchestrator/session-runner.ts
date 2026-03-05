@@ -56,7 +56,7 @@ export interface SystemTurnHost {
   setAgent(a: AgentProcess | null): void;
   dequeue(): QueuedMessage | undefined;
   readonly queueLength: number;
-  getQueueSnapshot(): Array<{ text: string; position: number }>;
+  getQueueSnapshot(): { text: string; position: number }[];
   onAgentFinished(): void;
 }
 
@@ -87,7 +87,7 @@ export function runSystemTurn(
     host.emitMessage({ type: "agent_event", event });
 
     if (event.type === "agent_assistant") {
-      const contentArr = (event as { content?: Array<{ type: string; text?: string }> }).content ?? [];
+      const contentArr = (event as { content?: { type: string; text?: string }[] }).content ?? [];
       const agentText = contentArr
         .filter((b): b is { type: "text"; text: string } => b.type === "text")
         .map((b) => b.text)
@@ -170,7 +170,7 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   accumulatedText: string;
   accumulatedToolUse: ClaudeContentBlockToolUse[];
   turnSummary: string;
-  chatMessageGroups: Array<{ text: string; toolUse: ClaudeContentBlockToolUse[] }>;
+  chatMessageGroups: { text: string; toolUse: ClaudeContentBlockToolUse[] }[];
   needsNewMessageGroup: boolean;
   agentId: AgentId;
 
@@ -183,7 +183,7 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   enqueue(msg: QueuedMessage): number;
   dequeue(): QueuedMessage | undefined;
   clearQueue(): void;
-  getQueueSnapshot(): Array<{ text: string; position: number }>;
+  getQueueSnapshot(): { text: string; position: number }[];
 
   // Terminal
   getTerminal(): TerminalProcess | null;
@@ -260,7 +260,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _accumulatedText = "";
   private _accumulatedToolUse: ClaudeContentBlockToolUse[] = [];
   private _turnSummary = "";
-  private _chatMessageGroups: Array<{ text: string; toolUse: ClaudeContentBlockToolUse[] }> = [];
+  private _chatMessageGroups: { text: string; toolUse: ClaudeContentBlockToolUse[] }[] = [];
   private _needsNewMessageGroup = true;
   private _messageQueue: QueuedMessage[] = [];
   private _terminal: TerminalProcess | null = null;
@@ -295,8 +295,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set accumulatedToolUse(blocks: ClaudeContentBlockToolUse[]) { this._accumulatedToolUse = blocks; }
   get turnSummary(): string { return this._turnSummary; }
   set turnSummary(s: string) { this._turnSummary = s; }
-  get chatMessageGroups(): Array<{ text: string; toolUse: ClaudeContentBlockToolUse[] }> { return this._chatMessageGroups; }
-  set chatMessageGroups(groups: Array<{ text: string; toolUse: ClaudeContentBlockToolUse[] }>) { this._chatMessageGroups = groups; }
+  get chatMessageGroups(): { text: string; toolUse: ClaudeContentBlockToolUse[] }[] { return this._chatMessageGroups; }
+  set chatMessageGroups(groups: { text: string; toolUse: ClaudeContentBlockToolUse[] }[]) { this._chatMessageGroups = groups; }
   get needsNewMessageGroup(): boolean { return this._needsNewMessageGroup; }
   set needsNewMessageGroup(v: boolean) { this._needsNewMessageGroup = v; }
   get agentId(): AgentId { return this._agentId; }
@@ -315,7 +315,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   }
   dequeue(): QueuedMessage | undefined { return this._messageQueue.shift(); }
   clearQueue(): void { this._messageQueue.length = 0; }
-  getQueueSnapshot(): Array<{ text: string; position: number }> {
+  getQueueSnapshot(): { text: string; position: number }[] {
     return this._messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 }));
   }
 
@@ -364,7 +364,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   buildPreviewStatus(): WsServerMessage {
     return { type: "preview_status", running: false, port: 5173, url: "http://localhost:5173", sessionId: this.sessionId };
   }
-  get previewStatusKnown(): boolean { return true; }
+  readonly previewStatusKnown: boolean = true;
   async waitForPreviewStatus(): Promise<void> { /* always known */ }
 
   private _systemTurnDeps: SystemTurnDeps | null = null;

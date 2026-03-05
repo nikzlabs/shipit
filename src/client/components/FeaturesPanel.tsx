@@ -17,7 +17,7 @@ const STATUS_CONFIG: Record<FeatureStatus, { label: string; variant: BadgeProps[
 };
 
 function StatusBadge({ status }: { status: FeatureStatus }) {
-  const config = STATUS_CONFIG[status] ?? STATUS_CONFIG["planned"];
+  const config = STATUS_CONFIG[status] ?? STATUS_CONFIG.planned;
   return (
     <Badge variant={config.variant} className="text-[11px]">
       {config.label}

@@ -323,7 +323,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _accumulatedText = "";
   private _accumulatedToolUse: ClaudeContentBlockToolUse[] = [];
   private _turnSummary = "";
-  private _chatMessageGroups: Array<{ text: string; toolUse: ClaudeContentBlockToolUse[] }> = [];
+  private _chatMessageGroups: { text: string; toolUse: ClaudeContentBlockToolUse[] }[] = [];
   private _needsNewMessageGroup = true;
 
   // Message queue
@@ -420,8 +420,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   get turnSummary(): string { return this._turnSummary; }
   set turnSummary(s: string) { this._turnSummary = s; }
 
-  get chatMessageGroups(): Array<{ text: string; toolUse: ClaudeContentBlockToolUse[] }> { return this._chatMessageGroups; }
-  set chatMessageGroups(groups: Array<{ text: string; toolUse: ClaudeContentBlockToolUse[] }>) { this._chatMessageGroups = groups; }
+  get chatMessageGroups(): { text: string; toolUse: ClaudeContentBlockToolUse[] }[] { return this._chatMessageGroups; }
+  set chatMessageGroups(groups: { text: string; toolUse: ClaudeContentBlockToolUse[] }[]) { this._chatMessageGroups = groups; }
 
   get needsNewMessageGroup(): boolean { return this._needsNewMessageGroup; }
   set needsNewMessageGroup(v: boolean) { this._needsNewMessageGroup = v; }
@@ -458,7 +458,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._messageQueue.length = 0;
   }
 
-  getQueueSnapshot(): Array<{ text: string; position: number }> {
+  getQueueSnapshot(): { text: string; position: number }[] {
     return this._messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 }));
   }
 
@@ -540,8 +540,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       // produces a definitive event (preview_ready, preview_config_missing, etc.).
       // No timer needed — the event-driven flow covers all cases.
       // eslint-disable-next-line no-restricted-syntax -- sync method chains async operations
-      this.connectEventStream().then(() => {
-        if (!this._disposed) this.startWorkerResources();
+      void this.connectEventStream().then(() => {
+        if (!this._disposed) void this.startWorkerResources();
       });
     }
   }
@@ -601,7 +601,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         sessionId: this.sessionId,
       };
     }
-    const crashed = this._lastPreviewExitCode != null && this._lastPreviewExitCode !== 0;
+    const crashed = this._lastPreviewExitCode !== null && this._lastPreviewExitCode !== undefined && this._lastPreviewExitCode !== 0;
     return {
       type: "preview_status" as const,
       running: false,
@@ -767,7 +767,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
     // Wait for the container to be ready before connecting
     // eslint-disable-next-line no-restricted-syntax -- waits for container readiness in sync context
-    this._workerReady.then(() => {
+    void this._workerReady.then(() => {
       if (this.sseConnection || this._disposed) return;
       this._connectEventStreamNow();
     });
@@ -806,7 +806,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         if (isReconnect && this._remoteTerminalRunning) {
           const buffered = this.getTerminalOutputBuffer();
           if (buffered) {
-            this.emitMessage({ type: "terminal_output", data: "\x1bc" + buffered });
+            this.emitMessage({ type: "terminal_output", data: `\x1bc${  buffered}` });
           }
         }
       },
@@ -864,7 +864,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
     this.sseReconnectTimer = setTimeout(() => {
       this.sseReconnectTimer = null;
-      this.connectEventStream();
+      void this.connectEventStream();
     }, delay);
   }
 
@@ -1024,7 +1024,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this.emit("idle");
     }
     // Auto-restart crashed preview after agent turn ends (agent may have fixed the issue)
-    if (this._lastPreviewExitCode != null && this._lastPreviewExitCode !== 0) {
+    if (this._lastPreviewExitCode !== null && this._lastPreviewExitCode !== undefined && this._lastPreviewExitCode !== 0) {
       this._lastPreviewExitCode = null;
       this._previewLogBuffer = [];
       // eslint-disable-next-line no-restricted-syntax -- fire-and-forget preview restart

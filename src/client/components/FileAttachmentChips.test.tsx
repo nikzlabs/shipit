@@ -59,7 +59,7 @@ describe("FileAttachmentChips", () => {
     ];
     render(<FileAttachmentChips files={files} onRemove={() => {}} />);
     const chip = screen.getByTestId("file-chip-name");
-    expect(chip.textContent!.startsWith("...")).toBe(true);
+    expect(chip.textContent.startsWith("...")).toBe(true);
   });
 
   it("renders the file icon SVG", () => {

@@ -62,7 +62,7 @@ interface CodexItem {
   type?: string;
   // Agent message items
   role?: string;
-  content?: Array<{ type: string; text?: string; annotations?: unknown[] }>;
+  content?: { type: string; text?: string; annotations?: unknown[] }[];
   // Command execution items
   call_id?: string;
   name?: string;
@@ -232,7 +232,7 @@ export class CodexAdapter
   /** Write a JSON-RPC message to the process stdin. */
   private writeJsonRpc(msg: JsonRpcRequest | JsonRpcNotification): void {
     if (!this.proc?.stdin?.writable) return;
-    const line = JSON.stringify(msg) + "\n";
+    const line = `${JSON.stringify(msg)  }\n`;
     this.proc.stdin.write(line);
   }
 
@@ -263,11 +263,11 @@ export class CodexAdapter
 
   private handleMessage(msg: JsonRpcInbound): void {
     // Response to a pending request
-    if ("id" in msg && msg.id != null) {
-      const pending = this.pendingRequests.get(msg.id as number);
+    if ("id" in msg && msg.id !== null && msg.id !== undefined) {
+      const pending = this.pendingRequests.get(msg.id);
       if (pending) {
-        this.pendingRequests.delete(msg.id as number);
-        const resp = msg as JsonRpcResponse;
+        this.pendingRequests.delete(msg.id);
+        const resp = msg;
         if (resp.error) {
           pending.reject(new Error(`JSON-RPC error ${resp.error.code}: ${resp.error.message}`));
         } else {
@@ -367,7 +367,7 @@ export class CodexAdapter
     }
 
     // Function call output (tool result)
-    if (item.type === "function_call_output" && item.output != null) {
+    if (item.type === "function_call_output" && item.output !== null && item.output !== undefined) {
       this.emit("event", {
         type: "agent_tool_result",
         content: [
@@ -378,13 +378,13 @@ export class CodexAdapter
           },
         ],
       } as AgentEvent);
-      return;
+      
     }
   }
 
   /** Handle incremental message deltas (streaming text). */
   private handleMessageDelta(params: Record<string, unknown>): void {
-    const delta = params.delta as { content?: Array<{ type: string; text?: string }> } | undefined;
+    const delta = params.delta as { content?: { type: string; text?: string }[] } | undefined;
     if (!delta?.content) return;
 
     const blocks = this.mapContentBlocks(delta.content);
@@ -423,7 +423,7 @@ export class CodexAdapter
 
   /** Map Codex content blocks to AgentContentBlock format. */
   private mapContentBlocks(
-    blocks: Array<{ type: string; text?: string; annotations?: unknown[] }>,
+    blocks: { type: string; text?: string; annotations?: unknown[] }[],
   ): AgentContentBlock[] {
     const result: AgentContentBlock[] = [];
     for (const block of blocks) {

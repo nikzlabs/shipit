@@ -94,7 +94,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     });
 
     const address = await worker.start();
-    const match = address.match(/:(\d+)$/);
+    const match = /:(\d+)$/.exec(address);
     const port = match ? Number(match[1]) : 0;
     workerUrl = `http://127.0.0.1:${port}`;
   });
@@ -125,7 +125,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     proxy.run({ prompt: "Hello from proxy", cwd: "/some/host/path" });
 
     // Wait for the worker to receive the request
-    await waitFor(() => lastAgent?.runCalled === true, 3000, "agent.run()");
+    await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
 
     expect(lastAgent.lastParams?.prompt).toBe("Hello from proxy");
     // The worker overrides cwd to /workspace (session-worker.ts fix)
@@ -147,7 +147,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
 
     const proxy = runner.createAgent("claude");
 
-    const events: Array<{ type: string }> = [];
+    const events: { type: string }[] = [];
     proxy.on("event", (event: { type: string }) => events.push(event));
 
     const donePromise = new Promise<number>((resolve) => {
@@ -156,7 +156,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
 
     // Start the agent via proxy
     proxy.run({ prompt: "Event test", cwd: "/workspace" });
-    await waitFor(() => lastAgent?.runCalled === true, 3000, "agent.run()");
+    await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
 
     // Simulate events on the worker side
     lastAgent.emit("event", {
@@ -198,11 +198,11 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
 
     const proxy = runner.createAgent("claude");
     proxy.run({ prompt: "Interrupt me", cwd: "/workspace" });
-    await waitFor(() => lastAgent?.runCalled === true, 3000, "agent.run()");
+    await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
 
     // Interrupt via proxy
     proxy.interrupt();
-    await waitFor(() => lastAgent?.interrupted === true, 3000, "agent.interrupted");
+    await waitFor(() => lastAgent?.interrupted, 3000, "agent.interrupted");
 
     expect(lastAgent.interrupted).toBe(true);
 
@@ -224,7 +224,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
 
     const proxy = runner.createAgent("claude");
     proxy.run({ prompt: "Ask me something", cwd: "/workspace" });
-    await waitFor(() => lastAgent?.runCalled === true, 3000, "agent.run()");
+    await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
 
     // Write stdin via proxy
     proxy.writeStdin("yes\n");
@@ -250,11 +250,11 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
 
     const proxy = runner.createAgent("claude");
     proxy.run({ prompt: "Kill me", cwd: "/workspace" });
-    await waitFor(() => lastAgent?.runCalled === true, 3000, "agent.run()");
+    await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
 
     // Kill via proxy
     proxy.kill();
-    await waitFor(() => lastAgent?.killed === true, 3000, "agent.killed");
+    await waitFor(() => lastAgent?.killed, 3000, "agent.killed");
 
     expect(lastAgent.killed).toBe(true);
 
@@ -277,7 +277,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     // First run
     const proxy1 = runner.createAgent("claude");
     proxy1.run({ prompt: "First run", cwd: "/workspace" });
-    await waitFor(() => lastAgent?.runCalled === true, 3000, "first agent.run()");
+    await waitFor(() => lastAgent?.runCalled, 3000, "first agent.run()");
 
     const firstAgent = lastAgent;
     expect(firstAgent.lastParams?.prompt).toBe("First run");
@@ -292,7 +292,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     // Second run (simulates answer_question creating a new agent)
     const proxy2 = runner.createAgent("claude");
     proxy2.run({ prompt: "Second run", sessionId: "s1", cwd: "/workspace" });
-    await waitFor(() => lastAgent?.runCalled === true && lastAgent !== firstAgent, 3000, "second agent.run()");
+    await waitFor(() => lastAgent?.runCalled && lastAgent !== firstAgent, 3000, "second agent.run()");
 
     expect(lastAgent.lastParams?.prompt).toBe("Second run");
 
@@ -343,7 +343,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     });
 
     proxy.run({ prompt: "Auth test", cwd: "/workspace" });
-    await waitFor(() => lastAgent?.runCalled === true, 3000, "agent.run()");
+    await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
 
     // Simulate auth event on worker
     lastAgent.emit("auth_required");

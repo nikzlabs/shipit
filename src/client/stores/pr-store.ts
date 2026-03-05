@@ -39,7 +39,7 @@ export interface PrCardState {
     failed: number;
     pending: number;
     /** Per-check failure details. */
-    failedChecks?: Array<{ name: string; summary: string }>;
+    failedChecks?: { name: string; summary: string }[];
   };
   /** Auto-fix state (open phase). */
   autoFix?: {

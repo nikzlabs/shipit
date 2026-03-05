@@ -73,10 +73,10 @@ export function shipitErrorCapturePlugin(): {
       const headIndex = html.indexOf("<head>");
       if (headIndex !== -1) {
         const insertPos = headIndex + "<head>".length;
-        return html.slice(0, insertPos) + "\n" + ERROR_CAPTURE_SCRIPT + "\n" + html.slice(insertPos);
+        return `${html.slice(0, insertPos)  }\n${  ERROR_CAPTURE_SCRIPT  }\n${  html.slice(insertPos)}`;
       }
       // Fallback: prepend to the HTML if no <head> tag found
-      return ERROR_CAPTURE_SCRIPT + "\n" + html;
+      return `${ERROR_CAPTURE_SCRIPT  }\n${  html}`;
     },
   };
 }

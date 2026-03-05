@@ -113,22 +113,22 @@ export interface FileDiff {
 export interface WsChatHistoryMessage {
   role: "user" | "assistant";
   text: string;
-  toolUse?: Array<{
+  toolUse?: {
     type: "tool_use";
     id: string;
     name: string;
     input: Record<string, unknown>;
-  }>;
-  images?: Array<{
+  }[];
+  images?: {
     data: string;      // base64 image data (inlined for small images)
     mediaType: string;
-  }>;
-  files?: Array<{
+  }[];
+  files?: {
     path: string;
     contentPreview: string;  // first 200 chars of content
     startLine?: number;
     endLine?: number;
-  }>;
+  }[];
   isError?: boolean;
   /** Git commit hash produced by auto-commit after this assistant message. */
   commitHash?: string;

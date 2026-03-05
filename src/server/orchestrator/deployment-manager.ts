@@ -53,12 +53,12 @@ export class DeploymentManager extends EventEmitter {
       const deps = { ...pkg.dependencies, ...pkg.devDependencies };
 
       // Next.js
-      if (deps["next"]) {
+      if (deps.next) {
         return { name: "next", buildCommand: "npm run build", outputDirectory: ".next" };
       }
 
       // Vite (most ShipIt templates)
-      if (deps["vite"]) {
+      if (deps.vite) {
         return { name: "vite", buildCommand: "npm run build", outputDirectory: "dist" };
       }
 
@@ -92,13 +92,13 @@ export class DeploymentManager extends EventEmitter {
         shell: true,
       });
 
-      proc.stdout!.on("data", (chunk: Buffer) => {
+      proc.stdout.on("data", (chunk: Buffer) => {
         for (const line of chunk.toString().split("\n").filter(Boolean)) {
           this.emit("log", { text: line });
         }
       });
 
-      proc.stderr!.on("data", (chunk: Buffer) => {
+      proc.stderr.on("data", (chunk: Buffer) => {
         for (const line of chunk.toString().split("\n").filter(Boolean)) {
           this.emit("log", { text: line });
         }

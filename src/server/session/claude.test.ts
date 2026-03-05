@@ -73,7 +73,7 @@ describe("ClaudeProcess", () => {
 
       // Simulate PTY data with a complete JSON line
       const event = { type: "system", subtype: "init", session_id: "abc123" };
-      mockProc.simulateData(JSON.stringify(event) + "\n");
+      mockProc.simulateData(`${JSON.stringify(event)  }\n`);
 
       expect(events).toHaveLength(1);
       expect(events[0]).toEqual(event);
@@ -91,7 +91,7 @@ describe("ClaudeProcess", () => {
 
       const event1 = { type: "system", subtype: "init", session_id: "abc" };
       const event2 = { type: "assistant", message: { content: [{ type: "text", text: "hi" }] } };
-      const chunk = JSON.stringify(event1) + "\n" + JSON.stringify(event2) + "\n";
+      const chunk = `${JSON.stringify(event1)  }\n${  JSON.stringify(event2)  }\n`;
       mockProc.simulateData(chunk);
 
       expect(events).toHaveLength(2);
@@ -118,7 +118,7 @@ describe("ClaudeProcess", () => {
       expect(events).toHaveLength(0);
 
       // Send second half + newline
-      mockProc.simulateData(json.slice(half) + "\n");
+      mockProc.simulateData(`${json.slice(half)  }\n`);
       expect(events).toHaveLength(1);
       expect(events[0]).toEqual(event);
     });
@@ -150,7 +150,7 @@ describe("ClaudeProcess", () => {
       claude.run("test");
 
       const event = { type: "system", subtype: "init", session_id: "abc" };
-      mockProc.simulateData("\n\n" + JSON.stringify(event) + "\n\n");
+      mockProc.simulateData(`\n\n${  JSON.stringify(event)  }\n\n`);
 
       expect(events).toHaveLength(1);
     });
@@ -216,7 +216,7 @@ describe("ClaudeProcess", () => {
         claude.on("auth_required", () => { authRequired = true; });
 
         claude.run("test");
-        mockProc.simulateData(keyword + "\n");
+        mockProc.simulateData(`${keyword  }\n`);
         expect(authRequired).toBe(true);
       }
     });
@@ -319,7 +319,7 @@ describe("ClaudeProcess", () => {
       mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
-      const logs: Array<{ source: string; text: string }> = [];
+      const logs: { source: string; text: string }[] = [];
       claude.on("log", (source: string, text: string) => logs.push({ source, text }));
 
       claude.run("test");
@@ -335,13 +335,13 @@ describe("ClaudeProcess", () => {
       mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
-      const logs: Array<{ source: string; text: string }> = [];
+      const logs: { source: string; text: string }[] = [];
       claude.on("log", (source: string, text: string) => logs.push({ source, text }));
 
       claude.run("test");
 
       const event = { type: "system", subtype: "init", session_id: "abc" };
-      mockProc.simulateData(JSON.stringify(event) + "\n");
+      mockProc.simulateData(`${JSON.stringify(event)  }\n`);
 
       expect(logs).toHaveLength(0);
     });
@@ -387,7 +387,7 @@ describe("ClaudeProcess", () => {
       mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
-      const logs: Array<{ source: string; text: string }> = [];
+      const logs: { source: string; text: string }[] = [];
       claude.on("log", (source: string, text: string) => logs.push({ source, text }));
 
       claude.run("test");
@@ -405,7 +405,7 @@ describe("ClaudeProcess", () => {
       mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
-      const logs: Array<{ source: string; text: string }> = [];
+      const logs: { source: string; text: string }[] = [];
       claude.on("log", (source: string, text: string) => logs.push({ source, text }));
 
       claude.run("test");
@@ -425,7 +425,7 @@ describe("ClaudeProcess", () => {
       mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
-      const logs: Array<{ source: string; text: string }> = [];
+      const logs: { source: string; text: string }[] = [];
       claude.on("log", (source: string, text: string) => logs.push({ source, text }));
 
       claude.run("test");
@@ -445,7 +445,7 @@ describe("ClaudeProcess", () => {
       mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
-      const logs: Array<{ source: string; text: string }> = [];
+      const logs: { source: string; text: string }[] = [];
       claude.on("log", (source: string, text: string) => logs.push({ source, text }));
 
       claude.run("test");

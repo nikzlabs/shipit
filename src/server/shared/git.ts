@@ -189,7 +189,7 @@ export class GitManager {
    * Get per-file diff summary (files changed with insertions/deletions).
    * Returns an empty array if there are no commits or no changes.
    */
-  async diffSummary(): Promise<Array<{ file: string; insertions: number; deletions: number }>> {
+  async diffSummary(): Promise<{ file: string; insertions: number; deletions: number }[]> {
     try {
       const result = await this.git.diffSummary(["HEAD~1...HEAD"]);
       return result.files.map((f) => ({
@@ -235,7 +235,7 @@ export class GitManager {
    * Get list of changed files between two commits with their status.
    * Returns entries like { status: "A", path: "src/foo.ts", oldPath?: "src/bar.ts" }.
    */
-  async diffNameStatus(fromCommit: string, toCommit: string): Promise<Array<{ status: string; path: string; oldPath?: string }>> {
+  async diffNameStatus(fromCommit: string, toCommit: string): Promise<{ status: string; path: string; oldPath?: string }[]> {
     try {
       const output = await this.git.diff(["--name-status", fromCommit, toCommit]);
       if (!output.trim()) return [];

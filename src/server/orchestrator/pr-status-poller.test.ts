@@ -36,7 +36,7 @@ function makeGraphQLPrNode(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function makeSessionManager(sessions: Array<{ id: string; branch?: string; remoteUrl?: string }>): SessionManager {
+function makeSessionManager(sessions: { id: string; branch?: string; remoteUrl?: string }[]): SessionManager {
   return {
     list: () => sessions.map((s) => ({
       id: s.id,
@@ -274,7 +274,7 @@ describe("PrStatusPoller", () => {
     await vi.advanceTimersByTimeAsync(3000);
     expect(sseBroadcast).toHaveBeenCalledTimes(2);
 
-    const lastCall = sseBroadcast.mock.calls[1] as [string, { updates: Array<{ sessionId: string; prState: string }> }];
+    const lastCall = sseBroadcast.mock.calls[1] as [string, { updates: { sessionId: string; prState: string }[] }];
     expect(lastCall[1].updates[0]).toMatchObject({ sessionId: "s1", prState: "merged" });
   });
 

@@ -119,7 +119,7 @@ export async function applyTemplate(
   const git = createGitManager(sessionDir);
   await git.autoCommit(`Apply template: ${template.name}`);
 
-  const session = sessionManager.get(appSessionId!);
+  const session = sessionManager.get(appSessionId);
   return {
     templateId: template.id,
     name: template.name,

@@ -134,7 +134,7 @@ function wireAgentListeners(
       if (text || toolBlocks.length > 0) {
         const groups = ctx.getChatMessageGroups();
         if (ctx.getNeedsNewMessageGroup() || groups.length === 0) {
-          groups.push({ text: text, toolUse: [...toolBlocks] });
+          groups.push({ text, toolUse: [...toolBlocks] });
           ctx.setNeedsNewMessageGroup(false);
         } else {
           const last = groups[groups.length - 1];
@@ -686,7 +686,7 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
   const existingAgent = ctx.getAgent();
   if (existingAgent) {
     // Claude is still running — write answer to stdin (it may be blocking on input)
-    existingAgent.writeStdin(answerText + "\n");
+    existingAgent.writeStdin(`${answerText  }\n`);
     return;
   }
 

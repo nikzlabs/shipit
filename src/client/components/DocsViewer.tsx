@@ -22,7 +22,7 @@ export function DocsViewer({ files, selectedFile, content, onSelectFile, onRefre
 
   const renderedHtml = useMemo(() => {
     if (!content) return "";
-    return marked.parse(content, { async: false }) as string;
+    return marked.parse(content, { async: false });
   }, [content]);
 
   if (files.length === 0) {

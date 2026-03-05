@@ -8,7 +8,7 @@ afterEach(() => {
 });
 
 describe("useNotification", () => {
-  let visibilityListeners: Array<() => void>;
+  let visibilityListeners: (() => void)[];
   let hiddenValue: boolean;
 
   beforeEach(() => {

@@ -11,22 +11,22 @@ import { getErrorMessage } from "../shared/utils.js";
 export interface PersistedMessage {
   role: "user" | "assistant";
   text: string;
-  toolUse?: Array<{
+  toolUse?: {
     type: "tool_use";
     id: string;
     name: string;
     input: Record<string, unknown>;
-  }>;
-  images?: Array<{
+  }[];
+  images?: {
     data: string;
     mediaType: string;
-  }>;
-  files?: Array<{
+  }[];
+  files?: {
     path: string;
     contentPreview: string;
     startLine?: number;
     endLine?: number;
-  }>;
+  }[];
   isError?: boolean;
   /** Git commit hash produced by auto-commit after this assistant message. */
   commitHash?: string;

@@ -60,7 +60,7 @@ export function useConnectionSync(params: {
       session.setMessages((prev) => {
         const last = prev[prev.length - 1];
         const updated =
-          last && last.role === "assistant" && last.streaming
+          last?.role === "assistant" && last.streaming
             ? [...prev.slice(0, -1), { ...last, streaming: false }]
             : prev;
         return [

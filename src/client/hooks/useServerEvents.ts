@@ -94,7 +94,7 @@ export function useServerEvents(): void {
     });
 
     es.addEventListener("agent_list", (e: MessageEvent) => {
-      const data = JSON.parse(e.data) as { agents: Array<{ id: string; name: string; installed: boolean; authConfigured: boolean; models?: string[] }> };
+      const data = JSON.parse(e.data) as { agents: { id: string; name: string; installed: boolean; authConfigured: boolean; models?: string[] }[] };
       useUiStore.getState().setAgentList(data.agents.map((a) => ({ ...a, models: a.models ?? [] })));
     });
 

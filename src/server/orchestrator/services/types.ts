@@ -34,7 +34,7 @@ export interface BootstrapData {
   repos: RepoInfo[];
   agents: AgentInfo[];
   defaultAgentId: AgentId;
-  templates: Array<Omit<ProjectTemplate, "files">>;
+  templates: Omit<ProjectTemplate, "files">[];
   githubStatus: GitHubStatus;
   settings: GlobalSettings;
 }
