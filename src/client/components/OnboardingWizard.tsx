@@ -59,6 +59,7 @@ export function OnboardingWizard({
 
   // Step 2 state
   const [refreshing, setRefreshing] = useState(false);
+  const [completing, setCompleting] = useState(false);
 
   // Step 1 derived
   const canSubmitManual = name.trim().length > 0 && email.trim().length > 0;
@@ -230,12 +231,15 @@ export function OnboardingWizard({
 
             <div className="space-y-3">
               <button
-                onClick={onComplete}
-                disabled={!anyAgentReady}
+                onClick={() => {
+                  setCompleting(true);
+                  onComplete();
+                }}
+                disabled={!anyAgentReady || completing}
                 className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 data-testid="get-started"
               >
-                Get Started
+                {completing ? "Starting..." : "Get Started"}
               </button>
 
               <button
