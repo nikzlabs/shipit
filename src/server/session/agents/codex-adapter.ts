@@ -179,7 +179,7 @@ export class CodexAdapter
     });
 
     // Start the initialization handshake, then create a thread and turn
-    this.initializeAndRun(params).catch((err) => {
+    this.initializeAndRun(params).catch((err: unknown) => {
       this.emit("error", err instanceof Error ? err : new Error(String(err)));
     });
   }

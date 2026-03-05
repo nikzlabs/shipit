@@ -43,7 +43,7 @@ export function resumeSessionInternal(sessionId: string) {
   usePreviewStore.getState().reset();
 
   // Fetch session data via HTTP
-  loadSessionHistory(sessionId).catch((err) => console.error("[api] Failed to load session history:", err));
+  loadSessionHistory(sessionId).catch((err: unknown) => console.error("[api] Failed to load session history:", err));
 }
 
 /**

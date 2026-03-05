@@ -93,9 +93,9 @@ export function resolveSessionConfig(sessionDir: string): SessionConfig {
   let doc: Record<string, unknown> | undefined;
   try {
     const content = fs.readFileSync(yamlPath, "utf-8");
-    const parsed = parseYaml(content);
+    const parsed = parseYaml(content) as Record<string, unknown> | null;
     if (typeof parsed === "object" && parsed !== null) {
-      doc = parsed as Record<string, unknown>;
+      doc = parsed;
     }
   } catch {
     // File doesn't exist or can't be read — use defaults

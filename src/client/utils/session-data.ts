@@ -1,4 +1,8 @@
 import type { ChatMessage } from "../components/MessageList.js";
+import type { GitCommit } from "../components/GitHistory.js";
+import type { SessionInfo, RepoInfo, FileTreeNode, FeatureInfo } from "../../server/shared/types.js";
+import type { AgentOption } from "../components/AgentPicker.js";
+import type { TemplateInfo } from "../components/TemplateSelector.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useFileStore } from "../stores/file-store.js";
@@ -7,15 +11,44 @@ import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 
+interface PreviewStatusResponse {
+  known: boolean;
+  running: boolean;
+  port: number;
+  url: string;
+  source: "vite" | "managed" | "detected";
+  detectedPorts?: number[];
+}
+
+interface HistoryResponse {
+  messages: { role: string; text: string; toolUse?: unknown[]; images?: unknown[]; files?: unknown[]; isError?: boolean }[];
+  commits: GitCommit[];
+  fileTree: FileTreeNode[];
+}
+
+interface BootstrapResponse {
+  sessions: SessionInfo[];
+  repos?: RepoInfo[];
+  agents: AgentOption[];
+  templates: TemplateInfo[];
+  features?: FeatureInfo[];
+  githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
+  settings: {
+    gitIdentity: { name: string; email: string };
+    systemPrompt: string;
+    maxIdleContainers?: number | null;
+  };
+}
+
 /**
  * Fetch session history via HTTP and populate stores.
  * Shared between useConnectionSync (WS reconnect) and session-actions (session resume).
  */
 export async function loadSessionHistory(sessionId: string): Promise<void> {
   const res = await fetch(`/api/sessions/${sessionId}/history`);
-  const data = await res.json();
+  const data = await res.json() as HistoryResponse;
   useSessionStore.getState().setMessages(
-    data.messages.map((m: { role: string; text: string; toolUse?: unknown[]; images?: unknown[]; files?: unknown[]; isError?: boolean }) => ({ ...m, streaming: false } as ChatMessage)),
+    data.messages.map((m) => ({ ...m, streaming: false } as ChatMessage)),
   );
   useGitStore.getState().setCommits(data.commits);
   useFileStore.getState().setTree(data.fileTree);
@@ -25,7 +58,7 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   try {
     const previewRes = await fetch(`/api/sessions/${sessionId}/preview-status`);
     if (previewRes.ok) {
-      const ps = await previewRes.json();
+      const ps = await previewRes.json() as PreviewStatusResponse;
       // Only apply if the store still has no status (WS message may have arrived first)
       if (ps.known && !usePreviewStore.getState().status) {
         usePreviewStore.getState().setStatus({
@@ -45,7 +78,7 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
           try {
             const retryRes = await fetch(`/api/sessions/${sessionId}/preview-status`);
             if (retryRes.ok) {
-              const retry = await retryRes.json();
+              const retry = await retryRes.json() as PreviewStatusResponse;
               if (retry.known && !usePreviewStore.getState().status) {
                 usePreviewStore.getState().setStatus({
                   running: retry.running,
@@ -71,7 +104,7 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
 export async function loadBootstrapData(): Promise<void> {
   const res = await fetch("/api/bootstrap");
   if (!res.ok) throw new Error(`Bootstrap failed: ${res.status}`);
-  const data = await res.json();
+  const data = await res.json() as BootstrapResponse;
   useSessionStore.getState().setSessions(data.sessions);
   if (data.repos) useRepoStore.getState().setRepos(data.repos);
   useUiStore.getState().setAgentList(data.agents);

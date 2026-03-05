@@ -21,7 +21,7 @@ async function handleResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let message = res.statusText;
     try {
-      const body = await res.json();
+      const body = await res.json() as { error?: string };
       if (body.error) message = body.error;
     } catch {
       // couldn't parse error body — use statusText

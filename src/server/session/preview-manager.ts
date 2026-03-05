@@ -457,7 +457,7 @@ export class PreviewManager extends EventEmitter {
               status: "running",
               message: `Reinstalling — ${reason} detected`,
             });
-            this.start(this._workspaceDir).catch((err) => {
+            this.start(this._workspaceDir).catch((err: unknown) => {
               console.error("[preview-manager] Recovery failed:", err);
               this.emit("stopped", code);
             });

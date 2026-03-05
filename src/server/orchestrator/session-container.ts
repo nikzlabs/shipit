@@ -747,7 +747,10 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
 
       this.eventStream.on("data", (chunk: Buffer) => {
         try {
-          const event = JSON.parse(chunk.toString());
+          const event = JSON.parse(chunk.toString()) as {
+            Action?: string;
+            Actor?: { Attributes?: Record<string, string> };
+          };
           const sessionId = event.Actor?.Attributes?.[CONTAINER_SESSION_ID_LABEL];
           if (!sessionId) return;
 

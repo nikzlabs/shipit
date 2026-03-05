@@ -104,7 +104,7 @@ export function PreviewFrame({
   const activePort = preview?.running ? (selectedPort ?? preview.port) : 0;
 
   // API host for container-mode subdomain URLs (e.g. "localhost:3001")
-  const apiHost = import.meta.env.VITE_API_HOST || window.location.host;
+  const apiHost = (import.meta.env.VITE_API_HOST as string | undefined) || window.location.host;
 
   // Derive iframe readiness from a key: when session/port/refresh changes,
   // the key changes and iframeReady becomes false *in the same render* —
@@ -121,7 +121,7 @@ export function PreviewFrame({
   // resolve *.localhost to 127.0.0.1 per spec, so subdomains work without DNS.
   const previewSubdomainUrl = preview?.url?.startsWith("/preview/") && sessionId
     ? (() => {
-        const [rawHostname, apiPort] = apiHost.includes(":") ? apiHost.split(":") : [apiHost, ""];
+        const [rawHostname, apiPort] = apiHost.includes(":") ? apiHost.split(":") as [string, string] : [apiHost, ""];
         // Substitute loopback IPs with "localhost" so subdomains resolve
         const apiHostname = /^(127\.\d+\.\d+\.\d+|::1)$/.test(rawHostname) ? "localhost" : rawHostname;
         // Other IP addresses (e.g. LAN) can't use subdomains without wildcard DNS
@@ -150,7 +150,7 @@ export function PreviewFrame({
         try {
           if (isContainerMode) {
             const resp = await fetch(pollUrl);
-            const data = await resp.json();
+            const data = await resp.json() as { ready?: boolean };
             if (data.ready) {
               if (!state.cancelled) setReadyForKey(key);
               return;

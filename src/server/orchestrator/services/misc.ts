@@ -51,11 +51,11 @@ export async function getBootstrapData(deps: {
   // GitHub token causing listUserRepos to throw) doesn't kill the entire
   // bootstrap — the other data still loads.
   const [sessions, settings] = await Promise.all([
-    listSessions(deps.sessionManager, deps.createGitManager).catch((err) => {
+    listSessions(deps.sessionManager, deps.createGitManager).catch((err: unknown) => {
       console.error("[bootstrap] Failed to list sessions:", err);
       return [] as Awaited<ReturnType<typeof listSessions>>;
     }),
-    getGlobalSettings(deps.agentRegistry, deps.defaultAgentId, deps.workspaceDir, deps.credentialStore).catch((err) => {
+    getGlobalSettings(deps.agentRegistry, deps.defaultAgentId, deps.workspaceDir, deps.credentialStore).catch((err: unknown) => {
       console.error("[bootstrap] Failed to get global settings:", err);
       return {
         gitIdentity: { name: "", email: "" },

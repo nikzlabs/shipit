@@ -12,7 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { SessionWorker } from "../../session/session-worker.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
-import type { AgentProcess, AgentProcessEvents, AgentId, AgentRunParams } from "../../shared/types.js";
+import type { AgentProcess, AgentProcessEvents, AgentId, AgentRunParams, PermissionMode } from "../../shared/types.js";
 
 // ---------------------------------------------------------------------------
 // Fake AgentProcess for worker tests
@@ -25,7 +25,7 @@ class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentP
     supportsImages: true,
     supportsSystemPrompt: true,
     supportsPermissionModes: true,
-    supportedPermissionModes: [] as import("../../shared/types.js").PermissionMode[],
+    supportedPermissionModes: [] as PermissionMode[],
     toolNames: [] as string[],
     models: [] as string[],
   };

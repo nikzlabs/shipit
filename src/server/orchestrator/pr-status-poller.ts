@@ -431,7 +431,7 @@ export class PrStatusPoller {
 
   private startPolling(repoKey: string, owner: string, repo: string): void {
     const timer = setInterval(() => {
-      this.pollRepo(repoKey, owner, repo).catch((err) => {
+      this.pollRepo(repoKey, owner, repo).catch((err: unknown) => {
         console.error(`[pr-poller] Error polling ${repoKey}:`, err);
       });
     }, POLL_INTERVAL_MS);
@@ -439,7 +439,7 @@ export class PrStatusPoller {
     this.repoTimers.set(repoKey, timer);
 
     // Run the first poll immediately
-    this.pollRepo(repoKey, owner, repo).catch((err) => {
+    this.pollRepo(repoKey, owner, repo).catch((err: unknown) => {
       console.error(`[pr-poller] Error on initial poll ${repoKey}:`, err);
     });
   }
@@ -521,7 +521,7 @@ export class PrStatusPoller {
 
           // Trigger post-merge archive
           if (this.onMergeDetectedCb) {
-            this.onMergeDetectedCb(session.id).catch((err) => {
+            this.onMergeDetectedCb(session.id).catch((err: unknown) => {
               console.error(`[pr-poller] Post-merge archive error for ${session.id}:`, err);
             });
           }
@@ -529,7 +529,7 @@ export class PrStatusPoller {
           // First poll with no prior state — fire a one-time REST probe to check
           // if a PR already exists (e.g., merged before server restart).
           this.pendingCatchUp.delete(session.id);
-          this.catchUpProbe(session.id, owner, repo, session.branch).catch((err) => {
+          this.catchUpProbe(session.id, owner, repo, session.branch).catch((err: unknown) => {
             console.error(`[pr-poller] Catch-up probe error for ${session.id}:`, err);
           });
         }
@@ -578,7 +578,7 @@ export class PrStatusPoller {
 
     // Trigger post-merge archive for merged PRs (not for closed-without-merge)
     if (isMerged && this.onMergeDetectedCb) {
-      this.onMergeDetectedCb(sessionId).catch((err) => {
+      this.onMergeDetectedCb(sessionId).catch((err: unknown) => {
         console.error(`[pr-poller] Post-merge archive error for ${sessionId}:`, err);
       });
     }
@@ -623,7 +623,7 @@ export class PrStatusPoller {
       const failedChecks = extractFailedCheckRuns(prNode);
       if (failedChecks.length > 0 && this.fetchAndFixCb) {
         // Trigger the fix asynchronously
-        this.fetchAndFixCb(sessionId, owner, repo, failedChecks).catch((err) => {
+        this.fetchAndFixCb(sessionId, owner, repo, failedChecks).catch((err: unknown) => {
           console.error(`[pr-poller] Auto-fix error for ${sessionId}:`, err);
         });
       }

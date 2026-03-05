@@ -41,7 +41,7 @@ export class TestClient {
     this.ws = ws;
     this.sessionId = sessionId;
     ws.on("message", (data: WebSocket.Data) => {
-      const msg: WsServerMessage = JSON.parse((data as Buffer).toString());
+      const msg = JSON.parse((data as Buffer).toString()) as WsServerMessage;
       const waiter = this.waiters.shift();
       if (waiter) {
         waiter(msg);
@@ -359,7 +359,7 @@ export class FakeClaudeProcess extends EventEmitter {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   emit(eventName: string | symbol, ...args: any[]): boolean {
     if (eventName === "event" && args[0] && typeof args[0] === "object") {
-      const raw = args[0];
+      const raw = args[0] as RawClaudeEvent;
       const mapped = mapClaudeEvent(raw);
       if (mapped) {
         return super.emit("event", mapped);
@@ -367,6 +367,7 @@ export class FakeClaudeProcess extends EventEmitter {
       // Already an AgentEvent or unrecognized — pass through
       return super.emit("event", raw);
     }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
     return super.emit(eventName, ...args);
   }
 
@@ -405,14 +406,30 @@ export class FakeClaudeProcess extends EventEmitter {
   }
 }
 
+/** Shape of raw Claude CLI events used in tests. */
+interface RawClaudeEvent {
+  type: string;
+  session_id?: string;
+  model?: string;
+  tools?: string[];
+  message?: { content?: unknown[] };
+  subtype?: string;
+  total_cost_usd?: number | null;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  duration_ms?: number;
+  result?: string;
+}
+
 /**
  * Translate raw Claude CLI events to AgentEvent format.
  * Same mapping as ClaudeAdapter.mapEvent() — kept here so tests can emit
  * events in the familiar Claude format without depending on session code.
  * Returns null for events already in AgentEvent format.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mapClaudeEvent(raw: any): any {
+function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
   switch (raw.type) {
     case "system":
       return {

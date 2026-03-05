@@ -12,7 +12,7 @@ export function useSessionWebSocket(sessionId: string | undefined): UseWebSocket
   const url = useMemo(() => {
     if (!sessionId) return null;
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = import.meta.env.VITE_API_HOST || window.location.host;
+    const host = (import.meta.env.VITE_API_HOST as string | undefined) || window.location.host;
     const agent = getSavedAgentId();
     return `${proto}//${host}/ws/sessions/${sessionId}?agent=${agent}`;
   }, [sessionId]);

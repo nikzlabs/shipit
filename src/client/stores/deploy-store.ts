@@ -73,7 +73,7 @@ export const useDeployStore = create<DeployState>((set, get) => ({
     if (!res.ok) {
       throw new Error(`Failed to fetch deploy setup: ${res.status}`);
     }
-    const data = await res.json();
+    const data = await res.json() as { targets: DeployTargetInfo[]; projectSettings: Record<string, { configured: boolean; projectName?: string }> };
     set({
       targets: data.targets,
       configStatus: data.projectSettings,
@@ -108,7 +108,7 @@ export const useDeployStore = create<DeployState>((set, get) => ({
     if (!res.ok) {
       throw new Error(`Failed to fetch deploy history: ${res.status}`);
     }
-    const data = await res.json();
+    const data = await res.json() as { deployments: DeploymentRecord[] };
     set({ history: data.deployments });
   },
 }));

@@ -31,7 +31,7 @@ export function useMessageHandler(params: {
 
     let data: WsServerMessage;
     try {
-      data = JSON.parse(lastMessage.data) as WsServerMessage;
+      data = JSON.parse(lastMessage.data as string) as WsServerMessage;
     } catch {
       return;
     }

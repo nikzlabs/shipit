@@ -56,19 +56,20 @@ export const useRepoStore = create<RepoState>((set) => ({
         body: JSON.stringify({ url }),
       });
       if (!res.ok) return null;
-      const data = await res.json();
+      const data = await res.json() as { repo?: RepoInfo };
       if (data.repo) {
+        const repo = data.repo;
         set((state) => {
           // Add or replace
-          const existing = state.repos.findIndex((r) => r.url === data.repo.url);
+          const existing = state.repos.findIndex((r) => r.url === repo.url);
           if (existing >= 0) {
             const updated = [...state.repos];
-            updated[existing] = data.repo;
+            updated[existing] = repo;
             return { repos: updated };
           }
-          return { repos: [data.repo, ...state.repos] };
+          return { repos: [repo, ...state.repos] };
         });
-        return data.repo as RepoInfo;
+        return data.repo;
       }
       return null;
     } catch (err) {
@@ -102,8 +103,7 @@ export const useRepoStore = create<RepoState>((set) => ({
         signal,
       });
       if (!res.ok) return null;
-      const data = await res.json();
-      return data as { sessionId: string; sessionDir: string };
+      return await res.json() as { sessionId: string; sessionDir: string };
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return null;
       console.error("[repo-store] claimSession failed:", err);

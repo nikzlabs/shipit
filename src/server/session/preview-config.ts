@@ -160,7 +160,7 @@ export async function resolvePreviewConfig(workspaceDir: string): Promise<Previe
   const yamlPath = path.join(workspaceDir, "shipit.yaml");
   try {
     const yamlContent = fs.readFileSync(yamlPath, "utf-8");
-    const parsed = parseYaml(yamlContent);
+    const parsed = parseYaml(yamlContent) as Record<string, unknown>;
     const { mode, install } = parseShipitYaml(parsed);
     return { mode, source: "shipit.yaml", install };
   } catch (err) {

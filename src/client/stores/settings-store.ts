@@ -83,7 +83,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     if (!res.ok) {
       throw new Error(`Failed to save instructions: ${res.status}`);
     }
-    const result = await res.json();
+    const result = await res.json() as { systemPrompt: string };
     set({
       systemPromptContent: result.systemPrompt,
       hasSystemPrompt: !!result.systemPrompt,
@@ -99,7 +99,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     if (!res.ok) {
       return null;
     }
-    const result = await res.json();
+    const result = await res.json() as { status: { authenticated: boolean; username?: string; avatarUrl?: string }; repos: { fullName: string; description: string | null; private: boolean; defaultBranch: string; cloneUrl: string }[] };
     set({ githubStatus: result.status });
     return result;
   },
@@ -111,7 +111,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     if (!res.ok) {
       throw new Error(`Failed to logout from GitHub: ${res.status}`);
     }
-    const result = await res.json();
+    const result = await res.json() as { status: { authenticated: boolean; username?: string; avatarUrl?: string } };
     set({ githubStatus: result.status });
   },
 }));

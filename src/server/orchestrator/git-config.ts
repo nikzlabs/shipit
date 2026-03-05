@@ -76,8 +76,8 @@ function migrateLegacyIdentity(credentialsDir: string): void {
   try {
     const credsFile = path.join(credentialsDir, "shipit-credentials.json");
     const raw = fs.readFileSync(credsFile, "utf-8");
-    const data = JSON.parse(raw);
-    const id = data.gitIdentity;
+    const data = JSON.parse(raw) as Record<string, unknown>;
+    const id = data.gitIdentity as Record<string, unknown> | undefined;
     if (
       id &&
       typeof id.name === "string" &&

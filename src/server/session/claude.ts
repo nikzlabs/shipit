@@ -181,7 +181,7 @@ export class ClaudeProcess extends EventEmitter {
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
-        const event: ClaudeEvent = JSON.parse(trimmed);
+        const event = JSON.parse(trimmed) as ClaudeEvent;
         this.emit("event", event);
       } catch {
         // Not valid JSON — relay as log output.

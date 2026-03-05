@@ -7,7 +7,7 @@
 
 import { EventEmitter } from "node:events";
 import http from "node:http";
-import type { AgentProcess, AgentProcessEvents, AgentId, AgentRunParams } from "../../shared/types.js";
+import type { AgentProcess, AgentProcessEvents, AgentId, AgentRunParams, PermissionMode } from "../../shared/types.js";
 
 // ---------------------------------------------------------------------------
 // Stubs
@@ -20,7 +20,7 @@ export class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements
     supportsImages: true,
     supportsSystemPrompt: true,
     supportsPermissionModes: true,
-    supportedPermissionModes: [] as import("../../shared/types.js").PermissionMode[],
+    supportedPermissionModes: [] as PermissionMode[],
     toolNames: [] as string[],
     models: [] as string[],
   };

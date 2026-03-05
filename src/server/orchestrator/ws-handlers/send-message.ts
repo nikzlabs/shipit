@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import type { WsClientMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment, FileAttachment, FileContextRef, PermissionMode } from "../../shared/types.js";
+import type { WsClientMessage, WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, ImageAttachment, FileAttachment, FileContextRef, PermissionMode } from "../../shared/types.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 
@@ -20,7 +20,7 @@ async function postTurnCommit(
   opts: {
     sessionDir: string;
     sessionId: string | undefined;
-    emit: (msg: import("../../shared/types.js").WsServerMessage) => void;
+    emit: (msg: WsServerMessage) => void;
   },
 ): Promise<string | null> {
   const git = ctx.createGitManager(opts.sessionDir);
@@ -68,7 +68,7 @@ function wireAgentListeners(
 ): void {
   const runner = ctx.getRunner();
   // Helper: emit to all viewers via runner, or fall back to ctx.send
-  const emitToViewers = (msg: import("../../shared/types.js").WsServerMessage) => {
+  const emitToViewers = (msg: WsServerMessage) => {
     if (runner) {
       runner.emitMessage(msg);
     } else {
@@ -306,7 +306,7 @@ async function runClaudeWithMessage(ctx: FullCtx, opts: {
   }
 
   // Helper: emit to all viewers via runner, or fall back to ctx.send
-  const emitDone = (msg: import("../../shared/types.js").WsServerMessage) => {
+  const emitDone = (msg: WsServerMessage) => {
     if (runner) {
       runner.emitMessage(msg);
     } else {
@@ -599,7 +599,7 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
             console.warn("[warm] Branch rename failed:", getErrorMessage(err));
             await finalizeBranchRenamed();
           }
-        }).catch(async (err) => {
+        }).catch(async (err: unknown) => {
           console.warn("[warm] Session naming failed:", err);
           await finalizeBranchRenamed();
         });

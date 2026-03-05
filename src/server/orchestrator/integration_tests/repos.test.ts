@@ -10,6 +10,7 @@ import { buildApp } from "../index.js";
 import { SessionManager } from "../sessions.js";
 import { RepoStore } from "../repo-store.js";
 import type { AuthManager } from "../auth.js";
+import type { GitHubAuthManager } from "../github-auth.js";
 import { StubAuthManager, StubGitHubAuthManager, createTestCredentialStore } from "./test-helpers.js";
 
 let tmpDir: string;
@@ -27,7 +28,7 @@ beforeEach(async () => {
     sessionManager,
     repoStore,
     authManager: new StubAuthManager() as unknown as AuthManager,
-    githubAuthManager: new StubGitHubAuthManager() as unknown as import("../github-auth.js").GitHubAuthManager,
+    githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
     credentialStore,
     workspaceDir: tmpDir,
     serveStatic: false,

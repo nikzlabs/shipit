@@ -17,6 +17,10 @@ import { SessionWorker } from "../../session/session-worker.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import { registerPreviewProxy } from "../preview-proxy.js";
 import type { WsServerMessage } from "../../shared/types.js";
+import type { PreviewManager } from "../../session/preview-manager.js";
+import type { TerminalProcess } from "../../session/terminal.js";
+import type { FileWatcher } from "../../session/file-watcher.js";
+import type { SessionContainerManager } from "../session-container.js";
 import {
   FakeWorkerAgent,
   StubTerminal,
@@ -43,7 +47,7 @@ describe("Worker Preview Endpoints", () => {
       host: "127.0.0.1",
       createPreviewManager: () => {
         lastPreview = new StubPreview();
-        return lastPreview as unknown as import("../../session/preview-manager.js").PreviewManager;
+        return lastPreview as unknown as PreviewManager;
       },
     });
 
@@ -155,13 +159,13 @@ describe("ContainerSessionRunner Preview Proxy", () => {
       host: "127.0.0.1",
       createPreviewManager: () => {
         lastPreview = new StubPreview();
-        return lastPreview as unknown as import("../../session/preview-manager.js").PreviewManager;
+        return lastPreview as unknown as PreviewManager;
       },
       createTerminal: () => {
-        return new StubTerminal() as unknown as import("../../session/terminal.js").TerminalProcess;
+        return new StubTerminal() as unknown as TerminalProcess;
       },
       createFileWatcher: () => {
-        return new StubWatcher() as unknown as import("../../session/file-watcher.js").FileWatcher;
+        return new StubWatcher() as unknown as FileWatcher;
       },
     });
 
@@ -374,7 +378,7 @@ describe("Preview Reverse Proxy", () => {
 
     const app = Fastify({ logger: false });
     registerPreviewProxy(app, {
-      containerManager: fakeContainerManager as unknown as import("../session-container.js").SessionContainerManager,
+      containerManager: fakeContainerManager as unknown as SessionContainerManager,
     });
     await app.ready();
 
@@ -396,7 +400,7 @@ describe("Preview Reverse Proxy", () => {
 
     const app = Fastify({ logger: false });
     registerPreviewProxy(app, {
-      containerManager: fakeContainerManager as unknown as import("../session-container.js").SessionContainerManager,
+      containerManager: fakeContainerManager as unknown as SessionContainerManager,
     });
     await app.ready();
 
@@ -418,7 +422,7 @@ describe("Preview Reverse Proxy", () => {
 
     const app = Fastify({ logger: false });
     registerPreviewProxy(app, {
-      containerManager: fakeContainerManager as unknown as import("../session-container.js").SessionContainerManager,
+      containerManager: fakeContainerManager as unknown as SessionContainerManager,
     });
     await app.ready();
 
@@ -458,7 +462,7 @@ describe("Preview Reverse Proxy", () => {
 
     const app = Fastify({ logger: false });
     registerPreviewProxy(app, {
-      containerManager: fakeContainerManager as unknown as import("../session-container.js").SessionContainerManager,
+      containerManager: fakeContainerManager as unknown as SessionContainerManager,
     });
 
     // Start the Fastify server to get a real HTTP connection (needed for hijack)

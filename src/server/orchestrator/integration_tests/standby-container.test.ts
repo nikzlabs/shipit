@@ -36,6 +36,7 @@ import {
   createTestCredentialStore,
 } from "./test-helpers.js";
 import type { AuthManager } from "../auth.js";
+import type { GitHubAuthManager } from "../github-auth.js";
 import { repoUrlToHash } from "../git-utils.js";
 
 const REPO_URL = "https://github.com/owner/standby-test-repo.git";
@@ -191,7 +192,7 @@ describe("standby container pre-warming", () => {
       sessionManager,
       repoStore,
       authManager: new StubAuthManager() as unknown as AuthManager,
-      githubAuthManager: new StubGitHubAuthManager() as unknown as import("../github-auth.js").GitHubAuthManager,
+      githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
       credentialStore,
       agentFactory: () => new FakeClaudeProcess() as any,
       workspaceDir: tmpDir,
