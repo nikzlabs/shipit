@@ -37,6 +37,8 @@ export interface ContainerConfig {
   env?: Record<string, string>;
   /** Additional Docker labels to apply to the container. */
   extraLabels?: Record<string, string>;
+  /** Whether this session needs Docker access (Docker CLI + proxy). */
+  dockerAccess?: boolean;
 }
 
 export interface SessionContainer {
@@ -91,6 +93,12 @@ export interface SessionContainerManagerOpts {
   credentialsVolume?: string;
   /** Stack name for labelling containers (e.g. "shipit-dev", "shipit-prod"). */
   stackName?: string;
+  /** Docker-capable session worker image name. Uses Docker CLI + proxy. */
+  dockerImageName?: string;
+  /** Docker API proxy host (bridge gateway IP). Required for Docker-enabled sessions. */
+  dockerProxyHost?: string;
+  /** Docker API proxy port. Required for Docker-enabled sessions. */
+  dockerProxyPort?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +136,9 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private workspaceVolume?: string;
   private credentialsVolume?: string;
   private stackName?: string;
+  private dockerImageName?: string;
+  private dockerProxyHost?: string;
+  private dockerProxyPort?: number;
   private standbySessionIds = new Set<string>();
   private eventStream: (NodeJS.ReadableStream & { destroy?: () => void }) | null = null;
   private _disposed = false;
@@ -150,6 +161,9 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     this.workspaceVolume = opts.workspaceVolume;
     this.credentialsVolume = opts.credentialsVolume;
     this.stackName = opts.stackName;
+    this.dockerImageName = opts.dockerImageName;
+    this.dockerProxyHost = opts.dockerProxyHost;
+    this.dockerProxyPort = opts.dockerProxyPort;
   }
 
   /** Build the base label set for containers and networks. */
@@ -272,11 +286,22 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       `WORKER_PORT=${this.workerPort}`,
       "HOME=/root",
     ];
+    if (config.dockerAccess && this.dockerProxyHost && this.dockerProxyPort) {
+      env.push(`DOCKER_HOST=tcp://${this.dockerProxyHost}:${this.dockerProxyPort}`);
+      // Prevent compose project name collisions between sessions
+      const sessionPrefix = config.sessionId.slice(0, 12);
+      env.push(`COMPOSE_PROJECT_NAME=shipit-${sessionPrefix}`);
+    }
     if (config.env) {
       for (const [key, value] of Object.entries(config.env)) {
         env.push(`${key}=${value}`);
       }
     }
+
+    // Use Docker-capable image when Docker access is requested
+    const imageName = (config.dockerAccess && this.dockerImageName)
+      ? this.dockerImageName
+      : config.imageName;
 
     const sc: SessionContainer = {
       id: "",
@@ -289,7 +314,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
 
     try {
       const container = await this.docker.createContainer({
-        Image: config.imageName,
+        Image: imageName,
         Cmd: ["node", "--import", "tsx", "src/server/session/session-worker.ts"],
         Labels: {
           ...this.baseLabels(),
@@ -306,6 +331,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
           NetworkMode: this.networkName,
           SecurityOpt: ["no-new-privileges"],
           ReadonlyRootfs: false,
+          CapDrop: ["ALL"],
+          CapAdd: ["CHOWN", "SETUID", "SETGID", "FOWNER", "DAC_OVERRIDE", "NET_BIND_SERVICE", "KILL"],
         },
         Env: env,
       });
@@ -363,6 +390,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   /**
    * Stop and remove a container for the given session.
    * Gracefully stops with a 5-second timeout before force-killing.
+   * Also cleans up Docker resources (containers, networks, volumes) created
+   * by the session through the Docker API proxy.
    */
   async destroy(sessionId: string): Promise<void> {
     this.standbySessionIds.delete(sessionId);
@@ -370,6 +399,9 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     if (!sc) return;
 
     sc.status = "stopping";
+
+    // Clean up Docker resources created through the proxy
+    await this.cleanupSessionDockerResources(sessionId);
 
     try {
       const container = this.docker.getContainer(sc.id);
@@ -392,6 +424,70 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     this.emit("container_destroyed", sessionId);
   }
 
+  /**
+   * Clean up Docker resources (containers, networks, volumes) created by a
+   * session through the Docker API proxy. These are identified by the
+   * `shipit-parent-session` label.
+   */
+  private async cleanupSessionDockerResources(sessionId: string): Promise<void> {
+    const parentLabel = `shipit-parent-session=${sessionId}`;
+
+    // Stop and remove child containers
+    try {
+      const containers = await this.docker.listContainers({
+        all: true,
+        filters: { label: [parentLabel] },
+      });
+      for (const ci of containers) {
+        try {
+          const container = this.docker.getContainer(ci.Id);
+          if (ci.State === "running") {
+            await container.stop({ t: 5 });
+          }
+          await container.remove({ force: true });
+        } catch {
+          // Container may already be gone
+        }
+      }
+    } catch {
+      // Docker may not be available
+    }
+
+    // Remove child networks
+    try {
+      const networks = await this.docker.listNetworks({
+        filters: { label: [parentLabel] },
+      });
+      for (const ni of networks) {
+        try {
+          const network = this.docker.getNetwork(ni.Id);
+          await network.remove();
+        } catch {
+          // Network may already be gone
+        }
+      }
+    } catch {
+      // Docker may not be available
+    }
+
+    // Remove child volumes
+    try {
+      const volumes = await this.docker.listVolumes({
+        filters: { label: [parentLabel] },
+      });
+      for (const vi of (volumes?.Volumes ?? [])) {
+        try {
+          const volume = this.docker.getVolume(vi.Name);
+          await volume.remove();
+        } catch {
+          // Volume may already be gone
+        }
+      }
+    } catch {
+      // Docker may not be available
+    }
+  }
+
   /** Stop and remove all session containers. Used for full_reset and shutdown. */
   async destroyAll(): Promise<void> {
     const sessionIds = [...this.containers.keys()];
@@ -411,6 +507,29 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   /** Number of active containers. */
   get size(): number {
     return this.containers.size;
+  }
+
+  /**
+   * Configure Docker proxy settings (called after the proxy starts).
+   * Enables Docker-capable sessions to set DOCKER_HOST env var.
+   */
+  setDockerProxy(host: string, port: number, dockerImageName?: string): void {
+    this.dockerProxyHost = host;
+    this.dockerProxyPort = port;
+    if (dockerImageName) {
+      this.dockerImageName = dockerImageName;
+    }
+  }
+
+  /**
+   * Look up a session by its container's bridge IP address.
+   * Used by the Docker API proxy for source-IP routing.
+   */
+  getSessionByContainerIp(ip: string): { sessionId: string; containerIp: string } | undefined {
+    for (const sc of this.containers.values()) {
+      if (sc.containerIp === ip) return sc;
+    }
+    return undefined;
   }
 
   // --- Standby container support ---
@@ -603,6 +722,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     memoryLimit?: number;
     cpuQuota?: number;
     pidsLimit?: number;
+    dockerAccess?: boolean;
   }): ContainerConfig {
     return {
       sessionId: opts.sessionId,
@@ -614,6 +734,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       cpuQuota: opts.cpuQuota ?? this.defaultCpuQuota,
       pidsLimit: opts.pidsLimit ?? this.defaultPidsLimit,
       env: opts.env,
+      dockerAccess: opts.dockerAccess,
     };
   }
 
