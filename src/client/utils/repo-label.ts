@@ -20,6 +20,16 @@ export function parseRepoLabel(remoteUrl: string): string {
   }
 }
 
+/**
+ * Extract just the repo name (no owner) from a remote URL.
+ *   "https://github.com/anthropics/shipit.git" → "shipit"
+ */
+export function parseRepoName(remoteUrl: string): string {
+  const label = parseRepoLabel(remoteUrl);
+  const slashIdx = label.lastIndexOf("/");
+  return slashIdx >= 0 ? label.slice(slashIdx + 1) : label;
+}
+
 /** URL prefix for repo-scoped new-session routes. */
 export const REPO_ROUTE_PREFIX = "/repo/";
 

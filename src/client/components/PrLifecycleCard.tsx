@@ -14,6 +14,7 @@ import type { PrCardState } from "../stores/pr-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { Button } from "./ui/button.js";
 import {
+  GitBranchIcon,
   GitPullRequestIcon,
   GitMergeIcon,
   CheckCircleIcon,
@@ -209,7 +210,7 @@ function ReadyPhase({ card, sessionId }: { card: PrCardState; sessionId: string 
 
   return (
     <div className="flex items-center gap-3">
-      <GitPullRequestIcon size={ICON_SIZE.SM} className="text-(--color-pr) shrink-0" />
+      <PrStateBadge sessionId={sessionId} />
       {card.headBranch && (
         <span className="text-xs text-(--color-text-secondary) truncate flex items-center gap-1">
           main <ArrowLeftIcon size={12} /> {card.headBranch}
@@ -270,7 +271,7 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
   return (
     <div>
       <div className="flex items-center gap-3 flex-wrap">
-        <GitPullRequestIcon size={ICON_SIZE.SM} className="text-(--color-pr) shrink-0" />
+        <PrStateBadge sessionId={sessionId} />
         <span className="text-xs text-(--color-text-secondary) truncate flex items-center gap-1">
           {pr.baseBranch} <ArrowLeftIcon size={12} /> {pr.headBranch}
         </span>
@@ -340,12 +341,12 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
   );
 }
 
-function MergedPhase({ card }: { card: PrCardState }) {
+function MergedPhase({ card, sessionId }: { card: PrCardState; sessionId: string }) {
   const pr = card.pr;
 
   return (
     <div className="flex items-center gap-3">
-      <GitMergeIcon size={ICON_SIZE.SM} className="text-(--color-pr) shrink-0" />
+      <PrStateBadge sessionId={sessionId} />
       <span className="text-xs text-(--color-text-secondary)">
         PR #{pr?.number} merged into {pr?.baseBranch}
       </span>
@@ -363,12 +364,12 @@ function MergedPhase({ card }: { card: PrCardState }) {
   );
 }
 
-function ClosedPhase({ card }: { card: PrCardState }) {
+function ClosedPhase({ card, sessionId }: { card: PrCardState; sessionId: string }) {
   const pr = card.pr;
 
   return (
     <div className="flex items-center gap-3">
-      <GitPullRequestIcon size={ICON_SIZE.SM} className="text-(--color-text-tertiary) shrink-0" />
+      <PrStateBadge sessionId={sessionId} />
       <span className="text-xs text-(--color-text-secondary)">
         PR #{pr?.number} closed
       </span>
@@ -447,53 +448,42 @@ export function PrLifecycleCard({ sessionId }: { sessionId: string }) {
       {card.phase === "ready" && <ReadyPhase card={card} sessionId={sessionId} />}
       {card.phase === "creating" && <CreatingPhase />}
       {card.phase === "open" && <OpenPhase card={card} sessionId={sessionId} />}
-      {card.phase === "merged" && <MergedPhase card={card} />}
-      {card.phase === "closed" && <ClosedPhase card={card} />}
+      {card.phase === "merged" && <MergedPhase card={card} sessionId={sessionId} />}
+      {card.phase === "closed" && <ClosedPhase card={card} sessionId={sessionId} />}
       {card.phase === "error" && <ErrorPhase card={card} sessionId={sessionId} />}
     </div>
   );
 }
 
-// ---- Sidebar PR icon ----
+// ---- PR state badge (reused in sidebar + card phases) ----
 
-export function PrStatusIcon({ sessionId }: { sessionId: string }) {
+export function PrStateBadge({ sessionId }: { sessionId: string }) {
   const status = usePrStore((s) => s.statusBySession[sessionId]);
   const card = usePrStore((s) => s.cardBySession[sessionId]);
 
   const prState = status?.prState ?? (card?.phase === "merged" ? "merged" : card?.phase === "closed" ? "closed" : card?.phase === "open" ? "open" : null);
-  const checksState = status?.checks?.state ?? card?.checks?.state;
 
-  if (!prState && !card) return null;
-  if (prState !== "open" && prState !== "merged" && prState !== "closed") return null;
+  const base = "w-5 h-5 rounded-md flex items-center justify-center shrink-0 border";
 
   if (prState === "merged") {
-    return <span className="text-(--color-pr)" title="PR merged"><GitMergeIcon size={12} /></span>;
-  }
-  if (prState === "closed") {
-    return <span className="text-(--color-text-tertiary)" title="PR closed"><GitPullRequestIcon size={12} /></span>;
-  }
-
-  if (checksState === "success") {
     return (
-      <span className="text-(--color-success) flex items-center gap-0.5" title="CI passed">
-        <GitPullRequestIcon size={12} /> <CheckCircleIcon size={10} />
+      <span className={`${base} bg-(--color-pr-subtle) text-(--color-pr) border-(--color-pr-border)`} title="PR merged">
+        <GitMergeIcon size={ICON_SIZE.SM} />
       </span>
     );
   }
-  if (checksState === "failure") {
+  if (prState === "open") {
     return (
-      <span className="text-(--color-error) flex items-center gap-0.5" title="CI failed">
-        <GitPullRequestIcon size={12} /> <XCircleIcon size={10} />
-      </span>
-    );
-  }
-  if (checksState === "pending") {
-    return (
-      <span className="text-(--color-warning) animate-pulse" title="CI running">
-        <GitPullRequestIcon size={12} />
+      <span className={`${base} bg-(--color-success-subtle) text-(--color-success) border-(--color-success-border)`} title="PR open">
+        <GitPullRequestIcon size={ICON_SIZE.SM} />
       </span>
     );
   }
 
-  return <span className="text-(--color-text-tertiary)" title="PR open"><GitPullRequestIcon size={12} /></span>;
+  // Default: no PR (branch only), or closed PR
+  return (
+    <span className={`${base} bg-(--color-bg-tertiary) text-(--color-text-tertiary) border-(--color-border-secondary)`} title={prState === "closed" ? "PR closed" : "Branch"}>
+      <GitBranchIcon size={ICON_SIZE.SM} />
+    </span>
+  );
 }

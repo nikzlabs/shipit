@@ -15,88 +15,69 @@ const baseSession = (overrides: Partial<SessionInfo> = {}): SessionInfo => ({
 
 const defaultProps = {
   sessions: [],
-  repos: [],
+  activeRepoUrl: "https://github.com/owner/repo.git",
+  activeRepoName: "repo",
+  activeRepoStatus: "ready" as const,
   currentSessionId: undefined,
   onResume: vi.fn(),
-  onNew: vi.fn(),
-  onNewSessionForRepo: vi.fn(),
   onArchive: vi.fn(),
   onRename: vi.fn(),
-  onRefresh: vi.fn(),
-  onAddRepo: vi.fn(),
-  onRemoveRepo: vi.fn(),
-  onViewAll: vi.fn(),
+  onOpenRepoSwitcher: vi.fn(),
+  onNewSession: vi.fn(),
   collapsed: false,
   onToggleCollapse: vi.fn(),
 };
 
 describe("SessionSidebar", () => {
-  it("renders header and Add Repository button", () => {
+  it("renders active repo name and Sessions header", () => {
     render(<SessionSidebar {...defaultProps} />);
+    expect(screen.getByText("repo")).toBeTruthy();
     expect(screen.getByText("Sessions")).toBeTruthy();
-    expect(screen.getByText("Add Repository")).toBeTruthy();
   });
 
-  it("calls onAddRepo when Add Repository is clicked", () => {
-    const onAddRepo = vi.fn();
-    render(<SessionSidebar {...defaultProps} onAddRepo={onAddRepo} />);
-    fireEvent.click(screen.getByText("Add Repository"));
-    expect(onAddRepo).toHaveBeenCalledTimes(1);
+  it("shows 'No repository' when no active repo", () => {
+    render(<SessionSidebar {...defaultProps} activeRepoUrl={undefined} activeRepoName="" />);
+    expect(screen.getByText("No repository")).toBeTruthy();
   });
 
-  it("renders session items", () => {
-    const sessions = [baseSession({ title: "Alpha session" })];
-    render(<SessionSidebar {...defaultProps} sessions={sessions} />);
-    expect(screen.getByText("Alpha session")).toBeTruthy();
+  it("calls onOpenRepoSwitcher when gear is clicked", () => {
+    const onOpenRepoSwitcher = vi.fn();
+    render(<SessionSidebar {...defaultProps} onOpenRepoSwitcher={onOpenRepoSwitcher} />);
+    fireEvent.click(screen.getByLabelText("Change repository"));
+    expect(onOpenRepoSwitcher).toHaveBeenCalledTimes(1);
   });
 
-  it("groups sessions by remoteUrl, shows group headers", () => {
+  it("renders session items filtered to active repo", () => {
     const sessions = [
-      baseSession({ id: "s1", title: "Session A", remoteUrl: "https://github.com/owner/repo.git" }),
-      baseSession({ id: "s2", title: "Session B", remoteUrl: "https://github.com/owner/repo.git" }),
+      baseSession({ id: "s1", title: "Matching", remoteUrl: "https://github.com/owner/repo.git" }),
+      baseSession({ id: "s2", title: "Other repo", remoteUrl: "https://github.com/other/thing.git" }),
     ];
     render(<SessionSidebar {...defaultProps} sessions={sessions} />);
-    expect(screen.getByText("Session A")).toBeTruthy();
-    expect(screen.getByText("Session B")).toBeTruthy();
-    // Group header should show owner/repo label
-    expect(screen.getByText("owner/repo")).toBeTruthy();
+    expect(screen.getByText("Matching")).toBeTruthy();
+    expect(screen.queryByText("Other repo")).toBeNull();
   });
 
-  it("shows 'No Remote' group for sessions without remoteUrl", () => {
-    const sessions = [baseSession({ id: "s1", title: "Untracked" })];
-    render(<SessionSidebar {...defaultProps} sessions={sessions} />);
-    expect(screen.getByText("No Remote")).toBeTruthy();
-    expect(screen.getByText("Untracked")).toBeTruthy();
-  });
-
-  it("extracts owner/repo from GitHub HTTPS URLs", () => {
+  it("shows sessions without remoteUrl when no active repo", () => {
     const sessions = [
-      baseSession({ id: "s1", remoteUrl: "https://github.com/alice/my-project.git" }),
+      baseSession({ id: "s1", title: "No remote session" }),
+      baseSession({ id: "s2", title: "Has remote", remoteUrl: "https://github.com/owner/repo.git" }),
     ];
-    render(<SessionSidebar {...defaultProps} sessions={sessions} />);
-    expect(screen.getByText("alice/my-project")).toBeTruthy();
+    render(<SessionSidebar {...defaultProps} activeRepoUrl={undefined} activeRepoName="" sessions={sessions} />);
+    expect(screen.getByText("No remote session")).toBeTruthy();
+    expect(screen.queryByText("Has remote")).toBeNull();
   });
 
-  it("extracts owner/repo from GitHub SSH URLs", () => {
-    const sessions = [
-      baseSession({ id: "s1", remoteUrl: "git@github.com:bob/cool-app.git" }),
-    ];
-    render(<SessionSidebar {...defaultProps} sessions={sessions} />);
-    expect(screen.getByText("bob/cool-app")).toBeTruthy();
-  });
-
-  it("highlights the current session with green dot", () => {
-    const sessions = [baseSession({ id: "s1", title: "Active" })];
+  it("highlights the current session with active background", () => {
+    const sessions = [baseSession({ id: "s1", title: "Active", remoteUrl: "https://github.com/owner/repo.git" })];
     render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" />);
-    // Active indicator is a span with success token class; session row should have distinct style
-    const activeIndicator = document.querySelector(".bg-\\(--color-success\\)");
-    expect(activeIndicator).toBeTruthy();
+    const activeRow = document.querySelector(".bg-\\(--color-bg-secondary\\)");
+    expect(activeRow).toBeTruthy();
   });
 
   it("calls onResume when a non-current session is clicked", () => {
     const onResume = vi.fn();
     const sessions = [
-      baseSession({ id: "s1", title: "Resume me" }),
+      baseSession({ id: "s1", title: "Resume me", remoteUrl: "https://github.com/owner/repo.git" }),
     ];
     render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" onResume={onResume} />);
     fireEvent.click(screen.getByText("Resume me"));
@@ -105,7 +86,7 @@ describe("SessionSidebar", () => {
 
   it("does not call onResume when the current session is clicked", () => {
     const onResume = vi.fn();
-    const sessions = [baseSession({ id: "s1", title: "Current" })];
+    const sessions = [baseSession({ id: "s1", title: "Current", remoteUrl: "https://github.com/owner/repo.git" })];
     render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" onResume={onResume} />);
     fireEvent.click(screen.getByText("Current"));
     expect(onResume).not.toHaveBeenCalled();
@@ -113,7 +94,7 @@ describe("SessionSidebar", () => {
 
   it("inline rename: form submit calls onRename, escape cancels", () => {
     const onRename = vi.fn();
-    const sessions = [baseSession({ id: "s1", title: "Old name" })];
+    const sessions = [baseSession({ id: "s1", title: "Old name", remoteUrl: "https://github.com/owner/repo.git" })];
     render(<SessionSidebar {...defaultProps} sessions={sessions} onRename={onRename} />);
 
     // Click pencil button
@@ -129,7 +110,7 @@ describe("SessionSidebar", () => {
     expect(onRename).not.toHaveBeenCalled();
     expect(screen.getByText("Old name")).toBeTruthy();
 
-    // Re-open and submit via form submit event (what Enter triggers in a browser)
+    // Re-open and submit via form submit event
     fireEvent.click(screen.getByTitle("Rename session"));
     const input2 = screen.getByDisplayValue("Old name");
     fireEvent.change(input2, { target: { value: "New name" } });
@@ -139,7 +120,7 @@ describe("SessionSidebar", () => {
 
   it("shows archive button on non-current sessions", () => {
     const onArchive = vi.fn();
-    const sessions = [baseSession({ id: "s1", title: "Archivable" })];
+    const sessions = [baseSession({ id: "s1", title: "Archivable", remoteUrl: "https://github.com/owner/repo.git" })];
     render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" onArchive={onArchive} />);
     const archiveBtn = screen.getByTitle("Archive session");
     expect(archiveBtn).toBeTruthy();
@@ -148,7 +129,7 @@ describe("SessionSidebar", () => {
   });
 
   it("does not show archive button on current session", () => {
-    const sessions = [baseSession({ id: "s1", title: "Current" })];
+    const sessions = [baseSession({ id: "s1", title: "Current", remoteUrl: "https://github.com/owner/repo.git" })];
     render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" />);
     expect(screen.queryByTitle("Archive session")).toBeNull();
   });
@@ -156,7 +137,6 @@ describe("SessionSidebar", () => {
   it("shows collapsed state with expand button", () => {
     render(<SessionSidebar {...defaultProps} collapsed={true} />);
     expect(screen.getByLabelText("Expand sidebar")).toBeTruthy();
-    // Should not show "Sessions" header text
     expect(screen.queryByText("Sessions")).toBeNull();
   });
 
@@ -174,75 +154,42 @@ describe("SessionSidebar", () => {
     expect(onToggleCollapse).toHaveBeenCalledTimes(1);
   });
 
-  it("collapsible groups toggle on header click", () => {
-    const sessions = [
-      baseSession({ id: "s1", title: "Visible session", remoteUrl: "https://github.com/x/y.git" }),
-    ];
-    render(<SessionSidebar {...defaultProps} sessions={sessions} />);
-
-    // Session is visible initially
-    expect(screen.getByText("Visible session")).toBeTruthy();
-
-    // Click the group header to collapse
-    fireEvent.click(screen.getByText("x/y"));
-    expect(screen.queryByText("Visible session")).toBeNull();
-
-    // Click again to expand
-    fireEvent.click(screen.getByText("x/y"));
-    expect(screen.getByText("Visible session")).toBeTruthy();
-  });
-
-  it("shows per-repo New Session button on repo groups", () => {
-    const repos = [
-      { url: "https://github.com/owner/repo.git", addedAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), status: "ready" as const },
-    ];
-    render(<SessionSidebar {...defaultProps} repos={repos} />);
+  it("shows New Session button at the bottom", () => {
+    render(<SessionSidebar {...defaultProps} />);
     expect(screen.getByText("New Session")).toBeTruthy();
   });
 
-  it("calls onNewSessionForRepo when per-repo button is clicked", () => {
-    const onNewSessionForRepo = vi.fn();
-    const repos = [
-      { url: "https://github.com/owner/repo.git", addedAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), status: "ready" as const },
-    ];
-    render(<SessionSidebar {...defaultProps} repos={repos} onNewSessionForRepo={onNewSessionForRepo} />);
+  it("calls onNewSession when New Session button is clicked", () => {
+    const onNewSession = vi.fn();
+    render(<SessionSidebar {...defaultProps} onNewSession={onNewSession} />);
     fireEvent.click(screen.getByText("New Session"));
-    expect(onNewSessionForRepo).toHaveBeenCalledWith("https://github.com/owner/repo.git");
+    expect(onNewSession).toHaveBeenCalledTimes(1);
   });
 
-  it("disables per-repo button when repo is cloning", () => {
-    const repos = [
-      { url: "https://github.com/owner/repo.git", addedAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), status: "cloning" as const },
-    ];
-    render(<SessionSidebar {...defaultProps} repos={repos} />);
-    const btn = screen.getByText("New Session");
+  it("disables New Session button when no active repo", () => {
+    render(<SessionSidebar {...defaultProps} activeRepoUrl={undefined} activeRepoName="" />);
+    const btn = screen.getByText("New Session").closest("button")!;
     expect(btn).toBeDisabled();
   });
 
-  it("shows cloning indicator on repo group with cloning status", () => {
-    const repos = [
-      { url: "https://github.com/owner/repo.git", addedAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), status: "cloning" as const },
-    ];
-    render(<SessionSidebar {...defaultProps} repos={repos} />);
+  it("disables New Session button when repo is cloning", () => {
+    render(<SessionSidebar {...defaultProps} activeRepoStatus="cloning" />);
+    const btn = screen.getByText("New Session").closest("button")!;
+    expect(btn).toBeDisabled();
+  });
+
+  it("shows cloning indicator in repo header", () => {
+    render(<SessionSidebar {...defaultProps} activeRepoStatus="cloning" />);
     expect(screen.getByText("cloning")).toBeTruthy();
   });
 
-  it("highlights New Session button when newSessionRepoUrl matches", () => {
-    const repos = [
-      { url: "https://github.com/owner/repo.git", addedAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), status: "ready" as const },
-    ];
-    render(<SessionSidebar {...defaultProps} repos={repos} newSessionRepoUrl="https://github.com/owner/repo.git" />);
-    const btn = screen.getByText("New Session").closest("button")!;
-    expect(btn.className).toContain("bg-(--color-bg-secondary)");
+  it("shows View All button in sessions header", () => {
+    render(<SessionSidebar {...defaultProps} />);
+    expect(screen.getByText("View All")).toBeTruthy();
   });
 
-  it("does not highlight New Session button when newSessionRepoUrl does not match", () => {
-    const repos = [
-      { url: "https://github.com/owner/repo.git", addedAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(), status: "ready" as const },
-    ];
-    render(<SessionSidebar {...defaultProps} repos={repos} newSessionRepoUrl="https://github.com/other/repo.git" />);
-    const btn = screen.getByText("New Session").closest("button")!;
-    // Should not have the active background class
-    expect(btn.className).not.toContain("bg-(--color-bg-secondary)");
+  it("shows 'No sessions yet.' when filtered list is empty", () => {
+    render(<SessionSidebar {...defaultProps} sessions={[]} />);
+    expect(screen.getByText("No sessions yet.")).toBeTruthy();
   });
 });

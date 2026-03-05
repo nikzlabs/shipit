@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
-import { PrLifecycleCard, PrStatusIcon } from "./PrLifecycleCard.js";
+import { PrLifecycleCard, PrStateBadge } from "./PrLifecycleCard.js";
 import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
 
@@ -377,56 +377,60 @@ describe("PrLifecycleCard", () => {
   });
 });
 
-// ---- PrStatusIcon ----
+// ---- PrStateBadge ----
 
-describe("PrStatusIcon", () => {
-  it("renders nothing when no status or card exists", () => {
-    const { container } = render(<PrStatusIcon sessionId="empty" />);
-    expect(container.firstChild).toBeNull();
+describe("PrStateBadge", () => {
+  it("renders branch badge when no status or card exists", () => {
+    render(<PrStateBadge sessionId="empty" />);
+    expect(screen.getByTitle("Branch")).toBeInTheDocument();
   });
 
-  it("renders merged icon from poller status", () => {
+  it("renders merged badge from poller status", () => {
     setStatus("s1", "merged");
 
-    render(<PrStatusIcon sessionId="s1" />);
+    render(<PrStateBadge sessionId="s1" />);
 
-    const icon = screen.getByTitle("PR merged");
-    expect(icon).toBeInTheDocument();
+    expect(screen.getByTitle("PR merged")).toBeInTheDocument();
   });
 
-  it("renders CI passed icon for open PR with success checks", () => {
+  it("renders open badge for open PR", () => {
     setStatus("s1", "open", "success");
 
-    render(<PrStatusIcon sessionId="s1" />);
+    render(<PrStateBadge sessionId="s1" />);
 
-    const icon = screen.getByTitle("CI passed");
-    expect(icon).toBeInTheDocument();
+    expect(screen.getByTitle("PR open")).toBeInTheDocument();
   });
 
-  it("renders CI failed icon for open PR with failed checks", () => {
+  it("renders open badge regardless of CI state", () => {
     setStatus("s1", "open", "failure");
 
-    render(<PrStatusIcon sessionId="s1" />);
+    render(<PrStateBadge sessionId="s1" />);
 
-    const icon = screen.getByTitle("CI failed");
-    expect(icon).toBeInTheDocument();
+    expect(screen.getByTitle("PR open")).toBeInTheDocument();
   });
 
-  it("renders CI running icon for open PR with pending checks", () => {
-    setStatus("s1", "open", "pending");
+  it("renders branch badge for closed PR", () => {
+    usePrStore.setState({
+      statusBySession: {
+        s1: {
+          sessionId: "s1",
+          prNumber: 1,
+          prUrl: "https://github.com/o/r/pull/1",
+          prTitle: "Test PR",
+          prState: "closed",
+          baseBranch: "main",
+          headBranch: "feature",
+          insertions: 10,
+          deletions: 5,
+          checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 },
+          mergeable: false,
+          autoMergeEnabled: false,
+        },
+      },
+    });
 
-    render(<PrStatusIcon sessionId="s1" />);
+    render(<PrStateBadge sessionId="s1" />);
 
-    const icon = screen.getByTitle("CI running");
-    expect(icon).toBeInTheDocument();
-  });
-
-  it("renders plain open icon when no CI", () => {
-    setStatus("s1", "open", "none");
-
-    render(<PrStatusIcon sessionId="s1" />);
-
-    const icon = screen.getByTitle("PR open");
-    expect(icon).toBeInTheDocument();
+    expect(screen.getByTitle("PR closed")).toBeInTheDocument();
   });
 });

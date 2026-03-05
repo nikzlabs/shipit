@@ -3,6 +3,7 @@ import type { PermissionMode, AgentId } from "../../server/shared/types.js";
 const PERMISSION_MODE_KEY = "vibe-permission-mode";
 const SIDEBAR_COLLAPSED_KEY = "vibe-sidebar-collapsed";
 const AGENT_PREFERENCE_KEY = "vibe-agent-id";
+const ACTIVE_REPO_KEY = "vibe-active-repo";
 
 export function getSavedPermissionMode(): PermissionMode {
   try {
@@ -56,4 +57,24 @@ export function saveAgentId(agentId: AgentId): void {
   }
 }
 
-export { PERMISSION_MODE_KEY, SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY };
+export function getSavedActiveRepo(): string | undefined {
+  try {
+    return localStorage.getItem(ACTIVE_REPO_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function saveActiveRepo(url: string | undefined): void {
+  try {
+    if (url) {
+      localStorage.setItem(ACTIVE_REPO_KEY, url);
+    } else {
+      localStorage.removeItem(ACTIVE_REPO_KEY);
+    }
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+export { PERMISSION_MODE_KEY, SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY, ACTIVE_REPO_KEY };

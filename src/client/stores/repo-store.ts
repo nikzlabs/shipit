@@ -1,15 +1,20 @@
 import { create } from "zustand";
 import type { RepoInfo } from "../../server/shared/types.js";
+import { getSavedActiveRepo, saveActiveRepo } from "../utils/local-storage.js";
 
 interface RepoState {
   repos: RepoInfo[];
+  activeRepoUrl: string | undefined;
   addRepoDialogOpen: boolean;
   newRepoDialogOpen: boolean;
+  repoSwitcherOpen: boolean;
 
   // Actions
   setRepos: (repos: RepoInfo[]) => void;
+  setActiveRepoUrl: (url: string | undefined) => void;
   setAddRepoDialogOpen: (open: boolean) => void;
   setNewRepoDialogOpen: (open: boolean) => void;
+  setRepoSwitcherOpen: (open: boolean) => void;
   updateRepoStatus: (url: string, status: "cloning" | "ready") => void;
   updateRepoWarmSession: (url: string, sessionId: string) => void;
   reset: () => void;
@@ -20,16 +25,34 @@ interface RepoState {
   claimSession: (url: string, signal?: AbortSignal) => Promise<{ sessionId: string; sessionDir: string } | null>;
 }
 
-export const useRepoStore = create<RepoState>((set) => ({
+export const useRepoStore = create<RepoState>((set, get) => ({
   repos: [],
+  activeRepoUrl: getSavedActiveRepo(),
   addRepoDialogOpen: false,
   newRepoDialogOpen: false,
+  repoSwitcherOpen: false,
 
-  setRepos: (repos) => set({ repos }),
+  setRepos: (repos) => {
+    const { activeRepoUrl } = get();
+    const urls = new Set(repos.map((r) => r.url));
+    // If active repo was removed, fall back to first repo
+    const nextActive = activeRepoUrl && urls.has(activeRepoUrl)
+      ? activeRepoUrl
+      : repos[0]?.url;
+    if (nextActive !== activeRepoUrl) saveActiveRepo(nextActive);
+    set({ repos, activeRepoUrl: nextActive });
+  },
+
+  setActiveRepoUrl: (url) => {
+    saveActiveRepo(url);
+    set({ activeRepoUrl: url });
+  },
 
   setAddRepoDialogOpen: (open) => set({ addRepoDialogOpen: open }),
 
   setNewRepoDialogOpen: (open) => set({ newRepoDialogOpen: open }),
+
+  setRepoSwitcherOpen: (open) => set({ repoSwitcherOpen: open }),
 
   updateRepoStatus: (url, status) =>
     set((state) => ({
@@ -43,7 +66,7 @@ export const useRepoStore = create<RepoState>((set) => ({
       ),
     })),
 
-  reset: () => set({ repos: [], addRepoDialogOpen: false, newRepoDialogOpen: false }),
+  reset: () => set({ repos: [], activeRepoUrl: undefined, addRepoDialogOpen: false, newRepoDialogOpen: false, repoSwitcherOpen: false }),
 
   addRepo: async (url) => {
     try {

@@ -63,8 +63,9 @@ import { usePrStore } from "./stores/pr-store.js";
 import { useSettingsStore } from "./stores/settings-store.js";
 import { useUiStore } from "./stores/ui-store.js";
 import { useRepoStore } from "./stores/repo-store.js";
-import { resumeSessionInternal, handleSessionResume, newSession, resetSessionState } from "./stores/actions/session-actions.js";
-import { parseRepoLabel, repoLabelToNewPath, parseNewSessionSlug } from "./utils/repo-label.js";
+import { resumeSessionInternal, handleSessionResume, resetSessionState } from "./stores/actions/session-actions.js";
+import { parseRepoLabel, parseRepoName, repoLabelToNewPath, parseNewSessionSlug } from "./utils/repo-label.js";
+import { RepoSwitcher } from "./components/RepoSwitcher.js";
 
 export default function App() {
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
@@ -92,7 +93,6 @@ export default function App() {
   const activity = useSessionStore((s) => s.activity);
   const sessions = useSessionStore((s) => s.sessions);
   const authUrl = useSessionStore((s) => s.authUrl);
-  const activeRunnerSessions = useSessionStore((s) => s.activeRunnerSessions);
   const queuedMessages = useSessionStore((s) => s.queuedMessages);
 
   const gitCommits = useGitStore((s) => s.commits);
@@ -160,8 +160,12 @@ export default function App() {
   const bootstrapLoaded = useUiStore((s) => s.bootstrapLoaded);
 
   const repos = useRepoStore((s) => s.repos);
+  const activeRepoUrl = useRepoStore((s) => s.activeRepoUrl);
+  const repoSwitcherOpen = useRepoStore((s) => s.repoSwitcherOpen);
   const addRepoDialogOpen = useRepoStore((s) => s.addRepoDialogOpen);
   const newRepoDialogOpen = useRepoStore((s) => s.newRepoDialogOpen);
+  const activeRepoName = useMemo(() => activeRepoUrl ? parseRepoName(activeRepoUrl) : "", [activeRepoUrl]);
+  const activeRepo = useMemo(() => repos.find((r) => r.url === activeRepoUrl), [repos, activeRepoUrl]);
 
   const creatingRepo = useSessionStore((s) => s.creatingRepo);
   const allSessionsDialogOpen = useSessionStore((s) => s.allSessionsDialogOpen);
@@ -737,21 +741,40 @@ export default function App() {
         </>
       ) : (
         <div className="flex flex-1 min-h-0">
-          <SessionSidebar
-            sessions={sessions} repos={repos} currentSessionId={sessionId} activeRunnerSessions={activeRunnerSessions}
-            newSessionRepoUrl={newSessionRepoUrl}
-            onResume={(sid) => handleSessionResume(sid, navigate)}
-            onNew={() => newSession(navigate)}
-            onNewSessionForRepo={handleNewSessionForRepo}
-            onArchive={async (sid) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId) { useSessionStore.getState().setSessionId(undefined); void navigate("/"); } }}
-            onRename={(sid, title) => useSessionStore.getState().renameSession(sid, title)}
-            onRefresh={() => useSessionStore.getState().refreshSessions()}
-            onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)}
-            onRemoveRepo={(url) => useRepoStore.getState().removeRepo(url)}
-            onViewAll={() => useSessionStore.getState().setAllSessionsDialogOpen(true)}
-            collapsed={sidebarCollapsed}
-            onToggleCollapse={() => useUiStore.getState().setSidebarCollapsed(!sidebarCollapsed)}
-          />
+          <div className="relative shrink-0">
+            <SessionSidebar
+              sessions={sessions}
+              activeRepoUrl={activeRepoUrl}
+              activeRepoName={activeRepoName}
+              activeRepoStatus={activeRepo?.status}
+              currentSessionId={sessionId}
+              onResume={(sid) => {
+                const session = sessions.find((s) => s.id === sid);
+                if (session?.remoteUrl) useRepoStore.getState().setActiveRepoUrl(session.remoteUrl);
+                handleSessionResume(sid, navigate);
+              }}
+              onArchive={async (sid) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId) { useSessionStore.getState().setSessionId(undefined); void navigate("/"); } }}
+              onRename={(sid, title) => useSessionStore.getState().renameSession(sid, title)}
+              onOpenRepoSwitcher={() => useRepoStore.getState().setRepoSwitcherOpen(!repoSwitcherOpen)}
+              onNewSession={() => { if (activeRepoUrl) void handleNewSessionForRepo(activeRepoUrl); }}
+              collapsed={sidebarCollapsed}
+              onToggleCollapse={() => useUiStore.getState().setSidebarCollapsed(!sidebarCollapsed)}
+            />
+            <RepoSwitcher
+              open={repoSwitcherOpen}
+              onClose={() => useRepoStore.getState().setRepoSwitcherOpen(false)}
+              repos={repos}
+              activeRepoUrl={activeRepoUrl}
+              onSelectRepo={(url) => useRepoStore.getState().setActiveRepoUrl(url)}
+              onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)}
+              onCreateNew={() => {
+                useRepoStore.getState().setAddRepoDialogOpen(false);
+                // eslint-disable-next-line no-restricted-syntax -- fire-and-forget one-liner
+                if (templates.length === 0) apiGet<{ templates: typeof templates }>("/api/bootstrap").then((d) => useUiStore.getState().setTemplates(d.templates)).catch(() => {});
+                useRepoStore.getState().setNewRepoDialogOpen(true);
+              }}
+            />
+          </div>
           <div ref={containerRef} className="flex flex-1 min-h-0">
             <div className={`flex flex-col min-w-0 ${showHomeScreen ? "" : "border-r border-(--color-border-primary)"}`} style={{ width: showHomeScreen ? "100%" : `${fraction * 100}%` }}>
               {chatPanel}
