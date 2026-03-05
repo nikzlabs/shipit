@@ -15,18 +15,18 @@ Themes are CSS custom property sets applied via a class on `<html>`. The active 
 /* src/client/index.css — token definitions */
 :root {
   /* Defaults = light theme */
-  --color-bg-primary: theme(colors.white);
-  --color-bg-secondary: theme(colors.gray.50);
-  ...
+  --color-bg-primary: ...;
+  --color-bg-secondary: ...;
 }
 .dark {
-  --color-bg-primary: theme(colors.gray.950);
-  --color-bg-secondary: theme(colors.gray.900);
-  ...
+  --color-bg-primary: ...;
+  --color-bg-secondary: ...;
 }
 ```
 
 To add a new theme (e.g., `.solarized`): define a new class block in `index.css` that overrides the same custom properties. Update `useTheme()` to cycle through available themes. No component changes needed.
+
+Concrete color values live exclusively in `src/client/index.css`. This skill defines the token **names** and their **semantic purpose** — never reference specific color values in component code.
 
 ## Color Tokens
 
@@ -34,74 +34,74 @@ All component styles must use these tokens. Never use raw Tailwind color classes
 
 ### Surface & Background
 
-| Token | Semantic Purpose | Light | Dark |
-|-------|-----------------|-------|------|
-| `--color-bg-primary` | Page/app background | `white` | `gray-950` |
-| `--color-bg-secondary` | Sidebar, secondary panels | `gray-50` | `gray-900` |
-| `--color-bg-tertiary` | Cards, inputs, code blocks | `gray-100` | `gray-800` |
-| `--color-bg-elevated` | Dropdowns, modals, popovers | `white` | `gray-800` |
-| `--color-bg-overlay` | Backdrop behind modals | `black/50` | `black/60` |
-| `--color-bg-hover` | Hover state for interactive surfaces | `gray-100` | `gray-800` |
-| `--color-bg-active` | Active/pressed state | `gray-200` | `gray-700` |
+| Token | Semantic Purpose |
+|-------|-----------------|
+| `--color-bg-primary` | Page/app background |
+| `--color-bg-secondary` | Sidebar, secondary panels |
+| `--color-bg-tertiary` | Cards, inputs, code blocks |
+| `--color-bg-elevated` | Dropdowns, modals, popovers |
+| `--color-bg-overlay` | Backdrop behind modals |
+| `--color-bg-hover` | Hover state for interactive surfaces |
+| `--color-bg-active` | Active/pressed state |
 
 ### Text
 
-| Token | Semantic Purpose | Light | Dark |
-|-------|-----------------|-------|------|
-| `--color-text-primary` | Body text, headings | `gray-900` | `gray-100` |
-| `--color-text-secondary` | Descriptions, timestamps | `gray-600` | `gray-400` |
-| `--color-text-tertiary` | Placeholders, disabled | `gray-400` | `gray-500` |
-| `--color-text-inverse` | Text on filled backgrounds | `white` | `white` |
-| `--color-text-link` | Clickable text links | `blue-600` | `blue-400` |
+| Token | Semantic Purpose |
+|-------|-----------------|
+| `--color-text-primary` | Body text, headings |
+| `--color-text-secondary` | Descriptions, timestamps |
+| `--color-text-tertiary` | Placeholders, disabled |
+| `--color-text-inverse` | Text on filled backgrounds |
+| `--color-text-link` | Clickable text links |
 
 ### Border & Divider
 
-| Token | Semantic Purpose | Light | Dark |
-|-------|-----------------|-------|------|
-| `--color-border-primary` | Panel borders, dividers | `gray-200` | `gray-800` |
-| `--color-border-secondary` | Input borders | `gray-300` | `gray-700` |
-| `--color-border-focus` | Focused input ring | `blue-500` | `blue-500` |
+| Token | Semantic Purpose |
+|-------|-----------------|
+| `--color-border-primary` | Panel borders, dividers |
+| `--color-border-secondary` | Input borders |
+| `--color-border-focus` | Focused input ring |
 
 ### Accent (Primary Action)
 
-| Token | Semantic Purpose | Light | Dark |
-|-------|-----------------|-------|------|
-| `--color-accent` | Primary buttons, active tabs | `blue-600` | `blue-600` |
-| `--color-accent-hover` | Primary button hover | `blue-700` | `blue-500` |
-| `--color-accent-text` | Text on accent backgrounds | `white` | `white` |
-| `--color-accent-subtle` | Tinted backgrounds, badges | `blue-50` | `blue-900/30` |
+| Token | Semantic Purpose |
+|-------|-----------------|
+| `--color-accent` | Primary buttons, active tabs |
+| `--color-accent-hover` | Primary button hover |
+| `--color-accent-text` | Text on accent backgrounds |
+| `--color-accent-subtle` | Tinted backgrounds, badges |
 
 ### Status / Semantic
 
-| Token | Semantic Purpose | Light | Dark |
-|-------|-----------------|-------|------|
-| `--color-success` | Connected, passed, deployed | `green-600` | `green-500` |
-| `--color-success-subtle` | Success background | `green-50` | `green-900/30` |
-| `--color-error` | Failed, disconnected, destructive | `red-600` | `red-500` |
-| `--color-error-subtle` | Error background | `red-50` | `red-900/30` |
-| `--color-warning` | In-progress, caution | `amber-600` | `amber-400` |
-| `--color-warning-subtle` | Warning background | `amber-50` | `amber-900/30` |
-| `--color-info` | Informational, typing | `blue-500` | `blue-400` |
-| `--color-info-subtle` | Info background | `blue-50` | `blue-900/30` |
+| Token | Semantic Purpose |
+|-------|-----------------|
+| `--color-success` | Connected, passed, deployed |
+| `--color-success-subtle` | Success background |
+| `--color-error` | Failed, disconnected, destructive |
+| `--color-error-subtle` | Error background |
+| `--color-warning` | In-progress, caution |
+| `--color-warning-subtle` | Warning background |
+| `--color-info` | Informational, typing |
+| `--color-info-subtle` | Info background |
 
 ### Domain-Specific
 
-| Token | Semantic Purpose | Light | Dark |
-|-------|-----------------|-------|------|
-| `--color-pr` | PR open/merged indicator | `purple-600` | `purple-400` |
-| `--color-folder` | Folder icon in file tree | `yellow-600` | `yellow-500` |
-| `--color-autofix` | Auto-fix toggle/indicator | `orange-600` | `orange-500` |
-| `--color-context-ok` | Context meter 0–60% | `green-500` | `green-500` |
-| `--color-context-mid` | Context meter 60–80% | `yellow-500` | `yellow-500` |
-| `--color-context-high` | Context meter 80–90% | `orange-500` | `orange-500` |
-| `--color-context-full` | Context meter 90%+ | `red-500` | `red-500` |
+| Token | Semantic Purpose |
+|-------|-----------------|
+| `--color-pr` | PR open/merged indicator |
+| `--color-folder` | Folder icon in file tree |
+| `--color-autofix` | Auto-fix toggle/indicator |
+| `--color-context-ok` | Context meter 0–60% |
+| `--color-context-mid` | Context meter 60–80% |
+| `--color-context-high` | Context meter 80–90% |
+| `--color-context-full` | Context meter 90%+ |
 
-## Scrollbar
+### Scrollbar
 
-| Token | Light | Dark |
-|-------|-------|------|
-| `--color-scrollbar-thumb` | `gray-400/40` | `gray-600/50` |
-| `--color-scrollbar-thumb-hover` | `gray-500/60` | `gray-500/70` |
+| Token | Semantic Purpose |
+|-------|-----------------|
+| `--color-scrollbar-thumb` | Scrollbar thumb |
+| `--color-scrollbar-thumb-hover` | Scrollbar thumb on hover |
 
 ## Typography
 
@@ -179,19 +179,19 @@ Icons inherit `currentColor`. Set color via the parent's text color token:
 
 ### Key Icon Mappings
 
-| Concept | Phosphor Icon | Notes |
-|---------|---------------|-------|
-| PR open | `GitPullRequest` | Color: `--color-pr` |
-| PR merged | `GitMerge` | Color: `--color-pr` |
-| PR closed | `GitPullRequest` | Color: `--color-text-tertiary` |
+| Concept | Phosphor Icon | Color Token |
+|---------|---------------|-------------|
+| PR open | `GitPullRequest` | `--color-pr` |
+| PR merged | `GitMerge` | `--color-pr` |
+| PR closed | `GitPullRequest` | `--color-text-tertiary` |
 | Branch | `GitBranch` | |
 | Commit | `GitCommit` | |
 | Diff | `GitDiff` | |
-| Success / check | `Check` or `CheckCircle` | Color: `--color-success` |
-| Error / fail | `X` or `XCircle` | Color: `--color-error` |
-| Warning | `Warning` | Color: `--color-warning` |
+| Success / check | `Check` or `CheckCircle` | `--color-success` |
+| Error / fail | `X` or `XCircle` | `--color-error` |
+| Warning | `Warning` | `--color-warning` |
 | Pending / loading | `CircleNotch` | With `animate-spin` |
-| Folder | `Folder` / `FolderOpen` | Color: `--color-folder` |
+| Folder | `Folder` / `FolderOpen` | `--color-folder` |
 | File | `File` / `FileCode` / `FileText` | |
 | Terminal | `Terminal` | |
 | Settings / gear | `Gear` | |
@@ -200,7 +200,7 @@ Icons inherit `currentColor`. Set color via the parent's text color token:
 | Moon (dark mode) | `Moon` | |
 | Search | `MagnifyingGlass` | |
 | Copy | `Copy` | |
-| Trash / delete | `Trash` | Color: `--color-error` for destructive |
+| Trash / delete | `Trash` | `--color-error` (destructive) |
 | External link | `ArrowSquareOut` | |
 | Chevron down | `CaretDown` | |
 | Arrow left | `ArrowLeft` | |
