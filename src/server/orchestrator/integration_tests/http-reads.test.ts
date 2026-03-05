@@ -15,7 +15,9 @@ import {
   StubGitHubAuthManager,
   FakeClaudeProcess,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 import { GitHubAuthManager } from "../github-auth.js";
 import { CredentialStore } from "../credential-store.js";
 
@@ -26,15 +28,16 @@ describe("Integration: Phase 1 GET endpoints", () => {
   let githubAuthManager: StubGitHubAuthManager;
   let credentialStore: CredentialStore;
   let chatHistoryManager: ChatHistoryManager;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-http-reads-"));
 
-    const sessionsFile = path.join(tmpDir, "sessions.json");
-    sessionManager = new SessionManager(sessionsFile);
+    sessionManager = new SessionManager(dbManager);
     githubAuthManager = new StubGitHubAuthManager();
     credentialStore = createTestCredentialStore(tmpDir);
-    chatHistoryManager = new ChatHistoryManager(path.join(tmpDir, ".chat-history"));
+    chatHistoryManager = new ChatHistoryManager(dbManager);
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
@@ -50,6 +53,7 @@ describe("Integration: Phase 1 GET endpoints", () => {
   });
 
   afterEach(async () => {
+    dbManager.close();
     await app.close();
     await new Promise((r) => setTimeout(r, 50));
     try {

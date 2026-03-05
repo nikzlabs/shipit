@@ -17,7 +17,9 @@ import {
   FakeClaudeProcess,
   waitForClaude,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 
 describe("Integration: Session isolation — switching & resume", () => {
   let app: FastifyInstance;
@@ -25,13 +27,14 @@ describe("Integration: Session isolation — switching & resume", () => {
   let tmpDir: string;
   let sessionManager: SessionManager;
   let lastClaude: FakeClaudeProcess = null as any;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-isolation-"));
 
-    const sessionsFile = path.join(tmpDir, "sessions.json");
-    sessionManager = new SessionManager(sessionsFile);
+    sessionManager = new SessionManager(dbManager);
 
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
@@ -53,6 +56,7 @@ describe("Integration: Session isolation — switching & resume", () => {
   });
 
   afterEach(async () => {
+    dbManager.close();
     await app.close();
     await new Promise((r) => setTimeout(r, 50));
     try {

@@ -20,7 +20,9 @@ import {
   StubAuthManager,
   FakeClaudeProcess,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 import type { AuthManager } from "../auth.js";
 import type { FastifyInstance } from "fastify";
 
@@ -109,13 +111,15 @@ describe("container lifecycle integration", () => {
   let sessionManager: SessionManager;
   let containerManager: SessionContainerManager;
   let fakeDocker: ReturnType<typeof createFakeDocker>;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-container-lifecycle-"));
     sessionsDir = path.join(tmpDir, "sessions");
     fs.mkdirSync(sessionsDir, { recursive: true });
 
-    sessionManager = new SessionManager(path.join(tmpDir, "sessions.json"));
+    sessionManager = new SessionManager(dbManager);
 
     fakeDocker = createFakeDocker();
     containerManager = new SessionContainerManager({
@@ -147,6 +151,7 @@ describe("container lifecycle integration", () => {
   });
 
   afterEach(async () => {
+    dbManager.close();
     await app.close();
     await new Promise((r) => setTimeout(r, 50));
     try {
@@ -320,13 +325,15 @@ describe("container reconnect on re-activation", () => {
   let sessionManager: SessionManager;
   let containerManager: SessionContainerManager;
   let fakeDocker: ReturnType<typeof createFakeDocker>;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-container-reconnect-"));
     sessionsDir = path.join(tmpDir, "sessions");
     fs.mkdirSync(sessionsDir, { recursive: true });
 
-    sessionManager = new SessionManager(path.join(tmpDir, "sessions.json"));
+    sessionManager = new SessionManager(dbManager);
 
     fakeDocker = createFakeDocker();
     containerManager = new SessionContainerManager({
@@ -356,6 +363,7 @@ describe("container reconnect on re-activation", () => {
   });
 
   afterEach(async () => {
+    dbManager.close();
     await app.close();
     await new Promise((r) => setTimeout(r, 50));
     try {

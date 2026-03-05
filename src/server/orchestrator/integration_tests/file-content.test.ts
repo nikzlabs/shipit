@@ -14,23 +14,26 @@ import {
   StubAuthManager,
   FakeClaudeProcess,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 
 describe("Integration: File content viewer", () => {
   let app: FastifyInstance;
   let tmpDir: string;
   let sessionId: string;
   let sessionDir: string;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-file-content-"));
 
     sessionId = crypto.randomUUID();
     sessionDir = path.join(tmpDir, "sessions", sessionId);
     fs.mkdirSync(sessionDir, { recursive: true });
 
-    const sessionsFile = path.join(tmpDir, "sessions.json");
-    const sessionManager = new SessionManager(sessionsFile);
+    const sessionManager = new SessionManager(dbManager);
     sessionManager.track(sessionId, "Test session", sessionDir);
 
     const credentialStore = createTestCredentialStore(tmpDir);
@@ -49,6 +52,7 @@ describe("Integration: File content viewer", () => {
   });
 
   afterEach(async () => {
+    dbManager.close();
     await app.close();
     await new Promise((r) => setTimeout(r, 50));
     try {

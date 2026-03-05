@@ -17,21 +17,25 @@ import {
   FakeClaudeProcess,
   waitForClaude,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 
 describe("Integration: System prompt", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
   let lastClaude: FakeClaudeProcess = null as any;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-sysprompt-"));
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
-      sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
+      sessionManager: new SessionManager(dbManager),
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
       agentFactory: () => {
@@ -48,6 +52,7 @@ describe("Integration: System prompt", () => {
   });
 
   afterEach(async () => {
+    dbManager.close();
     await app.close();
     await new Promise((r) => setTimeout(r, 200));
     try {

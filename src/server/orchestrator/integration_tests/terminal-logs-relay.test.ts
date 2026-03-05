@@ -16,7 +16,9 @@ import {
   FakeClaudeProcess,
   waitForClaude,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 
 describe("Integration: Terminal/logs relay", () => {
   let app: FastifyInstance;
@@ -24,13 +26,14 @@ describe("Integration: Terminal/logs relay", () => {
   let tmpDir: string;
   let sessionManager: SessionManager;
   let lastClaude: FakeClaudeProcess = null as any;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-logs-"));
 
-    const sessionsFile = path.join(tmpDir, "sessions.json");
-    sessionManager = new SessionManager(sessionsFile);
+    sessionManager = new SessionManager(dbManager);
 
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
@@ -51,6 +54,7 @@ describe("Integration: Terminal/logs relay", () => {
   });
 
   afterEach(async () => {
+    dbManager.close();
     await app.close();
     // Small delay to let lingering git processes release file handles
     await new Promise((r) => setTimeout(r, 50));

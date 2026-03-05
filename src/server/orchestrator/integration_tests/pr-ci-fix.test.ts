@@ -19,7 +19,9 @@ import {
   StubDeploymentStore,
   FakeClaudeProcess,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
@@ -33,9 +35,11 @@ let sessionId: string;
 let sessionDir: string;
 let sessionManager: SessionManager;
 let prStatusPoller: PrStatusPoller;
+let dbManager: DatabaseManager;
 const sseBroadcast = vi.fn();
 
 beforeEach(async () => {
+  dbManager = createTestDatabaseManager();
   tmpDir = fs.mkdtempSync("/tmp/shipit-pr-ci-fix-test-");
 
   githubAuth = new StubGitHubAuthManager();
@@ -62,7 +66,7 @@ beforeEach(async () => {
     env: { ...process.env, HOME: tmpDir },
   });
 
-  sessionManager = new SessionManager(path.join(tmpDir, "sessions.json"));
+  sessionManager = new SessionManager(dbManager);
   sessionManager.track(sessionId, "Test session", sessionDir);
 
   // Create poller with sseBroadcast spy
@@ -80,8 +84,8 @@ beforeEach(async () => {
     authManager: new StubAuthManager() as any,
     githubAuthManager: githubAuth as any,
     sessionManager,
-    chatHistoryManager: new ChatHistoryManager(path.join(tmpDir, "chat")),
-    usageManager: new UsageManager(path.join(tmpDir, "usage.json")),
+    chatHistoryManager: new ChatHistoryManager(dbManager),
+    usageManager: new UsageManager(dbManager),
     serveStatic: false,
     deploymentManager: new StubDeploymentManager() as any,
     deploymentStore: new StubDeploymentStore() as any,
@@ -92,6 +96,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  dbManager.close();
   prStatusPoller.destroy();
   await app.close();
   fs.rmSync(tmpDir, { recursive: true, force: true });

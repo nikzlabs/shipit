@@ -36,7 +36,9 @@ import {
   FakeClaudeProcess,
   waitForClaude,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 
 /**
  * FakeCodexProcess simulates the CodexAdapter for integration tests.
@@ -154,16 +156,17 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
   let lastClaude: FakeClaudeProcess = null as any;
   let lastCodex: FakeCodexProcess = null as any;
   let savedOpenAIKey: string | undefined;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     lastClaude = null as any;
     lastCodex = null as any;
     savedOpenAIKey = process.env.OPENAI_API_KEY;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-codex-agent-"));
 
-    const sessionsFile = path.join(tmpDir, "sessions.json");
-    const sessionManager = new SessionManager(sessionsFile);
-    const chatHistoryManager = new ChatHistoryManager(path.join(tmpDir, "chat-history"));
+    const sessionManager = new SessionManager(dbManager);
+    const chatHistoryManager = new ChatHistoryManager(dbManager);
     const registry = await makeRegistry();
 
     app = await buildApp({
@@ -188,6 +191,7 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
   });
 
   afterEach(async () => {
+    dbManager.close();
     await app.close();
     await new Promise((r) => setTimeout(r, 50));
     if (savedOpenAIKey !== undefined) process.env.OPENAI_API_KEY = savedOpenAIKey;
@@ -370,16 +374,17 @@ describe("Integration: Codex agent — validation and default agent", () => {
   let lastClaude: FakeClaudeProcess = null as any;
   let lastCodex: FakeCodexProcess = null as any;
   let savedOpenAIKey: string | undefined;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     lastClaude = null as any;
     lastCodex = null as any;
     savedOpenAIKey = process.env.OPENAI_API_KEY;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-codex-default-"));
 
-    const sessionsFile = path.join(tmpDir, "sessions.json");
-    const sessionManager = new SessionManager(sessionsFile);
-    const chatHistoryManager = new ChatHistoryManager(path.join(tmpDir, "chat-history"));
+    const sessionManager = new SessionManager(dbManager);
+    const chatHistoryManager = new ChatHistoryManager(dbManager);
     const registry = await makeRegistry();
 
     // Default agent is "claude" — tests that need the default behavior
@@ -404,6 +409,7 @@ describe("Integration: Codex agent — validation and default agent", () => {
   });
 
   afterEach(async () => {
+    dbManager.close();
     await app.close();
     await new Promise((r) => setTimeout(r, 50));
     if (savedOpenAIKey !== undefined) process.env.OPENAI_API_KEY = savedOpenAIKey;

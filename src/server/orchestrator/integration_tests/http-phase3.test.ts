@@ -14,7 +14,9 @@ import {
   StubAuthManager,
   StubGitHubAuthManager,
   FakeClaudeProcess,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 import { GitHubAuthManager } from "../github-auth.js";
 import { CredentialStore } from "../credential-store.js";
 import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
@@ -28,18 +30,19 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
   let chatHistoryManager: ChatHistoryManager;
   let stubAuthManager: StubAuthManager;
   let generateTextResult: string;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-http-phase3-"));
     generateTextResult = "## Summary\nTest PR description";
 
-    const sessionsFile = path.join(tmpDir, "sessions.json");
-    sessionManager = new SessionManager(sessionsFile);
+    sessionManager = new SessionManager(dbManager);
     githubAuthManager = new StubGitHubAuthManager();
     initGlobalGitConfig(tmpDir);
     setGitIdentity("Test User", "test@test.com");
     credentialStore = new CredentialStore(tmpDir);
-    chatHistoryManager = new ChatHistoryManager(path.join(tmpDir, ".chat-history"));
+    chatHistoryManager = new ChatHistoryManager(dbManager);
     stubAuthManager = new StubAuthManager();
 
     app = await buildApp({
@@ -62,6 +65,7 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
   });
 
   afterEach(async () => {
+    dbManager.close();
     await app.close();
     await new Promise((r) => setTimeout(r, 50));
     try {

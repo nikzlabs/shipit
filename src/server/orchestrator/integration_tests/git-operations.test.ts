@@ -14,7 +14,9 @@ import {
   StubAuthManager,
   FakeClaudeProcess,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 
 describe("Integration: Git operations", () => {
   let app: FastifyInstance;
@@ -22,8 +24,10 @@ describe("Integration: Git operations", () => {
   let sessionDir: string;
   let sessionManager: SessionManager;
   let sessionId: string;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-ops-"));
 
     // Pre-create a session directory with its own git repo
@@ -34,8 +38,7 @@ describe("Integration: Git operations", () => {
     const git = new GitManager(sessionDir);
     await git.init();
 
-    const sessionsFile = path.join(tmpDir, "sessions.json");
-    sessionManager = new SessionManager(sessionsFile);
+    sessionManager = new SessionManager(dbManager);
     sessionManager.track(sessionId, "Test session", sessionDir);
 
     app = await buildApp({
@@ -52,6 +55,7 @@ describe("Integration: Git operations", () => {
   });
 
   afterEach(async () => {
+    dbManager.close();
     await app.close();
     await new Promise((r) => setTimeout(r, 50));
     try {

@@ -24,7 +24,9 @@ import {
   FakeClaudeProcess,
   waitForClaude,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 
 type AnyMsg = any;
 
@@ -35,13 +37,15 @@ describe("Integration: prompt queuing", () => {
   let sessionManager: SessionManager;
   let chatHistoryManager: ChatHistoryManager;
   let lastClaude: FakeClaudeProcess = null as any;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-queue-"));
 
-    sessionManager = new SessionManager(path.join(tmpDir, "sessions.json"));
-    chatHistoryManager = new ChatHistoryManager(path.join(tmpDir, "chat-history"));
+    sessionManager = new SessionManager(dbManager);
+    chatHistoryManager = new ChatHistoryManager(dbManager);
 
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
@@ -63,6 +67,7 @@ describe("Integration: prompt queuing", () => {
   });
 
   afterEach(async () => {
+    dbManager.close();
     await app.close();
     await new Promise((r) => setTimeout(r, 50));
     try {

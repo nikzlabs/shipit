@@ -98,7 +98,7 @@ const MIGRATIONS: Migration[] = [
 export class DatabaseManager {
   readonly db: DatabaseInstance;
 
-  constructor(dbPath: string = "/workspace/.shipit.db") {
+  constructor(dbPath = "/workspace/.shipit.db") {
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");

@@ -1,21 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
+import { DatabaseManager } from "../shared/database.js";
 import { DeploymentStore } from "./deployment-store.js";
 import type { DeploymentRecord } from "../shared/types.js";
 
 describe("DeploymentStore", () => {
-  let tmpDir: string;
+  let dbManager: DatabaseManager;
   let store: DeploymentStore;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "deploy-store-"));
-    store = new DeploymentStore(tmpDir);
+    dbManager = new DatabaseManager(":memory:");
+    store = new DeploymentStore(dbManager);
   });
 
   afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    dbManager.close();
   });
 
   // ------------------------------------------------------------------
@@ -114,8 +112,9 @@ describe("DeploymentStore", () => {
 
     const history = store.getHistory("s1");
     expect(history).toHaveLength(2);
-    expect(history[0].id).toBe("d1");
-    expect(history[1].id).toBe("d2");
+    // Sorted DESC by timestamp
+    expect(history[0].id).toBe("d2");
+    expect(history[1].id).toBe("d1");
   });
 
   it("returns empty array for no history", () => {
@@ -156,7 +155,6 @@ describe("DeploymentStore", () => {
     expect(store.loadConfig("s2", "v")?.credentials.token).toBe("b");
 
     store.deleteSession("s1");
-    // s2 should be unaffected
     expect(store.loadConfig("s2", "v")?.credentials.token).toBe("b");
   });
 });

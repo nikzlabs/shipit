@@ -16,14 +16,18 @@ import {
   StubGitHubAuthManager,
   FakeClaudeProcess,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 
 describe("Integration: GitHub push, pull & remotes", () => {
   let app: FastifyInstance;
   let tmpDir: string;
   let sessionId: string;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-gh-pushpull-"));
 
     // Pre-create a session directory with its own git repo
@@ -34,8 +38,7 @@ describe("Integration: GitHub push, pull & remotes", () => {
     const git = new GitManager(sessionDir);
     await git.init();
 
-    const sessionsFile = path.join(tmpDir, "sessions.json");
-    const sessionManager = new SessionManager(sessionsFile);
+    const sessionManager = new SessionManager(dbManager);
     sessionManager.track(sessionId, "Test session", sessionDir);
 
     const githubAuthManager = new StubGitHubAuthManager();
@@ -55,6 +58,7 @@ describe("Integration: GitHub push, pull & remotes", () => {
   });
 
   afterEach(async () => {
+    dbManager.close();
     await app.close();
     fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
