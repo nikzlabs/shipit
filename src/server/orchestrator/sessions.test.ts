@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DatabaseManager } from "../shared/database.js";
 import { SessionManager } from "./sessions.js";
+import { ChatHistoryManager } from "./chat-history.js";
+import { UsageManager } from "./usage.js";
+import { deleteSession } from "./services/session.js";
 
 describe("SessionManager", () => {
   let dbManager: DatabaseManager;
@@ -113,5 +116,82 @@ describe("SessionManager", () => {
     const list = mgr.list();
     list.push({ id: "fake", title: "fake", createdAt: "", lastUsedAt: "" });
     expect(mgr.list()).toHaveLength(1);
+  });
+
+  describe("findUngraduatedWarm", () => {
+    it("finds a warm session by remote URL", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("warm-1", "Warm session");
+      mgr.setWarm("warm-1", true);
+      mgr.setRemoteUrl("warm-1", "https://github.com/user/repo.git");
+
+      const found = mgr.findUngraduatedWarm("https://github.com/user/repo.git");
+      expect(found).toBeDefined();
+      expect(found!.id).toBe("warm-1");
+      expect(found!.warm).toBe(true);
+    });
+
+    it("returns undefined when no warm session matches", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("normal-1", "Normal");
+      mgr.setRemoteUrl("normal-1", "https://github.com/user/repo.git");
+
+      expect(mgr.findUngraduatedWarm("https://github.com/user/repo.git")).toBeUndefined();
+    });
+
+    it("excludes the specified session ID", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("warm-1", "Warm 1");
+      mgr.setWarm("warm-1", true);
+      mgr.setRemoteUrl("warm-1", "https://github.com/user/repo.git");
+
+      expect(mgr.findUngraduatedWarm("https://github.com/user/repo.git", "warm-1")).toBeUndefined();
+    });
+
+    it("does not match warm sessions for a different repo", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("warm-1", "Warm 1");
+      mgr.setWarm("warm-1", true);
+      mgr.setRemoteUrl("warm-1", "https://github.com/user/other.git");
+
+      expect(mgr.findUngraduatedWarm("https://github.com/user/repo.git")).toBeUndefined();
+    });
+  });
+
+  describe("session deletion cascade", () => {
+    it("deleteSession cascades to chat history and usage", () => {
+      const sessions = new SessionManager(dbManager);
+      const chat = new ChatHistoryManager(dbManager);
+      const usage = new UsageManager(dbManager);
+
+      sessions.track("sess-1", "Test");
+      chat.append("sess-1", { role: "user", text: "Hello" });
+      usage.record("sess-1", 0.05, 3000);
+
+      const deleted = deleteSession(sessions, "sess-1", chat, usage);
+
+      expect(deleted).toBe(true);
+      expect(sessions.get("sess-1")).toBeUndefined();
+      expect(chat.load("sess-1")).toEqual([]);
+      expect(usage.getSessionUsage("sess-1")).toBeUndefined();
+    });
+
+    it("deleteSession returns false for nonexistent session without touching stores", () => {
+      const sessions = new SessionManager(dbManager);
+      const chat = new ChatHistoryManager(dbManager);
+      const usage = new UsageManager(dbManager);
+
+      // Add data for a different session
+      sessions.track("sess-2", "Keep");
+      chat.append("sess-2", { role: "user", text: "Kept" });
+      usage.record("sess-2", 0.10, 5000);
+
+      const deleted = deleteSession(sessions, "nonexistent", chat, usage);
+
+      expect(deleted).toBe(false);
+      // Other session data untouched
+      expect(chat.load("sess-2")).toHaveLength(1);
+      expect(usage.getSessionUsage("sess-2")).toBeDefined();
+    });
   });
 });

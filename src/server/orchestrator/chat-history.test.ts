@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { DatabaseManager } from "../shared/database.js";
 import { ChatHistoryManager, type PersistedMessage } from "./chat-history.js";
 
@@ -115,5 +115,105 @@ describe("ChatHistoryManager", () => {
     const loaded = mgr2.load("sess-1");
     expect(loaded).toHaveLength(1);
     expect(loaded[0].text).toBe("Persisted");
+  });
+
+  describe("updateLastMessage", () => {
+    it("merges fields into the last message", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", { role: "assistant", text: "Working...", inProgress: true });
+
+      mgr.updateLastMessage("sess-1", { inProgress: false, commitHash: "abc123" });
+
+      const messages = mgr.load("sess-1");
+      expect(messages).toHaveLength(1);
+      expect(messages[0].text).toBe("Working...");
+      expect(messages[0].inProgress).toBeUndefined(); // false → omitted by fromRow
+      expect(messages[0].commitHash).toBe("abc123");
+    });
+
+    it("updates only the last message when multiple exist", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", { role: "user", text: "Hello" });
+      mgr.append("sess-1", { role: "assistant", text: "Hi" });
+
+      mgr.updateLastMessage("sess-1", { text: "Updated hi" });
+
+      const messages = mgr.load("sess-1");
+      expect(messages).toHaveLength(2);
+      expect(messages[0].text).toBe("Hello");
+      expect(messages[1].text).toBe("Updated hi");
+    });
+
+    it("is a no-op for an empty session", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.updateLastMessage("nonexistent", { text: "ghost" });
+      expect(mgr.load("nonexistent")).toEqual([]);
+    });
+  });
+
+  describe("truncate", () => {
+    it("keeps only the first N messages", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", { role: "user", text: "A" });
+      mgr.append("sess-1", { role: "assistant", text: "B" });
+      mgr.append("sess-1", { role: "user", text: "C" });
+      mgr.append("sess-1", { role: "assistant", text: "D" });
+
+      const kept = mgr.truncate("sess-1", 2);
+      expect(kept).toHaveLength(2);
+      expect(kept[0].text).toBe("A");
+      expect(kept[1].text).toBe("B");
+
+      // Verify persisted state
+      const loaded = mgr.load("sess-1");
+      expect(loaded).toHaveLength(2);
+    });
+
+    it("returns all messages when count exceeds total", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", { role: "user", text: "Only one" });
+
+      const kept = mgr.truncate("sess-1", 10);
+      expect(kept).toHaveLength(1);
+      expect(kept[0].text).toBe("Only one");
+    });
+
+    it("returns empty for a session with no messages", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      const kept = mgr.truncate("nonexistent", 5);
+      expect(kept).toEqual([]);
+    });
+  });
+
+  describe("transaction error propagation", () => {
+    it("saveMessages rolls back on error and preserves original data", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", { role: "user", text: "Original" });
+
+      // Corrupt the insert statement to force an error mid-transaction
+      const internal = mgr as any;
+      const origRun = internal.stmtInsert.run;
+      let callCount = 0;
+      vi.spyOn(internal.stmtInsert, "run").mockImplementation(function (this: unknown, ...args: unknown[]) {
+        callCount++;
+        if (callCount === 2) throw new Error("Simulated DB error");
+        return origRun.apply(this, args);
+      });
+
+      // saveMessages: deletes existing + inserts new → error on 2nd insert should roll back
+      expect(() =>
+        mgr.saveMessages("sess-1", [
+          { role: "user", text: "New A" },
+          { role: "assistant", text: "New B" },
+        ]),
+      ).toThrow("Simulated DB error");
+
+      vi.restoreAllMocks();
+
+      // Original data should be intact (transaction rolled back the delete + first insert)
+      const messages = mgr.load("sess-1");
+      expect(messages).toHaveLength(1);
+      expect(messages[0].text).toBe("Original");
+    });
   });
 });

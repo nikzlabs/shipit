@@ -44,7 +44,7 @@ import * as rollbackHandlers from "./ws-handlers/rollback-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
 import { registerApiRoutes } from "./api-routes.js";
 import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
-import { archiveSession } from "./services/session.js";
+import { archiveSession, deleteSession } from "./services/session.js";
 export { CONTEXT_WINDOW_TOKENS } from "./ws-handlers/send-message.js";
 
 const WORKSPACE = "/workspace";
@@ -934,7 +934,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       if (activeWarmIds.has(id)) continue;
       const s = sessionManager.get(id);
       if (s?.warm || (s?.title === "Warm session" && !s.archived)) {
-        sessionManager.delete(id);
+        deleteSession(sessionManager, id, chatHistoryManager, usageManager);
         zombieCount++;
       }
     }
