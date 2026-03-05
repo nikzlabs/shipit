@@ -128,10 +128,10 @@ describe("SessionSidebar", () => {
     expect(onArchive).toHaveBeenCalledWith("s1");
   });
 
-  it("does not show archive button on current session", () => {
+  it("shows archive button on current session", () => {
     const sessions = [baseSession({ id: "s1", title: "Current", remoteUrl: "https://github.com/owner/repo.git" })];
     render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" />);
-    expect(screen.queryByTitle("Archive session")).toBeNull();
+    expect(screen.queryByTitle("Archive session")).not.toBeNull();
   });
 
   it("shows collapsed state with expand button", () => {

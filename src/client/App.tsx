@@ -755,7 +755,7 @@ export default function App() {
                 if (session?.remoteUrl) useRepoStore.getState().setActiveRepoUrl(session.remoteUrl);
                 handleSessionResume(sid, navigate);
               }}
-              onArchive={async (sid) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId) { useSessionStore.getState().setSessionId(undefined); void navigate("/"); } }}
+              onArchive={async (sid) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId && activeRepoUrl) { void handleNewSessionForRepo(activeRepoUrl); } }}
               onRename={(sid, title) => useSessionStore.getState().renameSession(sid, title)}
               onOpenRepoSwitcher={() => useRepoStore.getState().setRepoSwitcherOpen(!repoSwitcherOpen)}
               onNewSession={() => { if (activeRepoUrl) void handleNewSessionForRepo(activeRepoUrl); }}
