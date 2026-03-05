@@ -38,7 +38,7 @@ export function RepoSwitcher({ open, onClose, repos, activeRepoUrl, onSelectRepo
   return (
     <div
       ref={ref}
-      className="absolute left-2 top-11 w-52 bg-(--color-bg-elevated) border border-(--color-border-primary) rounded-lg shadow-lg z-50 py-1"
+      className="absolute right-2 top-11 w-52 bg-(--color-bg-elevated) border border-(--color-border-primary) rounded-lg shadow-lg z-50 py-1"
     >
       {repos.length > 0 && (
         <>
