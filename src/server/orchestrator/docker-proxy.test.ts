@@ -556,7 +556,8 @@ describe("Docker API proxy", () => {
         HostConfig: { Sysctls: { "net.ipv4.ip_forward": "1" } },
       });
       expect(res.status).toBe(201);
-      // Sysctls should be stripped (not cause an error, but removed silently)
+      const hc = daemon.containers.get((res.body as any).Id)?.hostConfig;
+      expect(hc?.Sysctls).toBeUndefined();
     });
 
     it("strips UsernsMode from HostConfig", async () => {
@@ -565,6 +566,8 @@ describe("Docker API proxy", () => {
         HostConfig: { UsernsMode: "host" },
       });
       expect(res.status).toBe(201);
+      const hc = daemon.containers.get((res.body as any).Id)?.hostConfig;
+      expect(hc?.UsernsMode).toBeUndefined();
     });
 
     it("strips Runtime from HostConfig", async () => {
@@ -573,6 +576,8 @@ describe("Docker API proxy", () => {
         HostConfig: { Runtime: "nvidia" },
       });
       expect(res.status).toBe(201);
+      const hc = daemon.containers.get((res.body as any).Id)?.hostConfig;
+      expect(hc?.Runtime).toBeUndefined();
     });
 
     it("rejects unknown mount types", async () => {
@@ -835,6 +840,21 @@ describe("Docker API proxy", () => {
       const res = await makeRequest(proxyUrl, "DELETE", "/v1.41/networks/foreign-net");
       expect(res.status).toBe(403);
     });
+
+    it("POST /networks/{id}/connect rejects foreign network", async () => {
+      daemon.networks.set("foreign-net", { labels: { [PARENT_SESSION_LABEL]: "other-session" } });
+      // Create an owned container to connect
+      const createRes = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: {},
+      });
+      const containerId = (createRes.body as any).Id;
+
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/networks/foreign-net/connect", {
+        Container: containerId,
+      });
+      expect(res.status).toBe(403);
+    });
   });
 
   // --- Volume scoping ---
@@ -849,6 +869,25 @@ describe("Docker API proxy", () => {
 
       const volume = daemon.volumes.get("my-vol");
       expect(volume?.labels[PARENT_SESSION_LABEL]).toBe("session-1");
+    });
+
+    it("rejects volume create with DriverOpts (host-path escape)", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/volumes/create", {
+        Name: "escape-vol",
+        Driver: "local",
+        DriverOpts: { type: "none", o: "bind", device: "/etc" },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("DriverOpts");
+    });
+
+    it("rejects volume create with non-local driver", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/volumes/create", {
+        Name: "nfs-vol",
+        Driver: "nfs",
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("driver");
     });
 
     it("GET /volumes filters to session volumes", async () => {
@@ -900,6 +939,8 @@ describe("Docker API proxy", () => {
         HostConfig: { Memory: -1 },
       });
       expect(res.status).toBe(201);
+      const hc = daemon.containers.get((res.body as any).Id)?.hostConfig;
+      expect(hc?.Memory).toBe(512 * 1024 * 1024);
     });
 
     it("caps negative CpuQuota values", async () => {
@@ -908,6 +949,8 @@ describe("Docker API proxy", () => {
         HostConfig: { CpuQuota: -1 },
       });
       expect(res.status).toBe(201);
+      const hc = daemon.containers.get((res.body as any).Id)?.hostConfig;
+      expect(hc?.CpuQuota).toBe(200_000);
     });
 
     it("caps negative PidsLimit values", async () => {
@@ -916,6 +959,8 @@ describe("Docker API proxy", () => {
         HostConfig: { PidsLimit: -1 },
       });
       expect(res.status).toBe(201);
+      const hc = daemon.containers.get((res.body as any).Id)?.hostConfig;
+      expect(hc?.PidsLimit).toBe(1024);
     });
 
     it("caps inflated CpuPeriod to prevent effective CPU limit bypass", async () => {
@@ -924,6 +969,8 @@ describe("Docker API proxy", () => {
         HostConfig: { CpuPeriod: 1_000_000 },
       });
       expect(res.status).toBe(201);
+      const hc = daemon.containers.get((res.body as any).Id)?.hostConfig;
+      expect(hc?.CpuPeriod).toBe(100_000);
     });
 
     it("caps resource values that exceed session limits", async () => {
@@ -932,6 +979,10 @@ describe("Docker API proxy", () => {
         HostConfig: { Memory: 8 * 1024 * 1024 * 1024, CpuQuota: 1_000_000, PidsLimit: 65535 },
       });
       expect(res.status).toBe(201);
+      const hc = daemon.containers.get((res.body as any).Id)?.hostConfig;
+      expect(hc?.Memory).toBe(512 * 1024 * 1024);
+      expect(hc?.CpuQuota).toBe(200_000);
+      expect(hc?.PidsLimit).toBe(1024);
     });
   });
 

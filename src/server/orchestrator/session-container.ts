@@ -403,8 +403,17 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       this.emit("container_started", config.sessionId);
       return sc;
     } catch (err) {
-      // Clean up on failure
+      // Clean up on failure — stop/remove the container if it was created
       this.containers.delete(config.sessionId);
+      if (sc.id) {
+        try {
+          const c = this.docker.getContainer(sc.id);
+          try { await c.stop({ t: 2 }); } catch { /* may not be running */ }
+          try { await c.remove({ force: true }); } catch { /* may already be gone */ }
+        } catch {
+          // Container reference invalid
+        }
+      }
       throw err;
     }
   }
@@ -752,6 +761,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
             const error = event.Action === "oom" ? "Out of memory" : undefined;
             sc.status = "stopped";
             this.containers.delete(sessionId);
+            this.standbySessionIds.delete(sessionId);
             this.emit("container_exited", sessionId, exitCode, error);
           }
         } catch {

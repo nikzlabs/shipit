@@ -302,8 +302,9 @@ async function sanitizeContainerCreate(
 ): Promise<{ error?: string }> {
   const hostConfig = (body.HostConfig ?? {}) as Record<string, unknown>;
 
-  // Reject privileged mode
-  if (hostConfig.Privileged === true) {
+  // Reject privileged mode (check for any truthy value, not just boolean true,
+  // to guard against type coercion with "true", 1, etc.)
+  if (hostConfig.Privileged) {
     return { error: "Privileged mode is not allowed" };
   }
 
@@ -390,10 +391,13 @@ async function sanitizeContainerCreate(
   // Strip fields that could weaken container isolation
   delete hostConfig.SecurityOpt;
   delete hostConfig.CgroupParent;
-  delete hostConfig.Sysctls;       // kernel parameter manipulation
-  delete hostConfig.UsernsMode;    // user namespace sharing
-  delete hostConfig.CgroupnsMode;  // cgroup namespace sharing
-  delete hostConfig.Runtime;       // custom runtimes (e.g., nvidia) may grant elevated access
+  delete hostConfig.Sysctls;        // kernel parameter manipulation
+  delete hostConfig.UsernsMode;     // user namespace sharing
+  delete hostConfig.CgroupnsMode;   // cgroup namespace sharing
+  delete hostConfig.Runtime;        // custom runtimes (e.g., nvidia) may grant elevated access
+  delete hostConfig.ReadonlyPaths;  // removing default read-only paths weakens /proc isolation
+  delete hostConfig.MaskedPaths;    // removing default masked paths exposes sensitive /proc entries
+  delete hostConfig.GroupAdd;       // adding host groups (e.g., docker, disk) could escalate access
 
   // Overwrite shipit-parent-session label (never merge)
   const labels = (body.Labels ?? {}) as Record<string, string>;
@@ -717,6 +721,20 @@ function buildRoutes(): Route[] {
     try {
       const bodyBuf = await readBody(ctx.req, MAX_BODY_SIZE);
       const body = JSON.parse(bodyBuf.toString()) as Record<string, unknown>;
+
+      // Block DriverOpts to prevent host-path escape via local driver bind mounts.
+      // Without this, a session could create a volume backed by an arbitrary host
+      // directory (e.g., DriverOpts: { type: "none", o: "bind", device: "/etc" })
+      // which would then pass label-based volume ownership checks.
+      const driverOpts = body.DriverOpts as Record<string, string> | undefined;
+      if (driverOpts && Object.keys(driverOpts).length > 0) {
+        return forbidden(ctx.res, "Volume DriverOpts are not allowed (host-path escape risk)");
+      }
+
+      // Only allow default local driver
+      if (body.Driver && body.Driver !== "local") {
+        return forbidden(ctx.res, `Volume driver "${body.Driver}" is not allowed`);
+      }
 
       const labels = (body.Labels ?? {}) as Record<string, string>;
       labels[PARENT_SESSION_LABEL] = ctx.session.sessionId;
