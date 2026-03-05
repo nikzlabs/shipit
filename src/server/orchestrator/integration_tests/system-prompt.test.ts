@@ -52,8 +52,8 @@ describe("Integration: System prompt", () => {
   });
 
   afterEach(async () => {
-    dbManager.close();
     await app.close();
+    dbManager.close();
     await new Promise((r) => setTimeout(r, 200));
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });

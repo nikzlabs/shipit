@@ -53,8 +53,8 @@ describe("Integration: Phase 1 GET endpoints", () => {
   });
 
   afterEach(async () => {
-    dbManager.close();
     await app.close();
+    dbManager.close();
     await new Promise((r) => setTimeout(r, 50));
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

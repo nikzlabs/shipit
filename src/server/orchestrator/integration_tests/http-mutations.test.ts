@@ -52,6 +52,7 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
+      databaseManager: dbManager,
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: githubAuthManager as unknown as GitHubAuthManager,
@@ -64,8 +65,8 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
   });
 
   afterEach(async () => {
-    dbManager.close();
     await app.close();
+    dbManager.close();
     await new Promise((r) => setTimeout(r, 50));
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
@@ -731,6 +732,7 @@ describe("Integration: Phase 2 HTTP agent mutations", () => {
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
+      databaseManager: dbManager,
       sessionManager: new SessionManager(dbManager),
       chatHistoryManager: new ChatHistoryManager(dbManager),
       credentialStore: new CredentialStore(path.join(tmpDir, "credentials")),
@@ -742,8 +744,8 @@ describe("Integration: Phase 2 HTTP agent mutations", () => {
   });
 
   afterEach(async () => {
-    dbManager.close();
     await app.close();
+    dbManager.close();
     await new Promise((r) => setTimeout(r, 50));
     if (savedOpenAIKey !== undefined) process.env.OPENAI_API_KEY = savedOpenAIKey;
     else delete process.env.OPENAI_API_KEY;
@@ -839,6 +841,7 @@ describe("Integration: Phase 2 HTTP deploy config mutations", () => {
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
+      databaseManager: dbManager,
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentFactory: () => new FakeClaudeProcess() as any,
@@ -850,8 +853,8 @@ describe("Integration: Phase 2 HTTP deploy config mutations", () => {
   });
 
   afterEach(async () => {
-    dbManager.close();
     await app.close();
+    dbManager.close();
     await new Promise((r) => setTimeout(r, 50));
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

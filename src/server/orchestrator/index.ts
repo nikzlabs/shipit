@@ -999,6 +999,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     createSessionDirFull: createSessionDir,
     containerManager: containerManager ?? undefined,
     prStatusPoller,
+    databaseManager,
   });
 
   // ---- Preview reverse proxy (container mode) ----
@@ -1391,6 +1392,7 @@ to determine the correct install command, preview mode, command, and ports.`,
     if (containerManager) {
       await containerManager.dispose();
     }
+    databaseManager.close();
   });
 
   return app;

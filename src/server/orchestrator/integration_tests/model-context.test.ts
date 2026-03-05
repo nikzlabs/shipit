@@ -54,8 +54,8 @@ describe("Integration: Model context & token tracking", () => {
   });
 
   afterEach(async () => {
-    dbManager.close();
     await app.close();
+    dbManager.close();
     // Wait for any pending async operations (git auto-commit) to complete
     await new Promise((r) => setTimeout(r, 200));
     try {

@@ -55,11 +55,37 @@ interface MessageRow {
   created_at: string;
 }
 
+const INSERT_SQL = `
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results)
+`;
+
+const UPDATE_SQL = `
+  UPDATE messages SET role=@role, content=@content, tool_use=@tool_use, images=@images,
+    files=@files, is_error=@is_error, commit_hash=@commit_hash, parent_commit_hash=@parent_commit_hash,
+    in_progress=@in_progress, tool_results=@tool_results
+  WHERE id = @id
+`;
+
 export class ChatHistoryManager {
   private db;
+  private stmtInsert;
+  private stmtUpdate;
+  private stmtLoadAll;
+  private stmtLoadLast;
+  private stmtDeleteBySession;
+  private stmtDeleteInProgress;
+  private stmtFinalizeInProgress;
 
   constructor(dbManager: DatabaseManager) {
     this.db = dbManager.db;
+    this.stmtInsert = this.db.prepare(INSERT_SQL);
+    this.stmtUpdate = this.db.prepare(UPDATE_SQL);
+    this.stmtLoadAll = this.db.prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY id");
+    this.stmtLoadLast = this.db.prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT 1");
+    this.stmtDeleteBySession = this.db.prepare("DELETE FROM messages WHERE session_id = ?");
+    this.stmtDeleteInProgress = this.db.prepare("DELETE FROM messages WHERE session_id = ? AND in_progress = 1");
+    this.stmtFinalizeInProgress = this.db.prepare("UPDATE messages SET in_progress = 0 WHERE session_id = ? AND in_progress = 1");
   }
 
   private toRow(sessionId: string, msg: PersistedMessage) {
@@ -96,50 +122,32 @@ export class ChatHistoryManager {
 
   /** Append a message to a session's history. */
   append(sessionId: string, message: PersistedMessage): void {
-    const row = this.toRow(sessionId, message);
-    this.db.prepare(`
-      INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results)
-      VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results)
-    `).run(row);
+    this.stmtInsert.run(this.toRow(sessionId, message));
   }
 
   /** Load all messages for a session. Returns [] if none exist. */
   load(sessionId: string): PersistedMessage[] {
-    const rows = this.db.prepare(
-      "SELECT * FROM messages WHERE session_id = ? ORDER BY id",
-    ).all(sessionId) as MessageRow[];
+    const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
     return rows.map((r) => this.fromRow(r));
   }
 
   /** Update the last message in a session's history by merging fields. */
   updateLastMessage(sessionId: string, update: Partial<PersistedMessage>): void {
-    const lastRow = this.db.prepare(
-      "SELECT id FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT 1",
-    ).get(sessionId) as { id: number } | undefined;
+    const lastRow = this.stmtLoadLast.get(sessionId) as MessageRow | undefined;
     if (!lastRow) return;
 
-    const messages = this.load(sessionId);
-    if (messages.length === 0) return;
-    const last = messages[messages.length - 1];
+    const last = this.fromRow(lastRow);
     Object.assign(last, update);
     const row = this.toRow(sessionId, last);
-    this.db.prepare(`
-      UPDATE messages SET role=@role, content=@content, tool_use=@tool_use, images=@images,
-        files=@files, is_error=@is_error, commit_hash=@commit_hash, parent_commit_hash=@parent_commit_hash,
-        in_progress=@in_progress, tool_results=@tool_results
-      WHERE id = @id
-    `).run({ ...row, id: lastRow.id });
+    this.stmtUpdate.run({ ...row, id: lastRow.id });
   }
 
   /** Truncate a session's history to the first `count` messages. */
   truncate(sessionId: string, count: number): PersistedMessage[] {
-    const rows = this.db.prepare(
-      "SELECT * FROM messages WHERE session_id = ? ORDER BY id",
-    ).all(sessionId) as MessageRow[];
+    const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
 
     if (rows.length > count) {
-      const keepIds = rows.slice(0, count).map((r) => r.id);
-      const lastKeepId = keepIds[keepIds.length - 1];
+      const lastKeepId = rows[count - 1].id;
       this.db.prepare(
         "DELETE FROM messages WHERE session_id = ? AND id > ?",
       ).run(sessionId, lastKeepId);
@@ -150,17 +158,12 @@ export class ChatHistoryManager {
 
   /** Save messages for a session (overwriting existing history). */
   saveMessages(sessionId: string, messages: PersistedMessage[]): void {
-    const save = this.db.transaction(() => {
-      this.db.prepare("DELETE FROM messages WHERE session_id = ?").run(sessionId);
-      const insert = this.db.prepare(`
-        INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results)
-        VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results)
-      `);
+    this.db.transaction(() => {
+      this.stmtDeleteBySession.run(sessionId);
       for (const msg of messages) {
-        insert.run(this.toRow(sessionId, msg));
+        this.stmtInsert.run(this.toRow(sessionId, msg));
       }
-    });
-    save();
+    })();
   }
 
   /**
@@ -168,40 +171,27 @@ export class ChatHistoryManager {
    * Called at each agent_tool_result boundary with the accumulated message groups.
    */
   replaceInProgress(sessionId: string, messages: PersistedMessage[]): void {
-    const replace = this.db.transaction(() => {
-      this.db.prepare(
-        "DELETE FROM messages WHERE session_id = ? AND in_progress = 1",
-      ).run(sessionId);
-      const insert = this.db.prepare(`
-        INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results)
-        VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results)
-      `);
+    this.db.transaction(() => {
+      this.stmtDeleteInProgress.run(sessionId);
       for (const msg of messages) {
-        insert.run(this.toRow(sessionId, msg));
+        this.stmtInsert.run(this.toRow(sessionId, msg));
       }
-    });
-    replace();
+    })();
   }
 
   /** Remove the inProgress flag from all messages. Called on agent_result. */
   finalizeInProgress(sessionId: string): void {
-    this.db.prepare(
-      "UPDATE messages SET in_progress = 0 WHERE session_id = ? AND in_progress = 1",
-    ).run(sessionId);
+    this.stmtFinalizeInProgress.run(sessionId);
   }
 
   /** Remove all in-progress messages. Called on agent error/abort. */
   clearInProgress(sessionId: string): void {
-    this.db.prepare(
-      "DELETE FROM messages WHERE session_id = ? AND in_progress = 1",
-    ).run(sessionId);
+    this.stmtDeleteInProgress.run(sessionId);
   }
 
   /** Delete a session's chat history. */
   delete(sessionId: string): boolean {
-    const result = this.db.prepare(
-      "DELETE FROM messages WHERE session_id = ?",
-    ).run(sessionId);
+    const result = this.stmtDeleteBySession.run(sessionId);
     return result.changes > 0;
   }
 

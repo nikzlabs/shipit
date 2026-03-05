@@ -78,8 +78,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  dbManager.close();
   await app.close();
+  dbManager.close();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 

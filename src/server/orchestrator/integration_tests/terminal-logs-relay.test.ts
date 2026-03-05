@@ -54,8 +54,8 @@ describe("Integration: Terminal/logs relay", () => {
   });
 
   afterEach(async () => {
-    dbManager.close();
     await app.close();
+    dbManager.close();
     // Small delay to let lingering git processes release file handles
     await new Promise((r) => setTimeout(r, 50));
     try {

@@ -28,6 +28,7 @@ import type { SessionContainerManager } from "./session-container.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { AuthManager } from "./auth.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
+import type { DatabaseManager } from "../shared/database.js";
 
 import {
   getBootstrapData,
@@ -131,6 +132,8 @@ export interface ApiDeps {
   containerManager?: SessionContainerManager;
   /** PR status poller — needed for tracking new PRs. */
   prStatusPoller?: PrStatusPoller;
+  /** Database manager — needed for full reset to clear all tables atomically. */
+  databaseManager?: DatabaseManager;
 }
 
 /**
@@ -1093,7 +1096,7 @@ export async function registerApiRoutes(
     "/api/reset",
     async (_request, reply) => {
       try {
-        await fullReset(sessionManager, deps.usageManager, deps.runnerRegistry, deps.workspaceDir, deps.repoStore);
+        await fullReset(sessionManager, deps.usageManager, deps.runnerRegistry, deps.workspaceDir, deps.repoStore, deps.databaseManager);
         deps.sseBroadcast("full_reset_complete", {});
         return { success: true };
       } catch (err) {

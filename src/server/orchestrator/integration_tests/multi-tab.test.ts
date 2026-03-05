@@ -48,6 +48,7 @@ describe("Integration: multi-tab scenarios", () => {
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
+      databaseManager: dbManager,
       sessionManager,
       chatHistoryManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
@@ -65,8 +66,8 @@ describe("Integration: multi-tab scenarios", () => {
   });
 
   afterEach(async () => {
-    dbManager.close();
     await app.close();
+    dbManager.close();
     await new Promise((r) => setTimeout(r, 50));
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

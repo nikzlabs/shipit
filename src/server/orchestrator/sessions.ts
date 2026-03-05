@@ -110,14 +110,17 @@ export class SessionManager {
 
   /** Consume (read + clear) conversation replay for a session. */
   consumeConversationReplay(id: string): string | undefined {
-    const row = this.db.prepare(
-      "SELECT conversation_replay FROM sessions WHERE id = ?",
-    ).get(id) as { conversation_replay: string | null } | undefined;
-    if (row?.conversation_replay) {
-      this.db.prepare("UPDATE sessions SET conversation_replay = NULL WHERE id = ?").run(id);
-      return row.conversation_replay;
-    }
-    return undefined;
+    let replay: string | undefined;
+    this.db.transaction(() => {
+      const row = this.db.prepare(
+        "SELECT conversation_replay FROM sessions WHERE id = ?",
+      ).get(id) as { conversation_replay: string | null } | undefined;
+      if (row?.conversation_replay) {
+        this.db.prepare("UPDATE sessions SET conversation_replay = NULL WHERE id = ?").run(id);
+        replay = row.conversation_replay;
+      }
+    })();
+    return replay;
   }
 
   /** Clear the agent session ID for a session. */

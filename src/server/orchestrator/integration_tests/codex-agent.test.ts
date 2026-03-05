@@ -191,8 +191,8 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
   });
 
   afterEach(async () => {
-    dbManager.close();
     await app.close();
+    dbManager.close();
     await new Promise((r) => setTimeout(r, 50));
     if (savedOpenAIKey !== undefined) process.env.OPENAI_API_KEY = savedOpenAIKey;
     else delete process.env.OPENAI_API_KEY;
@@ -409,8 +409,8 @@ describe("Integration: Codex agent — validation and default agent", () => {
   });
 
   afterEach(async () => {
-    dbManager.close();
     await app.close();
+    dbManager.close();
     await new Promise((r) => setTimeout(r, 50));
     if (savedOpenAIKey !== undefined) process.env.OPENAI_API_KEY = savedOpenAIKey;
     else delete process.env.OPENAI_API_KEY;

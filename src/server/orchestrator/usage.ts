@@ -13,25 +13,43 @@ interface UsageRow {
 
 export class UsageManager {
   private db;
+  private stmtInsert;
+  private stmtSessionUsage;
+  private stmtSessionTokens;
+  private stmtSessionTurns;
+  private stmtDeleteBySession;
 
   constructor(dbManager: DatabaseManager) {
     this.db = dbManager.db;
+    this.stmtInsert = this.db.prepare(`
+      INSERT INTO usage_turns (session_id, cost_usd, duration_ms, input_tokens, output_tokens)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    this.stmtSessionUsage = this.db.prepare(`
+      SELECT SUM(cost_usd) as total_cost, SUM(duration_ms) as total_duration, COUNT(*) as turn_count
+      FROM usage_turns WHERE session_id = ?
+    `);
+    this.stmtSessionTokens = this.db.prepare(`
+      SELECT SUM(input_tokens) as input_total, SUM(output_tokens) as output_total,
+             COUNT(*) as turn_count
+      FROM usage_turns WHERE session_id = ?
+    `);
+    this.stmtSessionTurns = this.db.prepare(
+      "SELECT * FROM usage_turns WHERE session_id = ? ORDER BY id",
+    );
+    this.stmtDeleteBySession = this.db.prepare(
+      "DELETE FROM usage_turns WHERE session_id = ?",
+    );
   }
 
   /** Record a turn's cost, duration, and optional token counts. */
   record(sessionId: string, costUsd: number, durationMs: number, inputTokens?: number, outputTokens?: number): void {
-    this.db.prepare(`
-      INSERT INTO usage_turns (session_id, cost_usd, duration_ms, input_tokens, output_tokens)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(sessionId, costUsd, durationMs, inputTokens ?? null, outputTokens ?? null);
+    this.stmtInsert.run(sessionId, costUsd, durationMs, inputTokens ?? null, outputTokens ?? null);
   }
 
   /** Get aggregated usage for a single session. */
   getSessionUsage(sessionId: string): SessionUsage | undefined {
-    const row = this.db.prepare(`
-      SELECT SUM(cost_usd) as total_cost, SUM(duration_ms) as total_duration, COUNT(*) as turn_count
-      FROM usage_turns WHERE session_id = ?
-    `).get(sessionId) as { total_cost: number | null; total_duration: number | null; turn_count: number };
+    const row = this.stmtSessionUsage.get(sessionId) as { total_cost: number | null; total_duration: number | null; turn_count: number };
 
     if (row.turn_count === 0) return undefined;
 
@@ -45,11 +63,7 @@ export class UsageManager {
 
   /** Get cumulative token totals for a session. */
   getSessionTokenTotals(sessionId: string): { cumulativeInputTokens: number; cumulativeOutputTokens: number } | undefined {
-    const row = this.db.prepare(`
-      SELECT SUM(input_tokens) as input_total, SUM(output_tokens) as output_total,
-             COUNT(*) as turn_count
-      FROM usage_turns WHERE session_id = ?
-    `).get(sessionId) as { input_total: number | null; output_total: number | null; turn_count: number };
+    const row = this.stmtSessionTokens.get(sessionId) as { input_total: number | null; output_total: number | null; turn_count: number };
 
     if (row.turn_count === 0) return undefined;
     if (row.input_total === null && row.output_total === null) return undefined;
@@ -62,10 +76,7 @@ export class UsageManager {
 
   /** Get per-turn usage data for a session (for the usage modal breakdown). */
   getSessionTurns(sessionId: string): UsageTurn[] {
-    const rows = this.db.prepare(
-      "SELECT * FROM usage_turns WHERE session_id = ? ORDER BY id",
-    ).all(sessionId) as UsageRow[];
-
+    const rows = this.stmtSessionTurns.all(sessionId) as UsageRow[];
     return rows.map((r) => this.fromRow(r));
   }
 
@@ -101,9 +112,7 @@ export class UsageManager {
 
   /** Delete all usage data for a session. */
   delete(sessionId: string): boolean {
-    const result = this.db.prepare(
-      "DELETE FROM usage_turns WHERE session_id = ?",
-    ).run(sessionId);
+    const result = this.stmtDeleteBySession.run(sessionId);
     return result.changes > 0;
   }
 

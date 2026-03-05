@@ -21,8 +21,8 @@ interface HistoryRow {
   target_id: string;
   environment: string;
   url: string;
-  commit_hash: string;
-  commit_message: string;
+  commit_hash: string | null;
+  commit_message: string | null;
   timestamp: string;
   duration_ms: number;
   status: string;
@@ -85,8 +85,8 @@ export class DeploymentStore {
       record.targetId,
       record.environment,
       record.url,
-      record.commitHash ?? "",
-      record.commitMessage ?? "",
+      record.commitHash ?? null,
+      record.commitMessage ?? null,
       record.timestamp,
       record.durationMs,
       record.status,

@@ -82,8 +82,8 @@ const MIGRATIONS: Migration[] = [
         target_id TEXT NOT NULL,
         environment TEXT NOT NULL,
         url TEXT NOT NULL,
-        commit_hash TEXT NOT NULL,
-        commit_message TEXT NOT NULL,
+        commit_hash TEXT,
+        commit_message TEXT,
         timestamp TEXT NOT NULL,
         duration_ms INTEGER NOT NULL,
         status TEXT NOT NULL,
@@ -123,7 +123,19 @@ export class DatabaseManager {
     migrate();
   }
 
+  /** Delete all rows from all tables (used by full reset). */
+  clearAll(): void {
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM messages").run();
+      this.db.prepare("DELETE FROM usage_turns").run();
+      this.db.prepare("DELETE FROM sessions").run();
+      this.db.prepare("DELETE FROM repos").run();
+      this.db.prepare("DELETE FROM deploy_configs").run();
+      this.db.prepare("DELETE FROM deploy_history").run();
+    })();
+  }
+
   close(): void {
-    this.db.close();
+    if (this.db.open) this.db.close();
   }
 }

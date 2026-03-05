@@ -78,7 +78,8 @@ export class RepoStore {
 
   /** Check if a repo URL is already tracked. */
   has(url: string): boolean {
-    return this.get(url) !== undefined;
+    const row = this.db.prepare("SELECT 1 FROM repos WHERE url = ? LIMIT 1").get(url);
+    return row !== undefined;
   }
 
   /** Clear all repo data. */
