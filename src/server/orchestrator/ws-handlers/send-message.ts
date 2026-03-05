@@ -599,7 +599,7 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
             console.warn("[warm] Branch rename failed:", getErrorMessage(err));
             await finalizeBranchRenamed();
           }
-        }).catch(async (err) => {
+        }).catch(async (err: unknown) => {
           console.warn("[warm] Session naming failed:", err);
           await finalizeBranchRenamed();
         });

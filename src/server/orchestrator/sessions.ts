@@ -26,7 +26,7 @@ export class SessionManager {
     try {
       if (fs.existsSync(this.sessionsFile)) {
         const raw = fs.readFileSync(this.sessionsFile, "utf-8");
-        this.sessions = JSON.parse(raw);
+        this.sessions = JSON.parse(raw) as SessionInfo[];
       }
     } catch {
       this.sessions = [];

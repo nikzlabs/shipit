@@ -232,7 +232,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   console.log("[server] GitHub credentials found:", hasGitHubToken);
   if (hasGitHubToken && !deps.githubAuthManager) {
     // Load user info and configure git credentials in the background
-    githubAuthManager.loadUserInfo().catch((err) => {
+    githubAuthManager.loadUserInfo().catch((err: unknown) => {
       console.error("[server] Failed to load GitHub user info:", err);
     });
   }
@@ -497,7 +497,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       const excess = idleSessionIds.slice(0, idleSessionIds.length - maxIdle);
       for (const sid of excess) {
         console.log(`[idle-cleanup] Stopping idle container for session ${sid}`);
-        containerManager.destroy(sid).catch((err) => {
+        containerManager.destroy(sid).catch((err: unknown) => {
           console.error(`[idle-cleanup] Failed to destroy container ${sid}:`, getErrorMessage(err));
         });
         runnerRegistry.dispose(sid);
@@ -861,7 +861,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget in sync warming callback
             containerManager.createStandby(config).then((sc) => {
               console.log(`[warm] Standby container ready for ${appSessionId} at ${sc.workerUrl}`);
-            }).catch((err) => {
+            }).catch((err: unknown) => {
               console.error(`[warm] Standby container failed for ${appSessionId}:`, getErrorMessage(err));
             });
           }
@@ -940,7 +940,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         if (!ws?.workspaceDir || !existsSync(ws.workspaceDir)) {
           console.log(`[warm] Stale warm session ${repo.warmSessionId} — worktree missing, re-warming`);
           if (containerManager?.isStandby(repo.warmSessionId)) {
-            containerManager.destroy(repo.warmSessionId).catch((err) => {
+            containerManager.destroy(repo.warmSessionId).catch((err: unknown) => {
               console.error(`[warm] Failed to destroy stale standby:`, getErrorMessage(err));
             });
           }
@@ -1286,7 +1286,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       // Message dispatcher — same as /ws but without new_session and activate_session
       socket.on("message", async (raw: Buffer) => {
         let msg: WsClientMessage;
-        try { msg = JSON.parse(raw.toString()); } catch { send({ type: "error", message: "Invalid JSON" }); return; }
+        try { msg = JSON.parse(raw.toString()) as WsClientMessage; } catch { send({ type: "error", message: "Invalid JSON" }); return; }
 
         switch (msg.type) {
           case "terminal_start": return terminalHandlers.handleTerminalStart(ctx, msg);

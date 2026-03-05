@@ -224,11 +224,11 @@ export const usePrStore = create<PrState>((set, get) => ({
         headers: { Accept: "application/json" },
       });
       if (!res.ok) {
-        const data = await res.json();
+        const data = await res.json() as { error?: string };
         get().setCardError(sessionId, data.error || "Failed to create pull request");
         return;
       }
-      const data = await res.json();
+      const data = await res.json() as { number: number; title: string; url: string; baseBranch: string; headBranch: string; insertions: number; deletions: number };
       get().setCardOpen(sessionId, {
         number: data.number,
         title: data.title,
@@ -253,7 +253,7 @@ export const usePrStore = create<PrState>((set, get) => ({
         headers: { Accept: "application/json" },
       });
       if (!res.ok) {
-        const data = await res.json();
+        const data = await res.json() as { error?: string };
         return data.error || "Failed to fix CI issues";
       }
       // State updates come from SSE, not from the POST response
@@ -274,7 +274,7 @@ export const usePrStore = create<PrState>((set, get) => ({
         body: JSON.stringify({ enabled }),
       });
       if (!res.ok) {
-        const data = await res.json();
+        const data = await res.json() as { error?: string };
         console.error("[pr-store] Auto-fix toggle failed:", data.error);
       }
       // State updates come from SSE, not from the POST response
@@ -296,7 +296,7 @@ export const usePrStore = create<PrState>((set, get) => ({
         body: JSON.stringify({ method }),
       });
       if (!res.ok) {
-        const data = await res.json();
+        const data = await res.json() as { message?: string; error?: string };
         return data.message || data.error || "Failed to merge pull request";
       }
       // State updates come from SSE (merged detection)
@@ -317,7 +317,7 @@ export const usePrStore = create<PrState>((set, get) => ({
         body: JSON.stringify({ enabled }),
       });
       if (!res.ok) {
-        const data = await res.json();
+        const data = await res.json() as { error?: string };
         console.error("[pr-store] Auto-merge toggle failed:", data.error);
       }
       // State updates come from SSE
@@ -337,7 +337,7 @@ export const usePrStore = create<PrState>((set, get) => ({
         body: JSON.stringify({ method }),
       });
       if (!res.ok) {
-        const data = await res.json();
+        const data = await res.json() as { error?: string };
         console.error("[pr-store] Set merge method failed:", data.error);
       }
       // State updates come from SSE
@@ -360,7 +360,7 @@ export const usePrStore = create<PrState>((set, get) => ({
         headers: { Accept: "application/json" },
       },
     );
-    const data = await res.json();
+    const data = await res.json() as { repos: ImportSearchResult[] };
     set({ importSearchResults: data.repos });
   },
 }));

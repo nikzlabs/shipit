@@ -217,7 +217,7 @@ export class SessionWorker extends EventEmitter {
       this.preview = this._createPreviewManager();
       this.wirePreviewEvents(this.preview);
       // Start is async but we return immediately — events will stream via SSE
-      this.preview.start(this.workspaceDir).catch((err) => {
+      this.preview.start(this.workspaceDir).catch((err: unknown) => {
         this.broadcastSSE({
           type: "preview_config_error",
           data: { message: getErrorMessage(err) },
@@ -242,7 +242,7 @@ export class SessionWorker extends EventEmitter {
       } else {
         this.preview = this._createPreviewManager();
         this.wirePreviewEvents(this.preview);
-        this.preview.start(this.workspaceDir).catch((err) => {
+        this.preview.start(this.workspaceDir).catch((err: unknown) => {
           this.broadcastSSE({
             type: "preview_config_error",
             data: { message: getErrorMessage(err) },

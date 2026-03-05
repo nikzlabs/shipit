@@ -209,8 +209,9 @@ async function containerBelongsToSession(
   try {
     const result = await forwardToDocker(socketPath, "GET", `/containers/${containerId}/json`, {});
     if (result.statusCode !== 200) return false;
-    const info = JSON.parse(result.body.toString());
-    return info.Config?.Labels?.[PARENT_SESSION_LABEL] === sessionId;
+    const info = JSON.parse(result.body.toString()) as Record<string, unknown>;
+    return (info.Config as Record<string, unknown> | undefined)?.Labels !== undefined &&
+      ((info.Config as Record<string, unknown>).Labels as Record<string, string>)?.[PARENT_SESSION_LABEL] === sessionId;
   } catch {
     return false;
   }
@@ -227,8 +228,8 @@ async function networkBelongsToSession(
   try {
     const result = await forwardToDocker(socketPath, "GET", `/networks/${networkId}`, {});
     if (result.statusCode !== 200) return false;
-    const info = JSON.parse(result.body.toString());
-    return info.Labels?.[PARENT_SESSION_LABEL] === sessionId;
+    const info = JSON.parse(result.body.toString()) as Record<string, unknown>;
+    return (info.Labels as Record<string, string> | undefined)?.[PARENT_SESSION_LABEL] === sessionId;
   } catch {
     return false;
   }
@@ -245,8 +246,8 @@ async function volumeBelongsToSession(
   try {
     const result = await forwardToDocker(socketPath, "GET", `/volumes/${volumeName}`, {});
     if (result.statusCode !== 200) return false;
-    const info = JSON.parse(result.body.toString());
-    return info.Labels?.[PARENT_SESSION_LABEL] === sessionId;
+    const info = JSON.parse(result.body.toString()) as Record<string, unknown>;
+    return (info.Labels as Record<string, string> | undefined)?.[PARENT_SESSION_LABEL] === sessionId;
   } catch {
     return false;
   }
@@ -262,8 +263,8 @@ async function getExecParentContainerId(
   try {
     const result = await forwardToDocker(socketPath, "GET", `/exec/${execId}/json`, {});
     if (result.statusCode !== 200) return undefined;
-    const info = JSON.parse(result.body.toString());
-    return info.ContainerID;
+    const info = JSON.parse(result.body.toString()) as Record<string, unknown>;
+    return info.ContainerID as string | undefined;
   } catch {
     return undefined;
   }
@@ -314,7 +315,7 @@ async function sanitizeContainerCreate(
   }
 
   // Inject NET_RAW into CapDrop
-  const capDrop = Array.isArray(hostConfig.CapDrop) ? [...hostConfig.CapDrop] : [];
+  const capDrop = Array.isArray(hostConfig.CapDrop) ? [...hostConfig.CapDrop as string[]] : [];
   if (!capDrop.includes("NET_RAW")) {
     capDrop.push("NET_RAW");
   }
@@ -932,8 +933,10 @@ export async function resolveBridgeGatewayIp(networkName = "bridge"): Promise<st
       res.on("data", (chunk: Buffer) => chunks.push(chunk));
       res.on("end", () => {
         try {
-          const info = JSON.parse(Buffer.concat(chunks).toString());
-          const gateway = info.IPAM?.Config?.[0]?.Gateway;
+          const info = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>;
+          const ipam = info.IPAM as Record<string, unknown> | undefined;
+          const config = (ipam?.Config as Record<string, string>[] | undefined);
+          const gateway = config?.[0]?.Gateway;
           if (!gateway) {
             reject(new Error(`No gateway IP found for Docker network "${networkName}"`));
             return;

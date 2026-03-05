@@ -58,7 +58,7 @@ export const useGitStore = create<GitState>((set, get) => ({
     if (!res.ok) {
       throw new Error(`Failed to fetch git log: ${res.status}`);
     }
-    const data = await res.json();
+    const data = await res.json() as { commits: GitCommit[] };
     set({ commits: data.commits });
   },
 
@@ -67,7 +67,7 @@ export const useGitStore = create<GitState>((set, get) => ({
     if (!res.ok) {
       throw new Error(`Failed to fetch diff: ${res.status}`);
     }
-    const data = await res.json();
+    const data = await res.json() as TurnDiffData;
     set({ turnDiff: data });
   },
 
@@ -92,7 +92,7 @@ export const useGitStore = create<GitState>((set, get) => ({
     if (!res.ok) {
       throw new Error(`Failed to save git identity: ${res.status}`);
     }
-    const result = await res.json();
+    const result = await res.json() as { name: string; email: string };
     set({ identity: result });
   },
 }));

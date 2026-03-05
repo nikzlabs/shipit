@@ -26,7 +26,7 @@ export class UsageManager {
     try {
       if (fs.existsSync(this.usageFile)) {
         const raw = fs.readFileSync(this.usageFile, "utf-8");
-        this.turns = JSON.parse(raw);
+        this.turns = JSON.parse(raw) as UsageTurn[];
       }
     } catch {
       this.turns = [];

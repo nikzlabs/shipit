@@ -135,7 +135,7 @@ export const useSessionStore = create<SessionState>((set) => ({
     const res = await fetch("/api/sessions/all", {
       headers: { Accept: "application/json" },
     });
-    const data = await res.json();
+    const data = await res.json() as { sessions: SessionInfo[] };
     set({ allSessions: data.sessions });
   },
 
@@ -144,7 +144,7 @@ export const useSessionStore = create<SessionState>((set) => ({
       method: "POST",
       headers: { Accept: "application/json" },
     });
-    const result = await res.json();
+    const result = await res.json() as { sessions: SessionInfo[] };
     set((state) => ({
       sessions: result.sessions,
       allSessions: state.allSessions.map((s) =>
@@ -158,7 +158,7 @@ export const useSessionStore = create<SessionState>((set) => ({
       method: "DELETE",
       headers: { Accept: "application/json" },
     });
-    const result = await res.json();
+    const result = await res.json() as { sessions: SessionInfo[] };
     set((state) => ({
       sessions: result.sessions,
       allSessions: state.allSessions.map((s) =>
@@ -188,7 +188,7 @@ export const useSessionStore = create<SessionState>((set) => ({
       method: "GET",
       headers: { Accept: "application/json" },
     });
-    const data = await res.json();
+    const data = await res.json() as { sessions: SessionInfo[] };
     set({ sessions: data.sessions });
   },
 }));

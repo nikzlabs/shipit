@@ -39,7 +39,7 @@ export class CredentialStore {
   private load(): void {
     try {
       const raw = fs.readFileSync(this.filePath, "utf-8");
-      const parsed = JSON.parse(raw);
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
       if (parsed && typeof parsed === "object") {
         this.data = parsed as CredentialData;
       }

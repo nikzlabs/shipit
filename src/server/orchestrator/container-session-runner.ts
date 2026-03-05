@@ -131,9 +131,9 @@ async function workerPost(baseUrl: string, path: string, body?: unknown): Promis
         res.on("data", (chunk: string) => { data += chunk; });
         res.on("end", () => {
           try {
-            const parsed = JSON.parse(data);
+            const parsed = JSON.parse(data) as Record<string, unknown>;
             if (res.statusCode && res.statusCode >= 400) {
-              reject(new Error(parsed.error ?? `HTTP ${res.statusCode}`));
+              reject(new Error((parsed.error as string) ?? `HTTP ${res.statusCode}`));
             } else {
               resolve(parsed);
             }
@@ -168,9 +168,9 @@ async function workerGet(baseUrl: string, path: string): Promise<unknown> {
         res.on("data", (chunk: string) => { data += chunk; });
         res.on("end", () => {
           try {
-            const parsed = JSON.parse(data);
+            const parsed = JSON.parse(data) as Record<string, unknown>;
             if (res.statusCode && res.statusCode >= 400) {
-              reject(new Error(parsed.error ?? `HTTP ${res.statusCode}`));
+              reject(new Error((parsed.error as string) ?? `HTTP ${res.statusCode}`));
             } else {
               resolve(parsed);
             }
@@ -870,26 +870,26 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   private handleSSEEvent(event: SSEEvent): void {
     try {
-      const data = JSON.parse(event.data);
+      const data = JSON.parse(event.data) as Record<string, unknown>;
 
       switch (event.type) {
         // --- Agent events ---
 
         case "agent_event":
           if (this._agent) {
-            this._agent.emit("event", data as AgentEvent);
+            this._agent.emit("event", data as unknown as AgentEvent);
           }
           break;
 
         case "agent_done":
           if (this._agent) {
-            this._agent.emit("done", data.exitCode ?? 0);
+            this._agent.emit("done", (data.exitCode as number) ?? 0);
           }
           break;
 
         case "agent_error":
           if (this._agent) {
-            this._agent.emit("error", new Error(data.message ?? "Unknown worker error"));
+            this._agent.emit("error", new Error((data.message as string) ?? "Unknown worker error"));
           }
           break;
 
@@ -901,27 +901,27 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
         case "agent_log":
           if (this._agent) {
-            this._agent.emit("log", data.source ?? "worker", data.text ?? "");
+            this._agent.emit("log", (data.source as string) ?? "worker", (data.text as string) ?? "");
           }
           break;
 
         // --- Terminal events ---
 
         case "terminal_data":
-          this.appendTerminalOutput(data.data);
-          this.emitMessage({ type: "terminal_output", data: data.data });
+          this.appendTerminalOutput(data.data as string);
+          this.emitMessage({ type: "terminal_output", data: data.data as string });
           break;
 
         case "terminal_exit":
           this._remoteTerminalRunning = false;
-          this.emitMessage({ type: "terminal_exit", exitCode: data.exitCode });
+          this.emitMessage({ type: "terminal_exit", exitCode: data.exitCode as number | null });
           break;
 
         // --- Preview events ---
 
         case "preview_ready":
           this._previewStateReceived = true;
-          this._workerPreviewPorts = data.ports ?? [];
+          this._workerPreviewPorts = (data.ports as number[]) ?? [];
           this._previewLogBuffer = [];
           this._lastPreviewExitCode = null;
           this.emitMessage(this.buildPreviewStatus());
@@ -930,7 +930,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         case "preview_stopped":
           this._previewStateReceived = true;
           this._workerPreviewPorts = [];
-          this._lastPreviewExitCode = data.code ?? null;
+          this._lastPreviewExitCode = (data.code as number) ?? null;
           this.emitMessage(this.buildPreviewStatus());
           break;
 
@@ -938,7 +938,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           this._previewStateReceived = true;
           this.emitMessage({
             type: "preview_config_missing",
-            checked: data.checked ?? [],
+            checked: (data.checked as string[]) ?? [],
           } as WsServerMessage);
           break;
 
@@ -946,7 +946,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           this._previewStateReceived = true;
           this.emitMessage({
             type: "preview_config_error",
-            message: data.message ?? "",
+            message: (data.message as string) ?? "",
           } as WsServerMessage);
           break;
 
@@ -959,14 +959,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           break;
 
         case "preview_log": {
-          const text = data.text ?? "";
+          const text = (data.text as string) ?? "";
           this._previewLogBuffer.push(text);
           if (this._previewLogBuffer.length > ContainerSessionRunner.MAX_PREVIEW_LOG_LINES) {
             this._previewLogBuffer.shift();
           }
           this.emitMessage({
             type: "log_entry",
-            source: data.source ?? "preview",
+            source: (data.source as string) ?? "preview",
             text,
             timestamp: new Date().toISOString(),
           } as WsServerMessage);
@@ -976,7 +976,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         // --- File watcher events ---
 
         case "file_changes":
-          this.emitMessage({ type: "files_changed", paths: data.paths ?? [] } as WsServerMessage);
+          this.emitMessage({ type: "files_changed", paths: (data.paths as string[]) ?? [] } as WsServerMessage);
           // Detect shipit.yaml changes and restart preview on worker
           if ((data.paths as string[])?.some((p: string) => p === "shipit.yaml" || p.endsWith("/shipit.yaml"))) {
             // eslint-disable-next-line no-restricted-syntax -- fire-and-forget preview restart in sync handler

@@ -494,7 +494,7 @@ export default function App() {
     try {
       const res = await fetch(`/api/sessions/${sid}/git/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(commitHash)}`);
       if (!res.ok) return;
-      const data = await res.json();
+      const data = await res.json() as import("./components/DiffPanel.js").TurnDiffData;
       useGitStore.getState().setTurnDiff(data);
       useGitStore.getState().setHistoryDiffMode(true);
       useUiStore.getState().setRightTab("changes");
