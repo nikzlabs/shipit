@@ -12,7 +12,7 @@ import { AuthManager } from "./auth.js";
 import { GitHubAuthManager } from "./github-auth.js";
 import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
-import { generateBranchPrefix, repoUrlToHash } from "./git-utils.js";
+import { generateBranchPrefix, repoUrlToHash, pushToOrigin } from "./git-utils.js";
 import { ChatHistoryManager } from "./chat-history.js";
 import { UsageManager } from "./usage.js";
 import { FeatureManager } from "./features.js";
@@ -466,13 +466,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             runner.setPushTimer(null);
             try {
               const git = createGitManager(sessionDir);
-              const remotes = await git.getRemotes();
-              const origin = remotes.find((r) => r.name === "origin");
-              if (!origin) return;
-              const branch = await git.getCurrentBranch();
-              if (!branch) return;
-              await git.push("origin", branch);
-              runner.emitMessage({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
+              const branch = await pushToOrigin(git);
+              if (branch) {
+                runner.emitMessage({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
+              }
             } catch (err) {
               console.error("[system-turn] auto-push failed:", getErrorMessage(err));
             }
@@ -1051,13 +1048,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           runner.setPushTimer(null);
           try {
             if (!githubAuthManager.authenticated) return;
-            const remotes = await git.getRemotes();
-            const origin = remotes.find((r) => r.name === "origin");
-            if (!origin) return;
-            const branch = await git.getCurrentBranch();
-            if (!branch) return;
-            await git.push("origin", branch);
-            runner.emitMessage({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
+            const branch = await pushToOrigin(git);
+            if (branch) {
+              runner.emitMessage({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
+            }
           } catch (err) {
             const errMsg = getErrorMessage(err);
             const text = errMsg.includes("workflow")

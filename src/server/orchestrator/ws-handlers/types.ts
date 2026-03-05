@@ -1,4 +1,4 @@
-import type { WsServerMessage, WsLogEntry, ImageAttachment, FileContextRef, PermissionMode, ClaudeContentBlockToolUse } from "../../shared/types.js";
+import type { WsServerMessage, WsLogEntry, ClaudeContentBlockToolUse } from "../../shared/types.js";
 import type { GitManager } from "../../shared/git.js";
 import type { RepoGit } from "../repo-git.js";
 import type { SessionManager } from "../sessions.js";
@@ -14,15 +14,10 @@ import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { RepoStore } from "../repo-store.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { AgentId, AgentProcess, TerminalProcess } from "../../shared/types.js";
-import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerRegistry, QueuedMessage } from "../session-runner.js";
 
-/** Queued message waiting for the current Claude turn to finish. */
-export interface QueuedMessage {
-  text: string;
-  images?: ImageAttachment[];
-  files?: FileContextRef[];
-  permissionMode?: PermissionMode;
-}
+// Re-export so existing consumers of types.ts don't break
+export type { QueuedMessage };
 
 // ---------------------------------------------------------------------------
 // Sub-context interfaces — see docs/054-handler-context-refactor/plan.md
