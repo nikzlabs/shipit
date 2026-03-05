@@ -10,6 +10,9 @@ import type { GitManager } from "../../shared/git.js";
 import type { RepoGit } from "../repo-git.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { SessionInfo } from "../../shared/types.js";
+import type { RepoStore } from "../repo-store.js";
+import type { GitHubAuthManager } from "../github-auth.js";
+import { generateBranchPrefix } from "../git-utils.js";
 import { ServiceError } from "./types.js";
 
 // ---- Read operations ----
@@ -182,16 +185,79 @@ export function listAllSessions(
   return sessionManager.listAll();
 }
 
-/** Unarchive (restore) a session. Returns the updated active session list. */
-export function unarchiveSession(
+/** Unarchive (restore) a session, recreating worktree if needed. */
+export async function unarchiveSession(
   sessionManager: SessionManager,
+  createRepoGit: (dir: string) => RepoGit,
+  getSharedRepoDir: (url: string) => string,
+  githubAuthManager: GitHubAuthManager,
+  repoStore: RepoStore,
   sessionId: string,
-): { session: SessionInfo; sessions: SessionInfo[] } {
-  const ok = sessionManager.unarchive(sessionId);
-  if (!ok) throw new ServiceError(404, "Session not found or not archived");
+): Promise<{ session: SessionInfo; sessions: SessionInfo[] }> {
   const session = sessionManager.get(sessionId);
-  if (!session) throw new ServiceError(404, "Session not found");
-  return { session, sessions: sessionManager.list() };
+  if (!session?.archived) throw new ServiceError(404, "Session not found or not archived");
+
+  // Worktree sessions need their checkout and branch restored
+  if (session.sessionType === "worktree" && session.remoteUrl && session.workspaceDir) {
+    const repoDir = getSharedRepoDir(session.remoteUrl);
+
+    // Re-clone shared repo if it was deleted (last session for this repo)
+    // eslint-disable-next-line no-restricted-syntax -- stat existence-check idiom
+    const repoExists = await fs.stat(repoDir).then(() => true, () => false);
+    if (!repoExists) {
+      await fs.mkdir(repoDir, { recursive: true });
+      const cloneUrl = githubAuthManager.getAuthenticatedCloneUrl(session.remoteUrl);
+      const repoGit = createRepoGit(repoDir);
+      await repoGit.clone(cloneUrl);
+      repoStore.add(session.remoteUrl);
+      repoStore.setReady(session.remoteUrl);
+    }
+
+    const repoGit = createRepoGit(repoDir);
+
+    // Remove stale remnants so worktree add succeeds (needs absent dir)
+    await fs.rm(session.workspaceDir, { recursive: true, force: true });
+
+    const newBranch = generateBranchPrefix();
+    let startPoint: string | undefined;
+    try {
+      const defaultBranch = await repoGit.getDefaultBranch();
+      if (defaultBranch && !defaultBranch.includes("(")) {
+        startPoint = `origin/${defaultBranch}`;
+      }
+    } catch {
+      // Fallback: let git use HEAD
+    }
+
+    // Retry worktree creation (git lock contention)
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await repoGit.createWorktree(session.workspaceDir, newBranch, startPoint);
+        break;
+      } catch (wtErr) {
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+        } else {
+          throw wtErr;
+        }
+      }
+    }
+
+    // Configure credentials
+    if (githubAuthManager.authenticated) {
+      githubAuthManager.configureGitCredentials(session.workspaceDir);
+    }
+
+    sessionManager.setWorktreeInfo(sessionId, {
+      branch: newBranch,
+      sessionType: "worktree",
+    });
+  }
+
+  sessionManager.unarchive(sessionId);
+  const updated = sessionManager.get(sessionId);
+  if (!updated) throw new ServiceError(404, "Session not found");
+  return { session: updated, sessions: sessionManager.list() };
 }
 
 // ---- Mutation operations ----
