@@ -4,6 +4,8 @@
 - [ ] Create `src/client/themes/dark.css` with `.dark { ... }` block overriding tokens
 - [ ] Import both theme files from `src/client/index.css`
 - [ ] Add `--color-scrollbar-*` tokens and refactor scrollbar CSS to use them
+- [ ] Add `--font-size-code: 13px` token to theme files
+- [ ] Add shared motion tokens to `index.css`: `--duration-fast: 150ms`, `--duration-normal: 200ms`, `--duration-slow: 1s`, `--ease-default: ease`, `--ease-out: ease-out`, `--ease-in: ease-in`
 - [ ] Verify UI is visually unchanged (tokens defined but not consumed yet)
 
 ## Phase 2: Install Phosphor Icons

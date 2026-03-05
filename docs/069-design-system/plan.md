@@ -32,7 +32,9 @@ Design language skill: `.claude/skills/design-language/SKILL.md` — defines all
 2. Create `src/client/themes/dark.css` with `.dark { ... }` block overriding the same tokens with dark-theme values
 3. Import both theme files from `index.css`
 4. Add `--color-scrollbar-*` tokens and update scrollbar CSS to use them
-5. Verify existing UI is unchanged (tokens defined but not yet consumed)
+5. Add `--font-size-code: 13px` token
+6. Add shared motion tokens in `index.css`: `--duration-fast: 150ms`, `--duration-normal: 200ms`, `--duration-slow: 1s`, `--ease-default: ease`, `--ease-out: ease-out`, `--ease-in: ease-in`
+7. Verify existing UI is unchanged (tokens defined but not yet consumed)
 
 ### Phase 2: Install Phosphor Icons
 

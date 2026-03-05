@@ -60,12 +60,12 @@ Never use raw Tailwind color classes like `bg-gray-950` or `text-blue-500` in co
 | `--color-scrollbar-thumb` | Scrollbar thumb |
 | `--color-scrollbar-thumb-hover` | Scrollbar thumb on hover |
 | `--font-size-code` | Monospace / code block font size |
-| `--duration-fast` | Color transitions, exits (150ms) |
-| `--duration-normal` | Enter animations, layout shifts (200ms) |
-| `--duration-slow` | Loading spinners (1s) |
-| `--ease-default` | Default easing (ease) |
-| `--ease-out` | Enter animations (ease-out) |
-| `--ease-in` | Exit animations (ease-in) |
+| `--duration-fast` | Color transitions, exits |
+| `--duration-normal` | Enter animations, layout shifts |
+| `--duration-slow` | Loading spinners |
+| `--ease-default` | Default easing |
+| `--ease-out` | Enter animations |
+| `--ease-in` | Exit animations |
 
 ## Typography
 
