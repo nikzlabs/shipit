@@ -1,0 +1,25 @@
+# Docker-capable session worker image.
+# Extends the dev session worker image with Docker CLI (client only, no daemon).
+# Used when a session has `capabilities.docker: true` in shipit.yaml.
+# The Docker CLI talks to the host daemon via DOCKER_HOST env var pointing
+# to the orchestrator's Docker API proxy.
+#
+# Build with:
+#   docker build -f docker/Dockerfile.session-worker.docker .
+#
+# Requires the dev image to be built first (or use --build-arg to override):
+#   docker build -f docker/Dockerfile.session-worker.dev -t shipit-session-worker:dev .
+
+ARG BASE_IMAGE=shipit-session-worker:dev
+FROM ${BASE_IMAGE}
+
+# Install Docker CLI (client only — no daemon, no containerd, no buildx)
+RUN curl -fsSL https://download.docker.com/linux/static/stable/$(uname -m)/docker-27.5.1.tgz \
+    | tar xz --strip-components=1 -C /usr/local/bin docker/docker
+
+# Install Docker Compose plugin
+RUN mkdir -p /usr/local/lib/docker/cli-plugins && \
+    ARCH=$(uname -m) && \
+    curl -fsSL "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-${ARCH}" \
+    -o /usr/local/lib/docker/cli-plugins/docker-compose && \
+    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose

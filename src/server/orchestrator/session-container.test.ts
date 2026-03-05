@@ -239,6 +239,8 @@ describe("SessionContainerManager", () => {
             PidsLimit: 256,
             NetworkMode: "shipit-test",
             SecurityOpt: ["no-new-privileges"],
+            CapDrop: ["ALL"],
+            CapAdd: ["CHOWN", "SETUID", "SETGID", "FOWNER", "DAC_OVERRIDE", "NET_BIND_SERVICE", "KILL"],
           }),
         }),
       );
@@ -330,6 +332,16 @@ describe("SessionContainerManager", () => {
       await manager.create(buildConfig());
 
       expect(started).toHaveBeenCalledWith("test-session-1");
+    });
+
+    it("drops all capabilities and adds back minimum set", async () => {
+      await manager.create(buildConfig());
+
+      const call = mockDocker.createContainer.mock.calls[0][0];
+      expect(call.HostConfig.CapDrop).toEqual(["ALL"]);
+      expect(call.HostConfig.CapAdd).toEqual([
+        "CHOWN", "SETUID", "SETGID", "FOWNER", "DAC_OVERRIDE", "NET_BIND_SERVICE", "KILL",
+      ]);
     });
 
     it("cleans up on creation failure", async () => {
