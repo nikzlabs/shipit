@@ -10,10 +10,10 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import crypto from "node:crypto";
 import { execSync } from "node:child_process";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../index.js";
+import { repoUrlToHash } from "../git-utils.js";
 import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import { RepoStore } from "../repo-store.js";
@@ -53,8 +53,7 @@ function createSharedRepo(repoDir: string): void {
 }
 
 function getSharedRepoDirForUrl(workspaceDir: string, repoUrl: string): string {
-  const hash = crypto.createHash("sha256").update(repoUrl).digest("hex").slice(0, 16);
-  return path.join(workspaceDir, "repos", hash);
+  return path.join(workspaceDir, "repos", repoUrlToHash(repoUrl));
 }
 
 /** Poll until a condition becomes true. */

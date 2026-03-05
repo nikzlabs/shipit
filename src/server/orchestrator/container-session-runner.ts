@@ -12,6 +12,7 @@
 
 import { EventEmitter } from "node:events";
 import http from "node:http";
+import { getErrorMessage } from "../shared/utils.js";
 import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess } from "../shared/types.js";
 import type { WsServerMessage, ClaudeContentBlockToolUse } from "../shared/types.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps } from "./session-runner.js";
@@ -736,7 +737,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       console.log(`[container-runner:${this.sessionId}] Preview started on worker`);
     } catch (err) {
       // "Preview already running" = reconnect case — SSE replay delivers current state
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       if (msg.includes("already running")) {
         console.log(`[container-runner:${this.sessionId}] Preview already running on worker`);
       } else {
@@ -980,7 +981,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
             // eslint-disable-next-line no-restricted-syntax -- fire-and-forget preview restart in sync handler
             workerPost(this.workerUrl, "/preview/stop")
               .then(() => workerPost(this.workerUrl, "/preview/start"))
-              .catch(() => {});
+              .catch((err: unknown) => console.warn(`[container-runner:${this.sessionId}] Preview restart after shipit.yaml change failed:`, err));
           }
           break;
       }

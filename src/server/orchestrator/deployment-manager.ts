@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import type { DeployTarget, DeployContext, DeployResult } from "./deploy-targets/deploy-target.js";
 import type { DeployTargetInfo } from "../shared/types.js";
+import { getErrorMessage } from "../shared/utils.js";
 
 export interface FrameworkInfo {
   name: string;
@@ -143,8 +144,7 @@ export class DeploymentManager extends EventEmitter {
       this.emit("complete", { ...result, targetId });
       return result;
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.emit("error", { message, phase: "deploying" });
+      this.emit("error", { message: getErrorMessage(err), phase: "deploying" });
       throw err;
     } finally {
       this._deploying = false;

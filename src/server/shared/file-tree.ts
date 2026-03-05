@@ -2,16 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { FileTreeNode } from "./types.js";
 
-/** Directories to skip when scanning the workspace file tree. */
-const SKIP_DIRS = new Set([
-  "node_modules",
-  ".git",
-  ".vibe-chat-history",
-  "dist",
-  ".next",
-  ".cache",
-  ".vite",
-]);
+import { WORKSPACE_SKIP_DIRS } from "./fs-constants.js";
 
 /**
  * Recursively scan a directory and return a tree of FileTreeNode objects.
@@ -32,7 +23,7 @@ export async function scanFileTree(dir: string, prefix = ""): Promise<FileTreeNo
   const files: FileTreeNode[] = [];
 
   for (const entry of entries) {
-    if (SKIP_DIRS.has(entry.name)) continue;
+    if (WORKSPACE_SKIP_DIRS.has(entry.name)) continue;
     // Skip hidden files/dirs (except common ones like .env)
     if (entry.name.startsWith(".") && entry.name !== ".env" && entry.name !== ".env.local") continue;
 

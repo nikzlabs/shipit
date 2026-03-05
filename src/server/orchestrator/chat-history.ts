@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { getErrorMessage } from "../shared/utils.js";
 
 /**
  * A single persisted chat message.
@@ -141,7 +142,7 @@ export class ChatHistoryManager {
       this.ensureDir();
       fs.writeFileSync(this.filePath(sessionId), JSON.stringify(messages, null, 2));
     } catch (err) {
-      console.error("[chat-history] failed to save:", err instanceof Error ? err.message : String(err));
+      console.error("[chat-history] failed to save:", getErrorMessage(err));
     }
   }
 }

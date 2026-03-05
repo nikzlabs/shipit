@@ -2,21 +2,10 @@ import { watch, type FSWatcher } from "node:fs";
 import { EventEmitter } from "node:events";
 import path from "node:path";
 
-/**
- * Directories and file patterns to ignore when watching for changes.
- * Aligned with the ignore lists in `file-tree.ts` and `markdown.ts`.
- */
-const IGNORE_PATTERNS = [
-  "node_modules",
-  ".git",
-  ".vite",
-  ".next",
-  ".cache",
-  "dist",
-  ".shipit-usage.json",
-  ".vibe-sessions.json",
-  ".vibe-chat-history",
-];
+import { WORKSPACE_SKIP_DIRS } from "../shared/fs-constants.js";
+
+/** File-level ignores (specific data files in the workspace root, not directories). */
+const IGNORE_FILES = new Set([".shipit-usage.json", ".vibe-sessions.json"]);
 
 /**
  * Watches a directory recursively for file changes and emits debounced
@@ -94,7 +83,7 @@ export class FileWatcher extends EventEmitter {
    */
   private shouldIgnore(filePath: string): boolean {
     const parts = filePath.split(path.sep);
-    return parts.some((part) => IGNORE_PATTERNS.includes(part));
+    return parts.some((part) => WORKSPACE_SKIP_DIRS.has(part) || IGNORE_FILES.has(part));
   }
 
   /**

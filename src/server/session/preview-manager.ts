@@ -14,6 +14,7 @@ import {
   runInstallCommand,
   deleteNodeModules,
 } from "./install-runner.js";
+import { getErrorMessage } from "../shared/utils.js";
 
 const VITE_PORT = 5173;
 
@@ -231,7 +232,7 @@ export class PreviewManager extends EventEmitter {
         } catch (err) {
           this.emit("install_status", {
             status: "error",
-            message: `Install failed: ${err instanceof Error ? err.message : String(err)}`,
+            message: `Install failed: ${getErrorMessage(err)}`,
           });
           return;
         }

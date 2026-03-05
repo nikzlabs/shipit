@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { SessionInfo } from "../shared/types.js";
+import { getErrorMessage } from "../shared/utils.js";
 
 const DEFAULT_SESSIONS_FILE = path.join("/workspace", ".vibe-sessions.json");
 
@@ -37,7 +38,7 @@ export class SessionManager {
     try {
       fs.writeFileSync(this.sessionsFile, JSON.stringify(this.sessions, null, 2));
     } catch (err) {
-      console.error("[sessions] failed to save:", err instanceof Error ? err.message : String(err));
+      console.error("[sessions] failed to save:", getErrorMessage(err));
     }
   }
 

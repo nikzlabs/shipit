@@ -12,6 +12,11 @@ export function generateBranchPrefix(): string {
   return "shipit/" + generateBranchSlug();
 }
 
+/** Hash a repo URL to a short 16-char hex string for use as a directory name. */
+export function repoUrlToHash(repoUrl: string): string {
+  return crypto.createHash("sha256").update(repoUrl).digest("hex").slice(0, 16);
+}
+
 /** Parse owner/repo from a GitHub remote URL. */
 export function parseGitHubRemote(url: string): { owner: string; repo: string } | null {
   // Handle HTTPS: https://github.com/owner/repo.git

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { UsageTurn, SessionUsage, UsageStats } from "../shared/types.js";
+import { getErrorMessage } from "../shared/utils.js";
 
 const DEFAULT_USAGE_FILE = path.join("/workspace", ".shipit-usage.json");
 
@@ -41,7 +42,7 @@ export class UsageManager {
       }
       fs.writeFileSync(this.usageFile, JSON.stringify(this.turns, null, 2));
     } catch (err) {
-      console.error("[usage] failed to save:", err instanceof Error ? err.message : String(err));
+      console.error("[usage] failed to save:", getErrorMessage(err));
     }
   }
 

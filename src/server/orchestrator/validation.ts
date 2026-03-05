@@ -2,9 +2,8 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import type { ImageAttachment, FileAttachment, FileContextRef } from "../shared/types.js";
 
-export function getErrorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
+// Re-exported from shared for backward compatibility — prefer importing from "../shared/utils.js" directly.
+export { getErrorMessage } from "../shared/utils.js";
 
 // ---- Image validation constants ----
 const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
