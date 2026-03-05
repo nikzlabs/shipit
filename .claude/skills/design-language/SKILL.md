@@ -62,7 +62,7 @@ Never use raw Tailwind color classes like `bg-gray-950` or `text-blue-500` in co
 
 ## Typography
 
-System font stack, no custom web fonts. Body: `text-sm`, headings: `text-lg font-semibold`, code: `font-mono text-[13px]`, small: `text-xs`.
+System font stack, no custom web fonts. Body: `text-sm`, headings: `text-lg font-semibold`, code: `font-mono text-[FONT_SIZE.CODE]` (from `src/client/design-tokens.ts`), small: `text-xs`.
 
 ## Iconography — Phosphor Icons
 

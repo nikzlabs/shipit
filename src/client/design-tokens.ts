@@ -9,3 +9,9 @@ export const ICON_SIZE = {
   /** Hero / illustrations (48px) */
   XL: 48,
 } as const;
+
+/** Font sizes for non-standard values not covered by Tailwind's scale. */
+export const FONT_SIZE = {
+  /** Code / monospace blocks (13px) */
+  CODE: "13px",
+} as const;
