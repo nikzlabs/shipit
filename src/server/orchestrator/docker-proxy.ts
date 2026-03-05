@@ -24,6 +24,15 @@ export interface SessionInfo {
   dockerAccess: boolean;
   /** Session-specific bridge network name for child containers. */
   sessionNetworkName?: string;
+  /** Resource limits to enforce on child containers (from session config). */
+  resourceLimits?: {
+    /** Memory limit in bytes. */
+    memory: number;
+    /** CPU quota in microseconds per 100ms period. */
+    cpuQuota: number;
+    /** Maximum PIDs. */
+    pidsLimit: number;
+  };
 }
 
 export interface DockerProxyDeps {
@@ -360,6 +369,26 @@ async function sanitizeContainerCreate(
   labels[PARENT_SESSION_LABEL] = session.sessionId;
   body.Labels = labels;
 
+  // Enforce resource limits on child containers — capped at session's own limits
+  if (session.resourceLimits) {
+    const limits = session.resourceLimits;
+    const currentMemory = hostConfig.Memory as number | undefined;
+    if (!currentMemory || currentMemory > limits.memory) {
+      hostConfig.Memory = limits.memory;
+    }
+    const currentCpuQuota = hostConfig.CpuQuota as number | undefined;
+    if (!currentCpuQuota || currentCpuQuota > limits.cpuQuota) {
+      hostConfig.CpuQuota = limits.cpuQuota;
+    }
+    if (!hostConfig.CpuPeriod) {
+      hostConfig.CpuPeriod = 100_000;
+    }
+    const currentPids = hostConfig.PidsLimit as number | undefined;
+    if (!currentPids || currentPids > limits.pidsLimit) {
+      hostConfig.PidsLimit = limits.pidsLimit;
+    }
+  }
+
   // Inject session-specific network so child containers can communicate
   if (session.sessionNetworkName) {
     // If NetworkMode is not explicitly set or is "default", use session network
@@ -560,7 +589,7 @@ function buildRoutes(): Route[] {
   // GET /networks/{id} — label check
   route("GET", /^(?:\/v[\d.]+)?\/networks\/([a-zA-Z0-9_.-]+)(\?.*)?$/, async (ctx, match) => {
     const networkId = match[1];
-    if (networkId === "create") return; // Skip, handled by POST /networks/create
+    if (networkId === "create") return forbidden(ctx.res, "Endpoint not allowed: GET /networks/create");
     if (!(await networkBelongsToSession(ctx.socketPath, networkId, ctx.session.sessionId))) {
       return forbidden(ctx.res, "Network does not belong to this session");
     }
@@ -687,7 +716,7 @@ function buildRoutes(): Route[] {
   // GET /volumes/{name} — label check
   route("GET", /^(?:\/v[\d.]+)?\/volumes\/([a-zA-Z0-9_.-]+)(\?.*)?$/, async (ctx, match) => {
     const volumeName = match[1];
-    if (volumeName === "create") return; // Skip, handled by POST /volumes/create
+    if (volumeName === "create") return forbidden(ctx.res, "Endpoint not allowed: GET /volumes/create");
     if (!(await volumeBelongsToSession(ctx.socketPath, volumeName, ctx.session.sessionId))) {
       return forbidden(ctx.res, "Volume does not belong to this session");
     }
@@ -713,8 +742,10 @@ function buildRoutes(): Route[] {
     pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
 
+  // DELETE /images/{id} — blocked to prevent cross-session image deletion.
+  // Images are shared resources; allowing deletion could DoS other sessions.
   route("DELETE", /^(?:\/v[\d.]+)?\/images\/([^/]+)(\?.*)?$/, async (ctx) => {
-    pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
+    forbidden(ctx.res, "Image deletion is not allowed (images are shared resources)");
   });
 
   // POST /build — passthrough (chunked streaming, no body buffering)

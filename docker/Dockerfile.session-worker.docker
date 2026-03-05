@@ -1,12 +1,17 @@
 # Docker-capable session worker image.
-# Adds Docker CLI (client only, no daemon) on top of the base session worker.
+# Extends the dev session worker image with Docker CLI (client only, no daemon).
 # Used when a session has `capabilities.docker: true` in shipit.yaml.
 # The Docker CLI talks to the host daemon via DOCKER_HOST env var pointing
 # to the orchestrator's Docker API proxy.
+#
+# Build with:
+#   docker build -f docker/Dockerfile.session-worker.docker .
+#
+# Requires the dev image to be built first (or use --build-arg to override):
+#   docker build -f docker/Dockerfile.session-worker.dev -t shipit-session-worker:dev .
 
-FROM node:24-slim
-
-RUN apt-get update && apt-get install -y git curl python3 make g++ && rm -rf /var/lib/apt/lists/*
+ARG BASE_IMAGE=shipit-session-worker:dev
+FROM ${BASE_IMAGE}
 
 # Install Docker CLI (client only — no daemon, no containerd, no buildx)
 RUN curl -fsSL https://download.docker.com/linux/static/stable/$(uname -m)/docker-27.5.1.tgz \
@@ -18,23 +23,3 @@ RUN mkdir -p /usr/local/lib/docker/cli-plugins && \
     curl -fsSL "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-${ARCH}" \
     -o /usr/local/lib/docker/cli-plugins/docker-compose && \
     chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-
-RUN npm install -g @anthropic-ai/claude-code @openai/codex
-
-WORKDIR /app
-
-COPY package.json package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline --loglevel=verbose
-
-COPY tsconfig.json ./
-# Only copy code the session-worker actually needs — session + shared layers.
-# Orchestrator and client code are not used and would bloat the image.
-COPY src/server/session/ ./src/server/session/
-COPY src/server/shared/ ./src/server/shared/
-
-# Credential symlinks (same as dev/prod images)
-RUN mkdir -p /workspace /credentials && ln -s /credentials/.claude /root/.claude && ln -sf /credentials/.claude.json /root/.claude.json
-
-EXPOSE 9100
-
-CMD ["node", "--import", "tsx", "src/server/session/session-worker.ts"]

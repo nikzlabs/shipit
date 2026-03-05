@@ -52,6 +52,14 @@ export interface SessionContainer {
   workerUrl: string;
   /** Container lifecycle status. */
   status: "starting" | "running" | "stopping" | "stopped";
+  /** Host-side workspace directory for bind mount validation. */
+  hostWorkspaceDir: string;
+  /** Whether this session has Docker access. */
+  dockerAccess: boolean;
+  /** Session-specific bridge network name (only set when dockerAccess is true). */
+  sessionNetworkName?: string;
+  /** Resource limits for child containers created through the proxy. */
+  resourceLimits?: { memory: number; cpuQuota: number; pidsLimit: number };
 }
 
 export interface SessionContainerManagerEvents {
@@ -309,7 +317,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     // Child containers created through the proxy join this network so they
     // can communicate with each other but not with other sessions' containers.
     let sessionNetworkName: string | undefined;
-    if (config.dockerAccess && this.dockerProxyHost && this.dockerProxyPort) {
+    if (config.dockerAccess) {
       sessionNetworkName = `shipit-session-${config.sessionId.slice(0, 12)}`;
       try {
         await this.docker.createNetwork({
@@ -332,6 +340,14 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       containerIp: "",
       workerUrl: "",
       status: "starting",
+      hostWorkspaceDir: config.sessionDir,
+      dockerAccess: config.dockerAccess ?? false,
+      sessionNetworkName,
+      resourceLimits: (config.dockerAccess) ? {
+        memory: config.memoryLimit,
+        cpuQuota: config.cpuQuota,
+        pidsLimit: config.pidsLimit,
+      } : undefined,
     };
     this.containers.set(config.sessionId, sc);
 
@@ -423,9 +439,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
 
     sc.status = "stopping";
 
-    // Clean up Docker resources created through the proxy
-    await this.cleanupSessionDockerResources(sessionId);
-
+    // Stop the session container first so it can't create new child resources
     try {
       const container = this.docker.getContainer(sc.id);
       try {
@@ -433,6 +447,16 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       } catch {
         // Already stopped or doesn't exist
       }
+    } catch {
+      // Container may already be gone
+    }
+
+    // Clean up Docker resources created through the proxy (after session is stopped)
+    await this.cleanupSessionDockerResources(sessionId);
+
+    // Remove the session container
+    try {
+      const container = this.docker.getContainer(sc.id);
       try {
         await container.remove({ force: true });
       } catch {
@@ -548,7 +572,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * Look up a session by its container's bridge IP address.
    * Used by the Docker API proxy for source-IP routing.
    */
-  getSessionByContainerIp(ip: string): { sessionId: string; containerIp: string } | undefined {
+  getSessionByContainerIp(ip: string): SessionContainer | undefined {
     for (const sc of this.containers.values()) {
       if (sc.containerIp === ip) return sc;
     }
@@ -636,7 +660,10 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * is in the active set, populates the map so the runner factory can
    * reconnect to them instead of creating duplicates.
    */
-  async rediscover(activeSessionIds: Set<string>): Promise<number> {
+  async rediscover(
+    activeSessionIds: Set<string>,
+    sessionInfoResolver?: (sessionId: string) => { workspaceDir: string; dockerAccess: boolean } | undefined,
+  ): Promise<number> {
     let count = 0;
     try {
       const containers = await this.docker.listContainers({
@@ -653,12 +680,17 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
           const info = await container.inspect();
           const networkInfo = info.NetworkSettings?.Networks?.[this.networkName];
           if (!networkInfo?.IPAddress) continue;
+          const resolved = sessionInfoResolver?.(sessionId);
+          const dockerAccess = resolved?.dockerAccess ?? false;
           this.containers.set(sessionId, {
             id: ci.Id,
             sessionId,
             containerIp: networkInfo.IPAddress,
             workerUrl: `http://${networkInfo.IPAddress}:${this.workerPort}`,
             status: "running",
+            hostWorkspaceDir: resolved?.workspaceDir ?? "",
+            dockerAccess,
+            sessionNetworkName: dockerAccess ? `shipit-session-${sessionId.slice(0, 12)}` : undefined,
           });
           if (ci.Labels?.[CONTAINER_STANDBY_LABEL] === "true") {
             this.standbySessionIds.add(sessionId);

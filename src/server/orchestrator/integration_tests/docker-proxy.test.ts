@@ -8,7 +8,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import http from "node:http";
-import net from "node:net";
+import type { AddressInfo } from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -305,7 +305,7 @@ describe("Docker proxy integration", () => {
 
     proxy = createDockerProxy(deps);
     await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
-    const addr = proxy.address() as net.AddressInfo;
+    const addr = proxy.address() as AddressInfo;
     proxyUrl = `http://127.0.0.1:${addr.port}`;
   });
 

@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import http from "node:http";
-import net from "node:net";
+import type { AddressInfo } from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -378,7 +378,7 @@ describe("Docker API proxy", () => {
     await new Promise<void>((resolve) => {
       proxy.listen(0, "127.0.0.1", resolve);
     });
-    const addr = proxy.address() as net.AddressInfo;
+    const addr = proxy.address() as AddressInfo;
     proxyUrl = `http://127.0.0.1:${addr.port}`;
   });
 
@@ -779,6 +779,12 @@ describe("Docker API proxy", () => {
     it("allows POST /build", async () => {
       const res = await makeRequest(proxyUrl, "POST", "/v1.41/build");
       expect(res.status).toBe(200);
+    });
+
+    it("blocks DELETE /images/{id} (shared resource protection)", async () => {
+      const res = await makeRequest(proxyUrl, "DELETE", "/v1.41/images/alpine:latest");
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("shared resources");
     });
   });
 });

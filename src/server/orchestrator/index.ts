@@ -302,7 +302,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       const activeIds = new Set(sessionManager.allIds());
       const orphans = await containerManager.cleanupOrphans(activeIds);
       if (orphans > 0) console.log(`[server] Cleaned up ${orphans} orphan container(s)`);
-      const rediscovered = await containerManager.rediscover(activeIds);
+      const rediscovered = await containerManager.rediscover(activeIds, (sessionId) => {
+        const session = sessionManager.get(sessionId);
+        if (!session?.workspaceDir) return undefined;
+        const cfg = resolveSessionConfig(session.workspaceDir);
+        return { workspaceDir: session.workspaceDir, dockerAccess: cfg.capabilities.docker };
+      });
       if (rediscovered > 0) console.log(`[server] Rediscovered ${rediscovered} container(s) from previous run`);
       await containerManager.startHealthMonitor();
       console.log("[server] Docker container mode enabled");
@@ -320,14 +325,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         getSessionByContainerIp: (ip: string): DockerProxySessionInfo | undefined => {
           const sc = containerManager!.getSessionByContainerIp(ip);
           if (!sc) return undefined;
-          const session = sessionManager.get(sc.sessionId);
-          const sessionConfig = session?.workspaceDir ? resolveSessionConfig(session.workspaceDir) : undefined;
-          const hasDocker = sessionConfig?.capabilities.docker ?? false;
+          // dockerAccess, hostWorkspaceDir, and sessionNetworkName are
+          // stored on the SessionContainer at creation time — no need to
+          // re-read shipit.yaml on every request.
           return {
             sessionId: sc.sessionId,
-            hostWorkspaceDir: session?.workspaceDir ?? "",
-            dockerAccess: hasDocker,
-            sessionNetworkName: hasDocker ? `shipit-session-${sc.sessionId.slice(0, 12)}` : undefined,
+            hostWorkspaceDir: sc.hostWorkspaceDir,
+            dockerAccess: sc.dockerAccess,
+            sessionNetworkName: sc.sessionNetworkName,
+            resourceLimits: sc.resourceLimits,
           };
         },
       });
