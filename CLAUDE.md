@@ -126,7 +126,7 @@ Three-layer system: browser (React SPA) → orchestrator (Fastify) → session w
 docs/
   NNN-feature-name/
     plan.md        — How the feature works, key files, patterns
-    checklist.md   — Remaining work (only exists if there's open work)
+    checklist.md   — Remaining work items or tracking notes
 ```
 
 Feature docs describe individual features and may include planned-but-not-implemented designs.
@@ -141,4 +141,4 @@ status: in-progress
 ---
 ```
 
-When creating a new feature doc, set `status: planned`. Update to `in-progress` when work begins and `done` when complete. Set `paused` for features that have a design but are not currently planned for implementation. When adding a `checklist.md` for remaining work, ensure the status is `in-progress`. When a feature is done, set `status: done` and mark all checklist items as complete (`[x]`).
+When creating a new feature doc, set `status: planned`. Update to `in-progress` when work begins and `done` when complete. Set `paused` for features that have a design but are not currently planned for implementation. A `checklist.md` can exist alongside any status — it tracks remaining work items regardless of whether the feature is actively in progress. When a feature is done, set `status: done` and mark all checklist items as complete (`[x]`).
