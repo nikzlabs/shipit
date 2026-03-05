@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Warning, GearSix, Play, CircleNotch, ArrowClockwise } from "@phosphor-icons/react";
+import { WarningIcon, GearSixIcon, PlayIcon, CircleNotchIcon, ArrowClockwiseIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { PreviewError } from "../hooks/usePreviewErrors.js";
 
@@ -176,7 +176,7 @@ export function PreviewFrame({
     return (
       <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
         <div className="text-center space-y-3">
-          <CircleNotch size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
+          <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
           <p>Installing dependencies...</p>
           <p className="text-xs text-(--color-text-tertiary)">
             This may take a moment.
@@ -191,7 +191,7 @@ export function PreviewFrame({
     return (
       <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
         <div className="text-center space-y-2">
-          <Warning size={ICON_SIZE.LG} className="mx-auto text-(--color-error)" />
+          <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-error)" />
           <p className="text-(--color-error)">Install failed</p>
           {installStatus.message && (
             <p className="text-xs text-(--color-text-tertiary) max-w-sm">
@@ -211,7 +211,7 @@ export function PreviewFrame({
     return (
       <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
         <div className="text-center space-y-3 max-w-lg px-4">
-          <Warning size={ICON_SIZE.LG} className="mx-auto text-(--color-error)" />
+          <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-error)" />
           <p className="text-(--color-error) font-medium">
             Preview server crashed{crashInfo.exitCode != null ? ` (exit code ${crashInfo.exitCode})` : ""}
           </p>
@@ -251,7 +251,7 @@ export function PreviewFrame({
       return (
         <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
           <div className="text-center space-y-3">
-            <CircleNotch size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
+            <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
             <p>Starting dev server...</p>
           </div>
         </div>
@@ -263,7 +263,7 @@ export function PreviewFrame({
       return (
         <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
           <div className="text-center space-y-3">
-            <GearSix size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
+            <GearSixIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
             <p>No preview configuration found.</p>
             <p className="text-xs text-(--color-text-tertiary) max-w-sm">
               Create a shipit.yaml file to configure how the preview server runs, or let Claude set it up for you.
@@ -284,7 +284,7 @@ export function PreviewFrame({
     return (
       <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
         <div className="text-center space-y-2">
-          <Play size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
+          <PlayIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
           <p>Preview will appear here when a dev server is running.</p>
           <p className="text-xs text-(--color-text-tertiary)">
             Ask the agent to create a project to get started. Vite, Express, Next.js, and other servers are auto-detected.
@@ -375,7 +375,7 @@ export function PreviewFrame({
             className="px-2 py-0.5 rounded hover:bg-(--color-bg-hover) transition-colors"
             title="Refresh preview"
           >
-            <ArrowClockwise size={ICON_SIZE.SM} />
+            <ArrowClockwiseIcon size={ICON_SIZE.SM} />
           </button>
         </div>
       </div>
@@ -395,7 +395,7 @@ export function PreviewFrame({
       ) : (
         <div className="flex-1 flex items-center justify-center bg-white text-(--color-text-secondary) text-sm">
           <div className="text-center space-y-3">
-            <CircleNotch size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
+            <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
             <p>Starting dev server...</p>
           </div>
         </div>

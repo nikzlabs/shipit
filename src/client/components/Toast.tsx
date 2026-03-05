@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CheckCircle } from "@phosphor-icons/react";
+import { CheckCircleIcon } from "@phosphor-icons/react";
 
 export interface ToastData {
   message: string;
@@ -43,7 +43,7 @@ export function Toast({ toast, onDismiss }: ToastProps) {
         visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2"
       }`}
     >
-      <CheckCircle size={16} className="text-(--color-success) shrink-0" />
+      <CheckCircleIcon size={16} className="text-(--color-success) shrink-0" />
       <span>{toast.message}</span>
       {toast.action && (
         <button

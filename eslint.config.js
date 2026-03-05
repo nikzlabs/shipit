@@ -11,8 +11,12 @@ export default tseslint.config(
         ...globals.node,
         ...globals.browser,
       },
+      parserOptions: {
+        projectService: true,
+      },
     },
     rules: {
+      "@typescript-eslint/no-deprecated": "error",
       "@typescript-eslint/no-unused-vars": [
         "error",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },

@@ -1,4 +1,4 @@
-import { useEffect, type MutableRefObject } from "react";
+import { useEffect, type RefObject } from "react";
 import type { ChatMessage, ToolResultBlock } from "../components/MessageList.js";
 import { activityFromTool } from "../components/StreamingIndicator.js";
 import type { InteractiveTerminalHandle } from "../components/InteractiveTerminal.js";
@@ -22,7 +22,7 @@ import { usePrStore } from "../stores/pr-store.js";
 export function useMessageHandler(params: {
   lastMessage: MessageEvent | null;
   send: (msg: WsClientMessage) => void;
-  terminalRef: MutableRefObject<InteractiveTerminalHandle | null>;
+  terminalRef: RefObject<InteractiveTerminalHandle | null>;
   notify: (msg: string) => void;
 }): void {
   const { lastMessage, send, terminalRef, notify } = params;

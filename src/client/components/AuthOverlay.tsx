@@ -15,7 +15,7 @@ export function AuthOverlay({ url, onPasteCode, onApiKey }: AuthOverlayProps) {
   const [apiKey, setApiKey] = useState("");
   const [apiKeyError, setApiKeyError] = useState("");
 
-  const handleCodeSubmit = (e: React.FormEvent) => {
+  const handleCodeSubmit = (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
     const trimmed = authCode.trim();
     if (!trimmed) {
@@ -27,7 +27,7 @@ export function AuthOverlay({ url, onPasteCode, onApiKey }: AuthOverlayProps) {
     onPasteCode?.(trimmed);
   };
 
-  const handleApiKeySubmit = (e: React.FormEvent) => {
+  const handleApiKeySubmit = (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
     const trimmed = apiKey.trim();
     if (!trimmed) {

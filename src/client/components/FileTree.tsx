@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import { Folder, FolderOpen, File, CaretRight, Plus, FolderSimple, ArrowClockwise } from "@phosphor-icons/react";
+import { FolderIcon, FolderOpenIcon, FileIcon, CaretRightIcon, PlusIcon, FolderSimpleIcon, ArrowClockwiseIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { FileTreeNode } from "../../server/shared/types.js";
 
@@ -42,11 +42,11 @@ function TreeNode({
           className="flex items-center gap-1.5 w-full text-left py-1 px-2 hover:bg-(--color-bg-hover) transition-colors text-sm text-(--color-text-primary)"
           style={{ paddingLeft }}
         >
-          <CaretRight size={12} className={`shrink-0 text-(--color-text-tertiary) transition-transform ${expanded ? "rotate-90" : ""}`} />
+          <CaretRightIcon size={12} className={`shrink-0 text-(--color-text-tertiary) transition-transform ${expanded ? "rotate-90" : ""}`} />
           {expanded ? (
-            <FolderOpen size={ICON_SIZE.SM} weight="fill" className="shrink-0 text-(--color-folder)" />
+            <FolderOpenIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0 text-(--color-folder)" />
           ) : (
-            <Folder size={ICON_SIZE.SM} weight="fill" className="shrink-0 text-(--color-folder)" />
+            <FolderIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0 text-(--color-folder)" />
           )}
           <span className="truncate">{node.name}</span>
         </button>
@@ -84,7 +84,7 @@ function TreeNode({
         className="flex items-center gap-1.5 flex-1 min-w-0 text-left"
         title={node.path}
       >
-        <File size={ICON_SIZE.SM} className="shrink-0 text-(--color-text-tertiary)" />
+        <FileIcon size={ICON_SIZE.SM} className="shrink-0 text-(--color-text-tertiary)" />
         <span className="truncate">{node.name}</span>
       </button>
       {onAddToChat && (
@@ -97,7 +97,7 @@ function TreeNode({
           title="Add to chat context"
           aria-label={`Add ${node.name} to chat`}
         >
-          <Plus size={12} />
+          <PlusIcon size={12} />
         </button>
       )}
     </div>
@@ -109,7 +109,7 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToCh
     return (
       <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
         <div className="text-center space-y-2">
-          <FolderSimple size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
+          <FolderSimpleIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
           <p>No files in /workspace yet.</p>
           <p className="text-xs text-(--color-text-tertiary)">
             Ask the agent to create a project to get started.
@@ -135,7 +135,7 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToCh
           className="px-2 py-0.5 rounded hover:bg-(--color-bg-hover) transition-colors shrink-0"
           title="Refresh file tree"
         >
-          <ArrowClockwise size={ICON_SIZE.SM} />
+          <ArrowClockwiseIcon size={ICON_SIZE.SM} />
         </button>
       </div>
 

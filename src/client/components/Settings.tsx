@@ -122,7 +122,7 @@ export function Settings({
     }
   };
 
-  const handleDeployConfigSubmit = (e: React.FormEvent) => {
+  const handleDeployConfigSubmit = (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!selectedDeployTarget || savingDeployConfig) return;
     setSavingDeployConfig(true);

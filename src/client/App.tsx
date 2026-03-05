@@ -10,7 +10,7 @@ import { useTheme } from "./hooks/useTheme.js";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts.js";
 import { useConnectionSync } from "./hooks/useConnectionSync.js";
 import { useAutoFix } from "./hooks/useAutoFix.js";
-import { Sun, Moon, GearSix, DownloadSimple, Rocket, CircleNotch } from "@phosphor-icons/react";
+import { SunIcon, MoonIcon, GearSixIcon, DownloadSimpleIcon, RocketIcon, CircleNotchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "./design-tokens.js";
 import { useMessageHandler } from "./hooks/useMessageHandler.js";
 import { useApi } from "./hooks/useApi.js";
@@ -630,7 +630,7 @@ export default function App() {
         <div className="border-t border-(--color-border-primary) px-4 py-1.5 flex items-center gap-2">
           <AgentPicker agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} disabled={isLoading || status !== "open"} />
           <button onClick={handleDownloadChat} className="ml-auto p-1 rounded text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors" title="Download chat history" aria-label="Download chat history">
-            <DownloadSimple size={ICON_SIZE.SM} />
+            <DownloadSimpleIcon size={ICON_SIZE.SM} />
           </button>
         </div>
       )}
@@ -645,7 +645,7 @@ export default function App() {
     return (
       <div className="flex h-screen items-center justify-center bg-(--color-bg-primary)">
         {showBootstrapSpinner && (
-          <CircleNotch size={ICON_SIZE.MD} className="animate-spin text-(--color-text-tertiary)" />
+          <CircleNotchIcon size={ICON_SIZE.MD} className="animate-spin text-(--color-text-tertiary)" />
         )}
       </div>
     );
@@ -701,11 +701,11 @@ export default function App() {
         </div>
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
           <button onClick={handleDeployOpen} className="hidden sm:inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-(--color-accent-subtle) text-(--color-accent) hover:bg-(--color-accent) hover:text-(--color-accent-text) transition-colors font-medium" title="Deploy to production" aria-label="Deploy">
-            <Rocket size={ICON_SIZE.SM} />
+            <RocketIcon size={ICON_SIZE.SM} />
             Deploy
           </button>
           <button onClick={() => handleSettingsOpen()} className={`hidden sm:inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${hasSystemPrompt || githubStatus.authenticated ? "text-(--color-accent) hover:text-(--color-accent-hover) hover:bg-(--color-bg-hover)" : "text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"}`} title="Settings" aria-label="Settings">
-            <GearSix size={ICON_SIZE.SM} />
+            <GearSixIcon size={ICON_SIZE.SM} />
           </button>
           {currentSessionUsage && currentSessionUsage.totalCostUsd > 0 && (
             <button onClick={handleUsageBadgeClick} className="hidden sm:inline text-xs px-2 py-0.5 rounded-full bg-(--color-accent-subtle) text-(--color-accent) hover:bg-(--color-accent) hover:text-(--color-accent-text) transition-colors cursor-pointer" title="View usage details">
@@ -714,9 +714,9 @@ export default function App() {
           )}
           <button onClick={toggleTheme} className="p-1.5 rounded-md text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors" title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"} aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}>
             {theme === "dark" ? (
-              <Sun size={ICON_SIZE.SM} />
+              <SunIcon size={ICON_SIZE.SM} />
             ) : (
-              <Moon size={ICON_SIZE.SM} />
+              <MoonIcon size={ICON_SIZE.SM} />
             )}
           </button>
         </div>

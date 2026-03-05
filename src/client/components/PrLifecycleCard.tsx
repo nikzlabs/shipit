@@ -13,14 +13,14 @@ import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import {
-  GitPullRequest,
-  GitMerge,
-  CheckCircle,
-  XCircle,
-  CircleNotch,
-  CaretDown,
-  ArrowLeft,
-  Warning,
+  GitPullRequestIcon,
+  GitMergeIcon,
+  CheckCircleIcon,
+  XCircleIcon,
+  CircleNotchIcon,
+  CaretDownIcon,
+  ArrowLeftIcon,
+  WarningIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 
@@ -31,7 +31,7 @@ const MAX_VISIBLE_FAILURES = 5;
 
 function Spinner() {
   return (
-    <CircleNotch size={14} className="animate-spin text-(--color-info) shrink-0" />
+    <CircleNotchIcon size={14} className="animate-spin text-(--color-info) shrink-0" />
   );
 }
 
@@ -51,21 +51,21 @@ function CiIndicator({ checks }: { checks: PrCardState["checks"] }) {
   if (checks.state === "success") {
     return (
       <span className="text-(--color-success) text-xs flex items-center gap-1" title={`CI passed  ${checks.total}/${checks.total} checks`}>
-        <CheckCircle size={ICON_SIZE.SM} /> CI {checks.total}/{checks.total}
+        <CheckCircleIcon size={ICON_SIZE.SM} /> CI {checks.total}/{checks.total}
       </span>
     );
   }
   if (checks.state === "failure") {
     return (
       <span className="text-(--color-error) text-xs flex items-center gap-1" title={`CI failed  ${checks.failed} of ${checks.total}`}>
-        <XCircle size={ICON_SIZE.SM} /> CI {checks.passed}/{checks.total}
+        <XCircleIcon size={ICON_SIZE.SM} /> CI {checks.passed}/{checks.total}
       </span>
     );
   }
   // pending
   return (
     <span className="text-(--color-warning) text-xs flex items-center gap-1 animate-pulse" title={`CI running  ${checks.passed}/${checks.total}`}>
-      <CircleNotch size={ICON_SIZE.SM} className="animate-spin" /> CI {checks.passed}/{checks.total}
+      <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin" /> CI {checks.passed}/{checks.total}
     </span>
   );
 }
@@ -81,7 +81,7 @@ function FailedChecksList({ checks }: { checks: PrCardState["checks"] }) {
     <div className="mt-1 space-y-0.5">
       {visible.map((check) => (
         <div key={check.name} className="text-xs text-(--color-text-secondary) pl-5">
-          <XCircle size={12} className="inline text-(--color-error)" /> {check.name} — <span className="text-(--color-text-tertiary)">{check.summary}</span>
+          <XCircleIcon size={12} className="inline text-(--color-error)" /> {check.name} — <span className="text-(--color-text-tertiary)">{check.summary}</span>
         </div>
       ))}
       {remaining > 0 && (
@@ -169,7 +169,7 @@ function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: 
         className="px-1 py-0.5 text-xs font-medium bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-r border-l border-black/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         aria-label="Select merge method"
       >
-        <CaretDown size={12} />
+        <CaretDownIcon size={12} />
       </button>
       {dropdownOpen && (
         <div className="absolute top-full right-0 mt-1 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-md shadow-lg z-10 min-w-45">
@@ -179,7 +179,7 @@ function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: 
               onClick={() => { setMergeMethod(sessionId, m); setDropdownOpen(false); }}
               className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors text-left"
             >
-              <span className="w-3 text-(--color-success)">{m === method ? <CheckCircle size={12} /> : ""}</span>
+              <span className="w-3 text-(--color-success)">{m === method ? <CheckCircleIcon size={12} /> : ""}</span>
               {MERGE_METHOD_LABELS[m]}
             </button>
           ))}
@@ -206,10 +206,10 @@ function ReadyPhase({ card, sessionId }: { card: PrCardState; sessionId: string 
 
   return (
     <div className="flex items-center gap-3">
-      <GitPullRequest size={ICON_SIZE.SM} className="text-(--color-pr) shrink-0" />
+      <GitPullRequestIcon size={ICON_SIZE.SM} className="text-(--color-pr) shrink-0" />
       {card.headBranch && (
         <span className="text-xs text-(--color-text-secondary) truncate flex items-center gap-1">
-          main <ArrowLeft size={12} /> {card.headBranch}
+          main <ArrowLeftIcon size={12} /> {card.headBranch}
         </span>
       )}
       {hasDiffStats && <DiffStats ins={ins} del={del} />}
@@ -266,9 +266,9 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
   return (
     <div>
       <div className="flex items-center gap-3 flex-wrap">
-        <GitPullRequest size={ICON_SIZE.SM} className="text-(--color-pr) shrink-0" />
+        <GitPullRequestIcon size={ICON_SIZE.SM} className="text-(--color-pr) shrink-0" />
         <span className="text-xs text-(--color-text-secondary) truncate flex items-center gap-1">
-          {pr.baseBranch} <ArrowLeft size={12} /> {pr.headBranch}
+          {pr.baseBranch} <ArrowLeftIcon size={12} /> {pr.headBranch}
         </span>
         <DiffStats ins={pr.insertions} del={pr.deletions} />
         <CiIndicator checks={card.checks} />
@@ -306,7 +306,7 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
       )}
       {autoMerge?.error && (
         <div className="mt-1 text-xs text-(--color-warning) pl-5 flex items-center gap-1">
-          <Warning size={12} /> {autoMerge.error.message}{" "}
+          <WarningIcon size={12} /> {autoMerge.error.message}{" "}
           <a
             href={autoMerge.error.settingsUrl}
             target="_blank"
@@ -340,7 +340,7 @@ function MergedPhase({ card }: { card: PrCardState }) {
 
   return (
     <div className="flex items-center gap-3">
-      <GitMerge size={ICON_SIZE.SM} className="text-(--color-pr) shrink-0" />
+      <GitMergeIcon size={ICON_SIZE.SM} className="text-(--color-pr) shrink-0" />
       <span className="text-xs text-(--color-text-secondary)">
         PR #{pr?.number} merged into {pr?.baseBranch}
       </span>
@@ -363,7 +363,7 @@ function ClosedPhase({ card }: { card: PrCardState }) {
 
   return (
     <div className="flex items-center gap-3">
-      <GitPullRequest size={ICON_SIZE.SM} className="text-(--color-text-tertiary) shrink-0" />
+      <GitPullRequestIcon size={ICON_SIZE.SM} className="text-(--color-text-tertiary) shrink-0" />
       <span className="text-xs text-(--color-text-secondary)">
         PR #{pr?.number} closed
       </span>
@@ -408,7 +408,7 @@ function ErrorPhase({ card, sessionId }: { card: PrCardState; sessionId: string 
 
   return (
     <div className="flex items-start gap-3">
-      <XCircle size={ICON_SIZE.SM} className="text-(--color-error) shrink-0 mt-0.5" />
+      <XCircleIcon size={ICON_SIZE.SM} className="text-(--color-error) shrink-0 mt-0.5" />
       <span className="text-xs text-(--color-text-secondary) wrap-break-word min-w-0">
         Failed to create PR{lines.length > 0 && ": "}
         {lines.map((line, i) => (
@@ -460,33 +460,33 @@ export function PrStatusIcon({ sessionId }: { sessionId: string }) {
   if (prState !== "open" && prState !== "merged" && prState !== "closed") return null;
 
   if (prState === "merged") {
-    return <span className="text-(--color-pr)" title="PR merged"><GitMerge size={12} /></span>;
+    return <span className="text-(--color-pr)" title="PR merged"><GitMergeIcon size={12} /></span>;
   }
   if (prState === "closed") {
-    return <span className="text-(--color-text-tertiary)" title="PR closed"><GitPullRequest size={12} /></span>;
+    return <span className="text-(--color-text-tertiary)" title="PR closed"><GitPullRequestIcon size={12} /></span>;
   }
 
   if (checksState === "success") {
     return (
       <span className="text-(--color-success) flex items-center gap-0.5" title="CI passed">
-        <GitPullRequest size={12} /> <CheckCircle size={10} />
+        <GitPullRequestIcon size={12} /> <CheckCircleIcon size={10} />
       </span>
     );
   }
   if (checksState === "failure") {
     return (
       <span className="text-(--color-error) flex items-center gap-0.5" title="CI failed">
-        <GitPullRequest size={12} /> <XCircle size={10} />
+        <GitPullRequestIcon size={12} /> <XCircleIcon size={10} />
       </span>
     );
   }
   if (checksState === "pending") {
     return (
       <span className="text-(--color-warning) animate-pulse" title="CI running">
-        <GitPullRequest size={12} />
+        <GitPullRequestIcon size={12} />
       </span>
     );
   }
 
-  return <span className="text-(--color-text-tertiary)" title="PR open"><GitPullRequest size={12} /></span>;
+  return <span className="text-(--color-text-tertiary)" title="PR open"><GitPullRequestIcon size={12} /></span>;
 }

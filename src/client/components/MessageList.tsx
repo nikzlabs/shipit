@@ -13,7 +13,7 @@ import { AskUserQuestion, type AskQuestionItem } from "./AskUserQuestion.js";
 import { ToolResult } from "./ToolResult.js";
 import { TodoPanel, type TodoItem } from "./TodoPanel.js";
 import { sessionRelativePath } from "../path-utils.js";
-import { CircleNotch } from "@phosphor-icons/react";
+import { CircleNotchIcon } from "@phosphor-icons/react";
 import type { SearchMatch } from "../hooks/useSearch.js";
 import { buildVisualElements } from "./visual-elements.js";
 import { RollbackDropdown, type RollbackMode } from "./RollbackDropdown.js";
@@ -784,7 +784,7 @@ export function MessageList({
             >
               {msg.queued && (
                 <div className="flex items-center gap-1.5 mb-1.5 text-xs text-(--color-accent-text)/80 font-medium">
-                  <CircleNotch size={12} className="animate-spin" />
+                  <CircleNotchIcon size={12} className="animate-spin" />
                   Queued{msg.queuePosition !== undefined ? ` #${msg.queuePosition}` : ""}
                 </div>
               )}
