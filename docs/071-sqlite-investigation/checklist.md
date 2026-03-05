@@ -5,7 +5,7 @@ No backward compatibility with existing JSON files — clean cut.
 ## Phase 1: Foundation
 
 - [x] Install `better-sqlite3` and `@types/better-sqlite3`
-- [ ] Add `better-sqlite3` to both `Dockerfile.prod` and `Dockerfile.session-worker.prod` (native module — needs build tools or prebuilt binary in `node:24-slim`)
+- [x] Add `better-sqlite3` to both `Dockerfile.prod` and `Dockerfile.session-worker.prod` (native module — needs build tools or prebuilt binary in `node:24-slim`) — already handled: build stages have `python3 make g++ `, `better-sqlite3` is a production dep surviving `npm prune --omit=dev`, and statically links SQLite (no extra runtime libs needed)
 - [x] Create `src/server/shared/database.ts` — `DatabaseManager` class
   - Opens/creates `.db` file at configurable path
   - Enables WAL mode (`PRAGMA journal_mode=WAL`)
@@ -64,4 +64,4 @@ No backward compatibility with existing JSON files — clean cut.
 - [x] Run `npm run typecheck` — clean
 - [x] Run `npm run lint` — clean
 - [ ] Manual smoke test: create session, send messages, check usage, deploy
-- [ ] Verify Docker builds succeed (native module compiles in `node:24-slim`)
+- [x] Verify Docker builds succeed (native module compiles in `node:24-slim`)
