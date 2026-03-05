@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi, beforeEach } from "vitest";
 import { renderHook, cleanup, act } from "@testing-library/react";
 import { usePreviewErrors } from "./usePreviewErrors.js";
+import { usePreviewStore, resetDedupState } from "../stores/preview-store.js";
 
 afterEach(cleanup);
 
@@ -31,6 +32,9 @@ async function flush() {
 describe("usePreviewErrors", () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
+    // Reset store and dedup state between tests
+    usePreviewStore.getState().clearErrors();
+    resetDedupState();
   });
 
   afterEach(() => {
@@ -238,5 +242,23 @@ describe("usePreviewErrors", () => {
     unmount();
     expect(spy).toHaveBeenCalledWith("message", expect.any(Function));
     spy.mockRestore();
+  });
+
+  it("store.reset() clears errors (session switch)", async () => {
+    const { result } = renderHook(() => usePreviewErrors());
+
+    await act(async () => {
+      postPreviewError({ message: "Session 1 error" });
+      await flush();
+    });
+
+    expect(result.current.errors).toHaveLength(1);
+
+    act(() => {
+      usePreviewStore.getState().reset();
+    });
+
+    expect(result.current.errors).toHaveLength(0);
+    expect(result.current.hasErrors).toBe(false);
   });
 });
