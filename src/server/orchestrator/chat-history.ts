@@ -133,13 +133,15 @@ export class ChatHistoryManager {
 
   /** Update the last message in a session's history by merging fields. */
   updateLastMessage(sessionId: string, update: Partial<PersistedMessage>): void {
-    const lastRow = this.stmtLoadLast.get(sessionId) as MessageRow | undefined;
-    if (!lastRow) return;
+    this.db.transaction(() => {
+      const lastRow = this.stmtLoadLast.get(sessionId) as MessageRow | undefined;
+      if (!lastRow) return;
 
-    const last = this.fromRow(lastRow);
-    Object.assign(last, update);
-    const row = this.toRow(sessionId, last);
-    this.stmtUpdate.run({ ...row, id: lastRow.id });
+      const last = this.fromRow(lastRow);
+      Object.assign(last, update);
+      const row = this.toRow(sessionId, last);
+      this.stmtUpdate.run({ ...row, id: lastRow.id });
+    })();
   }
 
   /** Truncate a session's history to the first `count` messages. */
