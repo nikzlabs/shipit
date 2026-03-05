@@ -1,5 +1,4 @@
 import { CheckIcon } from "@phosphor-icons/react";
-import { ICON_SIZE } from "../design-tokens.js";
 
 export interface TodoItem {
   content: string;
