@@ -15,6 +15,9 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { SessionWorker } from "../../session/session-worker.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import type { WsServerMessage } from "../../shared/types.js";
+import type { FileWatcher } from "../../session/file-watcher.js";
+import type { PreviewManager } from "../../session/preview-manager.js";
+import type { TerminalProcess } from "../../session/terminal.js";
 import {
   FakeWorkerAgent,
   StubTerminal,
@@ -41,7 +44,7 @@ describe("Worker File Watcher Endpoints", () => {
       host: "127.0.0.1",
       createFileWatcher: () => {
         lastWatcher = new StubWatcher();
-        return lastWatcher as unknown as import("../../session/file-watcher.js").FileWatcher;
+        return lastWatcher as unknown as FileWatcher;
       },
     });
 
@@ -110,13 +113,13 @@ describe("ContainerSessionRunner File Watcher Proxy", () => {
       host: "127.0.0.1",
       createFileWatcher: () => {
         lastWatcher = new StubWatcher();
-        return lastWatcher as unknown as import("../../session/file-watcher.js").FileWatcher;
+        return lastWatcher as unknown as FileWatcher;
       },
       createPreviewManager: () => {
-        return new StubPreview() as unknown as import("../../session/preview-manager.js").PreviewManager;
+        return new StubPreview() as unknown as PreviewManager;
       },
       createTerminal: () => {
-        return new StubTerminal() as unknown as import("../../session/terminal.js").TerminalProcess;
+        return new StubTerminal() as unknown as TerminalProcess;
       },
     });
 
@@ -223,15 +226,15 @@ describe("Worker Cleanup", () => {
       host: "127.0.0.1",
       createTerminal: () => {
         terminal = new StubTerminal();
-        return terminal as unknown as import("../../session/terminal.js").TerminalProcess;
+        return terminal as unknown as TerminalProcess;
       },
       createPreviewManager: () => {
         preview = new StubPreview();
-        return preview as unknown as import("../../session/preview-manager.js").PreviewManager;
+        return preview as unknown as PreviewManager;
       },
       createFileWatcher: () => {
         watcher = new StubWatcher();
-        return watcher as unknown as import("../../session/file-watcher.js").FileWatcher;
+        return watcher as unknown as FileWatcher;
       },
     });
 

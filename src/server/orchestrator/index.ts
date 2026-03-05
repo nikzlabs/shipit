@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
+import type { Server as HttpServer } from "node:http";
 import { GitManager } from "../shared/git.js";
 import { AgentRegistry, ALLOWED_ENV_KEYS } from "../shared/agent-registry.js";
 import { RepoGit } from "./repo-git.js";
@@ -23,7 +24,7 @@ import { initGlobalGitConfig, getGitIdentity } from "./git-config.js";
 import { VercelTarget } from "./deploy-targets/vercel.js";
 import { CloudflareTarget } from "./deploy-targets/cloudflare.js";
 import { SessionRunnerRegistry } from "./session-runner.js";
-import type { SessionRunnerInterface } from "./session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerFactory } from "./session-runner.js";
 import { SessionContainerManager } from "./session-container.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import { registerPreviewProxy } from "./preview-proxy.js";
@@ -128,12 +129,12 @@ export interface AppDeps {
    * the registry uses this to create runners instead of the default.
    * Used to inject ContainerSessionRunner for Docker mode.
    */
-  runnerFactory?: import("./session-runner.js").SessionRunnerFactory;
+  runnerFactory?: SessionRunnerFactory;
   /**
    * Pre-configured SessionContainerManager instance. When provided, skips
    * Docker auto-detection and network setup. Useful for testing.
    */
-  sessionContainerManager?: import("./session-container.js").SessionContainerManager;
+  sessionContainerManager?: SessionContainerManager;
   /** Repo store instance. Defaults to `new RepoStore()`. */
   repoStore?: RepoStore;
   /**
@@ -325,7 +326,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   }
 
   // ---- Docker API proxy (optional, for Docker-enabled sessions) ----
-  let dockerProxyServer: import("node:http").Server | null = null;
+  let dockerProxyServer: HttpServer | null = null;
   if (containerManager && !isTestMode) {
     try {
       const bridgeGatewayIp = await resolveBridgeGatewayIp();
@@ -369,8 +370,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // In production, the factory creates ContainerSessionRunner instances that
   // talk to per-session Docker containers via HTTP+SSE. Tests inject a custom
   // factory or claudeFactory (using in-process SessionRunner via registry default).
-  const effectiveRunnerFactory: import("./session-runner.js").SessionRunnerFactory | undefined =
-    deps.runnerFactory ?? (containerManager ? ((o: Parameters<import("./session-runner.js").SessionRunnerFactory>[0]) => {
+  const effectiveRunnerFactory: SessionRunnerFactory | undefined =
+    deps.runnerFactory ?? (containerManager ? ((o: Parameters<SessionRunnerFactory>[0]) => {
       const mgr = containerManager;
 
       // Check for an existing container (runner was disposed but container kept running).

@@ -18,6 +18,7 @@ import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import { RepoStore } from "../repo-store.js";
 import type { AuthManager } from "../auth.js";
+import type { GitHubAuthManager } from "../github-auth.js";
 import {
   TestClient,
   StubAuthManager,
@@ -107,7 +108,7 @@ describe("Integration: warm session lifecycle", () => {
       sessionManager,
       repoStore,
       authManager: new StubAuthManager() as unknown as AuthManager,
-      githubAuthManager: new StubGitHubAuthManager() as unknown as import("../github-auth.js").GitHubAuthManager,
+      githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
       credentialStore,
       agentFactory: () => {
         lastClaude = new FakeClaudeProcess();

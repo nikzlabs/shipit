@@ -121,6 +121,10 @@ export default tseslint.config(
           selector: "CallExpression > MemberExpression[property.name='then']",
           message: "Prefer async/await over .then(). Use store methods or async helpers. Add eslint-disable if .then() is intentional (fire-and-forget in sync context, lazy(), Promise two-arg form).",
         },
+        {
+          selector: "TSImportType",
+          message: "Avoid inline import() types. Use a top-level `import type { X } from '...'` instead. Add eslint-disable if dynamic import() is intentional (lazy(), conditional loading).",
+        },
       ],
     },
   },

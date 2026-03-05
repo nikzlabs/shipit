@@ -44,6 +44,7 @@ import { OnboardingWizard } from "./components/OnboardingWizard.js";
 import { DeployModal } from "./components/DeployModal.js";
 import { FeaturesPanel } from "./components/FeaturesPanel.js";
 
+import type { TurnDiffData } from "./components/DiffPanel.js";
 // eslint-disable-next-line no-restricted-syntax -- lazy() named-export pattern
 const DiffPanel = lazy(() => import("./components/DiffPanel.js").then(m => ({ default: m.DiffPanel })));
 import { PrLifecycleCard } from "./components/PrLifecycleCard.js";
@@ -494,7 +495,7 @@ export default function App() {
     try {
       const res = await fetch(`/api/sessions/${sid}/git/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(commitHash)}`);
       if (!res.ok) return;
-      const data = await res.json() as import("./components/DiffPanel.js").TurnDiffData;
+      const data = await res.json() as TurnDiffData;
       useGitStore.getState().setTurnDiff(data);
       useGitStore.getState().setHistoryDiffMode(true);
       useUiStore.getState().setRightTab("changes");

@@ -37,7 +37,7 @@ export function useConnectionSync(params: {
       const pending = useSessionStore.getState().pendingWsMessage;
       if (pending) {
         useSessionStore.getState().setPendingWsMessage(undefined);
-        send({ ...pending, sessionId } as import("../../server/shared/types.js").WsClientMessage);
+        send({ ...pending, sessionId } as WsClientMessage);
       }
     }
     if (status === "closed") {

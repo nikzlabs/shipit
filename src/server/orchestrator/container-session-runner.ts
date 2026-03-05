@@ -13,7 +13,7 @@
 import { EventEmitter } from "node:events";
 import http from "node:http";
 import { getErrorMessage } from "../shared/utils.js";
-import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess } from "../shared/types.js";
+import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess, PermissionMode } from "../shared/types.js";
 import type { WsServerMessage, ClaudeContentBlockToolUse } from "../shared/types.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps } from "./session-runner.js";
 import { runSystemTurn } from "./session-runner.js";
@@ -253,7 +253,7 @@ class ProxyAgentProcess extends EventEmitter<{
     supportsImages: true,
     supportsSystemPrompt: true,
     supportsPermissionModes: true,
-    supportedPermissionModes: [] as import("../shared/types.js").PermissionMode[],
+    supportedPermissionModes: [] as PermissionMode[],
     toolNames: [] as string[],
     models: [] as string[],
   };

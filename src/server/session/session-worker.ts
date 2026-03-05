@@ -16,7 +16,10 @@ import { TerminalProcess } from "./terminal.js";
 import { PreviewManager } from "./preview-manager.js";
 import { FileWatcher } from "./file-watcher.js";
 import { scanFileTree } from "../shared/file-tree.js";
+import type { ServerResponse } from "node:http";
 import { getErrorMessage } from "../shared/utils.js";
+import { ClaudeProcess } from "./claude.js";
+import { ClaudeAdapter } from "./agents/claude-adapter.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -67,7 +70,7 @@ export class SessionWorker extends EventEmitter {
   private agent: AgentProcess | null = null;
   private agentFactory: WorkerAgentFactory;
   private sseClients = new Set<(event: WorkerSSEEvent) => void>();
-  private sseRawResponses = new Set<import("node:http").ServerResponse>();
+  private sseRawResponses = new Set<ServerResponse>();
   private port: number;
   private host: string;
   private workspaceDir: string;
@@ -86,7 +89,7 @@ export class SessionWorker extends EventEmitter {
   private _lastPreviewExitCode: number | null = null;
 
   // Terminal backpressure state
-  private _sseBackpressured = new Set<import("node:http").ServerResponse>();
+  private _sseBackpressured = new Set<ServerResponse>();
   private _terminalPaused = false;
 
   constructor(deps: SessionWorkerDeps) {
@@ -517,9 +520,6 @@ export class SessionWorker extends EventEmitter {
 
 // Only auto-start when run directly (not when imported for testing)
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
-  const { ClaudeProcess } = await import("./claude.js");
-  const { ClaudeAdapter } = await import("./agents/claude-adapter.js");
-
   const worker = new SessionWorker({
     agentFactory: () => new ClaudeAdapter(new ClaudeProcess()),
     port: Number(process.env.WORKER_PORT) || 9100,

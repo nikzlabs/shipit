@@ -1,7 +1,9 @@
+import crypto from "node:crypto";
 import type { WsClientMessage } from "../../shared/types.js";
 import type { ConnectionCtx, AppCtx } from "./types.js";
 import { getErrorMessage } from "../validation.js";
 import { buildConversationReplay } from "../services/replay.js";
+import { forkSession } from "../services/session.js";
 
 type WsRollbackCode = Extract<WsClientMessage, { type: "rollback_code" }>;
 type WsRollbackCodeAndChat = Extract<WsClientMessage, { type: "rollback_code_and_chat" }>;
@@ -95,11 +97,7 @@ export async function handleForkSessionFromMessage(ctx: ConnectionCtx & AppCtx, 
   }
 
   try {
-    // Import forkSession service
-    const { forkSession } = await import("../services/session.js");
-
     // Generate a branch name for the fork
-    const crypto = await import("node:crypto");
     const shortId = crypto.randomUUID().slice(0, 8);
     const branchName = `fork-${shortId}`;
 

@@ -15,6 +15,7 @@
  */
 
 import http from "node:http";
+import type { Duplex } from "node:stream";
 import type { FastifyInstance } from "fastify";
 import type { SessionContainerManager } from "./session-container.js";
 
@@ -139,7 +140,7 @@ function proxyWebSocket(
   targetPort: number,
   targetPath: string,
   headers: http.IncomingHttpHeaders,
-  socket: import("node:stream").Duplex,
+  socket: Duplex,
 ): void {
   const proxyReq = http.request({
     hostname: containerIp,
@@ -333,7 +334,7 @@ export function registerPreviewProxy(
     "upgrade",
     (
       req: http.IncomingMessage,
-      socket: import("node:stream").Duplex,
+      socket: Duplex,
       head: Buffer,
     ) => {
       // Try subdomain-based first
