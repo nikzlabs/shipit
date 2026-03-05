@@ -1,0 +1,57 @@
+/* Light theme — default (no class needed on <html>) */
+:root {
+  /* Surfaces */
+  --color-bg-primary: #ffffff;
+  --color-bg-secondary: #f9fafb;
+  --color-bg-tertiary: #f3f4f6;
+  --color-bg-elevated: #ffffff;
+  --color-bg-overlay: rgba(0, 0, 0, 0.5);
+  --color-bg-hover: rgba(0, 0, 0, 0.04);
+  --color-bg-active: rgba(0, 0, 0, 0.08);
+
+  /* Text */
+  --color-text-primary: #111827;
+  --color-text-secondary: #6b7280;
+  --color-text-tertiary: #9ca3af;
+  --color-text-inverse: #ffffff;
+  --color-text-link: #2563eb;
+
+  /* Borders */
+  --color-border-primary: #e5e7eb;
+  --color-border-secondary: #d1d5db;
+  --color-border-focus: #3b82f6;
+
+  /* Accent */
+  --color-accent: #2563eb;
+  --color-accent-hover: #1d4ed8;
+  --color-accent-text: #ffffff;
+  --color-accent-subtle: rgba(37, 99, 235, 0.1);
+
+  /* Status */
+  --color-success: #16a34a;
+  --color-success-subtle: rgba(22, 163, 74, 0.1);
+  --color-error: #dc2626;
+  --color-error-subtle: rgba(220, 38, 38, 0.1);
+  --color-warning: #d97706;
+  --color-warning-subtle: rgba(217, 119, 6, 0.1);
+  --color-info: #2563eb;
+  --color-info-subtle: rgba(37, 99, 235, 0.1);
+
+  /* Domain-specific */
+  --color-pr: #7c3aed;
+  --color-folder: #eab308;
+  --color-autofix: #f97316;
+
+  /* Context meter */
+  --color-context-ok: #22c55e;
+  --color-context-mid: #eab308;
+  --color-context-high: #f97316;
+  --color-context-full: #ef4444;
+
+  /* Scrollbar */
+  --color-scrollbar-thumb: rgba(156, 163, 175, 0.4);
+  --color-scrollbar-thumb-hover: rgba(107, 114, 128, 0.6);
+
+  /* Typography */
+  --font-size-code: 13px;
+}

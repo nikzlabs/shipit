@@ -162,18 +162,18 @@ export function Settings({
       data-testid="settings-backdrop"
     >
       <div
-        className="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-lg shadow-xl max-w-2xl w-full mx-4 flex flex-col h-120"
+        className="bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-lg shadow-xl max-w-2xl w-full mx-4 flex flex-col h-120"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={handleKeyDown}
         role="dialog"
         aria-label="Settings"
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-300 dark:border-gray-700">
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Settings</h2>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-(--color-border-secondary)">
+          <h2 className="text-lg font-semibold text-(--color-text-primary)">Settings</h2>
           <button
             onClick={onClose}
-            className="text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 transition-colors text-xl leading-none"
+            className="text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors text-xl leading-none"
             aria-label="Close"
           >
             &times;
@@ -183,8 +183,8 @@ export function Settings({
         {/* Body: sidebar tabs + content */}
         <div className="flex flex-1 min-h-0">
           {/* Left tab sidebar */}
-          <nav className="w-40 shrink-0 border-r border-gray-200 dark:border-gray-700 py-2">
-            <div className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+          <nav className="w-40 shrink-0 border-r border-(--color-border-secondary) py-2">
+            <div className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-(--color-text-tertiary)">
               General
             </div>
             {generalTabs.map((tab) => (
@@ -193,15 +193,15 @@ export function Settings({
                 onClick={() => setActiveTab(tab)}
                 className={`w-full text-left px-4 py-2 text-sm transition-colors ${
                   activeTab === tab
-                    ? "bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100 font-medium"
-                    : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800/50"
+                    ? "bg-(--color-bg-secondary) text-(--color-text-primary) font-medium"
+                    : "text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"
                 }`}
               >
                 {tabLabel(tab)}
               </button>
             ))}
 
-            <div className="px-4 py-1.5 mt-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+            <div className="px-4 py-1.5 mt-3 text-[10px] font-semibold uppercase tracking-wider text-(--color-text-tertiary)">
               Project
             </div>
             <button
@@ -210,10 +210,10 @@ export function Settings({
               title={!hasActiveSession ? "Requires active session" : undefined}
               className={`w-full text-left px-4 py-2 text-sm transition-colors ${
                 !hasActiveSession
-                  ? "text-gray-300 dark:text-gray-600 cursor-not-allowed"
+                  ? "text-(--color-text-tertiary) cursor-not-allowed"
                   : activeTab === "deploy"
-                    ? "bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100 font-medium"
-                    : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800/50"
+                    ? "bg-(--color-bg-secondary) text-(--color-text-primary) font-medium"
+                    : "text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"
               }`}
               data-testid="settings-tab-deploy"
             >
@@ -235,7 +235,7 @@ export function Settings({
               />
 
               {codexAgent && (
-                <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
+                <div className="pt-2 border-t border-(--color-border-secondary)">
                   <CodexAuthCard
                     agent={codexAgent}
                     onApiKeySubmit={async (key) => { onSetAgentEnv?.("codex", "OPENAI_API_KEY", key); }}
@@ -243,7 +243,7 @@ export function Settings({
                 </div>
               )}
 
-              <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
+              <div className="pt-2 border-t border-(--color-border-secondary)">
                 <UtilityModelCard />
               </div>
             </div>
@@ -251,7 +251,7 @@ export function Settings({
 
           {activeTab === "instructions" && (
             <div className="flex-1 min-w-0 px-5 py-4 flex flex-col gap-3 overflow-y-auto">
-              <p className="text-sm text-gray-600 dark:text-gray-400">
+              <p className="text-sm text-(--color-text-secondary)">
                 These instructions are sent to the agent with every message. Use them to define project
                 conventions, preferred libraries, or style guidelines.
               </p>
@@ -261,15 +261,15 @@ export function Settings({
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
                 placeholder="e.g. Always use TypeScript with strict mode. Use Tailwind CSS for styling."
-                className="flex-1 min-h-30 w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-md px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 resize-none focus:outline-none focus:border-blue-500"
+                className="flex-1 min-h-30 w-full bg-(--color-bg-secondary) border border-(--color-border-secondary) rounded-md px-3 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) resize-none focus:outline-none focus:border-(--color-border-focus)"
                 data-testid="settings-textarea"
               />
 
-              <div className="flex items-center justify-between text-xs text-gray-500">
+              <div className="flex items-center justify-between text-xs text-(--color-text-secondary)">
                 <span>
                   Note: The agent also reads CLAUDE.md from your workspace root automatically.
                 </span>
-                <span className={isOverLimit ? "text-red-400" : ""}>
+                <span className={isOverLimit ? "text-(--color-error)" : ""}>
                   {charCount.toLocaleString()} / {MAX_LENGTH.toLocaleString()}
                 </span>
               </div>
@@ -277,14 +277,14 @@ export function Settings({
               <div className="flex items-center justify-end gap-2">
                 <button
                   onClick={onClose}
-                  className="px-3 py-1.5 text-sm rounded-md text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                  className="px-3 py-1.5 text-sm rounded-md text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleSave}
                   disabled={isOverLimit}
-                  className="px-3 py-1.5 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  className="px-3 py-1.5 text-sm rounded-md bg-(--color-accent) text-(--color-accent-text) hover:bg-(--color-accent-hover) disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   data-testid="settings-save"
                 >
                   Save
@@ -297,13 +297,13 @@ export function Settings({
             <div className="flex-1 min-w-0 px-5 py-4 flex flex-col gap-4 overflow-y-auto">
               {githubStatus.authenticated ? (
                 <div className="space-y-4">
-                  <div className="flex items-center gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
-                    <span className="w-2.5 h-2.5 rounded-full bg-green-400 shrink-0" />
+                  <div className="flex items-center gap-3 p-3 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary)">
+                    <span className="w-2.5 h-2.5 rounded-full bg-(--color-success) shrink-0" />
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      <p className="text-sm font-medium text-(--color-text-primary)">
                         {githubStatus.username ?? "GitHub"}
                       </p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">Connected</p>
+                      <p className="text-xs text-(--color-text-secondary)">Connected</p>
                     </div>
                   </div>
 
@@ -321,10 +321,10 @@ export function Settings({
                     disabled={disconnecting}
                     className={`w-full px-3 py-2 text-sm rounded-md border transition-colors ${
                       disconnecting
-                        ? "bg-gray-50 dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-400 dark:text-gray-500 opacity-50 cursor-not-allowed"
+                        ? "bg-(--color-bg-secondary) border-(--color-border-secondary) text-(--color-text-tertiary) opacity-50 cursor-not-allowed"
                         : confirmingLogout
-                          ? "bg-red-50 dark:bg-red-900/30 border-red-300 dark:border-red-700 text-red-700 dark:text-red-300"
-                          : "bg-gray-50 dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
+                          ? "bg-(--color-error-subtle) border-(--color-error)/50 text-(--color-error)"
+                          : "bg-(--color-bg-secondary) border-(--color-border-secondary) text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"
                     }`}
                     data-testid="settings-disconnect"
                   >
@@ -340,30 +340,30 @@ export function Settings({
           {activeTab === "git" && (
             <div className="flex-1 min-w-0 px-5 py-4 flex flex-col gap-4 overflow-y-auto">
               <div className="space-y-4">
-                <p className="text-sm text-gray-600 dark:text-gray-400">
+                <p className="text-sm text-(--color-text-secondary)">
                   Git identity used for automatic commits in all sessions.
                 </p>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Name</label>
+                  <label className="block text-sm font-medium text-(--color-text-primary) mb-1">Name</label>
                   <input
                     type="text"
                     value={gitName}
                     onChange={(e) => { setGitName(e.target.value); setGitSaved(false); }}
                     placeholder="Your Name"
-                    className="w-full rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                    className="w-full rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-3 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus)"
                     data-testid="settings-git-name"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email</label>
+                  <label className="block text-sm font-medium text-(--color-text-primary) mb-1">Email</label>
                   <input
                     type="email"
                     value={gitEmail}
                     onChange={(e) => { setGitEmail(e.target.value); setGitSaved(false); }}
                     placeholder="you@example.com"
-                    className="w-full rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                    className="w-full rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-3 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus)"
                     data-testid="settings-git-email"
                   />
                 </div>
@@ -374,7 +374,7 @@ export function Settings({
                     setGitSaved(true);
                   }}
                   disabled={!gitName.trim() || !gitEmail.trim()}
-                  className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full rounded-lg bg-(--color-accent) px-4 py-2.5 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   data-testid="settings-git-save"
                 >
                   {gitSaved ? "Saved" : "Save"}
@@ -386,8 +386,8 @@ export function Settings({
           {activeTab === "advanced" && (
             <div className="flex-1 min-w-0 px-5 py-4 flex flex-col gap-4 overflow-y-auto">
               <div className="space-y-3">
-                <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">Max Idle Containers</h3>
-                <p className="text-sm text-gray-600 dark:text-gray-400">
+                <h3 className="text-sm font-medium text-(--color-text-primary)">Max Idle Containers</h3>
+                <p className="text-sm text-(--color-text-secondary)">
                   Maximum Docker containers kept running when not in use. Containers beyond this limit are stopped. Set to 0 to stop all idle containers immediately.
                 </p>
                 <div className="flex items-center gap-3">
@@ -396,12 +396,12 @@ export function Settings({
                     min={0}
                     value={idleContainers}
                     onChange={(e) => { setIdleContainers(Math.max(0, Math.floor(Number(e.target.value) || 0))); setIdleContainersSaved(false); }}
-                    className="w-24 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:border-blue-500"
+                    className="w-24 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) focus:outline-none focus:border-(--color-border-focus)"
                     data-testid="settings-max-idle-containers"
                   />
                   <button
                     onClick={() => { onMaxIdleContainersSave(idleContainers); setIdleContainersSaved(true); }}
-                    className="px-3 py-2 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-500 transition-colors"
+                    className="px-3 py-2 text-sm rounded-md bg-(--color-accent) text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors"
                     data-testid="settings-max-idle-containers-save"
                   >
                     {idleContainersSaved ? "Saved" : "Save"}
@@ -409,11 +409,11 @@ export function Settings({
                 </div>
               </div>
 
-              <div className="border-t border-gray-200 dark:border-gray-700" />
+              <div className="border-t border-(--color-border-secondary)" />
 
               <div className="space-y-4">
-                <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">Reset Container</h3>
-                <p className="text-sm text-gray-600 dark:text-gray-400">
+                <h3 className="text-sm font-medium text-(--color-text-primary)">Reset Container</h3>
+                <p className="text-sm text-(--color-text-secondary)">
                   Delete all sessions, chat history, and settings. Credentials (GitHub, Claude) are preserved. This cannot be undone.
                 </p>
                 <button
@@ -431,10 +431,10 @@ export function Settings({
                   disabled={resetting}
                   className={`w-full px-3 py-2 text-sm rounded-md border transition-colors ${
                     resetting
-                      ? "bg-red-50 dark:bg-red-900/30 border-red-300 dark:border-red-700 text-red-700 dark:text-red-300 opacity-50 cursor-not-allowed"
+                      ? "bg-(--color-error-subtle) border-(--color-error)/50 text-(--color-error) opacity-50 cursor-not-allowed"
                       : confirmingReset
-                        ? "bg-red-50 dark:bg-red-900/30 border-red-300 dark:border-red-700 text-red-700 dark:text-red-300"
-                        : "bg-red-50 dark:bg-red-900/20 border-red-300 dark:border-red-800 text-red-700 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40"
+                        ? "bg-(--color-error-subtle) border-(--color-error)/50 text-(--color-error)"
+                        : "bg-(--color-error-subtle) border-(--color-error)/30 text-(--color-error) hover:border-(--color-error)/50"
                   }`}
                   data-testid="settings-reset"
                 >
@@ -452,23 +452,23 @@ export function Settings({
                     <button
                       type="button"
                       onClick={handleDeployBackToList}
-                      className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                      className="text-(--color-text-tertiary) hover:text-(--color-text-primary) transition-colors"
                       aria-label="Back to targets"
                     >
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
                       </svg>
                     </button>
-                    <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                    <h3 className="text-sm font-medium text-(--color-text-primary)">
                       Configure {selectedDeployTarget.name}
                     </h3>
                   </div>
 
                   {selectedDeployTarget.configFields.map((field) => (
                     <div key={field.key}>
-                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      <label className="block text-sm font-medium text-(--color-text-primary) mb-1">
                         {field.label}
-                        {field.required && <span className="text-red-500 ml-0.5">*</span>}
+                        {field.required && <span className="text-(--color-error) ml-0.5">*</span>}
                       </label>
                       <input
                         type={field.sensitive ? "password" : "text"}
@@ -477,20 +477,20 @@ export function Settings({
                         onChange={(e) =>
                           setDeployConfigValues((prev) => ({ ...prev, [field.key]: e.target.value }))
                         }
-                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        className="w-full px-3 py-2 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) text-(--color-text-primary) text-sm focus:outline-none focus:ring-2 focus:ring-(--color-accent)"
                         required={field.required}
                         autoComplete="off"
                         data-testid={`deploy-config-field-${field.key}`}
                       />
                       {field.helpText && (
-                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{field.helpText}</p>
+                        <p className="text-xs text-(--color-text-secondary) mt-1">{field.helpText}</p>
                       )}
                       {field.helpUrl && (
                         <a
                           href={field.helpUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="text-xs text-blue-500 hover:text-blue-400 mt-1 inline-block"
+                          className="text-xs text-(--color-text-link) hover:text-(--color-accent) mt-1 inline-block"
                         >
                           Get credentials &rarr;
                         </a>
@@ -499,15 +499,15 @@ export function Settings({
                   ))}
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                      Project Name <span className="text-gray-400 font-normal">(optional)</span>
+                    <label className="block text-sm font-medium text-(--color-text-primary) mb-1">
+                      Project Name <span className="text-(--color-text-tertiary) font-normal">(optional)</span>
                     </label>
                     <input
                       type="text"
                       placeholder="Auto-generated from directory name"
                       value={deployProjectName}
                       onChange={(e) => setDeployProjectName(e.target.value)}
-                      className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full px-3 py-2 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) text-(--color-text-primary) text-sm focus:outline-none focus:ring-2 focus:ring-(--color-accent)"
                       data-testid="deploy-config-project-name"
                     />
                   </div>
@@ -515,7 +515,7 @@ export function Settings({
                   <button
                     type="submit"
                     disabled={savingDeployConfig}
-                    className="w-full px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="w-full px-4 py-2 text-sm rounded-lg bg-(--color-accent) text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                     data-testid="deploy-config-save"
                   >
                     {savingDeployConfig ? "Saving..." : "Save Configuration"}
@@ -523,25 +523,25 @@ export function Settings({
                 </form>
               ) : (
                 <div className="space-y-3" data-testid="deploy-target-list">
-                  <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Deploy Targets</h3>
+                  <h3 className="text-sm font-medium text-(--color-text-primary) mb-2">Deploy Targets</h3>
                   {deployTargets.length === 0 ? (
-                    <p className="text-sm text-gray-500 dark:text-gray-400">No deployment targets available.</p>
+                    <p className="text-sm text-(--color-text-secondary)">No deployment targets available.</p>
                   ) : (
                     deployTargets.map((target) => {
                       const status = deployConfigStatus[target.id];
                       return (
                         <div
                           key={target.id}
-                          className="p-4 rounded-lg border border-gray-200 dark:border-gray-700"
+                          className="p-4 rounded-lg border border-(--color-border-secondary)"
                           data-testid={`deploy-target-${target.id}`}
                         >
                           <div className="flex items-center justify-between">
                             <div>
-                              <div className="font-medium text-gray-900 dark:text-gray-100">{target.name}</div>
-                              <div className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">{target.description}</div>
+                              <div className="font-medium text-(--color-text-primary)">{target.name}</div>
+                              <div className="text-sm text-(--color-text-secondary) mt-0.5">{target.description}</div>
                             </div>
                             {status?.configured && (
-                              <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300">
+                              <span className="text-xs px-2 py-0.5 rounded-full bg-(--color-success-subtle) text-(--color-success)">
                                 Configured
                               </span>
                             )}
@@ -553,17 +553,17 @@ export function Settings({
                                 setDeployConfigValues({});
                                 setDeployProjectName(status?.projectName ?? "");
                               }}
-                              className="text-xs text-blue-500 hover:text-blue-400 transition-colors"
+                              className="text-xs text-(--color-text-link) hover:text-(--color-accent) transition-colors"
                               data-testid={`deploy-target-configure-${target.id}`}
                             >
                               {status?.configured ? "Reconfigure" : "Configure"}
                             </button>
                             {status?.configured && (
                               <>
-                                <span className="text-gray-400 text-xs">|</span>
+                                <span className="text-(--color-text-tertiary) text-xs">|</span>
                                 <button
                                   onClick={() => onDeployDeleteConfig(target.id)}
-                                  className="text-xs text-red-500 hover:text-red-400 transition-colors"
+                                  className="text-xs text-(--color-error) hover:text-(--color-error) transition-colors"
                                   data-testid={`deploy-target-remove-${target.id}`}
                                 >
                                   Remove credentials

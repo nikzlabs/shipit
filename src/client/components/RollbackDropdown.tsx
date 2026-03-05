@@ -39,7 +39,7 @@ export function RollbackDropdown({ messageIndex, parentCommitHash, disabled, onR
       <button
         onClick={() => setOpen(!open)}
         disabled={disabled}
-        className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+        className="p-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
         title="Rollback options"
         aria-label="Rollback options"
       >
@@ -50,28 +50,28 @@ export function RollbackDropdown({ messageIndex, parentCommitHash, disabled, onR
       </button>
 
       {open && (
-        <div className="absolute right-0 bottom-full mb-1 w-52 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50 py-1">
+        <div className="absolute right-0 bottom-full mb-1 w-52 bg-(--color-bg-elevated) border border-(--color-border-primary) rounded-lg shadow-lg z-50 py-1">
           <button
             onClick={() => handleClick("code")}
-            className="w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200"
+            className="w-full text-left px-3 py-2 text-xs hover:bg-(--color-bg-hover) text-(--color-text-primary)"
           >
             <div className="font-medium">Rollback code</div>
-            <div className="text-gray-500 dark:text-gray-400 mt-0.5">Revert files, keep chat history</div>
+            <div className="text-(--color-text-secondary) mt-0.5">Revert files, keep chat history</div>
           </button>
           <button
             onClick={() => handleClick("code_and_chat")}
-            className="w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200"
+            className="w-full text-left px-3 py-2 text-xs hover:bg-(--color-bg-hover) text-(--color-text-primary)"
           >
             <div className="font-medium">Rollback code + chat</div>
-            <div className="text-gray-500 dark:text-gray-400 mt-0.5">Revert files, dim later messages</div>
+            <div className="text-(--color-text-secondary) mt-0.5">Revert files, dim later messages</div>
           </button>
-          <div className="border-t border-gray-200 dark:border-gray-700 my-1" />
+          <div className="border-t border-(--color-border-primary) my-1" />
           <button
             onClick={() => handleClick("fork")}
-            className="w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200"
+            className="w-full text-left px-3 py-2 text-xs hover:bg-(--color-bg-hover) text-(--color-text-primary)"
           >
             <div className="font-medium">Fork as new session</div>
-            <div className="text-gray-500 dark:text-gray-400 mt-0.5">New branch from this point</div>
+            <div className="text-(--color-text-secondary) mt-0.5">New branch from this point</div>
           </button>
         </div>
       )}

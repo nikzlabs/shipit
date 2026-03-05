@@ -88,8 +88,8 @@ describe("SessionSidebar", () => {
   it("highlights the current session with green dot", () => {
     const sessions = [baseSession({ id: "s1", title: "Active" })];
     render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" />);
-    // Active indicator is a span with emerald class; session row should have distinct style
-    const activeIndicator = document.querySelector(".bg-emerald-400");
+    // Active indicator is a span with success token class; session row should have distinct style
+    const activeIndicator = document.querySelector(".bg-\\(--color-success\\)");
     expect(activeIndicator).toBeTruthy();
   });
 
@@ -233,7 +233,7 @@ describe("SessionSidebar", () => {
     ];
     render(<SessionSidebar {...defaultProps} repos={repos} newSessionRepoUrl="https://github.com/owner/repo.git" />);
     const btn = screen.getByText("New Session").closest("button")!;
-    expect(btn.className).toContain("bg-gray-100");
+    expect(btn.className).toContain("bg-(--color-bg-secondary)");
   });
 
   it("does not highlight New Session button when newSessionRepoUrl does not match", () => {
@@ -242,8 +242,7 @@ describe("SessionSidebar", () => {
     ];
     render(<SessionSidebar {...defaultProps} repos={repos} newSessionRepoUrl="https://github.com/other/repo.git" />);
     const btn = screen.getByText("New Session").closest("button")!;
-    // Split classes and check none is exactly "bg-gray-100" (excluding hover: variant)
-    const classes = btn.className.split(/\s+/);
-    expect(classes).not.toContain("bg-gray-100");
+    // Should not have the active background class
+    expect(btn.className).not.toContain("bg-(--color-bg-secondary)");
   });
 });

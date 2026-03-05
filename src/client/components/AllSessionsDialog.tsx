@@ -118,17 +118,17 @@ export function AllSessionsDialog({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-lg rounded-lg bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 shadow-xl"
+        className="w-full max-w-lg rounded-lg bg-(--color-bg-elevated) border border-(--color-border-secondary) shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-gray-300 dark:border-gray-700 px-4 py-3">
-          <h2 className="text-sm font-medium text-gray-900 dark:text-gray-200">
+        <div className="flex items-center justify-between border-b border-(--color-border-secondary) px-4 py-3">
+          <h2 className="text-sm font-medium text-(--color-text-primary)">
             All Sessions
           </h2>
           <button
             onClick={onClose}
-            className="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+            className="text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors"
             aria-label="Close"
           >
             <svg
@@ -158,12 +158,12 @@ export function AllSessionsDialog({
               if (e.key === "Escape") onClose();
             }}
             placeholder="Search sessions..."
-            className="flex-1 min-w-0 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:border-blue-500 focus:outline-none"
+            className="flex-1 min-w-0 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-3 py-1.5 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:border-(--color-border-focus) focus:outline-none"
           />
           <select
             value={selectedRepo}
             onChange={(e) => setSelectedRepo(e.target.value)}
-            className="shrink-0 max-w-[200px] rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-sm text-gray-900 dark:text-gray-200 focus:border-blue-500 focus:outline-none truncate"
+            className="shrink-0 max-w-[200px] rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 py-1.5 text-sm text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none truncate"
           >
             <option value={ALL_REPOS}>All Repositories</option>
             {repoOptions.map((url) => (
@@ -176,9 +176,9 @@ export function AllSessionsDialog({
 
         {/* Session list */}
         <div className="px-4 pb-3">
-          <div className="max-h-80 overflow-y-auto rounded-md border border-gray-300 dark:border-gray-700">
+          <div className="max-h-80 overflow-y-auto rounded-md border border-(--color-border-secondary)">
             {filtered.length === 0 ? (
-              <p className="px-3 py-6 text-center text-xs text-gray-500 dark:text-gray-400">
+              <p className="px-3 py-6 text-center text-xs text-(--color-text-secondary)">
                 {sessions.length === 0
                   ? "No sessions yet."
                   : "No matches found."}
@@ -189,21 +189,21 @@ export function AllSessionsDialog({
                 return (
                   <div
                     key={session.id}
-                    className="group flex items-start gap-2 px-3 py-2 border-b border-gray-200/50 dark:border-gray-700/50 last:border-b-0 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                    className="group flex items-start gap-2 px-3 py-2 border-b border-(--color-border-primary)/50 last:border-b-0 hover:bg-(--color-bg-hover) transition-colors"
                   >
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         {isArchived ? (
                           <button
                             onClick={() => handleResume(session.id)}
-                            className="text-sm text-gray-500 dark:text-gray-400 truncate hover:text-gray-700 dark:hover:text-gray-200 transition-colors text-left"
+                            className="text-sm text-(--color-text-secondary) truncate hover:text-(--color-text-primary) transition-colors text-left"
                           >
                             {session.title}
                           </button>
                         ) : (
                           <button
                             onClick={() => handleResume(session.id)}
-                            className="text-sm text-gray-900 dark:text-gray-200 truncate hover:text-blue-600 dark:hover:text-blue-400 transition-colors text-left"
+                            className="text-sm text-(--color-text-primary) truncate hover:text-(--color-text-link) transition-colors text-left"
                           >
                             {session.title}
                           </button>
@@ -211,8 +211,8 @@ export function AllSessionsDialog({
                         <span
                           className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${
                             isArchived
-                              ? "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-500"
-                              : "bg-emerald-100/50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400"
+                              ? "bg-(--color-bg-secondary) text-(--color-text-tertiary)"
+                              : "bg-(--color-success-subtle) text-(--color-success)"
                           }`}
                         >
                           {isArchived ? "Archived" : "Active"}
@@ -220,11 +220,11 @@ export function AllSessionsDialog({
                       </div>
                       <div className="flex items-center gap-2 mt-0.5">
                         {selectedRepo === ALL_REPOS && session.remoteUrl && (
-                          <span className="text-[10px] text-gray-500 dark:text-gray-500 truncate">
+                          <span className="text-[10px] text-(--color-text-tertiary) truncate">
                             {parseRepoLabel(session.remoteUrl)}
                           </span>
                         )}
-                        <span className="text-[10px] text-gray-400 dark:text-gray-600">
+                        <span className="text-[10px] text-(--color-text-tertiary)">
                           {formatRelativeDate(session.lastUsedAt)}
                         </span>
                       </div>
@@ -236,7 +236,7 @@ export function AllSessionsDialog({
                         <button
                           onClick={() => handleUnarchive(session.id)}
                           disabled={actioningId === session.id}
-                          className="p-1 rounded text-gray-500 dark:text-gray-400 hover:text-emerald-500 dark:hover:text-emerald-400 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors disabled:opacity-50"
+                          className="p-1 rounded text-(--color-text-secondary) hover:text-(--color-success) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-50"
                           title="Restore session"
                         >
                           <RestoreIcon />
@@ -245,7 +245,7 @@ export function AllSessionsDialog({
                         <button
                           onClick={() => handleArchive(session.id)}
                           disabled={actioningId === session.id}
-                          className="p-1 rounded text-gray-500 dark:text-gray-400 hover:text-yellow-500 dark:hover:text-yellow-400 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors disabled:opacity-50"
+                          className="p-1 rounded text-(--color-text-secondary) hover:text-(--color-warning) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-50"
                           title="Archive session"
                         >
                           <ArchiveIcon />
@@ -260,10 +260,10 @@ export function AllSessionsDialog({
         </div>
 
         {/* Footer */}
-        <div className="flex justify-end border-t border-gray-300 dark:border-gray-700 px-4 py-3">
+        <div className="flex justify-end border-t border-(--color-border-secondary) px-4 py-3">
           <button
             onClick={onClose}
-            className="rounded-md px-3 py-1.5 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+            className="rounded-md px-3 py-1.5 text-xs text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors"
           >
             Close
           </button>

@@ -13,6 +13,7 @@ import { AskUserQuestion, type AskQuestionItem } from "./AskUserQuestion.js";
 import { ToolResult } from "./ToolResult.js";
 import { TodoPanel, type TodoItem } from "./TodoPanel.js";
 import { sessionRelativePath } from "../path-utils.js";
+import { CircleNotch } from "@phosphor-icons/react";
 import type { SearchMatch } from "../hooks/useSearch.js";
 import { buildVisualElements } from "./visual-elements.js";
 import { RollbackDropdown, type RollbackMode } from "./RollbackDropdown.js";
@@ -81,7 +82,7 @@ function ToolCallGroup({ items, isStreaming }: {
   return (
     <div
       ref={scrollRef}
-      className="bg-gray-50 dark:bg-gray-900 rounded max-h-30 overflow-y-auto"
+      className="bg-(--color-bg-secondary) rounded max-h-30 overflow-y-auto"
       data-testid="tool-call-group"
     >
       {items.map(({ tool, result, isLast }) => (
@@ -150,30 +151,30 @@ function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQu
   // Fallback: compact one-liner for non-file tools, with optional tool result
   return (
     <div>
-      <div className={`text-xs text-gray-500 dark:text-gray-400 px-2 py-1 font-mono flex items-center gap-2${grouped ? "" : " bg-gray-50 dark:bg-gray-900 rounded"}`}>
+      <div className={`text-xs text-(--color-text-secondary) px-2 py-1 font-mono flex items-center gap-2${grouped ? "" : " bg-(--color-bg-secondary) rounded"}`}>
         {inProgress && <ToolSpinner />}
-        <span className={inProgress ? "text-blue-400" : ""}>
+        <span className={inProgress ? "text-(--color-accent)" : ""}>
           {tool.name}
         </span>
         {"command" in tool.input && tool.input.command ? (
-          <span className="ml-1 text-gray-500 truncate max-w-xs">
+          <span className="ml-1 text-(--color-text-secondary) truncate max-w-xs">
             {String(tool.input.command).slice(0, 80)}
           </span>
         ) : null}
         {"file_path" in tool.input && tool.input.file_path ? (
-          <span className="ml-1 text-gray-500 truncate max-w-xs">
+          <span className="ml-1 text-(--color-text-secondary) truncate max-w-xs">
             {sessionRelativePath(tool.input.file_path)}
           </span>
         ) : null}
         {"pattern" in tool.input && tool.input.pattern ? (
-          <span className="ml-1 text-gray-500 truncate max-w-xs">
+          <span className="ml-1 text-(--color-text-secondary) truncate max-w-xs">
             {String(tool.input.pattern)}
           </span>
         ) : null}
         {hasResult && (
           <button
             onClick={() => setCollapsed(!collapsed)}
-            className="ml-auto text-gray-500 hover:text-gray-300 transition-colors shrink-0"
+            className="ml-auto text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors shrink-0"
             aria-label={collapsed ? "Show output" : "Hide output"}
             aria-expanded={!collapsed}
           >
@@ -191,7 +192,7 @@ function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQu
 /** Shows a small progress bar under file-modifying tools while they're running. */
 function ToolProgressBar({ tool }: { tool: string }) {
   return (
-    <div className="flex items-center gap-1.5 mt-1 text-xs text-blue-400">
+    <div className="flex items-center gap-1.5 mt-1 text-xs text-(--color-accent)">
       <ToolSpinner />
       <span>{tool === "Write" ? "Writing..." : "Applying edit..."}</span>
     </div>
@@ -271,9 +272,9 @@ const chatMarked = new Marked({
           ? hljs.highlight(text, { language }).value
           : hljs.highlightAuto(text).value;
       const langLabel = language
-        ? `<div class="text-xs text-gray-500 px-3 py-1 border-b border-gray-300/50 dark:border-gray-700/50">${language}</div>`
+        ? `<div class="text-xs text-(--color-text-secondary) px-3 py-1 border-b border-(--color-border-primary)">${language}</div>`
         : "";
-      return `<div class="my-2 rounded-md overflow-hidden bg-gray-100 dark:bg-gray-950">${langLabel}<pre class="p-3 overflow-x-auto text-xs leading-relaxed"><code class="hljs">${highlighted}</code></pre></div>`;
+      return `<div class="my-2 rounded-md overflow-hidden bg-(--color-bg-secondary)">${langLabel}<pre class="p-3 overflow-x-auto text-xs leading-relaxed"><code class="hljs">${highlighted}</code></pre></div>`;
     },
   },
 });
@@ -303,7 +304,7 @@ function MarkdownTooltip({ content, children }: { content: string; children: Rea
       {children}
       {visible && (
         <div className="absolute left-0 top-full z-50 pt-1">
-          <div className="max-w-lg max-h-80 overflow-auto rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-xl p-3">
+          <div className="max-w-lg max-h-80 overflow-auto rounded-lg border border-(--color-border-secondary) bg-(--color-bg-elevated) shadow-xl p-3">
             <div
               className="prose dark:prose-invert prose-sm max-w-none text-xs"
               dangerouslySetInnerHTML={{ __html: html }}
@@ -342,9 +343,9 @@ function CodeBlock({ code, language }: { code: string; language: string }) {
   }, [code, language]);
 
   return (
-    <div className="my-2 rounded-md overflow-hidden bg-gray-100 dark:bg-gray-950">
+    <div className="my-2 rounded-md overflow-hidden bg-(--color-bg-secondary)">
       {language && (
-        <div className="text-xs text-gray-500 px-3 py-1 border-b border-gray-300/50 dark:border-gray-700/50">
+        <div className="text-xs text-(--color-text-secondary) px-3 py-1 border-b border-(--color-border-primary)">
           {language}
         </div>
       )}
@@ -462,12 +463,12 @@ function MessageEditor({
         onChange={(e) => setText(e.target.value)}
         onKeyDown={handleKeyDown}
         rows={1}
-        className="w-full resize-none rounded-lg bg-blue-700 border border-blue-400 px-4 py-3 text-sm text-white placeholder-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400"
+        className="w-full resize-none rounded-lg bg-(--color-accent) border border-(--color-border-focus) px-4 py-3 text-sm text-(--color-accent-text) placeholder-blue-300 focus:outline-none focus:ring-2 focus:ring-(--color-border-focus)"
       />
       <div className="flex justify-end gap-2 mt-1">
         <button
           onClick={onCancel}
-          className="text-xs px-3 py-1 rounded bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+          className="text-xs px-3 py-1 rounded bg-(--color-bg-tertiary) text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
         >
           Cancel
         </button>
@@ -477,7 +478,7 @@ function MessageEditor({
             if (trimmed) onSave(trimmed);
           }}
           disabled={!text.trim()}
-          className="text-xs px-3 py-1 rounded bg-blue-500 text-white hover:bg-blue-400 disabled:opacity-50 transition-colors"
+          className="text-xs px-3 py-1 rounded bg-(--color-accent) text-(--color-accent-text) hover:bg-(--color-accent-hover) disabled:opacity-50 transition-colors"
         >
           Save & Send
         </button>
@@ -666,7 +667,7 @@ export function MessageList({
   return (
     <div className="flex-1 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-4">
       {messages.length === 0 && !isLoading && (
-        <div className="flex items-center justify-center h-full text-gray-500">
+        <div className="flex items-center justify-center h-full text-(--color-text-secondary)">
           <p>Send a message to start coding.</p>
         </div>
       )}
@@ -688,14 +689,14 @@ export function MessageList({
             const description = String(tool.input.description ?? "Running task...");
             const prompt = typeof tool.input.prompt === "string" ? tool.input.prompt : "";
             return (
-              <div key={tool.id} data-testid="subagent-task" className="border-l-2 border-green-600/40 pl-3 space-y-1">
+              <div key={tool.id} data-testid="subagent-task" className="border-l-2 border-(--color-success)/40 pl-3 space-y-1">
                 <div className="flex items-center gap-2 text-sm">
-                  <span className="font-semibold text-green-700 dark:text-green-400">Subagent:</span>
-                  <span className="text-gray-900 dark:text-gray-100">{description}</span>
+                  <span className="font-semibold text-(--color-success)">Subagent:</span>
+                  <span className="text-(--color-text-primary)">{description}</span>
                 </div>
                 {prompt && (
                   <MarkdownTooltip content={prompt}>
-                    <div className="text-xs text-gray-500 dark:text-gray-400 font-mono whitespace-pre-wrap overflow-hidden max-h-15 leading-5">{prompt}</div>
+                    <div className="text-xs text-(--color-text-secondary) font-mono whitespace-pre-wrap overflow-hidden max-h-15 leading-5">{prompt}</div>
                   </MarkdownTooltip>
                 )}
               </div>
@@ -705,11 +706,11 @@ export function MessageList({
           const skillName = String(tool.input.skill ?? "unknown");
           const args = tool.input.args ? String(tool.input.args) : "";
           return (
-            <div key={tool.id} data-testid="subagent-skill" className="border-l-2 border-green-600/40 pl-3">
+            <div key={tool.id} data-testid="subagent-skill" className="border-l-2 border-(--color-success)/40 pl-3">
               <div className="flex items-center gap-2 text-sm">
-                <span className="font-semibold text-green-700 dark:text-green-400">Skill:</span>
-                <span className="text-gray-900 dark:text-gray-100">{skillName}</span>
-                {args && <span className="text-gray-500 dark:text-gray-400 truncate max-w-xs">{args}</span>}
+                <span className="font-semibold text-(--color-success)">Skill:</span>
+                <span className="text-(--color-text-primary)">{skillName}</span>
+                {args && <span className="text-(--color-text-secondary) truncate max-w-xs">{args}</span>}
               </div>
             </div>
           );
@@ -740,7 +741,7 @@ export function MessageList({
               <div className="hidden group-hover:flex items-center gap-1 mr-2 shrink-0">
                 <button
                   onClick={() => setEditingIndex(i)}
-                  className="p-1 rounded text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                  className="p-1 rounded text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
                   title="Edit message"
                   aria-label="Edit message"
                 >
@@ -750,7 +751,7 @@ export function MessageList({
                 </button>
                 <button
                   onClick={() => onEditMessage?.(i, msg.text)}
-                  className="p-1 rounded text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                  className="p-1 rounded text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
                   title="Retry message"
                   aria-label="Retry message"
                 >
@@ -773,19 +774,17 @@ export function MessageList({
                 !useMarkdown && !hasCodeBlocks ? "whitespace-pre-wrap" : ""
               } ${
                 msg.isError
-                  ? "bg-red-100 dark:bg-red-900/60 text-red-700 dark:text-red-200 border border-red-300 dark:border-red-700/50"
+                  ? "bg-(--color-error-subtle) text-(--color-error) border border-(--color-error)/50"
                   : msg.queued
-                  ? "bg-blue-600/40 text-white/70 border border-blue-500/30"
+                  ? "bg-(--color-accent)/40 text-(--color-accent-text)/70 border border-(--color-accent)/30"
                   : msg.role === "user"
-                  ? "bg-blue-600 text-white"
-                  : "bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+                  ? "bg-(--color-accent) text-(--color-accent-text)"
+                  : "bg-(--color-bg-secondary) text-(--color-text-primary)"
               }`}
             >
               {msg.queued && (
-                <div className="flex items-center gap-1.5 mb-1.5 text-xs text-blue-200/80 font-medium">
-                  <svg className="w-3 h-3 animate-pulse" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/>
-                  </svg>
+                <div className="flex items-center gap-1.5 mb-1.5 text-xs text-(--color-accent-text)/80 font-medium">
+                  <CircleNotch size={12} className="animate-spin" />
                   Queued{msg.queuePosition !== undefined ? ` #${msg.queuePosition}` : ""}
                 </div>
               )}

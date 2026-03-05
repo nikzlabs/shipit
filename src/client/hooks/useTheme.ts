@@ -1,13 +1,21 @@
 import { useState, useEffect, useCallback } from "react";
 
-export type Theme = "light" | "dark";
+/**
+ * Theme type — "light" and "dark" are built-in; additional themes can be
+ * added by creating a CSS file in `src/client/themes/`, importing it in
+ * `index.css`, and registering the class name in `KNOWN_THEMES` below.
+ */
+export type Theme = "light" | "dark" | (string & {});
 
 const STORAGE_KEY = "shipit-theme";
+
+/** All theme class names that may be applied to <html>. */
+const KNOWN_THEMES = ["dark"] as const;
 
 function getInitialTheme(): Theme {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === "light" || stored === "dark") return stored;
+    if (stored) return stored;
   } catch {
     // localStorage unavailable
   }
@@ -15,10 +23,12 @@ function getInitialTheme(): Theme {
 }
 
 function applyTheme(theme: Theme): void {
-  if (theme === "dark") {
-    document.documentElement.classList.add("dark");
-  } else {
-    document.documentElement.classList.remove("dark");
+  const cl = document.documentElement.classList;
+  // Remove all known theme classes
+  for (const t of KNOWN_THEMES) cl.remove(t);
+  // Light = no class (:root defaults), others add their class name
+  if (theme !== "light") {
+    cl.add(theme);
   }
 }
 
@@ -38,5 +48,5 @@ export function useTheme() {
     setTheme((prev) => (prev === "dark" ? "light" : "dark"));
   }, []);
 
-  return { theme, toggle };
+  return { theme, toggle, setTheme };
 }

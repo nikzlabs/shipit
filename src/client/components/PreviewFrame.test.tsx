@@ -131,7 +131,7 @@ describe("PreviewFrame", () => {
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     await screen.findByTitle("Live Preview");
 
-    fireEvent.click(screen.getByText("Reload"));
+    fireEvent.click(screen.getByTitle("Refresh preview"));
     // iframe should have been re-mounted (different React key forces remount)
     await screen.findByTitle("Live Preview");
   });

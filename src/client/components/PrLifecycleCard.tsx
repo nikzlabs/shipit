@@ -12,27 +12,35 @@ import { useState } from "react";
 import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import {
+  GitPullRequest,
+  GitMerge,
+  CheckCircle,
+  XCircle,
+  CircleNotch,
+  CaretDown,
+  ArrowLeft,
+  Warning,
+} from "@phosphor-icons/react";
+import { ICON_SIZE } from "../design-tokens.js";
 
 // ---- Shared ----
 
-const linkClass = "text-xs text-gray-400 hover:text-gray-200 transition-colors";
+const linkClass = "text-xs text-(--color-text-tertiary) hover:text-(--color-text-secondary) transition-colors";
 const MAX_VISIBLE_FAILURES = 5;
 
 function Spinner() {
   return (
-    <svg className="animate-spin h-3.5 w-3.5 text-blue-400 shrink-0" viewBox="0 0 24 24" fill="none">
-      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-    </svg>
+    <CircleNotch size={14} className="animate-spin text-(--color-info) shrink-0" />
   );
 }
 
 function DiffStats({ ins, del }: { ins: number; del: number }) {
   return (
     <span className="text-xs tabular-nums whitespace-nowrap">
-      <span className="text-emerald-400">+{ins}</span>
+      <span className="text-(--color-success)">+{ins}</span>
       {" "}
-      <span className="text-red-400">-{del}</span>
+      <span className="text-(--color-error)">-{del}</span>
     </span>
   );
 }
@@ -41,17 +49,25 @@ function CiIndicator({ checks }: { checks: PrCardState["checks"] }) {
   if (!checks || checks.state === "none") return null;
 
   if (checks.state === "success") {
-    return <span className="text-emerald-400 text-xs" title={`CI passed  ${checks.total}/${checks.total} checks`}>{"\u2713"} CI {checks.total}/{checks.total}</span>;
+    return (
+      <span className="text-(--color-success) text-xs flex items-center gap-1" title={`CI passed  ${checks.total}/${checks.total} checks`}>
+        <CheckCircle size={ICON_SIZE.SM} /> CI {checks.total}/{checks.total}
+      </span>
+    );
   }
   if (checks.state === "failure") {
     return (
-      <span className="text-red-400 text-xs" title={`CI failed  ${checks.failed} of ${checks.total}`}>
-        {"\u2717"} CI {checks.passed}/{checks.total}
+      <span className="text-(--color-error) text-xs flex items-center gap-1" title={`CI failed  ${checks.failed} of ${checks.total}`}>
+        <XCircle size={ICON_SIZE.SM} /> CI {checks.passed}/{checks.total}
       </span>
     );
   }
   // pending
-  return <span className="text-amber-400 text-xs animate-pulse" title={`CI running  ${checks.passed}/${checks.total}`}>{"\u25D0"} CI {checks.passed}/{checks.total}</span>;
+  return (
+    <span className="text-(--color-warning) text-xs flex items-center gap-1 animate-pulse" title={`CI running  ${checks.passed}/${checks.total}`}>
+      <CircleNotch size={ICON_SIZE.SM} className="animate-spin" /> CI {checks.passed}/{checks.total}
+    </span>
+  );
 }
 
 function FailedChecksList({ checks }: { checks: PrCardState["checks"] }) {
@@ -64,12 +80,12 @@ function FailedChecksList({ checks }: { checks: PrCardState["checks"] }) {
   return (
     <div className="mt-1 space-y-0.5">
       {visible.map((check) => (
-        <div key={check.name} className="text-xs text-gray-400 pl-5">
-          <span className="text-red-400">{"\u2717"}</span> {check.name} — <span className="text-gray-500">{check.summary}</span>
+        <div key={check.name} className="text-xs text-(--color-text-secondary) pl-5">
+          <XCircle size={12} className="inline text-(--color-error)" /> {check.name} — <span className="text-(--color-text-tertiary)">{check.summary}</span>
         </div>
       ))}
       {remaining > 0 && (
-        <div className="text-xs text-gray-500 pl-5">
+        <div className="text-xs text-(--color-text-tertiary) pl-5">
           and {remaining} more...
         </div>
       )}
@@ -84,12 +100,12 @@ function AutoFixToggle({ sessionId, autoFix }: { sessionId: string; autoFix?: Pr
   return (
     <button
       onClick={() => toggleAutoFix(sessionId, !enabled)}
-      className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+      className="flex items-center gap-1 text-xs text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors"
       title={enabled ? "Disable auto-fix" : "Enable auto-fix"}
     >
       Auto-fix
-      <span className={`inline-block w-6 h-3.5 rounded-full transition-colors ${enabled ? "bg-emerald-600" : "bg-gray-600"}`}>
-        <span className={`block w-2.5 h-2.5 mt-0.5 rounded-full bg-white transition-transform ${enabled ? "translate-x-3" : "translate-x-0.5"}`} />
+      <span className={`inline-block w-6 h-3.5 rounded-full transition-colors ${enabled ? "bg-(--color-success)" : "bg-(--color-text-tertiary)"}`}>
+        <span className={`block w-2.5 h-2.5 mt-0.5 rounded-full bg-(--color-text-inverse) transition-transform ${enabled ? "translate-x-3" : "translate-x-0.5"}`} />
       </span>
     </button>
   );
@@ -102,12 +118,12 @@ function AutoMergeToggle({ sessionId, autoMerge }: { sessionId: string; autoMerg
   return (
     <button
       onClick={() => toggleAutoMerge(sessionId, !enabled)}
-      className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+      className="flex items-center gap-1 text-xs text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors"
       title={enabled ? "Disable auto-merge" : "Enable auto-merge"}
     >
       Auto-merge
-      <span className={`inline-block w-6 h-3.5 rounded-full transition-colors ${enabled ? "bg-emerald-600" : "bg-gray-600"}`}>
-        <span className={`block w-2.5 h-2.5 mt-0.5 rounded-full bg-white transition-transform ${enabled ? "translate-x-3" : "translate-x-0.5"}`} />
+      <span className={`inline-block w-6 h-3.5 rounded-full transition-colors ${enabled ? "bg-(--color-success)" : "bg-(--color-text-tertiary)"}`}>
+        <span className={`block w-2.5 h-2.5 mt-0.5 rounded-full bg-(--color-text-inverse) transition-transform ${enabled ? "translate-x-3" : "translate-x-0.5"}`} />
       </span>
     </button>
   );
@@ -143,27 +159,27 @@ function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: 
       <button
         onClick={handleMerge}
         disabled={merging}
-        className="px-2 py-0.5 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded-l transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        className="px-2 py-0.5 text-xs font-medium bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-l transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {merging ? "Merging..." : label}
       </button>
       <button
         onClick={() => setDropdownOpen(!dropdownOpen)}
         disabled={merging}
-        className="px-1 py-0.5 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded-r border-l border-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        className="px-1 py-0.5 text-xs font-medium bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-r border-l border-black/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         aria-label="Select merge method"
       >
-        {"\u25BE"}
+        <CaretDown size={12} />
       </button>
       {dropdownOpen && (
-        <div className="absolute top-full right-0 mt-1 bg-gray-800 border border-gray-700 rounded-md shadow-lg z-10 min-w-45">
+        <div className="absolute top-full right-0 mt-1 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-md shadow-lg z-10 min-w-45">
           {(["squash", "merge", "rebase"] as const).map((m) => (
             <button
               key={m}
               onClick={() => { setMergeMethod(sessionId, m); setDropdownOpen(false); }}
-              className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700 transition-colors text-left"
+              className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors text-left"
             >
-              <span className="w-3 text-emerald-400">{m === method ? "\u2713" : ""}</span>
+              <span className="w-3 text-(--color-success)">{m === method ? <CheckCircle size={12} /> : ""}</span>
               {MERGE_METHOD_LABELS[m]}
             </button>
           ))}
@@ -190,10 +206,10 @@ function ReadyPhase({ card, sessionId }: { card: PrCardState; sessionId: string 
 
   return (
     <div className="flex items-center gap-3">
-      <span className="text-purple-400 text-sm shrink-0">{"\u2442"}</span>
+      <GitPullRequest size={ICON_SIZE.SM} className="text-(--color-pr) shrink-0" />
       {card.headBranch && (
-        <span className="text-xs text-gray-300 truncate">
-          main {"\u2190"} {card.headBranch}
+        <span className="text-xs text-(--color-text-secondary) truncate flex items-center gap-1">
+          main <ArrowLeft size={12} /> {card.headBranch}
         </span>
       )}
       {hasDiffStats && <DiffStats ins={ins} del={del} />}
@@ -201,7 +217,7 @@ function ReadyPhase({ card, sessionId }: { card: PrCardState; sessionId: string 
         <button
           onClick={handleCreate}
           disabled={creating}
-          className="px-3 py-1 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          className="px-3 py-1 text-xs font-medium bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {creating ? "Creating..." : "Create Pull Request"}
         </button>
@@ -214,7 +230,7 @@ function CreatingPhase() {
   return (
     <div className="flex items-center gap-2">
       <Spinner />
-      <span className="text-xs text-gray-300">Creating pull request...</span>
+      <span className="text-xs text-(--color-text-secondary)">Creating pull request...</span>
     </div>
   );
 }
@@ -250,9 +266,9 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
   return (
     <div>
       <div className="flex items-center gap-3 flex-wrap">
-        <span className="text-purple-400 text-sm shrink-0">{"\u2442"}</span>
-        <span className="text-xs text-gray-300 truncate">
-          {pr.baseBranch} {"\u2190"} {pr.headBranch}
+        <GitPullRequest size={ICON_SIZE.SM} className="text-(--color-pr) shrink-0" />
+        <span className="text-xs text-(--color-text-secondary) truncate flex items-center gap-1">
+          {pr.baseBranch} <ArrowLeft size={12} /> {pr.headBranch}
         </span>
         <DiffStats ins={pr.insertions} del={pr.deletions} />
         <CiIndicator checks={card.checks} />
@@ -269,7 +285,7 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
           <button
             onClick={handleFixCI}
             disabled={fixingCI}
-            className="px-2 py-0.5 text-xs font-medium bg-red-600/80 hover:bg-red-500 text-white rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-2 py-0.5 text-xs font-medium bg-(--color-error)/80 hover:bg-(--color-error) text-(--color-text-inverse) rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {fixingCI ? "Fixing..." : "Fix CI Issues"}
           </button>
@@ -284,18 +300,18 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
         </a>
       </div>
       {autoMerge?.enabled && !isCiPassed && !isCiNone && (
-        <div className="mt-1 text-xs text-gray-400 pl-5">
+        <div className="mt-1 text-xs text-(--color-text-secondary) pl-5">
           Will merge when CI passes
         </div>
       )}
       {autoMerge?.error && (
-        <div className="mt-1 text-xs text-amber-400 pl-5">
-          {"\u26A0"} {autoMerge.error.message}{" "}
+        <div className="mt-1 text-xs text-(--color-warning) pl-5 flex items-center gap-1">
+          <Warning size={12} /> {autoMerge.error.message}{" "}
           <a
             href={autoMerge.error.settingsUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="underline hover:text-amber-300"
+            className="underline hover:opacity-80"
           >
             {autoMerge.error.code === "auto_merge_not_enabled" ? "Enable in repository settings" : "Configure branch protection"}
           </a>
@@ -304,13 +320,13 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
       {isAutoFixRunning && (
         <div className="mt-1 flex items-center gap-2 pl-5">
           <Spinner />
-          <span className="text-xs text-amber-400">
+          <span className="text-xs text-(--color-warning)">
             Auto-fixing (attempt {autoFix.attemptCount}/{autoFix.maxAttempts})...
           </span>
         </div>
       )}
       {isAutoFixExhausted && (
-        <div className="mt-1 text-xs text-gray-500 pl-5">
+        <div className="mt-1 text-xs text-(--color-text-tertiary) pl-5">
           Auto-fix exhausted ({autoFix.maxAttempts}/{autoFix.maxAttempts} attempts)
         </div>
       )}
@@ -324,8 +340,8 @@ function MergedPhase({ card }: { card: PrCardState }) {
 
   return (
     <div className="flex items-center gap-3">
-      <span className="text-purple-400 text-sm shrink-0">{"\u2713"}</span>
-      <span className="text-xs text-gray-300">
+      <GitMerge size={ICON_SIZE.SM} className="text-(--color-pr) shrink-0" />
+      <span className="text-xs text-(--color-text-secondary)">
         PR #{pr?.number} merged into {pr?.baseBranch}
       </span>
       {pr && (
@@ -347,8 +363,8 @@ function ClosedPhase({ card }: { card: PrCardState }) {
 
   return (
     <div className="flex items-center gap-3">
-      <span className="text-gray-400 text-sm shrink-0">{"\u2442"}</span>
-      <span className="text-xs text-gray-400">
+      <GitPullRequest size={ICON_SIZE.SM} className="text-(--color-text-tertiary) shrink-0" />
+      <span className="text-xs text-(--color-text-secondary)">
         PR #{pr?.number} closed
       </span>
       {pr && (
@@ -369,10 +385,10 @@ function ClosedPhase({ card }: { card: PrCardState }) {
 function RichErrorText({ text }: { text: string }) {
   const parts = text.split(/(https:\/\/\S+|`[^`]+`)/).map((part, i) => {
     if (part.startsWith("https://")) {
-      return <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline">{part}</a>;
+      return <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="text-(--color-text-link) hover:opacity-80 underline">{part}</a>;
     }
     if (part.startsWith("`") && part.endsWith("`")) {
-      return <code key={i} className="text-xs bg-gray-800 px-1 py-0.5 rounded text-gray-200">{part.slice(1, -1)}</code>;
+      return <code key={i} className="text-xs bg-(--color-bg-tertiary) px-1 py-0.5 rounded text-(--color-text-primary)">{part.slice(1, -1)}</code>;
     }
     return part;
   });
@@ -392,8 +408,8 @@ function ErrorPhase({ card, sessionId }: { card: PrCardState; sessionId: string 
 
   return (
     <div className="flex items-start gap-3">
-      <span className="text-red-400 text-xs shrink-0 mt-0.5">{"\u2717"}</span>
-      <span className="text-xs text-gray-300 wrap-break-word min-w-0">
+      <XCircle size={ICON_SIZE.SM} className="text-(--color-error) shrink-0 mt-0.5" />
+      <span className="text-xs text-(--color-text-secondary) wrap-break-word min-w-0">
         Failed to create PR{lines.length > 0 && ": "}
         {lines.map((line, i) => (
           <span key={i}>
@@ -405,7 +421,7 @@ function ErrorPhase({ card, sessionId }: { card: PrCardState; sessionId: string 
       <button
         onClick={handleRetry}
         disabled={retrying}
-        className="text-xs text-gray-400 hover:text-gray-200 transition-colors shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+        className="text-xs text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {retrying ? "Retrying..." : "Retry"}
       </button>
@@ -420,7 +436,7 @@ export function PrLifecycleCard({ sessionId }: { sessionId: string }) {
   if (!card) return null;
 
   return (
-    <div className="mx-4 my-2 rounded-lg border border-gray-800 bg-gray-900/60 px-4 py-2">
+    <div className="mx-4 my-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-secondary)/60 px-4 py-2">
       {card.phase === "ready" && <ReadyPhase card={card} sessionId={sessionId} />}
       {card.phase === "creating" && <CreatingPhase />}
       {card.phase === "open" && <OpenPhase card={card} sessionId={sessionId} />}
@@ -444,33 +460,33 @@ export function PrStatusIcon({ sessionId }: { sessionId: string }) {
   if (prState !== "open" && prState !== "merged" && prState !== "closed") return null;
 
   if (prState === "merged") {
-    return <span className="text-purple-400 text-[10px]" title="PR merged">{"\u2442"}</span>;
+    return <span className="text-(--color-pr)" title="PR merged"><GitMerge size={12} /></span>;
   }
   if (prState === "closed") {
-    return <span className="text-gray-500 text-[10px]" title="PR closed">{"\u2442"}</span>;
+    return <span className="text-(--color-text-tertiary)" title="PR closed"><GitPullRequest size={12} /></span>;
   }
 
   if (checksState === "success") {
     return (
-      <span className="text-emerald-400 text-[10px]" title="CI passed">
-        {"\u2442"} {"\u2713"}
+      <span className="text-(--color-success) flex items-center gap-0.5" title="CI passed">
+        <GitPullRequest size={12} /> <CheckCircle size={10} />
       </span>
     );
   }
   if (checksState === "failure") {
     return (
-      <span className="text-red-400 text-[10px]" title="CI failed">
-        {"\u2442"} {"\u2717"}
+      <span className="text-(--color-error) flex items-center gap-0.5" title="CI failed">
+        <GitPullRequest size={12} /> <XCircle size={10} />
       </span>
     );
   }
   if (checksState === "pending") {
     return (
-      <span className="text-amber-400 text-[10px] animate-pulse" title="CI running">
-        {"\u2442"}
+      <span className="text-(--color-warning) animate-pulse" title="CI running">
+        <GitPullRequest size={12} />
       </span>
     );
   }
 
-  return <span className="text-gray-500 text-[10px]" title="PR open">{"\u2442"}</span>;
+  return <span className="text-(--color-text-tertiary)" title="PR open"><GitPullRequest size={12} /></span>;
 }

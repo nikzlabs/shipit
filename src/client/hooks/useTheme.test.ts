@@ -5,13 +5,14 @@ import { useTheme } from "./useTheme.js";
 afterEach(() => {
   cleanup();
   localStorage.clear();
-  document.documentElement.classList.remove("dark");
+  // Remove all theme classes that tests may have applied
+  document.documentElement.classList.remove("dark", "solarized");
 });
 
 describe("useTheme", () => {
   beforeEach(() => {
     localStorage.clear();
-    document.documentElement.classList.remove("dark");
+    document.documentElement.classList.remove("dark", "solarized");
   });
 
   it("defaults to dark theme when no stored preference", () => {
@@ -34,10 +35,12 @@ describe("useTheme", () => {
     expect(document.documentElement.classList.contains("dark")).toBe(true);
   });
 
-  it("ignores invalid stored value and defaults to dark", () => {
-    localStorage.setItem("shipit-theme", "invalid");
+  it("accepts custom stored theme name (extensible themes)", () => {
+    localStorage.setItem("shipit-theme", "solarized");
     const { result } = renderHook(() => useTheme());
-    expect(result.current.theme).toBe("dark");
+    expect(result.current.theme).toBe("solarized");
+    // Custom theme class is applied to <html>
+    expect(document.documentElement.classList.contains("solarized")).toBe(true);
   });
 
   it("toggles from dark to light", () => {

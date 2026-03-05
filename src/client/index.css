@@ -1,8 +1,20 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
+@import "./themes/light.css";
+@import "./themes/dark.css";
 
 /* Class-based dark mode for Tailwind v4 */
 @custom-variant dark (&:where(.dark, .dark *));
+
+/* ── Shared motion tokens (theme-independent) ── */
+:root {
+  --duration-fast: 150ms;
+  --duration-normal: 200ms;
+  --duration-slow: 1s;
+  --ease-default: ease;
+  --ease-out: ease-out;
+  --ease-in: ease-in;
+}
 
 /* Typing indicator — three bouncing dots */
 @keyframes typing-bounce {
@@ -62,9 +74,8 @@
   color: #111;
 }
 
-/* ── Scrollbar styling ── */
+/* ── Scrollbar styling (uses theme tokens) ── */
 
-/* Light mode — WebKit browsers (Chrome, Safari, Edge) */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -75,36 +86,21 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background-color: rgba(156, 163, 175, 0.4);
+  background-color: var(--color-scrollbar-thumb);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(107, 114, 128, 0.6);
+  background-color: var(--color-scrollbar-thumb-hover);
 }
 
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
 
-/* Light mode — Firefox */
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(156, 163, 175, 0.4) transparent;
-}
-
-/* Dark mode — WebKit browsers (Chrome, Safari, Edge) */
-.dark ::-webkit-scrollbar-thumb {
-  background-color: rgba(75, 85, 99, 0.5);
-}
-
-.dark ::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(107, 114, 128, 0.7);
-}
-
-/* Dark mode — Firefox */
-.dark * {
-  scrollbar-color: rgba(75, 85, 99, 0.5) transparent;
+  scrollbar-color: var(--color-scrollbar-thumb) transparent;
 }
 
 /* ── Dark mode syntax highlighting (GitHub Dark) ── */

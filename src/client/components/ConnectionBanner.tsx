@@ -60,7 +60,7 @@ export function ConnectionBanner({
     return (
       <div
         role="status"
-        className="px-4 py-2 text-xs text-center font-medium bg-green-100/70 dark:bg-green-900/70 text-green-700 dark:text-green-200"
+        className="px-4 py-2 text-xs text-center font-medium bg-(--color-success-subtle) text-(--color-success)"
       >
         Reconnected
       </div>
@@ -76,8 +76,8 @@ export function ConnectionBanner({
       role="alert"
       className={`px-4 py-2 text-xs text-center font-medium flex items-center justify-center gap-3 ${
         isConnecting
-          ? "bg-yellow-100/70 dark:bg-yellow-900/70 text-yellow-700 dark:text-yellow-200"
-          : "bg-red-100/70 dark:bg-red-900/70 text-red-700 dark:text-red-200"
+          ? "bg-(--color-warning-subtle) text-(--color-warning)"
+          : "bg-(--color-error-subtle) text-(--color-error)"
       }`}
     >
       <span>
@@ -88,7 +88,7 @@ export function ConnectionBanner({
       {!isConnecting && onReconnect && (
         <button
           onClick={onReconnect}
-          className="px-2 py-0.5 rounded text-xs font-medium bg-red-200 dark:bg-red-800 hover:bg-red-300 dark:hover:bg-red-700 text-red-800 dark:text-red-100 transition-colors"
+          className="px-2 py-0.5 rounded text-xs font-medium bg-(--color-error)/20 hover:bg-(--color-error)/30 text-(--color-error) transition-colors"
         >
           Reconnect now
         </button>

@@ -28,7 +28,7 @@ interface SessionSidebarProps {
 function ChevronIcon({ expanded }: { expanded: boolean }) {
   return (
     <svg
-      className={`w-3 h-3 shrink-0 text-gray-500 transition-transform ${expanded ? "rotate-90" : ""}`}
+      className={`w-3 h-3 shrink-0 text-(--color-text-secondary) transition-transform ${expanded ? "rotate-90" : ""}`}
       fill="none"
       viewBox="0 0 24 24"
       stroke="currentColor"
@@ -103,15 +103,15 @@ function SessionItem({ session, isCurrent, isRunning, onResume, onArchive, onRen
     <div
       className={`group flex items-start gap-1.5 px-2 py-1.5 text-xs transition-colors rounded mx-1 ${
         isCurrent
-          ? "bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100"
-          : "text-gray-600 dark:text-gray-400 hover:bg-gray-100/60 dark:hover:bg-gray-800/60 hover:text-gray-800 dark:hover:text-gray-200"
+          ? "bg-(--color-bg-secondary) text-(--color-text-primary)"
+          : "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
       }`}
     >
       {/* Active / running indicator */}
       <span className={`mt-1 w-1.5 h-1.5 rounded-full shrink-0 ${
-        isRunning && !isCurrent ? "bg-amber-400 animate-pulse" :
-        isRunning && isCurrent ? "bg-emerald-400 animate-pulse" :
-        isCurrent ? "bg-emerald-400" : "bg-transparent"
+        isRunning && !isCurrent ? "bg-(--color-warning) animate-pulse" :
+        isRunning && isCurrent ? "bg-(--color-success) animate-pulse" :
+        isCurrent ? "bg-(--color-success)" : "bg-transparent"
       }`} />
 
       {isEditing ? (
@@ -126,7 +126,7 @@ function SessionItem({ session, isCurrent, isRunning, onResume, onArchive, onRen
             onChange={(e) => setEditingTitle(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Escape") cancelEditing(); }}
             onBlur={submitRename}
-            className="w-full bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-xs px-1.5 py-0.5 rounded border border-gray-300 dark:border-gray-600 focus:border-blue-500 focus:outline-none"
+            className="w-full bg-(--color-bg-tertiary) text-(--color-text-primary) text-xs px-1.5 py-0.5 rounded border border-(--color-border-secondary) focus:border-(--color-border-focus) focus:outline-none"
             maxLength={120}
           />
         </form>
@@ -139,7 +139,7 @@ function SessionItem({ session, isCurrent, isRunning, onResume, onArchive, onRen
             <p className="truncate leading-snug flex-1">{session.title}</p>
             <PrStatusIcon sessionId={session.id} />
           </div>
-          <p className="text-gray-500 dark:text-gray-600 text-[10px] mt-0.5">{formatRelativeDate(session.lastUsedAt)}</p>
+          <p className="text-(--color-text-tertiary) text-[10px] mt-0.5">{formatRelativeDate(session.lastUsedAt)}</p>
         </button>
       )}
 
@@ -147,7 +147,7 @@ function SessionItem({ session, isCurrent, isRunning, onResume, onArchive, onRen
         <div className="shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
           <button
             onClick={(e) => { e.stopPropagation(); startEditing(); }}
-            className="p-0.5 rounded text-gray-500 dark:text-gray-600 hover:text-blue-400 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+            className="p-0.5 rounded text-(--color-text-tertiary) hover:text-(--color-text-link) hover:bg-(--color-bg-hover) transition-colors"
             title="Rename session"
           >
             <PencilIcon />
@@ -155,7 +155,7 @@ function SessionItem({ session, isCurrent, isRunning, onResume, onArchive, onRen
           {!isCurrent && (
             <button
               onClick={(e) => { e.stopPropagation(); onArchive(session.id); }}
-              className="p-0.5 rounded text-gray-500 dark:text-gray-600 hover:text-yellow-400 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+              className="p-0.5 rounded text-(--color-text-tertiary) hover:text-(--color-warning) hover:bg-(--color-bg-hover) transition-colors"
               title="Archive session"
             >
               <ArchiveIcon />
@@ -189,21 +189,21 @@ function SessionGroup({ label, sessions, currentSessionId, activeRunnerSessions,
       <div className="group/header flex items-center gap-1 w-full px-2 py-1">
         <button
           onClick={() => setExpanded((v) => !v)}
-          className="flex items-center gap-1 flex-1 min-w-0 text-[10px] font-semibold text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 uppercase tracking-wide transition-colors"
+          className="flex items-center gap-1 flex-1 min-w-0 text-[10px] font-semibold text-(--color-text-secondary) hover:text-(--color-text-primary) uppercase tracking-wide transition-colors"
         >
           <ChevronIcon expanded={expanded} />
           <span className="truncate flex-1 text-left">{label}</span>
           {status === "cloning" && (
-            <span className="shrink-0 text-[9px] font-normal normal-case text-amber-400 animate-pulse">cloning</span>
+            <span className="shrink-0 text-[9px] font-normal normal-case text-(--color-warning) animate-pulse">cloning</span>
           )}
           {sessions.length > 0 && (
-            <span className="text-gray-400 dark:text-gray-700 font-normal normal-case">({sessions.length})</span>
+            <span className="text-(--color-text-tertiary) font-normal normal-case">({sessions.length})</span>
           )}
         </button>
         {onRemove && (
           <button
             onClick={(e) => { e.stopPropagation(); onRemove(); }}
-            className="shrink-0 p-0.5 rounded text-gray-500 dark:text-gray-700 opacity-0 group-hover/header:opacity-100 hover:text-red-400 hover:bg-gray-200 dark:hover:bg-gray-800 transition-all"
+            className="shrink-0 p-0.5 rounded text-(--color-text-tertiary) opacity-0 group-hover/header:opacity-100 hover:text-(--color-error) hover:bg-(--color-bg-hover) transition-all"
             title="Remove repository"
           >
             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -220,8 +220,8 @@ function SessionGroup({ label, sessions, currentSessionId, activeRunnerSessions,
               disabled={status === "cloning"}
               className={`flex items-center gap-2 w-full px-2.5 py-1.5 mx-1 text-xs rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
                 isNewSessionActive
-                  ? "bg-gray-100 dark:bg-gray-800 text-emerald-600 dark:text-emerald-400"
-                  : "text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+                  ? "bg-(--color-bg-secondary) text-(--color-success)"
+                  : "text-(--color-success) hover:opacity-80 hover:bg-(--color-bg-hover)"
               }`}
               style={{ width: "calc(100% - 0.5rem)" }}
             >
@@ -304,10 +304,10 @@ export function SessionSidebar({
 
   if (collapsed) {
     return (
-      <div className="flex flex-col w-10 shrink-0 bg-white dark:bg-gray-950 border-r border-gray-200 dark:border-gray-800 items-center py-2 gap-2">
+      <div className="flex flex-col w-10 shrink-0 bg-(--color-bg-primary) border-r border-(--color-border-primary) items-center py-2 gap-2">
         <button
           onClick={onToggleCollapse}
-          className="p-1.5 rounded text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+          className="p-1.5 rounded text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
           title="Expand sidebar"
           aria-label="Expand sidebar"
         >
@@ -317,7 +317,7 @@ export function SessionSidebar({
         </button>
         <button
           onClick={onAddRepo}
-          className="p-1.5 rounded text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+          className="p-1.5 rounded text-(--color-text-link) hover:text-(--color-accent) hover:bg-(--color-bg-hover) transition-colors"
           title="Add Repository"
           aria-label="Add Repository"
         >
@@ -330,13 +330,13 @@ export function SessionSidebar({
   }
 
   return (
-    <div className="flex flex-col w-60 shrink-0 bg-white dark:bg-gray-950 border-r border-gray-200 dark:border-gray-800 min-h-0">
+    <div className="flex flex-col w-60 shrink-0 bg-(--color-bg-primary) border-r border-(--color-border-primary) min-h-0">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2.5 border-b border-gray-200 dark:border-gray-800 shrink-0">
-        <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Sessions</span>
+      <div className="flex items-center justify-between px-3 py-2.5 border-b border-(--color-border-primary) shrink-0">
+        <span className="text-xs font-semibold text-(--color-text-secondary) uppercase tracking-wide">Sessions</span>
         <button
           onClick={onToggleCollapse}
-          className="p-1 rounded text-gray-500 dark:text-gray-600 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+          className="p-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
           title="Collapse sidebar"
           aria-label="Collapse sidebar"
         >
@@ -350,7 +350,7 @@ export function SessionSidebar({
       <div className="px-2 py-2 shrink-0">
         <button
           onClick={onAddRepo}
-          className="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded transition-colors"
+          className="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs text-(--color-text-link) hover:text-(--color-accent) hover:bg-(--color-bg-hover) rounded transition-colors"
         >
           <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 10.5v6m3-3H9m4.06-7.19l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
@@ -362,7 +362,7 @@ export function SessionSidebar({
       {/* Repo groups + ungrouped sessions */}
       <div className="flex-1 overflow-y-auto pb-2">
         {sessions.length === 0 && repos.length === 0 ? (
-          <p className="text-xs text-gray-500 dark:text-gray-600 px-3 py-4 text-center">No sessions yet.</p>
+          <p className="text-xs text-(--color-text-tertiary) px-3 py-4 text-center">No sessions yet.</p>
         ) : (
           <>
             {sortedRepoEntries.map(([url, groupSessions]) => {
@@ -400,10 +400,10 @@ export function SessionSidebar({
       </div>
 
       {/* View all sessions */}
-      <div className="shrink-0 border-t border-gray-200 dark:border-gray-800 px-2 py-2">
+      <div className="shrink-0 border-t border-(--color-border-primary) px-2 py-2">
         <button
           onClick={onViewAll}
-          className="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs text-gray-500 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded transition-colors"
+          className="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) rounded transition-colors"
         >
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" />

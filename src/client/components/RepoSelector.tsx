@@ -126,7 +126,7 @@ export function RepoSelector({
           onKeyDown={handleKeyDown}
           placeholder="Select a repository..."
           disabled={disabled}
-          className="w-full px-4 py-2.5 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-50"
+          className="w-full px-4 py-2.5 bg-(--color-bg-secondary) border border-(--color-border-secondary) rounded-lg text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus) disabled:opacity-50"
         />
         {selectedRepoUrl && !open && (
           <button
@@ -135,7 +135,7 @@ export function RepoSelector({
               setQuery("");
               inputRef.current?.focus();
             }}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 text-lg leading-none"
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-(--color-text-secondary) hover:text-(--color-text-primary) text-lg leading-none"
             aria-label="Clear selection"
           >
             &times;
@@ -144,14 +144,14 @@ export function RepoSelector({
       </div>
 
       {open && (
-        <div className="absolute z-50 mt-1 w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-lg shadow-xl max-h-64 overflow-y-auto">
+        <div className="absolute z-50 mt-1 w-full bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-lg shadow-xl max-h-64 overflow-y-auto">
           {/* New repo option */}
           <button
             onClick={() => {
               setOpen(false);
               onNewRepo();
             }}
-            className="w-full text-left px-4 py-2.5 text-sm text-blue-600 dark:text-blue-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors flex items-center gap-2 border-b border-gray-300 dark:border-gray-700"
+            className="w-full text-left px-4 py-2.5 text-sm text-(--color-text-link) hover:bg-(--color-bg-hover) transition-colors flex items-center gap-2 border-b border-(--color-border-secondary)"
           >
             <span className="text-lg leading-none">+</span>
             <span>New repository</span>
@@ -162,7 +162,7 @@ export function RepoSelector({
             <button
               key={url}
               onClick={() => handleSelect(url)}
-              className="w-full text-left px-4 py-2 text-sm text-gray-800 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+              className="w-full text-left px-4 py-2 text-sm text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
             >
               {parseRepoLabel(url)}
             </button>
@@ -172,28 +172,28 @@ export function RepoSelector({
           {uniqueSearchResults.length > 0 && (
             <>
               {filteredSessionRepos.length > 0 && (
-                <div className="border-t border-gray-300 dark:border-gray-700" />
+                <div className="border-t border-(--color-border-secondary)" />
               )}
               {uniqueSearchResults.map((repo) => (
                 <button
                   key={repo.cloneUrl}
                   onClick={() => handleSelect(repo.cloneUrl)}
-                  className="w-full text-left px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                  className="w-full text-left px-4 py-2 hover:bg-(--color-bg-hover) transition-colors"
                 >
                   <div className="flex items-center gap-2">
-                    <span className="text-sm text-gray-800 dark:text-gray-200">{repo.fullName}</span>
+                    <span className="text-sm text-(--color-text-primary)">{repo.fullName}</span>
                     <span
                       className={`text-[10px] px-1.5 py-0.5 rounded-full ${
                         repo.private
-                          ? "bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300"
-                          : "bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300"
+                          ? "bg-(--color-warning-subtle) text-(--color-warning)"
+                          : "bg-(--color-success-subtle) text-(--color-success)"
                       }`}
                     >
                       {repo.private ? "private" : "public"}
                     </span>
                   </div>
                   {repo.description && (
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">
+                    <p className="text-xs text-(--color-text-secondary) mt-0.5 truncate">
                       {repo.description}
                     </p>
                   )}
@@ -204,7 +204,7 @@ export function RepoSelector({
 
           {/* Empty state */}
           {!hasResults && query.trim().length > 0 && (
-            <div className="px-4 py-3 text-xs text-gray-500">
+            <div className="px-4 py-3 text-xs text-(--color-text-secondary)">
               No repositories found
             </div>
           )}

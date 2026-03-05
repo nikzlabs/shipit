@@ -49,14 +49,14 @@ function TemplateCard({
     <button
       onClick={() => onSelect(template.id)}
       disabled={disabled}
-      className="flex items-start gap-3 p-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 hover:bg-gray-100 dark:hover:bg-gray-700/50 hover:border-gray-400 dark:hover:border-gray-600 transition-colors text-left disabled:opacity-50 disabled:cursor-not-allowed"
+      className="flex items-start gap-3 p-3 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) hover:bg-(--color-bg-hover) hover:border-(--color-text-tertiary) transition-colors text-left disabled:opacity-50 disabled:cursor-not-allowed"
     >
       <span className="text-xl shrink-0 mt-0.5" role="img" aria-label={template.icon}>
         {ICON_MAP[template.icon] ?? "\uD83D\uDCE6"}
       </span>
       <div className="min-w-0">
-        <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{template.name}</p>
-        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{template.description}</p>
+        <p className="text-sm font-medium text-(--color-text-primary)">{template.name}</p>
+        <p className="text-xs text-(--color-text-secondary) mt-0.5">{template.description}</p>
       </div>
     </button>
   );
@@ -91,10 +91,10 @@ export function TemplateSelector({
     <div className="flex flex-col items-center justify-center flex-1 min-h-0 px-4 py-8 overflow-y-auto">
       <div className="w-full max-w-2xl">
         <div className="text-center mb-6">
-          <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
+          <h2 className="text-xl font-semibold text-(--color-text-primary)">
             Start with a template
           </h2>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+          <p className="text-sm text-(--color-text-secondary) mt-1">
             Choose a project template, or just start chatting to build from scratch.
           </p>
         </div>
@@ -107,8 +107,8 @@ export function TemplateSelector({
               onClick={() => setFilter(cat)}
               className={`px-3 py-1 text-xs rounded-full transition-colors ${
                 filter === cat
-                  ? "bg-blue-600 text-white"
-                  : "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700"
+                  ? "bg-(--color-accent) text-(--color-accent-text)"
+                  : "bg-(--color-bg-secondary) text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"
               }`}
             >
               {cat === "all" ? "All" : CATEGORY_LABELS[cat]}
@@ -119,7 +119,7 @@ export function TemplateSelector({
         {/* Applying state */}
         {applying && (
           <div className="text-center py-8">
-            <div className="inline-flex items-center gap-2 text-sm text-blue-400">
+            <div className="inline-flex items-center gap-2 text-sm text-(--color-accent)">
               <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
@@ -134,7 +134,7 @@ export function TemplateSelector({
           <div className="space-y-5">
             {grouped.map((group) => (
               <div key={group.category}>
-                <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2 px-1">
+                <h3 className="text-xs font-medium text-(--color-text-secondary) uppercase tracking-wider mb-2 px-1">
                   {group.label}
                 </h3>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -157,7 +157,7 @@ export function TemplateSelector({
           <div className="text-center mt-8">
             <button
               onClick={onDismiss}
-              className="px-5 py-2 text-sm font-medium rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 hover:border-gray-400 dark:hover:border-gray-500 transition-colors"
+              className="px-5 py-2 text-sm font-medium rounded-lg border border-(--color-border-secondary) text-(--color-text-primary) hover:bg-(--color-bg-hover) hover:border-(--color-text-tertiary) transition-colors"
             >
               Skip — start with an empty project
             </button>
