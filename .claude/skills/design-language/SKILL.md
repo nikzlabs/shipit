@@ -7,9 +7,15 @@ user-invocable: true
 
 ShipIt uses semantic design tokens (CSS custom properties) for all colors. Themes are token overrides applied via a class on `<html>`. All UI code references tokens — never raw Tailwind color classes.
 
-Concrete color values live exclusively in `src/client/index.css`. This skill defines token **names** and **semantic purpose**. Theme state is managed by `useTheme()` in `src/client/hooks/useTheme.ts` (persisted to `localStorage` key `shipit-theme`).
+Concrete color values live in per-theme CSS files under `src/client/themes/`. Each file defines one theme's token values. `src/client/index.css` imports them and contains shared rules (animations, scrollbars, syntax highlighting). Theme state is managed by `useTheme()` in `src/client/hooks/useTheme.ts` (persisted to `localStorage` key `shipit-theme`).
 
-To add a new theme: define a new class block in `index.css` overriding the same custom properties, then register it in `useTheme()`. No component changes needed.
+```
+src/client/themes/
+  light.css       ← :root { --color-bg-primary: ...; }
+  dark.css        ← .dark { --color-bg-primary: ...; }
+```
+
+To add a new theme: create a new CSS file in `themes/`, import it in `index.css`, register the name in `useTheme()`. No component changes needed.
 
 ## Color Tokens
 

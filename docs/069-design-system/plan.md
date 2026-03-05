@@ -20,16 +20,19 @@ Design language skill: `.claude/skills/design-language/SKILL.md` — defines all
 
 ### Phase 1: Foundation — CSS Tokens
 
-**Goal:** Define all design tokens in `index.css` without changing any components. Both old classes and new tokens work simultaneously.
+**Goal:** Define all design tokens without changing any components. Both old classes and new tokens work simultaneously.
 
 **Files:**
+- `src/client/themes/light.css` (new)
+- `src/client/themes/dark.css` (new)
 - `src/client/index.css`
 
 **Work:**
-1. Add `:root { ... }` block with all `--color-*` tokens set to light-theme values (mapping to Tailwind `theme()` function)
-2. Add `.dark { ... }` block overriding the same tokens with dark-theme values
-3. Add `--color-scrollbar-*` tokens and update scrollbar CSS to use them
-4. Verify existing UI is unchanged (tokens defined but not yet consumed)
+1. Create `src/client/themes/light.css` with `:root { ... }` block — all `--color-*` tokens set to light-theme values
+2. Create `src/client/themes/dark.css` with `.dark { ... }` block overriding the same tokens with dark-theme values
+3. Import both theme files from `index.css`
+4. Add `--color-scrollbar-*` tokens and update scrollbar CSS to use them
+5. Verify existing UI is unchanged (tokens defined but not yet consumed)
 
 ### Phase 2: Install Phosphor Icons
 

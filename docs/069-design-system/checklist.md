@@ -1,7 +1,8 @@
 ## Phase 1: Foundation — CSS Tokens
 
-- [ ] Add `:root { ... }` block with all `--color-*` tokens (light-theme values) in `src/client/index.css`
-- [ ] Add `.dark { ... }` block overriding tokens with dark-theme values
+- [ ] Create `src/client/themes/light.css` with `:root { ... }` block — all `--color-*` tokens
+- [ ] Create `src/client/themes/dark.css` with `.dark { ... }` block overriding tokens
+- [ ] Import both theme files from `src/client/index.css`
 - [ ] Add `--color-scrollbar-*` tokens and refactor scrollbar CSS to use them
 - [ ] Verify UI is visually unchanged (tokens defined but not consumed yet)
 
