@@ -234,7 +234,7 @@ export function MessageInput({
       const fileData = e.dataTransfer?.getData("application/x-shipit-file");
       if (fileData && onAddFile) {
         try {
-          const { path } = JSON.parse(fileData);
+          const { path } = JSON.parse(fileData) as { path: string };
           onAddFile(path);
           return;
         } catch {

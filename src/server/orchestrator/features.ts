@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import path from "node:path";
 import type { FeatureInfo, FeatureStatus } from "../shared/types.js";
 
@@ -62,7 +63,7 @@ export class FeatureManager {
   async list(): Promise<FeatureInfo[]> {
     const docsDir = path.join(this.workspaceDir, "docs");
 
-    let entries: import("node:fs").Dirent[];
+    let entries: Dirent[];
     try {
       entries = await fs.readdir(docsDir, { withFileTypes: true });
     } catch {

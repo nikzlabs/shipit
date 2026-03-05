@@ -84,7 +84,7 @@ export class DeploymentStore {
 
     let history: DeploymentRecord[] = [];
     try {
-      history = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+      history = JSON.parse(fs.readFileSync(filePath, "utf-8")) as DeploymentRecord[];
     } catch {
       // empty or missing
     }
@@ -97,7 +97,7 @@ export class DeploymentStore {
   getHistory(sessionId: string): DeploymentRecord[] {
     try {
       const data = fs.readFileSync(this.historyPath(sessionId), "utf-8");
-      return JSON.parse(data);
+      return JSON.parse(data) as DeploymentRecord[];
     } catch {
       return [];
     }

@@ -9,6 +9,7 @@ import { AuthManager } from "../auth.js";
 
 
 import type { FastifyInstance } from "fastify";
+import type { GitHubAuthManager } from "../github-auth.js";
 import {
   TestClient,
   StubAuthManager,
@@ -62,7 +63,7 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: unauthSessions,
       authManager: unauthStub,
-      githubAuthManager: new StubGitHubAuthManager() as unknown as import("../github-auth.js").GitHubAuthManager,
+      githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
       agentFactory: () => new FakeClaudeProcess() as any,
       workspaceDir: unauthTmpDir,
       serveStatic: false,
@@ -110,7 +111,7 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: unauthSessions,
       authManager: unauthStub,
-      githubAuthManager: new StubGitHubAuthManager() as unknown as import("../github-auth.js").GitHubAuthManager,
+      githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
       agentFactory: () => new FakeClaudeProcess() as any,
       workspaceDir: unauthTmpDir,
       serveStatic: false,

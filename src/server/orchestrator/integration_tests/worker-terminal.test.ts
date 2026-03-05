@@ -15,6 +15,9 @@ import http from "node:http";
 import { SessionWorker } from "../../session/session-worker.js";
 import { ContainerSessionRunner, truncateTerminalBuffer } from "../container-session-runner.js";
 import type { WsServerMessage } from "../../shared/types.js";
+import type { TerminalProcess } from "../../session/terminal.js";
+import type { PreviewManager } from "../../session/preview-manager.js";
+import type { FileWatcher } from "../../session/file-watcher.js";
 import {
   FakeWorkerAgent,
   StubTerminal,
@@ -41,7 +44,7 @@ describe("Worker Terminal Endpoints", () => {
       host: "127.0.0.1",
       createTerminal: () => {
         lastTerminal = new StubTerminal();
-        return lastTerminal as unknown as import("../../session/terminal.js").TerminalProcess;
+        return lastTerminal as unknown as TerminalProcess;
       },
     });
 
@@ -178,13 +181,13 @@ describe("ContainerSessionRunner Terminal Proxy", () => {
       host: "127.0.0.1",
       createTerminal: () => {
         lastTerminal = new StubTerminal();
-        return lastTerminal as unknown as import("../../session/terminal.js").TerminalProcess;
+        return lastTerminal as unknown as TerminalProcess;
       },
       createPreviewManager: () => {
-        return new StubPreview() as unknown as import("../../session/preview-manager.js").PreviewManager;
+        return new StubPreview() as unknown as PreviewManager;
       },
       createFileWatcher: () => {
-        return new StubWatcher() as unknown as import("../../session/file-watcher.js").FileWatcher;
+        return new StubWatcher() as unknown as FileWatcher;
       },
     });
 
@@ -320,7 +323,7 @@ describe("Terminal SSE Backpressure", () => {
       host: "127.0.0.1",
       createTerminal: () => {
         lastTerminal = new StubTerminal();
-        return lastTerminal as unknown as import("../../session/terminal.js").TerminalProcess;
+        return lastTerminal as unknown as TerminalProcess;
       },
     });
 
@@ -448,13 +451,13 @@ describe("ContainerSessionRunner SSE Disconnect Handling", () => {
       host: "127.0.0.1",
       createTerminal: () => {
         lastTerminal = new StubTerminal();
-        return lastTerminal as unknown as import("../../session/terminal.js").TerminalProcess;
+        return lastTerminal as unknown as TerminalProcess;
       },
       createPreviewManager: () => {
-        return new StubPreview() as unknown as import("../../session/preview-manager.js").PreviewManager;
+        return new StubPreview() as unknown as PreviewManager;
       },
       createFileWatcher: () => {
-        return new StubWatcher() as unknown as import("../../session/file-watcher.js").FileWatcher;
+        return new StubWatcher() as unknown as FileWatcher;
       },
     });
 
@@ -551,13 +554,13 @@ describe("ContainerSessionRunner SSE Disconnect Handling", () => {
       host: "127.0.0.1",
       createTerminal: () => {
         lastTerminal = new StubTerminal();
-        return lastTerminal as unknown as import("../../session/terminal.js").TerminalProcess;
+        return lastTerminal as unknown as TerminalProcess;
       },
       createPreviewManager: () => {
-        return new StubPreview() as unknown as import("../../session/preview-manager.js").PreviewManager;
+        return new StubPreview() as unknown as PreviewManager;
       },
       createFileWatcher: () => {
-        return new StubWatcher() as unknown as import("../../session/file-watcher.js").FileWatcher;
+        return new StubWatcher() as unknown as FileWatcher;
       },
     });
     await newWorker.start();

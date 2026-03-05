@@ -82,7 +82,7 @@ export class ChatHistoryManager {
       const fp = this.filePath(sessionId);
       if (fs.existsSync(fp)) {
         const raw = fs.readFileSync(fp, "utf-8");
-        return JSON.parse(raw);
+        return JSON.parse(raw) as PersistedMessage[];
       }
     } catch {
       // Corrupted file — return empty

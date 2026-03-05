@@ -53,14 +53,14 @@ export default tseslint.config(
         "error",
         { checksVoidReturn: false },
       ],
-      // Allow `any` in non-test code for unavoidable cases, but warn
-      "@typescript-eslint/no-unsafe-assignment": "warn",
-      "@typescript-eslint/no-unsafe-member-access": "warn",
-      "@typescript-eslint/no-unsafe-call": "warn",
-      "@typescript-eslint/no-unsafe-argument": "warn",
-      "@typescript-eslint/no-unsafe-return": "warn",
-      // Catch variables should be unknown, but warn instead of error
-      "@typescript-eslint/use-unknown-in-catch-callback-variable": "warn",
+      // Prevent `any` contamination — all previously-warned cases are now fixed
+      "@typescript-eslint/no-unsafe-assignment": "error",
+      "@typescript-eslint/no-unsafe-member-access": "error",
+      "@typescript-eslint/no-unsafe-call": "error",
+      "@typescript-eslint/no-unsafe-argument": "error",
+      "@typescript-eslint/no-unsafe-return": "error",
+      // Catch variables must be typed as unknown
+      "@typescript-eslint/use-unknown-in-catch-callback-variable": "error",
 
       // ── Built-in ESLint rules ────────────────────────────────────────────
       // Error prevention
@@ -120,6 +120,10 @@ export default tseslint.config(
         {
           selector: "CallExpression > MemberExpression[property.name='then']",
           message: "Prefer async/await over .then(). Use store methods or async helpers. Add eslint-disable if .then() is intentional (fire-and-forget in sync context, lazy(), Promise two-arg form).",
+        },
+        {
+          selector: "TSImportType",
+          message: "Avoid inline import() types. Use a top-level `import type { X } from '...'` instead. Add eslint-disable if dynamic import() is intentional (lazy(), conditional loading).",
         },
       ],
     },

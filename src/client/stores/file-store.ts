@@ -65,7 +65,7 @@ export const useFileStore = create<FileState>((set) => ({
     if (!res.ok) {
       throw new Error(`Failed to fetch file tree: ${res.status}`);
     }
-    const { tree } = await res.json();
+    const { tree } = await res.json() as { tree: FileTreeNode[] };
     set({ tree });
   },
 
@@ -75,7 +75,7 @@ export const useFileStore = create<FileState>((set) => ({
     if (!res.ok) {
       throw new Error(`Failed to fetch file: ${res.status}`);
     }
-    const data = await res.json();
+    const data = await res.json() as { content: string | null; isBinary: boolean };
     set({ viewingFileContent: data.content, viewingFileBinary: data.isBinary });
   },
 
@@ -84,7 +84,7 @@ export const useFileStore = create<FileState>((set) => ({
     if (!res.ok) {
       throw new Error(`Failed to fetch file with tree: ${res.status}`);
     }
-    const data = await res.json();
+    const data = await res.json() as { tree: FileTreeNode[]; content: string | null; isBinary?: boolean };
     set({ tree: data.tree, viewingFileContent: data.content, viewingFileBinary: data.isBinary ?? false });
   },
 
@@ -93,7 +93,7 @@ export const useFileStore = create<FileState>((set) => ({
     if (!res.ok) {
       throw new Error(`Failed to refresh file content: ${res.status}`);
     }
-    const data = await res.json();
+    const data = await res.json() as { content: string | null; isBinary?: boolean };
     set({ viewingFileContent: data.content, viewingFileBinary: data.isBinary ?? false });
   },
 
@@ -102,7 +102,7 @@ export const useFileStore = create<FileState>((set) => ({
     if (!res.ok) {
       throw new Error(`Failed to fetch docs: ${res.status}`);
     }
-    const { files } = await res.json();
+    const { files } = await res.json() as { files: string[] };
     set({ docFiles: files });
   },
 
@@ -112,7 +112,7 @@ export const useFileStore = create<FileState>((set) => ({
     if (!res.ok) {
       throw new Error(`Failed to fetch doc: ${res.status}`);
     }
-    const { content } = await res.json();
+    const { content } = await res.json() as { content: string | null };
     set({ docContent: content });
   },
 }));

@@ -8,6 +8,7 @@
  */
 
 import { existsSync } from "node:fs";
+import { mkdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type { SessionManager } from "./sessions.js";
@@ -22,6 +23,8 @@ import type { DeploymentManager } from "./deployment-manager.js";
 import type { DeploymentStore } from "./deployment-store.js";
 import type { UsageManager } from "./usage.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
+import type { ContainerSessionRunner } from "./container-session-runner.js";
+import type { SessionContainerManager } from "./session-container.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { AuthManager } from "./auth.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
@@ -89,6 +92,7 @@ import {
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
+import { generateBranchPrefix } from "./git-utils.js";
 
 /**
  * Dependencies needed by API routes. A subset of AppDeps — only the
@@ -124,7 +128,7 @@ export interface ApiDeps {
   /** Create session dir with custom options. */
   createSessionDirFull: (title: string, opts?: { skipGitInit?: boolean }) => Promise<{ appSessionId: string; sessionDir: string }>;
   /** Container manager — needed for standby cleanup on repo delete. */
-  containerManager?: import("./session-container.js").SessionContainerManager;
+  containerManager?: SessionContainerManager;
   /** PR status poller — needed for tracking new PRs. */
   prStatusPoller?: PrStatusPoller;
 }
@@ -1077,7 +1081,7 @@ export async function registerApiRoutes(
         return reply.code(400).send({ error: "Preview restart only supported for container sessions" });
       }
       try {
-        const containerRunner = runner as import("./container-session-runner.js").ContainerSessionRunner;
+        const containerRunner = runner as ContainerSessionRunner;
         await containerRunner.restartPreviewOnWorker();
         return { restarted: true };
       } catch (err) {
@@ -1208,13 +1212,12 @@ export async function registerApiRoutes(
           // Clone in background
           const repoUrl = repo.url;
           const repoDir = deps.getSharedRepoDir(repoUrl);
-          // eslint-disable-next-line no-restricted-syntax -- fire-and-forget background clone
-          void import("node:fs/promises").then(async (fsModule) => {
+          void (async () => {
             try {
               // eslint-disable-next-line no-restricted-syntax -- stat existence-check idiom
-              const exists = await fsModule.stat(repoDir).then(() => true, () => false);
+              const exists = await stat(repoDir).then(() => true, () => false);
               if (!exists) {
-                await fsModule.mkdir(repoDir, { recursive: true });
+                await mkdir(repoDir, { recursive: true });
                 const cloneUrl = deps.githubAuthManager.getAuthenticatedCloneUrl(repoUrl);
                 const repoGit = createRepoGit(repoDir);
                 await repoGit.clone(cloneUrl);
@@ -1228,7 +1231,7 @@ export async function registerApiRoutes(
               console.error("[repos] Background clone failed:", getErrorMessage(err));
               deps.sseBroadcast("error", { message: `Failed to clone repository: ${getErrorMessage(err)}` });
             }
-          });
+          })();
           return { repo };
         } catch (err) {
           if (err instanceof ServiceError) {
@@ -1368,20 +1371,18 @@ export async function registerApiRoutes(
         // If the client already disconnected (rapid navigation), skip the expensive work.
         if (request.raw.destroyed) return;
         const repoDir = deps.getSharedRepoDir(url);
-        const { generateBranchPrefix } = await import("./git-utils.js");
         const branchPrefix = generateBranchPrefix();
         const created = await deps.createSessionDirFull("Warm session", { skipGitInit: true });
         const { appSessionId, sessionDir } = created;
 
         // Remove the empty dir (worktree add needs it absent)
-        const fsModule = await import("node:fs/promises");
-        await fsModule.rm(sessionDir, { recursive: true, force: true });
+        await rm(sessionDir, { recursive: true, force: true });
 
         const repoGit = createRepoGit(repoDir);
         const isEmptyRepo = await repoGit.isEmpty();
 
         if (isEmptyRepo) {
-          await fsModule.mkdir(sessionDir, { recursive: true });
+          await mkdir(sessionDir, { recursive: true });
           const sessionGit = createGitManager(sessionDir);
           await sessionGit.init();
           const cloneUrl = deps.githubAuthManager.getAuthenticatedCloneUrl(url);

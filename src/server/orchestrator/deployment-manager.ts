@@ -49,7 +49,7 @@ export class DeploymentManager extends EventEmitter {
     }
 
     try {
-      const pkg = JSON.parse(await fs.readFile(pkgPath, "utf-8"));
+      const pkg = JSON.parse(await fs.readFile(pkgPath, "utf-8")) as Record<string, Record<string, string> & { build?: string }> & { scripts?: { build?: string }; dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
       const deps = { ...pkg.dependencies, ...pkg.devDependencies };
 
       // Next.js

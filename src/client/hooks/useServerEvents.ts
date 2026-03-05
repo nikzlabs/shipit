@@ -14,18 +14,18 @@ export function useServerEvents(): void {
   const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
-    const apiHost = import.meta.env.VITE_API_HOST;
+    const apiHost = import.meta.env.VITE_API_HOST as string | undefined;
     const baseUrl = apiHost ? `${window.location.protocol}//${apiHost}` : "";
     const es = new EventSource(`${baseUrl}/api/events`);
     eventSourceRef.current = es;
 
     es.addEventListener("session_list", (e: MessageEvent) => {
-      const data = JSON.parse(e.data) as { sessions: SessionInfo[] };
+      const data = JSON.parse(e.data as string) as { sessions: SessionInfo[] };
       useSessionStore.getState().setSessions(data.sessions);
     });
 
     es.addEventListener("session_started", (e: MessageEvent) => {
-      const data = JSON.parse(e.data) as { session: SessionInfo };
+      const data = JSON.parse(e.data as string) as { session: SessionInfo };
       useSessionStore.getState().setSessions((prev) => {
         const exists = prev.some((s) => s.id === data.session.id);
         if (exists) return prev.map((s) => s.id === data.session.id ? data.session : s);
@@ -34,14 +34,14 @@ export function useServerEvents(): void {
     });
 
     es.addEventListener("session_renamed", (e: MessageEvent) => {
-      const data = JSON.parse(e.data) as { session: SessionInfo };
+      const data = JSON.parse(e.data as string) as { session: SessionInfo };
       useSessionStore.getState().setSessions((prev) =>
         prev.map((s) => s.id === data.session.id ? data.session : s),
       );
     });
 
     es.addEventListener("session_agent_started", (e: MessageEvent) => {
-      const data = JSON.parse(e.data) as { sessionId: string };
+      const data = JSON.parse(e.data as string) as { sessionId: string };
       useSessionStore.getState().setActiveRunnerSessions((prev) => {
         const next = new Set(prev);
         next.add(data.sessionId);
@@ -50,7 +50,7 @@ export function useServerEvents(): void {
     });
 
     es.addEventListener("session_agent_finished", (e: MessageEvent) => {
-      const data = JSON.parse(e.data) as { sessionId: string };
+      const data = JSON.parse(e.data as string) as { sessionId: string };
       useSessionStore.getState().setActiveRunnerSessions((prev) => {
         const next = new Set(prev);
         next.delete(data.sessionId);
@@ -65,27 +65,27 @@ export function useServerEvents(): void {
     });
 
     es.addEventListener("active_runners", (e: MessageEvent) => {
-      const data = JSON.parse(e.data) as { sessionIds: string[] };
+      const data = JSON.parse(e.data as string) as { sessionIds: string[] };
       useSessionStore.getState().setActiveRunnerSessions(() => new Set(data.sessionIds));
     });
 
     es.addEventListener("repo_list", (e: MessageEvent) => {
-      const data = JSON.parse(e.data) as { repos: RepoInfo[] };
+      const data = JSON.parse(e.data as string) as { repos: RepoInfo[] };
       useRepoStore.getState().setRepos(data.repos);
     });
 
     es.addEventListener("repo_status", (e: MessageEvent) => {
-      const data = JSON.parse(e.data) as { url: string; status: "cloning" | "ready" };
+      const data = JSON.parse(e.data as string) as { url: string; status: "cloning" | "ready" };
       useRepoStore.getState().updateRepoStatus(data.url, data.status);
     });
 
     es.addEventListener("repo_warm_ready", (e: MessageEvent) => {
-      const data = JSON.parse(e.data) as { url: string; sessionId: string };
+      const data = JSON.parse(e.data as string) as { url: string; sessionId: string };
       useRepoStore.getState().updateRepoWarmSession(data.url, data.sessionId);
     });
 
     es.addEventListener("auth_required", (e: MessageEvent) => {
-      const data = JSON.parse(e.data) as { url?: string };
+      const data = JSON.parse(e.data as string) as { url?: string };
       useSessionStore.getState().setAuthUrl(data.url ?? null);
     });
 
@@ -94,12 +94,12 @@ export function useServerEvents(): void {
     });
 
     es.addEventListener("agent_list", (e: MessageEvent) => {
-      const data = JSON.parse(e.data) as { agents: { id: string; name: string; installed: boolean; authConfigured: boolean; models?: string[] }[] };
+      const data = JSON.parse(e.data as string) as { agents: { id: string; name: string; installed: boolean; authConfigured: boolean; models?: string[] }[] };
       useUiStore.getState().setAgentList(data.agents.map((a) => ({ ...a, models: a.models ?? [] })));
     });
 
     es.addEventListener("pr_status", (e: MessageEvent) => {
-      const data = JSON.parse(e.data) as { updates: PrStatusSummary[] };
+      const data = JSON.parse(e.data as string) as { updates: PrStatusSummary[] };
       usePrStore.getState().applyPrStatusUpdates(data.updates);
     });
 
@@ -111,7 +111,7 @@ export function useServerEvents(): void {
     // Custom server-sent "server_error" events carry a JSON payload.
     es.addEventListener("server_error", (e: MessageEvent) => {
       try {
-        const data = JSON.parse(e.data) as { message: string };
+        const data = JSON.parse(e.data as string) as { message: string };
         console.error("[sse] Server error:", data.message);
       } catch {
         // Malformed data — ignore

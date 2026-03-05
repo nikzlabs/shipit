@@ -177,7 +177,7 @@ export const useUiStore = create<UiState>((set, get) => ({
       method: "GET",
       headers: { Accept: "application/json" },
     });
-    const data = await res.json();
+    const data = await res.json() as { features: FeatureInfo[] };
     set({ features: data.features });
   },
 
@@ -186,7 +186,7 @@ export const useUiStore = create<UiState>((set, get) => ({
       method: "GET",
       headers: { Accept: "application/json" },
     });
-    const data = await res.json();
+    const data = await res.json() as { stats: UsageStats };
     set({ allUsageStats: data.stats });
   },
 }));

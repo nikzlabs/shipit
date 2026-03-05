@@ -29,7 +29,7 @@ export class RepoStore {
     try {
       if (fs.existsSync(this.reposFile)) {
         const raw = fs.readFileSync(this.reposFile, "utf-8");
-        this.repos = JSON.parse(raw);
+        this.repos = JSON.parse(raw) as RepoInfo[];
       }
     } catch {
       this.repos = [];

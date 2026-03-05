@@ -18,7 +18,7 @@ export function useConnectionSync(params: {
     if (bootstrapFetchedRef.current) return;
     bootstrapFetchedRef.current = true;
 
-    loadBootstrapData().catch((err) => {
+    loadBootstrapData().catch((err: unknown) => {
       console.error("[bootstrap] Failed to fetch initial data:", err);
       useUiStore.getState().setBootstrapLoaded(true);
     });
@@ -31,13 +31,13 @@ export function useConnectionSync(params: {
     if (status === "open" && !historyLoadedRef.current && useSessionStore.getState().sessionId) {
       historyLoadedRef.current = true;
       const sessionId = useSessionStore.getState().sessionId!;
-      loadSessionHistory(sessionId).catch((err) => console.error("[api] Failed to load session history:", err));
+      loadSessionHistory(sessionId).catch((err: unknown) => console.error("[api] Failed to load session history:", err));
 
       // If there's a pending WS message (e.g. new session from home page, feature start), send it now
       const pending = useSessionStore.getState().pendingWsMessage;
       if (pending) {
         useSessionStore.getState().setPendingWsMessage(undefined);
-        send({ ...pending, sessionId } as import("../../server/shared/types.js").WsClientMessage);
+        send({ ...pending, sessionId } as WsClientMessage);
       }
     }
     if (status === "closed") {

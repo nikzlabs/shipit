@@ -90,7 +90,7 @@ function ensureOnboardingComplete(): void {
     let config: Record<string, unknown> = {};
     if (existsSync(CLAUDE_USER_CONFIG)) {
       const raw = readFileSync(CLAUDE_USER_CONFIG, "utf-8");
-      config = JSON.parse(raw);
+      config = JSON.parse(raw) as Record<string, unknown>;
     }
 
     let changed = false;
