@@ -1,3 +1,11 @@
+capabilities:
+  docker: true
+
+resources:
+  memory: 3072
+  cpu: 2.0
+  pids: 2048
+
 install: npm install
 preview:
   command: >-

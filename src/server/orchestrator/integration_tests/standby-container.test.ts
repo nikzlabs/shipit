@@ -466,7 +466,10 @@ describe("standby container pre-warming", () => {
       stackName: "shipit-test",
     });
 
-    const count = await newManager.rediscover(new Set([standbyId]));
+    const count = await newManager.rediscover(new Set([standbyId]), () => ({
+      workspaceDir: "/workspace/sessions/standby",
+      dockerAccess: false,
+    }));
     expect(count).toBe(1);
     expect(newManager.isStandby(standbyId)).toBe(true);
     expect(newManager.get(standbyId)).toBeDefined();

@@ -28,6 +28,9 @@ import { SessionContainerManager } from "./session-container.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import { registerPreviewProxy } from "./preview-proxy.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
+import { resolveSessionConfig } from "../shared/session-config.js";
+import { createDockerProxy, resolveBridgeGatewayIp } from "./docker-proxy.js";
+import type { SessionInfo as DockerProxySessionInfo } from "./docker-proxy.js";
 import type { AgentId, AgentEvent, AgentProcess } from "../shared/types.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry } from "../shared/types.js";
 import { getErrorMessage } from "./validation.js";
@@ -299,12 +302,66 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       const activeIds = new Set(sessionManager.allIds());
       const orphans = await containerManager.cleanupOrphans(activeIds);
       if (orphans > 0) console.log(`[server] Cleaned up ${orphans} orphan container(s)`);
-      const rediscovered = await containerManager.rediscover(activeIds);
+      const rediscovered = await containerManager.rediscover(activeIds, (sessionId) => {
+        const session = sessionManager.get(sessionId);
+        if (!session?.workspaceDir) return undefined;
+        const cfg = resolveSessionConfig(session.workspaceDir);
+        return {
+          workspaceDir: session.workspaceDir,
+          dockerAccess: cfg.capabilities.docker,
+          resourceLimits: cfg.capabilities.docker ? {
+            memory: cfg.resources.memory * 1024 * 1024,
+            cpuQuota: cfg.resources.cpu * 100_000,
+            pidsLimit: cfg.resources.pids,
+          } : undefined,
+        };
+      });
       if (rediscovered > 0) console.log(`[server] Rediscovered ${rediscovered} container(s) from previous run`);
       await containerManager.startHealthMonitor();
       console.log("[server] Docker container mode enabled");
     } else {
       throw new Error("Docker is not available (is /var/run/docker.sock mounted?)");
+    }
+  }
+
+  // ---- Docker API proxy (optional, for Docker-enabled sessions) ----
+  let dockerProxyServer: import("node:http").Server | null = null;
+  if (containerManager && !isTestMode) {
+    try {
+      const bridgeGatewayIp = await resolveBridgeGatewayIp();
+      const proxy = createDockerProxy({
+        getSessionByContainerIp: (ip: string): DockerProxySessionInfo | undefined => {
+          const sc = containerManager!.getSessionByContainerIp(ip);
+          if (!sc) return undefined;
+          // dockerAccess, hostWorkspaceDir, and sessionNetworkName are
+          // stored on the SessionContainer at creation time — no need to
+          // re-read shipit.yaml on every request.
+          return {
+            sessionId: sc.sessionId,
+            hostWorkspaceDir: sc.hostWorkspaceDir,
+            dockerAccess: sc.dockerAccess,
+            sessionNetworkName: sc.sessionNetworkName,
+            resourceLimits: sc.resourceLimits,
+          };
+        },
+      });
+      await new Promise<void>((resolve) => {
+        proxy.listen(0, bridgeGatewayIp, () => {
+          const addr = proxy.address();
+          if (addr && typeof addr === "object") {
+            containerManager!.setDockerProxy(bridgeGatewayIp, addr.port, process.env.SESSION_WORKER_DOCKER_IMAGE);
+            console.log(`[server] Docker API proxy listening on ${bridgeGatewayIp}:${addr.port}`);
+          }
+          resolve();
+        });
+        proxy.on("error", (err) => {
+          console.warn(`[server] Docker API proxy failed to start: ${err.message}`);
+          resolve(); // Non-fatal — Docker-enabled sessions won't work but others will
+        });
+      });
+      dockerProxyServer = proxy;
+    } catch (err) {
+      console.warn(`[server] Docker API proxy setup skipped: ${(err as Error).message}`);
     }
   }
 
@@ -360,11 +417,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             }
             // Standby creation failed or timed out — create fresh container.
             console.log(`[container] Standby not ready, creating fresh container for ${o.sessionId}...`);
+            const sessionConfig = resolveSessionConfig(o.sessionDir);
             const config = mgr.buildConfig({
               sessionId: o.sessionId,
               sessionDir: o.sessionDir,
               credentialsDir,
               sharedRepoDir: o.sharedRepoDir,
+              memoryLimit: sessionConfig.resources.memory * 1024 * 1024,
+              cpuQuota: Math.round(sessionConfig.resources.cpu * 100_000),
+              pidsLimit: sessionConfig.resources.pids,
+              dockerAccess: sessionConfig.capabilities.docker,
             });
             const sc = await mgr.create(config);
             console.log(`[container] Container ready for ${o.sessionId} at ${sc.workerUrl}`);
@@ -379,11 +441,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       }
 
       // Build config for fresh container creation.
+      const sessionConfig = resolveSessionConfig(o.sessionDir);
       const config = mgr.buildConfig({
         sessionId: o.sessionId,
         sessionDir: o.sessionDir,
         credentialsDir,
         sharedRepoDir: o.sharedRepoDir,
+        memoryLimit: sessionConfig.resources.memory * 1024 * 1024,
+        cpuQuota: Math.round(sessionConfig.resources.cpu * 100_000),
+        pidsLimit: sessionConfig.resources.pids,
+        dockerAccess: sessionConfig.capabilities.docker,
       });
       const runner = new ContainerSessionRunner({
         sessionId: o.sessionId,
@@ -1307,6 +1374,9 @@ to determine the correct install command, preview mode, command, and ports.`,
   app.addHook("onClose", async () => {
     authManager.kill();
     runnerRegistry.disposeAll();
+    if (dockerProxyServer) {
+      await new Promise<void>((resolve) => dockerProxyServer!.close(() => resolve()));
+    }
     if (containerManager) {
       await containerManager.dispose();
     }
