@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { PencilSimpleIcon, ArchiveIcon as PhArchiveIcon, GearSixIcon, GithubLogoIcon, PlusIcon, SidebarSimpleIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
@@ -6,6 +6,61 @@ import { Button } from "./ui/button.js";
 import { PrStateBadge } from "./PrLifecycleCard.js";
 import { useSessionStore } from "../stores/session-store.js";
 import type { SessionInfo } from "../../server/shared/types.js";
+
+const SIDEBAR_MIN = 180;
+const SIDEBAR_MAX = 400;
+const SIDEBAR_DEFAULT = 240;
+const SIDEBAR_STORAGE_KEY = "sidebar-width";
+
+function loadSidebarWidth(): number {
+  try {
+    const v = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    if (v !== null) {
+      const n = parseInt(v, 10);
+      if (!Number.isNaN(n) && n >= SIDEBAR_MIN && n <= SIDEBAR_MAX) return n;
+    }
+  } catch { /* ignore */ }
+  return SIDEBAR_DEFAULT;
+}
+
+function useSidebarResize() {
+  const [width, setWidth] = useState(loadSidebarWidth);
+  const [isDragging, setIsDragging] = useState(false);
+  const widthRef = useRef(width);
+  widthRef.current = width;
+
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+    const startX = e.clientX;
+    const startWidth = widthRef.current;
+
+    const onMouseMove = (ev: MouseEvent) => {
+      const newWidth = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, startWidth + ev.clientX - startX));
+      setWidth(newWidth);
+    };
+    const onMouseUp = () => {
+      setIsDragging(false);
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+      try { localStorage.setItem(SIDEBAR_STORAGE_KEY, widthRef.current.toString()); } catch { /* ignore */ }
+    };
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  }, []);
+
+  useEffect(() => {
+    if (isDragging) {
+      document.body.style.userSelect = "none";
+      document.body.style.cursor = "col-resize";
+    } else {
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+    }
+  }, [isDragging]);
+
+  return { width, isDragging, onMouseDown };
+}
 
 export type { SessionInfo };
 
@@ -143,6 +198,8 @@ export function SessionSidebar({
   collapsed,
   onToggleCollapse,
 }: SessionSidebarProps) {
+  const { width, isDragging, onMouseDown } = useSidebarResize();
+
   // Filter sessions to active repo
   const filteredSessions = activeRepoUrl
     ? sessions.filter((s) => s.remoteUrl === activeRepoUrl)
@@ -188,7 +245,8 @@ export function SessionSidebar({
   }
 
   return (
-    <div className="flex flex-col w-60 h-full shrink-0 bg-(--color-bg-primary) border-r border-(--color-border-primary) min-h-0">
+    <div className="flex h-full shrink-0 min-h-0">
+    <div className="flex flex-col h-full bg-(--color-bg-primary) border-r border-(--color-border-primary) min-h-0" style={{ width }}>
       {/* Active repo header */}
       <div className="flex items-center gap-2 px-3 py-2.5 border-b border-(--color-border-primary) shrink-0">
         <Button
@@ -263,6 +321,12 @@ export function SessionSidebar({
           New Session
         </Button>
       </div>
+    </div>
+    {/* Resize handle — overlaid on top of the border */}
+    <div
+      onMouseDown={onMouseDown}
+      className={`resize-handle shrink-0 -ml-2 ${isDragging ? "resize-handle--active" : ""}`}
+    />
     </div>
   );
 }
