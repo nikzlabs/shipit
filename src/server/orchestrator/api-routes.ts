@@ -459,7 +459,14 @@ export async function registerApiRoutes(
     "/api/sessions/:id/unarchive",
     async (request, reply) => {
       try {
-        const result = unarchiveSession(sessionManager, request.params.id);
+        const result = await unarchiveSession(
+          sessionManager,
+          createRepoGit,
+          deps.getSharedRepoDir,
+          deps.githubAuthManager,
+          deps.repoStore,
+          request.params.id,
+        );
         deps.sseBroadcast("session_list", { sessions: result.sessions });
         return result;
       } catch (err) {
