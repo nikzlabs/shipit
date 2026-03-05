@@ -243,6 +243,22 @@ A future Node→Bun migration would mean: swap the import, adjust a few API call
 
 ---
 
+## ORM Decision: Skip It
+
+ShipIt's 5 stores have ~30 methods total, all basic CRUD (`INSERT`, `SELECT WHERE`, `UPDATE SET`, `DELETE WHERE`, one `GROUP BY`). No joins, no dynamic query building. An ORM adds cost without matching benefit.
+
+| Factor | ORM (Prisma/Drizzle) | Raw `better-sqlite3` |
+|--------|---------------------|---------------------|
+| Dependency size | Prisma: ~40 MB + binary engine; Drizzle: ~2 MB | ~3 MB |
+| Docker build | Prisma needs `generate` step + platform engine | Just `npm install` |
+| Type safety | Auto-generated types | Manual interfaces (already exist) |
+| Query overhead | Builder layer | Direct prepared statements |
+| Debug experience | Abstracted SQL | You see exactly what runs |
+
+The domain types (`PersistedMessage`, `SessionInfo`, `UsageTurn`, etc.) already exist. A thin row→type mapping per table is ~5 lines each. Use `better-sqlite3` directly with prepared statements — the SQL is simple, readable, and gives direct access to SQLite-specific features (WAL pragma, `INSERT OR REPLACE`, JSON functions).
+
+---
+
 ## Final Recommendation
 
 ```
