@@ -104,9 +104,13 @@ export async function fullReset(
     if (repoStore) repoStore.clear();
   }
 
-  // Delete everything inside the workspace directory (including .shipit.db)
+  // Delete everything inside the workspace directory, but preserve the SQLite
+  // database files — clearAll() already emptied all tables and the open connection
+  // must remain valid for subsequent operations.
+  const preservePatterns = new Set([".shipit.db", ".shipit.db-wal", ".shipit.db-shm"]);
   const entries = await fs.readdir(workspaceDir);
   for (const entry of entries) {
+    if (preservePatterns.has(entry)) continue;
     try {
       await fs.rm(path.join(workspaceDir, entry), { recursive: true, force: true });
     } catch {
