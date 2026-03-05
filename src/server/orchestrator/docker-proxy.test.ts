@@ -675,7 +675,7 @@ describe("Docker API proxy", () => {
         expect((res.body as any).message).toContain("too large");
       } catch (err) {
         // Connection may be reset before response is sent — this is acceptable
-        expect((err as Error).message).toMatch(/ECONNRESET|socket hang up/);
+        expect((err as Error).message).toMatch(/ECONNRESET|socket hang up|EPIPE/);
       }
     });
   });
