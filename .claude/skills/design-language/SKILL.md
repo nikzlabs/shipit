@@ -68,15 +68,17 @@ System font stack, no custom web fonts. Body: `text-sm`, headings: `text-lg font
 
 Library: [`@phosphor-icons/react`](https://phosphoricons.com). All icons use Phosphor — no inline SVGs or Unicode characters.
 
-**Sizes:** 16px inline with text, 20px in buttons/nav, 32px empty states, 48px hero.
+**Sizes:** Use `ICON_SIZE` constants from `src/client/design-tokens.ts` — `SM` (16px) inline with text, `MD` (20px) buttons/nav, `LG` (32px) empty states, `XL` (48px) hero.
 
 **Weights:** `"regular"` (default), `"bold"` for emphasis, `"fill"` for toggle-on states, `"duotone"` sparingly for illustrations.
 
 **Color:** Icons inherit `currentColor`. Set via parent's text color token:
 
 ```tsx
+import { ICON_SIZE } from "../design-tokens.js";
+
 <span className="text-[var(--color-text-secondary)]">
-  <GitBranch size={16} />
+  <GitBranch size={ICON_SIZE.SM} />
 </span>
 ```
 
