@@ -63,6 +63,16 @@ function createMockDaemon(): MockDaemon {
         res.end(JSON.stringify(data));
       };
 
+      // Validate content-type for POST/PUT requests with JSON bodies.
+      // The real Docker daemon requires application/json; our mock should too
+      // to catch missing content-type forwarding in the proxy.
+      const contentType = req.headers["content-type"] ?? "";
+      const expectsJson = (method === "POST" || method === "PUT") && bodyStr && !url.match(/\/build/);
+      if (expectsJson && !contentType.includes("application/json")) {
+        respond(400, { message: `Content-Type must be application/json, got: ${contentType}` });
+        return;
+      }
+
       // GET /_ping
       if (url === "/_ping" && method === "GET") {
         res.writeHead(200, { "Content-Type": "text/plain" });

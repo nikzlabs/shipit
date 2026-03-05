@@ -46,6 +46,13 @@ export const PARENT_SESSION_LABEL = "shipit-parent-session";
 const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10 MB
 const DOCKER_SOCKET = "/var/run/docker.sock";
 
+// Docker container names: [a-zA-Z0-9][a-zA-Z0-9_.-]*
+// Docker container IDs: [0-9a-f]{12,64}
+// We use a single permissive pattern that covers both. The `/` separator in URL
+// paths prevents path traversal, and `:` is excluded since it only appears in
+// image references (handled by image routes with a separate pattern).
+const CONTAINER_NAME_RE = "[a-zA-Z0-9][a-zA-Z0-9_.-]*";
+
 // ---------------------------------------------------------------------------
 // Route matching
 // ---------------------------------------------------------------------------
@@ -254,6 +261,13 @@ async function getExecParentContainerId(
 /**
  * Validate that a host path (from Binds or Mounts) is under the session's workspace.
  * Uses realpath to resolve symlinks.
+ *
+ * SECURITY NOTE: There is an inherent TOCTOU (time-of-check-time-of-use) race here.
+ * A process inside the session container could create a symlink pointing inside the
+ * workspace to pass this check, then swap it to point outside before Docker mounts it.
+ * This is a fundamental limitation of path validation from outside the mount namespace
+ * and cannot be fully mitigated at this layer. The container's restricted capabilities
+ * (CapDrop: ALL) and network isolation reduce the blast radius.
  */
 async function isPathUnderWorkspace(hostPath: string, workspaceDir: string): Promise<boolean> {
   try {
@@ -480,7 +494,7 @@ function buildRoutes(): Route[] {
   for (const op of containerLabelOps) {
     const escapedSuffix = op.suffix.replace(/\//g, "\\/");
     const pattern = new RegExp(
-      `^(?:\\/v[\\d.]+)?\\/containers\\/([a-zA-Z0-9_.-]+)${escapedSuffix}(\\?.*)?$`,
+      `^(?:\\/v[\\d.]+)?\\/containers\\/(${CONTAINER_NAME_RE})${escapedSuffix}(\\?.*)?$`,
     );
     route(op.method, pattern, async (ctx, match) => {
       const containerId = match[1];
@@ -494,7 +508,7 @@ function buildRoutes(): Route[] {
   // ---- Container I/O (label-scoped, some streaming) ----
 
   // GET /containers/{id}/logs — streaming
-  route("GET", /^(?:\/v[\d.]+)?\/containers\/([a-zA-Z0-9_.-]+)\/logs(\?.*)?$/, async (ctx, match) => {
+  route("GET", /^(?:\/v[\d.]+)?\/containers\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)\/logs(\?.*)?$/, async (ctx, match) => {
     const containerId = match[1];
     if (!(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
       return forbidden(ctx.res, "Container does not belong to this session");
@@ -503,7 +517,7 @@ function buildRoutes(): Route[] {
   });
 
   // POST /containers/{id}/attach — streaming
-  route("POST", /^(?:\/v[\d.]+)?\/containers\/([a-zA-Z0-9_.-]+)\/attach(\?.*)?$/, async (ctx, match) => {
+  route("POST", /^(?:\/v[\d.]+)?\/containers\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)\/attach(\?.*)?$/, async (ctx, match) => {
     const containerId = match[1];
     if (!(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
       return forbidden(ctx.res, "Container does not belong to this session");
@@ -512,7 +526,7 @@ function buildRoutes(): Route[] {
   });
 
   // POST /containers/{id}/exec — create exec instance
-  route("POST", /^(?:\/v[\d.]+)?\/containers\/([a-zA-Z0-9_.-]+)\/exec(\?.*)?$/, async (ctx, match) => {
+  route("POST", /^(?:\/v[\d.]+)?\/containers\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)\/exec(\?.*)?$/, async (ctx, match) => {
     const containerId = match[1];
     if (!(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
       return forbidden(ctx.res, "Container does not belong to this session");
@@ -521,7 +535,7 @@ function buildRoutes(): Route[] {
   });
 
   // POST /exec/{id}/start — streaming, resolve exec → parent container
-  route("POST", /^(?:\/v[\d.]+)?\/exec\/([a-zA-Z0-9_.-]+)\/start(\?.*)?$/, async (ctx, match) => {
+  route("POST", /^(?:\/v[\d.]+)?\/exec\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)\/start(\?.*)?$/, async (ctx, match) => {
     const execId = match[1];
     const containerId = await getExecParentContainerId(ctx.socketPath, execId);
     if (!containerId || !(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
@@ -531,13 +545,23 @@ function buildRoutes(): Route[] {
   });
 
   // GET /exec/{id}/json — resolve exec → parent container
-  route("GET", /^(?:\/v[\d.]+)?\/exec\/([a-zA-Z0-9_.-]+)\/json(\?.*)?$/, async (ctx, match) => {
+  route("GET", /^(?:\/v[\d.]+)?\/exec\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)\/json(\?.*)?$/, async (ctx, match) => {
     const execId = match[1];
     const containerId = await getExecParentContainerId(ctx.socketPath, execId);
     if (!containerId || !(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
       return forbidden(ctx.res, "Exec instance does not belong to this session");
     }
     pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
+  });
+
+  // POST /containers/{id}/rename — explicitly unsupported
+  route("POST", /^(?:\/v[\d.]+)?\/containers\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)\/rename(\?.*)?$/, async (ctx) => {
+    forbidden(ctx.res, "Container rename is not supported through the Docker proxy");
+  });
+
+  // POST /containers/{id}/update — explicitly unsupported (live resource updates)
+  route("POST", /^(?:\/v[\d.]+)?\/containers\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)\/update(\?.*)?$/, async (ctx) => {
+    forbidden(ctx.res, "Container update is not supported through the Docker proxy");
   });
 
   // ---- Networks (label-scoped) ----
@@ -587,7 +611,7 @@ function buildRoutes(): Route[] {
   });
 
   // GET /networks/{id} — label check
-  route("GET", /^(?:\/v[\d.]+)?\/networks\/([a-zA-Z0-9_.-]+)(\?.*)?$/, async (ctx, match) => {
+  route("GET", /^(?:\/v[\d.]+)?\/networks\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)(\?.*)?$/, async (ctx, match) => {
     const networkId = match[1];
     if (networkId === "create") return forbidden(ctx.res, "Endpoint not allowed: GET /networks/create");
     if (!(await networkBelongsToSession(ctx.socketPath, networkId, ctx.session.sessionId))) {
@@ -597,7 +621,7 @@ function buildRoutes(): Route[] {
   });
 
   // DELETE /networks/{id} — label check
-  route("DELETE", /^(?:\/v[\d.]+)?\/networks\/([a-zA-Z0-9_.-]+)(\?.*)?$/, async (ctx, match) => {
+  route("DELETE", /^(?:\/v[\d.]+)?\/networks\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)(\?.*)?$/, async (ctx, match) => {
     const networkId = match[1];
     if (!(await networkBelongsToSession(ctx.socketPath, networkId, ctx.session.sessionId))) {
       return forbidden(ctx.res, "Network does not belong to this session");
@@ -606,7 +630,7 @@ function buildRoutes(): Route[] {
   });
 
   // POST /networks/{id}/connect — dual label check
-  route("POST", /^(?:\/v[\d.]+)?\/networks\/([a-zA-Z0-9_.-]+)\/connect(\?.*)?$/, async (ctx, match) => {
+  route("POST", /^(?:\/v[\d.]+)?\/networks\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)\/connect(\?.*)?$/, async (ctx, match) => {
     const networkId = match[1];
     if (!(await networkBelongsToSession(ctx.socketPath, networkId, ctx.session.sessionId))) {
       return forbidden(ctx.res, "Network does not belong to this session");
@@ -636,7 +660,7 @@ function buildRoutes(): Route[] {
   });
 
   // POST /networks/{id}/disconnect — dual label check
-  route("POST", /^(?:\/v[\d.]+)?\/networks\/([a-zA-Z0-9_.-]+)\/disconnect(\?.*)?$/, async (ctx, match) => {
+  route("POST", /^(?:\/v[\d.]+)?\/networks\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)\/disconnect(\?.*)?$/, async (ctx, match) => {
     const networkId = match[1];
     if (!(await networkBelongsToSession(ctx.socketPath, networkId, ctx.session.sessionId))) {
       return forbidden(ctx.res, "Network does not belong to this session");
@@ -714,7 +738,7 @@ function buildRoutes(): Route[] {
   });
 
   // GET /volumes/{name} — label check
-  route("GET", /^(?:\/v[\d.]+)?\/volumes\/([a-zA-Z0-9_.-]+)(\?.*)?$/, async (ctx, match) => {
+  route("GET", /^(?:\/v[\d.]+)?\/volumes\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)(\?.*)?$/, async (ctx, match) => {
     const volumeName = match[1];
     if (volumeName === "create") return forbidden(ctx.res, "Endpoint not allowed: GET /volumes/create");
     if (!(await volumeBelongsToSession(ctx.socketPath, volumeName, ctx.session.sessionId))) {
@@ -724,7 +748,7 @@ function buildRoutes(): Route[] {
   });
 
   // DELETE /volumes/{name} — label check
-  route("DELETE", /^(?:\/v[\d.]+)?\/volumes\/([a-zA-Z0-9_.-]+)(\?.*)?$/, async (ctx, match) => {
+  route("DELETE", /^(?:\/v[\d.]+)?\/volumes\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)(\?.*)?$/, async (ctx, match) => {
     const volumeName = match[1];
     if (!(await volumeBelongsToSession(ctx.socketPath, volumeName, ctx.session.sessionId))) {
       return forbidden(ctx.res, "Volume does not belong to this session");
@@ -738,6 +762,11 @@ function buildRoutes(): Route[] {
     pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
 
+  // POST /images/create — image pull passthrough.
+  // SECURITY NOTE: A session could pull very large images to exhaust host disk.
+  // This is mitigated at the infrastructure level via Docker's --storage-opt and
+  // disk quotas, not at the proxy layer. If disk pressure becomes an issue,
+  // consider adding a pull rate limit or image size cap here.
   route("POST", /^(?:\/v[\d.]+)?\/images\/create(\?.*)?$/, async (ctx) => {
     pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
@@ -748,7 +777,14 @@ function buildRoutes(): Route[] {
     forbidden(ctx.res, "Image deletion is not allowed (images are shared resources)");
   });
 
-  // POST /build — passthrough (chunked streaming, no body buffering)
+  // POST /build — passthrough (chunked streaming, no body buffering).
+  // SECURITY NOTE: The build context is a tar archive sent in the request body.
+  // Docker builds operate on the sent context (not the host filesystem), so
+  // COPY/ADD in the Dockerfile can only access files within that tar. However,
+  // multi-stage builds with COPY --from=<image> can read from any image on the
+  // host — this is a known Docker limitation, not a proxy-layer concern.
+  // Resource limits on child containers (injected via sanitizeContainerCreate)
+  // bound the impact of builds.
   route("POST", /^(?:\/v[\d.]+)?\/build(\?.*)?$/, async (ctx) => {
     pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
