@@ -303,6 +303,27 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       ? this.dockerImageName
       : config.imageName;
 
+    // Create session-specific bridge network for Docker-enabled sessions.
+    // Child containers created through the proxy join this network so they
+    // can communicate with each other but not with other sessions' containers.
+    let sessionNetworkName: string | undefined;
+    if (config.dockerAccess && this.dockerProxyHost) {
+      sessionNetworkName = `shipit-session-${config.sessionId.slice(0, 12)}`;
+      try {
+        await this.docker.createNetwork({
+          Name: sessionNetworkName,
+          Driver: "bridge",
+          Labels: {
+            ...this.baseLabels(),
+            "shipit-parent-session": config.sessionId,
+          },
+        });
+      } catch {
+        // Network may already exist from a previous run
+      }
+      env.push(`SHIPIT_SESSION_NETWORK=${sessionNetworkName}`);
+    }
+
     const sc: SessionContainer = {
       id: "",
       sessionId: config.sessionId,

@@ -322,10 +322,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           if (!sc) return undefined;
           const session = sessionManager.get(sc.sessionId);
           const sessionConfig = session?.workspaceDir ? resolveSessionConfig(session.workspaceDir) : undefined;
+          const hasDocker = sessionConfig?.capabilities.docker ?? false;
           return {
             sessionId: sc.sessionId,
             hostWorkspaceDir: session?.workspaceDir ?? "",
-            dockerAccess: sessionConfig?.capabilities.docker ?? false,
+            dockerAccess: hasDocker,
+            sessionNetworkName: hasDocker ? `shipit-session-${sc.sessionId.slice(0, 12)}` : undefined,
           };
         },
       });

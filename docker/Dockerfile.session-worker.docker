@@ -1,0 +1,40 @@
+# Docker-capable session worker image.
+# Adds Docker CLI (client only, no daemon) on top of the base session worker.
+# Used when a session has `capabilities.docker: true` in shipit.yaml.
+# The Docker CLI talks to the host daemon via DOCKER_HOST env var pointing
+# to the orchestrator's Docker API proxy.
+
+FROM node:24-slim
+
+RUN apt-get update && apt-get install -y git curl python3 make g++ && rm -rf /var/lib/apt/lists/*
+
+# Install Docker CLI (client only — no daemon, no containerd, no buildx)
+RUN curl -fsSL https://download.docker.com/linux/static/stable/$(uname -m)/docker-27.5.1.tgz \
+    | tar xz --strip-components=1 -C /usr/local/bin docker/docker
+
+# Install Docker Compose plugin
+RUN mkdir -p /usr/local/lib/docker/cli-plugins && \
+    ARCH=$(uname -m | sed 's/x86_64/x86_64/' | sed 's/aarch64/aarch64/') && \
+    curl -fsSL "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-${ARCH}" \
+    -o /usr/local/lib/docker/cli-plugins/docker-compose && \
+    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+RUN npm install -g @anthropic-ai/claude-code @openai/codex
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline --loglevel=verbose
+
+COPY tsconfig.json ./
+# Only copy code the session-worker actually needs — session + shared layers.
+# Orchestrator and client code are not used and would bloat the image.
+COPY src/server/session/ ./src/server/session/
+COPY src/server/shared/ ./src/server/shared/
+
+# Credential symlinks (same as dev/prod images)
+RUN mkdir -p /workspace /credentials && ln -s /credentials/.claude /root/.claude && ln -sf /credentials/.claude.json /root/.claude.json
+
+EXPOSE 9100
+
+CMD ["node", "--import", "tsx", "src/server/session/session-worker.ts"]

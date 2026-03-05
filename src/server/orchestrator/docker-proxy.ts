@@ -22,6 +22,8 @@ export interface SessionInfo {
   sessionId: string;
   hostWorkspaceDir: string;
   dockerAccess: boolean;
+  /** Session-specific bridge network name for child containers. */
+  sessionNetworkName?: string;
 }
 
 export interface DockerProxyDeps {
@@ -357,6 +359,14 @@ async function sanitizeContainerCreate(
   const labels = (body.Labels ?? {}) as Record<string, string>;
   labels[PARENT_SESSION_LABEL] = session.sessionId;
   body.Labels = labels;
+
+  // Inject session-specific network so child containers can communicate
+  if (session.sessionNetworkName) {
+    // If NetworkMode is not explicitly set or is "default", use session network
+    if (!hostConfig.NetworkMode || hostConfig.NetworkMode === "default" || hostConfig.NetworkMode === "bridge") {
+      hostConfig.NetworkMode = session.sessionNetworkName;
+    }
+  }
 
   // Write back HostConfig
   body.HostConfig = hostConfig;

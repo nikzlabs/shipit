@@ -11,7 +11,7 @@
 - [x] Apply caps in `resolveSessionConfig()` — `min(requested, cap)` for each resource
 - [x] Plumb capped values through `buildConfig()` → `create()`
 - [x] Unit tests for `resolveSessionConfig()`: valid config, missing fields (defaults), missing file (defaults), invalid values (capped/rejected)
-- [ ] Integration test for resource override flow: session with `shipit.yaml` resources gets container with overridden limits
+- [x] Integration test for resource override flow: session with `shipit.yaml` resources gets container with overridden limits
 
 ## Phase 2: Session container hardening
 
@@ -49,7 +49,7 @@
 - [x] Strip `SecurityOpt`
 - [x] Strip `CgroupParent`
 - [x] **Overwrite** `shipit-parent-session` label (never merge with client-supplied value)
-- [ ] Inject session-specific network
+- [x] Inject session-specific network
 
 ### Label-based scoping (container operations)
 - [x] `GET /containers/json` — filter response to session-labeled containers only
@@ -98,10 +98,10 @@
 
 ### ContainerConfig and session container changes
 - [x] Add `dockerAccess: boolean` to `ContainerConfig`
-- [ ] Build `Dockerfile.session-worker.docker` — base image + Docker CLI binary (no daemon)
+- [x] Build `Dockerfile.session-worker.docker` — base image + Docker CLI binary (no daemon)
 - [x] In `create()`, when `dockerAccess` is true: use Docker-capable image
 - [x] Set `DOCKER_HOST=tcp://{orchestrator-bridge-ip}:{proxy-port}` env var
-- [ ] Create session-specific bridge network `shipit-session-{sessionId}`
+- [x] Create session-specific bridge network `shipit-session-{sessionId}`
 - [x] Set `COMPOSE_PROJECT_NAME=shipit-{sessionId-prefix}` env var
 
 ### Cleanup
@@ -121,14 +121,14 @@
 - [x] Unit: exec-to-container resolution
 - [x] Unit: unknown endpoint returns 403
 - [x] Unit: request body size limit (>10 MB rejected)
-- [ ] Integration: proxy routing end-to-end (create → start → logs → stop → rm)
-- [ ] Integration: network create/connect/disconnect/delete lifecycle
-- [ ] Integration: volume create/delete lifecycle
-- [ ] Integration: session cleanup removes all labeled resources
+- [x] Integration: proxy routing end-to-end (create → start → logs → stop → rm)
+- [x] Integration: network create/connect/disconnect/delete lifecycle
+- [x] Integration: volume create/delete lifecycle
+- [x] Integration: session cleanup removes all labeled resources
 
 ## Phase 4: Self-hosting validation
 
-- [ ] Write `shipit.yaml` for the ShipIt repo (capabilities, resources, install, preview)
+- [x] Write `shipit.yaml` for the ShipIt repo (capabilities, resources, install, preview)
 - [ ] Clone ShipIt in a ShipIt session with Docker access + elevated resources
 - [ ] Validate: `npm ci` completes
 - [ ] Validate: `npm test` passes
