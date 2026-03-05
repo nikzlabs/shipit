@@ -82,11 +82,11 @@
 - [x] `GET /volumes/{id}` — label check
 - [x] `DELETE /volumes/{id}` — label check
 
-### Image endpoints (unscoped)
-- [x] `GET /images/*` — passthrough
-- [x] `POST /images/create` — passthrough
-- [x] `POST /build` — passthrough (chunked streaming, no body buffering)
-- [x] `DELETE /images/{id}` — passthrough
+### Image endpoints
+- [x] `GET /images/*` — passthrough (read-only)
+- [x] `POST /images/create` — passthrough (documented disk exhaustion risk)
+- [x] `POST /build` — passthrough (chunked streaming, documented limitations)
+- [x] `DELETE /images/{id}` — blocked (shared resource, cross-session DoS risk)
 
 ### System endpoints (unscoped)
 - [x] `GET /_ping` — passthrough
@@ -125,6 +125,51 @@
 - [x] Integration: network create/connect/disconnect/delete lifecycle
 - [x] Integration: volume create/delete lifecycle
 - [x] Integration: session cleanup removes all labeled resources
+
+## Phase 3b: Review hardening (post-implementation)
+
+### Container create sanitization (additional)
+- [x] Reject `NetworkMode: "container:{id}"` (network namespace sharing)
+- [x] Reject unknown mount types (only `bind`, `volume`, `tmpfs` allowed)
+- [x] Strip `Sysctls`, `UsernsMode`, `CgroupnsMode`, `Runtime`
+- [x] Strip `ReadonlyPaths`, `MaskedPaths`, `GroupAdd`
+- [x] `Privileged` check uses truthy (not `=== true`) to prevent type coercion bypass
+- [x] Enforce resource limits on child containers (memory, CPU quota, CPU period, PIDs) capped at session's own limits
+- [x] Reject negative resource limit values (`-1` = unlimited in Docker)
+- [x] Cap `CpuPeriod` to 100ms max to prevent effective CPU limit bypass
+
+### Volume create sanitization
+- [x] Block `DriverOpts` (prevents host-path escape via local driver bind mounts)
+- [x] Block non-`local` volume drivers
+
+### Proxy robustness
+- [x] `dockerRes.on("error")` handler in `pipeToDocker` (crash prevention)
+- [x] Client disconnect aborts upstream Docker request (`res.on("close")`)
+- [x] `readBody` listener cleanup on rejection (prevent double-resolve)
+- [x] Explicit `POST /containers/{id}/rename` and `/update` routes with clear error messages
+- [x] `GET /networks/create` and `GET /volumes/create` return 403 instead of void
+- [x] Block `DELETE /images/{id}` (shared resource protection)
+
+### Session container lifecycle
+- [x] Cache session config at container creation time (not re-read on every proxy request)
+- [x] Store `hostWorkspaceDir`, `dockerAccess`, `sessionNetworkName`, `resourceLimits` on `SessionContainer`
+- [x] `rediscover()` skips containers without valid workspace dir (not empty string)
+- [x] `rediscover()` populates `resourceLimits` from session config
+- [x] `create()` cleans up Docker container on late failures (inspect/health check)
+- [x] `destroy()` stops session container before cleaning child resources (race fix)
+- [x] Health monitor skips containers in `"stopping"` state (no duplicate events)
+- [x] Health monitor cleans up `standbySessionIds` on container death
+- [x] `cleanupSessionDockerResources` logs warnings instead of swallowing errors
+- [x] Network creation errors logged (not silently swallowed)
+
+### Test coverage
+- [x] 59 unit tests, 9 integration tests for Docker proxy
+- [x] Resource limit capping verified against actual `hostConfig` values (not just status)
+- [x] `HostConfig` field stripping verified (Sysctls, UsernsMode, Runtime, SecurityOpt, CgroupParent)
+- [x] Bind mount rejection, volume DriverOpts rejection, network connect foreign network
+- [x] Container rename/update blocking, image deletion blocking
+- [x] `NET_RAW` injection verified via `hostConfig.CapDrop`
+- [x] Content-type validation in mock daemon
 
 ## Phase 4: Self-hosting validation
 
