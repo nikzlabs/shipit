@@ -214,7 +214,7 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
               <PhArchiveIcon size={ICON_SIZE.SM} />
             </Button>
           )}
-          {!isArchived && onArchive && !isCurrent && (
+          {!isArchived && onArchive && (
             <Button
               variant="ghost"
               onClick={(e) => { e.stopPropagation(); onArchive(session.id); }}
