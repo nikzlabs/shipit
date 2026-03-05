@@ -260,20 +260,18 @@ export default function App() {
   useEffect(() => {
     if (urlSessionId && urlSessionId !== useSessionStore.getState().sessionId) {
       resumeSessionInternal(urlSessionId);
-      clearPreviewErrors();
       disableAutoFix();
     } else if (!urlSessionId && useSessionStore.getState().sessionId) {
       // Clear stale sessionId — prevents WS from connecting to old session.
       // On /new route, the auto-claim effect will set the correct sessionId.
       useSessionStore.getState().setSessionId(undefined);
       resetSessionState();
-      clearPreviewErrors();
       disableAutoFix();
       if (!isNewSessionRoute) {
         useUiStore.getState().setShowTemplates(true);
       }
     }
-  }, [urlSessionId, isNewSessionRoute, clearPreviewErrors, disableAutoFix]);
+  }, [urlSessionId, isNewSessionRoute, disableAutoFix]);
 
   // Auto-claim session when landing on /{slug}/new (direct URL navigation or page refresh)
   useEffect(() => {
