@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: xterm.js terminal initialization + ResizeObserver with cleanup (third-party lib + browser API)
 import { useEffect, useRef, useImperativeHandle, forwardRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";

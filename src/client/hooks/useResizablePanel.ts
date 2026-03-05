@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: document.body style manipulation during drag (DOM sync)
 import { useState, useCallback, useRef, useEffect } from "react";
 
 export interface UseResizablePanelOptions {

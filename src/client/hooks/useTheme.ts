@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: DOM class manipulation + localStorage persistence (external system sync)
 import { useState, useEffect, useCallback } from "react";
 
 /**

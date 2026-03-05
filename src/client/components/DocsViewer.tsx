@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import { marked } from "marked";
 import { Button } from "./ui/button.js";
 
@@ -13,12 +13,21 @@ export interface DocsViewerProps {
 export function DocsViewer({ files, selectedFile, content, onSelectFile, onRefresh }: DocsViewerProps) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
 
-  // Auto-select the first file when the list loads and nothing is selected
-  useEffect(() => {
-    if (files.length > 0 && !selectedFile) {
-      onSelectFile(files[0]);
-    }
-  }, [files, selectedFile, onSelectFile]);
+  // Auto-select the first file when the list loads and nothing is selected.
+  // Uses the effective selected file for rendering — calls onSelectFile via
+  // queueMicrotask to avoid calling parent callback during render.
+  const effectiveSelectedFile = selectedFile ?? (files.length > 0 ? files[0] : null);
+  const autoSelectNotifiedRef = useRef(false);
+  if (files.length > 0 && !selectedFile && !autoSelectNotifiedRef.current) {
+    autoSelectNotifiedRef.current = true;
+    queueMicrotask(() => onSelectFile(files[0]));
+  }
+  // Reset auto-select tracking when files change
+  const prevFilesRef = useRef(files);
+  if (prevFilesRef.current !== files) {
+    prevFilesRef.current = files;
+    autoSelectNotifiedRef.current = false;
+  }
 
   const renderedHtml = useMemo(() => {
     if (!content) return "";
@@ -56,7 +65,7 @@ export function DocsViewer({ files, selectedFile, content, onSelectFile, onRefre
             onClick={() => setIsDropdownOpen(!isDropdownOpen)}
             className="flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-(--color-bg-hover) transition-colors max-w-full"
           >
-            <span className="truncate">{selectedFile || "Select a file..."}</span>
+            <span className="truncate">{effectiveSelectedFile || "Select a file..."}</span>
             <span className="shrink-0">{isDropdownOpen ? "\u25B2" : "\u25BC"}</span>
           </button>
           {isDropdownOpen && (
@@ -69,7 +78,7 @@ export function DocsViewer({ files, selectedFile, content, onSelectFile, onRefre
                     setIsDropdownOpen(false);
                   }}
                   className={`block w-full text-left px-3 py-1.5 hover:bg-(--color-bg-hover) transition-colors truncate ${
-                    file === selectedFile ? "bg-(--color-bg-tertiary) text-(--color-text-primary)" : "text-(--color-text-secondary)"
+                    file === effectiveSelectedFile ? "bg-(--color-bg-tertiary) text-(--color-text-primary)" : "text-(--color-text-secondary)"
                   }`}
                 >
                   {file}

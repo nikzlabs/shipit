@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: window postMessage listener with cleanup (browser API subscription)
 import { useEffect } from "react";
 import {
   usePreviewStore,

@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: auto-focus input on mount (one-time DOM setup)
 import { useRef, useEffect } from "react";
 import { CaretUpIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";

@@ -128,6 +128,26 @@ export default tseslint.config(
       ],
     },
   },
+  // ── useEffect restriction (client code) ────────────────────────────────
+  // useEffect is a synchronization tool for external systems. Most state
+  // derivation, event handling, and prop-change reactions should use
+  // inline computation, event handlers, useMemo, or key props instead.
+  // Add an eslint-disable-next-line with a justification for each valid usage.
+  {
+    files: ["src/client/**/*.ts", "src/client/**/*.tsx"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [{
+            name: "react",
+            importNames: ["useEffect"],
+            message: "useEffect is restricted. Prefer event handlers, derived state, useMemo, or key props. If useEffect is genuinely needed (external system sync, browser API subscription, cleanup), add eslint-disable-next-line with a justification.",
+          }],
+        },
+      ],
+    },
+  },
   // ── Layer boundary enforcement ──────────────────────────────────────────
   // orchestrator/ and session/ must not import from each other (even type
   // imports). Shared types belong in shared/types/. Integration tests are

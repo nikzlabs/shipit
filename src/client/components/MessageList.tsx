@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: DOM scroll sync (scrollIntoView), window keydown listener, xterm auto-scroll
 import { useMemo, useEffect, useRef, useState, useCallback } from "react";
 import hljs from "highlight.js";
 import { Marked } from "marked";
@@ -429,22 +430,25 @@ function MessageEditor({
   const [text, setText] = useState(initialText);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (el) {
+  // Auto-focus and size textarea on mount via callback ref
+  const initRef = useRef(false);
+  const setTextareaRef = useCallback((el: HTMLTextAreaElement | null) => {
+    textareaRef.current = el;
+    if (el && !initRef.current) {
+      initRef.current = true;
       el.focus();
       el.style.height = "auto";
-      el.style.height = `${Math.min(el.scrollHeight, 200)  }px`;
+      el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
     }
   }, []);
 
-  useEffect(() => {
+  const resizeTextarea = () => {
     const el = textareaRef.current;
     if (el) {
       el.style.height = "auto";
-      el.style.height = `${Math.min(el.scrollHeight, 200)  }px`;
+      el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
     }
-  }, [text]);
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -460,9 +464,9 @@ function MessageEditor({
   return (
     <div className="w-full max-w-2xl">
       <textarea
-        ref={textareaRef}
+        ref={setTextareaRef}
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => { setText(e.target.value); resizeTextarea(); }}
         onKeyDown={handleKeyDown}
         rows={1}
         className="w-full resize-none rounded-lg bg-(--color-accent) border border-(--color-border-focus) px-4 py-3 text-sm text-(--color-accent-text) placeholder-blue-300 focus:outline-none focus:ring-2 focus:ring-(--color-border-focus)"
@@ -637,10 +641,12 @@ export function MessageList({
     [onEditMessage]
   );
 
-  // Cancel editing when loading starts (message was sent)
-  useEffect(() => {
-    if (isLoading) setEditingIndex(null);
-  }, [isLoading]);
+  // Cancel editing when loading starts (inline state reset during render)
+  const prevIsLoadingRef = useRef(isLoading);
+  if (isLoading && !prevIsLoadingRef.current) {
+    setEditingIndex(null);
+  }
+  prevIsLoadingRef.current = isLoading;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "instant" });

@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: relay errors to server API, auto-fix timer with cooldown/retry (external system sync + cleanup)
 import { useState, useEffect, useRef, useCallback } from "react";
 import { formatErrorForMessage } from "../components/PreviewFrame.js";
 import type { PreviewError } from "./usePreviewErrors.js";

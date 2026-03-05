@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: window keydown listener for Escape/? with cleanup (browser API subscription)
 import { useEffect, useRef } from "react";
 import { Button } from "./ui/button.js";
 

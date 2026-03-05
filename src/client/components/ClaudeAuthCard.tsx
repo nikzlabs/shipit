@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import type { AgentOption } from "./AgentPicker.js";
 
 export interface ClaudeAuthCardProps {
@@ -24,19 +24,15 @@ export function ClaudeAuthCard({
   const [apiKeyError, setApiKeyError] = useState("");
   const [apiKeyLoading, setApiKeyLoading] = useState(false);
   const [authCode, setAuthCode] = useState("");
-  const [authPending, setAuthPending] = useState(false);
+  const [authPendingLocal, setAuthPendingLocal] = useState(false);
 
-  // Reset authPending when authUrl arrives or agent becomes authenticated
-  useEffect(() => {
-    if (authUrl !== null || agent?.authConfigured) {
-      setAuthPending(false);
-    }
-  }, [authUrl, agent?.authConfigured]);
+  // Derive effective authPending: auto-clears when authUrl arrives or agent becomes authenticated
+  const authPending = authPendingLocal && authUrl === null && !agent?.authConfigured;
 
   if (!agent) return null;
 
   const handleStartAuth = () => {
-    setAuthPending(true);
+    setAuthPendingLocal(true);
     onStartAuth();
   };
 

@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: requestAnimationFrame for animation + setTimeout auto-dismiss with cleanup (timer-based side effects)
 import { useEffect, useState } from "react";
 import { CheckCircleIcon } from "@phosphor-icons/react";
 import { Button } from "./ui/button.js";
