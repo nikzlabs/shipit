@@ -106,6 +106,11 @@ export function useServerEvents(): void {
 
     es.addEventListener("full_reset_complete", () => {
       fullResetAllStores();
+      // Hard navigate home — all server state is wiped, a clean page load
+      // ensures no stale in-memory state lingers (WS connections, refs, etc.)
+      if (window.location.pathname !== "/") {
+        window.location.href = "/";
+      }
     });
 
     // Native EventSource "error" fires on connection drop — no data to parse.
