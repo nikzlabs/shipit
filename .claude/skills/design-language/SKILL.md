@@ -59,10 +59,11 @@ Never use raw Tailwind color classes like `bg-gray-950` or `text-blue-500` in co
 | `--color-context-full` | Context meter 90%+ |
 | `--color-scrollbar-thumb` | Scrollbar thumb |
 | `--color-scrollbar-thumb-hover` | Scrollbar thumb on hover |
+| `--font-size-code` | Monospace / code block font size |
 
 ## Typography
 
-System font stack, no custom web fonts. Body: `text-sm`, headings: `text-lg font-semibold`, code: `font-mono text-[FONT_SIZE.CODE]` (from `src/client/design-tokens.ts`), small: `text-xs`.
+System font stack, no custom web fonts. Body: `text-sm`, headings: `text-lg font-semibold`, code: `font-mono text-[var(--font-size-code)]`, small: `text-xs`.
 
 ## Iconography — Phosphor Icons
 
