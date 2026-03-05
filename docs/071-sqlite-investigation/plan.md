@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in-progress
 ---
 
 # Storage Investigation: SQLite vs PostgreSQL vs Plain Files (+ Bun vs Node)
