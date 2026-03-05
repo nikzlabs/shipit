@@ -1,3 +1,6 @@
+import { Badge } from "./ui/badge.js";
+import type { BadgeProps } from "./ui/badge.js";
+import { Button } from "./ui/button.js";
 import type { FeatureInfo, FeatureStatus } from "../../server/shared/types.js";
 
 export interface FeaturesPanelProps {
@@ -6,19 +9,19 @@ export interface FeaturesPanelProps {
   onRefresh: () => void;
 }
 
-const STATUS_CONFIG: Record<FeatureStatus, { label: string; bg: string; text: string }> = {
-  "planned": { label: "Planned", bg: "bg-(--color-bg-tertiary)", text: "text-(--color-text-primary)" },
-  "in-progress": { label: "In Progress", bg: "bg-(--color-warning-subtle)", text: "text-(--color-warning)" },
-  "done": { label: "Done", bg: "bg-(--color-success-subtle)", text: "text-(--color-success)" },
-  "paused": { label: "Paused", bg: "bg-(--color-bg-tertiary)", text: "text-(--color-text-secondary)" },
+const STATUS_CONFIG: Record<FeatureStatus, { label: string; variant: BadgeProps["variant"] }> = {
+  "planned": { label: "Planned", variant: "default" },
+  "in-progress": { label: "In Progress", variant: "warning" },
+  "done": { label: "Done", variant: "success" },
+  "paused": { label: "Paused", variant: "default" },
 };
 
 function StatusBadge({ status }: { status: FeatureStatus }) {
   const config = STATUS_CONFIG[status] ?? STATUS_CONFIG["planned"];
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium ${config.bg} ${config.text}`}>
+    <Badge variant={config.variant} className="text-[11px]">
       {config.label}
-    </span>
+    </Badge>
   );
 }
 
@@ -32,12 +35,14 @@ export function FeaturesPanel({ features, onStartSession, onRefresh }: FeaturesP
             Create feature docs in <code className="text-xs bg-(--color-bg-secondary) px-1 rounded">docs/NNN-feature-name/plan.md</code> with
             optional YAML frontmatter for status tracking.
           </p>
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={onRefresh}
-            className="mt-2 px-3 py-1 text-xs rounded bg-(--color-bg-secondary) hover:bg-(--color-bg-hover) text-(--color-text-primary) transition-colors"
+            className="mt-2"
           >
             Refresh
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -53,13 +58,14 @@ export function FeaturesPanel({ features, onStartSession, onRefresh }: FeaturesP
       {/* Header bar */}
       <div className="flex items-center justify-between px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs text-(--color-text-secondary)">
         <span className="font-medium">{features.length} feature{features.length !== 1 ? "s" : ""}</span>
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={onRefresh}
-          className="px-2 py-0.5 rounded hover:bg-(--color-bg-hover) transition-colors"
           title="Refresh feature list"
         >
           Reload
-        </button>
+        </Button>
       </div>
 
       {/* Feature list */}
@@ -120,13 +126,15 @@ function FeatureRow({
         </span>
         <StatusBadge status={feature.status} />
       </div>
-      <button
+      <Button
+        variant="primary"
+        size="sm"
         onClick={() => onStartSession(feature)}
-        className="shrink-0 ml-2 px-2.5 py-1 text-xs rounded bg-(--color-accent) hover:bg-(--color-accent-hover) text-(--color-accent-text) transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+        className="shrink-0 ml-2 opacity-0 group-hover:opacity-100 focus:opacity-100"
         title={`Start a new session to work on ${feature.name}`}
       >
         Start Session
-      </button>
+      </Button>
     </div>
   );
 }

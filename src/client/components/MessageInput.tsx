@@ -2,6 +2,7 @@ import { useState, useRef, useCallback } from "react";
 import { ModeSelector } from "./ModeSelector.js";
 import { FileAttachmentChips } from "./FileAttachmentChips.js";
 import { FileAutoComplete } from "./FileAutoComplete.js";
+import { Button } from "./ui/button.js";
 import type { PermissionMode, FileContextRef, FileTreeNode } from "../../server/shared/types.js";
 
 export interface ImagePreview {
@@ -279,7 +280,7 @@ export function MessageInput({
       {imageError && (
         <div className="flex items-center gap-2 mb-2 text-xs text-(--color-error) max-w-3xl mx-auto">
           <span>{imageError}</span>
-          <button onClick={clearImageError} className="text-(--color-error) hover:text-(--color-error) ml-auto">&times;</button>
+          <Button variant="ghost" size="sm" onClick={clearImageError} className="text-(--color-error) ml-auto">&times;</Button>
         </div>
       )}
 
@@ -346,17 +347,19 @@ export function MessageInput({
         />
 
         {/* Attach image button */}
-        <button
+        <Button
+          variant="secondary"
+          size="md"
           onClick={handleAttachClick}
           disabled={disabled || images.length >= MAX_IMAGES}
-          className="rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-3 text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="rounded-lg px-3 py-3"
           title="Attach image"
           aria-label="Attach image"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
           </svg>
-        </button>
+        </Button>
 
         <textarea
           ref={textareaRef}
@@ -370,9 +373,11 @@ export function MessageInput({
           className="flex-1 resize-none rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-3 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:ring-2 focus:ring-(--color-accent) disabled:opacity-50 field-sizing-content"
         />
         {isLoading && onInterrupt ? (
-          <button
+          <Button
+            variant="destructive"
+            size="md"
             onClick={onInterrupt}
-            className="rounded-lg bg-(--color-error) px-4 py-3 text-sm font-medium text-white hover:bg-(--color-error) transition-colors"
+            className="rounded-lg px-4 py-3"
             title="Stop (Esc)"
             aria-label="Stop Claude"
             data-testid="stop-button"
@@ -380,15 +385,17 @@ export function MessageInput({
             <svg className="w-4 h-4" viewBox="0 0 16 16" fill="currentColor">
               <rect x="3" y="3" width="10" height="10" rx="1" />
             </svg>
-          </button>
+          </Button>
         ) : (
-          <button
+          <Button
+            variant="primary"
+            size="md"
             onClick={handleSubmit}
             disabled={disabled || (!text.trim() && images.length === 0)}
-            className="rounded-lg bg-(--color-accent) px-4 py-3 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className="rounded-lg px-4 py-3"
           >
             Send
-          </button>
+          </Button>
         )}
       </div>
     </div>

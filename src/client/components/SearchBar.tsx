@@ -1,4 +1,5 @@
 import { useRef, useEffect } from "react";
+import { Button } from "./ui/button.js";
 import type { SearchMatch } from "../hooks/useSearch.js";
 
 /**
@@ -65,37 +66,43 @@ export function SearchBar({
       </span>
 
       {/* Prev / Next buttons */}
-      <button
+      <Button
+        variant="ghost"
+        size="sm"
         onClick={onPrev}
         disabled={matches.length === 0}
-        className="p-1 rounded text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) disabled:opacity-30 disabled:cursor-not-allowed"
+        className="p-1 disabled:opacity-30"
         title="Previous match (Shift+Enter)"
       >
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
         </svg>
-      </button>
-      <button
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
         onClick={onNext}
         disabled={matches.length === 0}
-        className="p-1 rounded text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) disabled:opacity-30 disabled:cursor-not-allowed"
+        className="p-1 disabled:opacity-30"
         title="Next match (Enter)"
       >
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
         </svg>
-      </button>
+      </Button>
 
       {/* Close button */}
-      <button
+      <Button
+        variant="ghost"
+        size="sm"
         onClick={onClose}
-        className="p-1 rounded text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"
+        className="p-1"
         title="Close search (Escape)"
       >
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
         </svg>
-      </button>
+      </Button>
     </div>
   );
 }

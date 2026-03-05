@@ -1,4 +1,6 @@
 import { useState, useCallback } from "react";
+import { Badge } from "./ui/badge.js";
+import { Button } from "./ui/button.js";
 
 export interface AskQuestionOption {
   label: string;
@@ -155,9 +157,9 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled }: As
           <div key={qIndex} className={`p-3 ${qIndex > 0 ? "border-t border-(--color-border-secondary)" : ""}`}>
             {/* Header tag */}
             {q.header && (
-              <span className="inline-block text-[10px] font-semibold uppercase tracking-wider text-(--color-accent) bg-(--color-accent-subtle) rounded px-1.5 py-0.5 mb-1.5">
+              <Badge variant="info" className="text-[10px] uppercase tracking-wider mb-1.5">
                 {q.header}
-              </span>
+              </Badge>
             )}
             {/* Question text */}
             <p className="text-sm text-(--color-text-primary) mb-2">{q.question}</p>
@@ -279,14 +281,15 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled }: As
       {/* Submit button for multi-select or multi-question */}
       {needsSubmitButton && !isAnswered && (
         <div className="px-3 pb-3">
-          <button
+          <Button
+            variant="primary"
+            size="md"
             onClick={handleSubmit}
             disabled={disabled || !hasAnyAnswer}
-            className="px-4 py-1.5 rounded-md text-sm font-medium bg-(--color-accent) text-(--color-accent-text) hover:bg-(--color-accent-hover) disabled:opacity-50 disabled:cursor-default transition-colors"
             data-testid="submit-answer"
           >
             Submit
-          </button>
+          </Button>
         </div>
       )}
     </div>

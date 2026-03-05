@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { TemplateInfo } from "./TemplateSelector.js";
+import { Button } from "./ui/button.js";
 
 const CATEGORY_LABELS: Record<TemplateInfo["category"], string> = {
   frontend: "Frontend",
@@ -92,13 +93,15 @@ export function NewRepoDialog({
             <h2 className="text-lg font-semibold text-(--color-text-primary)">
               Create New Repository
             </h2>
-            <button
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={onClose}
-              className="text-(--color-text-tertiary) hover:text-(--color-text-primary) transition-colors text-xl leading-none"
+              className="text-xl leading-none"
               aria-label="Close"
             >
               &times;
-            </button>
+            </Button>
           </div>
           <p className="text-sm text-(--color-text-secondary)">
             Create a new repository under <span className="text-(--color-text-primary) font-medium">{username}</span> with a project template.
@@ -239,20 +242,23 @@ export function NewRepoDialog({
 
         {/* Footer */}
         <div className="px-6 py-4 border-t border-(--color-border-secondary) flex gap-3">
-          <button
+          <Button
+            variant="secondary"
+            size="lg"
             onClick={onClose}
             disabled={creating}
-            className="flex-1 rounded-lg bg-(--color-bg-secondary) px-4 py-2.5 text-sm font-medium text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-50"
+            className="flex-1 rounded-lg py-2.5"
           >
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
+            size="lg"
             onClick={handleSubmit}
             disabled={!canSubmit}
-            className="flex-1 rounded-lg bg-(--color-accent) px-4 py-2.5 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex-1 rounded-lg py-2.5"
           >
             {creating ? "Creating..." : "Create & Setup"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

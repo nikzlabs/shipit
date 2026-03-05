@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import type { AgentOption } from "./AgentPicker.js";
 import type { DeployTargetInfo } from "../../server/shared/types.js";
+import { Badge } from "./ui/badge.js";
+import { Button } from "./ui/button.js";
+import { Modal } from "./ui/modal.js";
 import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
 import { CodexAuthCard } from "./CodexAuthCard.js";
 import { GitHubTokenForm } from "./GitHubTokenForm.js";
@@ -156,28 +159,26 @@ export function Settings({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-      onClick={handleBackdropClick}
+    <Modal
+      onClose={handleBackdropClick}
+      className="rounded-lg border-(--color-border-secondary) max-w-2xl w-full mx-4 flex flex-col h-120"
       data-testid="settings-backdrop"
+      onKeyDown={handleKeyDown}
+      role="dialog"
+      aria-label="Settings"
     >
-      <div
-        className="bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-lg shadow-xl max-w-2xl w-full mx-4 flex flex-col h-120"
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={handleKeyDown}
-        role="dialog"
-        aria-label="Settings"
-      >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-(--color-border-secondary)">
           <h2 className="text-lg font-semibold text-(--color-text-primary)">Settings</h2>
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={onClose}
-            className="text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors text-xl leading-none"
+            className="text-xl leading-none"
             aria-label="Close"
           >
             &times;
-          </button>
+          </Button>
         </div>
 
         {/* Body: sidebar tabs + content */}
@@ -275,20 +276,24 @@ export function Settings({
               </div>
 
               <div className="flex items-center justify-end gap-2">
-                <button
+                <Button
+                  variant="ghost"
+                  size="md"
                   onClick={onClose}
-                  className="px-3 py-1.5 text-sm rounded-md text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
+                  className="rounded-md"
                 >
                   Cancel
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="primary"
+                  size="md"
                   onClick={handleSave}
                   disabled={isOverLimit}
-                  className="px-3 py-1.5 text-sm rounded-md bg-(--color-accent) text-(--color-accent-text) hover:bg-(--color-accent-hover) disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  className="rounded-md"
                   data-testid="settings-save"
                 >
                   Save
-                </button>
+                </Button>
               </div>
             </div>
           )}
@@ -368,17 +373,19 @@ export function Settings({
                   />
                 </div>
 
-                <button
+                <Button
+                  variant="primary"
+                  size="lg"
                   onClick={() => {
                     onGitIdentitySave(gitName.trim(), gitEmail.trim());
                     setGitSaved(true);
                   }}
                   disabled={!gitName.trim() || !gitEmail.trim()}
-                  className="w-full rounded-lg bg-(--color-accent) px-4 py-2.5 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full rounded-lg"
                   data-testid="settings-git-save"
                 >
                   {gitSaved ? "Saved" : "Save"}
-                </button>
+                </Button>
               </div>
             </div>
           )}
@@ -399,13 +406,15 @@ export function Settings({
                     className="w-24 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) focus:outline-none focus:border-(--color-border-focus)"
                     data-testid="settings-max-idle-containers"
                   />
-                  <button
+                  <Button
+                    variant="primary"
+                    size="md"
                     onClick={() => { onMaxIdleContainersSave(idleContainers); setIdleContainersSaved(true); }}
-                    className="px-3 py-2 text-sm rounded-md bg-(--color-accent) text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors"
+                    className="rounded-md"
                     data-testid="settings-max-idle-containers-save"
                   >
                     {idleContainersSaved ? "Saved" : "Save"}
-                  </button>
+                  </Button>
                 </div>
               </div>
 
@@ -449,16 +458,18 @@ export function Settings({
               {selectedDeployTarget ? (
                 <form onSubmit={handleDeployConfigSubmit} className="space-y-4" data-testid="deploy-config-form">
                   <div className="flex items-center gap-2">
-                    <button
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       type="button"
                       onClick={handleDeployBackToList}
-                      className="text-(--color-text-tertiary) hover:text-(--color-text-primary) transition-colors"
+                      className="text-(--color-text-tertiary)"
                       aria-label="Back to targets"
                     >
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
                       </svg>
-                    </button>
+                    </Button>
                     <h3 className="text-sm font-medium text-(--color-text-primary)">
                       Configure {selectedDeployTarget.name}
                     </h3>
@@ -512,14 +523,16 @@ export function Settings({
                     />
                   </div>
 
-                  <button
+                  <Button
+                    variant="primary"
+                    size="lg"
                     type="submit"
                     disabled={savingDeployConfig}
-                    className="w-full px-4 py-2 text-sm rounded-lg bg-(--color-accent) text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="w-full rounded-lg"
                     data-testid="deploy-config-save"
                   >
                     {savingDeployConfig ? "Saving..." : "Save Configuration"}
-                  </button>
+                  </Button>
                 </form>
               ) : (
                 <div className="space-y-3" data-testid="deploy-target-list">
@@ -541,9 +554,7 @@ export function Settings({
                               <div className="text-sm text-(--color-text-secondary) mt-0.5">{target.description}</div>
                             </div>
                             {status?.configured && (
-                              <span className="text-xs px-2 py-0.5 rounded-full bg-(--color-success-subtle) text-(--color-success)">
-                                Configured
-                              </span>
+                              <Badge variant="success">Configured</Badge>
                             )}
                           </div>
                           <div className="flex gap-2 mt-3">
@@ -580,7 +591,6 @@ export function Settings({
             </div>
           )}
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

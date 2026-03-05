@@ -2,6 +2,9 @@ import { useState, useRef, useEffect, useMemo } from "react";
 import { formatRelativeDate } from "../utils/dates.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
+import { Badge } from "./ui/badge.js";
+import { Button } from "./ui/button.js";
+import { Modal } from "./ui/modal.js";
 
 interface AllSessionsDialogProps {
   open: boolean;
@@ -113,22 +116,19 @@ export function AllSessionsDialog({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick={onClose}
+    <Modal
+      onClose={onClose}
+      className="w-full max-w-lg rounded-lg border-(--color-border-secondary)"
     >
-      <div
-        className="w-full max-w-lg rounded-lg bg-(--color-bg-elevated) border border-(--color-border-secondary) shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-(--color-border-secondary) px-4 py-3">
           <h2 className="text-sm font-medium text-(--color-text-primary)">
             All Sessions
           </h2>
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={onClose}
-            className="text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors"
             aria-label="Close"
           >
             <svg
@@ -144,7 +144,7 @@ export function AllSessionsDialog({
                 d="M6 18L18 6M6 6l12 12"
               />
             </svg>
-          </button>
+          </Button>
         </div>
 
         {/* Filter bar */}
@@ -208,15 +208,9 @@ export function AllSessionsDialog({
                             {session.title}
                           </button>
                         )}
-                        <span
-                          className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                            isArchived
-                              ? "bg-(--color-bg-secondary) text-(--color-text-tertiary)"
-                              : "bg-(--color-success-subtle) text-(--color-success)"
-                          }`}
-                        >
+                        <Badge variant={isArchived ? "default" : "success"} className="shrink-0 text-[10px]">
                           {isArchived ? "Archived" : "Active"}
-                        </span>
+                        </Badge>
                       </div>
                       <div className="flex items-center gap-2 mt-0.5">
                         {selectedRepo === ALL_REPOS && session.remoteUrl && (
@@ -261,14 +255,14 @@ export function AllSessionsDialog({
 
         {/* Footer */}
         <div className="flex justify-end border-t border-(--color-border-secondary) px-4 py-3">
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={onClose}
-            className="rounded-md px-3 py-1.5 text-xs text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors"
           >
             Close
-          </button>
+          </Button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

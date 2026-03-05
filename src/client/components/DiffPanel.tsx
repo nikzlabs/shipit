@@ -1,5 +1,6 @@
 import { useState, useMemo } from "react";
 import { DiffEditor } from "@monaco-editor/react";
+import { Button } from "./ui/button.js";
 import type { FileDiff } from "../../server/shared/types.js";
 
 /** Map file extensions to Monaco language IDs. */
@@ -79,15 +80,17 @@ export function DiffPanel({ diff, onClose, commitMessage }: DiffPanelProps) {
       <div className="flex flex-col h-full">
         <div className="flex items-center justify-between px-4 py-2 border-b border-(--color-border-secondary) bg-(--color-bg-elevated)">
           <span className="text-sm text-(--color-text-secondary)">No changes</span>
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={onClose}
-            className="text-(--color-text-tertiary) hover:text-(--color-text-primary) transition-colors"
+            className="text-(--color-text-tertiary)"
             aria-label="Close diff panel"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
-          </button>
+          </Button>
         </div>
         <div className="flex-1 flex items-center justify-center text-(--color-text-secondary) text-sm">
           No file changes in this turn.
@@ -106,15 +109,17 @@ export function DiffPanel({ diff, onClose, commitMessage }: DiffPanelProps) {
           <span className="text-(--color-error) shrink-0">-{diff.stats.totalDeletions}</span>
           <span className="text-(--color-text-secondary) shrink-0">({diff.stats.filesChanged} file{diff.stats.filesChanged !== 1 ? "s" : ""})</span>
         </div>
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={onClose}
-          className="text-(--color-text-tertiary) hover:text-(--color-text-primary) transition-colors p-0.5"
+          className="text-(--color-text-tertiary) p-0.5"
           aria-label="Close diff panel"
         >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
           </svg>
-        </button>
+        </Button>
       </div>
 
       {/* Main area: file list + diff */}
@@ -193,12 +198,13 @@ export function DiffPanel({ diff, onClose, commitMessage }: DiffPanelProps) {
 
       {/* Footer */}
       <div className="flex items-center gap-2 px-3 py-1.5 border-t border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0">
-        <button
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={onClose}
-          className="px-3 py-1 text-xs font-medium rounded bg-(--color-bg-tertiary) hover:bg-(--color-bg-hover) text-(--color-text-primary) transition-colors"
         >
           Close
-        </button>
+        </Button>
         <span className="ml-auto text-[10px] text-(--color-text-tertiary) font-mono">
           {diff.fromCommit.slice(0, 7)}..{diff.toCommit.slice(0, 7)}
         </span>

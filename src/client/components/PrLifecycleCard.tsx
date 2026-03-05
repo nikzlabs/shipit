@@ -12,6 +12,7 @@ import { useState } from "react";
 import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { Button } from "./ui/button.js";
 import {
   GitPullRequestIcon,
   GitMergeIcon,
@@ -98,16 +99,17 @@ function AutoFixToggle({ sessionId, autoFix }: { sessionId: string; autoFix?: Pr
   const enabled = autoFix?.enabled ?? false;
 
   return (
-    <button
+    <Button
+      variant="ghost"
+      size="sm"
       onClick={() => toggleAutoFix(sessionId, !enabled)}
-      className="flex items-center gap-1 text-xs text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors"
       title={enabled ? "Disable auto-fix" : "Enable auto-fix"}
     >
       Auto-fix
       <span className={`inline-block w-6 h-3.5 rounded-full transition-colors ${enabled ? "bg-(--color-success)" : "bg-(--color-text-tertiary)"}`}>
         <span className={`block w-2.5 h-2.5 mt-0.5 rounded-full bg-(--color-text-inverse) transition-transform ${enabled ? "translate-x-3" : "translate-x-0.5"}`} />
       </span>
-    </button>
+    </Button>
   );
 }
 
@@ -116,16 +118,17 @@ function AutoMergeToggle({ sessionId, autoMerge }: { sessionId: string; autoMerg
   const enabled = autoMerge?.enabled ?? false;
 
   return (
-    <button
+    <Button
+      variant="ghost"
+      size="sm"
       onClick={() => toggleAutoMerge(sessionId, !enabled)}
-      className="flex items-center gap-1 text-xs text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors"
       title={enabled ? "Disable auto-merge" : "Enable auto-merge"}
     >
       Auto-merge
       <span className={`inline-block w-6 h-3.5 rounded-full transition-colors ${enabled ? "bg-(--color-success)" : "bg-(--color-text-tertiary)"}`}>
         <span className={`block w-2.5 h-2.5 mt-0.5 rounded-full bg-(--color-text-inverse) transition-transform ${enabled ? "translate-x-3" : "translate-x-0.5"}`} />
       </span>
-    </button>
+    </Button>
   );
 }
 
@@ -214,13 +217,14 @@ function ReadyPhase({ card, sessionId }: { card: PrCardState; sessionId: string 
       )}
       {hasDiffStats && <DiffStats ins={ins} del={del} />}
       {(card.headBranch || hasDiffStats) && (
-        <button
+        <Button
+          size="sm"
           onClick={handleCreate}
           disabled={creating}
-          className="px-3 py-1 text-xs font-medium bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          className="bg-(--color-success) hover:bg-(--color-success) hover:opacity-90 text-(--color-text-inverse)"
         >
           {creating ? "Creating..." : "Create Pull Request"}
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -282,13 +286,14 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
           <MergeButton sessionId={sessionId} autoMerge={autoMerge} />
         )}
         {showFixButton && (
-          <button
+          <Button
+            variant="destructive"
+            size="sm"
             onClick={handleFixCI}
             disabled={fixingCI}
-            className="px-2 py-0.5 text-xs font-medium bg-(--color-error)/80 hover:bg-(--color-error) text-(--color-text-inverse) rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {fixingCI ? "Fixing..." : "Fix CI Issues"}
-          </button>
+          </Button>
         )}
         <a
           href={pr.url}
@@ -418,13 +423,15 @@ function ErrorPhase({ card, sessionId }: { card: PrCardState; sessionId: string 
           </span>
         ))}
       </span>
-      <button
+      <Button
+        variant="ghost"
+        size="sm"
         onClick={handleRetry}
         disabled={retrying}
-        className="text-xs text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+        className="shrink-0"
       >
         {retrying ? "Retrying..." : "Retry"}
-      </button>
+      </Button>
     </div>
   );
 }

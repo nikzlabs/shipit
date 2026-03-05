@@ -1,4 +1,5 @@
 import { Component, type ReactNode, type ErrorInfo } from "react";
+import { Button } from "./ui/button.js";
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -54,18 +55,21 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               </pre>
             )}
             <div className="flex gap-3 justify-center pt-2">
-              <button
+              <Button
                 onClick={this.handleReload}
-                className="rounded-lg bg-(--color-accent) px-4 py-2 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors"
+                size="lg"
+                className="rounded-lg"
               >
                 Reload Page
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="secondary"
                 onClick={this.handleDismiss}
-                className="rounded-lg bg-(--color-bg-secondary) px-4 py-2 text-sm font-medium text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
+                size="lg"
+                className="rounded-lg"
               >
                 Try to Recover
-              </button>
+              </Button>
             </div>
           </div>
         </div>

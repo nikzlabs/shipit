@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 import { FolderIcon, FolderOpenIcon, FileIcon, CaretRightIcon, PlusIcon, FolderSimpleIcon, ArrowClockwiseIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
+import { Button } from "./ui/button.js";
 import type { FileTreeNode } from "../../server/shared/types.js";
 
 export type { FileTreeNode };
@@ -88,17 +89,19 @@ function TreeNode({
         <span className="truncate">{node.name}</span>
       </button>
       {onAddToChat && (
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={(e) => {
             e.stopPropagation();
             onAddToChat(node.path);
           }}
-          className="hidden group-hover:inline-flex items-center justify-center w-5 h-5 rounded text-(--color-text-secondary) hover:text-(--color-text-link) hover:bg-(--color-bg-hover) transition-colors shrink-0 ml-1"
+          className="hidden group-hover:inline-flex w-5 h-5 shrink-0 ml-1 text-(--color-text-secondary) hover:text-(--color-text-link)"
           title="Add to chat context"
           aria-label={`Add ${node.name} to chat`}
         >
           <PlusIcon size={12} />
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -114,12 +117,14 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToCh
           <p className="text-xs text-(--color-text-tertiary)">
             Ask the agent to create a project to get started.
           </p>
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={onRefresh}
-            className="mt-2 px-3 py-1 text-xs rounded bg-(--color-bg-tertiary) hover:bg-(--color-bg-hover) text-(--color-text-primary) transition-colors"
+            className="mt-2"
           >
             Refresh
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -130,13 +135,15 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToCh
       {/* Header bar */}
       <div className="flex items-center justify-between px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs text-(--color-text-secondary)">
         <span className="font-medium text-(--color-text-primary)">Files</span>
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={onRefresh}
-          className="px-2 py-0.5 rounded hover:bg-(--color-bg-hover) transition-colors shrink-0"
+          className="shrink-0"
           title="Refresh file tree"
         >
           <ArrowClockwiseIcon size={ICON_SIZE.SM} />
-        </button>
+        </Button>
       </div>
 
       {/* Tree content */}

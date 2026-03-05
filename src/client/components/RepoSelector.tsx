@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { parseRepoLabel } from "../utils/repo-label.js";
+import { Badge } from "./ui/badge.js";
 import type { SessionInfo } from "../../server/shared/types.js";
 
 interface RepoResult {
@@ -182,15 +183,9 @@ export function RepoSelector({
                 >
                   <div className="flex items-center gap-2">
                     <span className="text-sm text-(--color-text-primary)">{repo.fullName}</span>
-                    <span
-                      className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                        repo.private
-                          ? "bg-(--color-warning-subtle) text-(--color-warning)"
-                          : "bg-(--color-success-subtle) text-(--color-success)"
-                      }`}
-                    >
+                    <Badge variant={repo.private ? "warning" : "success"} className="text-[10px]">
                       {repo.private ? "private" : "public"}
-                    </span>
+                    </Badge>
                   </div>
                   {repo.description && (
                     <p className="text-xs text-(--color-text-secondary) mt-0.5 truncate">

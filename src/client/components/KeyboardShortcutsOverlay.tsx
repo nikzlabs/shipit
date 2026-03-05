@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { Button } from "./ui/button.js";
 
 export interface ShortcutEntry {
   keys: string[];
@@ -84,13 +85,14 @@ export function KeyboardShortcutsOverlay({ onClose }: { onClose: () => void }) {
           <h2 className="text-lg font-semibold text-(--color-text-primary)">
             Keyboard Shortcuts
           </h2>
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={onClose}
-            className="text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors text-sm"
             aria-label="Close"
           >
             Esc
-          </button>
+          </Button>
         </div>
 
         {shortcutGroups.map((group) => (

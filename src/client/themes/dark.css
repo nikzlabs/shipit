@@ -52,6 +52,24 @@
   --color-scrollbar-thumb: rgba(75, 85, 99, 0.5);
   --color-scrollbar-thumb-hover: rgba(107, 114, 128, 0.7);
 
+  /* Syntax highlighting (GitHub Dark) */
+  --color-syntax-base: #c9d1d9;
+  --color-syntax-bg: #0d1117;
+  --color-syntax-keyword: #ff7b72;
+  --color-syntax-title: #d2a8ff;
+  --color-syntax-attr: #79c0ff;
+  --color-syntax-string: #a5d6ff;
+  --color-syntax-string-regexp: #a5d6ff;
+  --color-syntax-builtin: #ffa657;
+  --color-syntax-comment: #8b949e;
+  --color-syntax-tag: #7ee787;
+  --color-syntax-section: #1f6feb;
+  --color-syntax-bullet: #f2cc60;
+  --color-syntax-addition: #aff5b4;
+  --color-syntax-addition-bg: #033a16;
+  --color-syntax-deletion: #ffdcd7;
+  --color-syntax-deletion-bg: #67060c;
+
   /* Typography */
   --font-size-code: 13px;
 }

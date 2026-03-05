@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import type { DeployTargetInfo, DeploymentRecord } from "../../server/shared/types.js";
+import { Button } from "./ui/button.js";
+import { Modal } from "./ui/modal.js";
 
 export type DeployPhase = "building" | "deploying" | "complete" | "error";
 
@@ -87,19 +89,14 @@ export function DeployModal({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+    <Modal
+      ref={dialogRef}
+      onClose={onClose}
+      className="shadow-2xl border-(--color-border-secondary) w-full max-w-lg max-h-[85vh] overflow-y-auto"
       role="dialog"
       aria-label="Deploy"
       aria-modal="true"
     >
-      <div
-        ref={dialogRef}
-        className="bg-(--color-bg-elevated) rounded-xl shadow-2xl border border-(--color-border-secondary) w-full max-w-lg max-h-[85vh] overflow-y-auto"
-      >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-(--color-border-secondary)">
           <h2 className="text-lg font-semibold text-(--color-text-primary)">
@@ -110,13 +107,15 @@ export function DeployModal({
             {view === "complete" && "Deployed!"}
             {view === "error" && "Deploy Failed"}
           </h2>
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={onClose}
-            className="text-(--color-text-tertiary) hover:text-(--color-text-primary) text-xl leading-none"
+            className="text-xl leading-none"
             aria-label="Close"
           >
             &times;
-          </button>
+          </Button>
         </div>
 
         <div className="px-6 py-4">
@@ -131,20 +130,24 @@ export function DeployModal({
               </p>
               <div className="flex gap-2 justify-center">
                 {onOpenDeploySettings && (
-                  <button
+                  <Button
+                    variant="primary"
+                    size="lg"
                     onClick={() => { onClose(); onOpenDeploySettings(); }}
-                    className="px-4 py-2 text-sm rounded-lg bg-(--color-accent) text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors font-medium"
+                    className="rounded-lg font-medium"
                     data-testid="deploy-open-deploy-settings"
                   >
                     Configure
-                  </button>
+                  </Button>
                 )}
-                <button
+                <Button
+                  variant="secondary"
+                  size="lg"
                   onClick={onClose}
-                  className="px-4 py-2 text-sm rounded-lg border border-(--color-border-secondary) text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
+                  className="rounded-lg"
                 >
                   Close
-                </button>
+                </Button>
               </div>
             </div>
           )}
@@ -198,22 +201,25 @@ export function DeployModal({
                 </div>
               )}
 
-              <button
+              <Button
+                variant="primary"
+                size="lg"
                 onClick={handleDeploy}
                 disabled={deploying}
-                className="w-full py-2.5 text-sm rounded-lg bg-(--color-accent) text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full rounded-lg font-medium"
               >
                 {deploying ? "Starting deploy..." : `Deploy to ${environment === "production" ? "Production" : "Preview"}`}
-              </button>
+              </Button>
 
               {configuredTargets.length > 1 && (
                 <div className="text-xs">
-                  <button
+                  <Button
+                    variant="ghost"
+                    size="sm"
                     onClick={() => setSelectedTarget(null)}
-                    className="text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors"
                   >
                     Switch target
-                  </button>
+                  </Button>
                 </div>
               )}
 
@@ -259,12 +265,14 @@ export function DeployModal({
                 </span>
               </div>
               <p className="text-xs text-(--color-text-secondary)">Check the Terminal tab for detailed output.</p>
-              <button
+              <Button
+                variant="secondary"
+                size="lg"
                 onClick={onCancel}
-                className="px-4 py-2 text-sm rounded-lg border border-(--color-border-secondary) text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
+                className="rounded-lg"
               >
                 Cancel
-              </button>
+              </Button>
             </div>
           )}
 
@@ -294,12 +302,14 @@ export function DeployModal({
                 >
                   Open
                 </a>
-                <button
+                <Button
+                  variant="secondary"
+                  size="lg"
                   onClick={onClose}
-                  className="flex-1 py-2 text-sm rounded-lg border border-(--color-border-secondary) text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
+                  className="flex-1 rounded-lg"
                 >
                   Close
-                </button>
+                </Button>
               </div>
             </div>
           )}
@@ -317,33 +327,36 @@ export function DeployModal({
                 {lastDeployError}
               </div>
               <div className="flex gap-2">
-                <button
+                <Button
+                  variant="primary"
+                  size="lg"
                   onClick={() => {
                     setSendingError(true);
                     onSendErrorToChat(lastDeployError);
                     setTimeout(() => setSendingError(false), 1000);
                   }}
                   disabled={sendingError}
-                  className="flex-1 py-2 text-sm rounded-lg bg-(--color-accent) text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="flex-1 rounded-lg font-medium"
                 >
                   {sendingError ? "Sent!" : "Send to Claude"}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="lg"
                   onClick={() => {
                     if (activeTarget) {
                       handleDeploy();
                     }
                   }}
                   disabled={deploying}
-                  className="flex-1 py-2 text-sm rounded-lg border border-(--color-border-secondary) text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="flex-1 rounded-lg"
                 >
                   {deploying ? "Retrying..." : "Retry"}
-                </button>
+                </Button>
               </div>
             </div>
           )}
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

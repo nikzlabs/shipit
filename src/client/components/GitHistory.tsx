@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Button } from "./ui/button.js";
 
 export interface GitCommit {
   hash: string;
@@ -35,15 +36,17 @@ export function GitHistory({
         <span className="text-xs font-medium text-(--color-text-secondary)">
           {commits.length} {commits.length === 1 ? "commit" : "commits"}
         </span>
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={onRefresh}
-          className="text-xs text-(--color-text-tertiary) hover:text-(--color-text-primary) transition-colors"
+          className="text-(--color-text-tertiary)"
           aria-label="Refresh"
         >
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
           </svg>
-        </button>
+        </Button>
       </div>
       <div className="flex-1 overflow-y-auto px-4 py-2">
         {commits.length === 0 ? (
@@ -66,12 +69,14 @@ export function GitHistory({
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
                   {onViewDiff && (
-                    <button
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={() => onViewDiff(commit.hash, commits[i + 1]?.hash ?? null)}
-                      className="shrink-0 px-2 py-0.5 rounded text-xs transition-colors bg-(--color-bg-secondary) text-(--color-text-secondary) opacity-0 group-hover:opacity-100 hover:text-(--color-text-primary)"
+                      className="shrink-0 opacity-0 group-hover:opacity-100 bg-(--color-bg-secondary)"
                     >
                       diff
-                    </button>
+                    </Button>
                   )}
                   {i > 0 && (
                     <button

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { WsStatus } from "../hooks/useWebSocket.js";
+import { Banner } from "./ui/banner.js";
 
 /** Grace period before showing the disconnect banner (ms). */
 const DISCONNECT_DELAY_MS = 1500;
@@ -58,12 +59,9 @@ export function ConnectionBanner({
   // Success flash — briefly shown after reconnection
   if (status === "open" && showReconnected) {
     return (
-      <div
-        role="status"
-        className="px-4 py-2 text-xs text-center font-medium bg-(--color-success-subtle) text-(--color-success)"
-      >
+      <Banner role="status" variant="success">
         Reconnected
-      </div>
+      </Banner>
     );
   }
 
@@ -72,13 +70,10 @@ export function ConnectionBanner({
   const isConnecting = status === "connecting";
 
   return (
-    <div
+    <Banner
       role="alert"
-      className={`px-4 py-2 text-xs text-center font-medium flex items-center justify-center gap-3 ${
-        isConnecting
-          ? "bg-(--color-warning-subtle) text-(--color-warning)"
-          : "bg-(--color-error-subtle) text-(--color-error)"
-      }`}
+      variant={isConnecting ? "warning" : "error"}
+      className="flex items-center justify-center gap-3"
     >
       <span>
         {isConnecting
@@ -93,6 +88,6 @@ export function ConnectionBanner({
           Reconnect now
         </button>
       )}
-    </div>
+    </Banner>
   );
 }

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { AgentOption } from "./AgentPicker.js";
+import { Button } from "./ui/button.js";
 import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
 import { CodexAuthCard } from "./CodexAuthCard.js";
 import { GitHubTokenForm } from "./GitHubTokenForm.js";
@@ -130,13 +131,15 @@ export function OnboardingWizard({
               <GitHubTokenForm onSubmit={handleGitHubTokenSubmit} />
 
               <div className="text-center">
-                <button
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={() => setMode("manual")}
-                  className="text-sm text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors"
+                  className="text-sm"
                   data-testid="switch-manual"
                 >
                   Set up manually instead
-                </button>
+                </Button>
               </div>
             </>
           ) : (
@@ -168,24 +171,28 @@ export function OnboardingWizard({
                   placeholder="you@example.com"
                   className="w-full rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-3 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus)"
                 />
-                <button
+                <Button
+                  variant="primary"
+                  size="lg"
                   onClick={handleManualSubmit}
                   disabled={!canSubmitManual}
-                  className="w-full rounded-lg bg-(--color-accent) px-4 py-2.5 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full rounded-lg py-2.5"
                   data-testid="manual-save"
                 >
                   Save
-                </button>
+                </Button>
               </div>
 
               <div className="text-center">
-                <button
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={() => setMode("github")}
-                  className="text-sm text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors"
+                  className="text-sm"
                   data-testid="switch-github"
                 >
                   Connect GitHub instead
-                </button>
+                </Button>
               </div>
             </>
           )
@@ -230,26 +237,29 @@ export function OnboardingWizard({
             </div>
 
             <div className="space-y-3">
-              <button
+              <Button
+                variant="primary"
+                size="lg"
                 onClick={() => {
                   setCompleting(true);
                   onComplete();
                 }}
                 disabled={!anyAgentReady || completing}
-                className="w-full rounded-lg bg-(--color-accent) px-4 py-2.5 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full rounded-lg py-2.5"
                 data-testid="get-started"
               >
                 {completing ? "Starting..." : "Get Started"}
-              </button>
+              </Button>
 
-              <button
+              <Button
+                variant="ghost"
                 onClick={handleRefresh}
                 disabled={refreshing}
-                className="w-full text-sm text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors disabled:opacity-50"
+                className="w-full"
                 data-testid="refresh-agents"
               >
                 {refreshing ? "Refreshing..." : "Refresh status"}
-              </button>
+              </Button>
             </div>
           </>
         )}

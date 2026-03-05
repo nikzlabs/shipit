@@ -1,5 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import type { RepoInfo } from "../../server/shared/types.js";
+import { Badge } from "./ui/badge.js";
+import { Button } from "./ui/button.js";
+import { Modal } from "./ui/modal.js";
 
 interface AddRepoDialogProps {
   open: boolean;
@@ -87,22 +90,22 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
   const isCloning = pendingRepo?.status === "cloning";
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
-      <div
-        className="w-full max-w-lg rounded-lg bg-(--color-bg-elevated) border border-(--color-border-secondary) shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <Modal
+      onClose={onClose}
+      className="w-full max-w-lg rounded-lg border-(--color-border-secondary)"
+    >
         <div className="flex items-center justify-between border-b border-(--color-border-secondary) px-4 py-3">
           <h2 className="text-sm font-medium text-(--color-text-primary)">Add Repository</h2>
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={onClose}
-            className="text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors"
             aria-label="Close"
           >
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
-          </button>
+          </Button>
         </div>
 
         <div className="p-4">
@@ -157,11 +160,9 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium text-(--color-text-primary) truncate">{repo.fullName}</span>
-                      <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                        repo.private ? "bg-(--color-warning-subtle) text-(--color-warning)" : "bg-(--color-success-subtle) text-(--color-success)"
-                      }`}>
+                      <Badge variant={repo.private ? "warning" : "success"} className="shrink-0 text-[10px]">
                         {repo.private ? "Private" : "Public"}
-                      </span>
+                      </Badge>
                     </div>
                     {repo.description && (
                       <p className="mt-0.5 text-xs text-(--color-text-secondary) truncate">{repo.description}</p>
@@ -180,29 +181,31 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
         </div>
 
         <div className="flex justify-between border-t border-(--color-border-secondary) px-4 py-3">
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={onCreateNew}
-            className="rounded-md px-3 py-1.5 text-xs text-(--color-text-link) hover:text-(--color-accent) hover:bg-(--color-bg-hover) transition-colors"
+            className="text-(--color-text-link) hover:text-(--color-accent)"
           >
             Create new repository
-          </button>
+          </Button>
           <div className="flex gap-2">
-            <button
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={onClose}
-              className="rounded-md px-3 py-1.5 text-xs text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors"
             >
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
+              size="sm"
               onClick={handleSubmitUrl}
               disabled={!query.trim() || submitting || isCloning}
-              className="rounded-md bg-(--color-accent) px-3 py-1.5 text-xs font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {submitting ? "Adding..." : "Add"}
-            </button>
+            </Button>
           </div>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

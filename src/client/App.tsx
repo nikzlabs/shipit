@@ -15,6 +15,7 @@ import { ICON_SIZE } from "./design-tokens.js";
 import { useMessageHandler } from "./hooks/useMessageHandler.js";
 import { useApi } from "./hooks/useApi.js";
 import { formatErrorForMessage } from "./components/PreviewFrame.js";
+import { Button } from "./components/ui/button.js";
 import { MessageInput } from "./components/MessageInput.js";
 import { MessageList } from "./components/MessageList.js";
 import { PreviewFrame } from "./components/PreviewFrame.js";
@@ -597,10 +598,10 @@ export default function App() {
           } />
         ) : rightTab === "changes" ? (
           turnDiff ? (
-            <Suspense fallback={<div className="flex items-center justify-center h-full text-gray-500 text-sm">Loading diff viewer...</div>}>
+            <Suspense fallback={<div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">Loading diff viewer...</div>}>
               <DiffPanel diff={turnDiff} onClose={historyDiffMode ? handleHistoryDiffClose : () => useUiStore.getState().setRightTab("preview")} commitMessage={historyDiffMode ? gitCommits.find((c) => c.hash === turnDiff.toCommit)?.message : undefined} />
             </Suspense>
-          ) : <div className="flex items-center justify-center h-full text-gray-500 text-sm">Loading diff...</div>
+          ) : <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">Loading diff...</div>
         ) : rightTab === "features" ? (
           <FeaturesPanel features={features} onStartSession={handleFeatureStartSession} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useUiStore.getState().fetchFeatures(sid).catch(() => {}); }} />
         ) : rightTab === "history" ? (
@@ -629,9 +630,9 @@ export default function App() {
       {!showHomeScreen && !showNewSessionView && (
         <div className="border-t border-(--color-border-primary) px-4 py-1.5 flex items-center gap-2">
           <AgentPicker agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} disabled={isLoading || status !== "open"} />
-          <button onClick={handleDownloadChat} className="ml-auto p-1 rounded text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors" title="Download chat history" aria-label="Download chat history">
+          <Button variant="ghost" size="sm" onClick={handleDownloadChat} className="ml-auto" title="Download chat history" aria-label="Download chat history">
             <DownloadSimpleIcon size={ICON_SIZE.SM} />
-          </button>
+          </Button>
         </div>
       )}
       {!showHomeScreen && !showNewSessionView && <StatusBar modelInfo={modelInfo} contextTokens={contextTokens} agentName={agentList.find((a) => a.id === activeAgentId)?.name} />}
@@ -712,13 +713,13 @@ export default function App() {
               {currentSessionUsage.totalCostUsd < 0.01 ? `$${currentSessionUsage.totalCostUsd.toFixed(3)}` : `$${currentSessionUsage.totalCostUsd.toFixed(2)}`}
             </button>
           )}
-          <button onClick={toggleTheme} className="p-1.5 rounded-md text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors" title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"} aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}>
+          <Button variant="ghost" size="sm" onClick={toggleTheme} title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"} aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}>
             {theme === "dark" ? (
               <SunIcon size={ICON_SIZE.SM} />
             ) : (
               <MoonIcon size={ICON_SIZE.SM} />
             )}
-          </button>
+          </Button>
         </div>
       </header>
 

@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { marked } from "marked";
+import { Button } from "./ui/button.js";
 
 export interface DocsViewerProps {
   files: string[];
@@ -33,12 +34,14 @@ export function DocsViewer({ files, selectedFile, content, onSelectFile, onRefre
           <p className="text-xs text-(--color-text-tertiary)">
             Ask the agent to create a README.md or other docs to get started.
           </p>
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={onRefresh}
-            className="mt-2 px-3 py-1 text-xs rounded bg-(--color-bg-secondary) hover:bg-(--color-bg-hover) text-(--color-text-primary) transition-colors"
+            className="mt-2"
           >
             Refresh
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -75,13 +78,15 @@ export function DocsViewer({ files, selectedFile, content, onSelectFile, onRefre
             </div>
           )}
         </div>
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={onRefresh}
-          className="px-2 py-0.5 rounded hover:bg-(--color-bg-hover) transition-colors shrink-0 ml-2"
+          className="shrink-0 ml-2"
           title="Refresh file list"
         >
           Reload
-        </button>
+        </Button>
       </div>
 
       {/* Markdown content */}

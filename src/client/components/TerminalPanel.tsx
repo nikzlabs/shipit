@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from "react";
+import { Button } from "./ui/button.js";
 
 export type LogSource = "stderr" | "stdout" | "server" | "preview" | "deploy" | "install";
 
@@ -162,13 +163,14 @@ export function TerminalPanel({ entries, onClear, terminalMode, onTerminalModeCh
           )}
         </div>
         {terminalMode === "logs" && (
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={onClear}
-            className="px-2 py-0.5 rounded hover:bg-(--color-bg-hover) transition-colors"
             title="Clear terminal output"
           >
             Clear
-          </button>
+          </Button>
         )}
       </div>
 

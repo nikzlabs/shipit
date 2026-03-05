@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Button } from "./ui/button.js";
 
 export interface TemplateInfo {
   id: string;
@@ -155,12 +156,14 @@ export function TemplateSelector({
         {/* Skip button */}
         {!applying && (
           <div className="text-center mt-8">
-            <button
+            <Button
+              variant="secondary"
+              size="lg"
               onClick={onDismiss}
-              className="px-5 py-2 text-sm font-medium rounded-lg border border-(--color-border-secondary) text-(--color-text-primary) hover:bg-(--color-bg-hover) hover:border-(--color-text-tertiary) transition-colors"
+              className="rounded-lg px-5"
             >
               Skip — start with an empty project
-            </button>
+            </Button>
           </div>
         )}
       </div>

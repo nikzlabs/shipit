@@ -1,6 +1,5 @@
 import { useMemo, useEffect, useRef, useState, useCallback } from "react";
 import hljs from "highlight.js";
-import "highlight.js/styles/github.css";
 import { Marked } from "marked";
 import { DiffBlock } from "./DiffBlock.js";
 import {
@@ -12,6 +11,7 @@ import {
 import { AskUserQuestion, type AskQuestionItem } from "./AskUserQuestion.js";
 import { ToolResult } from "./ToolResult.js";
 import { TodoPanel, type TodoItem } from "./TodoPanel.js";
+import { Button } from "./ui/button.js";
 import { sessionRelativePath } from "../path-utils.js";
 import { CircleNotchIcon } from "@phosphor-icons/react";
 import type { SearchMatch } from "../hooks/useSearch.js";
@@ -172,14 +172,16 @@ function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQu
           </span>
         ) : null}
         {hasResult && (
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => setCollapsed(!collapsed)}
-            className="ml-auto text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors shrink-0"
+            className="ml-auto shrink-0 py-0"
             aria-label={collapsed ? "Show output" : "Hide output"}
             aria-expanded={!collapsed}
           >
             {collapsed ? "▶ Show output" : "▼ Hide output"}
-          </button>
+          </Button>
         )}
       </div>
       {hasResult && !collapsed && (
@@ -466,22 +468,24 @@ function MessageEditor({
         className="w-full resize-none rounded-lg bg-(--color-accent) border border-(--color-border-focus) px-4 py-3 text-sm text-(--color-accent-text) placeholder-blue-300 focus:outline-none focus:ring-2 focus:ring-(--color-border-focus)"
       />
       <div className="flex justify-end gap-2 mt-1">
-        <button
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={onCancel}
-          className="text-xs px-3 py-1 rounded bg-(--color-bg-tertiary) text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
         >
           Cancel
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
           onClick={() => {
             const trimmed = text.trim();
             if (trimmed) onSave(trimmed);
           }}
           disabled={!text.trim()}
-          className="text-xs px-3 py-1 rounded bg-(--color-accent) text-(--color-accent-text) hover:bg-(--color-accent-hover) disabled:opacity-50 transition-colors"
         >
           Save & Send
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -739,26 +743,30 @@ export function MessageList({
             {/* Edit/Retry buttons — shown on hover for user messages */}
             {showEditActions && (
               <div className="hidden group-hover:flex items-center gap-1 mr-2 shrink-0">
-                <button
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={() => setEditingIndex(i)}
-                  className="p-1 rounded text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
+                  className="p-1"
                   title="Edit message"
                   aria-label="Edit message"
                 >
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                   </svg>
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={() => onEditMessage?.(i, msg.text)}
-                  className="p-1 rounded text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
+                  className="p-1"
                   title="Retry message"
                   aria-label="Retry message"
                 >
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                   </svg>
-                </button>
+                </Button>
               </div>
             )}
 

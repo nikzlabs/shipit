@@ -1,5 +1,6 @@
 import { useState, useMemo } from "react";
 import hljs from "highlight.js";
+import { Button } from "./ui/button.js";
 import type { ToolResultBlock } from "./MessageList.js";
 
 const BASH_MAX_LINES = 30;
@@ -71,13 +72,15 @@ function BashResult({ content, isError }: { content: string; isError?: boolean }
         {displayText}
       </pre>
       {truncated && (
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={() => setExpanded(!expanded)}
-          className="w-full text-xs text-center py-1 text-(--color-text-secondary) hover:text-(--color-text-primary) bg-(--color-bg-secondary)/50 hover:bg-(--color-bg-tertiary)/50 border-t border-(--color-border-secondary)/50 transition-colors"
+          className="w-full text-center py-1 rounded-none bg-(--color-bg-secondary)/50 hover:bg-(--color-bg-tertiary)/50 border-t border-(--color-border-secondary)/50"
           aria-label={expanded ? "Show less output" : "Show more output"}
         >
           {expanded ? "Show less" : `Show all ${totalLines} lines`}
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -114,13 +117,15 @@ function ReadResult({ content }: { content: string }) {
         )}
       </pre>
       {truncated && (
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={() => setExpanded(!expanded)}
-          className="w-full text-xs text-center py-1 text-(--color-text-secondary) hover:text-(--color-text-primary) bg-(--color-bg-secondary)/50 hover:bg-(--color-bg-tertiary)/50 border-t border-(--color-border-secondary)/50 transition-colors"
+          className="w-full text-center py-1 rounded-none bg-(--color-bg-secondary)/50 hover:bg-(--color-bg-tertiary)/50 border-t border-(--color-border-secondary)/50"
           aria-label={expanded ? "Show less output" : "Show more output"}
         >
           {expanded ? "Show less" : `Show all ${totalLines} lines`}
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -171,13 +176,15 @@ function GrepResult({ content }: { content: string }) {
         })}
       </pre>
       {truncated && (
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={() => setExpanded(!expanded)}
-          className="w-full text-xs text-center py-1 text-(--color-text-secondary) hover:text-(--color-text-primary) bg-(--color-bg-secondary)/50 hover:bg-(--color-bg-tertiary)/50 border-t border-(--color-border-secondary)/50 transition-colors"
+          className="w-full text-center py-1 rounded-none bg-(--color-bg-secondary)/50 hover:bg-(--color-bg-tertiary)/50 border-t border-(--color-border-secondary)/50"
           aria-label={expanded ? "Show less output" : "Show more output"}
         >
           {expanded ? "Show less" : `Show all ${totalLines} lines`}
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -208,13 +215,15 @@ function GenericResult({ content, isError }: { content: string; isError?: boolea
         {displayText}
       </pre>
       {truncated && (
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={() => setExpanded(!expanded)}
-          className="w-full text-xs text-center py-1 text-(--color-text-secondary) hover:text-(--color-text-primary) bg-(--color-bg-secondary)/50 hover:bg-(--color-bg-tertiary)/50 border-t border-(--color-border-secondary)/50 transition-colors"
+          className="w-full text-center py-1 rounded-none bg-(--color-bg-secondary)/50 hover:bg-(--color-bg-tertiary)/50 border-t border-(--color-border-secondary)/50"
           aria-label={expanded ? "Show less output" : "Show more output"}
         >
           {expanded ? "Show less" : `Show all ${totalLines} lines`}
-        </button>
+        </Button>
       )}
     </div>
   );

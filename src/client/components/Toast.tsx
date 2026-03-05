@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { CheckCircleIcon } from "@phosphor-icons/react";
+import { Button } from "./ui/button.js";
 
 export interface ToastData {
   message: string;
@@ -46,23 +47,27 @@ export function Toast({ toast, onDismiss }: ToastProps) {
       <CheckCircleIcon size={16} className="text-(--color-success) shrink-0" />
       <span>{toast.message}</span>
       {toast.action && (
-        <button
+        <Button
+          variant="primary"
+          size="sm"
           onClick={() => {
             toast.action!.onClick();
             handleDismiss();
           }}
-          className="ml-2 px-3 py-1 rounded-md text-xs font-medium bg-(--color-accent) hover:bg-(--color-accent-hover) text-(--color-accent-text) shrink-0"
+          className="ml-2 shrink-0"
         >
           {toast.action.label}
-        </button>
+        </Button>
       )}
-      <button
+      <Button
+        variant="ghost"
+        size="sm"
         onClick={handleDismiss}
         aria-label="Dismiss"
-        className="ml-1 text-(--color-text-tertiary) hover:text-(--color-text-primary) shrink-0"
+        className="ml-1 shrink-0"
       >
         &times;
-      </button>
+      </Button>
     </div>
   );
 }

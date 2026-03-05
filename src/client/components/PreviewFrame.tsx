@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { WarningIcon, GearSixIcon, PlayIcon, CircleNotchIcon, ArrowClockwiseIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
+import { Button } from "./ui/button.js";
 import type { PreviewError } from "../hooks/usePreviewErrors.js";
 
 export interface PreviewStatus {
@@ -222,20 +223,22 @@ export function PreviewFrame({
           )}
           <div className="flex items-center justify-center gap-2">
             {onRestartPreview && (
-              <button
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={onRestartPreview}
-                className="px-3 py-1.5 rounded bg-(--color-bg-tertiary) text-(--color-text-primary) text-xs hover:bg-(--color-bg-hover) transition-colors"
               >
                 Retry
-              </button>
+              </Button>
             )}
             {onSendCrashToAgent && (
-              <button
+              <Button
+                variant="primary"
+                size="sm"
                 onClick={onSendCrashToAgent}
-                className="px-3 py-1.5 rounded bg-(--color-accent) text-(--color-accent-text) text-xs hover:bg-(--color-accent-hover) transition-colors"
               >
                 Fix with Claude
-              </button>
+              </Button>
             )}
           </div>
         </div>
@@ -269,12 +272,13 @@ export function PreviewFrame({
               Create a shipit.yaml file to configure how the preview server runs, or let Claude set it up for you.
             </p>
             {onInitPreviewConfig && (
-              <button
+              <Button
+                variant="primary"
+                size="sm"
                 onClick={onInitPreviewConfig}
-                className="px-3 py-1.5 rounded bg-(--color-accent) text-(--color-accent-text) text-xs hover:bg-(--color-accent-hover) transition-colors"
               >
                 Set up with Claude
-              </button>
+              </Button>
             )}
           </div>
         </div>
@@ -370,13 +374,14 @@ export function PreviewFrame({
               Auto-fix{autoFixEnabled && autoFixRetries > 0 ? ` (${autoFixRetries}/3)` : ""}
             </span>
           </label>
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => setRefreshKey((k) => k + 1)}
-            className="px-2 py-0.5 rounded hover:bg-(--color-bg-hover) transition-colors"
             title="Refresh preview"
           >
             <ArrowClockwiseIcon size={ICON_SIZE.SM} />
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -409,20 +414,23 @@ export function PreviewFrame({
               {errors.length} error{errors.length !== 1 ? "s" : ""}
             </span>
             <div className="flex items-center gap-2">
-              <button
+              <Button
+                variant="primary"
+                size="sm"
                 onClick={() => onSendErrors(errors)}
-                className="px-2 py-0.5 rounded bg-(--color-accent) text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors"
                 title="Send all errors to the agent for fixing"
               >
                 Send to Agent
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={onClearErrors}
-                className="px-2 py-0.5 rounded hover:bg-(--color-bg-hover) text-(--color-error) transition-colors"
+                className="text-(--color-error)"
                 title="Clear all errors"
               >
                 Clear
-              </button>
+              </Button>
             </div>
           </div>
           <div className="flex-1 overflow-auto p-2 space-y-2 text-xs font-mono">
@@ -454,13 +462,15 @@ export function PreviewFrame({
                       </details>
                     )}
                   </div>
-                  <button
+                  <Button
+                    variant="ghost"
+                    size="sm"
                     onClick={() => onSendErrors([err])}
-                    className="shrink-0 px-1.5 py-0.5 rounded text-(--color-text-link) hover:bg-(--color-accent-subtle) transition-colors"
+                    className="shrink-0 text-(--color-text-link)"
                     title="Send this error to the agent"
                   >
                     Fix
-                  </button>
+                  </Button>
                 </div>
               </div>
             ))}

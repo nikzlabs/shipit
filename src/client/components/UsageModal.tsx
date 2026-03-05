@@ -1,3 +1,5 @@
+import { Button } from "./ui/button.js";
+import { Modal } from "./ui/modal.js";
 import type { SessionInfo } from "../../server/shared/types.js";
 import { formatModelName, formatTokenCount, getContextLevel, type ModelInfo } from "./StatusBar.js";
 
@@ -71,27 +73,25 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
   const hasTurnTokens = turnTokens && turnTokens.some((t) => t.inputTokens !== undefined || t.outputTokens !== undefined);
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-      onClick={onClose}
+    <Modal
+      onClose={onClose}
+      className="rounded-lg border-(--color-border-secondary) max-w-md w-full mx-4 max-h-[80vh] overflow-y-auto"
       data-testid="usage-modal-backdrop"
+      role="dialog"
+      aria-label="Usage Summary"
     >
-      <div
-        className="bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-lg shadow-xl max-w-md w-full mx-4 max-h-[80vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-label="Usage Summary"
-      >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-(--color-border-secondary)">
           <h2 className="text-lg font-semibold text-(--color-text-primary)">Usage Summary</h2>
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={onClose}
-            className="text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors text-xl leading-none"
+            className="text-xl leading-none"
             aria-label="Close"
           >
             &times;
-          </button>
+          </Button>
         </div>
 
         {/* Body */}
@@ -232,7 +232,6 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
             </section>
           )}
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

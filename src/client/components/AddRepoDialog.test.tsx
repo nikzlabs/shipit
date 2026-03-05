@@ -30,8 +30,8 @@ describe("AddRepoDialog", () => {
   it("calls onClose when backdrop is clicked", () => {
     const onClose = vi.fn();
     const { container } = render(<AddRepoDialog {...defaultProps} onClose={onClose} />);
-    // Click the backdrop (outermost div)
-    fireEvent.click(container.querySelector(".fixed")!);
+    // Click the backdrop overlay
+    fireEvent.click(container.querySelector('[aria-hidden="true"]')!);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
