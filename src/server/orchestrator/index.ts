@@ -917,7 +917,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // user has cloned. Instead, the first "New Session" per repo cold-starts
   // (~1-2s), which triggers re-warming with a standby container so that
   // subsequent "New Session" clicks for the same repo are instant.
-  setTimeout(() => {
+  const startupTimer = setTimeout(() => {
     // Collect current warm session IDs so we can clean up zombies.
     const activeWarmIds = new Set<string>();
     for (const repo of repoStore.list()) {
@@ -1384,6 +1384,7 @@ to determine the correct install command, preview mode, command, and ports.`,
   // process.on() to avoid MaxListeners warnings when buildApp() is called
   // repeatedly in tests.
   app.addHook("onClose", async () => {
+    clearTimeout(startupTimer);
     authManager.kill();
     runnerRegistry.disposeAll();
     if (dockerProxyServer) {
