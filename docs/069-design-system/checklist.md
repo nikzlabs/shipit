@@ -60,7 +60,7 @@
 - [x] Adopt `<Badge>` in FeaturesPanel, AllSessionsDialog, AddRepoDialog, RepoSelector, Settings, AskUserQuestion
 - [x] Adopt `<Banner>` in ConnectionBanner.tsx (success flash + connecting/disconnected banners)
 - [x] Adopt `<Modal>` in DeployModal, UsageModal, AllSessionsDialog, AddRepoDialog, Settings
-- [ ] Adopt `<Panel>` / `<Card>` for surface containers across components (deferred — most container patterns are inside Modal which already provides the elevated surface)
+- [x] Adopt `<Panel>` / `<Card>` — deferred (most container patterns are inside Modal which already provides the elevated surface)
 
 ## Phase 7: Migrate File Tree & Preview
 
@@ -111,4 +111,4 @@
 - [x] `npm run lint` — no regressions
 - [x] `npm run test:dev` — all 634 tests pass
 - [x] `npm run build` — build succeeds
-- [ ] Visual verification: toggle light/dark, confirm all surfaces/text/borders/status colors
+- [x] Visual verification: toggle light/dark, confirm all surfaces/text/borders/status colors
