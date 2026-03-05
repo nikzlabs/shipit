@@ -15,7 +15,9 @@ import {
   FakeClaudeProcess,
   waitForClaude,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 
 describe("Integration: AskUserQuestion / answer_question flow", () => {
   let app: FastifyInstance;
@@ -24,13 +26,14 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
   let sessionManager: SessionManager;
   /** Most recently created FakeClaudeProcess — set by agentFactory. */
   let lastClaude: FakeClaudeProcess = null as any;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-ask-question-"));
 
-    const sessionsFile = path.join(tmpDir, "sessions.json");
-    sessionManager = new SessionManager(sessionsFile);
+    sessionManager = new SessionManager(dbManager);
 
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
@@ -52,6 +55,7 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
 
   afterEach(async () => {
     await app.close();
+    dbManager.close();
     await new Promise((r) => setTimeout(r, 50));
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

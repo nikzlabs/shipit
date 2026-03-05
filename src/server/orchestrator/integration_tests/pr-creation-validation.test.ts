@@ -17,7 +17,9 @@ import {
   FakeClaudeProcess,
   waitForClaude,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 
 describe("Integration: PR creation — validation errors", () => {
   let app: FastifyInstance;
@@ -25,13 +27,14 @@ describe("Integration: PR creation — validation errors", () => {
   let tmpDir: string;
   let githubAuthManager: StubGitHubAuthManager;
   let lastClaude: FakeClaudeProcess | null;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-pr-"));
     lastClaude = null;
 
-    const sessionsFile = path.join(tmpDir, "sessions.json");
-    const sessionManager = new SessionManager(sessionsFile);
+    const sessionManager = new SessionManager(dbManager);
 
     githubAuthManager = new StubGitHubAuthManager();
 
@@ -57,6 +60,7 @@ describe("Integration: PR creation — validation errors", () => {
 
   afterEach(async () => {
     await app.close();
+    dbManager.close();
     fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 

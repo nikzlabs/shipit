@@ -17,7 +17,9 @@ import {
   FakeClaudeProcess,
   waitForClaude,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 
 describe("Integration: Usage & cost tracking", () => {
   let app: FastifyInstance;
@@ -25,12 +27,14 @@ describe("Integration: Usage & cost tracking", () => {
   let tmpDir: string;
   let sessionManager: SessionManager;
   let lastClaude: FakeClaudeProcess = null as any;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-usage-integration-"));
 
-    sessionManager = new SessionManager(path.join(tmpDir, "sessions.json"));
+    sessionManager = new SessionManager(dbManager);
 
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
@@ -53,6 +57,7 @@ describe("Integration: Usage & cost tracking", () => {
 
   afterEach(async () => {
     await app.close();
+    dbManager.close();
     // Wait for any pending async operations (git auto-commit) to complete
     await new Promise((r) => setTimeout(r, 200));
     try {

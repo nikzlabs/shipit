@@ -12,6 +12,7 @@ import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { AgentId } from "../../shared/types.js";
 import type { UsageManager } from "../usage.js";
+import type { DatabaseManager } from "../../shared/database.js";
 import type { CredentialStore } from "../credential-store.js";
 import { FeatureManager } from "../features.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
@@ -87,24 +88,35 @@ export async function fullReset(
   runnerRegistry: SessionRunnerRegistry,
   workspaceDir: string,
   repoStore?: RepoStore,
+  databaseManager?: DatabaseManager,
 ): Promise<void> {
   // Dispose all runners
   runnerRegistry.disposeAll();
 
-  // Delete everything inside the workspace directory
+  // Clear all database tables first (before deleting the DB file on disk).
+  // This keeps the in-memory prepared statements consistent for the remainder
+  // of this process's lifetime.
+  if (databaseManager) {
+    databaseManager.clearAll();
+  } else {
+    sessionManager.clear();
+    usageManager.clear();
+    if (repoStore) repoStore.clear();
+  }
+
+  // Delete everything inside the workspace directory, but preserve the SQLite
+  // database files — clearAll() already emptied all tables and the open connection
+  // must remain valid for subsequent operations.
+  const preservePatterns = new Set([".shipit.db", ".shipit.db-wal", ".shipit.db-shm"]);
   const entries = await fs.readdir(workspaceDir);
   for (const entry of entries) {
+    if (preservePatterns.has(entry)) continue;
     try {
       await fs.rm(path.join(workspaceDir, entry), { recursive: true, force: true });
     } catch {
       // Best-effort
     }
   }
-
-  // Clear in-memory state
-  sessionManager.clear();
-  usageManager.clear();
-  if (repoStore) repoStore.clear();
 }
 
 /** Report a preview error (log broadcast). */

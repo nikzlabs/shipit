@@ -13,18 +13,21 @@ import {
   StubAuthManager,
   FakeClaudeProcess,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 
 describe("Integration: Session management", () => {
   let app: FastifyInstance;
   let tmpDir: string;
   let sessionManager: SessionManager;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-session-mgmt-"));
 
-    const sessionsFile = path.join(tmpDir, "sessions.json");
-    sessionManager = new SessionManager(sessionsFile);
+    sessionManager = new SessionManager(dbManager);
 
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
@@ -41,6 +44,7 @@ describe("Integration: Session management", () => {
 
   afterEach(async () => {
     await app.close();
+    dbManager.close();
     await new Promise((r) => setTimeout(r, 50));
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
@@ -73,12 +77,13 @@ describe("Integration: bootstrap sessions remoteUrl caching", () => {
   let app: FastifyInstance;
   let tmpDir: string;
   let sessionManager: SessionManager;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-session-remote-"));
 
-    const sessionsFile = path.join(tmpDir, "sessions.json");
-    sessionManager = new SessionManager(sessionsFile);
+    sessionManager = new SessionManager(dbManager);
 
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
@@ -93,6 +98,7 @@ describe("Integration: bootstrap sessions remoteUrl caching", () => {
 
   afterEach(async () => {
     await app.close();
+    dbManager.close();
     await new Promise((r) => setTimeout(r, 50));
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

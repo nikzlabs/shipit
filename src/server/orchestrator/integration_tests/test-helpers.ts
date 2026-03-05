@@ -10,6 +10,7 @@ import { EventEmitter } from "node:events";
 import path from "node:path";
 import WebSocket from "ws";
 import type { WsServerMessage, WsClientMessage } from "../../shared/types.js";
+import { DatabaseManager } from "../../shared/database.js";
 import { CredentialStore } from "../credential-store.js";
 import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 
@@ -627,4 +628,9 @@ export function createTestCredentialStore(tmpDir: string): CredentialStore {
   initGlobalGitConfig(credDir);
   setGitIdentity("Test User", "test@test.com");
   return new CredentialStore(credDir);
+}
+
+/** Create an in-memory DatabaseManager for tests. */
+export function createTestDatabaseManager(): DatabaseManager {
+  return new DatabaseManager(":memory:");
 }

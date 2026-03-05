@@ -14,7 +14,9 @@ import {
   FakeClaudeProcess,
   waitForClaude,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 
 describe("Integration: Worktree sessions", () => {
   let app: FastifyInstance;
@@ -22,13 +24,14 @@ describe("Integration: Worktree sessions", () => {
   let tmpDir: string;
   let sessionManager: SessionManager;
   let lastClaude: FakeClaudeProcess | null;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-worktree-"));
     lastClaude = null;
 
-    const sessionsFile = path.join(tmpDir, "sessions.json");
-    sessionManager = new SessionManager(sessionsFile);
+    sessionManager = new SessionManager(dbManager);
 
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
@@ -50,6 +53,7 @@ describe("Integration: Worktree sessions", () => {
 
   afterEach(async () => {
     await app.close();
+    dbManager.close();
     await new Promise((r) => setTimeout(r, 50));
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

@@ -1,241 +1,208 @@
-import fs from "node:fs";
-import path from "node:path";
 import type { SessionInfo } from "../shared/types.js";
-import { getErrorMessage } from "../shared/utils.js";
+import type { DatabaseManager } from "../shared/database.js";
 
-const DEFAULT_SESSIONS_FILE = path.join("/workspace", ".vibe-sessions.json");
+interface SessionRow {
+  id: string;
+  agent_session_id: string | null;
+  title: string;
+  created_at: string;
+  last_used_at: string;
+  workspace_dir: string | null;
+  remote_url: string | null;
+  conversation_replay: string | null;
+  archived: number;
+  warm: number;
+  branch: string | null;
+  session_type: string | null;
+  branch_renamed: number;
+}
 
-/**
- * Manages session persistence. Stores session metadata in a JSON file
- * so users can list, resume, and start new sessions.
- *
- * @param sessionsFile - Path to the JSON file for persistence.
- *   Defaults to `/workspace/.vibe-sessions.json`. Override in tests.
- */
 export class SessionManager {
-  private sessions: SessionInfo[] = [];
-  private sessionsFile: string;
+  private db;
 
-  constructor(sessionsFile?: string) {
-    this.sessionsFile = sessionsFile ?? DEFAULT_SESSIONS_FILE;
-    this.load();
+  constructor(dbManager: DatabaseManager) {
+    this.db = dbManager.db;
   }
 
-  /** Load sessions from disk. */
-  private load(): void {
-    try {
-      if (fs.existsSync(this.sessionsFile)) {
-        const raw = fs.readFileSync(this.sessionsFile, "utf-8");
-        this.sessions = JSON.parse(raw) as SessionInfo[];
-      }
-    } catch {
-      this.sessions = [];
-    }
-  }
-
-  /** Persist sessions to disk. */
-  private save(): void {
-    try {
-      fs.writeFileSync(this.sessionsFile, JSON.stringify(this.sessions, null, 2));
-    } catch (err) {
-      console.error("[sessions] failed to save:", getErrorMessage(err));
-    }
+  private fromRow(row: SessionRow): SessionInfo {
+    const info: SessionInfo = {
+      id: row.id,
+      title: row.title,
+      createdAt: row.created_at,
+      lastUsedAt: row.last_used_at,
+    };
+    if (row.agent_session_id) info.agentSessionId = row.agent_session_id;
+    if (row.workspace_dir) info.workspaceDir = row.workspace_dir;
+    if (row.remote_url) info.remoteUrl = row.remote_url;
+    if (row.conversation_replay) info.conversationReplay = row.conversation_replay;
+    if (row.archived) info.archived = true;
+    if (row.warm) info.warm = true;
+    if (row.branch) info.branch = row.branch;
+    if (row.session_type) info.sessionType = row.session_type as SessionInfo["sessionType"];
+    if (row.branch_renamed) info.branchRenamed = true;
+    return info;
   }
 
   /** List all non-archived, non-warm sessions, most recently used first. */
   list(): SessionInfo[] {
-    return this.sessions
-      .filter((s) => s.archived !== true && s.warm !== true)
-      .sort((a, b) => new Date(b.lastUsedAt).getTime() - new Date(a.lastUsedAt).getTime());
+    const rows = this.db.prepare(
+      "SELECT * FROM sessions WHERE archived = 0 AND warm = 0 ORDER BY last_used_at DESC, rowid DESC",
+    ).all() as SessionRow[];
+    return rows.map((r) => this.fromRow(r));
   }
 
   /** All session IDs including warm and archived — for container lifecycle decisions. */
   allIds(): string[] {
-    return this.sessions.map((s) => s.id);
+    const rows = this.db.prepare("SELECT id FROM sessions").all() as { id: string }[];
+    return rows.map((r) => r.id);
   }
 
-  /** Find a warm (ungraduated) session for a repo URL, excluding a specific ID.
-   *  Used to reuse previously-claimed-but-unused sessions instead of creating new ones. */
+  /** Find a warm (ungraduated) session for a repo URL, excluding a specific ID. */
   findUngraduatedWarm(repoUrl: string, excludeId?: string): SessionInfo | undefined {
-    return this.sessions.find((s) =>
-      s.warm === true && s.remoteUrl === repoUrl && s.id !== excludeId);
+    const row = this.db.prepare(
+      "SELECT * FROM sessions WHERE warm = 1 AND remote_url = ? AND id != ?",
+    ).get(repoUrl, excludeId ?? "") as SessionRow | undefined;
+    return row ? this.fromRow(row) : undefined;
   }
 
   /** Get a session by id. Returns undefined if not found. */
   get(id: string): SessionInfo | undefined {
-    return this.sessions.find((s) => s.id === id);
+    const row = this.db.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as SessionRow | undefined;
+    return row ? this.fromRow(row) : undefined;
   }
 
   /** Track a session — creates it if new, updates lastUsedAt if existing. */
   track(id: string, title?: string, workspaceDir?: string): SessionInfo {
     const now = new Date().toISOString();
-    const existing = this.sessions.find((s) => s.id === id);
+    const existing = this.get(id);
     if (existing) {
-      existing.lastUsedAt = now;
-      if (title) existing.title = title;
-      if (workspaceDir && !existing.workspaceDir) existing.workspaceDir = workspaceDir;
-      this.save();
-      return existing;
+      const updates: string[] = ["last_used_at = ?"];
+      const params: unknown[] = [now];
+      if (title) {
+        updates.push("title = ?");
+        params.push(title);
+      }
+      if (workspaceDir && !existing.workspaceDir) {
+        updates.push("workspace_dir = ?");
+        params.push(workspaceDir);
+      }
+      params.push(id);
+      this.db.prepare(`UPDATE sessions SET ${updates.join(", ")} WHERE id = ?`).run(...params);
+      return this.get(id)!;
     }
 
-    const session: SessionInfo = {
-      id,
-      title: title || "New session",
-      createdAt: now,
-      lastUsedAt: now,
-      workspaceDir,
-    };
-    this.sessions.unshift(session);
-    this.save();
-    return session;
+    this.db.prepare(`
+      INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(id, title || "New session", now, now, workspaceDir ?? null);
+    return this.get(id)!;
   }
 
-  /** Store the agent's conversation ID (e.g. Claude CLI session_id) for a session. */
+  /** Store the agent's conversation ID for a session. */
   setAgentSessionId(id: string, agentSessionId: string): void {
-    const session = this.sessions.find((s) => s.id === id);
-    if (session) {
-      session.agentSessionId = agentSessionId;
-      this.save();
-    }
+    this.db.prepare("UPDATE sessions SET agent_session_id = ? WHERE id = ?").run(agentSessionId, id);
   }
 
   /** Store conversation replay text for injection after a rollback. */
   setConversationReplay(id: string, replay: string): void {
-    const session = this.sessions.find((s) => s.id === id);
-    if (session) {
-      session.conversationReplay = replay;
-      this.save();
-    }
+    this.db.prepare("UPDATE sessions SET conversation_replay = ? WHERE id = ?").run(replay, id);
   }
 
   /** Consume (read + clear) conversation replay for a session. */
   consumeConversationReplay(id: string): string | undefined {
-    const session = this.sessions.find((s) => s.id === id);
-    if (session?.conversationReplay) {
-      const replay = session.conversationReplay;
-      delete session.conversationReplay;
-      this.save();
-      return replay;
-    }
-    return undefined;
+    let replay: string | undefined;
+    this.db.transaction(() => {
+      const row = this.db.prepare(
+        "SELECT conversation_replay FROM sessions WHERE id = ?",
+      ).get(id) as { conversation_replay: string | null } | undefined;
+      if (row?.conversation_replay) {
+        this.db.prepare("UPDATE sessions SET conversation_replay = NULL WHERE id = ?").run(id);
+        replay = row.conversation_replay;
+      }
+    })();
+    return replay;
   }
 
-  /** Clear the agent session ID for a session (forces fresh CLI session on next message). */
+  /** Clear the agent session ID for a session. */
   clearAgentSessionId(id: string): void {
-    const session = this.sessions.find((s) => s.id === id);
-    if (session) {
-      delete session.agentSessionId;
-      this.save();
-    }
+    this.db.prepare("UPDATE sessions SET agent_session_id = NULL WHERE id = ?").run(id);
   }
 
   /** Cache the origin remote URL for a session. */
   setRemoteUrl(id: string, remoteUrl: string | undefined): void {
-    const session = this.sessions.find((s) => s.id === id);
-    if (session) {
-      session.remoteUrl = remoteUrl;
-      this.save();
-    }
+    this.db.prepare("UPDATE sessions SET remote_url = ? WHERE id = ?").run(remoteUrl ?? null, id);
   }
 
   /** Rename a session. Returns the updated session, or null if not found. */
   rename(id: string, title: string): SessionInfo | null {
-    const session = this.sessions.find((s) => s.id === id);
-    if (!session) return null;
-    session.title = title;
-    this.save();
-    return session;
+    const result = this.db.prepare("UPDATE sessions SET title = ? WHERE id = ?").run(title, id);
+    if (result.changes === 0) return null;
+    return this.get(id) ?? null;
   }
 
-  /** Archive a session (hide from list, preserve all data). */
+  /** Archive a session. */
   archive(id: string): boolean {
-    const session = this.sessions.find((s) => s.id === id);
-    if (!session) return false;
-    session.archived = true;
-    this.save();
-    return true;
+    const result = this.db.prepare("UPDATE sessions SET archived = 1 WHERE id = ?").run(id);
+    return result.changes > 0;
   }
 
-  /** Unarchive a session (restore to active list). */
+  /** Unarchive a session. */
   unarchive(id: string): boolean {
-    const session = this.sessions.find((s) => s.id === id);
-    if (!session?.archived) return false;
-    delete session.archived;
-    this.save();
+    const row = this.db.prepare("SELECT archived FROM sessions WHERE id = ?").get(id) as { archived: number } | undefined;
+    if (!row?.archived) return false;
+    this.db.prepare("UPDATE sessions SET archived = 0 WHERE id = ?").run(id);
     return true;
   }
 
   /** List all archived sessions, most recently used first. */
   listArchived(): SessionInfo[] {
-    return this.sessions
-      .filter((s) => s.archived === true)
-      .sort((a, b) => new Date(b.lastUsedAt).getTime() - new Date(a.lastUsedAt).getTime());
+    const rows = this.db.prepare(
+      "SELECT * FROM sessions WHERE archived = 1 ORDER BY last_used_at DESC, rowid DESC",
+    ).all() as SessionRow[];
+    return rows.map((r) => this.fromRow(r));
   }
 
   /** List all non-warm sessions (active + archived), most recently used first. */
   listAll(): SessionInfo[] {
-    return this.sessions
-      .filter((s) => s.warm !== true)
-      .sort((a, b) => new Date(b.lastUsedAt).getTime() - new Date(a.lastUsedAt).getTime());
+    const rows = this.db.prepare(
+      "SELECT * FROM sessions WHERE warm = 0 ORDER BY last_used_at DESC, rowid DESC",
+    ).all() as SessionRow[];
+    return rows.map((r) => this.fromRow(r));
   }
 
-  /** Clear all in-memory session data (used by full reset). */
+  /** Clear all session data. */
   clear(): void {
-    this.sessions = [];
+    this.db.prepare("DELETE FROM sessions").run();
   }
 
   /** Delete a session by id. */
   delete(id: string): boolean {
-    const idx = this.sessions.findIndex((s) => s.id === id);
-    if (idx === -1) return false;
-    this.sessions.splice(idx, 1);
-    this.save();
-    return true;
+    const result = this.db.prepare("DELETE FROM sessions WHERE id = ?").run(id);
+    return result.changes > 0;
   }
 
   /** Set or clear the warm flag on a session. */
   setWarm(id: string, warm: boolean): void {
-    const session = this.sessions.find((s) => s.id === id);
-    if (session) {
-      if (warm) {
-        session.warm = true;
-      } else {
-        delete session.warm;
-      }
-      this.save();
-    }
+    this.db.prepare("UPDATE sessions SET warm = ? WHERE id = ?").run(warm ? 1 : 0, id);
   }
 
   /** Find all non-archived sessions with the given remote URL. */
   findAllByRemoteUrl(remoteUrl: string): SessionInfo[] {
-    return this.sessions.filter(
-      (s) => s.remoteUrl === remoteUrl && s.archived !== true,
-    );
+    const rows = this.db.prepare(
+      "SELECT * FROM sessions WHERE remote_url = ? AND archived = 0",
+    ).all(remoteUrl) as SessionRow[];
+    return rows.map((r) => this.fromRow(r));
   }
 
-  /** Mark a session's branch as renamed (descriptive slug applied). */
+  /** Mark a session's branch as renamed. */
   setBranchRenamed(id: string, renamed: boolean): void {
-    const session = this.sessions.find((s) => s.id === id);
-    if (session) {
-      if (renamed) {
-        session.branchRenamed = true;
-      } else {
-        delete session.branchRenamed;
-      }
-      this.save();
-    }
+    this.db.prepare("UPDATE sessions SET branch_renamed = ? WHERE id = ?").run(renamed ? 1 : 0, id);
   }
 
   /** Set branch and session type on a session. */
-  setWorktreeInfo(
-    id: string,
-    info: { branch: string; sessionType: "standalone" | "worktree" },
-  ): void {
-    const session = this.sessions.find((s) => s.id === id);
-    if (session) {
-      session.branch = info.branch;
-      session.sessionType = info.sessionType;
-      this.save();
-    }
+  setWorktreeInfo(id: string, info: { branch: string; sessionType: "standalone" | "worktree" }): void {
+    this.db.prepare(
+      "UPDATE sessions SET branch = ?, session_type = ? WHERE id = ?",
+    ).run(info.branch, info.sessionType, id);
   }
 }

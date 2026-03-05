@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
-import path from "node:path";
 import { buildApp } from "../index.js";
 import {
   StubAuthManager,
@@ -9,7 +8,9 @@ import {
   StubDeploymentStore,
   FakeClaudeProcess,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
@@ -19,8 +20,10 @@ import type { FastifyInstance } from "fastify";
 let tmpDir: string;
 let app: FastifyInstance;
 let githubAuth: StubGitHubAuthManager;
+let dbManager: DatabaseManager;
 
 beforeEach(async () => {
+  dbManager = createTestDatabaseManager();
   tmpDir = fs.mkdtempSync("/tmp/shipit-import-test-");
 
   githubAuth = new StubGitHubAuthManager();
@@ -31,9 +34,9 @@ beforeEach(async () => {
     agentFactory: () => new FakeClaudeProcess() as any,
     authManager: new StubAuthManager() as any,
     githubAuthManager: githubAuth as any,
-    sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
-    chatHistoryManager: new ChatHistoryManager(path.join(tmpDir, "chat")),
-    usageManager: new UsageManager(path.join(tmpDir, "usage.json")),
+    sessionManager: new SessionManager(dbManager),
+    chatHistoryManager: new ChatHistoryManager(dbManager),
+    usageManager: new UsageManager(dbManager),
     serveStatic: false,
     deploymentManager: new StubDeploymentManager() as any,
     deploymentStore: new StubDeploymentStore() as any,
@@ -43,6 +46,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await app.close();
+  dbManager.close();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 

@@ -16,7 +16,9 @@ import {
   FakeClaudeProcess,
   StubDeploymentManager,
   StubDeploymentStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 import { GitHubAuthManager } from "../github-auth.js";
 import { CredentialStore } from "../credential-store.js";
 import { initGlobalGitConfig, getGitIdentity, setGitIdentity } from "../git-config.js";
@@ -32,23 +34,25 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
   let credentialStore: CredentialStore;
   let chatHistoryManager: ChatHistoryManager;
   let savedOpenAIKey: string | undefined;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     // Save and clear OPENAI_API_KEY so codex agent starts with authConfigured=false
     savedOpenAIKey = process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-http-mutations-"));
 
-    const sessionsFile = path.join(tmpDir, "sessions.json");
-    sessionManager = new SessionManager(sessionsFile);
+    sessionManager = new SessionManager(dbManager);
     githubAuthManager = new StubGitHubAuthManager();
     initGlobalGitConfig(tmpDir);
     setGitIdentity("Test User", "test@test.com");
     credentialStore = new CredentialStore(tmpDir);
-    chatHistoryManager = new ChatHistoryManager(path.join(tmpDir, ".chat-history"));
+    chatHistoryManager = new ChatHistoryManager(dbManager);
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
+      databaseManager: dbManager,
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: githubAuthManager as unknown as GitHubAuthManager,
@@ -62,6 +66,7 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
 
   afterEach(async () => {
     await app.close();
+    dbManager.close();
     await new Promise((r) => setTimeout(r, 50));
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
@@ -708,8 +713,10 @@ describe("Integration: Phase 2 HTTP agent mutations", () => {
   let app: FastifyInstance;
   let tmpDir: string;
   let savedOpenAIKey: string | undefined;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     savedOpenAIKey = process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
 
@@ -725,8 +732,9 @@ describe("Integration: Phase 2 HTTP agent mutations", () => {
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
-      sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
-      chatHistoryManager: new ChatHistoryManager(path.join(tmpDir, ".chat-history")),
+      databaseManager: dbManager,
+      sessionManager: new SessionManager(dbManager),
+      chatHistoryManager: new ChatHistoryManager(dbManager),
       credentialStore: new CredentialStore(path.join(tmpDir, "credentials")),
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentRegistry: registry,
@@ -737,6 +745,7 @@ describe("Integration: Phase 2 HTTP agent mutations", () => {
 
   afterEach(async () => {
     await app.close();
+    dbManager.close();
     await new Promise((r) => setTimeout(r, 50));
     if (savedOpenAIKey !== undefined) process.env.OPENAI_API_KEY = savedOpenAIKey;
     else delete process.env.OPENAI_API_KEY;
@@ -809,13 +818,15 @@ describe("Integration: Phase 2 HTTP deploy config mutations", () => {
   let sessionManager: SessionManager;
   let stubDeployMgr: StubDeploymentManager;
   let stubDeployStore: StubDeploymentStore;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-http-deploy-"));
     initGlobalGitConfig(tmpDir);
     setGitIdentity("Test User", "test@test.com");
 
-    sessionManager = new SessionManager(path.join(tmpDir, "sessions.json"));
+    sessionManager = new SessionManager(dbManager);
     stubDeployMgr = new StubDeploymentManager();
     stubDeployMgr.register({
       info: {
@@ -830,6 +841,7 @@ describe("Integration: Phase 2 HTTP deploy config mutations", () => {
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
+      databaseManager: dbManager,
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentFactory: () => new FakeClaudeProcess() as any,
@@ -842,6 +854,7 @@ describe("Integration: Phase 2 HTTP deploy config mutations", () => {
 
   afterEach(async () => {
     await app.close();
+    dbManager.close();
     await new Promise((r) => setTimeout(r, 50));
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

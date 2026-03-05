@@ -13,17 +13,20 @@ import {
   StubAuthManager,
   FakeClaudeProcess,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 
 describe("Integration: Workspace project templates", () => {
   let app: FastifyInstance;
   let tmpDir: string;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-templates-"));
 
-    const sessionsFile = path.join(tmpDir, "sessions.json");
-    const sessionManager = new SessionManager(sessionsFile);
+    const sessionManager = new SessionManager(dbManager);
 
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
@@ -38,6 +41,7 @@ describe("Integration: Workspace project templates", () => {
 
   afterEach(async () => {
     await app.close();
+    dbManager.close();
     fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 

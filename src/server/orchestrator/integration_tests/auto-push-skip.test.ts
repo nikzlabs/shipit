@@ -12,7 +12,9 @@ import {
   FakeClaudeProcess,
   waitForClaude,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
@@ -24,8 +26,10 @@ let app: Awaited<ReturnType<typeof buildApp>>;
 let client: TestClient;
 let githubAuth: StubGitHubAuthManager;
 let latestClaude: FakeClaudeProcess | null = null;
+let dbManager: DatabaseManager;
 
 beforeEach(async () => {
+  dbManager = createTestDatabaseManager();
   tmpDir = fs.mkdtempSync("/tmp/shipit-auto-push-test-");
   latestClaude = null;
 
@@ -41,9 +45,9 @@ beforeEach(async () => {
     },
     authManager: new StubAuthManager() as any,
     githubAuthManager: githubAuth as any,
-    sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
-    chatHistoryManager: new ChatHistoryManager(path.join(tmpDir, "chat")),
-    usageManager: new UsageManager(path.join(tmpDir, "usage.json")),
+    sessionManager: new SessionManager(dbManager),
+    chatHistoryManager: new ChatHistoryManager(dbManager),
+    usageManager: new UsageManager(dbManager),
     serveStatic: false,
     deploymentManager: new StubDeploymentManager() as any,
     deploymentStore: new StubDeploymentStore() as any,
@@ -60,6 +64,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  dbManager.close();
   client.close();
   await app.close();
   fs.rmSync(tmpDir, { recursive: true, force: true });

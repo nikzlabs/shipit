@@ -1,138 +1,130 @@
-import fs from "node:fs";
-import path from "node:path";
 import type { UsageTurn, SessionUsage, UsageStats } from "../shared/types.js";
-import { getErrorMessage } from "../shared/utils.js";
+import type { DatabaseManager } from "../shared/database.js";
 
-const DEFAULT_USAGE_FILE = path.join("/workspace", ".shipit-usage.json");
+interface UsageRow {
+  id: number;
+  session_id: string;
+  cost_usd: number;
+  duration_ms: number;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  created_at: string;
+}
 
-/**
- * Manages per-turn usage/cost data. Persists to a JSON file on disk so data
- * survives server restarts.
- *
- * @param usageFile - Path to the JSON file for persistence.
- *   Defaults to `/workspace/.shipit-usage.json`. Override in tests.
- */
 export class UsageManager {
-  private turns: UsageTurn[] = [];
-  private usageFile: string;
+  private db;
+  private stmtInsert;
+  private stmtSessionUsage;
+  private stmtSessionTokens;
+  private stmtSessionTurns;
+  private stmtDeleteBySession;
 
-  constructor(usageFile?: string) {
-    this.usageFile = usageFile ?? DEFAULT_USAGE_FILE;
-    this.load();
-  }
-
-  /** Load usage data from disk. */
-  private load(): void {
-    try {
-      if (fs.existsSync(this.usageFile)) {
-        const raw = fs.readFileSync(this.usageFile, "utf-8");
-        this.turns = JSON.parse(raw) as UsageTurn[];
-      }
-    } catch {
-      this.turns = [];
-    }
-  }
-
-  /** Persist usage data to disk. */
-  private save(): void {
-    try {
-      const dir = path.dirname(this.usageFile);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      fs.writeFileSync(this.usageFile, JSON.stringify(this.turns, null, 2));
-    } catch (err) {
-      console.error("[usage] failed to save:", getErrorMessage(err));
-    }
+  constructor(dbManager: DatabaseManager) {
+    this.db = dbManager.db;
+    this.stmtInsert = this.db.prepare(`
+      INSERT INTO usage_turns (session_id, cost_usd, duration_ms, input_tokens, output_tokens)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    this.stmtSessionUsage = this.db.prepare(`
+      SELECT SUM(cost_usd) as total_cost, SUM(duration_ms) as total_duration, COUNT(*) as turn_count
+      FROM usage_turns WHERE session_id = ?
+    `);
+    this.stmtSessionTokens = this.db.prepare(`
+      SELECT SUM(input_tokens) as input_total, SUM(output_tokens) as output_total,
+             COUNT(*) as turn_count
+      FROM usage_turns WHERE session_id = ?
+    `);
+    this.stmtSessionTurns = this.db.prepare(
+      "SELECT * FROM usage_turns WHERE session_id = ? ORDER BY id",
+    );
+    this.stmtDeleteBySession = this.db.prepare(
+      "DELETE FROM usage_turns WHERE session_id = ?",
+    );
   }
 
   /** Record a turn's cost, duration, and optional token counts. */
   record(sessionId: string, costUsd: number, durationMs: number, inputTokens?: number, outputTokens?: number): void {
-    this.turns.push({
-      sessionId,
-      costUsd,
-      durationMs,
-      timestamp: new Date().toISOString(),
-      inputTokens,
-      outputTokens,
-    });
-    this.save();
+    this.stmtInsert.run(sessionId, costUsd, durationMs, inputTokens ?? null, outputTokens ?? null);
   }
 
   /** Get aggregated usage for a single session. */
   getSessionUsage(sessionId: string): SessionUsage | undefined {
-    const sessionTurns = this.turns.filter((t) => t.sessionId === sessionId);
-    if (sessionTurns.length === 0) return undefined;
+    const row = this.stmtSessionUsage.get(sessionId) as { total_cost: number | null; total_duration: number | null; turn_count: number };
+
+    if (row.turn_count === 0) return undefined;
 
     return {
       sessionId,
-      totalCostUsd: sessionTurns.reduce((sum, t) => sum + t.costUsd, 0),
-      totalDurationMs: sessionTurns.reduce((sum, t) => sum + t.durationMs, 0),
-      turnCount: sessionTurns.length,
+      totalCostUsd: row.total_cost ?? 0,
+      totalDurationMs: row.total_duration ?? 0,
+      turnCount: row.turn_count,
     };
   }
 
   /** Get cumulative token totals for a session. */
   getSessionTokenTotals(sessionId: string): { cumulativeInputTokens: number; cumulativeOutputTokens: number } | undefined {
-    const sessionTurns = this.turns.filter((t) => t.sessionId === sessionId);
-    if (sessionTurns.length === 0) return undefined;
+    const row = this.stmtSessionTokens.get(sessionId) as { input_total: number | null; output_total: number | null; turn_count: number };
 
-    const hasAnyTokens = sessionTurns.some((t) => t.inputTokens !== undefined || t.outputTokens !== undefined);
-    if (!hasAnyTokens) return undefined;
+    if (row.turn_count === 0) return undefined;
+    if (row.input_total === null && row.output_total === null) return undefined;
 
     return {
-      cumulativeInputTokens: sessionTurns.reduce((sum, t) => sum + (t.inputTokens ?? 0), 0),
-      cumulativeOutputTokens: sessionTurns.reduce((sum, t) => sum + (t.outputTokens ?? 0), 0),
+      cumulativeInputTokens: row.input_total ?? 0,
+      cumulativeOutputTokens: row.output_total ?? 0,
     };
   }
 
   /** Get per-turn usage data for a session (for the usage modal breakdown). */
   getSessionTurns(sessionId: string): UsageTurn[] {
-    return this.turns.filter((t) => t.sessionId === sessionId);
+    const rows = this.stmtSessionTurns.all(sessionId) as UsageRow[];
+    return rows.map((r) => this.fromRow(r));
   }
 
   /** Get aggregated usage across all sessions. */
   getStats(): UsageStats {
-    const sessionMap = new Map<string, UsageTurn[]>();
-    for (const turn of this.turns) {
-      const list = sessionMap.get(turn.sessionId);
-      if (list) {
-        list.push(turn);
-      } else {
-        sessionMap.set(turn.sessionId, [turn]);
-      }
-    }
+    const sessionRows = this.db.prepare(`
+      SELECT session_id, SUM(cost_usd) as total_cost, SUM(duration_ms) as total_duration, COUNT(*) as turn_count
+      FROM usage_turns GROUP BY session_id
+    `).all() as { session_id: string; total_cost: number; total_duration: number; turn_count: number }[];
 
-    const sessions: SessionUsage[] = [];
-    for (const [sessionId, turns] of sessionMap) {
-      sessions.push({
-        sessionId,
-        totalCostUsd: turns.reduce((sum, t) => sum + t.costUsd, 0),
-        totalDurationMs: turns.reduce((sum, t) => sum + t.durationMs, 0),
-        turnCount: turns.length,
-      });
-    }
+    const sessions: SessionUsage[] = sessionRows.map((r) => ({
+      sessionId: r.session_id,
+      totalCostUsd: r.total_cost,
+      totalDurationMs: r.total_duration,
+      turnCount: r.turn_count,
+    }));
+
+    const totalRow = this.db.prepare(
+      "SELECT SUM(cost_usd) as total_cost, COUNT(*) as total_turns FROM usage_turns",
+    ).get() as { total_cost: number | null; total_turns: number };
 
     return {
       sessions,
-      totalCostUsd: this.turns.reduce((sum, t) => sum + t.costUsd, 0),
-      totalTurns: this.turns.length,
+      totalCostUsd: totalRow.total_cost ?? 0,
+      totalTurns: totalRow.total_turns,
     };
   }
 
-  /** Clear all in-memory usage data (used by full reset). */
+  /** Clear all usage data. */
   clear(): void {
-    this.turns = [];
+    this.db.prepare("DELETE FROM usage_turns").run();
   }
 
   /** Delete all usage data for a session. */
   delete(sessionId: string): boolean {
-    const before = this.turns.length;
-    this.turns = this.turns.filter((t) => t.sessionId !== sessionId);
-    if (this.turns.length !== before) {
-      this.save();
-      return true;
-    }
-    return false;
+    const result = this.stmtDeleteBySession.run(sessionId);
+    return result.changes > 0;
+  }
+
+  private fromRow(row: UsageRow): UsageTurn {
+    const turn: UsageTurn = {
+      sessionId: row.session_id,
+      costUsd: row.cost_usd,
+      durationMs: row.duration_ms,
+      timestamp: row.created_at,
+    };
+    if (row.input_tokens !== null) turn.inputTokens = row.input_tokens;
+    if (row.output_tokens !== null) turn.outputTokens = row.output_tokens;
+    return turn;
   }
 }

@@ -17,7 +17,9 @@ import {
   FakeClaudeProcess,
   waitForClaude,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 
 describe("Integration: PR description generation", () => {
   let app: FastifyInstance;
@@ -26,15 +28,16 @@ describe("Integration: PR description generation", () => {
   let lastClaude: FakeClaudeProcess | null;
   let generateTextResult: string;
   let generateTextError: Error | null;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-pr-desc-"));
     lastClaude = null;
     generateTextResult = "## Summary\n\nAdded authentication.\n\n## Changes\n\n- Added JWT auth module";
     generateTextError = null;
 
-    const sessionsFile = path.join(tmpDir, "sessions.json");
-    const sessionManager = new SessionManager(sessionsFile);
+    const sessionManager = new SessionManager(dbManager);
 
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
@@ -62,6 +65,7 @@ describe("Integration: PR description generation", () => {
 
   afterEach(async () => {
     await app.close();
+    dbManager.close();
     fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
@@ -114,13 +118,12 @@ describe("Integration: PR description generation", () => {
   it("returns description when minimal git history via HTTP", async () => {
     // Build a separate app with an empty git repo (no commits beyond init)
     const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-pr-empty-"));
-    const emptySessionsFile = path.join(emptyDir, "sessions.json");
     let emptyLastClaude: FakeClaudeProcess | null = null;
 
     const emptyApp = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
-      sessionManager: new SessionManager(emptySessionsFile),
+      sessionManager: new SessionManager(dbManager),
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
       agentFactory: () => {
