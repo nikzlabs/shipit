@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
 import type { CredentialStore } from "./credential-store.js";
 import { setGitIdentity } from "./git-config.js";
+import { getErrorMessage } from "../shared/utils.js";
 
 export interface GitHubAuthStatus {
   authenticated: boolean;
@@ -222,7 +223,7 @@ export class GitHubAuthManager extends EventEmitter {
     } catch (err) {
       return {
         success: false,
-        message: err instanceof Error ? err.message : String(err),
+        message: getErrorMessage(err),
       };
     }
   }
@@ -279,7 +280,7 @@ export class GitHubAuthManager extends EventEmitter {
     } catch (err) {
       return {
         success: false,
-        message: err instanceof Error ? err.message : String(err),
+        message: getErrorMessage(err),
       };
     }
   }

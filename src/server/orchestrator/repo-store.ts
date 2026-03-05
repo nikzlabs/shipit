@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { RepoInfo } from "../shared/types.js";
+import { getErrorMessage } from "../shared/utils.js";
 
 const DEFAULT_REPOS_FILE = path.join("/workspace", ".vibe-repos.json");
 
@@ -40,7 +41,7 @@ export class RepoStore {
     try {
       fs.writeFileSync(this.reposFile, JSON.stringify(this.repos, null, 2));
     } catch (err) {
-      console.error("[repos] failed to save:", err instanceof Error ? err.message : String(err));
+      console.error("[repos] failed to save:", getErrorMessage(err));
     }
   }
 

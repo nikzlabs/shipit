@@ -16,7 +16,6 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import crypto from "node:crypto";
 import { execSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type { FastifyInstance } from "fastify";
@@ -37,6 +36,7 @@ import {
   createTestCredentialStore,
 } from "./test-helpers.js";
 import type { AuthManager } from "../auth.js";
+import { repoUrlToHash } from "../git-utils.js";
 
 const REPO_URL = "https://github.com/owner/standby-test-repo.git";
 
@@ -113,8 +113,7 @@ function createFakeDocker() {
 // ---------------------------------------------------------------------------
 
 function getSharedRepoDirForUrl(workspaceDir: string, repoUrl: string): string {
-  const hash = crypto.createHash("sha256").update(repoUrl).digest("hex").slice(0, 16);
-  return path.join(workspaceDir, "repos", hash);
+  return path.join(workspaceDir, "repos", repoUrlToHash(repoUrl));
 }
 
 function createSharedRepo(repoDir: string): void {

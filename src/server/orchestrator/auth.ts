@@ -280,7 +280,8 @@ export class AuthManager extends EventEmitter {
     if (this.authUrlEmitted || this.wizardEnterCount >= 10 || this.findTriggerPos() !== -1) {
       if (this.wizardEnterCount >= 10 && !this.authUrlEmitted) {
         console.log("[auth] Exhausted Enter attempts. Buffer (%d chars):", this.outputBuffer.length);
-        console.log("[auth] Buffer contents:", this.outputBuffer.substring(0, 500));
+        const redacted = this.outputBuffer.substring(0, 500).replace(/https?:\/\/\S+/g, "[URL REDACTED]");
+        console.log("[auth] Buffer contents (URLs redacted):", redacted);
       }
       return;
     }

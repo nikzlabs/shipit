@@ -11,13 +11,8 @@ import { generateSessionName } from "../session-namer.js";
 type WsSendMessage = Extract<WsClientMessage, { type: "send_message" }>;
 type WsAnswerQuestion = Extract<WsClientMessage, { type: "answer_question" }>;
 
-/** Map model identifiers to context window sizes. */
-export function getContextWindowSize(model: string): number {
-  if (model.includes("opus")) return 200_000;
-  if (model.includes("sonnet")) return 200_000;
-  if (model.includes("haiku")) return 200_000;
-  return 200_000;
-}
+/** Context window size in tokens (same across all current model families). */
+export const CONTEXT_WINDOW_TOKENS = 200_000;
 
 /**
  * Wire up common agent event listeners shared across send_message,
@@ -77,7 +72,7 @@ function wireAgentListeners(
         emitToViewers({
           type: "model_info",
           model: event.model,
-          contextWindowTokens: getContextWindowSize(event.model),
+          contextWindowTokens: CONTEXT_WINDOW_TOKENS,
         });
       }
     }
@@ -308,7 +303,7 @@ async function runClaudeWithMessage(ctx: FullCtx, opts: {
         if (commitHash) {
           emitDone({ type: "git_committed", hash: commitHash, message: firstLine });
           // Schedule auto-push (debounced)
-          ctx.scheduleAutoPush(git, ctx.send);
+          ctx.scheduleAutoPush(git);
 
           // Link commit to the last assistant message in chat history
           if (capturedSessionId && parentHash) {
@@ -740,7 +735,7 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
         if (hash) {
           ctx.send({ type: "git_committed", hash, message: firstLine });
           // Schedule auto-push (debounced)
-          ctx.scheduleAutoPush(git, ctx.send);
+          ctx.scheduleAutoPush(git);
 
           // Link commit to the last assistant message in chat history
           if (capturedSessionId && parentHash) {

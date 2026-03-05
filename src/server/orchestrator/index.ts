@@ -12,7 +12,7 @@ import { AuthManager } from "./auth.js";
 import { GitHubAuthManager } from "./github-auth.js";
 import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
-import { generateBranchPrefix } from "./git-utils.js";
+import { generateBranchPrefix, repoUrlToHash } from "./git-utils.js";
 import { ChatHistoryManager } from "./chat-history.js";
 import { UsageManager } from "./usage.js";
 import { FeatureManager } from "./features.js";
@@ -40,7 +40,7 @@ import * as sendMessageHandlers from "./ws-handlers/send-message.js";
 import { registerApiRoutes } from "./api-routes.js";
 import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
 import { archiveSession } from "./services/session.js";
-export { getContextWindowSize } from "./ws-handlers/send-message.js";
+export { CONTEXT_WINDOW_TOKENS } from "./ws-handlers/send-message.js";
 
 const WORKSPACE = "/workspace";
 
@@ -678,8 +678,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const reposRoot = path.join(workspaceDir, "repos");
 
   const getSharedRepoDir = (repoUrl: string): string => {
-    const hash = crypto.createHash("sha256").update(repoUrl).digest("hex").slice(0, 16);
-    return path.join(reposRoot, hash);
+    return path.join(reposRoot, repoUrlToHash(repoUrl));
   };
 
   // ---- Warm session pool ----
@@ -1044,7 +1043,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         previewRetryListener = null;
       };
 
-      const scheduleAutoPush = (git: GitManager, _sendFn: typeof send) => {
+      const scheduleAutoPush = (git: GitManager) => {
         const runner = attachedRunner;
         if (!runner) return;
         runner.clearPushTimer();

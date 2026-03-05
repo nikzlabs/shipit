@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { getErrorMessage } from "../shared/utils.js";
 
 export type UtilityModelProvider = "openai-compatible" | "anthropic";
 
@@ -53,10 +54,7 @@ export class CredentialStore {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), { mode: 0o600 });
     } catch (err) {
-      console.error(
-        "[credential-store] Failed to save:",
-        err instanceof Error ? err.message : String(err),
-      );
+      console.error("[credential-store] Failed to save:", getErrorMessage(err));
     }
   }
 

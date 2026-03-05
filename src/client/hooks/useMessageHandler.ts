@@ -216,9 +216,9 @@ export function useMessageHandler(params: {
       if (currentRightTab === "files" && currentSessionId) {
         const currentViewingFile = useFileStore.getState().viewingFile;
         if (currentViewingFile) {
-          useFileStore.getState().fetchFileWithTree(currentSessionId, currentViewingFile).catch(() => {});
+          useFileStore.getState().fetchFileWithTree(currentSessionId, currentViewingFile).catch((err: unknown) => console.warn("[file-refresh]", err));
         } else {
-          useFileStore.getState().fetchTree(currentSessionId).catch(() => {});
+          useFileStore.getState().fetchTree(currentSessionId).catch((err: unknown) => console.warn("[file-refresh]", err));
         }
       }
     }
@@ -256,7 +256,7 @@ export function useMessageHandler(params: {
       // Refresh git history and file tree
       const currentSessionId = useSessionStore.getState().sessionId;
       if (currentSessionId) {
-        useFileStore.getState().fetchTree(currentSessionId).catch(() => {});
+        useFileStore.getState().fetchTree(currentSessionId).catch((err: unknown) => console.warn("[file-refresh]", err));
       }
     }
 
@@ -312,11 +312,11 @@ export function useMessageHandler(params: {
         const needsFile = currentViewingFile && paths.some((p) => currentViewingFile.endsWith(p));
 
         if (needsTree && needsFile) {
-          useFileStore.getState().fetchFileWithTree(sid, currentViewingFile).catch(() => {});
+          useFileStore.getState().fetchFileWithTree(sid, currentViewingFile).catch((err: unknown) => console.warn("[file-refresh]", err));
         } else if (needsTree) {
-          useFileStore.getState().fetchTree(sid).catch(() => {});
+          useFileStore.getState().fetchTree(sid).catch((err: unknown) => console.warn("[file-refresh]", err));
         } else if (needsFile) {
-          useFileStore.getState().refreshFileContent(sid, currentViewingFile).catch(() => {});
+          useFileStore.getState().refreshFileContent(sid, currentViewingFile).catch((err: unknown) => console.warn("[file-refresh]", err));
         }
       }
 
@@ -334,7 +334,7 @@ export function useMessageHandler(params: {
       ui.setShowTemplates(false);
       const sid = useSessionStore.getState().sessionId;
       if (sid) {
-        useFileStore.getState().fetchTree(sid).catch(() => {});
+        useFileStore.getState().fetchTree(sid).catch((err: unknown) => console.warn("[file-refresh]", err));
       }
     }
 

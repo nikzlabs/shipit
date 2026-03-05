@@ -97,8 +97,8 @@ export interface SessionContainerManagerOpts {
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_IMAGE = process.env.SESSION_WORKER_IMAGE!;
-const DEFAULT_NETWORK = process.env.DOCKER_NETWORK!;
+const DEFAULT_IMAGE = process.env.SESSION_WORKER_IMAGE;
+const DEFAULT_NETWORK = process.env.DOCKER_NETWORK;
 const DEFAULT_MEMORY_LIMIT = 512 * 1024 * 1024; // 512 MB
 const DEFAULT_CPU_QUOTA = 50_000; // 0.5 CPU (50000 µs per 100ms period)
 const DEFAULT_CPU_PERIOD = 100_000; // 100ms
@@ -135,8 +135,13 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   constructor(opts: SessionContainerManagerOpts = {}) {
     super();
     this.docker = opts.docker ?? new Docker({ socketPath: opts.socketPath ?? "/var/run/docker.sock" });
-    this.imageName = opts.imageName ?? DEFAULT_IMAGE;
-    this.networkName = opts.networkName ?? DEFAULT_NETWORK;
+    const imageName = opts.imageName ?? DEFAULT_IMAGE;
+    if (!imageName) throw new Error("SESSION_WORKER_IMAGE env var is required when no imageName option is provided");
+    this.imageName = imageName;
+
+    const networkName = opts.networkName ?? DEFAULT_NETWORK;
+    if (!networkName) throw new Error("DOCKER_NETWORK env var is required when no networkName option is provided");
+    this.networkName = networkName;
     this.defaultMemoryLimit = opts.memoryLimit ?? DEFAULT_MEMORY_LIMIT;
     this.defaultCpuQuota = opts.cpuQuota ?? DEFAULT_CPU_QUOTA;
     this.defaultPidsLimit = opts.pidsLimit ?? DEFAULT_PIDS_LIMIT;

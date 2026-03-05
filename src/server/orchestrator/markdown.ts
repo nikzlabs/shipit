@@ -1,8 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-/** Directories to skip when scanning for markdown files. */
-const SKIP_DIRS = new Set(["node_modules", ".git"]);
+import { WORKSPACE_SKIP_DIRS } from "../shared/fs-constants.js";
 
 /**
  * Recursively find `.md` files in a directory, skipping `node_modules` and `.git`.
@@ -15,7 +14,7 @@ export async function findMarkdownFiles(dir: string, prefix = ""): Promise<strin
   const results: string[] = [];
 
   for (const entry of entries) {
-    if (SKIP_DIRS.has(entry.name)) continue;
+    if (WORKSPACE_SKIP_DIRS.has(entry.name)) continue;
     const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
 
     if (entry.isDirectory()) {

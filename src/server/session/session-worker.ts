@@ -16,6 +16,7 @@ import { TerminalProcess } from "./terminal.js";
 import { PreviewManager } from "./preview-manager.js";
 import { FileWatcher } from "./file-watcher.js";
 import { scanFileTree } from "../shared/file-tree.js";
+import { getErrorMessage } from "../shared/utils.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -113,7 +114,7 @@ export class SessionWorker extends EventEmitter {
         return reply.code(409).send({ error: "Agent already running" });
       }
 
-      const { agentId, params } = request.body as { agentId: AgentId; params: AgentRunParams };
+      const { agentId, params } = request.body;
       if (!agentId || !params) {
         return reply.code(400).send({ error: "agentId and params are required" });
       }
@@ -128,8 +129,7 @@ export class SessionWorker extends EventEmitter {
         return { started: true };
       } catch (err) {
         this.agent = null;
-        const message = err instanceof Error ? err.message : String(err);
-        return reply.code(500).send({ error: message });
+        return reply.code(500).send({ error: getErrorMessage(err) });
       }
     });
 
@@ -154,7 +154,7 @@ export class SessionWorker extends EventEmitter {
       if (!this.agent) {
         return reply.code(404).send({ error: "No agent running" });
       }
-      const { data } = request.body as { data: string };
+      const { data } = request.body;
       if (typeof data !== "string") {
         return reply.code(400).send({ error: "data must be a string" });
       }
@@ -188,7 +188,7 @@ export class SessionWorker extends EventEmitter {
       if (!this.terminal) {
         return reply.code(404).send({ error: "No terminal running" });
       }
-      const { data } = request.body as { data: string };
+      const { data } = request.body;
       if (typeof data !== "string") {
         return reply.code(400).send({ error: "data must be a string" });
       }
@@ -200,7 +200,7 @@ export class SessionWorker extends EventEmitter {
       if (!this.terminal) {
         return reply.code(404).send({ error: "No terminal running" });
       }
-      const body = request.body as { cols: number; rows: number };
+      const body = request.body;
       const cols = typeof body.cols === "number" ? Math.max(1, Math.min(500, body.cols)) : 80;
       const rows = typeof body.rows === "number" ? Math.max(1, Math.min(200, body.rows)) : 24;
       this.terminal.resize(cols, rows);
@@ -220,7 +220,7 @@ export class SessionWorker extends EventEmitter {
       this.preview.start(this.workspaceDir).catch((err) => {
         this.broadcastSSE({
           type: "preview_config_error",
-          data: { message: err instanceof Error ? err.message : String(err) },
+          data: { message: getErrorMessage(err) },
         });
       });
       return { started: true };
@@ -245,7 +245,7 @@ export class SessionWorker extends EventEmitter {
         this.preview.start(this.workspaceDir).catch((err) => {
           this.broadcastSSE({
             type: "preview_config_error",
-            data: { message: err instanceof Error ? err.message : String(err) },
+            data: { message: getErrorMessage(err) },
           });
         });
       }

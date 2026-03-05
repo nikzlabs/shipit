@@ -28,7 +28,7 @@ export function useAutoFix(params: {
     apiPost(`/api/sessions/${sessionId}/preview-errors`, {
       message: latest.message,
       stack: latest.stack,
-    }).catch(() => {});
+    }).catch((err: unknown) => console.warn("[preview-error-relay]", err));
   }, [previewErrors.length, status, apiPost, previewErrors]);
 
   const handleSendAutoFix = useCallback(

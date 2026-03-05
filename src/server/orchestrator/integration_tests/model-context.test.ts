@@ -18,7 +18,7 @@ import {
   waitForClaude,
   createTestCredentialStore,
 } from "./test-helpers.js";
-import { getContextWindowSize } from "../index.js";
+import { CONTEXT_WINDOW_TOKENS } from "../index.js";
 
 describe("Integration: Model context & token tracking", () => {
   let app: FastifyInstance;
@@ -179,17 +179,7 @@ describe("Integration: Model context & token tracking", () => {
     client.close();
   });
 
-  it("context window lookup returns correct size for various models", () => {
-    // Opus model
-    expect(getContextWindowSize("claude-opus-4-20250514")).toBe(200000);
-
-    // Sonnet model
-    expect(getContextWindowSize("claude-sonnet-4-20250514")).toBe(200000);
-
-    // Haiku model
-    expect(getContextWindowSize("claude-haiku-3-5-20241022")).toBe(200000);
-
-    // Unknown model — should still return a default
-    expect(getContextWindowSize("unknown-model-xyz")).toBe(200000);
+  it("context window constant is 200k tokens", () => {
+    expect(CONTEXT_WINDOW_TOKENS).toBe(200000);
   });
 });
