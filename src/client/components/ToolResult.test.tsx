@@ -63,7 +63,7 @@ describe("ToolResult", () => {
         <ToolResult tool="Bash" result={result("command failed", true)} />
       );
       const pre = container.querySelector("pre");
-      expect(pre?.className).toContain("text-red-300");
+      expect(pre?.className).toContain("text-(--color-error)");
     });
 
     it("does not use red text for non-error output", () => {
@@ -71,8 +71,8 @@ describe("ToolResult", () => {
         <ToolResult tool="Bash" result={result("success")} />
       );
       const pre = container.querySelector("pre");
-      expect(pre?.className).toContain("text-gray-300");
-      expect(pre?.className).not.toContain("text-red-300");
+      expect(pre?.className).toContain("text-(--color-text-primary)");
+      expect(pre?.className).not.toContain("text-(--color-error)");
     });
 
     it("shows error border for error results", () => {
@@ -80,7 +80,7 @@ describe("ToolResult", () => {
         <ToolResult tool="Bash" result={result("error", true)} />
       );
       const wrapper = container.querySelector("div.mt-1");
-      expect(wrapper?.className).toContain("border-red-700");
+      expect(wrapper?.className).toContain("border-(--color-error)");
     });
 
     it("truncates long output and shows expand button", () => {
@@ -152,7 +152,7 @@ describe("ToolResult", () => {
         <ToolResult tool="Grep" result={result(grepOutput)} />
       );
       // File paths should be colored blue
-      const blueParts = container.querySelectorAll("span.text-blue-600");
+      const blueParts = container.querySelectorAll("span.text-\\(--color-text-link\\)");
       expect(blueParts.length).toBeGreaterThan(0);
       expect(blueParts[0].textContent).toBe("src/app.ts");
     });
@@ -162,7 +162,7 @@ describe("ToolResult", () => {
       const { container } = render(
         <ToolResult tool="Grep" result={result(grepOutput)} />
       );
-      const yellowParts = container.querySelectorAll("span.text-yellow-600");
+      const yellowParts = container.querySelectorAll("span.text-\\(--color-warning\\)");
       expect(yellowParts.length).toBeGreaterThan(0);
       expect(yellowParts[0].textContent).toBe("42");
     });
@@ -172,7 +172,7 @@ describe("ToolResult", () => {
       const { container } = render(
         <ToolResult tool="Grep" result={result(grepOutput)} />
       );
-      const blueParts = container.querySelectorAll("span.text-blue-600");
+      const blueParts = container.querySelectorAll("span.text-\\(--color-text-link\\)");
       expect(blueParts.length).toBe(2);
     });
 
@@ -187,7 +187,7 @@ describe("ToolResult", () => {
       const { container } = render(
         <ToolResult tool="Glob" result={result(globOutput)} />
       );
-      const blueParts = container.querySelectorAll("span.text-blue-600");
+      const blueParts = container.querySelectorAll("span.text-\\(--color-text-link\\)");
       expect(blueParts.length).toBe(3);
     });
   });
@@ -208,7 +208,7 @@ describe("ToolResult", () => {
         <ToolResult tool="Unknown" result={result("error occurred", true)} />
       );
       const pre = container.querySelector("pre");
-      expect(pre?.className).toContain("text-red-300");
+      expect(pre?.className).toContain("text-(--color-error)");
     });
 
     it("truncates at 15 lines", () => {

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { TemplateInfo } from "./TemplateSelector.js";
+import { Button } from "./ui/button.js";
 
 const CATEGORY_LABELS: Record<TemplateInfo["category"], string> = {
   frontend: "Frontend",
@@ -79,29 +80,31 @@ export function NewRepoDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 dark:bg-gray-950/90 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-(--color-bg-overlay) backdrop-blur-sm"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
       onKeyDown={handleKeyDown}
     >
-      <div className="max-w-2xl w-full mx-4 rounded-xl bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 max-h-[90vh] flex flex-col">
+      <div className="max-w-2xl w-full mx-4 rounded-xl bg-(--color-bg-elevated) border border-(--color-border-secondary) max-h-[90vh] flex flex-col">
         {/* Header */}
-        <div className="px-6 pt-6 pb-4 border-b border-gray-200 dark:border-gray-700">
+        <div className="px-6 pt-6 pb-4 border-b border-(--color-border-secondary)">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            <h2 className="text-lg font-semibold text-(--color-text-primary)">
               Create New Repository
             </h2>
-            <button
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={onClose}
-              className="text-gray-400 hover:text-gray-200 transition-colors text-xl leading-none"
+              className="text-xl leading-none"
               aria-label="Close"
             >
               &times;
-            </button>
+            </Button>
           </div>
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            Create a new repository under <span className="text-gray-800 dark:text-gray-200 font-medium">{username}</span> with a project template.
+          <p className="text-sm text-(--color-text-secondary)">
+            Create a new repository under <span className="text-(--color-text-primary) font-medium">{username}</span> with a project template.
           </p>
         </div>
 
@@ -109,7 +112,7 @@ export function NewRepoDialog({
         <div className="overflow-y-auto flex-1 px-6 py-4 space-y-5">
           {/* Repo name */}
           <div>
-            <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">
+            <label className="block text-sm text-(--color-text-primary) mb-1">
               Repository name
             </label>
             <input
@@ -117,12 +120,12 @@ export function NewRepoDialog({
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="my-project"
-              className="w-full rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-4 py-2.5 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono"
+              className="w-full rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-2.5 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus) font-mono"
               autoFocus
               disabled={creating}
             />
             {trimmedName && !isValidName && (
-              <p className="text-xs text-red-400 mt-1">
+              <p className="text-xs text-(--color-error) mt-1">
                 Only letters, numbers, hyphens, dots, and underscores allowed.
               </p>
             )}
@@ -130,7 +133,7 @@ export function NewRepoDialog({
 
           {/* Description */}
           <div>
-            <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">
+            <label className="block text-sm text-(--color-text-primary) mb-1">
               Description (optional)
             </label>
             <input
@@ -138,7 +141,7 @@ export function NewRepoDialog({
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="A short description of the project"
-              className="w-full rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-4 py-2.5 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+              className="w-full rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-2.5 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus)"
               disabled={creating}
             />
           </div>
@@ -151,8 +154,8 @@ export function NewRepoDialog({
               disabled={creating}
               className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium border transition-colors ${
                 !isPrivate
-                  ? "bg-gray-200 dark:bg-gray-700 border-blue-500 text-gray-900 dark:text-gray-100"
-                  : "bg-gray-100 dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:border-gray-400 dark:hover:border-gray-500"
+                  ? "bg-(--color-bg-tertiary) border-(--color-accent) text-(--color-text-primary)"
+                  : "bg-(--color-bg-secondary) border-(--color-border-secondary) text-(--color-text-secondary) hover:border-(--color-text-tertiary)"
               }`}
             >
               Public
@@ -163,8 +166,8 @@ export function NewRepoDialog({
               disabled={creating}
               className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium border transition-colors ${
                 isPrivate
-                  ? "bg-gray-200 dark:bg-gray-700 border-blue-500 text-gray-900 dark:text-gray-100"
-                  : "bg-gray-100 dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:border-gray-400 dark:hover:border-gray-500"
+                  ? "bg-(--color-bg-tertiary) border-(--color-accent) text-(--color-text-primary)"
+                  : "bg-(--color-bg-secondary) border-(--color-border-secondary) text-(--color-text-secondary) hover:border-(--color-text-tertiary)"
               }`}
             >
               Private
@@ -173,7 +176,7 @@ export function NewRepoDialog({
 
           {/* Template selection */}
           <div>
-            <label className="block text-sm text-gray-700 dark:text-gray-300 mb-2">
+            <label className="block text-sm text-(--color-text-primary) mb-2">
               Project template
             </label>
 
@@ -186,8 +189,8 @@ export function NewRepoDialog({
                   disabled={creating}
                   className={`px-3 py-1 text-xs rounded-full transition-colors ${
                     filter === cat
-                      ? "bg-blue-600 text-white"
-                      : "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700"
+                      ? "bg-(--color-accent) text-(--color-accent-text)"
+                      : "bg-(--color-bg-secondary) text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"
                   }`}
                 >
                   {cat === "all" ? "All" : CATEGORY_LABELS[cat]}
@@ -198,11 +201,11 @@ export function NewRepoDialog({
             {/* Template grid */}
             <div className="space-y-4">
               {templates.length === 0 && (
-                <p className="text-sm text-gray-500 text-center py-6">Loading templates...</p>
+                <p className="text-sm text-(--color-text-secondary) text-center py-6">Loading templates...</p>
               )}
               {grouped.map((group) => (
                 <div key={group.category}>
-                  <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2 px-1">
+                  <h3 className="text-xs font-medium text-(--color-text-secondary) uppercase tracking-wider mb-2 px-1">
                     {group.label}
                   </h3>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -213,18 +216,18 @@ export function NewRepoDialog({
                         disabled={creating}
                         className={`flex items-start gap-3 p-3 rounded-lg border transition-colors text-left disabled:opacity-50 ${
                           selectedTemplateId === template.id
-                            ? "border-blue-500 bg-blue-950/30"
-                            : "border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 hover:bg-gray-100 dark:hover:bg-gray-700/50 hover:border-gray-400 dark:hover:border-gray-600"
+                            ? "border-(--color-accent) bg-(--color-accent-subtle)"
+                            : "border-(--color-border-secondary) bg-(--color-bg-secondary) hover:bg-(--color-bg-hover) hover:border-(--color-text-tertiary)"
                         }`}
                       >
                         <span className="text-xl shrink-0 mt-0.5" role="img" aria-label={template.icon}>
                           {ICON_MAP[template.icon] ?? "\uD83D\uDCE6"}
                         </span>
                         <div className="min-w-0">
-                          <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                          <p className="text-sm font-medium text-(--color-text-primary)">
                             {template.name}
                           </p>
-                          <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                          <p className="text-xs text-(--color-text-secondary) mt-0.5">
                             {template.description}
                           </p>
                         </div>
@@ -238,21 +241,24 @@ export function NewRepoDialog({
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex gap-3">
-          <button
+        <div className="px-6 py-4 border-t border-(--color-border-secondary) flex gap-3">
+          <Button
+            variant="secondary"
+            size="lg"
             onClick={onClose}
             disabled={creating}
-            className="flex-1 rounded-lg bg-gray-100 dark:bg-gray-800 px-4 py-2.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors disabled:opacity-50"
+            className="flex-1 rounded-lg py-2.5"
           >
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
+            size="lg"
             onClick={handleSubmit}
             disabled={!canSubmit}
-            className="flex-1 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex-1 rounded-lg py-2.5"
           >
             {creating ? "Creating..." : "Create & Setup"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

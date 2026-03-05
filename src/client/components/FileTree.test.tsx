@@ -42,7 +42,7 @@ describe("FileTree", () => {
     const onRefresh = vi.fn();
     render(<FileTree tree={sampleTree} onRefresh={onRefresh} />);
     expect(screen.getByText("Files")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Reload"));
+    fireEvent.click(screen.getByTitle("Refresh file tree"));
     expect(onRefresh).toHaveBeenCalledOnce();
   });
 
@@ -127,7 +127,7 @@ describe("FileTree", () => {
     );
     // The highlight class is on the wrapper div, not the inner button
     const fileRow = screen.getByText("index.ts").closest("div[draggable]") ?? screen.getByText("index.ts").closest("button")?.parentElement;
-    expect(fileRow?.className).toContain("bg-blue-900");
+    expect(fileRow?.className).toContain("bg-(--color-accent-subtle)");
   });
 
   it("does not highlight non-selected files", () => {
@@ -135,7 +135,7 @@ describe("FileTree", () => {
       <FileTree tree={sampleTree} onRefresh={() => {}} selectedFile="src/index.ts" />
     );
     const fileButton = screen.getByText("package.json").closest("button");
-    expect(fileButton?.className).not.toContain("bg-blue-900");
+    expect(fileButton?.className).not.toContain("bg-(--color-accent-subtle)");
   });
 
   it("renders files as buttons for clickability", () => {

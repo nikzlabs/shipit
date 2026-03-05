@@ -28,19 +28,19 @@ describe("ClaudeAuthCard", () => {
 
   it("shows green dot and Authenticated when agent is authed", () => {
     renderCard({ agent: authedAgent });
-    expect(screen.getByTestId("claude-status-dot")).toHaveClass("bg-green-400");
+    expect(screen.getByTestId("claude-status-dot")).toHaveClass("bg-(--color-success)");
     expect(screen.getByText("Authenticated")).toBeInTheDocument();
   });
 
   it("shows yellow dot and Not authenticated when agent needs auth", () => {
     renderCard({ agent: unauthedAgent });
-    expect(screen.getByTestId("claude-status-dot")).toHaveClass("bg-yellow-400");
+    expect(screen.getByTestId("claude-status-dot")).toHaveClass("bg-(--color-warning)");
     expect(screen.getByText("Not authenticated")).toBeInTheDocument();
   });
 
   it("shows gray dot and Not installed when agent is not installed", () => {
     renderCard({ agent: notInstalledAgent });
-    expect(screen.getByTestId("claude-status-dot")).toHaveClass("bg-gray-400");
+    expect(screen.getByTestId("claude-status-dot")).toHaveClass("bg-(--color-text-tertiary)");
     expect(screen.getByText("Not installed")).toBeInTheDocument();
   });
 

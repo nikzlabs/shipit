@@ -1,8 +1,20 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
+@import "./themes/light.css";
+@import "./themes/dark.css";
 
 /* Class-based dark mode for Tailwind v4 */
 @custom-variant dark (&:where(.dark, .dark *));
+
+/* ── Shared motion tokens (theme-independent) ── */
+:root {
+  --duration-fast: 150ms;
+  --duration-normal: 200ms;
+  --duration-slow: 1s;
+  --ease-default: ease;
+  --ease-out: ease-out;
+  --ease-in: ease-in;
+}
 
 /* Typing indicator — three bouncing dots */
 @keyframes typing-bounce {
@@ -62,9 +74,8 @@
   color: #111;
 }
 
-/* ── Scrollbar styling ── */
+/* ── Scrollbar styling (uses theme tokens) ── */
 
-/* Light mode — WebKit browsers (Chrome, Safari, Edge) */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -75,115 +86,98 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background-color: rgba(156, 163, 175, 0.4);
+  background-color: var(--color-scrollbar-thumb);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(107, 114, 128, 0.6);
+  background-color: var(--color-scrollbar-thumb-hover);
 }
 
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
 
-/* Light mode — Firefox */
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(156, 163, 175, 0.4) transparent;
+  scrollbar-color: var(--color-scrollbar-thumb) transparent;
 }
 
-/* Dark mode — WebKit browsers (Chrome, Safari, Edge) */
-.dark ::-webkit-scrollbar-thumb {
-  background-color: rgba(75, 85, 99, 0.5);
+/* ── Syntax highlighting (token-based, works in all themes) ── */
+.hljs {
+  color: var(--color-syntax-base);
+  background: var(--color-syntax-bg);
 }
-
-.dark ::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(107, 114, 128, 0.7);
+.hljs-doctag,
+.hljs-keyword,
+.hljs-meta .hljs-keyword,
+.hljs-template-tag,
+.hljs-template-variable,
+.hljs-type,
+.hljs-variable.language_ {
+  color: var(--color-syntax-keyword);
 }
-
-/* Dark mode — Firefox */
-.dark * {
-  scrollbar-color: rgba(75, 85, 99, 0.5) transparent;
+.hljs-title,
+.hljs-title.class_,
+.hljs-title.class_.inherited__,
+.hljs-title.function_ {
+  color: var(--color-syntax-title);
 }
-
-/* ── Dark mode syntax highlighting (GitHub Dark) ── */
-/* Light mode uses github.css (imported in MessageList.tsx). */
-/* Dark mode overrides scoped under .dark. */
-.dark .hljs {
-  color: #c9d1d9;
-  background: #0d1117;
+.hljs-attr,
+.hljs-attribute,
+.hljs-literal,
+.hljs-meta,
+.hljs-number,
+.hljs-operator,
+.hljs-variable,
+.hljs-selector-attr,
+.hljs-selector-class,
+.hljs-selector-id {
+  color: var(--color-syntax-attr);
 }
-.dark .hljs-doctag,
-.dark .hljs-keyword,
-.dark .hljs-meta .hljs-keyword,
-.dark .hljs-template-tag,
-.dark .hljs-template-variable,
-.dark .hljs-type,
-.dark .hljs-variable.language_ {
-  color: #ff7b72;
+.hljs-regexp,
+.hljs-string,
+.hljs-meta .hljs-string {
+  color: var(--color-syntax-string);
 }
-.dark .hljs-title,
-.dark .hljs-title.class_,
-.dark .hljs-title.class_.inherited__,
-.dark .hljs-title.function_ {
-  color: #d2a8ff;
+.hljs-built_in,
+.hljs-symbol {
+  color: var(--color-syntax-builtin);
 }
-.dark .hljs-attr,
-.dark .hljs-attribute,
-.dark .hljs-literal,
-.dark .hljs-meta,
-.dark .hljs-number,
-.dark .hljs-operator,
-.dark .hljs-variable,
-.dark .hljs-selector-attr,
-.dark .hljs-selector-class,
-.dark .hljs-selector-id {
-  color: #79c0ff;
+.hljs-comment,
+.hljs-code,
+.hljs-formula {
+  color: var(--color-syntax-comment);
 }
-.dark .hljs-regexp,
-.dark .hljs-string,
-.dark .hljs-meta .hljs-string {
-  color: #a5d6ff;
+.hljs-name,
+.hljs-quote,
+.hljs-selector-tag,
+.hljs-selector-pseudo {
+  color: var(--color-syntax-tag);
 }
-.dark .hljs-built_in,
-.dark .hljs-symbol {
-  color: #ffa657;
+.hljs-subst {
+  color: var(--color-syntax-base);
 }
-.dark .hljs-comment,
-.dark .hljs-code,
-.dark .hljs-formula {
-  color: #8b949e;
-}
-.dark .hljs-name,
-.dark .hljs-quote,
-.dark .hljs-selector-tag,
-.dark .hljs-selector-pseudo {
-  color: #7ee787;
-}
-.dark .hljs-subst {
-  color: #c9d1d9;
-}
-.dark .hljs-section {
-  color: #1f6feb;
+.hljs-section {
+  color: var(--color-syntax-section);
   font-weight: bold;
 }
-.dark .hljs-bullet {
-  color: #f2cc60;
+.hljs-bullet {
+  color: var(--color-syntax-bullet);
 }
-.dark .hljs-emphasis {
-  color: #c9d1d9;
+.hljs-emphasis {
+  color: var(--color-syntax-base);
   font-style: italic;
 }
-.dark .hljs-strong {
-  color: #c9d1d9;
+.hljs-strong {
+  color: var(--color-syntax-base);
   font-weight: bold;
 }
-.dark .hljs-addition {
-  color: #aff5b4;
-  background-color: #033a16;
+.hljs-addition {
+  color: var(--color-syntax-addition);
+  background-color: var(--color-syntax-addition-bg);
 }
-.dark .hljs-deletion {
-  color: #ffdcd7;
-  background-color: #67060c;
+.hljs-deletion {
+  color: var(--color-syntax-deletion);
+  background-color: var(--color-syntax-deletion-bg);
 }

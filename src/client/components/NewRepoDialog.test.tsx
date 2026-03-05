@@ -118,15 +118,15 @@ describe("NewRepoDialog", () => {
     expect(submitBtn).toBeDisabled();
   });
 
-  it("selecting a template highlights it with border-blue-500", () => {
+  it("selecting a template highlights it with border-(--color-accent)", () => {
     render(<NewRepoDialog {...defaultProps} />);
 
     const reactBtn = screen.getByText("React").closest("button")!;
-    expect(reactBtn.className).toContain("border-gray-");
-    expect(reactBtn.className).not.toContain("border-blue-500");
+    expect(reactBtn.className).toContain("border-(--color-border-secondary)");
+    expect(reactBtn.className).not.toContain("border-(--color-accent)");
 
     fireEvent.click(reactBtn);
-    expect(reactBtn.className).toContain("border-blue-500");
+    expect(reactBtn.className).toContain("border-(--color-accent)");
   });
 
   it("selecting a different template un-highlights the previous one", () => {
@@ -136,11 +136,11 @@ describe("NewRepoDialog", () => {
     const vueBtn = screen.getByText("Vue").closest("button")!;
 
     fireEvent.click(reactBtn);
-    expect(reactBtn.className).toContain("border-blue-500");
+    expect(reactBtn.className).toContain("border-(--color-accent)");
 
     fireEvent.click(vueBtn);
-    expect(reactBtn.className).not.toContain("border-blue-500");
-    expect(vueBtn.className).toContain("border-blue-500");
+    expect(reactBtn.className).not.toContain("border-(--color-accent)");
+    expect(vueBtn.className).toContain("border-(--color-accent)");
   });
 
   it("category filter pills filter the template list", () => {

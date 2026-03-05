@@ -79,8 +79,8 @@ describe("MessageList", () => {
       );
       const userEl = screen.getByText("user-msg-content").closest("div[class*='bg-']");
       const assistantEl = screen.getByText("assistant-msg-content").closest("div[class*='bg-']");
-      expect(userEl?.className).toContain("bg-blue-600");
-      expect(assistantEl?.className).toContain("bg-gray-800");
+      expect(userEl?.className).toContain("bg-(--color-accent)");
+      expect(assistantEl?.className).toContain("bg-(--color-bg-secondary)");
     });
   });
 
@@ -297,7 +297,7 @@ describe("MessageList", () => {
       };
       render(<MessageList messages={[errorMsg]} isLoading={false} />);
       const el = screen.getByText("Error: Connection lost").closest("div[class*='bg-']");
-      expect(el?.className).toContain("bg-red-900");
+      expect(el?.className).toContain("bg-(--color-error-subtle)");
     });
 
     it("does not use red styling for normal assistant messages", () => {
@@ -308,7 +308,7 @@ describe("MessageList", () => {
         />
       );
       const el = screen.getByText("Normal message").closest("div[class*='bg-']");
-      expect(el?.className).not.toContain("bg-red-900");
+      expect(el?.className).not.toContain("bg-(--color-error-subtle)");
     });
 
     it("renders error messages with border", () => {
@@ -321,7 +321,7 @@ describe("MessageList", () => {
       render(<MessageList messages={[errorMsg]} isLoading={false} />);
       const el = screen.getByText("Error: CLI crashed").closest("div[class*='border']");
       expect(el?.className).toContain("border");
-      expect(el?.className).toContain("red");
+      expect(el?.className).toContain("border-(--color-error)");
     });
   });
 
@@ -511,7 +511,7 @@ describe("MessageList", () => {
       // Code block should exist
       expect(container.querySelectorAll("pre code.hljs")).toHaveLength(1);
       // No language label div (border-b is only present when language label shown)
-      expect(container.querySelector(".border-b.border-gray-700\\/50")).toBeNull();
+      expect(container.querySelector(".border-b.border-\\(--color-border-primary\\)")).toBeNull();
     });
 
     it("renders text around code blocks normally", () => {
@@ -546,7 +546,7 @@ describe("MessageList", () => {
         />
       );
       // The message bubble should NOT have whitespace-pre-wrap on the parent
-      const bubble = container.querySelector("div[class*='bg-gray-800']");
+      const bubble = container.querySelector("div[class*='bg-(--color-bg-secondary)']");
       expect(bubble?.className).not.toContain("whitespace-pre-wrap");
     });
 
@@ -755,8 +755,8 @@ describe("MessageList", () => {
       fireEvent.click(editButtons[0]);
       // The first message should now be in edit mode (textarea visible)
       expect(screen.getByRole("textbox")).toBeInTheDocument();
-      // The message bubble (bg-blue-600) for "First" should be gone — replaced by the editor
-      const blueBubbles = container.querySelectorAll("div[class*='bg-blue-600']");
+      // The message bubble (bg-(--color-accent)) for "First" should be gone — replaced by the editor
+      const blueBubbles = container.querySelectorAll("div[class*='bg-(--color-accent)']");
       // Only the second user message ("Second") should still have a blue bubble
       expect(blueBubbles).toHaveLength(1);
       expect(blueBubbles[0].textContent).toContain("Second");

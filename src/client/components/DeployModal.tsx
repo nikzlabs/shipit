@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import type { DeployTargetInfo, DeploymentRecord } from "../../server/shared/types.js";
+import { Button } from "./ui/button.js";
+import { Modal } from "./ui/modal.js";
 
 export type DeployPhase = "building" | "deploying" | "complete" | "error";
 
@@ -87,22 +89,17 @@ export function DeployModal({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+    <Modal
+      ref={dialogRef}
+      onClose={onClose}
+      className="shadow-2xl border-(--color-border-secondary) w-full max-w-lg max-h-[85vh] overflow-y-auto"
       role="dialog"
       aria-label="Deploy"
       aria-modal="true"
     >
-      <div
-        ref={dialogRef}
-        className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 w-full max-w-lg max-h-[85vh] overflow-y-auto"
-      >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-(--color-border-secondary)">
+          <h2 className="text-lg font-semibold text-(--color-text-primary)">
             {view === "picker" && "Deploy"}
             {view === "not-configured" && "Deploy"}
             {view === "ready" && `Deploy to ${activeTarget?.name ?? ""}`}
@@ -110,41 +107,47 @@ export function DeployModal({
             {view === "complete" && "Deployed!"}
             {view === "error" && "Deploy Failed"}
           </h2>
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-xl leading-none"
+            className="text-xl leading-none"
             aria-label="Close"
           >
             &times;
-          </button>
+          </Button>
         </div>
 
         <div className="px-6 py-4">
           {/* No configured targets */}
           {view === "not-configured" && (
             <div className="space-y-3 text-center">
-              <p className="text-sm text-gray-500 dark:text-gray-400">
+              <p className="text-sm text-(--color-text-secondary)">
                 No deploy targets configured.
               </p>
-              <p className="text-sm text-gray-500 dark:text-gray-400">
-                Set up a deploy target in <strong className="text-gray-700 dark:text-gray-300">Project Settings</strong>.
+              <p className="text-sm text-(--color-text-secondary)">
+                Set up a deploy target in <strong className="text-(--color-text-primary)">Project Settings</strong>.
               </p>
               <div className="flex gap-2 justify-center">
                 {onOpenDeploySettings && (
-                  <button
+                  <Button
+                    variant="primary"
+                    size="lg"
                     onClick={() => { onClose(); onOpenDeploySettings(); }}
-                    className="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors font-medium"
+                    className="rounded-lg font-medium"
                     data-testid="deploy-open-deploy-settings"
                   >
                     Configure
-                  </button>
+                  </Button>
                 )}
-                <button
+                <Button
+                  variant="secondary"
+                  size="lg"
                   onClick={onClose}
-                  className="px-4 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                  className="rounded-lg"
                 >
                   Close
-                </button>
+                </Button>
               </div>
             </div>
           )}
@@ -156,10 +159,10 @@ export function DeployModal({
                 <button
                   key={target.id}
                   onClick={() => setSelectedTarget(target)}
-                  className="w-full text-left p-4 rounded-lg border border-gray-200 dark:border-gray-700 hover:border-blue-400 dark:hover:border-blue-500 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                  className="w-full text-left p-4 rounded-lg border border-(--color-border-secondary) hover:border-(--color-accent) hover:bg-(--color-bg-hover) transition-colors"
                 >
-                  <div className="font-medium text-gray-900 dark:text-gray-100">{target.name}</div>
-                  <div className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">{target.description}</div>
+                  <div className="font-medium text-(--color-text-primary)">{target.name}</div>
+                  <div className="text-sm text-(--color-text-secondary) mt-0.5">{target.description}</div>
                 </button>
               ))}
             </div>
@@ -170,7 +173,7 @@ export function DeployModal({
             <div className="space-y-4">
               {activeTarget.supportsPreview && (
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  <label className="block text-sm font-medium text-(--color-text-primary) mb-2">
                     Environment
                   </label>
                   <div className="flex gap-2">
@@ -178,8 +181,8 @@ export function DeployModal({
                       onClick={() => setEnvironment("production")}
                       className={`flex-1 py-2 px-3 text-sm rounded-lg border transition-colors ${
                         environment === "production"
-                          ? "border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 font-medium"
-                          : "border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:border-gray-400"
+                          ? "border-(--color-accent) bg-(--color-accent-subtle) text-(--color-text-link) font-medium"
+                          : "border-(--color-border-secondary) text-(--color-text-secondary) hover:border-(--color-text-tertiary)"
                       }`}
                     >
                       Production
@@ -188,8 +191,8 @@ export function DeployModal({
                       onClick={() => setEnvironment("preview")}
                       className={`flex-1 py-2 px-3 text-sm rounded-lg border transition-colors ${
                         environment === "preview"
-                          ? "border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 font-medium"
-                          : "border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:border-gray-400"
+                          ? "border-(--color-accent) bg-(--color-accent-subtle) text-(--color-text-link) font-medium"
+                          : "border-(--color-border-secondary) text-(--color-text-secondary) hover:border-(--color-text-tertiary)"
                       }`}
                     >
                       Preview
@@ -198,47 +201,50 @@ export function DeployModal({
                 </div>
               )}
 
-              <button
+              <Button
+                variant="primary"
+                size="lg"
                 onClick={handleDeploy}
                 disabled={deploying}
-                className="w-full py-2.5 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full rounded-lg font-medium"
               >
                 {deploying ? "Starting deploy..." : `Deploy to ${environment === "production" ? "Production" : "Preview"}`}
-              </button>
+              </Button>
 
               {configuredTargets.length > 1 && (
                 <div className="text-xs">
-                  <button
+                  <Button
+                    variant="ghost"
+                    size="sm"
                     onClick={() => setSelectedTarget(null)}
-                    className="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
                   >
                     Switch target
-                  </button>
+                  </Button>
                 </div>
               )}
 
               {/* Deploy history */}
               {deployHistory.length > 0 && (
-                <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
-                  <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Recent Deployments</h3>
+                <div className="border-t border-(--color-border-secondary) pt-4">
+                  <h3 className="text-sm font-medium text-(--color-text-primary) mb-2">Recent Deployments</h3>
                   <div className="space-y-2">
                     {deployHistory.slice(-5).reverse().map((record) => (
                       <div
                         key={record.id}
-                        className="flex items-center justify-between text-xs py-1.5 px-2 rounded bg-gray-50 dark:bg-gray-800"
+                        className="flex items-center justify-between text-xs py-1.5 px-2 rounded bg-(--color-bg-secondary)"
                       >
                         <div className="flex items-center gap-2">
-                          <span className={`w-1.5 h-1.5 rounded-full ${record.status === "success" ? "bg-green-400" : "bg-red-400"}`} />
+                          <span className={`w-1.5 h-1.5 rounded-full ${record.status === "success" ? "bg-(--color-success)" : "bg-(--color-error)"}`} />
                           <a
                             href={record.url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-blue-500 hover:text-blue-400 truncate max-w-[200px]"
+                            className="text-(--color-text-link) hover:text-(--color-accent) truncate max-w-[200px]"
                           >
                             {record.url}
                           </a>
                         </div>
-                        <span className="text-gray-400 shrink-0 ml-2">
+                        <span className="text-(--color-text-tertiary) shrink-0 ml-2">
                           {new Date(record.timestamp).toLocaleDateString()}
                         </span>
                       </div>
@@ -253,25 +259,27 @@ export function DeployModal({
           {view === "deploying" && (
             <div className="space-y-4 text-center">
               <div className="flex items-center justify-center gap-2">
-                <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-                <span className="text-sm text-gray-600 dark:text-gray-400">
+                <div className="w-5 h-5 border-2 border-(--color-accent) border-t-transparent rounded-full animate-spin" />
+                <span className="text-sm text-(--color-text-secondary)">
                   {deployStatus === "building" ? "Building project..." : "Deploying..."}
                 </span>
               </div>
-              <p className="text-xs text-gray-500">Check the Terminal tab for detailed output.</p>
-              <button
+              <p className="text-xs text-(--color-text-secondary)">Check the Terminal tab for detailed output.</p>
+              <Button
+                variant="secondary"
+                size="lg"
                 onClick={onCancel}
-                className="px-4 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                className="rounded-lg"
               >
                 Cancel
-              </button>
+              </Button>
             </div>
           )}
 
           {/* Complete */}
           {view === "complete" && lastDeployUrl && (
             <div className="space-y-4 text-center">
-              <div className="flex items-center justify-center gap-2 text-green-500">
+              <div className="flex items-center justify-center gap-2 text-(--color-success)">
                 <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                 </svg>
@@ -281,7 +289,7 @@ export function DeployModal({
                 href={lastDeployUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="block text-blue-500 hover:text-blue-400 text-sm break-all"
+                className="block text-(--color-text-link) hover:text-(--color-accent) text-sm break-all"
               >
                 {lastDeployUrl}
               </a>
@@ -290,16 +298,18 @@ export function DeployModal({
                   href={lastDeployUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex-1 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors font-medium text-center"
+                  className="flex-1 py-2 text-sm rounded-lg bg-(--color-accent) text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors font-medium text-center"
                 >
                   Open
                 </a>
-                <button
+                <Button
+                  variant="secondary"
+                  size="lg"
                   onClick={onClose}
-                  className="flex-1 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                  className="flex-1 rounded-lg"
                 >
                   Close
-                </button>
+                </Button>
               </div>
             </div>
           )}
@@ -307,43 +317,46 @@ export function DeployModal({
           {/* Error */}
           {view === "error" && lastDeployError && (
             <div className="space-y-4">
-              <div className="flex items-center gap-2 text-red-500">
+              <div className="flex items-center gap-2 text-(--color-error)">
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                 </svg>
                 <span className="text-sm font-medium">Deployment failed</span>
               </div>
-              <div className="text-sm text-gray-600 dark:text-gray-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3">
+              <div className="text-sm text-(--color-text-secondary) bg-(--color-error-subtle) border border-(--color-error)/30 rounded-lg p-3">
                 {lastDeployError}
               </div>
               <div className="flex gap-2">
-                <button
+                <Button
+                  variant="primary"
+                  size="lg"
                   onClick={() => {
                     setSendingError(true);
                     onSendErrorToChat(lastDeployError);
                     setTimeout(() => setSendingError(false), 1000);
                   }}
                   disabled={sendingError}
-                  className="flex-1 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="flex-1 rounded-lg font-medium"
                 >
                   {sendingError ? "Sent!" : "Send to Claude"}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="lg"
                   onClick={() => {
                     if (activeTarget) {
                       handleDeploy();
                     }
                   }}
                   disabled={deploying}
-                  className="flex-1 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="flex-1 rounded-lg"
                 >
                   {deploying ? "Retrying..." : "Retry"}
-                </button>
+                </Button>
               </div>
             </div>
           )}
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

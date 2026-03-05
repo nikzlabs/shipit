@@ -2,6 +2,7 @@ import { useState, useRef, useCallback } from "react";
 import { ModeSelector } from "./ModeSelector.js";
 import { FileAttachmentChips } from "./FileAttachmentChips.js";
 import { FileAutoComplete } from "./FileAutoComplete.js";
+import { Button } from "./ui/button.js";
 import type { PermissionMode, FileContextRef, FileTreeNode } from "../../server/shared/types.js";
 
 export interface ImagePreview {
@@ -262,7 +263,7 @@ export function MessageInput({
 
   return (
     <div
-      className="border-t border-gray-200 dark:border-gray-800 px-3 sm:px-6 py-3 sm:py-4 relative"
+      className="border-t border-(--color-border-primary) px-3 sm:px-6 py-3 sm:py-4 relative"
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
@@ -270,16 +271,16 @@ export function MessageInput({
     >
       {/* Drop zone overlay */}
       {isDragging && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center bg-blue-500/10 border-2 border-dashed border-blue-500 rounded-lg pointer-events-none">
-          <span className="text-blue-400 text-sm font-medium">Drop file or image here</span>
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-(--color-accent)/10 border-2 border-dashed border-(--color-accent) rounded-lg pointer-events-none">
+          <span className="text-(--color-accent) text-sm font-medium">Drop file or image here</span>
         </div>
       )}
 
       {/* Image error toast */}
       {imageError && (
-        <div className="flex items-center gap-2 mb-2 text-xs text-red-400 max-w-3xl mx-auto">
+        <div className="flex items-center gap-2 mb-2 text-xs text-(--color-error) max-w-3xl mx-auto">
           <span>{imageError}</span>
-          <button onClick={clearImageError} className="text-red-400 hover:text-red-300 ml-auto">&times;</button>
+          <Button variant="ghost" size="sm" onClick={clearImageError} className="text-(--color-error) ml-auto">&times;</Button>
         </div>
       )}
 
@@ -298,11 +299,11 @@ export function MessageInput({
               <img
                 src={img.previewUrl}
                 alt={img.filename}
-                className="w-16 h-16 object-cover rounded-md border border-gray-300 dark:border-gray-700"
+                className="w-16 h-16 object-cover rounded-md border border-(--color-border-secondary)"
               />
               <button
                 onClick={() => removeImage(i)}
-                className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-(--color-error) text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                 aria-label={`Remove ${img.filename}`}
                 title={`Remove ${img.filename}`}
               >
@@ -346,17 +347,19 @@ export function MessageInput({
         />
 
         {/* Attach image button */}
-        <button
+        <Button
+          variant="secondary"
+          size="md"
           onClick={handleAttachClick}
           disabled={disabled || images.length >= MAX_IMAGES}
-          className="rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 px-3 py-3 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="rounded-lg px-3 py-3"
           title="Attach image"
           aria-label="Attach image"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
           </svg>
-        </button>
+        </Button>
 
         <textarea
           ref={textareaRef}
@@ -367,12 +370,14 @@ export function MessageInput({
           placeholder="Describe what to build... (type @ to attach files)"
           disabled={disabled}
           rows={1}
-          className="flex-1 resize-none rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 field-sizing-content"
+          className="flex-1 resize-none rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-3 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:ring-2 focus:ring-(--color-accent) disabled:opacity-50 field-sizing-content"
         />
         {isLoading && onInterrupt ? (
-          <button
+          <Button
+            variant="destructive"
+            size="md"
             onClick={onInterrupt}
-            className="rounded-lg bg-red-600 px-4 py-3 text-sm font-medium text-white hover:bg-red-500 transition-colors"
+            className="rounded-lg px-4 py-3"
             title="Stop (Esc)"
             aria-label="Stop Claude"
             data-testid="stop-button"
@@ -380,15 +385,17 @@ export function MessageInput({
             <svg className="w-4 h-4" viewBox="0 0 16 16" fill="currentColor">
               <rect x="3" y="3" width="10" height="10" rx="1" />
             </svg>
-          </button>
+          </Button>
         ) : (
-          <button
+          <Button
+            variant="primary"
+            size="md"
             onClick={handleSubmit}
             disabled={disabled || (!text.trim() && images.length === 0)}
-            className="rounded-lg bg-blue-600 px-4 py-3 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className="rounded-lg px-4 py-3"
           >
             Send
-          </button>
+          </Button>
         )}
       </div>
     </div>

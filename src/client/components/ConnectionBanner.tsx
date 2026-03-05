@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { WsStatus } from "../hooks/useWebSocket.js";
+import { Banner } from "./ui/banner.js";
 
 /** Grace period before showing the disconnect banner (ms). */
 const DISCONNECT_DELAY_MS = 1500;
@@ -58,12 +59,9 @@ export function ConnectionBanner({
   // Success flash — briefly shown after reconnection
   if (status === "open" && showReconnected) {
     return (
-      <div
-        role="status"
-        className="px-4 py-2 text-xs text-center font-medium bg-green-100/70 dark:bg-green-900/70 text-green-700 dark:text-green-200"
-      >
+      <Banner role="status" variant="success">
         Reconnected
-      </div>
+      </Banner>
     );
   }
 
@@ -72,13 +70,10 @@ export function ConnectionBanner({
   const isConnecting = status === "connecting";
 
   return (
-    <div
+    <Banner
       role="alert"
-      className={`px-4 py-2 text-xs text-center font-medium flex items-center justify-center gap-3 ${
-        isConnecting
-          ? "bg-yellow-100/70 dark:bg-yellow-900/70 text-yellow-700 dark:text-yellow-200"
-          : "bg-red-100/70 dark:bg-red-900/70 text-red-700 dark:text-red-200"
-      }`}
+      variant={isConnecting ? "warning" : "error"}
+      className="flex items-center justify-center gap-3"
     >
       <span>
         {isConnecting
@@ -88,11 +83,11 @@ export function ConnectionBanner({
       {!isConnecting && onReconnect && (
         <button
           onClick={onReconnect}
-          className="px-2 py-0.5 rounded text-xs font-medium bg-red-200 dark:bg-red-800 hover:bg-red-300 dark:hover:bg-red-700 text-red-800 dark:text-red-100 transition-colors"
+          className="px-2 py-0.5 rounded text-xs font-medium bg-(--color-error)/20 hover:bg-(--color-error)/30 text-(--color-error) transition-colors"
         >
           Reconnect now
         </button>
       )}
-    </div>
+    </Banner>
   );
 }

@@ -19,12 +19,12 @@ interface AgentPickerProps {
 /** Small dot indicator for agent status. */
 function StatusDot({ installed, authConfigured }: { installed: boolean; authConfigured: boolean }) {
   if (installed && authConfigured) {
-    return <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" data-testid="status-dot-ready" />;
+    return <span className="w-1.5 h-1.5 rounded-full bg-(--color-success) shrink-0" data-testid="status-dot-ready" />;
   }
   if (installed) {
-    return <span className="w-1.5 h-1.5 rounded-full bg-yellow-500 shrink-0" data-testid="status-dot-auth" />;
+    return <span className="w-1.5 h-1.5 rounded-full bg-(--color-warning) shrink-0" data-testid="status-dot-auth" />;
   }
-  return <span className="w-1.5 h-1.5 rounded-full bg-gray-500 shrink-0" data-testid="status-dot-unavailable" />;
+  return <span className="w-1.5 h-1.5 rounded-full bg-(--color-text-tertiary) shrink-0" data-testid="status-dot-unavailable" />;
 }
 
 export function AgentPicker({ agents, activeAgentId, onAgentChange, disabled }: AgentPickerProps) {
@@ -74,7 +74,7 @@ export function AgentPicker({ agents, activeAgentId, onAgentChange, disabled }: 
       <button
         onClick={() => setOpen((v) => !v)}
         disabled={disabled}
-        className="flex items-center gap-1.5 px-2 py-0.5 text-xs rounded-full transition-colors font-medium bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed border border-gray-300 dark:border-gray-600"
+        className="flex items-center gap-1.5 px-2 py-0.5 text-xs rounded-full transition-colors font-medium bg-(--color-bg-secondary) text-(--color-text-secondary) hover:bg-(--color-bg-hover) disabled:opacity-50 disabled:cursor-not-allowed border border-(--color-border-secondary)"
         aria-label="Select agent"
         aria-expanded={open}
         data-testid="agent-picker-trigger"
@@ -88,7 +88,7 @@ export function AgentPicker({ agents, activeAgentId, onAgentChange, disabled }: 
 
       {open && (
         <div
-          className="absolute bottom-full left-0 mb-1 w-52 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden"
+          className="absolute bottom-full left-0 mb-1 w-52 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-lg shadow-xl z-50 overflow-hidden"
           data-testid="agent-picker-dropdown"
         >
           <div className="py-1">
@@ -102,25 +102,25 @@ export function AgentPicker({ agents, activeAgentId, onAgentChange, disabled }: 
                   disabled={!isAvailable}
                   className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2 transition-colors ${
                     isActive
-                      ? "bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
+                      ? "bg-(--color-accent-subtle) text-(--color-text-link)"
                       : isAvailable
-                        ? "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
-                        : "text-gray-400 dark:text-gray-500 cursor-not-allowed"
+                        ? "text-(--color-text-primary) hover:bg-(--color-bg-hover)"
+                        : "text-(--color-text-tertiary) cursor-not-allowed"
                   }`}
                   data-testid={`agent-option-${agent.id}`}
                 >
                   <StatusDot installed={agent.installed} authConfigured={agent.authConfigured} />
                   <span className="flex-1">{agent.name}</span>
                   {isActive && (
-                    <svg className="w-4 h-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <svg className="w-4 h-4 text-(--color-accent)" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                     </svg>
                   )}
                   {!agent.installed && (
-                    <span className="text-[10px] text-gray-400 dark:text-gray-500">not installed</span>
+                    <span className="text-[10px] text-(--color-text-tertiary)">not installed</span>
                   )}
                   {agent.installed && !agent.authConfigured && (
-                    <span className="text-[10px] text-yellow-500">needs auth</span>
+                    <span className="text-[10px] text-(--color-warning)">needs auth</span>
                   )}
                 </button>
               );

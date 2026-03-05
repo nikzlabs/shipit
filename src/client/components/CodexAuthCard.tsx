@@ -41,22 +41,22 @@ export function CodexAuthCard({ agent, onApiKeySubmit }: CodexAuthCardProps) {
   return (
     <div className="space-y-3" data-testid="codex-auth-card">
       {/* Status badge */}
-      <div className="flex items-center gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
+      <div className="flex items-center gap-3 p-3 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary)">
         <span
           className={`w-2.5 h-2.5 rounded-full shrink-0 ${
             !agent.installed
-              ? "bg-gray-400"
+              ? "bg-(--color-text-tertiary)"
               : agent.authConfigured
-                ? "bg-green-400"
-                : "bg-yellow-400"
+                ? "bg-(--color-success)"
+                : "bg-(--color-warning)"
           }`}
           data-testid="codex-status-dot"
         />
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+          <p className="text-sm font-medium text-(--color-text-primary)">
             {agent.name}
           </p>
-          <p className="text-xs text-gray-500 dark:text-gray-400">
+          <p className="text-xs text-(--color-text-secondary)">
             {!agent.installed
               ? "Not installed"
               : agent.authConfigured
@@ -75,15 +75,15 @@ export function CodexAuthCard({ agent, onApiKeySubmit }: CodexAuthCardProps) {
             onChange={(e) => { setCodexKey(e.target.value); setCodexKeyError(""); }}
             onKeyDown={handleKeyDown}
             placeholder="OPENAI_API_KEY"
-            className="w-full rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono"
+            className="w-full rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-3 text-sm text-(--color-text-primary) placeholder-gray-500 focus:outline-none focus:border-(--color-border-focus) font-mono"
             disabled={codexKeyLoading}
             data-testid="codex-api-key-input"
           />
-          {codexKeyError && <p className="text-xs text-red-500" data-testid="codex-api-key-error">{codexKeyError}</p>}
+          {codexKeyError && <p className="text-xs text-(--color-error)" data-testid="codex-api-key-error">{codexKeyError}</p>}
           <button
             onClick={handleSubmit}
             disabled={!codexKey.trim() || codexKeyLoading}
-            className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full rounded-lg bg-(--color-accent) px-4 py-2.5 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             data-testid="codex-api-key-submit"
           >
             Save

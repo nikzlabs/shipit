@@ -238,7 +238,8 @@ describe("DeployModal", () => {
         onClose={onClose}
       />,
     );
-    const backdrop = screen.getByRole("dialog");
+    // Click the backdrop overlay inside Modal
+    const backdrop = screen.getByRole("dialog").parentElement!.querySelector('[aria-hidden="true"]')!;
     fireEvent.click(backdrop);
     expect(onClose).toHaveBeenCalled();
   });

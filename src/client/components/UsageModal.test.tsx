@@ -144,7 +144,7 @@ describe("UsageModal", () => {
 
   it("calls onClose when backdrop is clicked", () => {
     const onClose = vi.fn();
-    render(
+    const { container } = render(
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
@@ -152,7 +152,8 @@ describe("UsageModal", () => {
         onClose={onClose}
       />
     );
-    fireEvent.click(screen.getByTestId("usage-modal-backdrop"));
+    const backdrop = container.querySelector('[aria-hidden="true"]')!;
+    fireEvent.click(backdrop);
     expect(onClose).toHaveBeenCalledOnce();
   });
 

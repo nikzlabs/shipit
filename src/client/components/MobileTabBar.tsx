@@ -23,15 +23,15 @@ export function MobileTabBar({
 }) {
   return (
     <nav
-      className="flex border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950"
+      className="flex border-t border-(--color-border-primary) bg-(--color-bg-primary)"
       aria-label="Mobile navigation"
     >
       <button
         onClick={() => onChangePanel("chat")}
         className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 text-xs font-medium transition-colors ${
           activePanel === "chat"
-            ? "text-blue-500 dark:text-blue-400"
-            : "text-gray-500 active:text-gray-700 dark:active:text-gray-300"
+            ? "text-(--color-text-link)"
+            : "text-(--color-text-secondary) active:text-(--color-text-primary)"
         }`}
         aria-current={activePanel === "chat" ? "page" : undefined}
       >
@@ -50,8 +50,8 @@ export function MobileTabBar({
         onClick={() => onChangePanel("preview")}
         className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 text-xs font-medium transition-colors ${
           activePanel === "preview"
-            ? "text-blue-500 dark:text-blue-400"
-            : "text-gray-500 active:text-gray-700 dark:active:text-gray-300"
+            ? "text-(--color-text-link)"
+            : "text-(--color-text-secondary) active:text-(--color-text-primary)"
         }`}
         aria-current={activePanel === "preview" ? "page" : undefined}
       >

@@ -25,19 +25,19 @@ describe("CodexAuthCard", () => {
 
   it("shows green dot and Authenticated when authed", () => {
     renderCard({ agent: authedAgent });
-    expect(screen.getByTestId("codex-status-dot")).toHaveClass("bg-green-400");
+    expect(screen.getByTestId("codex-status-dot")).toHaveClass("bg-(--color-success)");
     expect(screen.getByText("Authenticated")).toBeInTheDocument();
   });
 
   it("shows yellow dot and API key not set when needs auth", () => {
     renderCard();
-    expect(screen.getByTestId("codex-status-dot")).toHaveClass("bg-yellow-400");
+    expect(screen.getByTestId("codex-status-dot")).toHaveClass("bg-(--color-warning)");
     expect(screen.getByText("API key not set")).toBeInTheDocument();
   });
 
   it("shows gray dot and Not installed when not installed", () => {
     renderCard({ agent: notInstalledAgent });
-    expect(screen.getByTestId("codex-status-dot")).toHaveClass("bg-gray-400");
+    expect(screen.getByTestId("codex-status-dot")).toHaveClass("bg-(--color-text-tertiary)");
     expect(screen.getByText("Not installed")).toBeInTheDocument();
   });
 

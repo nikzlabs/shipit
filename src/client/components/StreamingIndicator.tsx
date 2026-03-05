@@ -25,9 +25,9 @@ export interface StreamingActivity {
 export function TypingDots() {
   return (
     <span className="inline-flex items-center gap-0.5">
-      <span className="typing-dot inline-block w-1.5 h-1.5 rounded-full bg-blue-400" />
-      <span className="typing-dot inline-block w-1.5 h-1.5 rounded-full bg-blue-400" />
-      <span className="typing-dot inline-block w-1.5 h-1.5 rounded-full bg-blue-400" />
+      <span className="typing-dot inline-block w-1.5 h-1.5 rounded-full bg-(--color-info)" />
+      <span className="typing-dot inline-block w-1.5 h-1.5 rounded-full bg-(--color-info)" />
+      <span className="typing-dot inline-block w-1.5 h-1.5 rounded-full bg-(--color-info)" />
     </span>
   );
 }
@@ -39,7 +39,7 @@ export function TypingDots() {
 export function ThinkingIndicator({ activity }: { activity?: StreamingActivity }) {
   return (
     <div className="flex justify-start">
-      <div className="bg-gray-100 dark:bg-gray-800 rounded-lg px-4 py-3 text-sm text-gray-500 dark:text-gray-400 flex items-center gap-2">
+      <div className="bg-(--color-bg-tertiary) rounded-lg px-4 py-3 text-sm text-(--color-text-secondary) flex items-center gap-2">
         <TypingDots />
         <span>{activity?.label ?? "Thinking..."}</span>
       </div>
@@ -50,7 +50,7 @@ export function ThinkingIndicator({ activity }: { activity?: StreamingActivity }
 /** Small spinner icon for in-progress tool executions. */
 export function ToolSpinner() {
   return (
-    <span className="tool-spinner inline-block w-3 h-3 border border-blue-400 border-t-transparent rounded-full" />
+    <span className="tool-spinner inline-block w-3 h-3 border border-(--color-info) border-t-transparent rounded-full" />
   );
 }
 

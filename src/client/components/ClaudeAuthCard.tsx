@@ -81,22 +81,22 @@ export function ClaudeAuthCard({
   return (
     <div className="space-y-3" data-testid="claude-auth-card">
       {/* Status badge */}
-      <div className="flex items-center gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
+      <div className="flex items-center gap-3 p-3 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary)">
         <span
           className={`w-2.5 h-2.5 rounded-full shrink-0 ${
             !agent.installed
-              ? "bg-gray-400"
+              ? "bg-(--color-text-tertiary)"
               : agent.authConfigured
-                ? "bg-green-400"
-                : "bg-yellow-400"
+                ? "bg-(--color-success)"
+                : "bg-(--color-warning)"
           }`}
           data-testid="claude-status-dot"
         />
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+          <p className="text-sm font-medium text-(--color-text-primary)">
             {agent.name}
           </p>
-          <p className="text-xs text-gray-500 dark:text-gray-400">
+          <p className="text-xs text-(--color-text-secondary)">
             {!agent.installed
               ? "Not installed"
               : agent.authConfigured
@@ -112,7 +112,7 @@ export function ClaudeAuthCard({
           <button
             onClick={handleStartAuth}
             disabled={authPending}
-            className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full rounded-lg bg-(--color-accent) px-4 py-2.5 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             data-testid="claude-start-auth"
           >
             {authPending ? "Waiting for login..." : "Login with Claude"}
@@ -127,13 +127,13 @@ export function ClaudeAuthCard({
             href={authUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="block w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors text-center"
+            className="block w-full rounded-lg bg-(--color-accent) px-4 py-2.5 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors text-center"
             data-testid="claude-open-auth-url"
           >
             Open Authentication Page
           </a>
           <div className="space-y-2">
-            <label className="block text-xs text-gray-500 dark:text-gray-400">
+            <label className="block text-xs text-(--color-text-secondary)">
               After signing in, paste the authorization code:
             </label>
             <div className="flex gap-2">
@@ -142,13 +142,13 @@ export function ClaudeAuthCard({
                 value={authCode}
                 onChange={(e) => setAuthCode(e.target.value)}
                 placeholder="Paste code here..."
-                className="flex-1 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-4 py-2.5 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono"
+                className="flex-1 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-2.5 text-sm text-(--color-text-primary) placeholder-gray-500 focus:outline-none focus:border-(--color-border-focus) font-mono"
                 data-testid="claude-auth-code-input"
               />
               <button
                 onClick={handlePasteAuthCode}
                 disabled={!authCode.trim()}
-                className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                className="rounded-lg bg-(--color-accent) px-4 py-2.5 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
                 data-testid="claude-auth-code-submit"
               >
                 Submit
@@ -161,7 +161,7 @@ export function ClaudeAuthCard({
       {/* API key input */}
       {showApiKeyInput && (
         <div className="space-y-2">
-          <p className="text-xs text-gray-500 dark:text-gray-400">
+          <p className="text-xs text-(--color-text-secondary)">
             {agent.authConfigured ? "Override authentication with an API key:" : "Or authenticate with an API key:"}
           </p>
           <input
@@ -170,15 +170,15 @@ export function ClaudeAuthCard({
             onChange={(e) => { setApiKey(e.target.value); setApiKeyError(""); }}
             onKeyDown={handleApiKeyKeyDown}
             placeholder="sk-ant-..."
-            className="w-full rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono"
+            className="w-full rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-3 text-sm text-(--color-text-primary) placeholder-gray-500 focus:outline-none focus:border-(--color-border-focus) font-mono"
             disabled={apiKeyLoading}
             data-testid="claude-api-key-input"
           />
-          {apiKeyError && <p className="text-xs text-red-500" data-testid="claude-api-key-error">{apiKeyError}</p>}
+          {apiKeyError && <p className="text-xs text-(--color-error)" data-testid="claude-api-key-error">{apiKeyError}</p>}
           <button
             onClick={handleApiKeySubmit}
             disabled={!apiKey.trim() || apiKeyLoading}
-            className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full rounded-lg bg-(--color-accent) px-4 py-2.5 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             data-testid="claude-api-key-submit"
           >
             Set API Key
@@ -190,7 +190,7 @@ export function ClaudeAuthCard({
       {agent.authConfigured && onClearApiKey && (
         <button
           onClick={onClearApiKey}
-          className="w-full px-3 py-2 text-sm rounded-md border bg-gray-50 dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+          className="w-full px-3 py-2 text-sm rounded-md border bg-(--color-bg-secondary) border-(--color-border-secondary) text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
           data-testid="claude-clear-api-key"
         >
           Clear API Key

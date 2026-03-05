@@ -45,8 +45,9 @@ describe("Settings", () => {
 
   it("calls onClose on backdrop click", () => {
     const onClose = vi.fn();
-    render(<Settings {...defaultProps} onClose={onClose} />);
-    fireEvent.click(screen.getByTestId("settings-backdrop"));
+    const { container } = render(<Settings {...defaultProps} onClose={onClose} />);
+    const backdrop = container.querySelector('[aria-hidden="true"]')!;
+    fireEvent.click(backdrop);
     expect(onClose).toHaveBeenCalledOnce();
   });
 

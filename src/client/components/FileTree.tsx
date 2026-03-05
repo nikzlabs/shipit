@@ -1,4 +1,7 @@
 import { useState, useCallback } from "react";
+import { FolderIcon, FolderOpenIcon, FileIcon, CaretRightIcon, PlusIcon, FolderSimpleIcon, ArrowClockwiseIcon } from "@phosphor-icons/react";
+import { ICON_SIZE } from "../design-tokens.js";
+import { Button } from "./ui/button.js";
 import type { FileTreeNode } from "../../server/shared/types.js";
 
 export type { FileTreeNode };
@@ -9,48 +12,6 @@ export interface FileTreeProps {
   onFileClick?: (filePath: string) => void;
   selectedFile?: string | null;
   onAddToChat?: (filePath: string) => void;
-}
-
-/** Icon for collapsed directory */
-function FolderClosedIcon() {
-  return (
-    <svg className="w-4 h-4 shrink-0 text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
-    </svg>
-  );
-}
-
-/** Icon for expanded directory */
-function FolderOpenIcon() {
-  return (
-    <svg className="w-4 h-4 shrink-0 text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776" />
-    </svg>
-  );
-}
-
-/** Icon for files */
-function FileIcon() {
-  return (
-    <svg className="w-4 h-4 shrink-0 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
-    </svg>
-  );
-}
-
-/** Chevron arrow for expand/collapse */
-function ChevronIcon({ expanded }: { expanded: boolean }) {
-  return (
-    <svg
-      className={`w-3 h-3 shrink-0 text-gray-500 transition-transform ${expanded ? "rotate-90" : ""}`}
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-      strokeWidth={2}
-    >
-      <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
-    </svg>
-  );
 }
 
 function TreeNode({
@@ -79,11 +40,15 @@ function TreeNode({
       <div>
         <button
           onClick={toggle}
-          className="flex items-center gap-1.5 w-full text-left py-1 px-2 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-sm text-gray-700 dark:text-gray-300"
+          className="flex items-center gap-1.5 w-full text-left py-1 px-2 hover:bg-(--color-bg-hover) transition-colors text-sm text-(--color-text-primary)"
           style={{ paddingLeft }}
         >
-          <ChevronIcon expanded={expanded} />
-          {expanded ? <FolderOpenIcon /> : <FolderClosedIcon />}
+          <CaretRightIcon size={12} className={`shrink-0 text-(--color-text-tertiary) transition-transform ${expanded ? "rotate-90" : ""}`} />
+          {expanded ? (
+            <FolderOpenIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0 text-(--color-folder)" />
+          ) : (
+            <FolderIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0 text-(--color-folder)" />
+          )}
           <span className="truncate">{node.name}</span>
         </button>
         {expanded && node.children && (
@@ -103,8 +68,8 @@ function TreeNode({
     <div
       className={`group flex items-center py-1 px-2 text-sm transition-colors ${
         isSelected
-          ? "bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-200"
-          : "text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
+          ? "bg-(--color-accent-subtle) text-(--color-text-link)"
+          : "text-(--color-text-secondary) hover:bg-(--color-bg-hover)"
       }`}
       style={{ paddingLeft: paddingLeft + 16 }}
       draggable
@@ -120,23 +85,23 @@ function TreeNode({
         className="flex items-center gap-1.5 flex-1 min-w-0 text-left"
         title={node.path}
       >
-        <FileIcon />
+        <FileIcon size={ICON_SIZE.SM} className="shrink-0 text-(--color-text-tertiary)" />
         <span className="truncate">{node.name}</span>
       </button>
       {onAddToChat && (
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={(e) => {
             e.stopPropagation();
             onAddToChat(node.path);
           }}
-          className="hidden group-hover:inline-flex items-center justify-center w-5 h-5 rounded text-gray-400 hover:text-blue-400 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors shrink-0 ml-1"
+          className="hidden group-hover:inline-flex w-5 h-5 shrink-0 ml-1 text-(--color-text-secondary) hover:text-(--color-text-link)"
           title="Add to chat context"
           aria-label={`Add ${node.name} to chat`}
         >
-          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-          </svg>
-        </button>
+          <PlusIcon size={12} />
+        </Button>
       )}
     </div>
   );
@@ -145,19 +110,21 @@ function TreeNode({
 export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToChat }: FileTreeProps) {
   if (tree.length === 0) {
     return (
-      <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+      <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
         <div className="text-center space-y-2">
-          <div className="text-2xl">&#128193;</div>
+          <FolderSimpleIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
           <p>No files in /workspace yet.</p>
-          <p className="text-xs text-gray-400 dark:text-gray-600">
+          <p className="text-xs text-(--color-text-tertiary)">
             Ask the agent to create a project to get started.
           </p>
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={onRefresh}
-            className="mt-2 px-3 py-1 text-xs rounded bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 transition-colors"
+            className="mt-2"
           >
             Refresh
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -166,15 +133,17 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToCh
   return (
     <div className="flex flex-col h-full">
       {/* Header bar */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-gray-50 dark:bg-gray-900 border-b border-gray-300 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400">
-        <span className="font-medium text-gray-700 dark:text-gray-300">Files</span>
-        <button
+      <div className="flex items-center justify-between px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs text-(--color-text-secondary)">
+        <span className="font-medium text-(--color-text-primary)">Files</span>
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={onRefresh}
-          className="px-2 py-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors shrink-0"
+          className="shrink-0"
           title="Refresh file tree"
         >
-          Reload
-        </button>
+          <ArrowClockwiseIcon size={ICON_SIZE.SM} />
+        </Button>
       </div>
 
       {/* Tree content */}
