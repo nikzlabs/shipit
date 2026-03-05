@@ -793,7 +793,7 @@ export default function App() {
         open={addRepoDialogOpen}
         onClose={() => useRepoStore.getState().setAddRepoDialogOpen(false)}
         onAdd={async (url) => { await useRepoStore.getState().addRepo(url); }}
-        onRepoReady={(url) => { useRepoStore.getState().setActiveRepoUrl(url); navigate(repoLabelToNewPath(url)); }}
+        onRepoReady={(url) => { useRepoStore.getState().setActiveRepoUrl(url); void navigate(repoLabelToNewPath(url)); }}
         onCreateNew={() => {
           useRepoStore.getState().setAddRepoDialogOpen(false);
           // eslint-disable-next-line no-restricted-syntax -- fire-and-forget one-liner
