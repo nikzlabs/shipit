@@ -34,7 +34,9 @@ import {
   StubGitHubAuthManager,
   FakeClaudeProcess,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 import type { AuthManager } from "../auth.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { repoUrlToHash } from "../git-utils.js";
@@ -154,11 +156,13 @@ describe("standby container pre-warming", () => {
   let fakeDocker: ReturnType<typeof createFakeDocker>;
   let origGitTerminalPrompt: string | undefined;
   let origGitConfigGlobal: string | undefined;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-standby-"));
-    sessionManager = new SessionManager(path.join(tmpDir, "sessions.json"));
-    repoStore = new RepoStore(path.join(tmpDir, "repos.json"));
+    sessionManager = new SessionManager(dbManager);
+    repoStore = new RepoStore(dbManager);
 
     origGitTerminalPrompt = process.env.GIT_TERMINAL_PROMPT;
     process.env.GIT_TERMINAL_PROMPT = "0";
@@ -207,6 +211,7 @@ describe("standby container pre-warming", () => {
   });
 
   afterEach(async () => {
+    dbManager.close();
     if (origGitTerminalPrompt === undefined) {
       delete process.env.GIT_TERMINAL_PROMPT;
     } else {

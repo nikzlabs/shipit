@@ -1,125 +1,89 @@
-import fs from "node:fs";
-import path from "node:path";
 import type { RepoInfo } from "../shared/types.js";
-import { getErrorMessage } from "../shared/utils.js";
+import type { DatabaseManager } from "../shared/database.js";
 
-const DEFAULT_REPOS_FILE = path.join("/workspace", ".vibe-repos.json");
+interface RepoRow {
+  url: string;
+  added_at: string;
+  last_used_at: string;
+  status: string;
+  warm_session_id: string | null;
+}
 
-/**
- * Manages repo persistence. Stores explicitly added repos in a JSON file
- * so users have a first-class concept of "repo" in the sidebar.
- *
- * Follows the same pattern as SessionManager — JSON file persistence,
- * synchronous in-memory reads, save-on-write.
- *
- * @param reposFile - Path to the JSON file for persistence.
- *   Defaults to `/workspace/.vibe-repos.json`. Override in tests.
- */
 export class RepoStore {
-  private repos: RepoInfo[] = [];
-  private reposFile: string;
+  private db;
 
-  constructor(reposFile?: string) {
-    this.reposFile = reposFile ?? DEFAULT_REPOS_FILE;
-    this.load();
+  constructor(dbManager: DatabaseManager) {
+    this.db = dbManager.db;
   }
 
-  /** Load repos from disk. */
-  private load(): void {
-    try {
-      if (fs.existsSync(this.reposFile)) {
-        const raw = fs.readFileSync(this.reposFile, "utf-8");
-        this.repos = JSON.parse(raw) as RepoInfo[];
-      }
-    } catch {
-      this.repos = [];
-    }
-  }
-
-  /** Persist repos to disk. */
-  private save(): void {
-    try {
-      fs.writeFileSync(this.reposFile, JSON.stringify(this.repos, null, 2));
-    } catch (err) {
-      console.error("[repos] failed to save:", getErrorMessage(err));
-    }
+  private fromRow(row: RepoRow): RepoInfo {
+    const info: RepoInfo = {
+      url: row.url,
+      addedAt: row.added_at,
+      lastUsedAt: row.last_used_at,
+      status: row.status as RepoInfo["status"],
+    };
+    if (row.warm_session_id) info.warmSessionId = row.warm_session_id;
+    return info;
   }
 
   /** Add a repo. Sets status to "cloning". Returns the new RepoInfo. */
   add(url: string): RepoInfo {
-    const existing = this.repos.find((r) => r.url === url);
+    const existing = this.get(url);
     if (existing) {
-      existing.lastUsedAt = new Date().toISOString();
-      this.save();
-      return existing;
+      this.db.prepare("UPDATE repos SET last_used_at = ? WHERE url = ?").run(new Date().toISOString(), url);
+      return this.get(url)!;
     }
     const now = new Date().toISOString();
-    const repo: RepoInfo = {
-      url,
-      addedAt: now,
-      lastUsedAt: now,
-      status: "cloning",
-    };
-    this.repos.unshift(repo);
-    this.save();
-    return repo;
+    this.db.prepare(
+      "INSERT INTO repos (url, added_at, last_used_at, status) VALUES (?, ?, ?, 'cloning')",
+    ).run(url, now, now);
+    return this.get(url)!;
   }
 
   /** Flip status to "ready" after clone completes. */
   setReady(url: string): void {
-    const repo = this.repos.find((r) => r.url === url);
-    if (repo) {
-      repo.status = "ready";
-      this.save();
-    }
+    this.db.prepare("UPDATE repos SET status = 'ready' WHERE url = ?").run(url);
   }
 
   /** Store the warm session's ID. */
   setWarmSessionId(url: string, sessionId: string | undefined): void {
-    const repo = this.repos.find((r) => r.url === url);
-    if (repo) {
-      repo.warmSessionId = sessionId;
-      this.save();
-    }
+    this.db.prepare("UPDATE repos SET warm_session_id = ? WHERE url = ?").run(sessionId ?? null, url);
   }
 
   /** Update lastUsedAt timestamp. */
   touch(url: string): void {
-    const repo = this.repos.find((r) => r.url === url);
-    if (repo) {
-      repo.lastUsedAt = new Date().toISOString();
-      this.save();
-    }
+    this.db.prepare("UPDATE repos SET last_used_at = ? WHERE url = ?").run(new Date().toISOString(), url);
   }
 
-  /** Remove a repo. Caller is responsible for worktree/session cleanup. */
+  /** Remove a repo. */
   remove(url: string): boolean {
-    const idx = this.repos.findIndex((r) => r.url === url);
-    if (idx === -1) return false;
-    this.repos.splice(idx, 1);
-    this.save();
-    return true;
+    const result = this.db.prepare("DELETE FROM repos WHERE url = ?").run(url);
+    return result.changes > 0;
   }
 
   /** List all repos sorted by lastUsedAt descending. */
   list(): RepoInfo[] {
-    return [...this.repos].sort(
-      (a, b) => new Date(b.lastUsedAt).getTime() - new Date(a.lastUsedAt).getTime(),
-    );
+    const rows = this.db.prepare(
+      "SELECT * FROM repos ORDER BY last_used_at DESC, rowid DESC",
+    ).all() as RepoRow[];
+    return rows.map((r) => this.fromRow(r));
   }
 
   /** Get a single repo by URL. */
   get(url: string): RepoInfo | undefined {
-    return this.repos.find((r) => r.url === url);
+    const row = this.db.prepare("SELECT * FROM repos WHERE url = ?").get(url) as RepoRow | undefined;
+    return row ? this.fromRow(row) : undefined;
   }
 
   /** Check if a repo URL is already tracked. */
   has(url: string): boolean {
-    return this.repos.some((r) => r.url === url);
+    const row = this.db.prepare("SELECT 1 FROM repos WHERE url = ? LIMIT 1").get(url);
+    return row !== undefined;
   }
 
-  /** Clear all in-memory repo data (used by full reset). */
+  /** Clear all repo data. */
   clear(): void {
-    this.repos = [];
+    this.db.prepare("DELETE FROM repos").run();
   }
 }

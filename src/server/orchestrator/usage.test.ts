@@ -1,35 +1,30 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { DatabaseManager } from "../shared/database.js";
 import { UsageManager } from "./usage.js";
 
 describe("UsageManager", () => {
-  let tmpDir: string;
-  let usageFile: string;
+  let dbManager: DatabaseManager;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-usage-test-"));
-    usageFile = path.join(tmpDir, "usage.json");
+    dbManager = new DatabaseManager(":memory:");
   });
 
   afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    dbManager.close();
   });
 
-  it("starts with empty data when file does not exist", () => {
-    const mgr = new UsageManager(usageFile);
+  it("starts with empty data", () => {
+    const mgr = new UsageManager(dbManager);
     const stats = mgr.getStats();
     expect(stats.totalCostUsd).toBe(0);
     expect(stats.totalTurns).toBe(0);
     expect(stats.sessions).toEqual([]);
   });
 
-  it("records a turn and persists to disk", () => {
-    const mgr = new UsageManager(usageFile);
+  it("records a turn", () => {
+    const mgr = new UsageManager(dbManager);
     mgr.record("sess-1", 0.05, 3000);
 
-    // Verify in-memory
     const stats = mgr.getStats();
     expect(stats.totalCostUsd).toBe(0.05);
     expect(stats.totalTurns).toBe(1);
@@ -40,16 +35,10 @@ describe("UsageManager", () => {
       totalDurationMs: 3000,
       turnCount: 1,
     });
-
-    // Verify persisted to disk
-    expect(fs.existsSync(usageFile)).toBe(true);
-    const raw = JSON.parse(fs.readFileSync(usageFile, "utf-8"));
-    expect(raw).toHaveLength(1);
-    expect(raw[0].sessionId).toBe("sess-1");
   });
 
   it("aggregates multiple turns for the same session", () => {
-    const mgr = new UsageManager(usageFile);
+    const mgr = new UsageManager(dbManager);
     mgr.record("sess-1", 0.10, 2000);
     mgr.record("sess-1", 0.15, 4000);
 
@@ -63,7 +52,7 @@ describe("UsageManager", () => {
   });
 
   it("tracks multiple sessions independently", () => {
-    const mgr = new UsageManager(usageFile);
+    const mgr = new UsageManager(dbManager);
     mgr.record("sess-1", 0.10, 2000);
     mgr.record("sess-2", 0.20, 5000);
     mgr.record("sess-1", 0.05, 1000);
@@ -85,12 +74,12 @@ describe("UsageManager", () => {
   });
 
   it("returns undefined for unknown session", () => {
-    const mgr = new UsageManager(usageFile);
+    const mgr = new UsageManager(dbManager);
     expect(mgr.getSessionUsage("nonexistent")).toBeUndefined();
   });
 
   it("deletes usage data for a session", () => {
-    const mgr = new UsageManager(usageFile);
+    const mgr = new UsageManager(dbManager);
     mgr.record("sess-1", 0.10, 2000);
     mgr.record("sess-2", 0.20, 3000);
 
@@ -105,33 +94,23 @@ describe("UsageManager", () => {
   });
 
   it("returns false when deleting nonexistent session", () => {
-    const mgr = new UsageManager(usageFile);
+    const mgr = new UsageManager(dbManager);
     expect(mgr.delete("nonexistent")).toBe(false);
   });
 
-  it("loads persisted data on construction", () => {
-    // Create and populate a manager
-    const mgr1 = new UsageManager(usageFile);
+  it("persists data across manager instances", () => {
+    const mgr1 = new UsageManager(dbManager);
     mgr1.record("sess-1", 0.50, 10000);
     mgr1.record("sess-1", 0.25, 5000);
 
-    // Create a new manager from the same file
-    const mgr2 = new UsageManager(usageFile);
+    const mgr2 = new UsageManager(dbManager);
     const stats = mgr2.getStats();
     expect(stats.totalCostUsd).toBe(0.75);
     expect(stats.totalTurns).toBe(2);
   });
 
-  it("handles corrupted JSON gracefully", () => {
-    fs.writeFileSync(usageFile, "not valid json{{{");
-    const mgr = new UsageManager(usageFile);
-    const stats = mgr.getStats();
-    expect(stats.totalTurns).toBe(0);
-    expect(stats.sessions).toEqual([]);
-  });
-
   it("records zero cost gracefully", () => {
-    const mgr = new UsageManager(usageFile);
+    const mgr = new UsageManager(dbManager);
     mgr.record("sess-1", 0, 1000);
 
     const usage = mgr.getSessionUsage("sess-1");
@@ -143,12 +122,11 @@ describe("UsageManager", () => {
   });
 
   it("records turn with timestamp", () => {
-    const mgr = new UsageManager(usageFile);
+    const mgr = new UsageManager(dbManager);
     mgr.record("sess-1", 0.05, 2000);
 
-    const raw = JSON.parse(fs.readFileSync(usageFile, "utf-8"));
-    expect(raw[0].timestamp).toBeDefined();
-    // Should be a valid ISO date string
-    expect(new Date(raw[0].timestamp).toISOString()).toBe(raw[0].timestamp);
+    const turns = mgr.getSessionTurns("sess-1");
+    expect(turns).toHaveLength(1);
+    expect(turns[0].timestamp).toBeDefined();
   });
 });

@@ -14,15 +14,19 @@ import {
   StubAuthManager,
   FakeClaudeProcess,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 
 describe("Integration: Docs", () => {
   let app: FastifyInstance;
   let tmpDir: string;
   let sessionId: string;
   let sessionDir: string;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-docs-"));
 
     // Create a session with a doc file
@@ -31,8 +35,7 @@ describe("Integration: Docs", () => {
     fs.mkdirSync(sessionDir, { recursive: true });
     fs.writeFileSync(path.join(sessionDir, "README.md"), "# Hello\nWorld");
 
-    const sessionsFile = path.join(tmpDir, "sessions.json");
-    const sessionManager = new SessionManager(sessionsFile);
+    const sessionManager = new SessionManager(dbManager);
     sessionManager.track(sessionId, "Test session", sessionDir);
 
     const credentialStore = createTestCredentialStore(tmpDir);
@@ -52,6 +55,7 @@ describe("Integration: Docs", () => {
 
   afterEach(async () => {
     await app.close();
+    dbManager.close();
     await new Promise((r) => setTimeout(r, 50));
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

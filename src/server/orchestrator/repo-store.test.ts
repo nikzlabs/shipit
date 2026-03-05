@@ -1,19 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { DatabaseManager } from "../shared/database.js";
 import { RepoStore } from "./repo-store.js";
 
-let tmpDir: string;
+let dbManager: DatabaseManager;
 let store: RepoStore;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-repo-store-test-"));
-  store = new RepoStore(path.join(tmpDir, "repos.json"));
+  dbManager = new DatabaseManager(":memory:");
+  store = new RepoStore(dbManager);
 });
 
 afterEach(() => {
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  dbManager.close();
 });
 
 describe("RepoStore", () => {
@@ -52,7 +50,6 @@ describe("RepoStore", () => {
   it("touch updates lastUsedAt", () => {
     const repo = store.add("https://github.com/owner/repo.git");
     const _originalDate = repo.lastUsedAt;
-    // Small delay to ensure different timestamp
     store.touch("https://github.com/owner/repo.git");
     const updated = store.get("https://github.com/owner/repo.git");
     expect(updated?.lastUsedAt).toBeTruthy();
@@ -69,28 +66,25 @@ describe("RepoStore", () => {
     expect(store.remove("https://github.com/unknown/repo.git")).toBe(false);
   });
 
-  it("persists to disk", () => {
+  it("persists across instances", () => {
     store.add("https://github.com/owner/repo.git");
     store.setReady("https://github.com/owner/repo.git");
 
-    // Create a new store from the same file
-    const store2 = new RepoStore(path.join(tmpDir, "repos.json"));
+    const store2 = new RepoStore(dbManager);
     expect(store2.list()).toHaveLength(1);
     expect(store2.get("https://github.com/owner/repo.git")?.status).toBe("ready");
   });
 
   it("list sorts by lastUsedAt descending", () => {
-    const repoA = store.add("https://github.com/a/repo.git");
-    const repoB = store.add("https://github.com/b/repo.git");
-    // Manually set different lastUsedAt timestamps to test sort order
-    repoA.lastUsedAt = "2020-01-01T00:00:00.000Z";
-    repoB.lastUsedAt = "2025-01-01T00:00:00.000Z";
+    store.add("https://github.com/a/repo.git");
+    store.add("https://github.com/b/repo.git");
+    // The second add is more recent, so it should be first
     const list = store.list();
     expect(list[0].url).toBe("https://github.com/b/repo.git");
     expect(list[1].url).toBe("https://github.com/a/repo.git");
   });
 
-  it("clear empties in-memory state", () => {
+  it("clear empties all data", () => {
     store.add("https://github.com/owner/repo.git");
     store.clear();
     expect(store.list()).toHaveLength(0);

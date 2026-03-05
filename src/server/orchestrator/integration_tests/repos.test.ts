@@ -11,17 +11,20 @@ import { SessionManager } from "../sessions.js";
 import { RepoStore } from "../repo-store.js";
 import type { AuthManager } from "../auth.js";
 import type { GitHubAuthManager } from "../github-auth.js";
-import { StubAuthManager, StubGitHubAuthManager, createTestCredentialStore } from "./test-helpers.js";
+import { StubAuthManager, StubGitHubAuthManager, createTestCredentialStore, createTestDatabaseManager } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 
 let tmpDir: string;
 let app: FastifyInstance;
 let sessionManager: SessionManager;
 let repoStore: RepoStore;
+let dbManager: DatabaseManager;
 
 beforeEach(async () => {
+  dbManager = createTestDatabaseManager();
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-repo-test-"));
-  sessionManager = new SessionManager(path.join(tmpDir, "sessions.json"));
-  repoStore = new RepoStore(path.join(tmpDir, "repos.json"));
+  sessionManager = new SessionManager(dbManager);
+  repoStore = new RepoStore(dbManager);
   const credentialStore = createTestCredentialStore(tmpDir);
 
   app = await buildApp({
@@ -38,6 +41,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await app.close();
+  dbManager.close();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 

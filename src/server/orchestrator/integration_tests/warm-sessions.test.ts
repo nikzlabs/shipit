@@ -26,7 +26,9 @@ import {
   FakeClaudeProcess,
   waitForClaude,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 
 const REPO_URL = "https://github.com/owner/test-repo.git";
 
@@ -80,12 +82,14 @@ describe("Integration: warm session lifecycle", () => {
   let repoStore: RepoStore;
   let lastClaude: FakeClaudeProcess;
   let origGitTerminalPrompt: string | undefined;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-warm-session-"));
-    sessionManager = new SessionManager(path.join(tmpDir, "sessions.json"));
-    repoStore = new RepoStore(path.join(tmpDir, "repos.json"));
+    sessionManager = new SessionManager(dbManager);
+    repoStore = new RepoStore(dbManager);
 
     // Prevent git from prompting for credentials (hangs in CI/test)
     origGitTerminalPrompt = process.env.GIT_TERMINAL_PROMPT;
@@ -124,6 +128,7 @@ describe("Integration: warm session lifecycle", () => {
   });
 
   afterEach(async () => {
+    dbManager.close();
     if (origGitTerminalPrompt === undefined) {
       delete process.env.GIT_TERMINAL_PROMPT;
     } else {

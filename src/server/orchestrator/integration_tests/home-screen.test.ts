@@ -14,7 +14,9 @@ import {
   StubGitHubAuthManager,
   FakeClaudeProcess,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 
 // ---------------------------------------------------------------------------
 // home_create_repo_with_template
@@ -23,12 +25,13 @@ import {
 describe("Integration: home_create_repo_with_template (HTTP)", () => {
   let app: FastifyInstance;
   let tmpDir: string;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-home-create-"));
 
-    const sessionsFile = path.join(tmpDir, "sessions.json");
-    const sessionManager = new SessionManager(sessionsFile);
+    const sessionManager = new SessionManager(dbManager);
 
     const githubAuthManager = new StubGitHubAuthManager();
 
@@ -51,6 +54,7 @@ describe("Integration: home_create_repo_with_template (HTTP)", () => {
 
   afterEach(async () => {
     await app.close();
+    dbManager.close();
     await new Promise((r) => setTimeout(r, 50));
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

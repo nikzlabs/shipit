@@ -18,15 +18,19 @@ import {
   FakeClaudeProcess,
   waitForClaude,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 
 describe("Integration: Image upload", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
   let lastClaude: FakeClaudeProcess = null as any;
+  let dbManager: DatabaseManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-imageupload-"));
     lastClaude = undefined as unknown as FakeClaudeProcess;
@@ -34,8 +38,8 @@ describe("Integration: Image upload", () => {
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
-      sessionManager: new SessionManager(path.join(tmpDir, "sessions.json")),
-      chatHistoryManager: new ChatHistoryManager(path.join(tmpDir, "chat-history")),
+      sessionManager: new SessionManager(dbManager),
+      chatHistoryManager: new ChatHistoryManager(dbManager),
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
       agentFactory: () => {
@@ -53,6 +57,7 @@ describe("Integration: Image upload", () => {
 
   afterEach(async () => {
     await app.close();
+    dbManager.close();
     await new Promise((r) => setTimeout(r, 100));
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });

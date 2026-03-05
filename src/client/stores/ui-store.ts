@@ -164,6 +164,7 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   reset: () =>
     set({
+      settingsOpen: false,
       currentSessionUsage: null,
       allUsageStats: null,
       modelInfo: null,

@@ -6,6 +6,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import type { Server as HttpServer } from "node:http";
+import { DatabaseManager } from "../shared/database.js";
 import { GitManager } from "../shared/git.js";
 import { AgentRegistry, ALLOWED_ENV_KEYS } from "../shared/agent-registry.js";
 import { RepoGit } from "./repo-git.js";
@@ -135,6 +136,8 @@ export interface AppDeps {
    * Docker auto-detection and network setup. Useful for testing.
    */
   sessionContainerManager?: SessionContainerManager;
+  /** Database manager instance. Defaults to `new DatabaseManager(workspaceDir/.shipit.db)`. */
+  databaseManager?: DatabaseManager;
   /** Repo store instance. Defaults to `new RepoStore()`. */
   repoStore?: RepoStore;
   /**
@@ -178,21 +181,22 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const createGitManager = deps.createGitManager ?? ((dir: string) => new GitManager(dir));
   const createRepoGit = deps.createRepoGit ?? ((dir: string) => new RepoGit(dir));
 
+  // ---- Database manager (SQLite) ----
+  const databaseManager = deps.databaseManager ?? new DatabaseManager(
+    path.join(workspaceDir, ".shipit.db"),
+  );
+
   // ---- Session manager ----
-  const sessionManager = deps.sessionManager ?? new SessionManager();
+  const sessionManager = deps.sessionManager ?? new SessionManager(databaseManager);
 
   // ---- Repo store ----
-  const repoStore = deps.repoStore ?? new RepoStore(
-    path.join(workspaceDir, ".vibe-repos.json")
-  );
+  const repoStore = deps.repoStore ?? new RepoStore(databaseManager);
 
   // ---- Chat history manager ----
-  const chatHistoryManager = deps.chatHistoryManager ?? new ChatHistoryManager();
+  const chatHistoryManager = deps.chatHistoryManager ?? new ChatHistoryManager(databaseManager);
 
   // ---- Usage/cost tracking manager ----
-  const usageManager = deps.usageManager ?? new UsageManager(
-    path.join(workspaceDir, ".shipit-usage.json")
-  );
+  const usageManager = deps.usageManager ?? new UsageManager(databaseManager);
 
   // ---- Auth manager ----
   const authManager = deps.authManager ?? new AuthManager();
@@ -247,7 +251,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   })();
 
   // ---- Deployment store ----
-  const deploymentStore = deps.deploymentStore ?? new DeploymentStore(workspaceDir);
+  const deploymentStore = deps.deploymentStore ?? new DeploymentStore(databaseManager);
 
   // ---- Feature manager ----
   const featureManager = deps.featureManager ?? new FeatureManager(workspaceDir);
@@ -913,7 +917,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // user has cloned. Instead, the first "New Session" per repo cold-starts
   // (~1-2s), which triggers re-warming with a standby container so that
   // subsequent "New Session" clicks for the same repo are instant.
-  setTimeout(() => {
+  const startupTimer = setTimeout(() => {
     // Collect current warm session IDs so we can clean up zombies.
     const activeWarmIds = new Set<string>();
     for (const repo of repoStore.list()) {
@@ -995,6 +999,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     createSessionDirFull: createSessionDir,
     containerManager: containerManager ?? undefined,
     prStatusPoller,
+    databaseManager,
   });
 
   // ---- Preview reverse proxy (container mode) ----
@@ -1379,6 +1384,7 @@ to determine the correct install command, preview mode, command, and ports.`,
   // process.on() to avoid MaxListeners warnings when buildApp() is called
   // repeatedly in tests.
   app.addHook("onClose", async () => {
+    clearTimeout(startupTimer);
     authManager.kill();
     runnerRegistry.disposeAll();
     if (dockerProxyServer) {
@@ -1387,6 +1393,7 @@ to determine the correct install command, preview mode, command, and ports.`,
     if (containerManager) {
       await containerManager.dispose();
     }
+    databaseManager.close();
   });
 
   return app;
