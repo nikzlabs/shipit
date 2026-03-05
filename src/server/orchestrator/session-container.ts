@@ -286,9 +286,11 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       `WORKER_PORT=${this.workerPort}`,
       "HOME=/root",
     ];
-    if (config.dockerAccess && this.dockerProxyHost && this.dockerProxyPort) {
+    if (config.dockerAccess) {
+      if (!this.dockerProxyHost || !this.dockerProxyPort) {
+        throw new Error(`Docker access requested but proxy not configured for session ${config.sessionId}`);
+      }
       env.push(`DOCKER_HOST=tcp://${this.dockerProxyHost}:${this.dockerProxyPort}`);
-      // Prevent compose project name collisions between sessions
       const sessionPrefix = config.sessionId.slice(0, 12);
       env.push(`COMPOSE_PROJECT_NAME=shipit-${sessionPrefix}`);
     }
@@ -307,7 +309,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     // Child containers created through the proxy join this network so they
     // can communicate with each other but not with other sessions' containers.
     let sessionNetworkName: string | undefined;
-    if (config.dockerAccess && this.dockerProxyHost) {
+    if (config.dockerAccess && this.dockerProxyHost && this.dockerProxyPort) {
       sessionNetworkName = `shipit-session-${config.sessionId.slice(0, 12)}`;
       try {
         await this.docker.createNetwork({
