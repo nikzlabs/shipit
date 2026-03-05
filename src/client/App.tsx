@@ -782,7 +782,7 @@ export default function App() {
             {!showHomeScreen && (
               <>
                 <ResizeHandle isDragging={isDragging} onMouseDown={onMouseDown} onTouchStart={onTouchStart} />
-                <div className="min-w-0 flex flex-col bg-(--color-bg-secondary)" style={{ width: `${(1 - fraction) * 100}%` }}>{rightPanel}</div>
+                <div className={`min-w-0 flex flex-col bg-(--color-bg-secondary) ${isDragging ? "pointer-events-none" : ""}`} style={{ width: `${(1 - fraction) * 100}%` }}>{rightPanel}</div>
               </>
             )}
           </div>
