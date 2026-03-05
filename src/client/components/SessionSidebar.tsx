@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { PencilSimpleIcon, ArchiveIcon as PhArchiveIcon, GearSixIcon, GithubLogoIcon, PlusIcon, SidebarSimpleIcon } from "@phosphor-icons/react";
+import { PencilSimpleIcon, ArchiveIcon as PhArchiveIcon, GearSixIcon, GithubLogoIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
 import { Button } from "./ui/button.js";
 import { PrStateBadge } from "./PrLifecycleCard.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { usePrStore } from "../stores/pr-store.js";
 import type { SessionInfo } from "../../server/shared/types.js";
 
 const SIDEBAR_MIN = 180;
@@ -90,6 +91,24 @@ export interface SessionItemProps {
   disabled?: boolean;
 }
 
+function AgentDot({ sessionId }: { sessionId: string }) {
+  const isActive = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
+  if (!isActive) return null;
+  return <span className="w-2 h-2 rounded-full bg-(--color-success) animate-pulse shrink-0" title="Agent running" />;
+}
+
+function CiDot({ sessionId }: { sessionId: string }) {
+  const checks = usePrStore((s) => s.cardBySession[sessionId]?.checks);
+  if (!checks || checks.state === "none") return null;
+  if (checks.state === "success") {
+    return <span className="shrink-0 text-(--color-success) flex" title={`CI passed ${checks.total}/${checks.total}`}><CheckCircleIcon size={12} /></span>;
+  }
+  if (checks.state === "failure") {
+    return <span className="shrink-0 text-(--color-error) flex" title={`CI failed ${checks.failed} of ${checks.total}`}><XCircleIcon size={12} /></span>;
+  }
+  return <span className="shrink-0 text-(--color-warning) flex" title={`CI running ${checks.passed}/${checks.total}`}><CircleNotchIcon size={12} className="animate-spin" /></span>;
+}
+
 export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore, onRename, repoLabel, disabled }: SessionItemProps) {
   const isArchived = session.archived === true;
   const [editingTitle, setEditingTitle] = useState("");
@@ -161,7 +180,9 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
           className="flex-1 min-w-0 text-left"
         >
           <p className="truncate leading-snug">{session.title}</p>
-          <div className="flex items-center gap-2 mt-0.5">
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <AgentDot sessionId={session.id} />
+            <CiDot sessionId={session.id} />
             {repoLabel && (
               <span className="text-[10px] text-(--color-text-tertiary) truncate">{repoLabel}</span>
             )}
