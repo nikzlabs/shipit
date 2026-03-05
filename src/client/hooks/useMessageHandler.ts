@@ -500,6 +500,9 @@ export function useMessageHandler(params: {
       });
       if (data.sessionId === useSessionStore.getState().sessionId) {
         session.setIsLoading(data.running);
+        if (!data.running) {
+          session.setActivity(undefined);
+        }
       }
     }
 

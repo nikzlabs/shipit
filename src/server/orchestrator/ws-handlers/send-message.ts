@@ -7,6 +7,7 @@ import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 type FullCtx = ConnectionCtx & RunnerCtx & AppCtx;
 import { getErrorMessage, validateImages, resolveFileAttachments, formatFileContext } from "../validation.js";
 import { generateSessionName } from "../session-namer.js";
+import type { ToolResultEntry } from "../session-runner.js";
 
 type WsSendMessage = Extract<WsClientMessage, { type: "send_message" }>;
 type WsAnswerQuestion = Extract<WsClientMessage, { type: "answer_question" }>;
@@ -51,6 +52,21 @@ async function postTurnCommit(
 /** Context window size in tokens (same across all current model families). */
 export const CONTEXT_WINDOW_TOKENS = 200_000;
 
+/** Extract tool result entries from an agent_tool_result event. */
+function extractToolResults(event: AgentEvent): ToolResultEntry[] {
+  const content = (event as { content?: unknown[] }).content ?? [];
+  return content
+    .filter((b): b is Record<string, unknown> =>
+      typeof b === "object" && b !== null && (b as Record<string, unknown>).type === "tool_result" && !!(b as Record<string, unknown>).tool_use_id)
+    .map((b) => ({
+      toolUseId: b.tool_use_id as string,
+      content: typeof b.content === "string" ? b.content
+        : (b.content === null || b.content === undefined) ? ""
+        : JSON.stringify(b.content),
+      isError: (b.is_error as boolean) ?? false,
+    }));
+}
+
 /**
  * Wire up common agent event listeners shared across send_message,
  * answer_question, and the queued-message replay inside runClaudeWithMessage.
@@ -66,6 +82,10 @@ function wireAgentListeners(
     capturedSessionId?: string;
   },
 ): void {
+  // Capture runner at wire time — this direct reference survives WS disconnects.
+  // After disconnect, ctx setters (which go through `attachedRunner`) become no-ops,
+  // but the agent continues emitting events. All runner state mutations MUST use
+  // this captured reference, not ctx, to ensure state is updated correctly.
   const runner = ctx.getRunner();
   // Helper: emit to all viewers via runner, or fall back to ctx.send
   const emitToViewers = (msg: WsServerMessage) => {
@@ -119,36 +139,64 @@ function wireAgentListeners(
         .filter((b): b is ClaudeContentBlockText => b.type === "text")
         .map((b) => b.text)
         .join("");
-      if (text) {
-        ctx.setTurnSummary(text);
-        ctx.setAccumulatedText(ctx.getAccumulatedText() + text);
+      if (text && runner) {
+        runner.turnSummary = text;
+        runner.accumulatedText += text;
       }
 
       const toolBlocks = (event.content ?? [])
         .filter((b): b is ClaudeContentBlockToolUse => b.type === "tool_use");
-      if (toolBlocks.length > 0) {
-        ctx.setAccumulatedToolUse([...ctx.getAccumulatedToolUse(), ...toolBlocks]);
+      if (toolBlocks.length > 0 && runner) {
+        runner.accumulatedToolUse = [...runner.accumulatedToolUse, ...toolBlocks];
       }
 
       // Track message groups for chat history (split at tool-result boundaries)
-      if (text || toolBlocks.length > 0) {
-        const groups = ctx.getChatMessageGroups();
-        if (ctx.getNeedsNewMessageGroup() || groups.length === 0) {
+      if ((text || toolBlocks.length > 0) && runner) {
+        const groups = runner.chatMessageGroups;
+        if (runner.needsNewMessageGroup || groups.length === 0) {
           groups.push({ text, toolUse: [...toolBlocks] });
-          ctx.setNeedsNewMessageGroup(false);
+          runner.needsNewMessageGroup = false;
         } else {
           const last = groups[groups.length - 1];
           last.text += text;
           last.toolUse.push(...toolBlocks);
         }
-        ctx.setChatMessageGroups(groups);
+        runner.chatMessageGroups = groups;
       }
     }
 
     // Mark a message-group boundary when tool results arrive so the
     // next agent_assistant starts a new chat history entry.
     if (event.type === "agent_tool_result") {
-      ctx.setNeedsNewMessageGroup(true);
+      if (runner) runner.needsNewMessageGroup = true;
+
+      // Attach tool results to the current message group
+      const toolResults = extractToolResults(event);
+      if (toolResults.length > 0 && runner) {
+        const groups = runner.chatMessageGroups;
+        if (groups.length > 0) {
+          const last = groups[groups.length - 1];
+          last.toolResults = [...(last.toolResults ?? []), ...toolResults];
+          runner.chatMessageGroups = groups;
+        }
+      }
+
+      // Persist all accumulated message groups as in-progress
+      const usageSessionId = opts.capturedSessionId;
+      if (usageSessionId) {
+        const groups = runner?.chatMessageGroups ?? [];
+        const inProgressMessages = groups
+          .filter((g) => g.text || g.toolUse.length > 0)
+          .map((g) => ({
+            role: "assistant" as const,
+            text: g.text,
+            toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
+            toolResults: g.toolResults?.length ? g.toolResults : undefined,
+            inProgress: true,
+          }));
+        ctx.chatHistoryManager.replaceInProgress(usageSessionId, inProgressMessages);
+        if (runner) runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;
+      }
     }
 
     if (event.type === "agent_result") {
@@ -185,15 +233,34 @@ function wireAgentListeners(
 
       // Persist each message group as a separate assistant entry so that
       // reloaded chat history shows the same message boundaries as live streaming.
-      const groups = ctx.getChatMessageGroups();
-      for (const group of groups) {
-        if (group.text || group.toolUse.length > 0) {
-          ctx.chatHistoryManager.append(usageSessionId, {
-            role: "assistant",
-            text: group.text,
-            toolUse: group.toolUse.length > 0 ? group.toolUse : undefined,
-          });
-        }
+      const groups = runner?.chatMessageGroups ?? [];
+      const finalMessages = groups
+        .filter((g) => g.text || g.toolUse.length > 0)
+        .map((g) => ({
+          role: "assistant" as const,
+          text: g.text,
+          toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
+          toolResults: g.toolResults?.length ? g.toolResults : undefined,
+        }));
+      ctx.chatHistoryManager.replaceInProgress(usageSessionId, finalMessages);
+      ctx.chatHistoryManager.finalizeInProgress(usageSessionId);
+      if (runner) runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;
+
+      // Mark turn as complete immediately — don't wait for async post-turn
+      // work (git commit, PR lifecycle) in the "done" handler. This closes
+      // the timing window where a reconnecting viewer sees running=true.
+      // Use runner directly (not ctx) so this works even after WS disconnect.
+      if (runner) {
+        runner.running = false;
+        runner.clearTurnEventBuffer();
+      }
+      if (turnSessionId) {
+        emitToViewers({
+          type: "session_status",
+          sessionId: turnSessionId,
+          running: false,
+          queueLength: runner?.queueLength ?? 0,
+        });
       }
     }
   });
@@ -210,13 +277,14 @@ function wireAgentListeners(
     emitToViewers({ type: "error", message: `Agent process error: ${err.message}` });
     const turnSessionId = opts.capturedSessionId;
     if (turnSessionId) {
+      ctx.chatHistoryManager.clearInProgress(turnSessionId);
       ctx.chatHistoryManager.append(turnSessionId, {
         role: "assistant",
         text: `Error: ${err.message}`,
         isError: true,
       });
     }
-    ctx.setAgent(null);
+    if (runner) runner.setAgent(null);
   });
 }
 
@@ -317,11 +385,11 @@ async function runClaudeWithMessage(ctx: FullCtx, opts: {
   currentAgent.on("done", async (code: number | null) => {
     console.log("[agent] process exited with code", code);
     ctx.broadcastLog("server", `Agent process exited with code ${code}`);
-    ctx.setAgent(null);
+    if (runner) runner.setAgent(null);
 
     // If the process exited without producing a result event, notify the
     // client so it can clear the loading state instead of hanging forever.
-    if (!receivedResult && !ctx.getWasInterrupted()) {
+    if (!receivedResult && !(runner?.wasInterrupted ?? false)) {
       const reason = code !== 0
         ? `Agent process exited with code ${code}`
         : "Agent process ended without a response";
@@ -377,20 +445,21 @@ async function runClaudeWithMessage(ctx: FullCtx, opts: {
 
     // Mark Claude as no longer running, then process the next queued message
     // If interrupted, clear the queue instead of dequeuing.
-    ctx.setIsClaudeRunning(false);
-    const messageQueue = ctx.getMessageQueue();
-    if (ctx.getWasInterrupted() && messageQueue.length > 0) {
-      ctx.clearMessageQueue();
+    // Use runner directly (not ctx) so this works even after WS disconnect.
+    if (runner) runner.running = false;
+    const messageQueue = runner?.messageQueue ?? [];
+    if ((runner?.wasInterrupted ?? false) && messageQueue.length > 0) {
+      if (runner) runner.clearQueue();
       emitDone({ type: "queue_updated", queue: [] });
     }
-    if (!ctx.getWasInterrupted() && messageQueue.length > 0) {
+    if (!(runner?.wasInterrupted ?? false) && messageQueue.length > 0) {
       const next = messageQueue.shift()!;
       // Notify the client that the queue is now one shorter
       emitDone({
         type: "queue_updated",
         queue: messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 })),
       });
-      ctx.setIsClaudeRunning(true);
+      if (runner) runner.running = true;
       // Resolve file attachments for the queued message
       const nextImages = next.images && next.images.length > 0 ? next.images : undefined;
       const nextFileRefs = next.files && next.files.length > 0 ? next.files : undefined;
@@ -419,12 +488,12 @@ async function runClaudeWithMessage(ctx: FullCtx, opts: {
         });
       } catch (err) {
         console.error("[queue] Error processing queued message:", getErrorMessage(err));
-        ctx.setIsClaudeRunning(false);
+        if (runner) runner.running = false;
       }
     }
 
     // Notify via SSE for sidebar activity dots
-    if (capturedSessionId && !ctx.getIsClaudeRunning()) {
+    if (capturedSessionId && !(runner?.running ?? false)) {
       ctx.sseBroadcast("session_agent_finished", { sessionId: capturedSessionId });
       if (runner) runner.onAgentFinished();
     }
@@ -739,10 +808,11 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     capturedSessionId,
   });
 
+  const answerRunner = ctx.getRunner();
   currentAgent.on("done", async (code: number | null) => {
     console.log("[agent] process exited with code", code);
     ctx.broadcastLog("server", `Agent process exited with code ${code}`);
-    ctx.setAgent(null);
+    if (answerRunner) answerRunner.setAgent(null);
 
     try {
       if (capturedSessionDir) {

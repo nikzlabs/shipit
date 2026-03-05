@@ -546,6 +546,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         sseBroadcast,
         persistMessage: (sessionId, msg) => chatHistoryManager.append(sessionId, msg),
         resolveAgentSessionId: (sessionId) => sessionManager.get(sessionId)?.agentSessionId,
+        replaceInProgress: (sessionId, messages) => chatHistoryManager.replaceInProgress(sessionId, messages),
+        finalizeInProgress: (sessionId) => chatHistoryManager.finalizeInProgress(sessionId),
+        clearInProgress: (sessionId) => chatHistoryManager.clearInProgress(sessionId),
       });
     },
   });
@@ -1063,11 +1066,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         runnerMessageListener = (msg: WsServerMessage) => { send(msg); };
         runner.on("message", runnerMessageListener);
         runner.attachViewer();
-        for (const msg of runner.getTurnEventBuffer()) { send(msg); }
+        // Don't replay the turn event buffer here — persisted chat history is
+        // loaded via HTTP (loadSessionHistory) and is the single source of truth.
+        // Replaying buffer events races with the HTTP load and causes duplicates
+        // or overwritten messages.  Live events stream via the "message" listener.
         if (runner.getQueueSnapshot().length > 0) {
           send({ type: "queue_updated", queue: runner.getQueueSnapshot() });
         }
-        if (runner.running || runner.queueLength > 0 || runner.getTurnEventBuffer().length > 0) {
+        if (runner.running || runner.queueLength > 0) {
           send({ type: "session_status", sessionId: runner.sessionId, running: runner.running, queueLength: runner.queueLength });
         }
         // Send preview_status on attach only if the runner has definitive state.

@@ -14,6 +14,18 @@ import type { WsServerMessage, ImageAttachment, FileContextRef, PermissionMode, 
 // Types
 // ---------------------------------------------------------------------------
 
+export interface ToolResultEntry {
+  toolUseId: string;
+  content: string;
+  isError?: boolean;
+}
+
+export interface ChatMessageGroup {
+  text: string;
+  toolUse: ClaudeContentBlockToolUse[];
+  toolResults?: ToolResultEntry[];
+}
+
 export interface QueuedMessage {
   text: string;
   images?: ImageAttachment[];
@@ -38,6 +50,12 @@ export interface SystemTurnDeps {
   persistMessage: (sessionId: string, msg: { role: "user" | "assistant"; text: string }) => void;
   /** Resolve the Claude CLI session ID for --resume (returns undefined for fresh sessions). */
   resolveAgentSessionId: (sessionId: string) => string | undefined;
+  /** Replace in-progress messages in chat history (incremental persistence). */
+  replaceInProgress?: (sessionId: string, messages: { role: "assistant"; text: string; inProgress: true }[]) => void;
+  /** Finalize in-progress messages (remove the flag) after turn completion. */
+  finalizeInProgress?: (sessionId: string) => void;
+  /** Clear in-progress messages on error/abort. */
+  clearInProgress?: (sessionId: string) => void;
 }
 
 /**
@@ -97,11 +115,25 @@ export function runSystemTurn(
         host.accumulatedText += agentText;
       }
     }
+
+    if (event.type === "agent_tool_result" && host.accumulatedText) {
+      deps.replaceInProgress?.(host.sessionId, [
+        { role: "assistant", text: host.accumulatedText, inProgress: true },
+      ]);
+    }
+
+    if (event.type === "agent_result" && host.accumulatedText) {
+      deps.replaceInProgress?.(host.sessionId, [
+        { role: "assistant", text: host.accumulatedText, inProgress: true },
+      ]);
+      deps.finalizeInProgress?.(host.sessionId);
+    }
   });
 
   agent.on("error", (err: Error) => {
     console.error("[system-turn] agent error:", err.message);
     host.emitMessage({ type: "error", message: `Agent process error: ${err.message}` });
+    deps.clearInProgress?.(host.sessionId);
     host.setAgent(null);
   });
 
@@ -170,7 +202,7 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   accumulatedText: string;
   accumulatedToolUse: ClaudeContentBlockToolUse[];
   turnSummary: string;
-  chatMessageGroups: { text: string; toolUse: ClaudeContentBlockToolUse[] }[];
+  chatMessageGroups: ChatMessageGroup[];
   needsNewMessageGroup: boolean;
   agentId: AgentId;
 
@@ -201,6 +233,9 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   getTurnEventBuffer(): WsServerMessage[];
   clearTurnEventBuffer(): void;
   emitMessage(msg: WsServerMessage): void;
+  /** Index into the turn event buffer up to which events have been persisted to chat history.
+   *  On viewer attach, only events after this index need to be replayed. */
+  lastPersistedBufferIndex: number;
 
   // Detected ports (per-session)
   detectedPorts: number[];
@@ -260,7 +295,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _accumulatedText = "";
   private _accumulatedToolUse: ClaudeContentBlockToolUse[] = [];
   private _turnSummary = "";
-  private _chatMessageGroups: { text: string; toolUse: ClaudeContentBlockToolUse[] }[] = [];
+  private _chatMessageGroups: ChatMessageGroup[] = [];
   private _needsNewMessageGroup = true;
   private _messageQueue: QueuedMessage[] = [];
   private _terminal: TerminalProcess | null = null;
@@ -270,6 +305,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _turnEventBuffer: WsServerMessage[] = [];
   private static readonly MAX_TURN_BUFFER = 1000;
   private static readonly MAX_QUEUE_SIZE = 50;
+  lastPersistedBufferIndex = 0;
   private _viewerCount = 0;
   private _detectedPorts: number[] = [];
   private _disposed = false;
@@ -295,8 +331,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set accumulatedToolUse(blocks: ClaudeContentBlockToolUse[]) { this._accumulatedToolUse = blocks; }
   get turnSummary(): string { return this._turnSummary; }
   set turnSummary(s: string) { this._turnSummary = s; }
-  get chatMessageGroups(): { text: string; toolUse: ClaudeContentBlockToolUse[] }[] { return this._chatMessageGroups; }
-  set chatMessageGroups(groups: { text: string; toolUse: ClaudeContentBlockToolUse[] }[]) { this._chatMessageGroups = groups; }
+  get chatMessageGroups(): ChatMessageGroup[] { return this._chatMessageGroups; }
+  set chatMessageGroups(groups: ChatMessageGroup[]) { this._chatMessageGroups = groups; }
   get needsNewMessageGroup(): boolean { return this._needsNewMessageGroup; }
   set needsNewMessageGroup(v: boolean) { this._needsNewMessageGroup = v; }
   get agentId(): AgentId { return this._agentId; }
@@ -337,7 +373,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   }
 
   getTurnEventBuffer(): WsServerMessage[] { return [...this._turnEventBuffer]; }
-  clearTurnEventBuffer(): void { this._turnEventBuffer = []; }
+  clearTurnEventBuffer(): void { this._turnEventBuffer = []; this.lastPersistedBufferIndex = 0; }
   emitMessage(msg: WsServerMessage): void {
     if (this._turnEventBuffer.length < SessionRunner.MAX_TURN_BUFFER) {
       this._turnEventBuffer.push(msg);

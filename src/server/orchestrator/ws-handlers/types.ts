@@ -14,7 +14,7 @@ import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { RepoStore } from "../repo-store.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { AgentId, AgentProcess, TerminalProcess } from "../../shared/types.js";
-import type { SessionRunnerInterface, SessionRunnerRegistry, QueuedMessage } from "../session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerRegistry, QueuedMessage, ChatMessageGroup } from "../session-runner.js";
 
 // Re-export so existing consumers of types.ts don't break
 export type { QueuedMessage };
@@ -74,8 +74,8 @@ export interface RunnerCtx {
   setAccumulatedToolUse: (blocks: ClaudeContentBlockToolUse[]) => void;
 
   // Per-turn message groups — each tool-result boundary starts a new group
-  getChatMessageGroups: () => { text: string; toolUse: ClaudeContentBlockToolUse[] }[];
-  setChatMessageGroups: (groups: { text: string; toolUse: ClaudeContentBlockToolUse[] }[]) => void;
+  getChatMessageGroups: () => ChatMessageGroup[];
+  setChatMessageGroups: (groups: ChatMessageGroup[]) => void;
   getNeedsNewMessageGroup: () => boolean;
   setNeedsNewMessageGroup: (v: boolean) => void;
 

@@ -41,7 +41,7 @@ export function useConnectionSync(params: {
         send({ ...pending, sessionId } as WsClientMessage);
       }
     }
-    if (status === "closed") {
+    if (status === "closed" || status === "connecting") {
       historyLoadedRef.current = false;
     }
   }, [status, send]);
@@ -55,7 +55,12 @@ export function useConnectionSync(params: {
     prevStatusRef.current = status;
 
     if (wasOpen && status === "closed" && useSessionStore.getState().isLoading) {
+      // Don't inject "connection lost" when switching sessions — the stores
+      // are reset and the new session will load its own state via HTTP.
+      // Only show the error for genuine disconnects (messages still present).
       const session = useSessionStore.getState();
+      if (session.messages.length === 0) return;
+
       session.setIsLoading(false);
       session.setActivity(undefined);
       session.setMessages((prev) => {
