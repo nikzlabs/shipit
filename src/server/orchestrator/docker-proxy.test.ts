@@ -67,7 +67,7 @@ function createMockDaemon(): MockDaemon {
       // The real Docker daemon requires application/json; our mock should too
       // to catch missing content-type forwarding in the proxy.
       const contentType = req.headers["content-type"] ?? "";
-      const expectsJson = (method === "POST" || method === "PUT") && bodyStr && !url.match(/\/build/);
+      const expectsJson = (method === "POST" || method === "PUT") && bodyStr && !(/\/build/.exec(url));
       if (expectsJson && !contentType.includes("application/json")) {
         respond(400, { message: `Content-Type must be application/json, got: ${contentType}` });
         return;
@@ -81,19 +81,19 @@ function createMockDaemon(): MockDaemon {
       }
 
       // GET /version
-      if (url.match(/\/v[\d.]+\/version$|^\/version$/) && method === "GET") {
+      if ((/\/v[\d.]+\/version$|^\/version$/.exec(url)) && method === "GET") {
         respond(200, { Version: "20.10.0", ApiVersion: "1.41" });
         return;
       }
 
       // GET /info
-      if (url.match(/\/info$/) && method === "GET") {
+      if ((/\/info$/.exec(url)) && method === "GET") {
         respond(200, { ID: "mock-daemon" });
         return;
       }
 
       // POST /containers/create
-      if (url.match(/\/containers\/create/) && method === "POST") {
+      if ((/\/containers\/create/.exec(url)) && method === "POST") {
         containerCounter++;
         const id = `mock-container-${containerCounter}`;
         const labels = (body.Labels ?? {}) as Record<string, string>;
@@ -104,7 +104,7 @@ function createMockDaemon(): MockDaemon {
       }
 
       // GET /containers/json
-      if (url.match(/\/containers\/json/) && method === "GET") {
+      if ((/\/containers\/json/.exec(url)) && method === "GET") {
         const list = [...containers.entries()].map(([id, c]) => ({
           Id: id,
           Labels: c.labels,
@@ -115,7 +115,7 @@ function createMockDaemon(): MockDaemon {
       }
 
       // GET /containers/{id}/json
-      const containerInspectMatch = url.match(/\/containers\/([^/]+)\/json/);
+      const containerInspectMatch = /\/containers\/([^/]+)\/json/.exec(url);
       if (containerInspectMatch && method === "GET") {
         const id = containerInspectMatch[1];
         const c = containers.get(id);
@@ -125,7 +125,7 @@ function createMockDaemon(): MockDaemon {
       }
 
       // POST /containers/{id}/start
-      const containerStartMatch = url.match(/\/containers\/([^/]+)\/start/);
+      const containerStartMatch = /\/containers\/([^/]+)\/start/.exec(url);
       if (containerStartMatch && method === "POST") {
         const id = containerStartMatch[1];
         const c = containers.get(id);
@@ -136,7 +136,7 @@ function createMockDaemon(): MockDaemon {
       }
 
       // POST /containers/{id}/stop
-      const containerStopMatch = url.match(/\/containers\/([^/]+)\/stop/);
+      const containerStopMatch = /\/containers\/([^/]+)\/stop/.exec(url);
       if (containerStopMatch && method === "POST") {
         const id = containerStopMatch[1];
         const c = containers.get(id);
@@ -147,16 +147,16 @@ function createMockDaemon(): MockDaemon {
       }
 
       // DELETE /containers/{id}
-      const containerDeleteMatch = url.match(/\/containers\/([^/]+)$/) && method === "DELETE";
+      const containerDeleteMatch = (/\/containers\/([^/]+)$/.exec(url)) && method === "DELETE";
       if (containerDeleteMatch) {
-        const id = url.match(/\/containers\/([^/]+)$/)![1];
+        const id = /\/containers\/([^/]+)$/.exec(url)![1];
         containers.delete(id);
         respond(204, {});
         return;
       }
 
       // POST /containers/{id}/exec
-      const execCreateMatch = url.match(/\/containers\/([^/]+)\/exec/);
+      const execCreateMatch = /\/containers\/([^/]+)\/exec/.exec(url);
       if (execCreateMatch && method === "POST") {
         const containerId = execCreateMatch[1];
         const c = containers.get(containerId);
@@ -169,7 +169,7 @@ function createMockDaemon(): MockDaemon {
       }
 
       // GET /exec/{id}/json
-      const execInspectMatch = url.match(/\/exec\/([^/]+)\/json/);
+      const execInspectMatch = /\/exec\/([^/]+)\/json/.exec(url);
       if (execInspectMatch && method === "GET") {
         const execId = execInspectMatch[1];
         const containerId = execs.get(execId);
@@ -179,7 +179,7 @@ function createMockDaemon(): MockDaemon {
       }
 
       // POST /exec/{id}/start
-      const execStartMatch = url.match(/\/exec\/([^/]+)\/start/);
+      const execStartMatch = /\/exec\/([^/]+)\/start/.exec(url);
       if (execStartMatch && method === "POST") {
         const execId = execStartMatch[1];
         const containerId = execs.get(execId);
@@ -189,7 +189,7 @@ function createMockDaemon(): MockDaemon {
       }
 
       // POST /networks/create
-      if (url.match(/\/networks\/create/) && method === "POST") {
+      if ((/\/networks\/create/.exec(url)) && method === "POST") {
         const id = `mock-network-${Date.now()}`;
         const labels = (body.Labels ?? {}) as Record<string, string>;
         networks.set(id, { labels });
@@ -198,7 +198,7 @@ function createMockDaemon(): MockDaemon {
       }
 
       // GET /networks
-      if (url.match(/\/networks(\?|$)/) && method === "GET" && !url.match(/\/networks\/[^?]/)) {
+      if ((/\/networks(\?|$)/.exec(url)) && method === "GET" && !(/\/networks\/[^?]/.exec(url))) {
         const list = [...networks.entries()].map(([id, n]) => ({
           Id: id, Name: id, Labels: n.labels,
         }));
@@ -207,7 +207,7 @@ function createMockDaemon(): MockDaemon {
       }
 
       // GET /networks/{id}
-      const networkInspectMatch = url.match(/\/networks\/([^/?]+)$/);
+      const networkInspectMatch = /\/networks\/([^/?]+)$/.exec(url);
       if (networkInspectMatch && method === "GET") {
         const id = networkInspectMatch[1];
         const n = networks.get(id);
@@ -218,14 +218,14 @@ function createMockDaemon(): MockDaemon {
 
       // DELETE /networks/{id}
       if (networkInspectMatch && method === "DELETE") {
-        const id = url.match(/\/networks\/([^/?]+)$/)![1];
+        const id = /\/networks\/([^/?]+)$/.exec(url)![1];
         networks.delete(id);
         respond(204, {});
         return;
       }
 
       // POST /volumes/create
-      if (url.match(/\/volumes\/create/) && method === "POST") {
+      if ((/\/volumes\/create/.exec(url)) && method === "POST") {
         const name = (body.Name as string) ?? `mock-vol-${Date.now()}`;
         const labels = (body.Labels ?? {}) as Record<string, string>;
         volumes.set(name, { labels });
@@ -234,7 +234,7 @@ function createMockDaemon(): MockDaemon {
       }
 
       // GET /volumes
-      if (url.match(/\/volumes(\?|$)/) && method === "GET" && !url.match(/\/volumes\/[^?]/)) {
+      if ((/\/volumes(\?|$)/.exec(url)) && method === "GET" && !(/\/volumes\/[^?]/.exec(url))) {
         const list = [...volumes.entries()].map(([name, v]) => ({
           Name: name, Labels: v.labels,
         }));
@@ -243,7 +243,7 @@ function createMockDaemon(): MockDaemon {
       }
 
       // GET /volumes/{name}
-      const volumeInspectMatch = url.match(/\/volumes\/([^/?]+)$/);
+      const volumeInspectMatch = /\/volumes\/([^/?]+)$/.exec(url);
       if (volumeInspectMatch && method === "GET") {
         const name = volumeInspectMatch[1];
         const v = volumes.get(name);
@@ -254,38 +254,38 @@ function createMockDaemon(): MockDaemon {
 
       // DELETE /volumes/{name}
       if (volumeInspectMatch && method === "DELETE") {
-        const name = url.match(/\/volumes\/([^/?]+)$/)![1];
+        const name = /\/volumes\/([^/?]+)$/.exec(url)![1];
         volumes.delete(name);
         respond(204, {});
         return;
       }
 
       // GET /images/json
-      if (url.match(/\/images/) && method === "GET") {
+      if ((/\/images/.exec(url)) && method === "GET") {
         respond(200, []);
         return;
       }
 
       // POST /images/create
-      if (url.match(/\/images\/create/) && method === "POST") {
+      if ((/\/images\/create/.exec(url)) && method === "POST") {
         respond(200, {});
         return;
       }
 
       // POST /build
-      if (url.match(/\/build/) && method === "POST") {
+      if ((/\/build/.exec(url)) && method === "POST") {
         respond(200, { stream: "built" });
         return;
       }
 
       // POST /networks/{id}/connect
-      if (url.match(/\/networks\/[^/]+\/connect/) && method === "POST") {
+      if ((/\/networks\/[^/]+\/connect/.exec(url)) && method === "POST") {
         respond(200, {});
         return;
       }
 
       // POST /networks/{id}/disconnect
-      if (url.match(/\/networks\/[^/]+\/disconnect/) && method === "POST") {
+      if ((/\/networks\/[^/]+\/disconnect/.exec(url)) && method === "POST") {
         respond(200, {});
         return;
       }

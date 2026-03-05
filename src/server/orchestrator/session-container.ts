@@ -242,10 +242,10 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     // not on the host. Use Docker volume subpaths (API 1.45+) to mount just
     // the session subdir at /user for a short cwd that saves tokens.
     const binds: string[] = [];
-    const mounts: Array<{
+    const mounts: {
       Type: "volume"; Source: string; Target: string; ReadOnly?: boolean;
       VolumeOptions?: { Subpath?: string };
-    }> = [];
+    }[] = [];
     const workspaceDir = "/user";
     if (this.workspaceVolume) {
       // Mount the session subdir from the named volume at /user

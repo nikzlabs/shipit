@@ -6,10 +6,10 @@
  */
 export function parseRepoLabel(remoteUrl: string): string {
   // GitHub HTTPS: https://github.com/owner/repo.git
-  const httpsMatch = remoteUrl.match(/github\.com\/([^/]+\/[^/.]+)/);
+  const httpsMatch = /github\.com\/([^/]+\/[^/.]+)/.exec(remoteUrl);
   if (httpsMatch) return httpsMatch[1];
   // GitHub SSH: git@github.com:owner/repo.git
-  const sshMatch = remoteUrl.match(/github\.com:([^/]+\/[^/.]+)/);
+  const sshMatch = /github\.com:([^/]+\/[^/.]+)/.exec(remoteUrl);
   if (sshMatch) return sshMatch[1];
   // Generic: strip protocol and .git suffix
   try {

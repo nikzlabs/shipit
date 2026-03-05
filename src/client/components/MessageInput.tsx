@@ -28,7 +28,7 @@ export function MessageInput({
   onAddFile,
   fileTree = [],
 }: {
-  onSend: (text: string, images?: Array<{ data: string; mediaType: string; filename: string }>) => void;
+  onSend: (text: string, images?: { data: string; mediaType: string; filename: string }[]) => void;
   disabled: boolean;
   isLoading?: boolean;
   onInterrupt?: () => void;
@@ -147,7 +147,7 @@ export function MessageInput({
       const textBeforeCursor = newText.slice(0, cursorPos);
 
       // Find the last @ that's not preceded by a word character (to avoid email addresses)
-      const atMatch = textBeforeCursor.match(/(?:^|[^a-zA-Z0-9])@([^\s]*)$/);
+      const atMatch = /(?:^|[^a-zA-Z0-9])@([^\s]*)$/.exec(textBeforeCursor);
       if (atMatch) {
         const query = atMatch[1];
         setAutoCompleteQuery(query);
@@ -166,10 +166,10 @@ export function MessageInput({
       // Replace the @query in the text with just @filepath
       const cursorPos = textareaRef.current?.selectionStart ?? text.length;
       const textBeforeCursor = text.slice(0, cursorPos);
-      const atMatch = textBeforeCursor.match(/(?:^|[^a-zA-Z0-9])@([^\s]*)$/);
+      const atMatch = /(?:^|[^a-zA-Z0-9])@([^\s]*)$/.exec(textBeforeCursor);
       if (atMatch) {
-        const startIdx = textBeforeCursor.lastIndexOf("@" + atMatch[1]);
-        const newText = text.slice(0, startIdx) + "@" + filePath + " " + text.slice(cursorPos);
+        const startIdx = textBeforeCursor.lastIndexOf(`@${  atMatch[1]}`);
+        const newText = `${text.slice(0, startIdx)  }@${  filePath  } ${  text.slice(cursorPos)}`;
         setText(newText);
       }
       setShowAutoComplete(false);

@@ -23,13 +23,13 @@ interface SettingsState {
 
   saveInstructions: (content: string) => Promise<void>;
   submitGitHubToken: (token: string) => Promise<{
-    repos: Array<{
+    repos: {
       fullName: string;
       description: string | null;
       private: boolean;
       defaultBranch: string;
       cloneUrl: string;
-    }>;
+    }[];
   } | null>;
   gitHubLogout: () => Promise<void>;
 }

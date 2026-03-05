@@ -229,7 +229,7 @@ export function Settings({
                 agent={claudeAgent}
                 authUrl={authUrl}
                 onStartAuth={onStartAuth}
-                onApiKeySubmit={async (key) => { onApiKey(key); }}
+                onApiKeySubmit={async (key) => { onApiKey(key); return undefined; }}
                 onPasteAuthCode={onPasteCode}
                 onClearApiKey={onClearApiKey}
                 showApiKeyWhenAuthed
@@ -239,7 +239,7 @@ export function Settings({
                 <div className="pt-2 border-t border-(--color-border-secondary)">
                   <CodexAuthCard
                     agent={codexAgent}
-                    onApiKeySubmit={async (key) => { onSetAgentEnv?.("codex", "OPENAI_API_KEY", key); }}
+                    onApiKeySubmit={async (key) => { onSetAgentEnv?.("codex", "OPENAI_API_KEY", key); return undefined; }}
                   />
                 </div>
               )}
@@ -337,7 +337,7 @@ export function Settings({
                   </button>
                 </div>
               ) : (
-                <GitHubTokenForm onSubmit={async (t) => { onGitHubTokenSubmit(t); }} />
+                <GitHubTokenForm onSubmit={async (t) => { onGitHubTokenSubmit(t); return undefined; }} />
               )}
             </div>
           )}

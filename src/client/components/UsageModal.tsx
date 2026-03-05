@@ -59,7 +59,7 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
   // Look up session titles by ID
   const getSessionTitle = (sessionId: string): string => {
     const session = sessions.find((s) => s.id === sessionId);
-    return session?.title ?? sessionId.slice(0, 12) + "...";
+    return session?.title ?? `${sessionId.slice(0, 12)  }...`;
   };
 
   const contextPercentage = modelInfo && modelInfo.contextWindowTokens > 0 && contextTokens
@@ -70,7 +70,7 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
   // Compute cumulative token totals from turn data
   const totalInputTokens = turnTokens?.reduce((sum, t) => sum + (t.inputTokens ?? 0), 0) ?? 0;
   const totalOutputTokens = turnTokens?.reduce((sum, t) => sum + (t.outputTokens ?? 0), 0) ?? 0;
-  const hasTurnTokens = turnTokens && turnTokens.some((t) => t.inputTokens !== undefined || t.outputTokens !== undefined);
+  const hasTurnTokens = turnTokens?.some((t) => t.inputTokens !== undefined || t.outputTokens !== undefined);
 
   return (
     <Modal

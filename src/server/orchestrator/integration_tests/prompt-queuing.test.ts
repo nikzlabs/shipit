@@ -58,7 +58,7 @@ describe("Integration: prompt queuing", () => {
     });
 
     const address = await app.listen({ port: 0, host: "127.0.0.1" });
-    const match = address.match(/:(\d+)$/);
+    const match = /:(\d+)$/.exec(address);
     port = match ? Number(match[1]) : 0;
   });
 
@@ -73,7 +73,7 @@ describe("Integration: prompt queuing", () => {
   });
 
   /** Drain messages until predicate returns truthy, up to maxMsgs attempts. */
-  async function drainUntil(client: TestClient, predicate: (m: AnyMsg) => boolean, maxMsgs = 30, timeoutMs = 2000): Promise<AnyMsg | null> {
+  async function drainUntil(client: TestClient, predicate: (m: AnyMsg) => boolean, maxMsgs = 30, timeoutMs = 2000): Promise<AnyMsg> {
     for (let i = 0; i < maxMsgs; i++) {
       const msg: AnyMsg = await client.receive(timeoutMs);
       if (predicate(msg)) return msg;

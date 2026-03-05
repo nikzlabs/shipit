@@ -143,21 +143,21 @@ export function PreviewFrame({
   // or Docker port mapping is not yet established.
   useEffect(() => {
     if (!activePort || !pollUrl || iframeReady) return;
-    let cancelled = false;
+    const state = { cancelled: false };
     const key = targetKey;
     const poll = async () => {
-      for (let i = 0; i < 30 && !cancelled; i++) {
+      for (let i = 0; i < 30 && !state.cancelled; i++) {
         try {
           if (isContainerMode) {
             const resp = await fetch(pollUrl);
             const data = await resp.json();
             if (data.ready) {
-              if (!cancelled) setReadyForKey(key);
+              if (!state.cancelled) setReadyForKey(key);
               return;
             }
           } else {
             await fetch(pollUrl, { mode: "no-cors" });
-            if (!cancelled) setReadyForKey(key);
+            if (!state.cancelled) setReadyForKey(key);
             return;
           }
         } catch {
@@ -166,14 +166,14 @@ export function PreviewFrame({
         await new Promise((r) => setTimeout(r, 500));
       }
       // Give up after ~15s — show iframe anyway
-      if (!cancelled) setReadyForKey(key);
+      if (!state.cancelled) setReadyForKey(key);
     };
-    poll();
-    return () => { cancelled = true; };
+    void poll();
+    return () => { state.cancelled = true; };
   }, [activePort, pollUrl, iframeReady, isContainerMode, targetKey]);
 
   // Show install progress
-  if (installStatus && installStatus.status === "running") {
+  if (installStatus?.status === "running") {
     return (
       <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
         <div className="text-center space-y-3">
@@ -188,7 +188,7 @@ export function PreviewFrame({
   }
 
   // Show install error
-  if (installStatus && installStatus.status === "error") {
+  if (installStatus?.status === "error") {
     return (
       <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
         <div className="text-center space-y-2">
@@ -208,13 +208,13 @@ export function PreviewFrame({
   }
 
   // Show crash state when preview server exited with error
-  if (crashInfo && (!preview || !preview.running)) {
+  if (crashInfo && (!preview?.running)) {
     return (
       <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
         <div className="text-center space-y-3 max-w-lg px-4">
           <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-error)" />
           <p className="text-(--color-error) font-medium">
-            Preview server crashed{crashInfo.exitCode != null ? ` (exit code ${crashInfo.exitCode})` : ""}
+            Preview server crashed{crashInfo.exitCode !== null && crashInfo.exitCode !== undefined ? ` (exit code ${crashInfo.exitCode})` : ""}
           </p>
           {crashInfo.output && (
             <pre className="text-left text-xs text-(--color-text-secondary) bg-(--color-bg-secondary) rounded p-3 max-h-48 overflow-auto whitespace-pre-wrap border border-(--color-border-secondary)">
@@ -246,7 +246,7 @@ export function PreviewFrame({
     );
   }
 
-  if (!preview || !preview.running) {
+  if (!preview?.running) {
     // No status received yet but a session is active — the preview server is
     // starting up.  Show a spinner instead of the static placeholder so the
     // user doesn't think nothing is happening.
@@ -302,7 +302,7 @@ export function PreviewFrame({
   // naturally). When unavailable (IP-based access), fall back to the path-based
   // proxy URL. Local mode (no container) uses localhost directly.
   const activeUrl = previewSubdomainUrl
-    ?? (preview?.url?.startsWith("/preview/") ? `${preview.url}` : `http://localhost:${activePort}`);
+    ?? (preview?.url?.startsWith("/preview/") ? preview.url : `http://localhost:${activePort}`);
   const isManaged = (preview.source === "vite" || preview.source === "managed") && activePort === preview.port;
   const showSelector = detectedPorts.length > 1 || ((preview.source === "vite" || preview.source === "managed") && detectedPorts.length > 0);
 

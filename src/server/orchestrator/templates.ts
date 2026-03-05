@@ -1149,7 +1149,7 @@ console.log("Edit src/index.ts to build your CLI tool.");
 /**
  * Return all available templates (metadata only, no file contents).
  */
-export function listTemplates(): Array<Omit<ProjectTemplate, "files">> {
+export function listTemplates(): Omit<ProjectTemplate, "files">[] {
   return TEMPLATES.map((t) => ({
     id: t.id,
     name: t.name,

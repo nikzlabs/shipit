@@ -33,7 +33,7 @@ export class PreviewConfigError extends Error {
  * Looks for patterns like `--port 3001`, `--port=3001`, `-p 8080`.
  */
 function extractPortFromScript(script: string): number | undefined {
-  const match = script.match(/(?:--port[=\s]|-p\s+)(\d+)/);
+  const match = /(?:--port[=\s]|-p\s+)(\d+)/.exec(script);
   if (match) {
     const port = Number(match[1]);
     if (Number.isInteger(port) && port > 0 && port <= 65535) return port;
@@ -110,7 +110,7 @@ function parseShipitYaml(raw: unknown): { mode: PreviewMode; install?: string } 
     }
 
     let ports: number[] | undefined;
-    if ("ports" in preview && preview.ports != null) {
+    if ("ports" in preview && preview.ports !== null && preview.ports !== undefined) {
       if (!Array.isArray(preview.ports)) {
         throw new PreviewConfigError("shipit.yaml `preview.ports` must be an array of numbers");
       }
@@ -124,14 +124,14 @@ function parseShipitYaml(raw: unknown): { mode: PreviewMode; install?: string } 
     }
 
     let directory: string | undefined;
-    if ("directory" in preview && preview.directory != null) {
+    if ("directory" in preview && preview.directory !== null && preview.directory !== undefined) {
       if (typeof preview.directory !== "string") {
         throw new PreviewConfigError("shipit.yaml `preview.directory` must be a string");
       }
       directory = preview.directory;
     }
 
-    return { mode: { kind: "command", command: preview.command as string, ports, directory }, install };
+    return { mode: { kind: "command", command: preview.command, ports, directory }, install };
   }
 
   // html mode
@@ -139,7 +139,7 @@ function parseShipitYaml(raw: unknown): { mode: PreviewMode; install?: string } 
     throw new PreviewConfigError("shipit.yaml `preview.html` must be a string");
   }
 
-  return { mode: { kind: "html", html: preview.html as string }, install };
+  return { mode: { kind: "html", html: preview.html }, install };
 }
 
 // ---------------------------------------------------------------------------

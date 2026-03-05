@@ -17,7 +17,7 @@ export function FileAttachmentChips({ files, onRemove }: FileAttachmentChipsProp
       {files.map((f, i) => {
         const fileName = f.path.split("/").pop() ?? f.path;
         const lineRange = f.startLine && f.endLine ? `L${f.startLine}-${f.endLine}` : null;
-        const displayPath = f.path.length > 40 ? "..." + f.path.slice(-37) : f.path;
+        const displayPath = f.path.length > 40 ? `...${  f.path.slice(-37)}` : f.path;
 
         return (
           <span

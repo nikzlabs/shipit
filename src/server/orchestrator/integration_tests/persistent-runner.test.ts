@@ -56,7 +56,7 @@ describe("Integration: persistent session runners", () => {
     });
 
     const address = await app.listen({ port: 0, host: "127.0.0.1" });
-    const match = address.match(/:(\d+)$/);
+    const match = /:(\d+)$/.exec(address);
     port = match ? Number(match[1]) : 0;
   });
 
@@ -71,7 +71,7 @@ describe("Integration: persistent session runners", () => {
   });
 
   /** Drain messages until predicate returns truthy. */
-  async function drainUntil(client: TestClient, predicate: (m: AnyMsg) => boolean, maxMsgs = 30): Promise<AnyMsg | null> {
+  async function drainUntil(client: TestClient, predicate: (m: AnyMsg) => boolean, maxMsgs = 30): Promise<AnyMsg> {
     for (let i = 0; i < maxMsgs; i++) {
       const msg: AnyMsg = await client.receive(3000);
       if (predicate(msg)) return msg;
@@ -151,7 +151,7 @@ describe("Integration: persistent session runners", () => {
 
     // Client2 should receive the exit log entry (session_agent_finished is SSE-only)
     const finished = await drainUntil(client2, (m) =>
-      m.type === "log_entry" && (m as any).text?.includes("exited"),
+      m.type === "log_entry" && (m).text?.includes("exited"),
     );
     expect(finished).toBeTruthy();
 
@@ -358,7 +358,7 @@ describe("Integration: persistent session runners", () => {
     const session1Id = session1Started!.session.id;
 
     // Create a second session manually
-    const session2Id = "concurrent-session-2-" + Date.now();
+    const session2Id = `concurrent-session-2-${  Date.now()}`;
     const session2Dir = path.join(tmpDir, "sessions", session2Id);
     fs.mkdirSync(session2Dir, { recursive: true });
     sessionManager.track(session2Id, "Session 2", session2Dir);

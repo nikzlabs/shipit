@@ -289,13 +289,13 @@ export class GitHubAuthManager extends EventEmitter {
    * List the authenticated user's repos, sorted by most recently pushed.
    * Used to populate the repo selector before the user types a search query.
    */
-  async listUserRepos(): Promise<Array<{
+  async listUserRepos(): Promise<{
     fullName: string;
     description: string | null;
     private: boolean;
     defaultBranch: string;
     cloneUrl: string;
-  }>> {
+  }[]> {
     if (!this._token) return [];
 
     try {
@@ -312,7 +312,7 @@ export class GitHubAuthManager extends EventEmitter {
 
       if (!res.ok) return [];
 
-      const data = (await res.json()) as Array<{ full_name: string; description: string | null; private: boolean; default_branch: string; clone_url: string }>;
+      const data = (await res.json()) as { full_name: string; description: string | null; private: boolean; default_branch: string; clone_url: string }[];
       return data.map((r) => ({
         fullName: r.full_name,
         description: r.description,
@@ -328,13 +328,13 @@ export class GitHubAuthManager extends EventEmitter {
   /**
    * Search the user's accessible repos by name.
    */
-  async searchRepos(query: string): Promise<Array<{
+  async searchRepos(query: string): Promise<{
     fullName: string;
     description: string | null;
     private: boolean;
     defaultBranch: string;
     cloneUrl: string;
-  }>> {
+  }[]> {
     if (!this._token) return [];
 
     const res = await fetch(
@@ -350,7 +350,7 @@ export class GitHubAuthManager extends EventEmitter {
 
     if (!res.ok) return [];
 
-    const data = (await res.json()) as { items: Array<{ full_name: string; description: string | null; private: boolean; default_branch: string; clone_url: string }> };
+    const data = (await res.json()) as { items: { full_name: string; description: string | null; private: boolean; default_branch: string; clone_url: string }[] };
     return data.items.map((r) => ({
       fullName: r.full_name,
       description: r.description,
@@ -383,7 +383,7 @@ export class GitHubAuthManager extends EventEmitter {
     );
 
     if (!res.ok) return null;
-    const prs = (await res.json()) as Array<{ html_url: string; number: number; base: { ref: string }; title: string }>;
+    const prs = (await res.json()) as { html_url: string; number: number; base: { ref: string }; title: string }[];
     if (prs.length === 0) return null;
 
     const pr = prs[0];
@@ -422,11 +422,11 @@ export class GitHubAuthManager extends EventEmitter {
     );
 
     if (!res.ok) return null;
-    const prs = (await res.json()) as Array<{
+    const prs = (await res.json()) as {
       html_url: string; number: number; base: { ref: string }; title: string;
       state: "open" | "closed"; merged_at: string | null;
       additions: number; deletions: number;
-    }>;
+    }[];
     if (prs.length === 0) return null;
 
     const pr = prs[0];
@@ -525,7 +525,7 @@ export class GitHubAuthManager extends EventEmitter {
     });
 
     if (!graphqlRes.ok) return { success: false, message: "Failed to enable auto-merge" };
-    const graphqlData = (await graphqlRes.json()) as { errors?: Array<{ message: string }> };
+    const graphqlData = (await graphqlRes.json()) as { errors?: { message: string }[] };
 
     if (graphqlData.errors) {
       const errMsg = graphqlData.errors[0]?.message ?? "Unknown error";
@@ -583,7 +583,7 @@ export class GitHubAuthManager extends EventEmitter {
     });
 
     if (!graphqlRes.ok) return { success: false, message: "Failed to disable auto-merge" };
-    const graphqlData = (await graphqlRes.json()) as { errors?: Array<{ message: string }> };
+    const graphqlData = (await graphqlRes.json()) as { errors?: { message: string }[] };
 
     if (graphqlData.errors) {
       return { success: false, message: graphqlData.errors[0]?.message ?? "Unknown error" };
@@ -618,7 +618,7 @@ export class GitHubAuthManager extends EventEmitter {
       );
 
       if (statusRes.ok) {
-        const statusData = (await statusRes.json()) as { statuses: Array<{ state: string }> };
+        const statusData = (await statusRes.json()) as { statuses: { state: string }[] };
         for (const s of statusData.statuses) {
           if (s.state === "success") passed++;
           else if (s.state === "failure" || s.state === "error") failed++;
@@ -643,7 +643,7 @@ export class GitHubAuthManager extends EventEmitter {
       );
 
       if (checksRes.ok) {
-        const checksData = (await checksRes.json()) as { check_runs: Array<{ conclusion: string | null; status: string }> };
+        const checksData = (await checksRes.json()) as { check_runs: { conclusion: string | null; status: string }[] };
         for (const check of checksData.check_runs) {
           if (check.conclusion === "success") passed++;
           else if (check.conclusion === "failure" || check.conclusion === "cancelled" || check.conclusion === "timed_out") failed++;
@@ -668,13 +668,13 @@ export class GitHubAuthManager extends EventEmitter {
     owner: string,
     repo: string,
     checkRunId: number,
-  ): Promise<Array<{
+  ): Promise<{
     path: string;
     startLine: number;
     endLine: number;
     message: string;
     annotationLevel: "failure" | "warning" | "notice";
-  }>> {
+  }[]> {
     if (!this._token) return [];
 
     try {
@@ -691,13 +691,13 @@ export class GitHubAuthManager extends EventEmitter {
 
       if (!res.ok) return [];
 
-      const data = (await res.json()) as Array<{
+      const data = (await res.json()) as {
         path: string;
         start_line: number;
         end_line: number;
         message: string;
         annotation_level: string;
-      }>;
+      }[];
       return data.map((a) => ({
         path: a.path,
         startLine: a.start_line,

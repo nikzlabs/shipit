@@ -322,7 +322,7 @@ async function sanitizeContainerCreate(
 
   // Reject host and container NetworkMode (sharing another container's network namespace)
   const networkMode = hostConfig.NetworkMode as string | undefined;
-  if (networkMode === "host" || (networkMode && networkMode.startsWith("container:"))) {
+  if (networkMode === "host" || (networkMode?.startsWith("container:"))) {
     return { error: "NetworkMode host/container is not allowed" };
   }
 
@@ -361,7 +361,7 @@ async function sanitizeContainerCreate(
 
   // Validate Mounts — only bind, volume, and tmpfs are allowed
   if (Array.isArray(hostConfig.Mounts)) {
-    for (const mount of hostConfig.Mounts as Array<Record<string, unknown>>) {
+    for (const mount of hostConfig.Mounts as Record<string, unknown>[]) {
       if (mount.Type === "bind") {
         const source = mount.Source as string;
         if (!(await isPathUnderWorkspace(source, session.hostWorkspaceDir))) {
@@ -375,7 +375,7 @@ async function sanitizeContainerCreate(
       } else if (mount.Type === "tmpfs") {
         // tmpfs mounts are safe — no host path involved
       } else {
-        return { error: `Mount type "${mount.Type}" is not allowed (only bind, volume, tmpfs)` };
+        return { error: `Mount type "${String(mount.Type)}" is not allowed (only bind, volume, tmpfs)` };
       }
     }
   }
@@ -464,7 +464,7 @@ function buildRoutes(): Route[] {
 
       const result = await sanitizeContainerCreate(body, ctx.session, ctx.socketPath);
       if (result.error) {
-        return forbidden(ctx.res, result.error);
+        forbidden(ctx.res, result.error); return;
       }
 
       const sanitizedBody = Buffer.from(JSON.stringify(body));
@@ -496,7 +496,7 @@ function buildRoutes(): Route[] {
       return;
     }
 
-    const containers = JSON.parse(dockerResult.body.toString()) as Array<Record<string, unknown>>;
+    const containers = JSON.parse(dockerResult.body.toString()) as Record<string, unknown>[];
     const filtered = containers.filter((c) => {
       const labels = c.Labels as Record<string, string> | undefined;
       return labels?.[PARENT_SESSION_LABEL] === ctx.session.sessionId;
@@ -506,7 +506,7 @@ function buildRoutes(): Route[] {
   });
 
   // Container operations that need label check
-  const containerLabelOps: Array<{ method: string; suffix: string }> = [
+  const containerLabelOps: { method: string; suffix: string }[] = [
     { method: "GET", suffix: "/json" },
     { method: "POST", suffix: "/start" },
     { method: "POST", suffix: "/stop" },
@@ -524,7 +524,7 @@ function buildRoutes(): Route[] {
     route(op.method, pattern, async (ctx, match) => {
       const containerId = match[1];
       if (!(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
-        return forbidden(ctx.res, "Container does not belong to this session");
+        forbidden(ctx.res, "Container does not belong to this session"); return;
       }
       pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
     });
@@ -536,7 +536,7 @@ function buildRoutes(): Route[] {
   route("GET", /^(?:\/v[\d.]+)?\/containers\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)\/logs(\?.*)?$/, async (ctx, match) => {
     const containerId = match[1];
     if (!(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
-      return forbidden(ctx.res, "Container does not belong to this session");
+      forbidden(ctx.res, "Container does not belong to this session"); return;
     }
     pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
@@ -545,7 +545,7 @@ function buildRoutes(): Route[] {
   route("POST", /^(?:\/v[\d.]+)?\/containers\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)\/attach(\?.*)?$/, async (ctx, match) => {
     const containerId = match[1];
     if (!(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
-      return forbidden(ctx.res, "Container does not belong to this session");
+      forbidden(ctx.res, "Container does not belong to this session"); return;
     }
     pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
@@ -554,7 +554,7 @@ function buildRoutes(): Route[] {
   route("POST", /^(?:\/v[\d.]+)?\/containers\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)\/exec(\?.*)?$/, async (ctx, match) => {
     const containerId = match[1];
     if (!(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
-      return forbidden(ctx.res, "Container does not belong to this session");
+      forbidden(ctx.res, "Container does not belong to this session"); return;
     }
     pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
@@ -564,7 +564,7 @@ function buildRoutes(): Route[] {
     const execId = match[1];
     const containerId = await getExecParentContainerId(ctx.socketPath, execId);
     if (!containerId || !(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
-      return forbidden(ctx.res, "Exec instance does not belong to this session");
+      forbidden(ctx.res, "Exec instance does not belong to this session"); return;
     }
     pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
@@ -574,7 +574,7 @@ function buildRoutes(): Route[] {
     const execId = match[1];
     const containerId = await getExecParentContainerId(ctx.socketPath, execId);
     if (!containerId || !(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
-      return forbidden(ctx.res, "Exec instance does not belong to this session");
+      forbidden(ctx.res, "Exec instance does not belong to this session"); return;
     }
     pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
@@ -626,7 +626,7 @@ function buildRoutes(): Route[] {
       return;
     }
 
-    const networks = JSON.parse(dockerResult.body.toString()) as Array<Record<string, unknown>>;
+    const networks = JSON.parse(dockerResult.body.toString()) as Record<string, unknown>[];
     const filtered = networks.filter((n) => {
       const labels = n.Labels as Record<string, string> | undefined;
       return labels?.[PARENT_SESSION_LABEL] === ctx.session.sessionId;
@@ -638,9 +638,9 @@ function buildRoutes(): Route[] {
   // GET /networks/{id} — label check
   route("GET", /^(?:\/v[\d.]+)?\/networks\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)(\?.*)?$/, async (ctx, match) => {
     const networkId = match[1];
-    if (networkId === "create") return forbidden(ctx.res, "Endpoint not allowed: GET /networks/create");
+    if (networkId === "create") { forbidden(ctx.res, "Endpoint not allowed: GET /networks/create"); return; }
     if (!(await networkBelongsToSession(ctx.socketPath, networkId, ctx.session.sessionId))) {
-      return forbidden(ctx.res, "Network does not belong to this session");
+      forbidden(ctx.res, "Network does not belong to this session"); return;
     }
     pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
@@ -649,7 +649,7 @@ function buildRoutes(): Route[] {
   route("DELETE", /^(?:\/v[\d.]+)?\/networks\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)(\?.*)?$/, async (ctx, match) => {
     const networkId = match[1];
     if (!(await networkBelongsToSession(ctx.socketPath, networkId, ctx.session.sessionId))) {
-      return forbidden(ctx.res, "Network does not belong to this session");
+      forbidden(ctx.res, "Network does not belong to this session"); return;
     }
     pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
@@ -658,7 +658,7 @@ function buildRoutes(): Route[] {
   route("POST", /^(?:\/v[\d.]+)?\/networks\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)\/connect(\?.*)?$/, async (ctx, match) => {
     const networkId = match[1];
     if (!(await networkBelongsToSession(ctx.socketPath, networkId, ctx.session.sessionId))) {
-      return forbidden(ctx.res, "Network does not belong to this session");
+      forbidden(ctx.res, "Network does not belong to this session"); return;
     }
 
     try {
@@ -666,7 +666,7 @@ function buildRoutes(): Route[] {
       const body = JSON.parse(bodyBuf.toString()) as Record<string, unknown>;
       const containerId = body.Container as string;
       if (containerId && !(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
-        return forbidden(ctx.res, "Container does not belong to this session");
+        forbidden(ctx.res, "Container does not belong to this session"); return;
       }
 
       const dockerResult = await forwardToDocker(
@@ -688,7 +688,7 @@ function buildRoutes(): Route[] {
   route("POST", /^(?:\/v[\d.]+)?\/networks\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)\/disconnect(\?.*)?$/, async (ctx, match) => {
     const networkId = match[1];
     if (!(await networkBelongsToSession(ctx.socketPath, networkId, ctx.session.sessionId))) {
-      return forbidden(ctx.res, "Network does not belong to this session");
+      forbidden(ctx.res, "Network does not belong to this session"); return;
     }
 
     try {
@@ -696,7 +696,7 @@ function buildRoutes(): Route[] {
       const body = JSON.parse(bodyBuf.toString()) as Record<string, unknown>;
       const containerId = body.Container as string;
       if (containerId && !(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
-        return forbidden(ctx.res, "Container does not belong to this session");
+        forbidden(ctx.res, "Container does not belong to this session"); return;
       }
 
       const dockerResult = await forwardToDocker(
@@ -728,12 +728,12 @@ function buildRoutes(): Route[] {
       // which would then pass label-based volume ownership checks.
       const driverOpts = body.DriverOpts as Record<string, string> | undefined;
       if (driverOpts && Object.keys(driverOpts).length > 0) {
-        return forbidden(ctx.res, "Volume DriverOpts are not allowed (host-path escape risk)");
+        forbidden(ctx.res, "Volume DriverOpts are not allowed (host-path escape risk)"); return;
       }
 
       // Only allow default local driver
       if (body.Driver && body.Driver !== "local") {
-        return forbidden(ctx.res, `Volume driver "${body.Driver}" is not allowed`);
+        forbidden(ctx.res, `Volume driver "${body.Driver as string}" is not allowed`); return;
       }
 
       const labels = (body.Labels ?? {}) as Record<string, string>;
@@ -766,7 +766,7 @@ function buildRoutes(): Route[] {
     }
 
     const data = JSON.parse(dockerResult.body.toString()) as Record<string, unknown>;
-    const volumes = (data.Volumes ?? []) as Array<Record<string, unknown>>;
+    const volumes = (data.Volumes ?? []) as Record<string, unknown>[];
     const filtered = volumes.filter((v) => {
       const labels = v.Labels as Record<string, string> | undefined;
       return labels?.[PARENT_SESSION_LABEL] === ctx.session.sessionId;
@@ -779,9 +779,9 @@ function buildRoutes(): Route[] {
   // GET /volumes/{name} — label check
   route("GET", /^(?:\/v[\d.]+)?\/volumes\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)(\?.*)?$/, async (ctx, match) => {
     const volumeName = match[1];
-    if (volumeName === "create") return forbidden(ctx.res, "Endpoint not allowed: GET /volumes/create");
+    if (volumeName === "create") { forbidden(ctx.res, "Endpoint not allowed: GET /volumes/create"); return; }
     if (!(await volumeBelongsToSession(ctx.socketPath, volumeName, ctx.session.sessionId))) {
-      return forbidden(ctx.res, "Volume does not belong to this session");
+      forbidden(ctx.res, "Volume does not belong to this session"); return;
     }
     pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
@@ -790,7 +790,7 @@ function buildRoutes(): Route[] {
   route("DELETE", /^(?:\/v[\d.]+)?\/volumes\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)(\?.*)?$/, async (ctx, match) => {
     const volumeName = match[1];
     if (!(await volumeBelongsToSession(ctx.socketPath, volumeName, ctx.session.sessionId))) {
-      return forbidden(ctx.res, "Volume does not belong to this session");
+      forbidden(ctx.res, "Volume does not belong to this session"); return;
     }
     pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
@@ -870,18 +870,18 @@ export function createDockerProxy(deps: DockerProxyDeps): http.Server {
       // Resolve source IP → session
       const remoteIp = req.socket.remoteAddress;
       if (!remoteIp) {
-        return forbidden(res, "Cannot determine source IP");
+        forbidden(res, "Cannot determine source IP"); return;
       }
 
       // Strip IPv6 prefix (::ffff:) if present
       const ip = remoteIp.replace(/^::ffff:/, "");
       const session = deps.getSessionByContainerIp(ip);
       if (!session) {
-        return forbidden(res, "Unknown source IP");
+        forbidden(res, "Unknown source IP"); return;
       }
 
       if (!session.dockerAccess) {
-        return forbidden(res, "Docker access not enabled for this session");
+        forbidden(res, "Docker access not enabled for this session"); return;
       }
 
       const url = req.url ?? "/";
@@ -919,7 +919,7 @@ export function createDockerProxy(deps: DockerProxyDeps): http.Server {
  * Resolve the Docker bridge network gateway IP (e.g., 172.17.0.1).
  * This is the IP that session containers use to reach the orchestrator.
  */
-export async function resolveBridgeGatewayIp(networkName: string = "bridge"): Promise<string> {
+export async function resolveBridgeGatewayIp(networkName = "bridge"): Promise<string> {
   return new Promise((resolve, reject) => {
     const opts: http.RequestOptions = {
       socketPath: DOCKER_SOCKET,
@@ -940,7 +940,7 @@ export async function resolveBridgeGatewayIp(networkName: string = "bridge"): Pr
           }
           resolve(gateway);
         } catch (err) {
-          reject(err);
+          reject(err instanceof Error ? err : new Error(String(err)));
         }
       });
       res.on("error", reject);

@@ -66,7 +66,7 @@ export interface WsGitHubPullResult {
 
 export interface WsGitHubRemotes {
   type: "github_remotes";
-  remotes: Array<{ name: string; url: string }>;
+  remotes: { name: string; url: string }[];
 }
 
 export interface WsGitHubPRCreated {
@@ -85,13 +85,13 @@ export interface WsGitHubBranches {
 
 export interface WsGitHubSearchResults {
   type: "github_search_results";
-  repos: Array<{
+  repos: {
     fullName: string;
     description: string | null;
     private: boolean;
     defaultBranch: string;
     cloneUrl: string;
-  }>;
+  }[];
 }
 
 // ---- PR status & merge server messages ----
@@ -132,13 +132,13 @@ export interface CIFailureLog {
   checkName: string;
   conclusion: string;         // "failure", "cancelled", "timed_out"
   summary: string;            // one-line from CheckRun.title
-  annotations: Array<{
+  annotations: {
     path: string;
     startLine: number;
     endLine: number;
     message: string;
     annotationLevel: "failure" | "warning" | "notice";
-  }>;
+  }[];
   errorLines: string[];       // extracted error-like lines (most actionable)
   logExcerpt: string;         // last 20 lines of cleaned log (fallback)
   logFilePath?: string;       // absolute path to full log file on disk
@@ -184,7 +184,7 @@ export interface PrStatusSummary {
     failed: number;
     pending: number;
     /** Per-check failure details (populated when state is "failure"). */
-    failedChecks?: Array<{ name: string; summary: string }>;
+    failedChecks?: { name: string; summary: string }[];
   };
   mergeable: boolean;
   autoMergeEnabled: boolean;

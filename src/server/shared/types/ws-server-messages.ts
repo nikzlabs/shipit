@@ -147,13 +147,13 @@ export interface WsGlobalSettings {
   type: "global_settings";
   gitIdentity: { name: string; email: string };
   systemPrompt: string;
-  agents: Array<{
+  agents: {
     id: AgentId;
     name: string;
     installed: boolean;
     authConfigured: boolean;
     models: string[];
-  }>;
+  }[];
   defaultAgentId: AgentId;
 }
 
@@ -195,7 +195,7 @@ export interface WsMessageQueued {
 export interface WsQueueUpdated {
   type: "queue_updated";
   /** Current queue contents after the change. */
-  queue: Array<{ text: string; position: number }>;
+  queue: { text: string; position: number }[];
 }
 
 // ---- Diff review messages (server → client) ----
@@ -212,13 +212,13 @@ export interface WsTurnDiff {
 
 export interface WsAgentListMessage {
   type: "agent_list";
-  agents: Array<{
+  agents: {
     id: AgentId;
     name: string;
     installed: boolean;
     authConfigured: boolean;
     models: string[];
-  }>;
+  }[];
   defaultAgentId: AgentId;
 }
 

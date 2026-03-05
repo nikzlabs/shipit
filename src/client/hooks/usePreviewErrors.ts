@@ -59,7 +59,7 @@ export function usePreviewErrors(): UsePreviewErrorsReturn {
   useEffect(() => {
     const handler = (event: MessageEvent) => {
       const data = event.data as PostMessageData | undefined;
-      if (!data || data.source !== "shipit-preview") return;
+      if (data?.source !== "shipit-preview") return;
 
       let errorEntry: PreviewError | null = null;
 

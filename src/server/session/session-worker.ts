@@ -324,7 +324,7 @@ export class SessionWorker extends EventEmitter {
       // Replay current state so late-connecting clients don't miss events
       if (this.preview?.running && this.preview.ports.length > 0) {
         sendEvent({ type: "preview_ready", data: { ports: this.preview.ports } });
-      } else if (this._lastPreviewExitCode != null && !this.preview?.running) {
+      } else if (this._lastPreviewExitCode !== null && this._lastPreviewExitCode !== undefined && !this.preview?.running) {
         // Preview crashed — replay recent logs then the stopped event
         for (const text of this._previewLogBuffer) {
           sendEvent({ type: "preview_log", data: { source: "preview", text } });

@@ -212,7 +212,7 @@ describe("TerminalPanel", () => {
       expect(screen.getByText("server line")).toBeInTheDocument();
 
       const filterGroup = screen.getByRole("group", { name: /filter log sources/i });
-      const errButton = filterGroup.querySelector("button[aria-pressed='true']") as HTMLButtonElement;
+      const errButton = filterGroup.querySelector("button[aria-pressed='true']")!;
       fireEvent.click(errButton);
 
       expect(screen.queryByText("error line")).toBeNull();
@@ -228,7 +228,7 @@ describe("TerminalPanel", () => {
       render(<TerminalPanel entries={entries} {...defaultProps} />);
 
       const filterGroup = screen.getByRole("group", { name: /filter log sources/i });
-      const errButton = filterGroup.querySelector("button") as HTMLButtonElement;
+      const errButton = filterGroup.querySelector("button")!;
 
       fireEvent.click(errButton);
       expect(screen.queryByText("error line")).toBeNull();
@@ -249,7 +249,7 @@ describe("TerminalPanel", () => {
       render(<TerminalPanel entries={entries} {...defaultProps} />);
 
       const filterGroup = screen.getByRole("group", { name: /filter log sources/i });
-      const buttons = Array.from(filterGroup.querySelectorAll("button")) as HTMLButtonElement[];
+      const buttons = Array.from(filterGroup.querySelectorAll("button"));
 
       fireEvent.click(buttons[0]);
       fireEvent.click(buttons[1]);
@@ -267,7 +267,7 @@ describe("TerminalPanel", () => {
       render(<TerminalPanel entries={entries} {...defaultProps} />);
 
       const filterGroup = screen.getByRole("group", { name: /filter log sources/i });
-      const errButton = filterGroup.querySelector("button") as HTMLButtonElement;
+      const errButton = filterGroup.querySelector("button")!;
       fireEvent.click(errButton);
 
       expect(screen.getByText(/No logs match the current filter/)).toBeInTheDocument();

@@ -1,6 +1,6 @@
 import type { PermissionMode } from "../../server/shared/types.js";
 
-const MODES: Array<{ value: PermissionMode; label: string; description: string }> = [
+const MODES: { value: PermissionMode; label: string; description: string }[] = [
   { value: "auto", label: "Auto", description: "All changes applied immediately" },
   { value: "plan", label: "Plan", description: "Read-only — Claude will explore and plan without making changes" },
   { value: "normal", label: "Normal", description: "Supervised — Claude will ask before each change" },

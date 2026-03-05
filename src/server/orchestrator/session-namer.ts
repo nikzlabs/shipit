@@ -31,7 +31,7 @@ export async function generateSessionName(
 
     if (!text) return null;
 
-    const jsonMatch = text.match(/\{[^}]*"slug"\s*:\s*"[^"]*"[^}]*"title"\s*:\s*"[^"]*"[^}]*\}/);
+    const jsonMatch = /\{[^}]*"slug"\s*:\s*"[^"]*"[^}]*"title"\s*:\s*"[^"]*"[^}]*\}/.exec(text);
     if (!jsonMatch) {
       console.warn("[session-namer] No JSON found in response:", text.slice(0, 200));
       return null;
@@ -84,7 +84,7 @@ async function callOpenAICompatible(config: UtilityModelConfig, prompt: string):
     return null;
   }
 
-  const body = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
+  const body = await res.json() as { choices?: { message?: { content?: string } }[] };
   return body.choices?.[0]?.message?.content ?? null;
 }
 
@@ -114,6 +114,6 @@ async function callAnthropic(config: UtilityModelConfig, prompt: string): Promis
     return null;
   }
 
-  const body = await res.json() as { content?: Array<{ type: string; text?: string }> };
+  const body = await res.json() as { content?: { type: string; text?: string }[] };
   return body.content?.find((b) => b.type === "text")?.text ?? null;
 }

@@ -110,9 +110,9 @@ function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQu
 
   // Render file-modifying tools as diff blocks
   if (tool.name === "Edit") {
-    const filePath = String(tool.input.file_path ?? "unknown");
-    const oldString = tool.input.old_string != null ? String(tool.input.old_string) : undefined;
-    const newString = tool.input.new_string != null ? String(tool.input.new_string) : undefined;
+    const filePath = (tool.input.file_path as string) ?? "unknown";
+    const oldString = tool.input.old_string !== null && tool.input.old_string !== undefined ? (tool.input.old_string as string) : undefined;
+    const newString = tool.input.new_string !== null && tool.input.new_string !== undefined ? (tool.input.new_string as string) : undefined;
     return (
       <div>
         <DiffBlock filePath={filePath} oldString={oldString} newString={newString} />
@@ -122,8 +122,8 @@ function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQu
   }
 
   if (tool.name === "Write") {
-    const filePath = String(tool.input.file_path ?? "unknown");
-    const content = tool.input.content != null ? String(tool.input.content) : "";
+    const filePath = (tool.input.file_path as string) ?? "unknown";
+    const content = tool.input.content !== null && tool.input.content !== undefined ? (tool.input.content as string) : "";
     return (
       <div>
         <DiffBlock filePath={filePath} newString={content} isWrite />
@@ -158,7 +158,7 @@ function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQu
         </span>
         {"command" in tool.input && tool.input.command ? (
           <span className="ml-1 text-(--color-text-secondary) truncate max-w-xs">
-            {String(tool.input.command).slice(0, 80)}
+            {(tool.input.command as string).slice(0, 80)}
           </span>
         ) : null}
         {"file_path" in tool.input && tool.input.file_path ? (
@@ -168,7 +168,7 @@ function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQu
         ) : null}
         {"pattern" in tool.input && tool.input.pattern ? (
           <span className="ml-1 text-(--color-text-secondary) truncate max-w-xs">
-            {String(tool.input.pattern)}
+            {tool.input.pattern as string}
           </span>
         ) : null}
         {hasResult && (
@@ -284,7 +284,7 @@ const chatMarked = new Marked({
 /** Render markdown text as HTML for assistant messages. */
 function MarkdownContent({ text }: { text: string }) {
   const html = useMemo(() => {
-    return chatMarked.parse(text, { async: false }) as string;
+    return chatMarked.parse(text, { async: false });
   }, [text]);
 
   return (
@@ -299,7 +299,7 @@ function MarkdownContent({ text }: { text: string }) {
 /** Hover tooltip that renders its content as markdown. Scrollable. */
 function MarkdownTooltip({ content, children }: { content: string; children: React.ReactNode }) {
   const [visible, setVisible] = useState(false);
-  const html = useMemo(() => chatMarked.parse(content, { async: false }) as string, [content]);
+  const html = useMemo(() => chatMarked.parse(content, { async: false }), [content]);
 
   return (
     <div className="relative" onMouseEnter={() => setVisible(true)} onMouseLeave={() => setVisible(false)}>
@@ -390,8 +390,7 @@ function HighlightedText({
       parts.push(text.slice(cursor, match.start));
     }
     const isCurrent =
-      currentMatch &&
-      currentMatch.messageIndex === match.messageIndex &&
+      currentMatch?.messageIndex === match.messageIndex &&
       currentMatch.start === match.start;
     parts.push(
       <mark
@@ -434,7 +433,7 @@ function MessageEditor({
     if (el) {
       el.focus();
       el.style.height = "auto";
-      el.style.height = Math.min(el.scrollHeight, 200) + "px";
+      el.style.height = `${Math.min(el.scrollHeight, 200)  }px`;
     }
   }, []);
 
@@ -442,7 +441,7 @@ function MessageEditor({
     const el = textareaRef.current;
     if (el) {
       el.style.height = "auto";
-      el.style.height = Math.min(el.scrollHeight, 200) + "px";
+      el.style.height = `${Math.min(el.scrollHeight, 200)  }px`;
     }
   }, [text]);
 
@@ -690,7 +689,7 @@ export function MessageList({
         if (el.kind === "subagent") {
           const tool = el.tool;
           if (tool.name === "Task") {
-            const description = String(tool.input.description ?? "Running task...");
+            const description = (tool.input.description as string) ?? "Running task...";
             const prompt = typeof tool.input.prompt === "string" ? tool.input.prompt : "";
             return (
               <div key={tool.id} data-testid="subagent-task" className="border-l-2 border-(--color-success)/40 pl-3 space-y-1">
@@ -707,8 +706,8 @@ export function MessageList({
             );
           }
           // Skill
-          const skillName = String(tool.input.skill ?? "unknown");
-          const args = tool.input.args ? String(tool.input.args) : "";
+          const skillName = (tool.input.skill as string) ?? "unknown";
+          const args = tool.input.args ? (tool.input.args as string) : "";
           return (
             <div key={tool.id} data-testid="subagent-skill" className="border-l-2 border-(--color-success)/40 pl-3">
               <div className="flex items-center gap-2 text-sm">

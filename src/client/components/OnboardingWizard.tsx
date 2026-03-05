@@ -72,7 +72,7 @@ export function OnboardingWizard({
 
   // ---- Step 1 handlers ----
 
-  const handleGitHubTokenSubmit = async (token: string): Promise<boolean | void> => {
+  const handleGitHubTokenSubmit = async (token: string): Promise<boolean | undefined> => {
     const success = await onGitHubTokenSubmit(token);
     if (success) {
       setStep(2);

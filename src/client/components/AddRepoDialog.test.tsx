@@ -10,7 +10,7 @@ const defaultProps = {
   onClose: vi.fn(),
   onAdd: vi.fn().mockResolvedValue(undefined),
   onCreateNew: vi.fn(),
-  searchResults: [] as Array<{ fullName: string; description: string | null; private: boolean; cloneUrl: string }>,
+  searchResults: [] as { fullName: string; description: string | null; private: boolean; cloneUrl: string }[],
   onSearch: vi.fn(),
   repos: [] as RepoInfo[],
 };

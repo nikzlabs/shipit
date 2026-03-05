@@ -32,9 +32,7 @@ function parsePreviewSubdomain(
 ): { sessionId: string; port: number } | null {
   if (!host) return null;
   const hostname = host.split(":")[0]; // Strip server port
-  const match = hostname.match(
-    /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})--(\d+)\./i,
-  );
+  const match = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})--(\d+)\./i.exec(hostname);
   if (!match) return null;
   const port = Number(match[2]);
   if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
@@ -302,7 +300,7 @@ export function registerPreviewProxy(
 
     const wildcard = params["*"] || "";
     const queryString = request.url.includes("?")
-      ? "?" + request.url.split("?").slice(1).join("?")
+      ? `?${  request.url.split("?").slice(1).join("?")}`
       : "";
     const targetPath = `/${wildcard}${queryString}`;
 

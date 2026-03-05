@@ -22,7 +22,7 @@ export interface AgentInfo {
 }
 
 /** Agent metadata definitions (static). */
-const AGENT_DEFS: Array<{ id: AgentId; name: string; binary: string; capabilities: AgentCapabilities }> = [
+const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: AgentCapabilities }[] = [
   {
     id: "claude",
     name: "Claude Code",
