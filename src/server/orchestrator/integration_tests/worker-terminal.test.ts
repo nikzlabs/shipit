@@ -123,7 +123,7 @@ describe("Worker Terminal Endpoints", () => {
     const port = typeof address === "object" && address ? address.port : 0;
     const workerUrl = `http://127.0.0.1:${port}`;
 
-    const events: Array<{ type: string; data: unknown }> = [];
+    const events: { type: string; data: unknown }[] = [];
     const sse = collectSSE(workerUrl, (type, data) => events.push({ type, data }));
 
     // Give SSE time to connect
@@ -145,7 +145,7 @@ describe("Worker Terminal Endpoints", () => {
     const port = typeof address === "object" && address ? address.port : 0;
     const workerUrl = `http://127.0.0.1:${port}`;
 
-    const events: Array<{ type: string; data: unknown }> = [];
+    const events: { type: string; data: unknown }[] = [];
     const sse = collectSSE(workerUrl, (type, data) => events.push({ type, data }));
     await new Promise((r) => setTimeout(r, 100));
 
@@ -189,7 +189,7 @@ describe("ContainerSessionRunner Terminal Proxy", () => {
     });
 
     const address = await worker.start();
-    const match = address.match(/:(\d+)$/);
+    const match = /:(\d+)$/.exec(address);
     workerUrl = `http://127.0.0.1:${match ? match[1] : 0}`;
   });
 
@@ -423,7 +423,7 @@ describe("truncateTerminalBuffer", () => {
     // Newline appears before ANSI reset in the search window
     const head = "x".repeat(100);
     const tail = "after-newline\x1b[0mafter-reset-end";
-    const buf = head + "\n" + tail;
+    const buf = `${head  }\n${  tail}`;
     const result = truncateTerminalBuffer(buf, tail.length + 5);
     // Should cut at the newline, not the ANSI reset
     expect(result).toBe(tail);
@@ -459,7 +459,7 @@ describe("ContainerSessionRunner SSE Disconnect Handling", () => {
     });
 
     const address = await worker.start();
-    const match = address.match(/:(\d+)$/);
+    const match = /:(\d+)$/.exec(address);
     workerUrl = `http://127.0.0.1:${match ? match[1] : 0}`;
   });
 

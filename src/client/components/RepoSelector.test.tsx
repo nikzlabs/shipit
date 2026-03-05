@@ -270,7 +270,7 @@ describe("RepoSelector", () => {
     ];
     render(<RepoSelector {...defaultProps} sessions={sessions} onSelect={onSelect} />);
 
-    const input = screen.getByPlaceholderText("Select a repository...") as HTMLInputElement;
+    const input = screen.getByPlaceholderText("Select a repository...");
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: "alice" } });
 

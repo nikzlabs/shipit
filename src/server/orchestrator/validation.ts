@@ -105,7 +105,7 @@ export async function resolveFileAttachments(
 
     // Path traversal check
     const resolved = path.resolve(sessionDir, filePath);
-    if (!resolved.startsWith(sessionDir + "/") && resolved !== sessionDir) {
+    if (!resolved.startsWith(`${sessionDir  }/`) && resolved !== sessionDir) {
       return { files: [], error: `Invalid file path: ${filePath}` };
     }
 

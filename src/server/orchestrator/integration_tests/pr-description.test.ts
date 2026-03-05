@@ -56,7 +56,7 @@ describe("Integration: PR description generation", () => {
     });
 
     const address = await app.listen({ port: 0, host: "127.0.0.1" });
-    const match = address.match(/:(\d+)$/);
+    const match = /:(\d+)$/.exec(address);
     port = match ? Number(match[1]) : 0;
   });
 
@@ -134,7 +134,7 @@ describe("Integration: PR description generation", () => {
     });
 
     const emptyAddress = await emptyApp.listen({ port: 0, host: "127.0.0.1" });
-    const emptyMatch = emptyAddress.match(/:(\d+)$/);
+    const emptyMatch = /:(\d+)$/.exec(emptyAddress);
     const emptyPort = emptyMatch ? Number(emptyMatch[1]) : 0;
 
     try {

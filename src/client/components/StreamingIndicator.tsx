@@ -150,5 +150,5 @@ function shortPath(filePath: unknown): string {
   const relative = sessionRelativePath(filePath);
   const parts = relative.split("/").filter(Boolean);
   if (parts.length <= 2) return relative;
-  return ".../" + parts.slice(-2).join("/");
+  return `.../${  parts.slice(-2).join("/")}`;
 }

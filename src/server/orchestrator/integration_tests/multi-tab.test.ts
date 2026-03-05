@@ -56,7 +56,7 @@ describe("Integration: multi-tab scenarios", () => {
     });
 
     const address = await app.listen({ port: 0, host: "127.0.0.1" });
-    const match = address.match(/:(\d+)$/);
+    const match = /:(\d+)$/.exec(address);
     port = match ? Number(match[1]) : 0;
   });
 
@@ -71,7 +71,7 @@ describe("Integration: multi-tab scenarios", () => {
   });
 
   /** Drain messages until predicate returns truthy. */
-  async function drainUntil(client: TestClient, predicate: (m: AnyMsg) => boolean, maxMsgs = 30): Promise<AnyMsg | null> {
+  async function drainUntil(client: TestClient, predicate: (m: AnyMsg) => boolean, maxMsgs = 30): Promise<AnyMsg> {
     for (let i = 0; i < maxMsgs; i++) {
       const msg: AnyMsg = await client.receive(3000);
       if (predicate(msg)) return msg;

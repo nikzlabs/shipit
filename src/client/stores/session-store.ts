@@ -13,7 +13,7 @@ interface SessionState {
   sessions: SessionInfo[];
   authUrl: string | null;
   activeRunnerSessions: Set<string>;
-  queuedMessages: Array<{ text: string; position: number }>;
+  queuedMessages: { text: string; position: number }[];
   /** WS message to auto-send when the next per-session WS connection opens (e.g. new session from home). */
   pendingWsMessage: Record<string, unknown> | undefined;
 
@@ -37,10 +37,10 @@ interface SessionState {
   ) => void;
   setQueuedMessages: (
     messages:
-      | Array<{ text: string; position: number }>
+      | { text: string; position: number }[]
       | ((
-          prev: Array<{ text: string; position: number }>,
-        ) => Array<{ text: string; position: number }>),
+          prev: { text: string; position: number }[],
+        ) => { text: string; position: number }[]),
   ) => void;
   setPendingWsMessage: (message: Record<string, unknown> | undefined) => void;
   reset: () => void;
@@ -64,7 +64,7 @@ const initialResettableState = {
   activity: undefined as StreamingActivity | undefined,
   selectedRepoUrl: null as string | null,
   creatingRepo: false,
-  queuedMessages: [] as Array<{ text: string; position: number }>,
+  queuedMessages: [] as { text: string; position: number }[],
   pendingWsMessage: undefined as Record<string, unknown> | undefined,
 };
 

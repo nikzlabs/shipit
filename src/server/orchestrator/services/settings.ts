@@ -102,7 +102,7 @@ export async function saveGlobalSettings(
     const trimmed = content.trim();
     if (trimmed) {
       await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(filePath, trimmed + "\n", "utf-8");
+      await fs.writeFile(filePath, `${trimmed  }\n`, "utf-8");
     } else {
       try { await fs.unlink(filePath); } catch { /* ok if missing */ }
     }

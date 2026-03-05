@@ -33,7 +33,7 @@ import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 export class TestClient {
   private ws: WebSocket;
   private queue: WsServerMessage[] = [];
-  private waiters: Array<(msg: WsServerMessage) => void> = [];
+  private waiters: ((msg: WsServerMessage) => void)[] = [];
   /** The session ID this client is connected to. */
   public readonly sessionId: string;
 
@@ -41,7 +41,7 @@ export class TestClient {
     this.ws = ws;
     this.sessionId = sessionId;
     ws.on("message", (data: WebSocket.Data) => {
-      const msg: WsServerMessage = JSON.parse(data.toString());
+      const msg: WsServerMessage = JSON.parse((data as Buffer).toString());
       const waiter = this.waiters.shift();
       if (waiter) {
         waiter(msg);
@@ -81,7 +81,7 @@ export class TestClient {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`);
       // Create client before open so message listener is attached early
-      const client = new TestClient(ws, sessionId!);
+      const client = new TestClient(ws, sessionId);
       ws.on("open", () => resolve(client));
       ws.on("error", reject);
     });
@@ -272,11 +272,11 @@ export class StubGitHubAuthManager extends EventEmitter {
     return this._prData;
   }
 
-  async mergePullRequest(_owner: string, _repo: string, _pullNumber: number, _method: string = "merge") {
+  async mergePullRequest(_owner: string, _repo: string, _pullNumber: number, _method = "merge") {
     return this._mergeResult ?? { success: true, message: "Pull request merged" };
   }
 
-  async enableAutoMerge(_owner: string, _repo: string, _pullNumber: number, _method: string = "MERGE") {
+  async enableAutoMerge(_owner: string, _repo: string, _pullNumber: number, _method = "MERGE") {
     return { success: true, message: "Auto-merge enabled — PR will merge when checks pass" };
   }
 
@@ -348,7 +348,7 @@ export class FakeClaudeProcess extends EventEmitter {
   public lastPrompt = "";
   public lastSessionId: string | undefined;
   public lastSystemPrompt: string | undefined;
-  public lastImages: Array<{ data: string; mediaType: string; filename?: string }> | undefined;
+  public lastImages: { data: string; mediaType: string; filename?: string }[] | undefined;
   public lastCwd: string | undefined;
   public lastPermissionMode: string | undefined;
   public killed = false;
@@ -370,7 +370,7 @@ export class FakeClaudeProcess extends EventEmitter {
     return super.emit(eventName, ...args);
   }
 
-  run(params: { prompt: string; sessionId?: string; systemPrompt?: string; images?: Array<{ data: string; mediaType: string; filename?: string }>; cwd?: string; permissionMode?: string }) {
+  run(params: { prompt: string; sessionId?: string; systemPrompt?: string; images?: { data: string; mediaType: string; filename?: string }[]; cwd?: string; permissionMode?: string }) {
     this.runCalled = true;
     this.lastPrompt = params.prompt;
     this.lastSessionId = params.sessionId;
@@ -437,8 +437,8 @@ function mapClaudeEvent(raw: any): any {
         type: "agent_result",
         status: raw.subtype,
         sessionId: raw.session_id,
-        cost: raw.total_cost_usd != null ? { totalUsd: raw.total_cost_usd } : undefined,
-        tokens: raw.input_tokens != null
+        cost: raw.total_cost_usd !== null && raw.total_cost_usd !== undefined ? { totalUsd: raw.total_cost_usd } : undefined,
+        tokens: raw.input_tokens !== null && raw.input_tokens !== undefined
           ? {
               input: raw.input_tokens,
               output: raw.output_tokens ?? 0,
@@ -498,11 +498,11 @@ export class FakeDeployTarget {
  */
 export class StubDeploymentManager extends EventEmitter {
   private _deploying = false;
-  private _targets: Array<{ info: { id: string; name: string; description: string; configFields: Array<{ key: string; label: string; required: boolean; sensitive: boolean }>; supportsPreview: boolean } }> = [];
+  private _targets: { info: { id: string; name: string; description: string; configFields: { key: string; label: string; required: boolean; sensitive: boolean }[]; supportsPreview: boolean } }[] = [];
 
   get deploying() { return this._deploying; }
 
-  register(target: { info: { id: string; name: string; description: string; configFields: Array<{ key: string; label: string; required: boolean; sensitive: boolean }>; supportsPreview: boolean } }) {
+  register(target: { info: { id: string; name: string; description: string; configFields: { key: string; label: string; required: boolean; sensitive: boolean }[]; supportsPreview: boolean } }) {
     this._targets.push(target);
   }
 
@@ -540,7 +540,7 @@ export class StubDeploymentManager extends EventEmitter {
  */
 export class StubDeploymentStore {
   private configs = new Map<string, Map<string, { targetId: string; credentials: Record<string, string>; projectName?: string }>>();
-  private history = new Map<string, Array<Record<string, unknown>>>();
+  private history = new Map<string, Record<string, unknown>[]>();
 
   saveConfig(sessionId: string, config: { targetId: string; credentials: Record<string, string>; projectName?: string }) {
     if (!this.configs.has(sessionId)) this.configs.set(sessionId, new Map());

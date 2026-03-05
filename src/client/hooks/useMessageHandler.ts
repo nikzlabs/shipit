@@ -3,10 +3,9 @@ import type { ChatMessage, ToolResultBlock } from "../components/MessageList.js"
 import { activityFromTool } from "../components/StreamingIndicator.js";
 import type { InteractiveTerminalHandle } from "../components/InteractiveTerminal.js";
 import type {
-  WsServerMessage, WsUsageUpdate, WsModelInfo,
+  WsServerMessage,
   WsChatHistoryMessage,
-  AgentEvent, AgentContentBlock, WsClientMessage,
-  WsMessageQueued, WsQueueUpdated,
+  AgentContentBlock, WsClientMessage,
 } from "../../server/shared/types.js";
 import { PERMISSION_MODE_KEY, SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY } from "../utils/local-storage.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -62,7 +61,7 @@ export function useMessageHandler(params: {
         detectedPorts: data.detectedPorts,
       });
       // Track crash info
-      if (!data.running && data.exitCode != null && data.exitCode !== 0) {
+      if (!data.running && data.exitCode !== null && data.exitCode !== undefined && data.exitCode !== 0) {
         preview.setCrashInfo({ exitCode: data.exitCode, output: data.errorOutput ?? "" });
       } else if (data.running) {
         preview.setCrashInfo(null);
@@ -78,7 +77,7 @@ export function useMessageHandler(params: {
     }
 
     if (data.type === "agent_event") {
-      const event = data.event as AgentEvent;
+      const event = data.event;
 
       if (event.type === "agent_assistant") {
         const textBlocks = (event.content ?? [])
@@ -99,7 +98,7 @@ export function useMessageHandler(params: {
         if (textBlocks || toolUseBlocks.length > 0) {
           session.setMessages((prev) => {
             const last = prev[prev.length - 1];
-            const canMerge = last && last.role === "assistant" && last.streaming
+            const canMerge = last?.role === "assistant" && last.streaming
               && !(last.toolResults && last.toolResults.length > 0);
             if (canMerge) {
               return [
@@ -113,7 +112,7 @@ export function useMessageHandler(params: {
                 },
               ];
             }
-            const closed = last && last.role === "assistant" && last.streaming
+            const closed = last?.role === "assistant" && last.streaming
               ? [...prev.slice(0, -1), { ...last, streaming: false }]
               : prev;
             return [
@@ -139,16 +138,16 @@ export function useMessageHandler(params: {
             let content: string;
             if (typeof rawContent === "string") {
               content = rawContent;
-            } else if (rawContent == null) {
+            } else if (rawContent === null || rawContent === undefined) {
               content = "";
             } else {
               content = JSON.stringify(rawContent);
             }
             if (content.length > 1_000_000) {
-              content = content.slice(0, 1_000_000) + "\n... (output truncated — exceeded 1MB)";
+              content = `${content.slice(0, 1_000_000)  }\n... (output truncated — exceeded 1MB)`;
             }
             results.push({
-              toolUseId: String(block.tool_use_id),
+              toolUseId: block.tool_use_id as string,
               content,
               isError: (block.is_error as boolean) ?? false,
             });
@@ -176,7 +175,7 @@ export function useMessageHandler(params: {
         notify("The agent has finished responding.");
         session.setMessages((prev) => {
           const last = prev[prev.length - 1];
-          if (last && last.role === "assistant") {
+          if (last?.role === "assistant") {
             return [...prev.slice(0, -1), { ...last, streaming: false }];
           }
           return prev;
@@ -190,7 +189,7 @@ export function useMessageHandler(params: {
       session.setMessages((prev) => {
         const last = prev[prev.length - 1];
         const updated =
-          last && last.role === "assistant" && last.streaming
+          last?.role === "assistant" && last.streaming
             ? [...prev.slice(0, -1), { ...last, streaming: false }]
             : prev;
         return [
@@ -347,12 +346,12 @@ export function useMessageHandler(params: {
     }
 
     if (data.type === "model_info") {
-      const info = data as WsModelInfo;
+      const info = data;
       ui.setModelInfo({ model: info.model, contextWindowTokens: info.contextWindowTokens });
     }
 
     if (data.type === "usage_update") {
-      const update = data as WsUsageUpdate;
+      const update = data;
       ui.setCurrentSessionUsage({
         sessionId: update.sessionId,
         totalCostUsd: update.totalCostUsd,
@@ -401,13 +400,13 @@ export function useMessageHandler(params: {
     }
 
     if (data.type === "message_queued") {
-      const queued = data as WsMessageQueued;
+      const queued = data;
       session.setQueuedMessages((prev) => [...prev, { text: queued.text, position: queued.position }]);
       session.setMessages((prev) => [...prev, { role: "user" as const, text: queued.text, queued: true, queuePosition: queued.position }]);
     }
 
     if (data.type === "queue_updated") {
-      const update = data as WsQueueUpdated;
+      const update = data;
       session.setQueuedMessages(update.queue);
       if (update.queue.length === 0) {
         session.setMessages((prev) =>
@@ -445,7 +444,7 @@ export function useMessageHandler(params: {
       session.setMessages((prev) => {
         const last = prev[prev.length - 1];
         if (last?.role === "assistant" && last.streaming) {
-          return [...prev.slice(0, -1), { ...last, streaming: false, text: last.text + "\n\n_(Interrupted by user)_" }];
+          return [...prev.slice(0, -1), { ...last, streaming: false, text: `${last.text  }\n\n_(Interrupted by user)_` }];
         }
         return prev;
       });

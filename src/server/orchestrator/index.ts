@@ -274,7 +274,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         if (exitCode === 0 || text.length > 0) {
           resolve(text);
         } else {
-          reject(new Error("Agent process exited with code " + exitCode));
+          reject(new Error(`Agent process exited with code ${  exitCode}`));
         }
       });
       agent.on("error", (err: Error) => reject(err));
@@ -331,7 +331,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       const bridgeGatewayIp = await resolveBridgeGatewayIp();
       const proxy = createDockerProxy({
         getSessionByContainerIp: (ip: string): DockerProxySessionInfo | undefined => {
-          const sc = containerManager!.getSessionByContainerIp(ip);
+          const sc = containerManager.getSessionByContainerIp(ip);
           if (!sc) return undefined;
           // dockerAccess, hostWorkspaceDir, and sessionNetworkName are
           // stored on the SessionContainer at creation time — no need to
@@ -349,7 +349,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         proxy.listen(0, bridgeGatewayIp, () => {
           const addr = proxy.address();
           if (addr && typeof addr === "object") {
-            containerManager!.setDockerProxy(bridgeGatewayIp, addr.port, process.env.SESSION_WORKER_DOCKER_IMAGE);
+            containerManager.setDockerProxy(bridgeGatewayIp, addr.port, process.env.SESSION_WORKER_DOCKER_IMAGE);
             console.log(`[server] Docker API proxy listening on ${bridgeGatewayIp}:${addr.port}`);
           }
           resolve();
@@ -371,14 +371,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // factory or claudeFactory (using in-process SessionRunner via registry default).
   const effectiveRunnerFactory: import("./session-runner.js").SessionRunnerFactory | undefined =
     deps.runnerFactory ?? (containerManager ? ((o: Parameters<import("./session-runner.js").SessionRunnerFactory>[0]) => {
-      const mgr = containerManager!;
+      const mgr = containerManager;
 
       // Check for an existing container (runner was disposed but container kept running).
       const existing = mgr.get(o.sessionId);
 
       // Reconnect to running container — avoids expensive container restart cycle.
       // If this is a standby container, claim it (removes standby tracking).
-      if (existing && existing.status === "running") {
+      if (existing?.status === "running") {
         mgr.claimStandby(o.sessionId);
         console.log(`[container] Reconnecting to existing container for ${o.sessionId} at ${existing.workerUrl}`);
         return new ContainerSessionRunner({
@@ -392,7 +392,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       // Wait for in-progress container creation (e.g., standby being built).
       // The standby `create()` call updates the SessionContainer object in-place
       // when finished, so polling `mgr.get()` will see the updated status/URL.
-      if (existing && existing.status === "starting") {
+      if (existing?.status === "starting") {
         console.log(`[container] Waiting for in-progress container creation for ${o.sessionId}...`);
         const runner = new ContainerSessionRunner({
           sessionId: o.sessionId,
@@ -406,7 +406,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             const deadline = Date.now() + 30_000;
             while (Date.now() < deadline) {
               const sc = mgr.get(o.sessionId);
-              if (sc && sc.status === "running") {
+              if (sc?.status === "running") {
                 mgr.claimStandby(o.sessionId);
                 console.log(`[container] Standby container ready for ${o.sessionId} at ${sc.workerUrl}`);
                 runner.setWorkerUrl(sc.workerUrl);
@@ -552,7 +552,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // ---- SSE (Server-Sent Events) for global push ----
   // Delivers session_list, repo updates, auth, activity dots to all clients
   // (home page + session page) without requiring a WebSocket connection.
-  type SSEClient = { write: (data: string) => boolean; closed: boolean };
+  interface SSEClient { write: (data: string) => boolean; closed: boolean }
   const sseClients = new Set<SSEClient>();
 
   /** Send an SSE event to all connected SSE clients. */
@@ -755,7 +755,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   const warmSessionForRepo = (repoUrl: string, opts?: { withStandby?: boolean }): void => {
     const repo = repoStore.get(repoUrl);
-    if (!repo || repo.status !== "ready") return;
+    if (repo?.status !== "ready") return;
     // Don't warm if already has a warm session or is currently warming
     if (warmingInProgress.has(repoUrl)) return;
     if (repo.warmSessionId) {
@@ -1152,7 +1152,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         if (dir !== activeSessionDir) {
           activeSessionDir = dir;
         }
-        if (dir) checkGitIdentity(dir);
+        if (dir) void checkGitIdentity(dir);
       };
 
       const checkGitIdentity = async (_sessionDir: string) => {
@@ -1229,7 +1229,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       };
 
       // Auto-activate the session on connect
-      activateSession(sessionId);
+      void activateSession(sessionId);
 
       // Send log buffer and git identity check
       for (const entry of logBuffer) { send(entry); }
@@ -1255,7 +1255,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           const prStatus = prStatusPoller.getStatus(sessionId);
           if (!prStatus) {
             // No open/merged PR — send branch info and diff stats
-            (async () => {
+            void (async () => {
               try {
                 const git = createGitManager(session.workspaceDir!);
                 const headBranch = session.branch || await git.getCurrentBranch();
@@ -1292,7 +1292,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           case "terminal_start": return terminalHandlers.handleTerminalStart(ctx, msg);
           case "terminal_input": return terminalHandlers.handleTerminalInput(ctx, msg);
           case "terminal_resize": return terminalHandlers.handleTerminalResize(ctx, msg);
-          case "clear_logs": return terminalHandlers.handleClearLogs(ctx);
+          case "clear_logs": { terminalHandlers.handleClearLogs(ctx); return; }
           case "set_agent": {
             const agentId = msg.agentId;
             const info = agentRegistry.get(agentId);
@@ -1308,14 +1308,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           }
           // new_session and activate_session are NOT handled — session is implicit from URL
           case "initiate_deploy": return deployHandlers.handleInitiateDeploy(ctx, msg);
-          case "cancel_deploy": return deployHandlers.handleCancelDeploy(ctx);
+          case "cancel_deploy": { deployHandlers.handleCancelDeploy(ctx); return; }
           case "rollback_code": return rollbackHandlers.handleRollbackCode(ctx, msg);
           case "rollback_code_and_chat": return rollbackHandlers.handleRollbackCodeAndChat(ctx, msg);
           case "fork_session_from_message": return rollbackHandlers.handleForkSessionFromMessage(ctx, msg);
-          case "cancel_queued_message": return miscHandlers.handleCancelQueuedMessage(ctx, msg);
-          case "interrupt_claude": return miscHandlers.handleInterruptClaude(ctx);
+          case "cancel_queued_message": { miscHandlers.handleCancelQueuedMessage(ctx, msg); return; }
+          case "interrupt_claude": { miscHandlers.handleInterruptClaude(ctx); return; }
           case "init_preview_config": {
-            sendMessageHandlers.handleSendMessage(ctx, {
+            void sendMessageHandlers.handleSendMessage(ctx, {
               type: "send_message",
               text: `Analyze this project and create a shipit.yaml file at the workspace root.
 The file configures the live preview and dependency installation.
@@ -1375,7 +1375,7 @@ to determine the correct install command, preview mode, command, and ports.`,
     authManager.kill();
     runnerRegistry.disposeAll();
     if (dockerProxyServer) {
-      await new Promise<void>((resolve) => dockerProxyServer!.close(() => resolve()));
+      await new Promise<void>((resolve) => dockerProxyServer.close(() => resolve()));
     }
     if (containerManager) {
       await containerManager.dispose();

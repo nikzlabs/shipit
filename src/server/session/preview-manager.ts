@@ -29,7 +29,7 @@ const VITE_PORT = 5173;
 export function extractMissingNativeModule(output: string): string | null {
   // Match: Cannot find module '@rollup/rollup-linux-arm64-gnu'
   // Match: Cannot find module @esbuild/linux-arm64
-  const match = output.match(/Cannot find module ['"]?(@(?:rollup|esbuild|swc|parcel)\/[a-z0-9_-]+)/i);
+  const match = /Cannot find module ['"]?(@(?:rollup|esbuild|swc|parcel)\/[a-z0-9_-]+)/i.exec(output);
   if (match) return match[1];
   // Fallback: rollup's own error message referencing the npm optional deps bug
   // but no parseable module name — caller should use the generic recovery path.
@@ -330,7 +330,7 @@ export class PreviewManager extends EventEmitter {
       // Auto-detect the listening port from common dev server output patterns
       // (e.g. "http://localhost:5173", "http://127.0.0.1:3000").
       if (!this._running) {
-        const portMatch = text.match(/https?:\/\/(?:localhost|127\.0\.0\.1):(\d+)/);
+        const portMatch = /https?:\/\/(?:localhost|127\.0\.0\.1):(\d+)/.exec(text);
         if (portMatch) {
           const port = Number(portMatch[1]);
           if (port > 0 && port <= 65535) {

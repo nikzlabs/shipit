@@ -46,7 +46,7 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     });
 
     const address = await app.listen({ port: 0, host: "127.0.0.1" });
-    const match = address.match(/:(\d+)$/);
+    const match = /:(\d+)$/.exec(address);
     port = match ? Number(match[1]) : 0;
   });
 

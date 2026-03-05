@@ -48,7 +48,7 @@ export function useNotification() {
       typeof Notification !== "undefined" &&
       Notification.permission === "default"
     ) {
-      Notification.requestPermission();
+      void Notification.requestPermission();
     }
   }, []);
 

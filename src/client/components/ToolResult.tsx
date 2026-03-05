@@ -148,7 +148,7 @@ function GrepResult({ content }: { content: string }) {
       <pre className={`p-2 text-xs font-mono overflow-x-auto leading-relaxed ${!expanded && truncated ? "max-h-[16rem]" : ""}`}>
         {lines.map((line, i) => {
           // Match ripgrep-style output: file:line:content or file:line-content
-          const match = line.match(/^([^:]+):(\d+)[:-](.*)/);
+          const match = /^([^:]+):(\d+)[:-](.*)/.exec(line);
           if (match) {
             return (
               <div key={i}>

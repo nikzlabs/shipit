@@ -39,7 +39,7 @@ export class RepoGit {
     // Try local symbolic-ref first (set by git clone, no network call)
     try {
       const head = await this.git.raw(["symbolic-ref", `refs/remotes/${remote}/HEAD`]);
-      const match = head.trim().match(/refs\/remotes\/[^/]+\/(.+)/);
+      const match = /refs\/remotes\/[^/]+\/(.+)/.exec(head.trim());
       if (match) return match[1];
     } catch {
       // symbolic-ref not set — fall through
@@ -47,7 +47,7 @@ export class RepoGit {
 
     // Fall back to remote query (requires network + credentials)
     const result = await this.git.remote(["show", remote]);
-    const match = (result ?? "").match(/HEAD branch:\s*(\S+)/);
+    const match = /HEAD branch:\s*(\S+)/.exec((result ?? ""));
     return match?.[1] ?? "main";
   }
 
@@ -70,9 +70,9 @@ export class RepoGit {
   }
 
   /** List all worktrees for this repo. */
-  async listWorktrees(): Promise<Array<{ path: string; branch: string; head: string }>> {
+  async listWorktrees(): Promise<{ path: string; branch: string; head: string }[]> {
     const output = await this.git.raw(["worktree", "list", "--porcelain"]);
-    const worktrees: Array<{ path: string; branch: string; head: string }> = [];
+    const worktrees: { path: string; branch: string; head: string }[] = [];
     let current: Partial<{ path: string; branch: string; head: string }> = {};
 
     for (const line of output.split("\n")) {

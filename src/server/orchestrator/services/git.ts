@@ -144,7 +144,7 @@ export async function setGitRemote(
   sessionId: string,
   name: string,
   url: string,
-): Promise<{ remotes: Array<{ name: string; url: string }> }> {
+): Promise<{ remotes: { name: string; url: string }[] }> {
   if (!name.trim() || !url.trim()) throw new ServiceError(400, "Remote name and URL are required");
   await git.addRemote(name.trim(), url.trim());
   if (name.trim() === "origin") {

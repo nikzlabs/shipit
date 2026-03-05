@@ -122,7 +122,7 @@ describe("useWebSocket", () => {
     expect(FakeWebSocket.instances.length).toBe(wsBefore);
 
     // After 2s (first backoff): new WebSocket created
-    act(() => vi.advanceTimersByTime(2000));
+    void act(() => vi.advanceTimersByTime(2000));
     expect(FakeWebSocket.instances.length).toBe(wsBefore + 1);
   });
 
@@ -133,23 +133,23 @@ describe("useWebSocket", () => {
     // First disconnect — 2s backoff
     act(() => latestWs().simulateClose());
     const count1 = FakeWebSocket.instances.length;
-    act(() => vi.advanceTimersByTime(2000));
+    void act(() => vi.advanceTimersByTime(2000));
     expect(FakeWebSocket.instances.length).toBe(count1 + 1);
 
     // Second disconnect — 4s backoff
     act(() => latestWs().simulateClose());
     const count2 = FakeWebSocket.instances.length;
-    act(() => vi.advanceTimersByTime(2000)); // Too early
+    void act(() => vi.advanceTimersByTime(2000)); // Too early
     expect(FakeWebSocket.instances.length).toBe(count2);
-    act(() => vi.advanceTimersByTime(2000)); // 4s total
+    void act(() => vi.advanceTimersByTime(2000)); // 4s total
     expect(FakeWebSocket.instances.length).toBe(count2 + 1);
 
     // Third disconnect — 8s backoff
     act(() => latestWs().simulateClose());
     const count3 = FakeWebSocket.instances.length;
-    act(() => vi.advanceTimersByTime(4000)); // Too early
+    void act(() => vi.advanceTimersByTime(4000)); // Too early
     expect(FakeWebSocket.instances.length).toBe(count3);
-    act(() => vi.advanceTimersByTime(4000)); // 8s total
+    void act(() => vi.advanceTimersByTime(4000)); // 8s total
     expect(FakeWebSocket.instances.length).toBe(count3 + 1);
   });
 
@@ -160,7 +160,7 @@ describe("useWebSocket", () => {
     expect(result.current.reconnectAttempt).toBe(1);
 
     // Reconnect fires
-    act(() => vi.advanceTimersByTime(2000));
+    void act(() => vi.advanceTimersByTime(2000));
     act(() => latestWs().simulateOpen());
     expect(result.current.reconnectAttempt).toBe(0);
   });
@@ -172,14 +172,14 @@ describe("useWebSocket", () => {
     // Create many failed reconnect attempts to push backoff high
     for (let i = 0; i < 10; i++) {
       act(() => latestWs().simulateClose());
-      act(() => vi.advanceTimersByTime(30_000));
+      void act(() => vi.advanceTimersByTime(30_000));
     }
 
     // 10th attempt — backoff would be 2*2^10 = 2048s without cap
     // With cap it should be 30s
     act(() => latestWs().simulateClose());
     const count = FakeWebSocket.instances.length;
-    act(() => vi.advanceTimersByTime(30_000));
+    void act(() => vi.advanceTimersByTime(30_000));
     expect(FakeWebSocket.instances.length).toBe(count + 1);
   });
 
@@ -217,7 +217,7 @@ describe("useWebSocket", () => {
 
     // Advancing timers should NOT cause another reconnect
     const countAfterAll = FakeWebSocket.instances.length;
-    act(() => vi.advanceTimersByTime(5000));
+    void act(() => vi.advanceTimersByTime(5000));
     expect(FakeWebSocket.instances.length).toBe(countAfterAll);
   });
 });

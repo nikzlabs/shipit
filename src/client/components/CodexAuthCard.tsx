@@ -3,7 +3,7 @@ import type { AgentOption } from "./AgentPicker.js";
 
 export interface CodexAuthCardProps {
   agent: AgentOption | undefined;
-  onApiKeySubmit: (key: string) => Promise<boolean | void>;
+  onApiKeySubmit: (key: string) => Promise<boolean | undefined>;
 }
 
 export function CodexAuthCard({ agent, onApiKeySubmit }: CodexAuthCardProps) {
@@ -34,7 +34,7 @@ export function CodexAuthCard({ agent, onApiKeySubmit }: CodexAuthCardProps) {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && codexKey.trim()) {
       e.preventDefault();
-      handleSubmit();
+      void handleSubmit();
     }
   };
 

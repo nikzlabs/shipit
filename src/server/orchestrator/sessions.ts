@@ -159,7 +159,7 @@ export class SessionManager {
   /** Unarchive a session (restore to active list). */
   unarchive(id: string): boolean {
     const session = this.sessions.find((s) => s.id === id);
-    if (!session || !session.archived) return false;
+    if (!session?.archived) return false;
     delete session.archived;
     this.save();
     return true;

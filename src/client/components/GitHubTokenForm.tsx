@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 export interface GitHubTokenFormProps {
-  onSubmit: (token: string) => Promise<boolean | void>;
+  onSubmit: (token: string) => Promise<boolean | undefined>;
 }
 
 export function GitHubTokenForm({ onSubmit }: GitHubTokenFormProps) {
@@ -29,7 +29,7 @@ export function GitHubTokenForm({ onSubmit }: GitHubTokenFormProps) {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && canSubmit) {
       e.preventDefault();
-      handleSubmit();
+      void handleSubmit();
     }
   };
 

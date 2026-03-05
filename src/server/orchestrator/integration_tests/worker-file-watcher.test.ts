@@ -77,7 +77,7 @@ describe("Worker File Watcher Endpoints", () => {
     const port = typeof address === "object" && address ? address.port : 0;
     const workerUrl = `http://127.0.0.1:${port}`;
 
-    const events: Array<{ type: string; data: unknown }> = [];
+    const events: { type: string; data: unknown }[] = [];
     const sse = collectSSE(workerUrl, (type, data) => events.push({ type, data }));
     await new Promise((r) => setTimeout(r, 100));
 
@@ -121,7 +121,7 @@ describe("ContainerSessionRunner File Watcher Proxy", () => {
     });
 
     const address = await worker.start();
-    const match = address.match(/:(\d+)$/);
+    const match = /:(\d+)$/.exec(address);
     workerUrl = `http://127.0.0.1:${match ? match[1] : 0}`;
   });
 

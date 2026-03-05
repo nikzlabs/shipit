@@ -67,13 +67,13 @@ export function getChatHistory(
 export function listWorktrees(
   sessionManager: SessionManager,
   sessionId: string,
-): Array<{ sessionId: string; branch: string; path: string }> {
+): { sessionId: string; branch: string; path: string }[] {
   const session = sessionManager.get(sessionId);
   const siblings = session?.remoteUrl
     ? sessionManager.findAllByRemoteUrl(session.remoteUrl)
     : [session].filter(Boolean) as SessionInfo[];
 
-  const worktrees: Array<{ sessionId: string; branch: string; path: string }> = [];
+  const worktrees: { sessionId: string; branch: string; path: string }[] = [];
   for (const s of siblings) {
     if (s.workspaceDir && s.branch) {
       worktrees.push({ sessionId: s.id, branch: s.branch, path: s.workspaceDir });
@@ -230,7 +230,7 @@ export async function archiveSession(
         const stat = await fs.stat(dotGit).catch(() => null);
         if (stat?.isFile()) {
           const content = await fs.readFile(dotGit, "utf-8");
-          const match = content.match(/gitdir:\s*(.+)/);
+          const match = /gitdir:\s*(.+)/.exec(content);
           if (match) {
             const gitDir = path.resolve(path.dirname(dotGit), match[1].trim());
             const mainGitDir = path.resolve(gitDir, "..", "..");

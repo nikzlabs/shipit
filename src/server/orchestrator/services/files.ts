@@ -19,7 +19,7 @@ export async function getFileContent(
   filePath: string,
 ): Promise<{ content: string; isBinary?: boolean }> {
   const safePath = path.resolve(dir, filePath);
-  if (!safePath.startsWith(dir + "/")) {
+  if (!safePath.startsWith(`${dir  }/`)) {
     throw new ServiceError(400, "Invalid path");
   }
   const stat = await fs.stat(safePath);
@@ -47,7 +47,7 @@ export async function getDocContent(
   docPath: string,
 ): Promise<string> {
   const safePath = path.resolve(dir, docPath);
-  if (!safePath.startsWith(dir + "/")) {
+  if (!safePath.startsWith(`${dir  }/`)) {
     throw new ServiceError(400, "Invalid path");
   }
   return fs.readFile(safePath, "utf-8");

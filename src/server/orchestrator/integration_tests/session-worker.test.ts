@@ -97,7 +97,7 @@ describe("Integration: Session Worker IPC", () => {
     });
 
     const address = await worker.start();
-    const match = address.match(/:(\d+)$/);
+    const match = /:(\d+)$/.exec(address);
     workerPort = match ? Number(match[1]) : 0;
     workerUrl = `http://127.0.0.1:${workerPort}`;
   });
@@ -245,7 +245,7 @@ describe("Integration: Session Worker IPC", () => {
     expect(lastAgent.runCalled).toBe(true);
 
     // Collect events on the proxy agent
-    const agentEvents: Array<{ type: string }> = [];
+    const agentEvents: { type: string }[] = [];
     proxy.on("event", (event: { type: string }) => {
       agentEvents.push(event);
     });
@@ -531,7 +531,7 @@ describe("Integration: Session Worker IPC", () => {
 
     // Wait for the done event to propagate
     await waitFor(() => {
-      worker.getApp().inject({ method: "GET", url: "/agent/status" });
+      void worker.getApp().inject({ method: "GET", url: "/agent/status" });
       return true; // The agent reference is cleared in the worker's done handler
     }, 1000, "agent cleared");
 

@@ -128,7 +128,7 @@ describe("MessageInput", () => {
 
       // Create a mock FileReader class
       class MockFileReader {
-        result: string = "data:image/png;base64,dGVzdA==";
+        result = "data:image/png;base64,dGVzdA==";
         onload: (() => void) | null = null;
         readAsDataURL() {
           // Simulate async completion

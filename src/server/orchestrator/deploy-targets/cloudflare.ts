@@ -85,14 +85,14 @@ export class CloudflareTarget implements DeployTarget {
         }
       };
 
-      proc.stdout!.on("data", handleChunk);
-      proc.stderr!.on("data", handleChunk);
+      proc.stdout.on("data", handleChunk);
+      proc.stderr.on("data", handleChunk);
 
       proc.on("close", (code) => {
         ctx.signal.removeEventListener("abort", onAbort);
         if (code === 0) {
           // Extract URL from mixed output
-          const urlMatch = allOutput.match(/https:\/\/[a-zA-Z0-9_-]+\.[\w.-]+\.pages\.dev/);
+          const urlMatch = /https:\/\/[a-zA-Z0-9_-]+\.[\w.-]+\.pages\.dev/.exec(allOutput);
           resolve({
             url: urlMatch?.[0] || `https://${ctx.projectName}.pages.dev`,
             environment: ctx.environment,

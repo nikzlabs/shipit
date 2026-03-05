@@ -703,7 +703,7 @@ describe("MessageList", () => {
         />
       );
       fireEvent.click(screen.getByLabelText("Edit message"));
-      const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+      const textarea = screen.getByRole("textbox");
       fireEvent.change(textarea, { target: { value: "New text" } });
       fireEvent.click(screen.getByText("Save & Send"));
       expect(onEdit).toHaveBeenCalledWith(0, "New text");
@@ -719,7 +719,7 @@ describe("MessageList", () => {
         />
       );
       fireEvent.click(screen.getByLabelText("Edit message"));
-      const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+      const textarea = screen.getByRole("textbox");
       fireEvent.change(textarea, { target: { value: "Enter submit" } });
       fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
       expect(onEdit).toHaveBeenCalledWith(0, "Enter submit");
@@ -735,7 +735,7 @@ describe("MessageList", () => {
         />
       );
       fireEvent.click(screen.getByLabelText("Edit message"));
-      const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+      const textarea = screen.getByRole("textbox");
       fireEvent.change(textarea, { target: { value: "   " } });
       fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
       expect(onEdit).not.toHaveBeenCalled();
@@ -986,7 +986,7 @@ describe("MessageList", () => {
       const { container } = render(
         <MessageList messages={messages} isLoading={false} />
       );
-      const img = container.querySelector('[data-testid="message-images"] img') as HTMLImageElement;
+      const img = container.querySelector('[data-testid="message-images"] img')! as HTMLImageElement;
       expect(img.src).toContain("data:image/png;base64,");
     });
 
@@ -1062,7 +1062,7 @@ describe("MessageList", () => {
       );
       fireEvent.click(screen.getByLabelText("View image 1 full size"));
       const dialog = screen.getByRole("dialog");
-      const lightboxImg = dialog.querySelector("img") as HTMLImageElement;
+      const lightboxImg = dialog.querySelector("img")!;
       expect(lightboxImg).toBeInTheDocument();
       expect(lightboxImg.src).toContain("data:image/png;base64,");
       // The lightbox image should have larger max dimensions

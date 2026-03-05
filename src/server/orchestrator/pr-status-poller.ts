@@ -79,20 +79,18 @@ interface GraphQLPrNode {
   additions: number;
   deletions: number;
   commits: {
-    nodes: Array<{
+    nodes: {
       commit: {
         oid?: string;
         statusCheckRollup: {
           state: string; // SUCCESS, FAILURE, PENDING, EXPECTED, ERROR
           contexts: {
-            nodes: Array<
-              | { databaseId?: number; name: string; status: string; conclusion: string | null; title?: string | null; detailsUrl?: string | null }
-              | { context: string; state: string }
-            >;
+            nodes: (| { databaseId?: number; name: string; status: string; conclusion: string | null; title?: string | null; detailsUrl?: string | null }
+              | { context: string; state: string })[];
           };
         } | null;
       };
-    }>;
+    }[];
   };
 }
 
@@ -104,7 +102,7 @@ interface GraphQLResponse {
       };
     };
   };
-  errors?: Array<{ message: string }>;
+  errors?: { message: string }[];
 }
 
 /** Parse a GraphQL PR node into a PrStatusSummary. */
@@ -116,7 +114,7 @@ export function parsePrNode(
   const rollup = commit?.statusCheckRollup;
 
   let passed = 0, failed = 0, pending = 0;
-  const failedChecks: Array<{ name: string; summary: string }> = [];
+  const failedChecks: { name: string; summary: string }[] = [];
 
   if (rollup?.contexts?.nodes) {
     for (const ctx of rollup.contexts.nodes) {
@@ -180,17 +178,17 @@ export function extractHeadSha(node: GraphQLPrNode): string | undefined {
 }
 
 /** Extract failed check run database IDs from a GraphQL PR node. */
-export function extractFailedCheckRuns(node: GraphQLPrNode): Array<{
+export function extractFailedCheckRuns(node: GraphQLPrNode): {
   databaseId: number;
   name: string;
   conclusion: string;
   title: string;
-}> {
+}[] {
   const commit = node.commits.nodes[0]?.commit;
   const rollup = commit?.statusCheckRollup;
   if (!rollup?.contexts?.nodes) return [];
 
-  const failed: Array<{ databaseId: number; name: string; conclusion: string; title: string }> = [];
+  const failed: { databaseId: number; name: string; conclusion: string; title: string }[] = [];
   for (const ctx of rollup.contexts.nodes) {
     if ("conclusion" in ctx && "name" in ctx && !("context" in ctx)) {
       const checkCtx = ctx as { databaseId?: number; name: string; status: string; conclusion: string | null; title?: string | null };
@@ -234,7 +232,7 @@ export class PrStatusPoller {
   /** Optional: runner registry for server-initiated fix prompts. */
   private runnerRegistry?: SessionRunnerRegistry;
   /** Optional: function to fetch CI failure logs and construct a fix prompt. */
-  private fetchAndFixCb?: (sessionId: string, owner: string, repo: string, failedChecks: Array<{ databaseId: number; name: string; conclusion: string; title: string }>) => Promise<void>;
+  private fetchAndFixCb?: (sessionId: string, owner: string, repo: string, failedChecks: { databaseId: number; name: string; conclusion: string; title: string }[]) => Promise<void>;
   /** Optional: called when a merged PR is detected — used to archive the session. */
   private onMergeDetectedCb?: (sessionId: string) => Promise<void>;
 
@@ -246,7 +244,7 @@ export class PrStatusPoller {
     sessionManager: SessionManager;
     sseBroadcast: (event: string, data: unknown) => void;
     runnerRegistry?: SessionRunnerRegistry;
-    fetchAndFixCb?: (sessionId: string, owner: string, repo: string, failedChecks: Array<{ databaseId: number; name: string; conclusion: string; title: string }>) => Promise<void>;
+    fetchAndFixCb?: (sessionId: string, owner: string, repo: string, failedChecks: { databaseId: number; name: string; conclusion: string; title: string }[]) => Promise<void>;
     onMergeDetectedCb?: (sessionId: string) => Promise<void>;
   }) {
     this.githubAuth = opts.githubAuth;
@@ -596,7 +594,7 @@ export class PrStatusPoller {
     repo: string,
   ): void {
     const state = this.autoFixStates.get(sessionId);
-    if (!state || !state.enabled) return;
+    if (!state?.enabled) return;
 
     const headSha = extractHeadSha(prNode);
 

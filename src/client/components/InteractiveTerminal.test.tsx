@@ -3,7 +3,7 @@ import { render, cleanup } from "@testing-library/react";
 import { createRef } from "react";
 
 // Track calls through module-level arrays that survive vi.mock hoisting
-const terminalInstances: Array<{
+const terminalInstances: {
   write: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
   loadAddon: ReturnType<typeof vi.fn>;
@@ -11,11 +11,11 @@ const terminalInstances: Array<{
   onData: ReturnType<typeof vi.fn>;
   cols: number;
   rows: number;
-}> = [];
+}[] = [];
 
-const fitInstances: Array<{
+const fitInstances: {
   fit: ReturnType<typeof vi.fn>;
-}> = [];
+}[] = [];
 
 vi.mock("@xterm/xterm", () => {
   class MockTerminal {
@@ -44,7 +44,9 @@ vi.mock("@xterm/addon-fit", () => {
 });
 
 vi.mock("@xterm/addon-web-links", () => {
-  class MockWebLinksAddon {}
+  class MockWebLinksAddon {
+    activate = vi.fn();
+  }
   return { WebLinksAddon: MockWebLinksAddon };
 });
 
@@ -52,11 +54,11 @@ vi.mock("@xterm/addon-web-links", () => {
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 
 // Stub ResizeObserver since jsdom doesn't support it
-const observerInstances: Array<{
+const observerInstances: {
   observe: ReturnType<typeof vi.fn>;
   disconnect: ReturnType<typeof vi.fn>;
   callback: () => void;
-}> = [];
+}[] = [];
 
 vi.stubGlobal("ResizeObserver", class MockResizeObserver {
   observe = vi.fn();

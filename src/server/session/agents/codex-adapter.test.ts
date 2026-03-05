@@ -29,24 +29,24 @@ class FakeChildProcess extends EventEmitter {
 
   /** Simulate the app-server sending a JSON-RPC response. */
   sendResponse(id: number, result: unknown): void {
-    const line = JSON.stringify({ id, result }) + "\n";
+    const line = `${JSON.stringify({ id, result })  }\n`;
     this.stdout.emit("data", Buffer.from(line));
   }
 
   /** Simulate the app-server sending a JSON-RPC error response. */
   sendErrorResponse(id: number, code: number, message: string): void {
-    const line = JSON.stringify({ id, error: { code, message } }) + "\n";
+    const line = `${JSON.stringify({ id, error: { code, message } })  }\n`;
     this.stdout.emit("data", Buffer.from(line));
   }
 
   /** Simulate the app-server sending a notification. */
   sendNotification(method: string, params?: Record<string, unknown>): void {
-    const line = JSON.stringify({ method, params: params ?? {} }) + "\n";
+    const line = `${JSON.stringify({ method, params: params ?? {} })  }\n`;
     this.stdout.emit("data", Buffer.from(line));
   }
 
   /** Get parsed JSON-RPC requests that were written to stdin. */
-  getRequests(): Array<{ method: string; id?: number; params?: unknown }> {
+  getRequests(): { method: string; id?: number; params?: unknown }[] {
     return this.stdin.written.map((line) => JSON.parse(line.trim()));
   }
 

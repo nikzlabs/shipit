@@ -179,7 +179,7 @@ function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: 
           {(["squash", "merge", "rebase"] as const).map((m) => (
             <button
               key={m}
-              onClick={() => { setMergeMethod(sessionId, m); setDropdownOpen(false); }}
+              onClick={() => { void setMergeMethod(sessionId, m); setDropdownOpen(false); }}
               className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors text-left"
             >
               <span className="w-3 text-(--color-success)">{m === method ? <CheckCircleIcon size={12} /> : ""}</span>

@@ -101,10 +101,10 @@ export class ClaudeAdapter
           type: "agent_result",
           status: raw.subtype,
           sessionId: raw.session_id,
-          cost: raw.total_cost_usd != null
+          cost: raw.total_cost_usd !== null && raw.total_cost_usd !== undefined
             ? { totalUsd: raw.total_cost_usd }
             : undefined,
-          tokens: raw.input_tokens != null
+          tokens: raw.input_tokens !== null && raw.input_tokens !== undefined
             ? {
                 input: raw.input_tokens,
                 output: raw.output_tokens ?? 0,

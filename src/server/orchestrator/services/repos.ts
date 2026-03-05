@@ -17,7 +17,7 @@ export function addRepo(
   repoStore: RepoStore,
   url: string,
 ): RepoInfo {
-  if (!url || !url.trim()) {
+  if (!url?.trim()) {
     throw new ServiceError(400, "Repository URL is required");
   }
 
@@ -36,7 +36,7 @@ export function removeRepo(
   repoStore: RepoStore,
   url: string,
 ): boolean {
-  if (!url || !url.trim()) {
+  if (!url?.trim()) {
     throw new ServiceError(400, "Repository URL is required");
   }
   const removed = repoStore.remove(url.trim());

@@ -88,7 +88,7 @@ export class ClaudeProcess extends EventEmitter {
         { type: "text" as const, text: prompt },
       ];
       const payload = JSON.stringify(content);
-      this.proc.write(payload + "\n");
+      this.proc.write(`${payload  }\n`);
     }
 
     // Inactivity watchdog: warn if no output within 30 seconds

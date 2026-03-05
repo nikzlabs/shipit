@@ -84,7 +84,7 @@ describe("Worker Preview Endpoints", () => {
     const port = typeof address === "object" && address ? address.port : 0;
     const workerUrl = `http://127.0.0.1:${port}`;
 
-    const events: Array<{ type: string; data: unknown }> = [];
+    const events: { type: string; data: unknown }[] = [];
     const sse = collectSSE(workerUrl, (type, data) => events.push({ type, data }));
     await new Promise((r) => setTimeout(r, 100));
 
@@ -103,7 +103,7 @@ describe("Worker Preview Endpoints", () => {
     const port = typeof address === "object" && address ? address.port : 0;
     const workerUrl = `http://127.0.0.1:${port}`;
 
-    const events: Array<{ type: string; data: unknown }> = [];
+    const events: { type: string; data: unknown }[] = [];
     const sse = collectSSE(workerUrl, (type, data) => events.push({ type, data }));
     await new Promise((r) => setTimeout(r, 100));
 
@@ -122,7 +122,7 @@ describe("Worker Preview Endpoints", () => {
     const port = typeof address === "object" && address ? address.port : 0;
     const workerUrl = `http://127.0.0.1:${port}`;
 
-    const events: Array<{ type: string; data: unknown }> = [];
+    const events: { type: string; data: unknown }[] = [];
     const sse = collectSSE(workerUrl, (type, data) => events.push({ type, data }));
     await new Promise((r) => setTimeout(r, 100));
 
@@ -166,7 +166,7 @@ describe("ContainerSessionRunner Preview Proxy", () => {
     });
 
     const address = await worker.start();
-    const match = address.match(/:(\d+)$/);
+    const match = /:(\d+)$/.exec(address);
     workerUrl = `http://127.0.0.1:${match ? match[1] : 0}`;
   });
 
@@ -197,7 +197,7 @@ describe("ContainerSessionRunner Preview Proxy", () => {
     lastPreview.simulateReady([3000]);
 
     await waitFor(
-      () => messages.some((m) => m.type === "preview_status" && (m as { running: boolean }).running === true),
+      () => messages.some((m) => m.type === "preview_status" && (m as { running: boolean }).running),
       2000,
       "preview_status running message",
     );
@@ -477,7 +477,7 @@ describe("Preview Reverse Proxy", () => {
         },
         (res) => {
           let data = "";
-          res.on("data", (chunk) => { data += chunk; });
+          res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
           res.on("end", () => resolve(data));
         },
       );

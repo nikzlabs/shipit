@@ -5,7 +5,7 @@ export interface ClaudeAuthCardProps {
   agent: AgentOption | undefined;
   authUrl: string | null;
   onStartAuth: () => void;
-  onApiKeySubmit: (key: string) => Promise<boolean | void>;
+  onApiKeySubmit: (key: string) => Promise<boolean | undefined>;
   onPasteAuthCode: (code: string) => void;
   onClearApiKey?: () => void;
   showApiKeyWhenAuthed?: boolean;
@@ -65,7 +65,7 @@ export function ClaudeAuthCard({
   const handleApiKeyKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && apiKey.trim()) {
       e.preventDefault();
-      handleApiKeySubmit();
+      void handleApiKeySubmit();
     }
   };
 

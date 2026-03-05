@@ -18,11 +18,11 @@ const VALID_STATUSES = new Set<FeatureStatus>(["planned", "in-progress", "done",
  *   ---
  */
 export function parseStatusFromFrontmatter(content: string): FeatureStatus {
-  const match = content.match(/^---\s*\n([\s\S]*?)\n---/);
+  const match = /^---\s*\n([\s\S]*?)\n---/.exec(content);
   if (!match) return "planned";
 
   const frontmatter = match[1];
-  const statusMatch = frontmatter.match(/^status:\s*(.+)$/m);
+  const statusMatch = /^status:\s*(.+)$/m.exec(frontmatter);
   if (!statusMatch) return "planned";
 
   const raw = statusMatch[1].trim().toLowerCase();
@@ -75,7 +75,7 @@ export class FeatureManager {
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
 
-      const match = entry.name.match(FEATURE_DIR_PATTERN);
+      const match = FEATURE_DIR_PATTERN.exec(entry.name);
       if (!match) continue;
 
       const num = parseInt(match[1], 10);

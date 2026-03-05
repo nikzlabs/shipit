@@ -11,7 +11,7 @@ interface AddRepoDialogProps {
   onCreateNew: () => void;
   /** Called when a newly-added repo finishes cloning and is ready. */
   onRepoReady?: (url: string) => void;
-  searchResults: Array<{ fullName: string; description: string | null; private: boolean; cloneUrl: string }>;
+  searchResults: { fullName: string; description: string | null; private: boolean; cloneUrl: string }[];
   onSearch: (query: string) => void | Promise<void>;
   /** Current repos from the store — used to track clone progress. */
   repos: RepoInfo[];
@@ -127,7 +127,7 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
               value={query}
               onChange={(e) => handleInputChange(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") handleSubmitUrl();
+                if (e.key === "Enter") void handleSubmitUrl();
                 if (e.key === "Escape") onClose();
               }}
               placeholder="Search GitHub repos or paste a URL..."
