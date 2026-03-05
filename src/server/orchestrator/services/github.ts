@@ -398,8 +398,10 @@ export async function fetchCIFailureLogs(
     let logFilePath: string | undefined;
     if (logDir && cleanLog) {
       const safeName = check.name.replace(/[^a-zA-Z0-9_-]/g, "_");
-      logFilePath = path.join(logDir, `${safeName}.log`);
-      fs.writeFileSync(logFilePath, cleanLog, "utf-8");
+      const absPath = path.join(logDir, `${safeName}.log`);
+      fs.writeFileSync(absPath, cleanLog, "utf-8");
+      // Store relative path — the agent runs from the workspace root
+      logFilePath = `.shipit/ci-logs/${safeName}.log`;
     }
     const errorLines = extractErrorLines(cleanLog);
     const lines = cleanLog.split("\n");
