@@ -55,6 +55,7 @@ import {
   unarchiveSession,
   renameSession,
   archiveSession,
+  deleteSession,
   gitRollback,
   setGitRemote,
   gitPush,
@@ -1326,7 +1327,7 @@ export async function registerApiRoutes(
           }
           const runner = deps.runnerRegistry.get(repo.warmSessionId);
           if (runner) runner.dispose();
-          sessionManager.delete(repo.warmSessionId);
+          deleteSession(sessionManager, repo.warmSessionId, deps.chatHistoryManager, deps.usageManager);
         }
         removeRepo(deps.repoStore, url);
         deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });

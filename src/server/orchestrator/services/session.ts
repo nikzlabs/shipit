@@ -6,6 +6,8 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import type { SessionManager } from "../sessions.js";
+import type { ChatHistoryManager } from "../chat-history.js";
+import type { UsageManager } from "../usage.js";
 import type { GitManager } from "../../shared/git.js";
 import type { RepoGit } from "../repo-git.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
@@ -337,4 +339,22 @@ export async function archiveSession(
   }
 
   return { sessions: sessionManager.list() };
+}
+
+/**
+ * Delete a session and cascade to related stores (chat history, usage).
+ * Use this instead of calling sessionManager.delete() directly.
+ */
+export function deleteSession(
+  sessionManager: SessionManager,
+  sessionId: string,
+  chatHistoryManager?: ChatHistoryManager,
+  usageManager?: UsageManager,
+): boolean {
+  const deleted = sessionManager.delete(sessionId);
+  if (deleted) {
+    chatHistoryManager?.delete(sessionId);
+    usageManager?.delete(sessionId);
+  }
+  return deleted;
 }
