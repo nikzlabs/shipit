@@ -40,6 +40,107 @@ export interface SystemTurnDeps {
   resolveAgentSessionId: (sessionId: string) => string | undefined;
 }
 
+/**
+ * Minimal host interface for the shared runSystemTurn() free function.
+ * Both SessionRunner and ContainerSessionRunner satisfy this contract.
+ */
+export interface SystemTurnHost {
+  readonly sessionId: string;
+  readonly sessionDir: string;
+  running: boolean;
+  accumulatedText: string;
+  turnSummary: string;
+  needsNewMessageGroup: boolean;
+  clearTurnEventBuffer(): void;
+  emitMessage(msg: WsServerMessage): void;
+  setAgent(a: AgentProcess | null): void;
+  dequeue(): QueuedMessage | undefined;
+  readonly queueLength: number;
+  getQueueSnapshot(): Array<{ text: string; position: number }>;
+  onAgentFinished(): void;
+}
+
+/**
+ * Shared implementation for server-initiated agent turns. Used by both
+ * SessionRunner and ContainerSessionRunner to avoid code duplication.
+ */
+export function runSystemTurn(
+  host: SystemTurnHost,
+  deps: SystemTurnDeps,
+  agentId: AgentId,
+  text: string,
+  createAgent: (agentId: AgentId) => AgentProcess,
+  activity?: string,
+): void {
+  const agent = createAgent(agentId);
+  host.running = true;
+  host.accumulatedText = "";
+  host.turnSummary = "";
+  host.needsNewMessageGroup = true;
+  host.clearTurnEventBuffer();
+
+  host.emitMessage({ type: "system_user_message", text, activity });
+  deps.persistMessage(host.sessionId, { role: "user", text });
+  deps.sseBroadcast("session_agent_started", { sessionId: host.sessionId, activity });
+
+  agent.on("event", (event: AgentEvent) => {
+    host.emitMessage({ type: "agent_event", event });
+
+    if (event.type === "agent_assistant") {
+      const contentArr = (event as { content?: Array<{ type: string; text?: string }> }).content ?? [];
+      const agentText = contentArr
+        .filter((b): b is { type: "text"; text: string } => b.type === "text")
+        .map((b) => b.text)
+        .join("");
+      if (agentText) {
+        host.turnSummary = agentText;
+        host.accumulatedText += agentText;
+      }
+    }
+  });
+
+  agent.on("error", (err: Error) => {
+    console.error("[system-turn] agent error:", err.message);
+    host.emitMessage({ type: "error", message: `Agent process error: ${err.message}` });
+    host.setAgent(null);
+  });
+
+  agent.on("done", async (code: number | null) => {
+    console.log("[system-turn] agent exited with code", code);
+    host.setAgent(null);
+
+    try {
+      const summary = host.turnSummary.split("\n")[0]?.slice(0, 120) || "CI fix";
+      const hash = await deps.autoCommit(host.sessionDir, summary);
+      if (hash) {
+        host.emitMessage({ type: "git_committed", hash, message: summary });
+        deps.scheduleAutoPush(host.sessionDir);
+      }
+    } catch (err) {
+      console.error("[system-turn] auto-commit failed:", err);
+    }
+
+    host.running = false;
+    if (host.queueLength > 0) {
+      const next = host.dequeue();
+      if (next) {
+        host.emitMessage({ type: "queue_updated", queue: host.getQueueSnapshot() });
+        runSystemTurn(host, deps, agentId, next.text, createAgent);
+        return;
+      }
+    }
+
+    deps.sseBroadcast("session_agent_finished", { sessionId: host.sessionId });
+    host.onAgentFinished();
+  });
+
+  agent.run({
+    prompt: text,
+    sessionId: deps.resolveAgentSessionId(host.sessionId),
+    cwd: host.sessionDir,
+  } as AgentRunParams);
+}
+
 // ---------------------------------------------------------------------------
 // SessionRunnerInterface — shared contract for direct and container runners
 // ---------------------------------------------------------------------------
@@ -285,88 +386,13 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     this._runSystemTurn(text, activity);
   }
 
-  /**
-   * Start an agent turn directly on the runner, without WS context.
-   * Handles event forwarding, auto-commit, auto-push, and queue drain.
-   */
   private _runSystemTurn(text: string, activity?: string): void {
     const deps = this._systemTurnDeps!;
-    const agent = deps.agentFactory(this._agentId);
-    this.setAgent(agent);
-    this._isRunning = true;
-    this._accumulatedText = "";
-    this._turnSummary = "";
-    this._needsNewMessageGroup = true;
-    this.clearTurnEventBuffer();
-
-    // Emit the prompt as a user message so viewers see what Claude was asked
-    this.emitMessage({ type: "system_user_message", text, activity });
-    deps.persistMessage(this.sessionId, { role: "user", text });
-
-    deps.sseBroadcast("session_agent_started", { sessionId: this.sessionId, activity });
-
-    // Forward agent events to viewers
-    agent.on("event", (event: AgentEvent) => {
-      this.emitMessage({ type: "agent_event", event });
-
-      if (event.type === "agent_assistant") {
-        const contentArr = (event as { content?: Array<{ type: string; text?: string }> }).content ?? [];
-        const text = contentArr
-          .filter((b): b is { type: "text"; text: string } => b.type === "text")
-          .map((b) => b.text)
-          .join("");
-        if (text) {
-          this._turnSummary = text;
-          this._accumulatedText += text;
-        }
-      }
-    });
-
-    agent.on("error", (err: Error) => {
-      console.error("[system-turn] agent error:", err.message);
-      this.emitMessage({ type: "error", message: `Agent process error: ${err.message}` });
-      this.setAgent(null);
-    });
-
-    agent.on("done", async (code: number | null) => {
-      console.log("[system-turn] agent exited with code", code);
-      this.setAgent(null);
-
-      // Auto-commit
-      try {
-        const summary = this._turnSummary.split("\n")[0]?.slice(0, 120) || "CI fix";
-        const hash = await deps.autoCommit(this.sessionDir, summary);
-        if (hash) {
-          this.emitMessage({ type: "git_committed", hash, message: summary });
-          deps.scheduleAutoPush(this.sessionDir);
-        }
-      } catch (err) {
-        console.error("[system-turn] auto-commit failed:", err);
-      }
-
-      // Queue drain
-      this._isRunning = false;
-      if (this._messageQueue.length > 0) {
-        const next = this.dequeue();
-        if (next) {
-          this.emitMessage({
-            type: "queue_updated",
-            queue: this._messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 })),
-          });
-          this._runSystemTurn(next.text);
-          return;
-        }
-      }
-
-      deps.sseBroadcast("session_agent_finished", { sessionId: this.sessionId });
-      this.onAgentFinished();
-    });
-
-    agent.run({
-      prompt: text,
-      sessionId: deps.resolveAgentSessionId(this.sessionId),
-      cwd: this.sessionDir,
-    } as AgentRunParams);
+    runSystemTurn(this, deps, this._agentId, text, (agentId) => {
+      const agent = deps.agentFactory(agentId);
+      this.setAgent(agent);
+      return agent;
+    }, activity);
   }
 
   onAgentFinished(): void {

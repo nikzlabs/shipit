@@ -16,6 +16,7 @@ import { getErrorMessage } from "../shared/utils.js";
 import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess } from "../shared/types.js";
 import type { WsServerMessage, ClaudeContentBlockToolUse } from "../shared/types.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps } from "./session-runner.js";
+import { runSystemTurn } from "./session-runner.js";
 
 // ---------------------------------------------------------------------------
 // SSE Client — connects to the worker's /events endpoint
@@ -1011,84 +1012,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   private _runSystemTurn(text: string, activity?: string): void {
-    const deps = this._systemTurnDeps!;
-    const agent = this.createAgent(this._agentId);
-    this._isRunning = true;
-    this._accumulatedText = "";
-    this._turnSummary = "";
-    this._needsNewMessageGroup = true;
-    this.clearTurnEventBuffer();
-
-    // Emit the prompt as a user message so viewers see what Claude was asked
-    this.emitMessage({ type: "system_user_message", text, activity });
-    deps.persistMessage(this.sessionId, { role: "user", text });
-
-    deps.sseBroadcast("session_agent_started", { sessionId: this.sessionId, activity });
-
-    // Forward agent events to viewers and track turn summary for auto-commit.
-    // handleSSEEvent re-emits SSE data to this._agent, so this listener
-    // receives them — but we must call emitMessage to push to WS viewers.
-    agent.on("event", (event: AgentEvent) => {
-      this.emitMessage({ type: "agent_event", event });
-
-      if (event.type === "agent_assistant") {
-        const contentArr = (event as { content?: Array<{ type: string; text?: string }> }).content ?? [];
-        const agentText = contentArr
-          .filter((b): b is { type: "text"; text: string } => b.type === "text")
-          .map((b) => b.text)
-          .join("");
-        if (agentText) {
-          this._turnSummary = agentText;
-          this._accumulatedText += agentText;
-        }
-      }
-    });
-
-    agent.on("error", (err: Error) => {
-      console.error("[system-turn] agent error:", err.message);
-      this.emitMessage({ type: "error", message: `Agent process error: ${err.message}` });
-      this.setAgent(null);
-    });
-
-    agent.on("done", async (code: number | null) => {
-      console.log("[system-turn] agent exited with code", code);
-      this.setAgent(null);
-
-      // Auto-commit
-      try {
-        const summary = this._turnSummary.split("\n")[0]?.slice(0, 120) || "CI fix";
-        const hash = await deps.autoCommit(this.sessionDir, summary);
-        if (hash) {
-          this.emitMessage({ type: "git_committed", hash, message: summary });
-          deps.scheduleAutoPush(this.sessionDir);
-        }
-      } catch (err) {
-        console.error("[system-turn] auto-commit failed:", err);
-      }
-
-      // Queue drain
-      this._isRunning = false;
-      if (this._messageQueue.length > 0) {
-        const next = this._messageQueue.shift();
-        if (next) {
-          this.emitMessage({
-            type: "queue_updated",
-            queue: this._messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 })),
-          });
-          this._runSystemTurn(next.text);
-          return;
-        }
-      }
-
-      deps.sseBroadcast("session_agent_finished", { sessionId: this.sessionId });
-      this.onAgentFinished();
-    });
-
-    agent.run({
-      prompt: text,
-      sessionId: deps.resolveAgentSessionId(this.sessionId),
-      cwd: this.sessionDir,
-    } as AgentRunParams);
+    runSystemTurn(this, this._systemTurnDeps!, this._agentId, text, (agentId) => {
+      return this.createAgent(agentId);
+    }, activity);
   }
 
   // --- Lifecycle ---

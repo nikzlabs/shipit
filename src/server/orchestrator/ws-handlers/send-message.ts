@@ -11,6 +11,43 @@ import { generateSessionName } from "../session-namer.js";
 type WsSendMessage = Extract<WsClientMessage, { type: "send_message" }>;
 type WsAnswerQuestion = Extract<WsClientMessage, { type: "answer_question" }>;
 
+/**
+ * Auto-commit working tree changes after an agent turn and link the commit to
+ * the last assistant message in chat history. Returns the commit hash or null.
+ */
+async function postTurnCommit(
+  ctx: Pick<FullCtx, "createGitManager" | "getTurnSummary" | "scheduleAutoPush" | "chatHistoryManager">,
+  opts: {
+    sessionDir: string;
+    sessionId: string | undefined;
+    emit: (msg: import("../../shared/types.js").WsServerMessage) => void;
+  },
+): Promise<string | null> {
+  const git = ctx.createGitManager(opts.sessionDir);
+  const parentHash = await git.getHeadHash();
+  const firstLine = ctx.getTurnSummary().split("\n")[0]?.slice(0, 120) || "Agent turn";
+  const commitHash = await git.autoCommit(firstLine);
+  if (!commitHash) return null;
+
+  opts.emit({ type: "git_committed", hash: commitHash, message: firstLine });
+  ctx.scheduleAutoPush(git);
+
+  if (opts.sessionId && parentHash) {
+    ctx.chatHistoryManager.updateLastMessage(opts.sessionId, {
+      commitHash,
+      parentCommitHash: parentHash,
+    });
+    const messages = ctx.chatHistoryManager.load(opts.sessionId);
+    opts.emit({
+      type: "commit_linked",
+      messageIndex: messages.length - 1,
+      commitHash,
+      parentCommitHash: parentHash,
+    });
+  }
+  return commitHash;
+}
+
 /** Context window size in tokens (same across all current model families). */
 export const CONTEXT_WINDOW_TOKENS = 200_000;
 
@@ -296,30 +333,11 @@ async function runClaudeWithMessage(ctx: FullCtx, opts: {
     let commitHash: string | null = null;
     try {
       if (capturedSessionDir) {
-        const git = ctx.createGitManager(capturedSessionDir);
-        const parentHash = await git.getHeadHash();
-        const firstLine = ctx.getTurnSummary().split("\n")[0]?.slice(0, 120) || "Agent turn";
-        commitHash = await git.autoCommit(firstLine);
-        if (commitHash) {
-          emitDone({ type: "git_committed", hash: commitHash, message: firstLine });
-          // Schedule auto-push (debounced)
-          ctx.scheduleAutoPush(git);
-
-          // Link commit to the last assistant message in chat history
-          if (capturedSessionId && parentHash) {
-            ctx.chatHistoryManager.updateLastMessage(capturedSessionId, {
-              commitHash,
-              parentCommitHash: parentHash,
-            });
-            const messages = ctx.chatHistoryManager.load(capturedSessionId);
-            emitDone({
-              type: "commit_linked",
-              messageIndex: messages.length - 1,
-              commitHash,
-              parentCommitHash: parentHash,
-            });
-          }
-        }
+        commitHash = await postTurnCommit(ctx, {
+          sessionDir: capturedSessionDir,
+          sessionId: capturedSessionId,
+          emit: emitDone,
+        });
       }
     } catch (err) {
       console.error("[git] auto-commit failed:", getErrorMessage(err));
@@ -728,30 +746,11 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
 
     try {
       if (capturedSessionDir) {
-        const git = ctx.createGitManager(capturedSessionDir);
-        const parentHash = await git.getHeadHash();
-        const firstLine = ctx.getTurnSummary().split("\n")[0]?.slice(0, 120) || "Agent turn";
-        const hash = await git.autoCommit(firstLine);
-        if (hash) {
-          ctx.send({ type: "git_committed", hash, message: firstLine });
-          // Schedule auto-push (debounced)
-          ctx.scheduleAutoPush(git);
-
-          // Link commit to the last assistant message in chat history
-          if (capturedSessionId && parentHash) {
-            ctx.chatHistoryManager.updateLastMessage(capturedSessionId, {
-              commitHash: hash,
-              parentCommitHash: parentHash,
-            });
-            const messages = ctx.chatHistoryManager.load(capturedSessionId);
-            ctx.send({
-              type: "commit_linked",
-              messageIndex: messages.length - 1,
-              commitHash: hash,
-              parentCommitHash: parentHash,
-            });
-          }
-        }
+        await postTurnCommit(ctx, {
+          sessionDir: capturedSessionDir,
+          sessionId: capturedSessionId,
+          emit: (msg) => ctx.send(msg),
+        });
       }
     } catch (err) {
       console.error("[git] auto-commit failed:", getErrorMessage(err));
