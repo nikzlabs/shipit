@@ -79,15 +79,19 @@ interface SessionSidebarProps {
   onToggleCollapse: () => void;
 }
 
-interface SessionItemProps {
+export interface SessionItemProps {
   session: SessionInfo;
   isCurrent: boolean;
   onResume: (id: string) => void;
-  onArchive: (id: string) => void;
-  onRename: (id: string, title: string) => void;
+  onArchive?: (id: string) => void;
+  onRestore?: (id: string) => void;
+  onRename?: (id: string, title: string) => void;
+  repoLabel?: string;
+  disabled?: boolean;
 }
 
-function SessionItem({ session, isCurrent, onResume, onArchive, onRename }: SessionItemProps) {
+export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore, onRename, repoLabel, disabled }: SessionItemProps) {
+  const isArchived = session.archived === true;
   const [editingTitle, setEditingTitle] = useState("");
   const [isEditing, setIsEditing] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -110,7 +114,7 @@ function SessionItem({ session, isCurrent, onResume, onArchive, onRename }: Sess
     if (editResolvedRef.current) return;
     editResolvedRef.current = true;
     if (editingTitle.trim()) {
-      onRename(session.id, editingTitle.trim());
+      onRename?.(session.id, editingTitle.trim());
     }
     setIsEditing(false);
     setEditingTitle("");
@@ -127,7 +131,9 @@ function SessionItem({ session, isCurrent, onResume, onArchive, onRename }: Sess
       className={`group flex items-start gap-1.5 px-2 py-1.5 text-xs transition-colors rounded mx-1 ${
         isCurrent
           ? "bg-(--color-bg-secondary) text-(--color-text-primary)"
-          : "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+          : isArchived
+            ? "text-(--color-text-tertiary) hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary)"
+            : "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
       }`}
     >
       <PrStateBadge sessionId={session.id} />
@@ -151,27 +157,47 @@ function SessionItem({ session, isCurrent, onResume, onArchive, onRename }: Sess
       ) : (
         <button
           onClick={() => { if (!isCurrent) onResume(session.id); }}
+          disabled={disabled}
           className="flex-1 min-w-0 text-left"
         >
           <p className="truncate leading-snug">{session.title}</p>
-          <p className="text-(--color-text-tertiary) text-[10px] mt-0.5">{formatRelativeDate(session.lastUsedAt)}</p>
+          <div className="flex items-center gap-2 mt-0.5">
+            {repoLabel && (
+              <span className="text-[10px] text-(--color-text-tertiary) truncate">{repoLabel}</span>
+            )}
+            <span className="text-(--color-text-tertiary) text-[10px]">{formatRelativeDate(session.lastUsedAt)}</span>
+          </div>
         </button>
       )}
 
       {!isEditing && (
         <div className="shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-          <Button
-            variant="ghost"
-            onClick={(e) => { e.stopPropagation(); startEditing(); }}
-            className="p-1! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-link)"
-            title="Rename session"
-          >
-            <PencilSimpleIcon size={ICON_SIZE.SM} />
-          </Button>
-          {!isCurrent && (
+          {onRename && (
+            <Button
+              variant="ghost"
+              onClick={(e) => { e.stopPropagation(); startEditing(); }}
+              className="p-1! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-link)"
+              title="Rename session"
+            >
+              <PencilSimpleIcon size={ICON_SIZE.SM} />
+            </Button>
+          )}
+          {isArchived && onRestore && (
+            <Button
+              variant="ghost"
+              onClick={(e) => { e.stopPropagation(); onRestore(session.id); }}
+              disabled={disabled}
+              className="p-1! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-success)"
+              title="Restore session"
+            >
+              <PhArchiveIcon size={ICON_SIZE.SM} />
+            </Button>
+          )}
+          {!isArchived && onArchive && !isCurrent && (
             <Button
               variant="ghost"
               onClick={(e) => { e.stopPropagation(); onArchive(session.id); }}
+              disabled={disabled}
               className="p-1! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-warning)"
               title="Archive session"
             >
