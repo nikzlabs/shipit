@@ -13,7 +13,8 @@ import { ToolResult } from "./ToolResult.js";
 import { TodoPanel, type TodoItem } from "./TodoPanel.js";
 import { Button } from "./ui/button.js";
 import { sessionRelativePath } from "../path-utils.js";
-import { CircleNotchIcon } from "@phosphor-icons/react";
+import { CircleNotchIcon, FileIcon as PhFileIcon, PencilSimpleIcon, ArrowsClockwiseIcon } from "@phosphor-icons/react";
+import { ICON_SIZE } from "../design-tokens.js";
 import type { SearchMatch } from "../hooks/useSearch.js";
 import { buildVisualElements } from "./visual-elements.js";
 import { RollbackDropdown, type RollbackMode } from "./RollbackDropdown.js";
@@ -545,9 +546,7 @@ function MessageFileAttachments({ files }: { files: ChatMessageFile[] }) {
             className="inline-flex items-center gap-1 px-2 py-0.5 bg-white/10 border border-white/20 rounded text-xs"
             title={f.path}
           >
-            <svg className="w-3 h-3 shrink-0 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
-            </svg>
+            <PhFileIcon size={ICON_SIZE.XS} className="shrink-0 opacity-60" />
             <span className="truncate max-w-[150px]">{fileName}</span>
             {lineRange && <span className="opacity-60">{lineRange}</span>}
           </span>
@@ -750,9 +749,7 @@ export function MessageList({
                   title="Edit message"
                   aria-label="Edit message"
                 >
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                  </svg>
+                  <PencilSimpleIcon size={14} />
                 </Button>
                 <Button
                   variant="ghost"
@@ -762,9 +759,7 @@ export function MessageList({
                   title="Retry message"
                   aria-label="Retry message"
                 >
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
+                  <ArrowsClockwiseIcon size={14} />
                 </Button>
               </div>
             )}

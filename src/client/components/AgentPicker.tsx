@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { CaretDownIcon, CheckIcon } from "@phosphor-icons/react";
+import { ICON_SIZE } from "../design-tokens.js";
 import type { AgentId } from "../../server/shared/types.js";
 
 export interface AgentOption {
@@ -81,9 +83,7 @@ export function AgentPicker({ agents, activeAgentId, onAgentChange, disabled }: 
       >
         {activeAgent && <StatusDot installed={activeAgent.installed} authConfigured={activeAgent.authConfigured} />}
         <span>{displayName}</span>
-        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-        </svg>
+        <CaretDownIcon size={ICON_SIZE.XS} />
       </button>
 
       {open && (
@@ -112,9 +112,7 @@ export function AgentPicker({ agents, activeAgentId, onAgentChange, disabled }: 
                   <StatusDot installed={agent.installed} authConfigured={agent.authConfigured} />
                   <span className="flex-1">{agent.name}</span>
                   {isActive && (
-                    <svg className="w-4 h-4 text-(--color-accent)" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                    </svg>
+                    <CheckIcon size={ICON_SIZE.SM} className="text-(--color-accent)" />
                   )}
                   {!agent.installed && (
                     <span className="text-[10px] text-(--color-text-tertiary)">not installed</span>

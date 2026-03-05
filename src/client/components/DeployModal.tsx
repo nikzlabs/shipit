@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from "react";
+import { CheckIcon, XIcon } from "@phosphor-icons/react";
+import { ICON_SIZE } from "../design-tokens.js";
 import type { DeployTargetInfo, DeploymentRecord } from "../../server/shared/types.js";
 import { Button } from "./ui/button.js";
 import { Modal } from "./ui/modal.js";
@@ -280,9 +282,7 @@ export function DeployModal({
           {view === "complete" && lastDeployUrl && (
             <div className="space-y-4 text-center">
               <div className="flex items-center justify-center gap-2 text-(--color-success)">
-                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                </svg>
+                <CheckIcon size={24} />
                 <span className="text-sm font-medium">Deployment successful!</span>
               </div>
               <a
@@ -318,9 +318,7 @@ export function DeployModal({
           {view === "error" && lastDeployError && (
             <div className="space-y-4">
               <div className="flex items-center gap-2 text-(--color-error)">
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                </svg>
+                <XIcon size={ICON_SIZE.MD} />
                 <span className="text-sm font-medium">Deployment failed</span>
               </div>
               <div className="text-sm text-(--color-text-secondary) bg-(--color-error-subtle) border border-(--color-error)/30 rounded-lg p-3">

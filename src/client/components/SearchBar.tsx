@@ -1,4 +1,6 @@
 import { useRef, useEffect } from "react";
+import { CaretUpIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
+import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import type { SearchMatch } from "../hooks/useSearch.js";
 
@@ -74,9 +76,7 @@ export function SearchBar({
         className="p-1 disabled:opacity-30"
         title="Previous match (Shift+Enter)"
       >
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
-        </svg>
+        <CaretUpIcon size={ICON_SIZE.SM} />
       </Button>
       <Button
         variant="ghost"
@@ -86,9 +86,7 @@ export function SearchBar({
         className="p-1 disabled:opacity-30"
         title="Next match (Enter)"
       >
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-        </svg>
+        <CaretDownIcon size={ICON_SIZE.SM} />
       </Button>
 
       {/* Close button */}
@@ -99,9 +97,7 @@ export function SearchBar({
         className="p-1"
         title="Close search (Escape)"
       >
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-        </svg>
+        <XIcon size={ICON_SIZE.SM} />
       </Button>
     </div>
   );

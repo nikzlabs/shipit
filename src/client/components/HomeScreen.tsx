@@ -1,3 +1,5 @@
+import { FolderPlusIcon } from "@phosphor-icons/react";
+import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 
 export interface HomeScreenProps {
@@ -10,9 +12,7 @@ export function HomeScreen({ onAddRepo, hasRepos }: HomeScreenProps) {
     return (
       <div className="flex flex-col items-center justify-center flex-1 min-h-0 px-4">
         <div className="text-center space-y-4">
-          <svg className="w-12 h-12 mx-auto text-(--color-text-tertiary)" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 10.5v6m3-3H9m4.06-7.19l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
-          </svg>
+          <FolderPlusIcon size={ICON_SIZE.XL} className="mx-auto text-(--color-text-tertiary)" />
           <p className="text-sm text-(--color-text-secondary)">Add a repository to get started</p>
           <Button
             variant="primary"

@@ -1,5 +1,7 @@
 import { useState, useMemo } from "react";
 import { DiffEditor } from "@monaco-editor/react";
+import { XIcon } from "@phosphor-icons/react";
+import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import type { FileDiff } from "../../server/shared/types.js";
 
@@ -87,9 +89,7 @@ export function DiffPanel({ diff, onClose, commitMessage }: DiffPanelProps) {
             className="text-(--color-text-tertiary)"
             aria-label="Close diff panel"
           >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
+            <XIcon size={ICON_SIZE.SM} />
           </Button>
         </div>
         <div className="flex-1 flex items-center justify-center text-(--color-text-secondary) text-sm">
@@ -116,9 +116,7 @@ export function DiffPanel({ diff, onClose, commitMessage }: DiffPanelProps) {
           className="text-(--color-text-tertiary) p-0.5"
           aria-label="Close diff panel"
         >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-          </svg>
+          <XIcon size={ICON_SIZE.SM} />
         </Button>
       </div>
 

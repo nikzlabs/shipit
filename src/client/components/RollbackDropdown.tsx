@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { ArrowCounterClockwiseIcon } from "@phosphor-icons/react";
 
 export type RollbackMode = "code" | "code_and_chat" | "fork";
 
@@ -44,9 +45,7 @@ export function RollbackDropdown({ messageIndex, parentCommitHash, disabled, onR
         aria-label="Rollback options"
       >
         {/* Undo/rewind icon */}
-        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a5 5 0 015 5v2M3 10l4-4m-4 4l4 4" />
-        </svg>
+        <ArrowCounterClockwiseIcon size={14} />
       </button>
 
       {open && (
