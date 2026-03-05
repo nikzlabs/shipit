@@ -60,6 +60,12 @@ Never use raw Tailwind color classes like `bg-gray-950` or `text-blue-500` in co
 | `--color-scrollbar-thumb` | Scrollbar thumb |
 | `--color-scrollbar-thumb-hover` | Scrollbar thumb on hover |
 | `--font-size-code` | Monospace / code block font size |
+| `--duration-fast` | Color transitions, exits (150ms) |
+| `--duration-normal` | Enter animations, layout shifts (200ms) |
+| `--duration-slow` | Loading spinners (1s) |
+| `--ease-default` | Default easing (ease) |
+| `--ease-out` | Enter animations (ease-out) |
+| `--ease-in` | Exit animations (ease-in) |
 
 ## Typography
 
@@ -101,7 +107,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 
 ## Motion
 
-Color transitions: `150ms ease` (`transition-colors`). Enter: `200ms ease-out`. Exit: `150ms ease-in`. Spinners: `1s linear infinite`. Avoid animating layout properties (`width`, `height`) unless explicitly resizing.
+Motion tokens are defined in `index.css` (shared, not per-theme). Use `transition-[color] duration-[var(--duration-fast)]` instead of Tailwind's `transition-colors` to reference the token. Avoid animating layout properties (`width`, `height`) unless explicitly resizing.
 
 ## Component Patterns
 
