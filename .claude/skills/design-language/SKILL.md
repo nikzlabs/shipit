@@ -130,3 +130,12 @@ import { Button } from "./ui/button.js";
 
 <Button variant="destructive" size="sm">Delete</Button>
 ```
+
+### Adding a new primitive
+
+1. Create `src/client/components/ui/<name>.tsx`
+2. Define variants with `cva()` — use only design tokens for colors, motion tokens for transitions
+3. Accept `className` prop and merge it with CVA output (so consumers can add layout classes like margins)
+4. Forward `ref` and spread remaining props onto the root element
+5. Export the component and its variant props type
+6. Add it to the table above in this skill
