@@ -145,8 +145,8 @@ export const useSessionStore = create<SessionState>((set) => ({
       headers: { Accept: "application/json" },
     });
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: "Unknown error" }));
-      throw new Error((err as { error?: string }).error ?? `Failed to unarchive session (${res.status})`);
+      const err = await res.json().catch(() => ({ error: "Unknown error" })) as { error?: string };
+      throw new Error(err.error ?? `Failed to unarchive session (${res.status})`);
     }
     const result = await res.json() as { sessions: SessionInfo[] };
     set((state) => ({
@@ -163,8 +163,8 @@ export const useSessionStore = create<SessionState>((set) => ({
       headers: { Accept: "application/json" },
     });
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: "Unknown error" }));
-      throw new Error((err as { error?: string }).error ?? `Failed to archive session (${res.status})`);
+      const err = await res.json().catch(() => ({ error: "Unknown error" })) as { error?: string };
+      throw new Error(err.error ?? `Failed to archive session (${res.status})`);
     }
     const result = await res.json() as { sessions: SessionInfo[] };
     set((state) => ({
