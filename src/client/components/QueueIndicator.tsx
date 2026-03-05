@@ -1,3 +1,6 @@
+import { PlayCircleIcon, XIcon } from "@phosphor-icons/react";
+import { ICON_SIZE } from "../design-tokens.js";
+
 interface QueueItem {
   text: string;
   position: number;
@@ -20,9 +23,7 @@ export function QueueIndicator({ queue, onCancel }: QueueIndicatorProps) {
     <div className="border-t border-(--color-border-primary) px-4 py-2 bg-(--color-bg-secondary)">
       <div className="flex items-center justify-between mb-1.5">
         <span className="text-xs font-medium text-(--color-text-secondary) flex items-center gap-1.5">
-          <svg className="w-3 h-3 animate-pulse text-(--color-accent)" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/>
-          </svg>
+          <PlayCircleIcon size={ICON_SIZE.XS} weight="fill" className="animate-pulse text-(--color-accent)" />
           {queue.length === 1 ? "1 message queued" : `${queue.length} messages queued`}
         </span>
         <button
@@ -51,9 +52,7 @@ export function QueueIndicator({ queue, onCancel }: QueueIndicatorProps) {
               aria-label={`Cancel queued message ${item.position}`}
               title="Cancel this queued message"
             >
-              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
+              <XIcon size={ICON_SIZE.XS} />
             </button>
           </div>
         ))}

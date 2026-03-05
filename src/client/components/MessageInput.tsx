@@ -1,4 +1,6 @@
 import { useState, useRef, useCallback } from "react";
+import { PaperclipIcon, StopIcon } from "@phosphor-icons/react";
+import { ICON_SIZE } from "../design-tokens.js";
 import { ModeSelector } from "./ModeSelector.js";
 import { FileAttachmentChips } from "./FileAttachmentChips.js";
 import { FileAutoComplete } from "./FileAutoComplete.js";
@@ -356,9 +358,7 @@ export function MessageInput({
           title="Attach image"
           aria-label="Attach image"
         >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-          </svg>
+          <PaperclipIcon size={ICON_SIZE.MD} />
         </Button>
 
         <textarea
@@ -382,9 +382,7 @@ export function MessageInput({
             aria-label="Stop Claude"
             data-testid="stop-button"
           >
-            <svg className="w-4 h-4" viewBox="0 0 16 16" fill="currentColor">
-              <rect x="3" y="3" width="10" height="10" rx="1" />
-            </svg>
+            <StopIcon size={ICON_SIZE.SM} weight="fill" />
           </Button>
         ) : (
           <Button
