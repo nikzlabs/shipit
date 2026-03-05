@@ -123,7 +123,7 @@ function parseResources(doc: Record<string, unknown> | undefined): SessionResour
   const res = doc.resources as Record<string, unknown>;
 
   const memory = typeof res.memory === "number" && Number.isFinite(res.memory) && res.memory > 0
-    ? res.memory
+    ? Math.floor(res.memory)
     : DEFAULT_RESOURCES.memory;
 
   const cpu = typeof res.cpu === "number" && Number.isFinite(res.cpu) && res.cpu > 0

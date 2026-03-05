@@ -21,8 +21,8 @@ import type { SessionInfo, DockerProxyDeps } from "./docker-proxy.js";
 interface MockDaemon {
   server: http.Server;
   socketPath: string;
-  /** Containers stored by the mock. Map of id → { labels, running } */
-  containers: Map<string, { labels: Record<string, string>; running: boolean }>;
+  /** Containers stored by the mock. Map of id → { labels, running, hostConfig } */
+  containers: Map<string, { labels: Record<string, string>; running: boolean; hostConfig?: Record<string, unknown> }>;
   /** Networks stored by the mock. */
   networks: Map<string, { labels: Record<string, string> }>;
   /** Volumes stored by the mock. */
@@ -33,7 +33,7 @@ interface MockDaemon {
 }
 
 function createMockDaemon(): MockDaemon {
-  const containers = new Map<string, { labels: Record<string, string>; running: boolean }>();
+  const containers = new Map<string, { labels: Record<string, string>; running: boolean; hostConfig?: Record<string, unknown> }>();
   const networks = new Map<string, { labels: Record<string, string> }>();
   const volumes = new Map<string, { labels: Record<string, string> }>();
   const execs = new Map<string, string>();
@@ -97,7 +97,8 @@ function createMockDaemon(): MockDaemon {
         containerCounter++;
         const id = `mock-container-${containerCounter}`;
         const labels = (body.Labels ?? {}) as Record<string, string>;
-        containers.set(id, { labels, running: false });
+        const hostConfig = (body.HostConfig ?? {}) as Record<string, unknown>;
+        containers.set(id, { labels, running: false, hostConfig });
         respond(201, { Id: id });
         return;
       }
@@ -478,17 +479,17 @@ describe("Docker API proxy", () => {
       expect((res.body as any).message).toContain("capabilities");
     });
 
-    it("injects NET_RAW into CapDrop", async () => {
+    it("injects NET_RAW into CapDrop and sets parent session label", async () => {
       const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
         Image: "alpine",
         HostConfig: {},
       });
       expect(res.status).toBe(201);
 
-      // Check that the container was created with the parent session label
       const containerId = (res.body as any).Id;
       const container = daemon.containers.get(containerId);
       expect(container?.labels[PARENT_SESSION_LABEL]).toBe("session-1");
+      expect(container?.hostConfig?.CapDrop).toContain("NET_RAW");
     });
 
     it("rejects host NetworkMode", async () => {
@@ -605,6 +606,35 @@ describe("Docker API proxy", () => {
       expect(container?.labels["other-label"]).toBe("kept");
     });
 
+    it("rejects bind mounts outside session workspace", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { Binds: ["/etc/passwd:/etc/passwd:ro"] },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("outside session workspace");
+    });
+
+    it("rejects bind Mounts outside session workspace", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { Mounts: [{ Type: "bind", Source: "/etc", Target: "/mnt" }] },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("outside session workspace");
+    });
+
+    it("strips SecurityOpt and CgroupParent", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { SecurityOpt: ["no-new-privileges"], CgroupParent: "/custom" },
+      });
+      expect(res.status).toBe(201);
+      const container = daemon.containers.get((res.body as any).Id);
+      expect(container?.hostConfig?.SecurityOpt).toBeUndefined();
+      expect(container?.hostConfig?.CgroupParent).toBeUndefined();
+    });
+
     it("allows valid container creation", async () => {
       const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
         Image: "alpine",
@@ -613,6 +643,22 @@ describe("Docker API proxy", () => {
       });
       expect(res.status).toBe(201);
       expect((res.body as any).Id).toBeTruthy();
+    });
+
+    it("injects session network when sessionNetworkName is set", async () => {
+      sessionMap.set("127.0.0.1", {
+        sessionId: "session-1",
+        hostWorkspaceDir: "/workspace/sessions/session-1",
+        dockerAccess: true,
+        sessionNetworkName: "shipit-session-abc123",
+      });
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: {},
+      });
+      expect(res.status).toBe(201);
+      const container = daemon.containers.get((res.body as any).Id);
+      expect(container?.hostConfig?.NetworkMode).toBe("shipit-session-abc123");
     });
 
     it("rejects request body exceeding 10 MB", async () => {
@@ -626,6 +672,22 @@ describe("Docker API proxy", () => {
         // Connection may be reset before response is sent — this is acceptable
         expect((err as Error).message).toMatch(/ECONNRESET|socket hang up/);
       }
+    });
+  });
+
+  // --- Unsupported container endpoints ---
+
+  describe("unsupported container endpoints", () => {
+    it("blocks POST /containers/{id}/rename with clear message", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/my-container/rename?name=new-name");
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("rename");
+    });
+
+    it("blocks POST /containers/{id}/update with clear message", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/my-container/update");
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("update");
     });
   });
 

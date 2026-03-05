@@ -19,7 +19,7 @@ RUN curl -fsSL https://download.docker.com/linux/static/stable/$(uname -m)/docke
 
 # Install Docker Compose plugin
 RUN mkdir -p /usr/local/lib/docker/cli-plugins && \
-    ARCH=$(uname -m | sed 's/x86_64/x86_64/' | sed 's/aarch64/aarch64/') && \
+    ARCH=$(uname -m) && \
     curl -fsSL "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-${ARCH}" \
     -o /usr/local/lib/docker/cli-plugins/docker-compose && \
     chmod +x /usr/local/lib/docker/cli-plugins/docker-compose

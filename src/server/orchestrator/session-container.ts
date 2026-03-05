@@ -328,8 +328,12 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
             "shipit-parent-session": config.sessionId,
           },
         });
-      } catch {
-        // Network may already exist from a previous run
+      } catch (err) {
+        // Network may already exist from a previous run — log other errors
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes("already exists")) {
+          console.warn(`[containers] Failed to create session network ${sessionNetworkName}:`, msg);
+        }
       }
       env.push(`SHIPIT_SESSION_NETWORK=${sessionNetworkName}`);
     }
