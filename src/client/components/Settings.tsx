@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useRef } from "react";
 import { ArrowLeftIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { AgentOption } from "./AgentPicker.js";
@@ -88,22 +88,20 @@ export function Settings({
   const savedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  useEffect(() => {
-    if (activeTab === "deploy") {
-      onDeployTabSelected?.();
-    }
-  }, [activeTab]);
+  // Fire onDeployTabSelected when initialTab is "deploy" (one-time on mount equivalent)
+  const deployNotifiedRef = useRef(false);
+  if (initialTab === "deploy" && !deployNotifiedRef.current) {
+    deployNotifiedRef.current = true;
+    onDeployTabSelected?.();
+  }
 
-  useEffect(() => {
+  // Sync local git identity state when props change (e.g. fetched from server)
+  const prevGitIdentityRef = useRef(gitIdentity);
+  if (prevGitIdentityRef.current.name !== gitIdentity.name || prevGitIdentityRef.current.email !== gitIdentity.email) {
+    prevGitIdentityRef.current = gitIdentity;
     setGitName(gitIdentity.name);
     setGitEmail(gitIdentity.email);
-  }, [gitIdentity.name, gitIdentity.email]);
-
-  useEffect(() => {
-    if (activeTab === "instructions") {
-      textareaRef.current?.focus();
-    }
-  }, [activeTab]);
+  }
 
   const handleSave = () => {
     savedRef.current = true;
@@ -193,7 +191,12 @@ export function Settings({
             {generalTabs.map((tab) => (
               <button
                 key={tab}
-                onClick={() => setActiveTab(tab)}
+                onClick={() => {
+                  setActiveTab(tab);
+                  if (tab === "instructions") {
+                    requestAnimationFrame(() => textareaRef.current?.focus());
+                  }
+                }}
                 className={`w-full text-left px-4 py-2 text-sm transition-colors ${
                   activeTab === tab
                     ? "bg-(--color-bg-secondary) text-(--color-text-primary) font-medium"
@@ -208,7 +211,7 @@ export function Settings({
               Project
             </div>
             <button
-              onClick={() => { if (hasActiveSession) setActiveTab("deploy"); }}
+              onClick={() => { if (hasActiveSession) { setActiveTab("deploy"); onDeployTabSelected?.(); } }}
               disabled={!hasActiveSession}
               title={!hasActiveSession ? "Requires active session" : undefined}
               className={`w-full text-left px-4 py-2 text-sm transition-colors ${

@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: document mousedown listener for click-outside with cleanup (browser API subscription)
 import { useState, useRef, useEffect } from "react";
 import { ArrowCounterClockwiseIcon } from "@phosphor-icons/react";
 

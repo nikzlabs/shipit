@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: EventSource (SSE) connection lifecycle with cleanup (external system sync)
 import { useEffect, useRef } from "react";
 import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";

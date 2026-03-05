@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: HTTP fetch on mount for utility model config (one-time data load, no fetch library available)
 import { useState, useEffect } from "react";
 import { useApi } from "../hooks/useApi.js";
 

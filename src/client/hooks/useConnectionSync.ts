@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: HTTP bootstrap fetch on mount, WS connect/disconnect handling (external system sync)
 import { useEffect, useRef } from "react";
 import type { WsClientMessage } from "../../server/shared/types.js";
 import { useSessionStore } from "../stores/session-store.js";
