@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: Escape keydown listener (browser API subscription with cleanup)
 import { useState, useEffect, useRef } from "react";
 import { CheckIcon, XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
@@ -59,19 +60,16 @@ export function DeployModal({
 
   const view = getView();
 
-  // Auto-select target if only one configured target exists
-  useEffect(() => {
-    if (configuredTargets.length === 1 && !selectedTarget) {
-      setSelectedTarget(configuredTargets[0]);
-    }
-  }, [configuredTargets, selectedTarget]);
+  // Auto-select when only one configured target exists (derived inline)
+  const activeTarget = selectedTarget ?? (configuredTargets.length === 1 ? configuredTargets[0] : null);
 
-  // Request history when entering ready view
-  useEffect(() => {
-    if (view === "ready") {
-      onGetHistory();
-    }
-  }, [view, onGetHistory]);
+  // Request history on mount if we're starting in "ready" view
+  const historyRequestedRef = useRef(false);
+  if (view === "ready" && !historyRequestedRef.current) {
+    historyRequestedRef.current = true;
+    // Schedule after render to avoid calling parent callback during render
+    queueMicrotask(() => onGetHistory());
+  }
 
   // Close on Escape
   useEffect(() => {
@@ -81,8 +79,6 @@ export function DeployModal({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
-
-  const activeTarget = selectedTarget ?? configuredTargets[0] ?? null;
 
   const handleDeploy = () => {
     if (!activeTarget || deploying) return;
@@ -160,7 +156,7 @@ export function DeployModal({
               {configuredTargets.map((target) => (
                 <button
                   key={target.id}
-                  onClick={() => setSelectedTarget(target)}
+                  onClick={() => { setSelectedTarget(target); onGetHistory(); }}
                   className="w-full text-left p-4 rounded-lg border border-(--color-border-secondary) hover:border-(--color-accent) hover:bg-(--color-bg-hover) transition-colors"
                 >
                   <div className="font-medium text-(--color-text-primary)">{target.name}</div>

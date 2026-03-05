@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: document visibilitychange listener with cleanup (browser API subscription)
 import { useEffect, useRef, useCallback } from "react";
 
 const DEFAULT_TITLE = "ShipIt";

@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: document.body style during drag, input focus on editing start (DOM sync)
 import { useState, useRef, useEffect, useCallback } from "react";
 import { PencilSimpleIcon, ArchiveIcon as PhArchiveIcon, GearSixIcon, GithubLogoIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";

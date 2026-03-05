@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: WebSocket message dispatch to stores (external system sync)
 import { useEffect, type RefObject } from "react";
 import type { ChatMessage, ToolResultBlock } from "../components/MessageList.js";
 import { activityFromTool } from "../components/StreamingIndicator.js";

@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: window keydown listener + DOM scrollIntoView (browser API subscriptions with cleanup)
 import { useState, useEffect, useRef, useCallback } from "react";
 import { FileIcon } from "@phosphor-icons/react";
 import type { FileTreeNode } from "../../server/shared/types.js";
@@ -51,10 +52,12 @@ export function FileAutoComplete({
   const allFiles = flattenTree(fileTree);
   const matches = filterFiles(allFiles, query);
 
-  // Reset selected index when matches change
-  useEffect(() => {
+  // Reset selected index when query changes (inline state reset during render)
+  const prevQueryRef = useRef(query);
+  if (prevQueryRef.current !== query) {
+    prevQueryRef.current = query;
     setSelectedIndex(0);
-  }, [query]);
+  }
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {

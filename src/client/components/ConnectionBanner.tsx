@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: setTimeout for disconnect delay with cleanup (timer-based side effect)
 import { useEffect, useRef, useState } from "react";
 import type { WsStatus } from "../hooks/useWebSocket.js";
 import { Banner } from "./ui/banner.js";

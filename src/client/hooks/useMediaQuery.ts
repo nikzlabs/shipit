@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: window.matchMedia listener with cleanup (browser API subscription)
 import { useState, useEffect } from "react";
 
 /**

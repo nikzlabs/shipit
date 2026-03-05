@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: debounce cleanup on unmount + document mousedown click-outside with cleanup (browser API subscription)
 import { useState, useRef, useEffect, useCallback } from "react";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import { Badge } from "./ui/badge.js";

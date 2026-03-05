@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useMemo } from "react";
 import { XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
@@ -51,15 +51,18 @@ export function AllSessionsDialog({
     );
   }, [sessions, repos]);
 
-  useEffect(() => {
-    if (open) {
-      setQuery("");
-      setSelectedRepo(currentRepoUrl ?? ALL_REPOS);
-      setActioningId(null);
+  // Reset state when dialog opens (inline state reset during render)
+  const prevOpenRef = useRef(false);
+  if (open && !prevOpenRef.current) {
+    setQuery("");
+    setSelectedRepo(currentRepoUrl ?? ALL_REPOS);
+    setActioningId(null);
+    queueMicrotask(() => {
       onFetch();
-      setTimeout(() => inputRef.current?.focus(), 50);
-    }
-  }, [open]);
+      inputRef.current?.focus();
+    });
+  }
+  prevOpenRef.current = open;
 
   if (!open) return null;
 

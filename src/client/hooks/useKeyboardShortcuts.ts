@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: window keydown listeners with cleanup (browser API subscription)
 import { useEffect } from "react";
 import type { UseSearchReturn } from "./useSearch.js";
 

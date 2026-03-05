@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: scroll event listener + DOM scrollIntoView (browser API subscription + DOM sync)
 import { useEffect, useRef, useState, useMemo } from "react";
 import { Button } from "./ui/button.js";
 

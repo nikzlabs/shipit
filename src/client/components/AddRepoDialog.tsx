@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: auto-close on async repo clone completion (reacts to external process finishing)
 import { useState, useRef, useEffect } from "react";
 import { XIcon, CircleNotchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
@@ -29,22 +30,25 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  useEffect(() => {
-    if (open) {
-      setQuery("");
-      setPendingUrl(null);
-      setTimeout(() => inputRef.current?.focus(), 50);
-      // Lazy-load the user's GitHub repos on first open
-      if (searchResults.length === 0) {
-        setLoadingRepos(true);
+  // Reset state when dialog opens (inline state reset during render)
+  const prevOpenRef = useRef(false);
+  if (open && !prevOpenRef.current) {
+    setQuery("");
+    setPendingUrl(null);
+    // Lazy-load the user's GitHub repos on first open
+    if (searchResults.length === 0) {
+      setLoadingRepos(true);
+      queueMicrotask(() => {
         // eslint-disable-next-line no-restricted-syntax -- Promise two-arg form for loading state
         Promise.resolve(onSearch("")).then(
           () => setLoadingRepos(false),
           () => setLoadingRepos(false),
         );
-      }
+      });
     }
-  }, [open]);
+    queueMicrotask(() => inputRef.current?.focus());
+  }
+  prevOpenRef.current = open;
 
   // Auto-close and navigate when the pending repo becomes ready
   const pendingRepo = pendingUrl ? repos.find((r) => r.url === pendingUrl) : null;

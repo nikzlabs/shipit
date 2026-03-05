@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: WebSocket connection lifecycle with cleanup and reconnection (external system sync)
 import { useRef, useEffect, useCallback, useState } from "react";
 
 export type WsStatus = "connecting" | "open" | "closed";

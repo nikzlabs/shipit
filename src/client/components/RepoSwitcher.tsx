@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: document mousedown + keydown listeners for click-outside/Escape with cleanup (browser API subscription)
 import { useRef, useEffect } from "react";
 import { PlusIcon, FolderPlusIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
