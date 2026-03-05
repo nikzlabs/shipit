@@ -116,6 +116,7 @@ Three-layer system: browser (React SPA) → orchestrator (Fastify) → session w
 - **Node built-ins** — use `node:` prefix (e.g., `import fs from "node:fs"`).
 - **Naming** — classes: PascalCase, functions: camelCase, events/WS message types: snake_case, constants: UPPER_SNAKE_CASE.
 - **React** — functional components only, hooks for all state/effects. React 19 JSX transform (no `import React` needed).
+- **Icons** — use `@phosphor-icons/react` for all icons. Never hardcode `<svg>` elements. Use the `ICON_SIZE` constants from `src/client/design-tokens.ts` (XS=12, SM=16, MD=20, LG=32, XL=48) for icon sizes. See the `design-language` skill for full icon and styling guidance.
 - **Styling** — Tailwind CSS v4 utility classes. Dark-mode-only color scheme (gray-950 backgrounds).
 - **Strict TypeScript** — `strict: true` in tsconfig. Target ES2022, module ESNext with bundler resolution.
 

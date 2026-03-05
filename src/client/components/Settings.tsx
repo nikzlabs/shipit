@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from "react";
+import { ArrowLeftIcon } from "@phosphor-icons/react";
+import { ICON_SIZE } from "../design-tokens.js";
 import type { AgentOption } from "./AgentPicker.js";
 import type { DeployTargetInfo } from "../../server/shared/types.js";
 import { Badge } from "./ui/badge.js";
@@ -466,9 +468,7 @@ export function Settings({
                       className="text-(--color-text-tertiary)"
                       aria-label="Back to targets"
                     >
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-                      </svg>
+                      <ArrowLeftIcon size={ICON_SIZE.SM} />
                     </Button>
                     <h3 className="text-sm font-medium text-(--color-text-primary)">
                       Configure {selectedDeployTarget.name}

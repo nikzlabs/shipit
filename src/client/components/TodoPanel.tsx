@@ -1,3 +1,6 @@
+import { CheckIcon } from "@phosphor-icons/react";
+import { ICON_SIZE } from "../design-tokens.js";
+
 export interface TodoItem {
   content: string;
   status: "pending" | "in_progress" | "completed";
@@ -42,20 +45,7 @@ function StatusIcon({ status }: { status: TodoItem["status"] }) {
   switch (status) {
     case "completed":
       return (
-        <svg
-          className="w-3.5 h-3.5 text-(--color-success) shrink-0"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          strokeWidth={2}
-          data-testid="status-completed"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M5 13l4 4L19 7"
-          />
-        </svg>
+        <CheckIcon size={14} className="text-(--color-success) shrink-0" data-testid="status-completed" />
       );
     case "in_progress":
       return (
