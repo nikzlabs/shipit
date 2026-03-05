@@ -130,6 +130,13 @@ export interface WsChatHistoryMessage {
     endLine?: number;
   }[];
   isError?: boolean;
+  toolResults?: {
+    toolUseId: string;
+    content: string;
+    isError?: boolean;
+  }[];
+  /** True while the agent turn that produced this message is still running. */
+  inProgress?: boolean;
   /** Git commit hash produced by auto-commit after this assistant message. */
   commitHash?: string;
   /** Parent commit hash (HEAD before the auto-commit). Used for rollback. */

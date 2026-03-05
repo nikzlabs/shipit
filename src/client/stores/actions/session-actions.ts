@@ -8,8 +8,6 @@ import { useDeployStore } from "../deploy-store.js";
 import { usePrStore } from "../pr-store.js";
 import { useSettingsStore } from "../settings-store.js";
 import { useRepoStore } from "../repo-store.js";
-import { loadSessionHistory } from "../../utils/session-data.js";
-
 /**
  * Resets all session-specific state across all stores.
  * Replaces the three duplicated reset blocks in the old codebase.
@@ -32,6 +30,7 @@ export function resumeSessionInternal(sessionId: string) {
   session.setSessionId(sessionId);
   session.setMessages([]);
   session.setIsLoading(false);
+  session.setActivity(undefined);
   session.setQueuedMessages([]);
   useUiStore.getState().setShowTemplates(false);
 
@@ -42,8 +41,8 @@ export function resumeSessionInternal(sessionId: string) {
   useUiStore.getState().reset();
   usePreviewStore.getState().reset();
 
-  // Fetch session data via HTTP
-  loadSessionHistory(sessionId).catch((err: unknown) => console.error("[api] Failed to load session history:", err));
+  // Session data is loaded via HTTP by useConnectionSync when the per-session WS connects.
+  // Don't load here — it races with the WS connection and causes double-loading.
 }
 
 /**

@@ -159,7 +159,7 @@ describe("Integration: persistent session runners", () => {
     client2.close();
   });
 
-  it("reconnecting replays buffered turn events", async () => {
+  it("reconnecting to a running session shows running status and history is available via HTTP", async () => {
     const client1 = await TestClient.connect(port);
     await client1.receive(); // preview_status
     const sessionId = client1.sessionId;
@@ -170,33 +170,37 @@ describe("Integration: persistent session runners", () => {
 
     // Emit init event to trigger session_started
     claude.emit("event", { type: "system", subtype: "init", session_id: "agent-session-2" });
-
-    // Drain session_started
     await drainUntil(client1, (m) => m.type === "session_started");
 
-    // Emit assistant event in Claude format (FakeClaudeProcess is wrapped by ClaudeAdapter)
+    // Emit assistant + tool_result to trigger incremental persistence
     claude.emit("event", {
       type: "assistant",
       message: { content: [{ type: "text", text: "Here is the answer" }] },
     });
-
-    // Wait for client1 to receive the events
-    const assistantMsg = await drainUntil(client1, (m) => m.type === "agent_event" && m.event?.type === "agent_assistant");
-    expect(assistantMsg).toBeTruthy();
+    await drainUntil(client1, (m) => m.type === "agent_event" && m.event?.type === "agent_assistant");
+    claude.emit("event", {
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "tu1", content: "ok" }] },
+    });
+    await drainUntil(client1, (m) => m.type === "agent_event" && m.event?.type === "agent_tool_result");
 
     // Disconnect client1
     client1.close();
     await new Promise((r) => setTimeout(r, 50));
 
-    // Reconnect to the same session (auto-activates, replays turn buffer)
+    // Reconnect to the same session — should see running status
     const client2 = await TestClient.connect(port, sessionId);
+    const statusMsg = await drainUntil(client2, (m) => m.type === "session_status");
+    expect(statusMsg).toBeTruthy();
+    expect(statusMsg!.running).toBe(true);
 
-    // Client2 should receive replayed events from the turn buffer
-    // The buffer includes agent_event from the assistant message
-    const replayed = await drainUntil(client2, (m) =>
-      m.type === "agent_event" && m.event?.type === "agent_assistant"
-    );
-    expect(replayed).toBeTruthy();
+    // HTTP history should include the in-progress assistant message
+    const historyRes = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    const history = historyRes.json();
+    expect(history.agentRunning).toBe(true);
+    const assistantMsgs = history.messages.filter((m: AnyMsg) => m.role === "assistant");
+    expect(assistantMsgs.length).toBeGreaterThanOrEqual(1);
+    expect(assistantMsgs[0].text).toContain("Here is the answer");
 
     // Finish Claude
     claude.finish("test-session-id");
@@ -338,6 +342,76 @@ describe("Integration: persistent session runners", () => {
     // Finish Claude
     claude.finish("test-session-id");
     client2.close();
+  });
+
+  it("agent turn completes correctly after viewer disconnects mid-turn", async () => {
+    const client1 = await TestClient.connect(port);
+    await client1.receive(); // preview_status
+    const sessionId = client1.sessionId;
+
+    // Start Claude
+    client1.send({ type: "send_message", text: "Hello" });
+    const claude = await waitForClaude(() => lastClaude);
+
+    // Emit init event to establish the session
+    claude.emit("event", { type: "system", subtype: "init", session_id: "agent-disconnect-1" });
+    await drainUntil(client1, (m) => m.type === "session_started");
+
+    // Emit assistant text
+    claude.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "Here is my answer" }] },
+    });
+    await drainUntil(client1, (m) => m.type === "agent_event" && m.event?.type === "agent_assistant");
+
+    // Emit tool_result to trigger incremental persistence
+    claude.emit("event", {
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "tu1", content: "ok" }] },
+    });
+    await drainUntil(client1, (m) => m.type === "agent_event" && m.event?.type === "agent_tool_result");
+
+    // Disconnect the viewer — agent continues running
+    client1.close();
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Emit more assistant text while disconnected
+    claude.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: " and more details" }] },
+    });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Finish the agent while disconnected
+    claude.finish("agent-disconnect-1");
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Verify: runner should report not running
+    const statusRes = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/status` });
+    expect(statusRes.statusCode).toBe(200);
+    expect(statusRes.json().running).toBe(false);
+
+    // Verify: HTTP history should contain the persisted assistant messages
+    const historyRes = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    expect(historyRes.statusCode).toBe(200);
+    const history = historyRes.json();
+    expect(history.agentRunning).toBe(false);
+
+    // Should have: user message + at least one assistant message
+    const userMsgs = history.messages.filter((m: AnyMsg) => m.role === "user");
+    const assistantMsgs = history.messages.filter((m: AnyMsg) => m.role === "assistant");
+    expect(userMsgs.length).toBeGreaterThanOrEqual(1);
+    expect(assistantMsgs.length).toBeGreaterThanOrEqual(1);
+
+    // Assistant messages should contain text from both assistant events
+    const allText = assistantMsgs.map((m: AnyMsg) => m.text).join("");
+    expect(allText).toContain("Here is my answer");
+    expect(allText).toContain("and more details");
+
+    // No messages should have inProgress flag
+    for (const m of history.messages) {
+      expect(m.inProgress).toBeFalsy();
+    }
   });
 
   it("get_session_status returns 404 for unknown sessions", async () => {

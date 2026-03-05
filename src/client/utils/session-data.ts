@@ -21,9 +21,19 @@ interface PreviewStatusResponse {
 }
 
 interface HistoryResponse {
-  messages: { role: string; text: string; toolUse?: unknown[]; images?: unknown[]; files?: unknown[]; isError?: boolean }[];
+  messages: {
+    role: string;
+    text: string;
+    toolUse?: unknown[];
+    toolResults?: { toolUseId: string; content: string; isError?: boolean }[];
+    images?: unknown[];
+    files?: unknown[];
+    isError?: boolean;
+    inProgress?: boolean;
+  }[];
   commits: GitCommit[];
   fileTree: FileTreeNode[];
+  agentRunning?: boolean;
 }
 
 interface BootstrapResponse {
@@ -48,8 +58,14 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   const res = await fetch(`/api/sessions/${sessionId}/history`);
   const data = await res.json() as HistoryResponse;
   useSessionStore.getState().setMessages(
-    data.messages.map((m) => ({ ...m, streaming: false } as ChatMessage)),
+    data.messages.map((m) => ({ ...m, streaming: m.inProgress ?? false } as ChatMessage)),
   );
+  if (data.agentRunning) {
+    useSessionStore.getState().setIsLoading(true);
+  } else {
+    useSessionStore.getState().setIsLoading(false);
+    useSessionStore.getState().setActivity(undefined);
+  }
   useGitStore.getState().setCommits(data.commits);
   useFileStore.getState().setTree(data.fileTree);
 

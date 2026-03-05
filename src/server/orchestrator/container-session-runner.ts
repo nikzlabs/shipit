@@ -15,7 +15,7 @@ import http from "node:http";
 import { getErrorMessage } from "../shared/utils.js";
 import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess, PermissionMode } from "../shared/types.js";
 import type { WsServerMessage, ClaudeContentBlockToolUse } from "../shared/types.js";
-import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps } from "./session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup } from "./session-runner.js";
 import { runSystemTurn } from "./session-runner.js";
 
 // ---------------------------------------------------------------------------
@@ -323,7 +323,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _accumulatedText = "";
   private _accumulatedToolUse: ClaudeContentBlockToolUse[] = [];
   private _turnSummary = "";
-  private _chatMessageGroups: { text: string; toolUse: ClaudeContentBlockToolUse[] }[] = [];
+  private _chatMessageGroups: ChatMessageGroup[] = [];
   private _needsNewMessageGroup = true;
 
   // Message queue
@@ -368,6 +368,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   // Turn event buffer
   private _turnEventBuffer: WsServerMessage[] = [];
   private static readonly MAX_TURN_BUFFER = 1000;
+  lastPersistedBufferIndex = 0;
 
   // Viewer tracking
   private _viewerCount = 0;
@@ -420,8 +421,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   get turnSummary(): string { return this._turnSummary; }
   set turnSummary(s: string) { this._turnSummary = s; }
 
-  get chatMessageGroups(): { text: string; toolUse: ClaudeContentBlockToolUse[] }[] { return this._chatMessageGroups; }
-  set chatMessageGroups(groups: { text: string; toolUse: ClaudeContentBlockToolUse[] }[]) { this._chatMessageGroups = groups; }
+  get chatMessageGroups(): ChatMessageGroup[] { return this._chatMessageGroups; }
+  set chatMessageGroups(groups: ChatMessageGroup[]) { this._chatMessageGroups = groups; }
 
   get needsNewMessageGroup(): boolean { return this._needsNewMessageGroup; }
   set needsNewMessageGroup(v: boolean) { this._needsNewMessageGroup = v; }
@@ -498,7 +499,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   // --- Turn event buffer ---
 
   getTurnEventBuffer(): WsServerMessage[] { return [...this._turnEventBuffer]; }
-  clearTurnEventBuffer(): void { this._turnEventBuffer = []; }
+  clearTurnEventBuffer(): void { this._turnEventBuffer = []; this.lastPersistedBufferIndex = 0; }
 
   emitMessage(msg: WsServerMessage): void {
     if (this._turnEventBuffer.length < ContainerSessionRunner.MAX_TURN_BUFFER) {

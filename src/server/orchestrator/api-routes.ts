@@ -376,7 +376,7 @@ export async function registerApiRoutes(
       reply.code(404).send({ error: "Session not found" });
       return;
     }
-    const messages = getChatHistory(deps.chatHistoryManager, request.params.id);
+    let messages = getChatHistory(deps.chatHistoryManager, request.params.id) as Record<string, unknown>[];
 
     // Also return git log and file tree for the session workspace (if it exists)
     let commits: Awaited<ReturnType<typeof getGitLog>> = [];
@@ -395,7 +395,33 @@ export async function registerApiRoutes(
       }
     }
 
-    return { messages, commits, fileTree };
+    const runner = deps.runnerRegistry.get(request.params.id);
+    const agentRunning = runner?.running ?? false;
+
+    // If the agent is mid-turn, replace persisted in-progress messages with
+    // the live state from the runner's chatMessageGroups. This covers text
+    // accumulated since the last agent_tool_result persistence boundary.
+    if (agentRunning && runner) {
+      const liveGroups = runner.chatMessageGroups;
+      if (liveGroups.length > 0) {
+        // Remove persisted in-progress entries (stale snapshot)
+        const kept = messages.filter((m) => !m.inProgress);
+        for (const g of liveGroups) {
+          if (g.text || g.toolUse.length > 0) {
+            kept.push({
+              role: "assistant",
+              text: g.text,
+              toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
+              toolResults: g.toolResults?.length ? g.toolResults : undefined,
+              inProgress: true,
+            });
+          }
+        }
+        messages = kept;
+      }
+    }
+
+    return { messages, commits, fileTree, agentRunning };
   });
 
   // GET /api/sessions/:id/usage — usage stats

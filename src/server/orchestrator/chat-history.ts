@@ -28,6 +28,13 @@ export interface PersistedMessage {
     endLine?: number;
   }[];
   isError?: boolean;
+  toolResults?: {
+    toolUseId: string;
+    content: string;
+    isError?: boolean;
+  }[];
+  /** True while the agent turn that produced this message is still running. */
+  inProgress?: boolean;
   /** Git commit hash produced by auto-commit after this assistant message. */
   commitHash?: string;
   /** Parent commit hash (HEAD before the auto-commit). Used for rollback. */
@@ -109,6 +116,38 @@ export class ChatHistoryManager {
   /** Save messages for a session (overwriting existing history). */
   saveMessages(sessionId: string, messages: PersistedMessage[]): void {
     this.save(sessionId, messages);
+  }
+
+  /**
+   * Replace all in-progress messages for a session with the given set.
+   * Called at each agent_tool_result boundary with the accumulated message groups.
+   */
+  replaceInProgress(sessionId: string, messages: PersistedMessage[]): void {
+    const existing = this.load(sessionId);
+    const kept = existing.filter((m) => !m.inProgress);
+    this.save(sessionId, [...kept, ...messages]);
+  }
+
+  /** Remove the inProgress flag from all messages. Called on agent_result. */
+  finalizeInProgress(sessionId: string): void {
+    const messages = this.load(sessionId);
+    let changed = false;
+    for (const m of messages) {
+      if (m.inProgress) {
+        delete m.inProgress;
+        changed = true;
+      }
+    }
+    if (changed) this.save(sessionId, messages);
+  }
+
+  /** Remove all in-progress messages. Called on agent error/abort. */
+  clearInProgress(sessionId: string): void {
+    const messages = this.load(sessionId);
+    const kept = messages.filter((m) => !m.inProgress);
+    if (kept.length !== messages.length) {
+      this.save(sessionId, kept);
+    }
   }
 
   /** Delete a session's chat history. */
