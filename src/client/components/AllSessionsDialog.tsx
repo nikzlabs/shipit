@@ -1,10 +1,9 @@
 import { useState, useRef, useEffect, useMemo } from "react";
-import { formatRelativeDate } from "../utils/dates.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
-import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { Modal } from "./ui/modal.js";
+import { SessionItem } from "./SessionSidebar.js";
 
 interface AllSessionsDialogProps {
   open: boolean;
@@ -19,22 +18,6 @@ interface AllSessionsDialogProps {
 }
 
 const ALL_REPOS = "__all__";
-
-function RestoreIcon() {
-  return (
-    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3" />
-    </svg>
-  );
-}
-
-function ArchiveIcon() {
-  return (
-    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="m20.25 7.5-.625 10.632a2.25 2.25 0 0 1-2.247 2.118H6.622a2.25 2.25 0 0 1-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125Z" />
-    </svg>
-  );
-}
 
 export function AllSessionsDialog({
   open,
@@ -188,71 +171,18 @@ export function AllSessionsDialog({
                   : "No matches found."}
               </p>
             ) : (
-              filtered.map((session) => {
-                const isArchived = session.archived === true;
-                return (
-                  <div
-                    key={session.id}
-                    className="group flex items-start gap-2 px-3 py-2 border-b border-(--color-border-primary)/50 last:border-b-0 hover:bg-(--color-bg-hover) transition-colors"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        {isArchived ? (
-                          <button
-                            onClick={() => handleResume(session.id)}
-                            className="text-sm text-(--color-text-secondary) truncate hover:text-(--color-text-primary) transition-colors text-left"
-                          >
-                            {session.title}
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => handleResume(session.id)}
-                            className="text-sm text-(--color-text-primary) truncate hover:text-(--color-text-link) transition-colors text-left"
-                          >
-                            {session.title}
-                          </button>
-                        )}
-                        <Badge variant={isArchived ? "default" : "success"} className="shrink-0 text-[10px]">
-                          {isArchived ? "Archived" : "Active"}
-                        </Badge>
-                      </div>
-                      <div className="flex items-center gap-2 mt-0.5">
-                        {selectedRepo === ALL_REPOS && session.remoteUrl && (
-                          <span className="text-[10px] text-(--color-text-tertiary) truncate">
-                            {parseRepoLabel(session.remoteUrl)}
-                          </span>
-                        )}
-                        <span className="text-[10px] text-(--color-text-tertiary)">
-                          {formatRelativeDate(session.lastUsedAt)}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Actions */}
-                    <div className="shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                      {isArchived ? (
-                        <button
-                          onClick={() => handleUnarchive(session.id)}
-                          disabled={actioningId === session.id}
-                          className="p-1 rounded text-(--color-text-secondary) hover:text-(--color-success) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-50"
-                          title="Restore session"
-                        >
-                          <RestoreIcon />
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => handleArchive(session.id)}
-                          disabled={actioningId === session.id}
-                          className="p-1 rounded text-(--color-text-secondary) hover:text-(--color-warning) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-50"
-                          title="Archive session"
-                        >
-                          <ArchiveIcon />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })
+              filtered.map((session) => (
+                <SessionItem
+                  key={session.id}
+                  session={session}
+                  isCurrent={false}
+                  onResume={handleResume}
+                  onArchive={handleArchive}
+                  onRestore={handleUnarchive}
+                  repoLabel={selectedRepo === ALL_REPOS && session.remoteUrl ? parseRepoLabel(session.remoteUrl) : undefined}
+                  disabled={actioningId === session.id}
+                />
+              ))
             )}
           </div>
         </div>
