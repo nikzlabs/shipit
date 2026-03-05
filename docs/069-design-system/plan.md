@@ -36,16 +36,16 @@ Design language skill: `.claude/skills/design-language/SKILL.md` — defines all
 6. Add shared motion tokens in `index.css`: `--duration-fast: 150ms`, `--duration-normal: 200ms`, `--duration-slow: 1s`, `--ease-default: ease`, `--ease-out: ease-out`, `--ease-in: ease-in`
 7. Verify existing UI is unchanged (tokens defined but not yet consumed)
 
-### Phase 2: Install Phosphor Icons
+### Phase 2: Install Dependencies
 
-**Goal:** Add `@phosphor-icons/react` dependency.
+**Goal:** Add `@phosphor-icons/react` and `class-variance-authority` dependencies.
 
 **Files:**
 - `package.json`
 
 **Work:**
-1. `npm install @phosphor-icons/react`
-2. Verify bundle — Phosphor is tree-shakeable, so unused icons won't bloat the build
+1. `npm install @phosphor-icons/react class-variance-authority`
+2. Verify bundle — both are tree-shakeable
 
 ### Phase 3: Migrate Core Layout (App.tsx)
 
@@ -96,7 +96,29 @@ Design language skill: `.claude/skills/design-language/SKILL.md` — defines all
 3. Migrate context meter colors in StatusBar to `--color-context-*` tokens
 4. Ensure all status dots, banners, and badges follow the patterns defined in the design language skill
 
-### Phase 6: Migrate File Tree & Preview
+### Phase 6: Extract UI Primitives
+
+**Goal:** Create shared primitive components with CVA so remaining migration phases can consume them instead of duplicating class strings.
+
+**Files:**
+- `src/client/components/ui/button.tsx` (new)
+- `src/client/components/ui/badge.tsx` (new)
+- `src/client/components/ui/status-dot.tsx` (new)
+- `src/client/components/ui/banner.tsx` (new)
+- `src/client/components/ui/panel.tsx` (new)
+- `src/client/components/ui/card.tsx` (new)
+- `src/client/components/ui/modal.tsx` (new)
+
+**Work:**
+1. Create `Button` with CVA variants: primary, secondary, destructive, ghost + sizes sm, md, lg
+2. Create `Badge` with CVA variants: default, success, error, warning, info
+3. Create `StatusDot` with status prop: success, error, warning, info
+4. Create `Banner` with CVA variants: error, warning, info, success
+5. Create `Panel`, `Card`, `Modal` as thin wrappers with token-based styling
+6. Refactor App.tsx and Phases 3–5 components to use the new primitives where applicable
+7. All primitives use design tokens — no raw Tailwind color classes
+
+### Phase 7: Migrate File Tree & Preview
 
 **Files:**
 - `src/client/components/FileTree.tsx`
@@ -109,9 +131,9 @@ Design language skill: `.claude/skills/design-language/SKILL.md` — defines all
 4. PreviewFrame: Migrate auto-fix orange indicator to `--color-autofix` token
 5. PreviewFrame: Replace any inline SVGs with Phosphor equivalents
 
-### Phase 7: Migrate Remaining Components
+### Phase 8: Migrate Remaining Components
 
-**Goal:** Sweep through all remaining components.
+**Goal:** Sweep through all remaining components, using UI primitives where applicable.
 
 **Files:**
 - `src/client/components/MessageList.tsx`
@@ -128,9 +150,9 @@ Design language skill: `.claude/skills/design-language/SKILL.md` — defines all
 2. Replace all `text-*` / `dark:text-*` pairs with token equivalents
 3. Replace all `border-*` / `dark:border-*` pairs with token equivalents
 4. Replace any remaining inline SVGs with Phosphor icons
-5. Ensure button patterns match the spec (primary, secondary, destructive, ghost)
+5. Replace inline button/badge/banner patterns with UI primitive components
 
-### Phase 8: Update useTheme for Multi-Theme Support
+### Phase 9: Update useTheme for Multi-Theme Support
 
 **Goal:** Extend the theme system beyond light/dark.
 
@@ -144,7 +166,7 @@ Design language skill: `.claude/skills/design-language/SKILL.md` — defines all
 4. Light theme = no class (`:root` defaults), dark theme = `.dark` class
 5. Future themes add their own class (e.g., `.solarized`, `.high-contrast`)
 
-### Phase 9: Clean Up Legacy Patterns
+### Phase 10: Clean Up Legacy Patterns
 
 **Goal:** Remove all dead code from the migration.
 
@@ -154,7 +176,7 @@ Design language skill: `.claude/skills/design-language/SKILL.md` — defines all
 3. Audit for any remaining raw color classes — there should be none outside of `index.css` token definitions
 4. Update any component tests that assert on specific color classes
 
-### Phase 10: Testing & Verification
+### Phase 11: Testing & Verification
 
 **Work:**
 1. Visual verification: toggle light/dark mode, confirm all surfaces, text, borders, and status colors are correct
@@ -170,7 +192,7 @@ Design language skill: `.claude/skills/design-language/SKILL.md` — defines all
 - **Incremental** — Each phase is independently shippable. Tokens and old classes coexist during migration.
 - **No visual changes** — Every phase should produce pixel-identical output. This is a refactor, not a redesign.
 - **Test after each phase** — Run `npm run test:dev` after each phase to catch regressions early.
-- **Component-by-component** — Phases 3–7 can be done in any order. Start with the highest-traffic files.
+- **Component-by-component** — Phases 3–5 can be done in any order. Phase 6 (UI primitives) should come before Phase 7–8 so those phases can consume the primitives.
 
 ## Risk & Mitigation
 

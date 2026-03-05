@@ -109,19 +109,24 @@ import { ICON_SIZE } from "../design-tokens.js";
 
 Motion tokens are defined in `index.css` (shared, not per-theme). Use `transition-[color] duration-[var(--duration-fast)]` instead of Tailwind's `transition-colors` to reference the token. Avoid animating layout properties (`width`, `height`) unless explicitly resizing.
 
-## Component Patterns
+## UI Primitives
 
-```
-Primary button:    bg-[var(--color-accent)] text-[var(--color-accent-text)] hover:bg-[var(--color-accent-hover)]
-Secondary button:  bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]
-Destructive button: bg-[var(--color-error)] text-[var(--color-accent-text)] hover:opacity-90
-Ghost button:      bg-transparent text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]
+Shared components in `src/client/components/ui/` using [CVA](https://cva.style) (class-variance-authority) for variant-based styling. Never duplicate token class strings across components — use these primitives instead.
 
-Status dot:    w-2 h-2 rounded-full bg-[var(--color-success|error|warning)]
-Status banner: bg-[var(--color-error-subtle)] border border-[var(--color-error)] text-[var(--color-error)]
-Badge:         px-2 py-0.5 rounded-full text-xs bg-[var(--color-accent-subtle)] text-[var(--color-accent)]
+| Component | File | Variants |
+|-----------|------|----------|
+| `Button` | `button.tsx` | `variant`: primary, secondary, destructive, ghost. `size`: sm, md, lg |
+| `Badge` | `badge.tsx` | `variant`: default, success, error, warning, info |
+| `StatusDot` | `status-dot.tsx` | `status`: success, error, warning, info |
+| `Banner` | `banner.tsx` | `variant`: error, warning, info, success |
+| `Panel` | `panel.tsx` | Base surface with border |
+| `Card` | `card.tsx` | Elevated surface with shadow |
+| `Modal` | `modal.tsx` | Dialog overlay with backdrop |
 
-Panel:  bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)] rounded-lg
-Card:   bg-[var(--color-bg-tertiary)] rounded-lg p-3 shadow-sm
-Modal:  bg-[var(--color-bg-elevated)] rounded-xl shadow-lg p-6
+Example usage:
+
+```tsx
+import { Button } from "./ui/button.js";
+
+<Button variant="destructive" size="sm">Delete</Button>
 ```

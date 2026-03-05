@@ -8,9 +8,9 @@
 - [ ] Add shared motion tokens to `index.css`: `--duration-fast: 150ms`, `--duration-normal: 200ms`, `--duration-slow: 1s`, `--ease-default: ease`, `--ease-out: ease-out`, `--ease-in: ease-in`
 - [ ] Verify UI is visually unchanged (tokens defined but not consumed yet)
 
-## Phase 2: Install Phosphor Icons
+## Phase 2: Install Dependencies
 
-- [ ] `npm install @phosphor-icons/react`
+- [ ] `npm install @phosphor-icons/react class-variance-authority`
 - [ ] Run `npm run build` and verify bundle size is acceptable
 
 ## Phase 3: Migrate Core Layout (App.tsx)
@@ -42,7 +42,18 @@
 - [ ] `StreamingIndicator.tsx` — migrate to `--color-info` token
 - [ ] Ensure all status dots, banners, and badges follow design language patterns
 
-## Phase 6: Migrate File Tree & Preview
+## Phase 6: Extract UI Primitives
+
+- [ ] Create `src/client/components/ui/button.tsx` — CVA variants: primary, secondary, destructive, ghost + sizes sm, md, lg
+- [ ] Create `src/client/components/ui/badge.tsx` — CVA variants: default, success, error, warning, info
+- [ ] Create `src/client/components/ui/status-dot.tsx` — status prop: success, error, warning, info
+- [ ] Create `src/client/components/ui/banner.tsx` — CVA variants: error, warning, info, success
+- [ ] Create `src/client/components/ui/panel.tsx` — token-based surface with border
+- [ ] Create `src/client/components/ui/card.tsx` — token-based elevated surface with shadow
+- [ ] Create `src/client/components/ui/modal.tsx` — dialog overlay with backdrop
+- [ ] Refactor App.tsx and Phases 3–5 components to use primitives where applicable
+
+## Phase 7: Migrate File Tree & Preview
 
 - [ ] `FileTree.tsx` — replace `text-yellow-500` folder with Phosphor `<Folder>` / `<FolderOpen>` + `--color-folder`
 - [ ] `FileTree.tsx` — replace file type indicators with Phosphor icons (`<FileCode>`, `<FileText>`, etc.)
@@ -50,7 +61,7 @@
 - [ ] `PreviewFrame.tsx` — migrate auto-fix orange indicator to `--color-autofix` token
 - [ ] `PreviewFrame.tsx` — replace any inline SVGs with Phosphor equivalents
 
-## Phase 7: Migrate Remaining Components
+## Phase 8: Migrate Remaining Components
 
 - [ ] `MessageList.tsx` — replace all hardcoded color pairs with tokens
 - [ ] `Settings.tsx` — replace all hardcoded color pairs with tokens
@@ -61,9 +72,9 @@
 - [ ] `ToolResult.tsx` — replace all hardcoded color pairs with tokens
 - [ ] Sweep all other `src/client/components/*.tsx` for remaining raw color classes
 - [ ] Replace any remaining inline SVGs with Phosphor icons
-- [ ] Ensure all buttons follow spec patterns (primary, secondary, destructive, ghost)
+- [ ] Replace inline button/badge/banner patterns with UI primitive components
 
-## Phase 8: Update useTheme for Multi-Theme Support
+## Phase 9: Update useTheme for Multi-Theme Support
 
 - [ ] Change theme type from `"light" | "dark"` to extensible union in `useTheme.ts`
 - [ ] Update toggle logic: remove all theme classes, add the new one
@@ -71,19 +82,19 @@
 - [ ] Light theme = no class (`:root` defaults), dark = `.dark` class
 - [ ] Document how to add a new theme (add CSS class block + register name)
 
-## Phase 9: Clean Up Legacy Patterns
+## Phase 10: Clean Up Legacy Patterns
 
 - [ ] Remove unused `dark:` prefixed classes now handled by tokens
 - [ ] Audit codebase: no raw Tailwind color classes outside `index.css` token definitions
 - [ ] Update component tests that assert on specific color class names
 - [ ] Remove light-mode syntax highlighting CSS import if replaced by token-aware version
 
-## Phase 10: Testing & Verification
+## Phase 11: Testing & Verification
 
 - [ ] Visual verification: toggle light/dark, confirm all surfaces/text/borders/status colors
 - [ ] `npm run typecheck` — no regressions
 - [ ] `npm run lint` — no regressions
 - [ ] `npm run test:dev` — all tests pass, snapshots updated
-- [ ] `npm run build` — verify bundle size delta from Phosphor is reasonable
+- [ ] `npm run build` — verify bundle size delta from dependencies is reasonable
 - [ ] Verify syntax highlighting in both themes
 - [ ] Test all status indicators (connection, CI, deploy, context meter)
