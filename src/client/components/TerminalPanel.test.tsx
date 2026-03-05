@@ -81,7 +81,7 @@ describe("TerminalPanel", () => {
     const entries: LogEntry[] = [entry("server", "test")];
     const { container } = render(<TerminalPanel entries={entries} {...defaultProps} />);
 
-    const timeElements = container.querySelectorAll(".text-gray-400");
+    const timeElements = container.querySelectorAll(".text-\\(--color-text-tertiary\\)");
     expect(timeElements.length).toBeGreaterThan(0);
   });
 

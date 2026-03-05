@@ -25,13 +25,13 @@ export function DiffBlock({ filePath, oldString, newString, isWrite }: DiffBlock
   const added = countLines(newString ?? "");
 
   return (
-    <div className="mt-1 flex items-center gap-2 text-xs font-mono text-gray-400">
-      <span className="text-gray-500">{isWrite ? "write" : "edit"}</span>
-      <span className="text-gray-300 truncate">{sessionRelativePath(filePath)}</span>
+    <div className="mt-1 flex items-center gap-2 text-xs font-mono text-(--color-text-tertiary)">
+      <span className="text-(--color-text-secondary)">{isWrite ? "write" : "edit"}</span>
+      <span className="text-(--color-text-primary) truncate">{sessionRelativePath(filePath)}</span>
       <span className="flex items-center gap-1.5 ml-auto shrink-0">
-        {added > 0 && <span className="text-green-400">+{added}</span>}
-        {removed > 0 && <span className="text-red-400">-{removed}</span>}
-        {added === 0 && removed === 0 && <span className="text-gray-500 italic">no changes</span>}
+        {added > 0 && <span className="text-(--color-success)">+{added}</span>}
+        {removed > 0 && <span className="text-(--color-error)">-{removed}</span>}
+        {added === 0 && removed === 0 && <span className="text-(--color-text-secondary) italic">no changes</span>}
       </span>
     </div>
   );

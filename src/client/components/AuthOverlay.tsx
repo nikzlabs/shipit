@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Button } from "./ui/button.js";
 
 interface AuthOverlayProps {
   url: string;
@@ -15,7 +16,7 @@ export function AuthOverlay({ url, onPasteCode, onApiKey }: AuthOverlayProps) {
   const [apiKey, setApiKey] = useState("");
   const [apiKeyError, setApiKeyError] = useState("");
 
-  const handleCodeSubmit = (e: React.FormEvent) => {
+  const handleCodeSubmit = (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
     const trimmed = authCode.trim();
     if (!trimmed) {
@@ -27,7 +28,7 @@ export function AuthOverlay({ url, onPasteCode, onApiKey }: AuthOverlayProps) {
     onPasteCode?.(trimmed);
   };
 
-  const handleApiKeySubmit = (e: React.FormEvent) => {
+  const handleApiKeySubmit = (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
     const trimmed = apiKey.trim();
     if (!trimmed) {
@@ -43,14 +44,14 @@ export function AuthOverlay({ url, onPasteCode, onApiKey }: AuthOverlayProps) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 dark:bg-gray-950/90 backdrop-blur-sm">
-      <div className="max-w-md w-full mx-4 rounded-xl bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 p-8 text-center space-y-6">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-(--color-bg-overlay) backdrop-blur-sm">
+      <div className="max-w-md w-full mx-4 rounded-xl bg-(--color-bg-elevated) border border-(--color-border-secondary) p-8 text-center space-y-6">
         <div className="space-y-2">
           <div className="text-3xl">&#128274;</div>
-          <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
+          <h2 className="text-xl font-semibold text-(--color-text-primary)">
             Authentication Required
           </h2>
-          <p className="text-sm text-gray-500 dark:text-gray-400">
+          <p className="text-sm text-(--color-text-secondary)">
             Claude Code CLI needs to authenticate with your Anthropic account.
           </p>
         </div>
@@ -61,14 +62,14 @@ export function AuthOverlay({ url, onPasteCode, onApiKey }: AuthOverlayProps) {
               href={url}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-block rounded-lg bg-blue-600 px-6 py-3 text-sm font-medium text-white hover:bg-blue-500 transition-colors"
+              className="inline-block rounded-lg bg-(--color-accent) px-6 py-3 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors"
             >
               Open Authentication Page
             </a>
 
-            <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
+            <div className="pt-4 border-t border-(--color-border-primary)">
               <form onSubmit={handleCodeSubmit} className="space-y-3">
-                <label htmlFor="auth-code" className="block text-sm text-gray-500 dark:text-gray-400">
+                <label htmlFor="auth-code" className="block text-sm text-(--color-text-secondary)">
                   After signing in, paste the authorization code below
                 </label>
                 <input
@@ -78,21 +79,22 @@ export function AuthOverlay({ url, onPasteCode, onApiKey }: AuthOverlayProps) {
                   onChange={(e) => { setAuthCode(e.target.value); setCodeError(""); }}
                   placeholder="Paste code here..."
                   disabled={codeSubmitted}
-                  className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono disabled:opacity-50"
+                  className="w-full rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) px-4 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:ring-2 focus:ring-(--color-accent) font-mono disabled:opacity-50"
                 />
-                {codeError && <p className="text-xs text-red-500">{codeError}</p>}
-                <button
+                {codeError && <p className="text-xs text-(--color-error)">{codeError}</p>}
+                <Button
                   type="submit"
                   disabled={codeSubmitted}
-                  className="w-full rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  size="lg"
+                  className="w-full rounded-lg"
                 >
                   {codeSubmitted ? "Code Submitted — Waiting..." : "Submit Code"}
-                </button>
+                </Button>
               </form>
             </div>
           </>
         ) : (
-          <div className="flex items-center justify-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+          <div className="flex items-center justify-center gap-2 text-sm text-(--color-text-secondary)">
             <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
@@ -102,9 +104,9 @@ export function AuthOverlay({ url, onPasteCode, onApiKey }: AuthOverlayProps) {
         )}
 
         {showApiKey ? (
-          <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
+          <div className="pt-2 border-t border-(--color-border-primary)">
             <form onSubmit={handleApiKeySubmit} className="space-y-3">
-              <label htmlFor="api-key" className="block text-sm text-gray-500 dark:text-gray-400">
+              <label htmlFor="api-key" className="block text-sm text-(--color-text-secondary)">
                 Enter your Anthropic API key
               </label>
               <input
@@ -113,25 +115,27 @@ export function AuthOverlay({ url, onPasteCode, onApiKey }: AuthOverlayProps) {
                 value={apiKey}
                 onChange={(e) => { setApiKey(e.target.value); setApiKeyError(""); }}
                 placeholder="sk-ant-..."
-                className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) px-4 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:ring-2 focus:ring-(--color-accent)"
               />
-              {apiKeyError && <p className="text-xs text-red-500">{apiKeyError}</p>}
-              <button
+              {apiKeyError && <p className="text-xs text-(--color-error)">{apiKeyError}</p>}
+              <Button
                 type="submit"
-                className="w-full rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 transition-colors"
+                size="lg"
+                className="w-full rounded-lg"
               >
                 Authenticate
-              </button>
+              </Button>
             </form>
           </div>
         ) : (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => setShowApiKey(true)}
-            className="text-xs text-gray-400 hover:text-gray-300 transition-colors"
+            className="text-(--color-text-tertiary) hover:text-(--color-text-secondary)"
           >
             Use API key instead
-          </button>
+          </Button>
         )}
       </div>
     </div>

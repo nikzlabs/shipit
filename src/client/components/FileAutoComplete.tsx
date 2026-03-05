@@ -92,7 +92,7 @@ export function FileAutoComplete({
   if (matches.length === 0) {
     return (
       <div
-        className="absolute bottom-full left-0 right-0 mb-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg shadow-lg z-20 p-2 text-xs text-gray-500"
+        className="absolute bottom-full left-0 right-0 mb-1 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-lg shadow-lg z-20 p-2 text-xs text-(--color-text-secondary)"
         data-testid="file-autocomplete"
       >
         No matching files
@@ -102,7 +102,7 @@ export function FileAutoComplete({
 
   return (
     <div
-      className="absolute bottom-full left-0 right-0 mb-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg shadow-lg z-20 max-h-48 overflow-y-auto"
+      className="absolute bottom-full left-0 right-0 mb-1 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-lg shadow-lg z-20 max-h-48 overflow-y-auto"
       data-testid="file-autocomplete"
       ref={listRef}
     >
@@ -111,14 +111,14 @@ export function FileAutoComplete({
           key={filePath}
           className={`flex items-center gap-2 w-full text-left px-3 py-1.5 text-xs transition-colors ${
             i === selectedIndex
-              ? "bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-200"
-              : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+              ? "bg-(--color-accent-subtle) text-(--color-text-link)"
+              : "text-(--color-text-primary) hover:bg-(--color-bg-hover)"
           }`}
           onClick={() => onSelect(filePath)}
           onMouseEnter={() => setSelectedIndex(i)}
           data-testid="file-autocomplete-item"
         >
-          <svg className="w-3.5 h-3.5 shrink-0 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <svg className="w-3.5 h-3.5 shrink-0 text-(--color-text-secondary)" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
           </svg>
           <span className="truncate">{filePath}</span>

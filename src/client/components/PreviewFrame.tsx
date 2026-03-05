@@ -1,4 +1,7 @@
 import { useState, useEffect } from "react";
+import { WarningIcon, GearSixIcon, PlayIcon, CircleNotchIcon, ArrowClockwiseIcon } from "@phosphor-icons/react";
+import { ICON_SIZE } from "../design-tokens.js";
+import { Button } from "./ui/button.js";
 import type { PreviewError } from "../hooks/usePreviewErrors.js";
 
 export interface PreviewStatus {
@@ -172,11 +175,11 @@ export function PreviewFrame({
   // Show install progress
   if (installStatus && installStatus.status === "running") {
     return (
-      <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+      <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
         <div className="text-center space-y-3">
-          <div className="inline-block w-6 h-6 border-2 border-gray-400 border-t-blue-500 rounded-full animate-spin" />
+          <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
           <p>Installing dependencies...</p>
-          <p className="text-xs text-gray-400 dark:text-gray-600">
+          <p className="text-xs text-(--color-text-tertiary)">
             This may take a moment.
           </p>
         </div>
@@ -187,16 +190,16 @@ export function PreviewFrame({
   // Show install error
   if (installStatus && installStatus.status === "error") {
     return (
-      <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+      <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
         <div className="text-center space-y-2">
-          <div className="text-2xl text-red-500">!</div>
-          <p className="text-red-400">Install failed</p>
+          <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-error)" />
+          <p className="text-(--color-error)">Install failed</p>
           {installStatus.message && (
-            <p className="text-xs text-gray-400 dark:text-gray-600 max-w-sm">
+            <p className="text-xs text-(--color-text-tertiary) max-w-sm">
               {installStatus.message}
             </p>
           )}
-          <p className="text-xs text-gray-400 dark:text-gray-600">
+          <p className="text-xs text-(--color-text-tertiary)">
             Check the terminal logs for details.
           </p>
         </div>
@@ -207,33 +210,35 @@ export function PreviewFrame({
   // Show crash state when preview server exited with error
   if (crashInfo && (!preview || !preview.running)) {
     return (
-      <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+      <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
         <div className="text-center space-y-3 max-w-lg px-4">
-          <div className="text-2xl text-red-500">&#9888;</div>
-          <p className="text-red-400 font-medium">
+          <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-error)" />
+          <p className="text-(--color-error) font-medium">
             Preview server crashed{crashInfo.exitCode != null ? ` (exit code ${crashInfo.exitCode})` : ""}
           </p>
           {crashInfo.output && (
-            <pre className="text-left text-xs text-gray-400 bg-gray-900 rounded p-3 max-h-48 overflow-auto whitespace-pre-wrap border border-gray-700">
+            <pre className="text-left text-xs text-(--color-text-secondary) bg-(--color-bg-secondary) rounded p-3 max-h-48 overflow-auto whitespace-pre-wrap border border-(--color-border-secondary)">
               {crashInfo.output}
             </pre>
           )}
           <div className="flex items-center justify-center gap-2">
             {onRestartPreview && (
-              <button
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={onRestartPreview}
-                className="px-3 py-1.5 rounded bg-gray-700 text-gray-200 text-xs hover:bg-gray-600 transition-colors"
               >
                 Retry
-              </button>
+              </Button>
             )}
             {onSendCrashToAgent && (
-              <button
+              <Button
+                variant="primary"
+                size="sm"
                 onClick={onSendCrashToAgent}
-                className="px-3 py-1.5 rounded bg-blue-600 text-white text-xs hover:bg-blue-500 transition-colors"
               >
                 Fix with Claude
-              </button>
+              </Button>
             )}
           </div>
         </div>
@@ -247,9 +252,9 @@ export function PreviewFrame({
     // user doesn't think nothing is happening.
     if (!preview && (sessionId || loading)) {
       return (
-        <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+        <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
           <div className="text-center space-y-3">
-            <div className="inline-block w-6 h-6 border-2 border-gray-400 border-t-blue-500 rounded-full animate-spin" />
+            <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
             <p>Starting dev server...</p>
           </div>
         </div>
@@ -259,20 +264,21 @@ export function PreviewFrame({
     // Show config missing state with option to set up
     if (configMissing) {
       return (
-        <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+        <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
           <div className="text-center space-y-3">
-            <div className="text-2xl">&#9881;</div>
+            <GearSixIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
             <p>No preview configuration found.</p>
-            <p className="text-xs text-gray-400 dark:text-gray-600 max-w-sm">
+            <p className="text-xs text-(--color-text-tertiary) max-w-sm">
               Create a shipit.yaml file to configure how the preview server runs, or let Claude set it up for you.
             </p>
             {onInitPreviewConfig && (
-              <button
+              <Button
+                variant="primary"
+                size="sm"
                 onClick={onInitPreviewConfig}
-                className="px-3 py-1.5 rounded bg-blue-600 text-white text-xs hover:bg-blue-500 transition-colors"
               >
                 Set up with Claude
-              </button>
+              </Button>
             )}
           </div>
         </div>
@@ -280,11 +286,11 @@ export function PreviewFrame({
     }
 
     return (
-      <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+      <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
         <div className="text-center space-y-2">
-          <div className="text-2xl">&#9654;</div>
+          <PlayIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
           <p>Preview will appear here when a dev server is running.</p>
-          <p className="text-xs text-gray-400 dark:text-gray-600">
+          <p className="text-xs text-(--color-text-tertiary)">
             Ask the agent to create a project to get started. Vite, Express, Next.js, and other servers are auto-detected.
           </p>
         </div>
@@ -315,15 +321,15 @@ export function PreviewFrame({
   const hasErrors = errors.length > 0;
 
   return (
-    <div className={`flex flex-col h-full ${autoFixEnabled ? "ring-2 ring-orange-500 ring-inset" : ""}`}>
-      <div className="flex items-center justify-between px-3 py-1.5 bg-gray-50 dark:bg-gray-900 border-b border-gray-300 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400">
+    <div className={`flex flex-col h-full ${autoFixEnabled ? "ring-2 ring-(--color-autofix) ring-inset" : ""}`}>
+      <div className="flex items-center justify-between px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs text-(--color-text-secondary)">
         <span className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-green-500" />
+          <span className="w-2 h-2 rounded-full bg-(--color-success)" />
           {showSelector ? (
             <select
               value={activePort}
               onChange={(e) => onSelectPort(Number(e.target.value))}
-              className="bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 text-xs rounded px-1.5 py-0.5 border border-gray-300 dark:border-gray-600 focus:outline-none focus:border-blue-500"
+              className="bg-(--color-bg-tertiary) text-(--color-text-primary) text-xs rounded px-1.5 py-0.5 border border-(--color-border-secondary) focus:outline-none focus:border-(--color-border-focus)"
               aria-label="Select preview port"
             >
               {allPorts.map((item) => (
@@ -336,7 +342,7 @@ export function PreviewFrame({
             <>
               {preview?.url?.startsWith("/preview/") ? `port ${activePort}` : `localhost:${activePort}`}
               {!isManaged && preview.source === "detected" && (
-                <span className="text-yellow-400">(auto-detected)</span>
+                <span className="text-(--color-warning)">(auto-detected)</span>
               )}
             </>
           )}
@@ -345,10 +351,10 @@ export function PreviewFrame({
           {hasErrors && (
             <button
               onClick={() => setErrorPanelOpen((prev) => !prev)}
-              className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900/50 text-red-600 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-800/50 transition-colors"
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-(--color-error-subtle) text-(--color-error) hover:bg-(--color-bg-hover) transition-colors"
               aria-label="Toggle error panel"
             >
-              <span className="inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-red-600 text-white">
+              <span className="inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-(--color-error) text-(--color-accent-text)">
                 {errors.length > 99 ? "99+" : errors.length}
               </span>
               <span>{errorPanelOpen ? "Hide" : "Errors"}</span>
@@ -361,20 +367,21 @@ export function PreviewFrame({
               onChange={onToggleAutoFix}
               className="sr-only peer"
             />
-            <span className={`relative w-7 h-4 rounded-full transition-colors ${autoFixEnabled ? "bg-orange-500" : "bg-gray-300 dark:bg-gray-600"}`}>
+            <span className={`relative w-7 h-4 rounded-full transition-colors ${autoFixEnabled ? "bg-(--color-autofix)" : "bg-(--color-border-secondary)"}`}>
               <span className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform ${autoFixEnabled ? "translate-x-3" : ""}`} />
             </span>
-            <span className={autoFixEnabled ? "text-orange-400" : ""}>
+            <span className={autoFixEnabled ? "text-(--color-autofix)" : ""}>
               Auto-fix{autoFixEnabled && autoFixRetries > 0 ? ` (${autoFixRetries}/3)` : ""}
             </span>
           </label>
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => setRefreshKey((k) => k + 1)}
-            className="px-2 py-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
             title="Refresh preview"
           >
-            Reload
-          </button>
+            <ArrowClockwiseIcon size={ICON_SIZE.SM} />
+          </Button>
         </div>
       </div>
 
@@ -391,9 +398,9 @@ export function PreviewFrame({
           {...(!isContainerMode && { sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-modals" })}
         />
       ) : (
-        <div className="flex-1 flex items-center justify-center bg-white text-gray-500 text-sm">
+        <div className="flex-1 flex items-center justify-center bg-white text-(--color-text-secondary) text-sm">
           <div className="text-center space-y-3">
-            <div className="inline-block w-6 h-6 border-2 border-gray-400 border-t-blue-500 rounded-full animate-spin" />
+            <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
             <p>Starting dev server...</p>
           </div>
         </div>
@@ -401,64 +408,69 @@ export function PreviewFrame({
 
       {/* Error panel */}
       {hasErrors && errorPanelOpen && (
-        <div className="border-t border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950 max-h-[40%] flex flex-col" role="region" aria-label="Preview errors">
-          <div className="flex items-center justify-between px-3 py-1.5 border-b border-red-200 dark:border-red-800/50 text-xs">
-            <span className="font-medium text-red-700 dark:text-red-300">
+        <div className="border-t border-(--color-error) bg-(--color-error-subtle) max-h-[40%] flex flex-col" role="region" aria-label="Preview errors">
+          <div className="flex items-center justify-between px-3 py-1.5 border-b border-(--color-error) text-xs">
+            <span className="font-medium text-(--color-error)">
               {errors.length} error{errors.length !== 1 ? "s" : ""}
             </span>
             <div className="flex items-center gap-2">
-              <button
+              <Button
+                variant="primary"
+                size="sm"
                 onClick={() => onSendErrors(errors)}
-                className="px-2 py-0.5 rounded bg-blue-600 text-white hover:bg-blue-500 transition-colors"
                 title="Send all errors to the agent for fixing"
               >
                 Send to Agent
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={onClearErrors}
-                className="px-2 py-0.5 rounded hover:bg-red-100 dark:hover:bg-red-900 text-red-600 dark:text-red-400 transition-colors"
+                className="text-(--color-error)"
                 title="Clear all errors"
               >
                 Clear
-              </button>
+              </Button>
             </div>
           </div>
           <div className="flex-1 overflow-auto p-2 space-y-2 text-xs font-mono">
             {errors.map((err) => (
-              <div key={err.id} className="p-2 rounded bg-red-100 dark:bg-red-900/30 border border-red-200 dark:border-red-800/50">
+              <div key={err.id} className="p-2 rounded bg-(--color-error-subtle) border border-(--color-error)">
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex-1 min-w-0">
-                    <div className="text-red-800 dark:text-red-200 font-semibold break-all">
+                    <div className="text-(--color-text-primary) font-semibold break-all">
                       {err.type === "console" && err.level && (
-                        <span className={`mr-1 ${err.level === "warn" ? "text-yellow-600 dark:text-yellow-400" : ""}`}>
+                        <span className={`mr-1 ${err.level === "warn" ? "text-(--color-warning)" : ""}`}>
                           [{err.level}]
                         </span>
                       )}
                       {err.message}
                     </div>
                     {err.source && err.line && (
-                      <div className="text-red-600 dark:text-red-400 mt-0.5">
+                      <div className="text-(--color-error) mt-0.5">
                         at {err.source}:{err.line}{err.col ? `:${err.col}` : ""}
                       </div>
                     )}
                     {err.stack && (
                       <details className="mt-1">
-                        <summary className="text-red-500 dark:text-red-500 cursor-pointer hover:text-red-700 dark:hover:text-red-300">
+                        <summary className="text-(--color-error) cursor-pointer hover:text-(--color-text-primary)">
                           Stack trace
                         </summary>
-                        <pre className="mt-1 text-[10px] text-red-600 dark:text-red-400 whitespace-pre-wrap break-all overflow-auto max-h-24">
+                        <pre className="mt-1 text-[10px] text-(--color-error) whitespace-pre-wrap break-all overflow-auto max-h-24">
                           {err.stack}
                         </pre>
                       </details>
                     )}
                   </div>
-                  <button
+                  <Button
+                    variant="ghost"
+                    size="sm"
                     onClick={() => onSendErrors([err])}
-                    className="shrink-0 px-1.5 py-0.5 rounded text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
+                    className="shrink-0 text-(--color-text-link)"
                     title="Send this error to the agent"
                   >
                     Fix
-                  </button>
+                  </Button>
                 </div>
               </div>
             ))}

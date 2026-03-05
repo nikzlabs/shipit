@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { Button } from "./ui/button.js";
 
 export interface ShortcutEntry {
   keys: string[];
@@ -41,8 +42,8 @@ function KeyCombo({ keys }: { keys: string[] }) {
     <span className="flex items-center gap-1">
       {keys.map((key, i) => (
         <span key={i}>
-          {i > 0 && <span className="text-gray-500 mx-0.5">+</span>}
-          <kbd className="inline-block min-w-[1.5rem] text-center px-1.5 py-0.5 text-xs font-mono rounded bg-gray-200 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-800 dark:text-gray-200">
+          {i > 0 && <span className="text-(--color-text-secondary) mx-0.5">+</span>}
+          <kbd className="inline-block min-w-[1.5rem] text-center px-1.5 py-0.5 text-xs font-mono rounded bg-(--color-bg-tertiary) border border-(--color-border-secondary) text-(--color-text-primary)">
             {key}
           </kbd>
         </span>
@@ -76,35 +77,36 @@ export function KeyboardShortcutsOverlay({ onClose }: { onClose: () => void }) {
       ref={overlayRef}
       role="dialog"
       aria-label="Keyboard shortcuts"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 dark:bg-gray-950/90 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-(--color-bg-overlay) backdrop-blur-sm"
       onClick={handleBackdropClick}
     >
-      <div className="max-w-lg w-full mx-4 rounded-xl bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 p-6 space-y-5">
+      <div className="max-w-lg w-full mx-4 rounded-xl bg-(--color-bg-elevated) border border-(--color-border-secondary) p-6 space-y-5">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+          <h2 className="text-lg font-semibold text-(--color-text-primary)">
             Keyboard Shortcuts
           </h2>
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={onClose}
-            className="text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 transition-colors text-sm"
             aria-label="Close"
           >
             Esc
-          </button>
+          </Button>
         </div>
 
         {shortcutGroups.map((group) => (
           <div key={group.title} className="space-y-2">
-            <h3 className="text-xs font-medium uppercase tracking-wider text-gray-500">
+            <h3 className="text-xs font-medium uppercase tracking-wider text-(--color-text-secondary)">
               {group.title}
             </h3>
             <div className="space-y-1">
               {group.shortcuts.map((shortcut, i) => (
                 <div
                   key={i}
-                  className="flex items-center justify-between py-1.5 px-2 rounded hover:bg-gray-100/50 dark:hover:bg-gray-800/50"
+                  className="flex items-center justify-between py-1.5 px-2 rounded hover:bg-(--color-bg-hover)"
                 >
-                  <span className="text-sm text-gray-700 dark:text-gray-300">
+                  <span className="text-sm text-(--color-text-primary)">
                     {shortcut.description}
                   </span>
                   <KeyCombo keys={shortcut.keys} />
@@ -114,8 +116,8 @@ export function KeyboardShortcutsOverlay({ onClose }: { onClose: () => void }) {
           </div>
         ))}
 
-        <p className="text-xs text-gray-400 dark:text-gray-600 text-center pt-2 border-t border-gray-200 dark:border-gray-800">
-          Press <kbd className="px-1 py-0.5 text-xs font-mono rounded bg-gray-200 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">?</kbd> to toggle this overlay
+        <p className="text-xs text-(--color-text-tertiary) text-center pt-2 border-t border-(--color-border-primary)">
+          Press <kbd className="px-1 py-0.5 text-xs font-mono rounded bg-(--color-bg-tertiary) border border-(--color-border-secondary) text-(--color-text-primary)">?</kbd> to toggle this overlay
         </p>
       </div>
     </div>

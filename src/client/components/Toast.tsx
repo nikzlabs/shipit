@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { CheckCircleIcon } from "@phosphor-icons/react";
+import { Button } from "./ui/button.js";
 
 export interface ToastData {
   message: string;
@@ -38,30 +40,34 @@ export function Toast({ toast, onDismiss }: ToastProps) {
   return (
     <div
       data-testid="toast"
-      className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 transition-all duration-200 ${
+      className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg border border-(--color-border-primary) bg-(--color-bg-elevated) text-sm text-(--color-text-primary) transition-all duration-200 ${
         visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2"
       }`}
     >
-      <span className="text-green-500 shrink-0">&#10003;</span>
+      <CheckCircleIcon size={16} className="text-(--color-success) shrink-0" />
       <span>{toast.message}</span>
       {toast.action && (
-        <button
+        <Button
+          variant="primary"
+          size="sm"
           onClick={() => {
             toast.action!.onClick();
             handleDismiss();
           }}
-          className="ml-2 px-3 py-1 rounded-md text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white shrink-0"
+          className="ml-2 shrink-0"
         >
           {toast.action.label}
-        </button>
+        </Button>
       )}
-      <button
+      <Button
+        variant="ghost"
+        size="sm"
         onClick={handleDismiss}
         aria-label="Dismiss"
-        className="ml-1 text-gray-400 hover:text-gray-200 shrink-0"
+        className="ml-1 shrink-0"
       >
         &times;
-      </button>
+      </Button>
     </div>
   );
 }

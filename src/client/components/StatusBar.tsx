@@ -36,10 +36,10 @@ export function getContextLevel(percentage: number): ContextLevel {
 }
 
 const levelColors: Record<ContextLevel, { bar: string; text: string }> = {
-  green: { bar: "bg-green-500", text: "text-green-400" },
-  yellow: { bar: "bg-yellow-500", text: "text-yellow-400" },
-  orange: { bar: "bg-orange-500", text: "text-orange-400" },
-  red: { bar: "bg-red-500", text: "text-red-400" },
+  green: { bar: "bg-(--color-context-ok)", text: "text-(--color-context-ok)" },
+  yellow: { bar: "bg-(--color-context-mid)", text: "text-(--color-context-mid)" },
+  orange: { bar: "bg-(--color-context-high)", text: "text-(--color-context-high)" },
+  red: { bar: "bg-(--color-context-full)", text: "text-(--color-context-full)" },
 };
 
 export function StatusBar({ modelInfo, contextTokens, agentName }: StatusBarProps) {
@@ -53,18 +53,18 @@ export function StatusBar({ modelInfo, contextTokens, agentName }: StatusBarProp
 
   return (
     <div
-      className="flex items-center gap-3 px-4 py-1 border-t border-gray-200 dark:border-gray-800 text-xs text-gray-500 dark:text-gray-400"
+      className="flex items-center gap-3 px-4 py-1 border-t border-(--color-border-primary) text-xs text-(--color-text-secondary)"
       data-testid="status-bar"
     >
       {agentName && agentName !== "Claude Code" && (
         <>
-          <span className="font-medium text-gray-600 dark:text-gray-300" data-testid="agent-name">
+          <span className="font-medium text-(--color-text-primary)" data-testid="agent-name">
             {agentName}
           </span>
-          <span className="text-gray-400 dark:text-gray-600">/</span>
+          <span className="text-(--color-text-tertiary)">/</span>
         </>
       )}
-      <span className="font-medium text-gray-600 dark:text-gray-300" data-testid="model-name">
+      <span className="font-medium text-(--color-text-primary)" data-testid="model-name">
         {formatModelName(modelInfo.model)}
       </span>
       {contextTokens > 0 && (
@@ -72,7 +72,7 @@ export function StatusBar({ modelInfo, contextTokens, agentName }: StatusBarProp
           <span>
             Context: {formatTokenCount(contextTokens)} / {formatTokenCount(modelInfo.contextWindowTokens)}
           </span>
-          <div className="w-20 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+          <div className="w-20 h-1.5 bg-(--color-bg-tertiary) rounded-full overflow-hidden">
             <div
               className={`h-full rounded-full transition-all ${colors.bar}`}
               style={{ width: `${percentage}%` }}

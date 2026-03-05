@@ -9,12 +9,12 @@ export function TodoPanel({ todos }: { todos: TodoItem[] }) {
 
   return (
     <div
-      className="text-xs max-h-48 overflow-y-auto border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2"
+      className="text-xs max-h-48 overflow-y-auto border border-(--color-border-secondary) rounded-lg px-3 py-2"
       data-testid="todo-panel"
     >
       <div className="flex items-center justify-between mb-1.5">
-        <span className="font-medium text-gray-700 dark:text-gray-300">Tasks</span>
-        <span className="text-gray-500">
+        <span className="font-medium text-(--color-text-primary)">Tasks</span>
+        <span className="text-(--color-text-secondary)">
           {completed}/{todos.length} completed
         </span>
       </div>
@@ -25,8 +25,8 @@ export function TodoPanel({ todos }: { todos: TodoItem[] }) {
             <span
               className={
                 todo.status === "completed"
-                  ? "line-through text-gray-500"
-                  : "text-gray-700 dark:text-gray-300"
+                  ? "line-through text-(--color-text-secondary)"
+                  : "text-(--color-text-primary)"
               }
             >
               {todo.status === "in_progress" ? todo.activeForm : todo.content}
@@ -43,7 +43,7 @@ function StatusIcon({ status }: { status: TodoItem["status"] }) {
     case "completed":
       return (
         <svg
-          className="w-3.5 h-3.5 text-green-400 shrink-0"
+          className="w-3.5 h-3.5 text-(--color-success) shrink-0"
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
@@ -60,14 +60,14 @@ function StatusIcon({ status }: { status: TodoItem["status"] }) {
     case "in_progress":
       return (
         <span
-          className="tool-spinner inline-block w-3.5 h-3.5 border border-blue-400 border-t-transparent rounded-full shrink-0"
+          className="tool-spinner inline-block w-3.5 h-3.5 border border-(--color-accent) border-t-transparent rounded-full shrink-0"
           data-testid="status-in-progress"
         />
       );
     case "pending":
       return (
         <span
-          className="inline-block w-3.5 h-3.5 rounded-full border border-gray-600 shrink-0"
+          className="inline-block w-3.5 h-3.5 rounded-full border border-(--color-border-secondary) shrink-0"
           data-testid="status-pending"
         />
       );

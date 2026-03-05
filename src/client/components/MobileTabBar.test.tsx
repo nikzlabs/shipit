@@ -14,22 +14,22 @@ describe("MobileTabBar", () => {
   it("highlights the active Chat tab", () => {
     render(<MobileTabBar activePanel="chat" onChangePanel={() => {}} />);
     const chatButton = screen.getByText("Chat").closest("button")!;
-    expect(chatButton.className).toContain("blue");
+    expect(chatButton.className).toContain("text-(--color-text-link)");
     expect(chatButton).toHaveAttribute("aria-current", "page");
 
     const previewButton = screen.getByText("Preview").closest("button")!;
-    expect(previewButton.className).not.toContain("blue");
+    expect(previewButton.className).not.toContain("text-(--color-text-link)");
     expect(previewButton).not.toHaveAttribute("aria-current");
   });
 
   it("highlights the active Preview tab", () => {
     render(<MobileTabBar activePanel="preview" onChangePanel={() => {}} />);
     const previewButton = screen.getByText("Preview").closest("button")!;
-    expect(previewButton.className).toContain("blue");
+    expect(previewButton.className).toContain("text-(--color-text-link)");
     expect(previewButton).toHaveAttribute("aria-current", "page");
 
     const chatButton = screen.getByText("Chat").closest("button")!;
-    expect(chatButton.className).not.toContain("blue");
+    expect(chatButton.className).not.toContain("text-(--color-text-link)");
   });
 
   it("calls onChangePanel with 'chat' when Chat is clicked", () => {

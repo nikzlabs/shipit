@@ -93,7 +93,7 @@ describe("ConnectionBanner", () => {
       vi.advanceTimersByTime(1500);
     });
     const banner = screen.getByRole("alert");
-    expect(banner.className).toContain("yellow");
+    expect(banner.className).toContain("warning");
   });
 
   it("uses red styling for closed state", () => {
@@ -103,7 +103,7 @@ describe("ConnectionBanner", () => {
       vi.advanceTimersByTime(1500);
     });
     const banner = screen.getByRole("alert");
-    expect(banner.className).toContain("red");
+    expect(banner.className).toContain("error");
   });
 
   // --- Attempt count ---
@@ -194,6 +194,6 @@ describe("ConnectionBanner", () => {
     const { rerender } = renderAfterConnect({ status: "closed" });
     rerender(<ConnectionBanner status="open" />);
     const banner = screen.getByRole("status");
-    expect(banner.className).toContain("green");
+    expect(banner.className).toContain("success");
   });
 });

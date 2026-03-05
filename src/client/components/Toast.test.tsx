@@ -106,6 +106,7 @@ describe("Toast", () => {
   it("renders a checkmark icon", () => {
     render(<Toast toast={makeToast()} onDismiss={vi.fn()} />);
     const toast = screen.getByTestId("toast");
-    expect(toast.textContent).toContain("✓");
+    // CheckCircle Phosphor icon renders as an SVG
+    expect(toast.querySelector("svg")).toBeInTheDocument();
   });
 });

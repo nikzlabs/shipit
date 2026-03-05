@@ -26,11 +26,11 @@ export function ModeSelector({
           className={`px-2 py-0.5 text-xs rounded-full transition-colors font-medium ${
             mode === m.value
               ? m.value === "plan"
-                ? "bg-blue-600 text-white"
+                ? "bg-(--color-accent) text-(--color-accent-text)"
                 : m.value === "normal"
-                  ? "bg-yellow-600 text-white"
-                  : "bg-gray-600 text-white"
-              : "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700"
+                  ? "bg-(--color-warning) text-(--color-accent-text)"
+                  : "bg-(--color-text-tertiary) text-(--color-accent-text)"
+              : "bg-(--color-bg-secondary) text-(--color-text-secondary) hover:bg-(--color-bg-hover)"
           } disabled:opacity-50 disabled:cursor-not-allowed`}
           aria-pressed={mode === m.value}
           data-testid={`mode-${m.value}`}
@@ -39,12 +39,12 @@ export function ModeSelector({
         </button>
       ))}
       {mode === "plan" && (
-        <span className="text-xs text-blue-400 ml-1" data-testid="mode-badge">
+        <span className="text-xs text-(--color-accent) ml-1" data-testid="mode-badge">
           Read-only
         </span>
       )}
       {mode === "normal" && (
-        <span className="text-xs text-yellow-400 ml-1" data-testid="mode-badge">
+        <span className="text-xs text-(--color-warning) ml-1" data-testid="mode-badge">
           Supervised
         </span>
       )}
