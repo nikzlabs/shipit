@@ -492,8 +492,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
             await container.stop({ t: 5 });
           }
           await container.remove({ force: true });
-        } catch {
-          // Container may already be gone
+        } catch (err) {
+          console.warn(`[containers] Failed to clean up child container ${ci.Id.slice(0, 12)} for session ${sessionId}:`, err);
         }
       }
     } catch {
@@ -509,8 +509,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         try {
           const network = this.docker.getNetwork(ni.Id);
           await network.remove();
-        } catch {
-          // Network may already be gone
+        } catch (err) {
+          console.warn(`[containers] Failed to clean up network ${ni.Id.slice(0, 12)} for session ${sessionId}:`, err);
         }
       }
     } catch {
@@ -526,8 +526,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         try {
           const volume = this.docker.getVolume(vi.Name);
           await volume.remove();
-        } catch {
-          // Volume may already be gone
+        } catch (err) {
+          console.warn(`[containers] Failed to clean up volume ${vi.Name} for session ${sessionId}:`, err);
         }
       }
     } catch {
@@ -662,7 +662,11 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    */
   async rediscover(
     activeSessionIds: Set<string>,
-    sessionInfoResolver?: (sessionId: string) => { workspaceDir: string; dockerAccess: boolean } | undefined,
+    sessionInfoResolver?: (sessionId: string) => {
+      workspaceDir: string;
+      dockerAccess: boolean;
+      resourceLimits?: { memory: number; cpuQuota: number; pidsLimit: number };
+    } | undefined,
   ): Promise<number> {
     let count = 0;
     try {
@@ -681,16 +685,20 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
           const networkInfo = info.NetworkSettings?.Networks?.[this.networkName];
           if (!networkInfo?.IPAddress) continue;
           const resolved = sessionInfoResolver?.(sessionId);
-          const dockerAccess = resolved?.dockerAccess ?? false;
+          // Skip containers whose session info can't be resolved — without a
+          // valid workspace dir, bind mount validation would be unsafe
+          if (!resolved?.workspaceDir) continue;
+          const dockerAccess = resolved.dockerAccess;
           this.containers.set(sessionId, {
             id: ci.Id,
             sessionId,
             containerIp: networkInfo.IPAddress,
             workerUrl: `http://${networkInfo.IPAddress}:${this.workerPort}`,
             status: "running",
-            hostWorkspaceDir: resolved?.workspaceDir ?? "",
+            hostWorkspaceDir: resolved.workspaceDir,
             dockerAccess,
             sessionNetworkName: dockerAccess ? `shipit-session-${sessionId.slice(0, 12)}` : undefined,
+            resourceLimits: dockerAccess ? resolved.resourceLimits : undefined,
           });
           if (ci.Labels?.[CONTAINER_STANDBY_LABEL] === "true") {
             this.standbySessionIds.add(sessionId);
@@ -734,6 +742,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
           if (!sc) return;
 
           if (event.Action === "die" || event.Action === "oom") {
+            // Skip if destroy() is already in-flight — it will handle cleanup
+            if (sc.status === "stopping") return;
             const exitCode = Number(event.Actor?.Attributes?.exitCode ?? 1);
             const error = event.Action === "oom" ? "Out of memory" : undefined;
             sc.status = "stopped";

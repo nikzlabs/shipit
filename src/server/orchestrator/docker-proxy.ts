@@ -92,17 +92,20 @@ async function readBody(req: http.IncomingMessage, maxSize: number): Promise<Buf
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
+    let rejected = false;
     req.on("data", (chunk: Buffer) => {
+      if (rejected) return;
       size += chunk.length;
       if (size > maxSize) {
+        rejected = true;
         reject(new Error("Request body too large"));
         req.destroy();
         return;
       }
       chunks.push(chunk);
     });
-    req.on("end", () => resolve(Buffer.concat(chunks)));
-    req.on("error", reject);
+    req.on("end", () => { if (!rejected) resolve(Buffer.concat(chunks)); });
+    req.on("error", (err) => { if (!rejected) reject(err); });
   });
 }
 
@@ -175,6 +178,9 @@ function pipeToDocker(
 
   const dockerReq = http.request(opts, (dockerRes) => {
     res.writeHead(dockerRes.statusCode ?? 500, dockerRes.headers);
+    dockerRes.on("error", () => {
+      res.destroy();
+    });
     dockerRes.pipe(res);
   });
 
@@ -182,6 +188,11 @@ function pipeToDocker(
     if (!res.headersSent) {
       respond(res, 502, { message: `Docker daemon error: ${err.message}` });
     }
+  });
+
+  // Abort upstream request if client disconnects
+  res.on("close", () => {
+    if (!dockerReq.destroyed) dockerReq.destroy();
   });
 
   req.pipe(dockerReq);
@@ -308,9 +319,10 @@ async function sanitizeContainerCreate(
   }
   hostConfig.CapDrop = capDrop;
 
-  // Reject host NetworkMode
-  if (hostConfig.NetworkMode === "host") {
-    return { error: "Host network mode is not allowed" };
+  // Reject host and container NetworkMode (sharing another container's network namespace)
+  const networkMode = hostConfig.NetworkMode as string | undefined;
+  if (networkMode === "host" || (networkMode && networkMode.startsWith("container:"))) {
+    return { error: "NetworkMode host/container is not allowed" };
   }
 
   // Reject host/container PidMode
@@ -346,7 +358,7 @@ async function sanitizeContainerCreate(
     }
   }
 
-  // Validate Mounts
+  // Validate Mounts — only bind, volume, and tmpfs are allowed
   if (Array.isArray(hostConfig.Mounts)) {
     for (const mount of hostConfig.Mounts as Array<Record<string, unknown>>) {
       if (mount.Type === "bind") {
@@ -359,8 +371,11 @@ async function sanitizeContainerCreate(
         if (volumeName && !(await volumeBelongsToSession(socketPath, volumeName, session.sessionId))) {
           return { error: `Volume ${volumeName} does not belong to this session` };
         }
+      } else if (mount.Type === "tmpfs") {
+        // tmpfs mounts are safe — no host path involved
+      } else {
+        return { error: `Mount type "${mount.Type}" is not allowed (only bind, volume, tmpfs)` };
       }
-      // tmpfs mounts are allowed
     }
   }
 
@@ -372,33 +387,39 @@ async function sanitizeContainerCreate(
     return { error: "VolumesFrom is not allowed" };
   }
 
-  // Strip SecurityOpt
+  // Strip fields that could weaken container isolation
   delete hostConfig.SecurityOpt;
-
-  // Strip CgroupParent
   delete hostConfig.CgroupParent;
+  delete hostConfig.Sysctls;       // kernel parameter manipulation
+  delete hostConfig.UsernsMode;    // user namespace sharing
+  delete hostConfig.CgroupnsMode;  // cgroup namespace sharing
+  delete hostConfig.Runtime;       // custom runtimes (e.g., nvidia) may grant elevated access
 
   // Overwrite shipit-parent-session label (never merge)
   const labels = (body.Labels ?? {}) as Record<string, string>;
   labels[PARENT_SESSION_LABEL] = session.sessionId;
   body.Labels = labels;
 
-  // Enforce resource limits on child containers — capped at session's own limits
+  // Enforce resource limits on child containers — capped at session's own limits.
+  // Values <= 0 mean "unlimited" in Docker, so we always override them.
   if (session.resourceLimits) {
     const limits = session.resourceLimits;
     const currentMemory = hostConfig.Memory as number | undefined;
-    if (!currentMemory || currentMemory > limits.memory) {
+    if (!currentMemory || currentMemory <= 0 || currentMemory > limits.memory) {
       hostConfig.Memory = limits.memory;
     }
     const currentCpuQuota = hostConfig.CpuQuota as number | undefined;
-    if (!currentCpuQuota || currentCpuQuota > limits.cpuQuota) {
+    if (!currentCpuQuota || currentCpuQuota <= 0 || currentCpuQuota > limits.cpuQuota) {
       hostConfig.CpuQuota = limits.cpuQuota;
     }
-    if (!hostConfig.CpuPeriod) {
+    // Cap CpuPeriod to the standard 100ms to prevent effective CPU limit bypass
+    // (inflating the period while quota is capped gives more CPU time)
+    const currentPeriod = hostConfig.CpuPeriod as number | undefined;
+    if (!currentPeriod || currentPeriod <= 0 || currentPeriod > 100_000) {
       hostConfig.CpuPeriod = 100_000;
     }
     const currentPids = hostConfig.PidsLimit as number | undefined;
-    if (!currentPids || currentPids > limits.pidsLimit) {
+    if (!currentPids || currentPids <= 0 || currentPids > limits.pidsLimit) {
       hostConfig.PidsLimit = limits.pidsLimit;
     }
   }

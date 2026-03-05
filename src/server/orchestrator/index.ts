@@ -306,7 +306,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         const session = sessionManager.get(sessionId);
         if (!session?.workspaceDir) return undefined;
         const cfg = resolveSessionConfig(session.workspaceDir);
-        return { workspaceDir: session.workspaceDir, dockerAccess: cfg.capabilities.docker };
+        return {
+          workspaceDir: session.workspaceDir,
+          dockerAccess: cfg.capabilities.docker,
+          resourceLimits: cfg.capabilities.docker ? {
+            memory: cfg.resources.memory * 1024 * 1024,
+            cpuQuota: cfg.resources.cpu * 100_000,
+            pidsLimit: cfg.resources.pids,
+          } : undefined,
+        };
       });
       if (rediscovered > 0) console.log(`[server] Rediscovered ${rediscovered} container(s) from previous run`);
       await containerManager.startHealthMonitor();

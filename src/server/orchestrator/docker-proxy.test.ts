@@ -497,7 +497,7 @@ describe("Docker API proxy", () => {
         HostConfig: { NetworkMode: "host" },
       });
       expect(res.status).toBe(403);
-      expect((res.body as any).message).toContain("Host network");
+      expect((res.body as any).message).toContain("NetworkMode");
     });
 
     it("rejects host PidMode", async () => {
@@ -532,12 +532,55 @@ describe("Docker API proxy", () => {
       expect(res.status).toBe(403);
     });
 
+    it("rejects container NetworkMode (namespace sharing)", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { NetworkMode: "container:foreign-container-id" },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("NetworkMode");
+    });
+
     it("rejects Devices", async () => {
       const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
         Image: "alpine",
         HostConfig: { Devices: [{ PathOnHost: "/dev/sda" }] },
       });
       expect(res.status).toBe(403);
+    });
+
+    it("strips Sysctls from HostConfig", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { Sysctls: { "net.ipv4.ip_forward": "1" } },
+      });
+      expect(res.status).toBe(201);
+      // Sysctls should be stripped (not cause an error, but removed silently)
+    });
+
+    it("strips UsernsMode from HostConfig", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { UsernsMode: "host" },
+      });
+      expect(res.status).toBe(201);
+    });
+
+    it("strips Runtime from HostConfig", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { Runtime: "nvidia" },
+      });
+      expect(res.status).toBe(201);
+    });
+
+    it("rejects unknown mount types", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { Mounts: [{ Type: "npipe", Source: "\\\\.\\pipe\\docker", Target: "/pipe" }] },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("not allowed");
     });
 
     it("rejects VolumesFrom", async () => {
@@ -770,6 +813,63 @@ describe("Docker API proxy", () => {
       daemon.volumes.set("foreign-vol", { labels: { [PARENT_SESSION_LABEL]: "other-session" } });
       const res = await makeRequest(proxyUrl, "DELETE", "/v1.41/volumes/foreign-vol");
       expect(res.status).toBe(403);
+    });
+  });
+
+  // --- Resource limit enforcement ---
+
+  describe("resource limit enforcement", () => {
+    beforeEach(() => {
+      sessionMap.set("127.0.0.1", {
+        sessionId: "session-1",
+        hostWorkspaceDir: "/workspace/sessions/session-1",
+        dockerAccess: true,
+        resourceLimits: {
+          memory: 512 * 1024 * 1024, // 512 MB
+          cpuQuota: 200_000,
+          pidsLimit: 1024,
+        },
+      });
+    });
+
+    it("caps negative Memory values (Docker uses -1 for unlimited)", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { Memory: -1 },
+      });
+      expect(res.status).toBe(201);
+    });
+
+    it("caps negative CpuQuota values", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { CpuQuota: -1 },
+      });
+      expect(res.status).toBe(201);
+    });
+
+    it("caps negative PidsLimit values", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { PidsLimit: -1 },
+      });
+      expect(res.status).toBe(201);
+    });
+
+    it("caps inflated CpuPeriod to prevent effective CPU limit bypass", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { CpuPeriod: 1_000_000 },
+      });
+      expect(res.status).toBe(201);
+    });
+
+    it("caps resource values that exceed session limits", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { Memory: 8 * 1024 * 1024 * 1024, CpuQuota: 1_000_000, PidsLimit: 65535 },
+      });
+      expect(res.status).toBe(201);
     });
   });
 
