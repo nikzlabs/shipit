@@ -36,6 +36,8 @@ export function DeployModal({
 }: DeployModalProps) {
   const [selectedTarget, setSelectedTarget] = useState<DeployTargetInfo | null>(null);
   const [environment, setEnvironment] = useState<"production" | "preview">("production");
+  const [deploying, setDeploying] = useState(false);
+  const [sendingError, setSendingError] = useState(false);
   const dialogRef = useRef<HTMLDivElement>(null);
 
   const configuredTargets = targets.filter((t) => configStatus[t.id]?.configured);
@@ -79,7 +81,8 @@ export function DeployModal({
   const activeTarget = selectedTarget ?? configuredTargets[0] ?? null;
 
   const handleDeploy = () => {
-    if (!activeTarget) return;
+    if (!activeTarget || deploying) return;
+    setDeploying(true);
     onDeploy(activeTarget.id, environment);
   };
 
@@ -197,9 +200,10 @@ export function DeployModal({
 
               <button
                 onClick={handleDeploy}
-                className="w-full py-2.5 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors font-medium"
+                disabled={deploying}
+                className="w-full py-2.5 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Deploy to {environment === "production" ? "Production" : "Preview"}
+                {deploying ? "Starting deploy..." : `Deploy to ${environment === "production" ? "Production" : "Preview"}`}
               </button>
 
               {configuredTargets.length > 1 && (
@@ -314,10 +318,15 @@ export function DeployModal({
               </div>
               <div className="flex gap-2">
                 <button
-                  onClick={() => onSendErrorToChat(lastDeployError)}
-                  className="flex-1 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors font-medium"
+                  onClick={() => {
+                    setSendingError(true);
+                    onSendErrorToChat(lastDeployError);
+                    setTimeout(() => setSendingError(false), 1000);
+                  }}
+                  disabled={sendingError}
+                  className="flex-1 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Send to Claude
+                  {sendingError ? "Sent!" : "Send to Claude"}
                 </button>
                 <button
                   onClick={() => {
@@ -325,9 +334,10 @@ export function DeployModal({
                       handleDeploy();
                     }
                   }}
-                  className="flex-1 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                  disabled={deploying}
+                  className="flex-1 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Retry
+                  {deploying ? "Retrying..." : "Retry"}
                 </button>
               </div>
             </div>
