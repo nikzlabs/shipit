@@ -229,6 +229,18 @@ The claimed 3-6x speed advantage of `bun:sqlite` over `better-sqlite3` mainly re
 
 If ShipIt does migrate to Bun later, switching from `better-sqlite3` to `bun:sqlite` is a small, mechanical change — the APIs are nearly identical.
 
+### Storage Format Compatibility
+
+Both `better-sqlite3` and `bun:sqlite` wrap the standard SQLite3 C library. **The database file format is identical** — a `.db` file created by one opens in the other with zero conversion.
+
+| Layer | Compatible? | Notes |
+|-------|-------------|-------|
+| Database file | Identical | Standard SQLite3 format, byte-for-byte |
+| JavaScript API | Similar, not drop-in | `bun:sqlite` inspired by `better-sqlite3`, minor differences |
+| Adapter cost | ~100 lines | Community [bun-better-sqlite3](https://github.com/nounder/bun-better-sqlite3) shim exists |
+
+A future Node→Bun migration would mean: swap the import, adjust a few API calls (or use the shim), keep the same database files. No data migration needed. This confirms that choosing `better-sqlite3` today does not create lock-in.
+
 ---
 
 ## Final Recommendation
