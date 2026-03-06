@@ -19,6 +19,12 @@ The standalone path creates sessions via `git init` with no remote, no worktree,
 
 Client-side, the only remaining trigger is `App.tsx` `handleSendMessage`: when there's no `sessionId`, it calls `POST /api/sessions` before sending the message.
 
+## Fresh Main Invariant (done)
+
+New sessions must never start from stale `origin/main`. Previously, `warmSessionForRepo()` only called `git fetch` when re-warming (after a session was claimed), not during initial warming. The sync fallback in `claim-session` also skipped fetch.
+
+**Fix**: `git fetch origin` now runs unconditionally in `warmSessionForRepo()` and in the `claim-session` sync fallback path. Since warming is fire-and-forget in the background, there is no user-visible latency.
+
 ## Design
 
 ### Empty Repo Handling
