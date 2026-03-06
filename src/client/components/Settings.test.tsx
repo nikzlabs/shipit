@@ -1,9 +1,13 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { Settings, type SettingsProps } from "./Settings.js";
+import { useUiStore } from "../stores/ui-store.js";
 import type { DeployTargetInfo } from "../../server/shared/types.js";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  useUiStore.getState().setSettingsTab(undefined);
+});
 
 const claudeAuthed = { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-sonnet"] };
 const claudeUnauthed = { ...claudeAuthed, authConfigured: false };
@@ -502,12 +506,12 @@ describe("Settings - Deploy tab", () => {
   };
 
   function renderOnDeployTab(props: Partial<SettingsProps> = {}) {
+    useUiStore.getState().setSettingsTab("deploy");
     return render(
       <Settings
         {...defaultProps}
         hasActiveSession={true}
         deployTargets={[fakeTarget, fakeTarget2]}
-        initialTab="deploy"
         {...props}
       />,
     );
@@ -627,10 +631,11 @@ describe("Settings - Deploy tab", () => {
     expect(onDeployTabSelected).toHaveBeenCalled();
   });
 
-  it("calls onDeployTabSelected on mount when initialTab is deploy", () => {
+  it("calls onDeployTabSelected on mount when settingsTab is deploy", () => {
     const onDeployTabSelected = vi.fn();
+    useUiStore.getState().setSettingsTab("deploy");
     render(
-      <Settings {...defaultProps} hasActiveSession={true} initialTab="deploy" onDeployTabSelected={onDeployTabSelected} />,
+      <Settings {...defaultProps} hasActiveSession={true} onDeployTabSelected={onDeployTabSelected} />,
     );
     expect(onDeployTabSelected).toHaveBeenCalled();
   });
