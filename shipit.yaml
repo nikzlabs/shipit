@@ -6,7 +6,7 @@ resources:
   cpu: 2.0
   pids: 2048
 
-install: npm install
+install: NODE_ENV=development npm install
 preview:
   command: >-
     ./node_modules/.bin/tsx watch src/server/orchestrator/index.ts &
