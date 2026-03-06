@@ -2,7 +2,10 @@ import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
 import type { CredentialStore } from "./credential-store.js";
 import { setGitIdentity } from "./git-config.js";
-import { getErrorMessage } from "../shared/utils.js";
+// Sub-module imports — delegated implementations
+import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl } from "./github-auth-repos.js";
+import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl } from "./github-auth-prs.js";
+import { getCheckStatus as getCheckStatusImpl, getCheckRunAnnotations as getCheckRunAnnotationsImpl, getJobLogs as getJobLogsImpl } from "./github-auth-checks.js";
 
 export interface GitHubAuthStatus {
   authenticated: boolean;
@@ -181,51 +184,7 @@ export class GitHubAuthManager extends EventEmitter {
     if (!this._token) {
       return { success: false, message: "Not authenticated with GitHub" };
     }
-
-    try {
-      const res = await fetch("https://api.github.com/user/repos", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this._token}`,
-          Accept: "application/vnd.github+json",
-          "Content-Type": "application/json",
-          "User-Agent": "ShipIt",
-        },
-        body: JSON.stringify({
-          name,
-          description: options.description || "",
-          private: options.isPrivate ?? true,
-          auto_init: false,
-        }),
-      });
-
-      if (!res.ok) {
-        const err = (await res.json()) as { message?: string };
-        return {
-          success: false,
-          message: err.message || `GitHub API returned ${res.status}`,
-        };
-      }
-
-      const data = (await res.json()) as {
-        name: string;
-        full_name: string;
-        html_url: string;
-        clone_url: string;
-      };
-      return {
-        success: true,
-        name: data.name,
-        fullName: data.full_name,
-        url: data.html_url,
-        cloneUrl: data.clone_url,
-      };
-    } catch (err) {
-      return {
-        success: false,
-        message: getErrorMessage(err),
-      };
-    }
+    return createRepoImpl(this._token, name, options);
   }
 
   /**
@@ -244,45 +203,7 @@ export class GitHubAuthManager extends EventEmitter {
     if (!this._token) {
       return { success: false, message: "Not authenticated with GitHub" };
     }
-
-    try {
-      const res = await fetch(
-        `https://api.github.com/repos/${options.owner}/${options.repo}/pulls`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${this._token}`,
-            Accept: "application/vnd.github+json",
-            "Content-Type": "application/json",
-            "User-Agent": "ShipIt",
-          },
-          body: JSON.stringify({
-            title: options.title,
-            body: options.body,
-            head: options.head,
-            base: options.base,
-            draft: options.draft ?? false,
-          }),
-        },
-      );
-
-      if (!res.ok) {
-        const err = (await res.json()) as { message?: string };
-        return { success: false, message: err.message || `GitHub API returned ${res.status}` };
-      }
-
-      const data = (await res.json()) as { html_url: string; number: number };
-      return {
-        success: true,
-        url: data.html_url,
-        number: data.number,
-      };
-    } catch (err) {
-      return {
-        success: false,
-        message: getErrorMessage(err),
-      };
-    }
+    return createPullRequestImpl(this._token, options);
   }
 
   /**
@@ -297,32 +218,7 @@ export class GitHubAuthManager extends EventEmitter {
     cloneUrl: string;
   }[]> {
     if (!this._token) return [];
-
-    try {
-      const res = await fetch(
-        "https://api.github.com/user/repos?sort=pushed&per_page=15&affiliation=owner,collaborator",
-        {
-          headers: {
-            Authorization: `Bearer ${this._token}`,
-            Accept: "application/vnd.github+json",
-            "User-Agent": "ShipIt",
-          },
-        },
-      );
-
-      if (!res.ok) return [];
-
-      const data = (await res.json()) as { full_name: string; description: string | null; private: boolean; default_branch: string; clone_url: string }[];
-      return data.map((r) => ({
-        fullName: r.full_name,
-        description: r.description,
-        private: r.private,
-        defaultBranch: r.default_branch,
-        cloneUrl: r.clone_url,
-      }));
-    } catch {
-      return [];
-    }
+    return listUserReposImpl(this._token);
   }
 
   /**
@@ -336,28 +232,7 @@ export class GitHubAuthManager extends EventEmitter {
     cloneUrl: string;
   }[]> {
     if (!this._token) return [];
-
-    const res = await fetch(
-      `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}+in:name&sort=updated&per_page=10`,
-      {
-        headers: {
-          Authorization: `Bearer ${this._token}`,
-          Accept: "application/vnd.github+json",
-          "User-Agent": "ShipIt",
-        },
-      },
-    );
-
-    if (!res.ok) return [];
-
-    const data = (await res.json()) as { items: { full_name: string; description: string | null; private: boolean; default_branch: string; clone_url: string }[] };
-    return data.items.map((r) => ({
-      fullName: r.full_name,
-      description: r.description,
-      private: r.private,
-      defaultBranch: r.default_branch,
-      cloneUrl: r.clone_url,
-    }));
+    return searchReposImpl(this._token, query);
   }
 
   /**
@@ -370,29 +245,7 @@ export class GitHubAuthManager extends EventEmitter {
     head: string,
   ): Promise<{ url: string; number: number; base: string; title: string } | null> {
     if (!this._token) return null;
-
-    const res = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/pulls?head=${owner}:${head}&state=open`,
-      {
-        headers: {
-          Authorization: `Bearer ${this._token}`,
-          Accept: "application/vnd.github+json",
-          "User-Agent": "ShipIt",
-        },
-      },
-    );
-
-    if (!res.ok) return null;
-    const prs = (await res.json()) as { html_url: string; number: number; base: { ref: string }; title: string }[];
-    if (prs.length === 0) return null;
-
-    const pr = prs[0];
-    return {
-      url: pr.html_url,
-      number: pr.number,
-      base: pr.base.ref,
-      title: pr.title,
-    };
+    return findPullRequestImpl(this._token, owner, repo, head);
   }
 
   /**
@@ -409,37 +262,7 @@ export class GitHubAuthManager extends EventEmitter {
     additions: number; deletions: number;
   } | null> {
     if (!this._token) return null;
-
-    const res = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/pulls?head=${owner}:${head}&state=all&sort=updated&direction=desc&per_page=1`,
-      {
-        headers: {
-          Authorization: `Bearer ${this._token}`,
-          Accept: "application/vnd.github+json",
-          "User-Agent": "ShipIt",
-        },
-      },
-    );
-
-    if (!res.ok) return null;
-    const prs = (await res.json()) as {
-      html_url: string; number: number; base: { ref: string }; title: string;
-      state: "open" | "closed"; merged_at: string | null;
-      additions: number; deletions: number;
-    }[];
-    if (prs.length === 0) return null;
-
-    const pr = prs[0];
-    return {
-      url: pr.html_url,
-      number: pr.number,
-      base: pr.base.ref,
-      title: pr.title,
-      state: pr.state,
-      merged_at: pr.merged_at,
-      additions: pr.additions,
-      deletions: pr.deletions,
-    };
+    return findPullRequestAnyStateImpl(this._token, owner, repo, head);
   }
 
   /**
@@ -452,30 +275,7 @@ export class GitHubAuthManager extends EventEmitter {
     method: "merge" | "squash" | "rebase" = "merge",
   ): Promise<{ success: boolean; message: string }> {
     if (!this._token) return { success: false, message: "Not authenticated" };
-
-    const res = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}/merge`,
-      {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${this._token}`,
-          Accept: "application/vnd.github+json",
-          "Content-Type": "application/json",
-          "User-Agent": "ShipIt",
-        },
-        body: JSON.stringify({ merge_method: method }),
-      },
-    );
-
-    if (!res.ok) {
-      const err = (await res.json()) as { message?: string };
-      if (res.status === 405) {
-        return { success: false, message: err.message || "PR is not mergeable" };
-      }
-      return { success: false, message: err.message || `GitHub API returned ${res.status}` };
-    }
-
-    return { success: true, message: "Pull request merged" };
+    return mergePullRequestImpl(this._token, owner, repo, pullNumber, method);
   }
 
   /**
@@ -489,53 +289,7 @@ export class GitHubAuthManager extends EventEmitter {
     method: "MERGE" | "SQUASH" | "REBASE" = "MERGE",
   ): Promise<{ success: boolean; message: string }> {
     if (!this._token) return { success: false, message: "Not authenticated" };
-
-    // First, get the PR's node ID (needed for GraphQL)
-    const prRes = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
-      {
-        headers: {
-          Authorization: `Bearer ${this._token}`,
-          Accept: "application/vnd.github+json",
-          "User-Agent": "ShipIt",
-        },
-      },
-    );
-
-    if (!prRes.ok) return { success: false, message: "Failed to fetch PR details" };
-    const prData = (await prRes.json()) as { node_id: string };
-    const nodeId = prData.node_id;
-
-    // Enable auto-merge via GraphQL
-    const graphqlRes = await fetch("https://api.github.com/graphql", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this._token}`,
-        "Content-Type": "application/json",
-        "User-Agent": "ShipIt",
-      },
-      body: JSON.stringify({
-        query: `mutation EnableAutoMerge($prId: ID!, $method: PullRequestMergeMethod!) {
-          enablePullRequestAutoMerge(input: { pullRequestId: $prId, mergeMethod: $method }) {
-            pullRequest { autoMergeRequest { enabledAt } }
-          }
-        }`,
-        variables: { prId: nodeId, method },
-      }),
-    });
-
-    if (!graphqlRes.ok) return { success: false, message: "Failed to enable auto-merge" };
-    const graphqlData = (await graphqlRes.json()) as { errors?: { message: string }[] };
-
-    if (graphqlData.errors) {
-      const errMsg = graphqlData.errors[0]?.message ?? "Unknown error";
-      if (errMsg.includes("auto-merge")) {
-        return { success: false, message: "Auto-merge is not enabled for this repository. Enable it in repo Settings > General." };
-      }
-      return { success: false, message: errMsg };
-    }
-
-    return { success: true, message: "Auto-merge enabled — PR will merge when checks pass" };
+    return enableAutoMergeImpl(this._token, owner, repo, pullNumber, method);
   }
 
   /**
@@ -548,48 +302,7 @@ export class GitHubAuthManager extends EventEmitter {
     pullNumber: number,
   ): Promise<{ success: boolean; message: string }> {
     if (!this._token) return { success: false, message: "Not authenticated" };
-
-    // Get the PR's node ID
-    const prRes = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
-      {
-        headers: {
-          Authorization: `Bearer ${this._token}`,
-          Accept: "application/vnd.github+json",
-          "User-Agent": "ShipIt",
-        },
-      },
-    );
-
-    if (!prRes.ok) return { success: false, message: "Failed to fetch PR details" };
-    const prData = (await prRes.json()) as { node_id: string };
-    const nodeId = prData.node_id;
-
-    const graphqlRes = await fetch("https://api.github.com/graphql", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this._token}`,
-        "Content-Type": "application/json",
-        "User-Agent": "ShipIt",
-      },
-      body: JSON.stringify({
-        query: `mutation DisableAutoMerge($prId: ID!) {
-          disablePullRequestAutoMerge(input: { pullRequestId: $prId }) {
-            pullRequest { autoMergeRequest { enabledAt } }
-          }
-        }`,
-        variables: { prId: nodeId },
-      }),
-    });
-
-    if (!graphqlRes.ok) return { success: false, message: "Failed to disable auto-merge" };
-    const graphqlData = (await graphqlRes.json()) as { errors?: { message: string }[] };
-
-    if (graphqlData.errors) {
-      return { success: false, message: graphqlData.errors[0]?.message ?? "Unknown error" };
-    }
-
-    return { success: true, message: "Auto-merge disabled" };
+    return disableAutoMergeImpl(this._token, owner, repo, pullNumber);
   }
 
   /**
@@ -601,63 +314,7 @@ export class GitHubAuthManager extends EventEmitter {
     ref: string,
   ): Promise<{ state: "pending" | "success" | "failure" | "none"; total: number; passed: number; failed: number; pending: number }> {
     if (!this._token) return { state: "none", total: 0, passed: 0, failed: 0, pending: 0 };
-
-    let passed = 0, failed = 0, pending = 0;
-
-    // Get combined status (legacy status API)
-    try {
-      const statusRes = await fetch(
-        `https://api.github.com/repos/${owner}/${repo}/commits/${ref}/status`,
-        {
-          headers: {
-            Authorization: `Bearer ${this._token}`,
-            Accept: "application/vnd.github+json",
-            "User-Agent": "ShipIt",
-          },
-        },
-      );
-
-      if (statusRes.ok) {
-        const statusData = (await statusRes.json()) as { statuses: { state: string }[] };
-        for (const s of statusData.statuses) {
-          if (s.state === "success") passed++;
-          else if (s.state === "failure" || s.state === "error") failed++;
-          else pending++;
-        }
-      }
-    } catch {
-      // ignore
-    }
-
-    // Also get check runs (GitHub Actions uses this API)
-    try {
-      const checksRes = await fetch(
-        `https://api.github.com/repos/${owner}/${repo}/commits/${ref}/check-runs`,
-        {
-          headers: {
-            Authorization: `Bearer ${this._token}`,
-            Accept: "application/vnd.github+json",
-            "User-Agent": "ShipIt",
-          },
-        },
-      );
-
-      if (checksRes.ok) {
-        const checksData = (await checksRes.json()) as { check_runs: { conclusion: string | null; status: string }[] };
-        for (const check of checksData.check_runs) {
-          if (check.conclusion === "success") passed++;
-          else if (check.conclusion === "failure" || check.conclusion === "cancelled" || check.conclusion === "timed_out") failed++;
-          else if (check.status !== "completed") pending++;
-        }
-      }
-    } catch {
-      // ignore
-    }
-
-    const total = passed + failed + pending;
-    const state = total === 0 ? "none" as const : failed > 0 ? "failure" as const : pending > 0 ? "pending" as const : "success" as const;
-
-    return { state, total, passed, failed, pending };
+    return getCheckStatusImpl(this._token, owner, repo, ref);
   }
 
   /**
@@ -676,38 +333,7 @@ export class GitHubAuthManager extends EventEmitter {
     annotationLevel: "failure" | "warning" | "notice";
   }[]> {
     if (!this._token) return [];
-
-    try {
-      const res = await fetch(
-        `https://api.github.com/repos/${owner}/${repo}/check-runs/${checkRunId}/annotations`,
-        {
-          headers: {
-            Authorization: `Bearer ${this._token}`,
-            Accept: "application/vnd.github+json",
-            "User-Agent": "ShipIt",
-          },
-        },
-      );
-
-      if (!res.ok) return [];
-
-      const data = (await res.json()) as {
-        path: string;
-        start_line: number;
-        end_line: number;
-        message: string;
-        annotation_level: string;
-      }[];
-      return data.map((a) => ({
-        path: a.path,
-        startLine: a.start_line,
-        endLine: a.end_line,
-        message: a.message,
-        annotationLevel: a.annotation_level as "failure" | "warning" | "notice",
-      }));
-    } catch {
-      return [];
-    }
+    return getCheckRunAnnotationsImpl(this._token, owner, repo, checkRunId);
   }
 
   /**
@@ -721,27 +347,7 @@ export class GitHubAuthManager extends EventEmitter {
     jobId: number,
   ): Promise<string> {
     if (!this._token) return "";
-
-    try {
-      const res = await fetch(
-        `https://api.github.com/repos/${owner}/${repo}/actions/jobs/${jobId}/logs`,
-        {
-          headers: {
-            Authorization: `Bearer ${this._token}`,
-            Accept: "application/vnd.github+json",
-            "User-Agent": "ShipIt",
-          },
-          redirect: "follow",
-        },
-      );
-
-      if (!res.ok) return "";
-
-      const text = await res.text();
-      return text;
-    } catch {
-      return "";
-    }
+    return getJobLogsImpl(this._token, owner, repo, jobId);
   }
 
   /**
@@ -783,3 +389,8 @@ export class GitHubAuthManager extends EventEmitter {
     }
   }
 }
+
+// Barrel re-exports from sub-modules for backwards compatibility
+export { createRepo, listUserRepos, searchRepos } from "./github-auth-repos.js";
+export { createPullRequest, findPullRequest, findPullRequestAnyState, mergePullRequest, enableAutoMerge, disableAutoMerge } from "./github-auth-prs.js";
+export { getCheckStatus, getCheckRunAnnotations, getJobLogs } from "./github-auth-checks.js";
