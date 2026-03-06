@@ -2,6 +2,10 @@
 
 ShipIt is a browser-based IDE for vibe coding — chat with Claude, it writes code, you see results live. Powered by Claude Code CLI and your Claude subscription.
 
+## Runtime
+
+ShipIt always runs inside Docker containers — there is no local/bare-metal mode. The orchestrator runs in a container and spawns session worker containers.
+
 ## Setup
 
 ```bash
