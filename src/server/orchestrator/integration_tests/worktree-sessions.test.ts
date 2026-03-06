@@ -177,16 +177,15 @@ describe("Integration: Worktree sessions", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("list_worktrees returns worktrees for active session (standalone)", async () => {
+  it("list_worktrees returns empty for session without remoteUrl", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     const sessionId = await createAndActivateSession(client, "Parent");
 
-    // For standalone sessions (no remoteUrl), list_worktrees returns only the active session
+    // Sessions without remoteUrl have no branch, so worktrees list is filtered to entries with branch
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/worktrees` });
     expect(res.statusCode).toBe(200);
-    // Standalone session has no branch, so worktrees list is filtered to entries with branch
     const worktrees = res.json().worktrees;
     expect(worktrees.length).toBe(0);
 

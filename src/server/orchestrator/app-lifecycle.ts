@@ -6,7 +6,6 @@ import type { Server as HttpServer } from "node:http";
 import type { FastifyInstance } from "fastify";
 import type { GitManager } from "../shared/git.js";
 import { generateBranchPrefix, repoUrlToHash, pushToOrigin } from "./git-utils.js";
-import { getGitIdentity } from "./git-config.js";
 import { SessionContainerManager } from "./session-container.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
@@ -558,42 +557,24 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
 /** Dependencies for session directory creation. */
 export interface SessionDirDeps {
   sessionsRoot: string;
-  createGitManager: (dir: string) => GitManager;
-  githubAuthManager: GitHubAuthManager;
   sessionManager: SessionManager;
 }
 
 /**
- * Create a factory function for creating new isolated session directories.
+ * Create a factory function for creating new session directories.
+ * The directory is created empty — git worktree setup happens separately.
  */
 export function createSessionDirFactory(
   dirDeps: SessionDirDeps,
-): (title: string, opts?: { skipGitInit?: boolean }) => Promise<{ appSessionId: string; sessionDir: string }> {
-  const { sessionsRoot, createGitManager, githubAuthManager, sessionManager } = dirDeps;
+): (title: string) => Promise<{ appSessionId: string; sessionDir: string }> {
+  const { sessionsRoot, sessionManager } = dirDeps;
 
   return async (
     title: string,
-    opts?: { skipGitInit?: boolean },
   ): Promise<{ appSessionId: string; sessionDir: string }> => {
     const appSessionId = crypto.randomUUID();
     const sessionDir = path.join(sessionsRoot, appSessionId);
     await fs.mkdir(sessionDir, { recursive: true });
-
-    if (!opts?.skipGitInit) {
-      // Initialize a fresh git repo for this session.
-      // Identity is inherited from global git config (GIT_CONFIG_GLOBAL).
-      // The UI blocks until the user sets their identity, so it must exist by now.
-      if (!getGitIdentity()) throw new Error("Cannot create session: git identity not configured");
-      const git = createGitManager(sessionDir);
-      await git.init();
-    }
-
-    // Configure GitHub credentials in the new repo if available.
-    // Skip when skipGitInit — the directory isn't a git repo yet (worktree
-    // will be created later and has its own configureGitCredentials call).
-    if (!opts?.skipGitInit && githubAuthManager.authenticated) {
-      githubAuthManager.configureGitCredentials(sessionDir);
-    }
 
     sessionManager.track(appSessionId, title, sessionDir);
     console.log("[server] Created session directory:", sessionDir);
@@ -620,14 +601,13 @@ export function createSharedRepoDirHelper(
 export interface WarmPoolDeps {
   repoStore: RepoStore;
   sessionManager: SessionManager;
-  createGitManager: (dir: string) => GitManager;
   createRepoGit: (dir: string) => RepoGit;
   githubAuthManager: GitHubAuthManager;
   credentialStore: CredentialStore;
   containerManager: SessionContainerManager | null;
   credentialsDir: string;
   getSharedRepoDir: (repoUrl: string) => string;
-  createSessionDir: (title: string, opts?: { skipGitInit?: boolean }) => Promise<{ appSessionId: string; sessionDir: string }>;
+  createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string }>;
   sseBroadcast: (event: string, data: unknown) => void;
 }
 
@@ -642,7 +622,7 @@ export function createWarmPool(
   waitForWarmSession: (repoUrl: string) => Promise<void> | undefined;
 } {
   const {
-    repoStore, sessionManager, createGitManager, createRepoGit,
+    repoStore, sessionManager, createRepoGit,
     githubAuthManager, credentialStore, containerManager,
     credentialsDir, getSharedRepoDir, createSessionDir, sseBroadcast,
   } = poolDeps;
@@ -672,7 +652,7 @@ export function createWarmPool(
         if (!repoExists) return;
 
         const branchPrefix = generateBranchPrefix();
-        const created = await createSessionDir("Warm session", { skipGitInit: true });
+        const created = await createSessionDir("Warm session");
         const { appSessionId, sessionDir } = created;
 
         // Mark as warm before doing git work
@@ -691,36 +671,30 @@ export function createWarmPool(
         // Remove the empty dir (worktree add needs it absent)
         await fs.rm(sessionDir, { recursive: true, force: true });
 
-        const isEmptyRepo = await repoGit.isEmpty();
+        // Empty repos have no commits — create one so worktree add has a start point
+        if (await repoGit.isEmpty()) {
+          await repoGit.createInitialCommit();
+        }
 
-        if (isEmptyRepo) {
-          await fs.mkdir(sessionDir, { recursive: true });
-          const sessionGit = createGitManager(sessionDir);
-          await sessionGit.init();
-          const cloneUrl = githubAuthManager.getAuthenticatedCloneUrl(repoUrl);
-          await sessionGit.addRemote("origin", cloneUrl);
-          await sessionGit.checkoutNewBranch(branchPrefix);
-        } else {
-          let startPoint: string | undefined;
-          try {
-            const defaultBranch = await repoGit.getDefaultBranch();
-            if (defaultBranch && !defaultBranch.includes("(")) {
-              startPoint = `origin/${defaultBranch}`;
-            }
-          } catch {
-            // Fallback: let git use HEAD
+        let startPoint: string | undefined;
+        try {
+          const defaultBranch = await repoGit.getDefaultBranch();
+          if (defaultBranch && !defaultBranch.includes("(")) {
+            startPoint = `origin/${defaultBranch}`;
           }
-          // Retry worktree creation (git lock contention)
-          for (let attempt = 0; attempt < 3; attempt++) {
-            try {
-              await repoGit.createWorktree(sessionDir, branchPrefix, startPoint);
-              break;
-            } catch (wtErr) {
-              if (attempt < 2) {
-                await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
-              } else {
-                throw wtErr;
-              }
+        } catch {
+          // Fallback: let git use HEAD
+        }
+        // Retry worktree creation (git lock contention)
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await repoGit.createWorktree(sessionDir, branchPrefix, startPoint);
+            break;
+          } catch (wtErr) {
+            if (attempt < 2) {
+              await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+            } else {
+              throw wtErr;
             }
           }
         }
@@ -732,7 +706,7 @@ export function createWarmPool(
 
         sessionManager.setWorktreeInfo(appSessionId, {
           branch: branchPrefix,
-          sessionType: isEmptyRepo ? "standalone" : "worktree",
+          sessionType: "worktree",
         });
 
         // Store the warm session ID on the repo.
@@ -742,8 +716,6 @@ export function createWarmPool(
 
         // Boot a standby container so the next activation is instant
         if (opts?.withStandby && containerManager) {
-          const session = sessionManager.get(appSessionId);
-          const sharedRepoDir = session?.sessionType === "worktree" ? repoDir : undefined;
           const realCount = containerManager.size - containerManager.standbyCount;
           const maxIdle = credentialStore.getMaxIdleContainers();
           if (realCount < maxIdle) {
@@ -751,7 +723,7 @@ export function createWarmPool(
               sessionId: appSessionId,
               sessionDir,
               credentialsDir,
-              sharedRepoDir,
+              sharedRepoDir: repoDir,
             });
             // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget in sync warming callback
             containerManager.createStandby(config).then((sc) => {

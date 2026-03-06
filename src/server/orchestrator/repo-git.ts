@@ -108,4 +108,13 @@ export class RepoGit {
       return true;
     }
   }
+
+  /**
+   * Create an initial empty commit in an empty repo so that
+   * `git worktree add` has a valid start point.
+   */
+  async createInitialCommit(): Promise<void> {
+    await this.git.commit("Initial commit", { "--allow-empty": null });
+    console.log("[git] Created initial commit in shared repo");
+  }
 }

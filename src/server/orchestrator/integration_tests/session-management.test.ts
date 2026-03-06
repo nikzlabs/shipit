@@ -59,16 +59,9 @@ describe("Integration: Session management", () => {
     expect(res.json().sessions).toEqual([]);
   });
 
-  it("POST /api/sessions creates a new session", async () => {
+  it("POST /api/sessions is removed (standalone sessions no longer supported)", async () => {
     const res = await app.inject({ method: "POST", url: "/api/sessions", payload: { title: "Test" } });
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.sessionId).toBeDefined();
-    expect(body.sessionDir).toBeDefined();
-
-    // Should be visible in bootstrap
-    const bootstrap = await app.inject({ method: "GET", url: "/api/bootstrap" });
-    expect(bootstrap.json().sessions.find((s: { id: string }) => s.id === body.sessionId)).toBeDefined();
+    expect(res.statusCode).toBe(404);
   });
 
 });

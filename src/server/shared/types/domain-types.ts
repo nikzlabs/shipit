@@ -24,8 +24,8 @@ export interface SessionInfo {
   archived?: boolean;
   /** If this session is a worktree, the branch name. */
   branch?: string;
-  /** Session type: "standalone" (default) or "worktree". */
-  sessionType?: "standalone" | "worktree";
+  /** Session type — all sessions are worktrees. */
+  sessionType?: "worktree";
   /** If true, this is a pre-created warm session not yet visible in the sidebar. */
   warm?: boolean;
   /** True once the branch has been renamed with a descriptive slug after graduation. */

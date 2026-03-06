@@ -123,7 +123,6 @@ export interface AppCtx {
   warmSessionForRepo: (repoUrl: string, opts?: { withStandby?: boolean }) => void;
 
   // Factories
-  createSessionDir: (title: string, opts?: { skipGitInit?: boolean }) => Promise<{ appSessionId: string; sessionDir: string }>;
   generateText: (prompt: string, cwd?: string) => Promise<string>;
   getSharedRepoDir: (repoUrl: string) => string;
 

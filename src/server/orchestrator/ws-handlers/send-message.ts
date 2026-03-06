@@ -180,36 +180,26 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
       }
     }
 
-    // If session has a workspaceDir but it was deleted, handle recovery
+    // If session has a workspaceDir but it was deleted, the worktree
+    // linkage (branch, shared repo) must be intact — can't recreate.
     if (session?.workspaceDir) {
       try {
         await fs.access(session.workspaceDir);
       } catch {
-        if (session.sessionType === "worktree") {
-          // Worktree directories can't simply be recreated — the git
-          // worktree linkage (branch, shared repo) must be intact.
-          ctx.send({
-            type: "error",
-            message: "This session's workspace is no longer available. The worktree may have been cleaned up.",
-          });
-          return;
-        }
-        console.log("[server] Recreating missing session directory:", session.workspaceDir);
-        await fs.mkdir(session.workspaceDir, { recursive: true });
-        const git = ctx.createGitManager(session.workspaceDir);
-        await git.init();
+        ctx.send({
+          type: "error",
+          message: "This session's workspace is no longer available. The worktree may have been cleaned up.",
+        });
+        return;
       }
     }
   } else {
-    // New session — create isolated directory
-    const { appSessionId, sessionDir } = await ctx.createSessionDir(
-      userText.slice(0, 80) || "New session",
-    );
-    ctx.setActiveAppSessionId(appSessionId);
-    ctx.setActiveSessionDir(sessionDir);
-
-    // Check git identity for the new session
-    ctx.checkGitIdentity(sessionDir);
+    // No session — messages must be sent to an existing session
+    ctx.send({
+      type: "error",
+      message: "No active session. Please create a session first.",
+    });
+    return;
   }
 
   // Ensure a runner exists for this session and attach to it

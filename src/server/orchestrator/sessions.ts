@@ -200,7 +200,7 @@ export class SessionManager {
   }
 
   /** Set branch and session type on a session. */
-  setWorktreeInfo(id: string, info: { branch: string; sessionType: "standalone" | "worktree" }): void {
+  setWorktreeInfo(id: string, info: { branch: string; sessionType: "worktree" }): void {
     this.db.prepare(
       "UPDATE sessions SET branch = ?, session_type = ? WHERE id = ?",
     ).run(info.branch, info.sessionType, id);

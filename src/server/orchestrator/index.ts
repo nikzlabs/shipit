@@ -154,12 +154,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Session directory creation ----
   const createSessionDir = createSessionDirFactory({
-    sessionsRoot, createGitManager, githubAuthManager, sessionManager,
+    sessionsRoot, sessionManager,
   });
 
   // ---- Warm session pool ----
   const { warmSessionForRepo, waitForWarmSession } = createWarmPool({
-    repoStore, sessionManager, createGitManager, createRepoGit,
+    repoStore, sessionManager, createRepoGit,
     githubAuthManager, credentialStore, containerManager,
     credentialsDir, getSharedRepoDir, createSessionDir, sseBroadcast,
   });
@@ -264,6 +264,21 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // ---- Preview reverse proxy (container mode) ----
   if (containerManager) {
     registerPreviewProxy(app, { containerManager });
+  }
+
+  // ---- Test-only session creation endpoint ----
+  // Replaces the removed POST /api/sessions for integration tests.
+  if (isTestMode) {
+    app.post<{ Body: { title?: string } }>(
+      "/api/_test/sessions",
+      async (_request) => {
+        const title = _request.body?.title?.trim() || "Test session";
+        const { appSessionId, sessionDir } = await createSessionDir(title);
+        const git = createGitManager(sessionDir);
+        await git.init();
+        return { sessionId: appSessionId, sessionDir };
+      },
+    );
   }
 
   // Serve the built client files from dist/client/
@@ -490,7 +505,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         sessionManager, chatHistoryManager, createGitManager, createRepoGit,
         githubAuthManager, deploymentManager, deploymentStore,
         featureManager, usageManager, authManager, agentRegistry, credentialStore,
-        repoStore, warmSessionForRepo, createSessionDir, generateText,
+        repoStore, warmSessionForRepo, generateText,
         getSharedRepoDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
         prStatusPoller,
         workspaceDir, sessionsRoot, defaultAgentId,
