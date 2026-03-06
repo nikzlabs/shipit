@@ -83,7 +83,7 @@ describe("PrLifecycleCard", () => {
 
     expect(screen.getByText("+30")).toBeInTheDocument();
     expect(screen.getByText("-2")).toBeInTheDocument();
-    expect(screen.getByText("Create Pull Request")).toBeInTheDocument();
+    expect(screen.getByText("Create PR")).toBeInTheDocument();
   });
 
   it("renders creating phase with spinner text", () => {
@@ -91,7 +91,7 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" />);
 
-    expect(screen.getByText("Creating pull request...")).toBeInTheDocument();
+    expect(screen.getByText("Creating PR...")).toBeInTheDocument();
   });
 
   it("renders open phase with branch flow and diff stats", () => {

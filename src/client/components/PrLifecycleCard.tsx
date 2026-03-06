@@ -217,14 +217,14 @@ function ReadyPhase({ card, sessionId }: { card: PrCardState; sessionId: string 
         </span>
       )}
       {hasDiffStats && <DiffStats ins={ins} del={del} />}
-      {(card.headBranch || hasDiffStats) && (
+      {hasDiffStats && (
         <Button
           size="sm"
           onClick={handleCreate}
           disabled={creating}
           className="bg-(--color-success) hover:bg-(--color-success) hover:opacity-90 text-(--color-text-inverse)"
         >
-          {creating ? "Creating..." : "Create Pull Request"}
+          {creating ? "Creating..." : "Create PR"}
         </Button>
       )}
     </div>
@@ -235,7 +235,7 @@ function CreatingPhase() {
   return (
     <div className="flex items-center gap-2">
       <Spinner />
-      <span className="text-xs text-(--color-text-secondary)">Creating pull request...</span>
+      <span className="text-xs text-(--color-text-secondary)">Creating PR...</span>
     </div>
   );
 }
