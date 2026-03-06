@@ -251,7 +251,7 @@ export function PreviewFrame({
         <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
           <div className="text-center space-y-3">
             <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
-            <p>Starting dev server...</p>
+            <p>{loading && !sessionId ? "Syncing with latest changes..." : "Starting dev server..."}</p>
           </div>
         </div>
       );

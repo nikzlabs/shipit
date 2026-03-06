@@ -45,8 +45,13 @@ describe("PreviewFrame", () => {
     expect(screen.getByText("Starting dev server...")).toBeInTheDocument();
   });
 
-  it("shows spinner when loading is true (claiming session)", () => {
+  it("shows syncing message when loading is true (claiming session)", () => {
     render(<PreviewFrame preview={null} loading={true} {...defaultProps} />);
+    expect(screen.getByText("Syncing with latest changes...")).toBeInTheDocument();
+  });
+
+  it("shows starting dev server when loading with sessionId already set", () => {
+    render(<PreviewFrame preview={null} loading={true} sessionId="abc-123" {...defaultProps} />);
     expect(screen.getByText("Starting dev server...")).toBeInTheDocument();
   });
 
