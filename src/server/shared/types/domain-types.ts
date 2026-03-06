@@ -32,6 +32,8 @@ export interface SessionInfo {
   branchRenamed?: boolean;
   /** Conversation replay text injected as system prompt context after a rollback. */
   conversationReplay?: string;
+  /** When the session's PR was merged. Sessions with mergedAt are kept alive until pruned. */
+  mergedAt?: string;
 }
 
 // ---- Repo types ----

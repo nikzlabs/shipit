@@ -15,6 +15,7 @@ interface SessionRow {
   branch: string | null;
   session_type: string | null;
   branch_renamed: number;
+  merged_at: string | null;
 }
 
 export class SessionManager {
@@ -40,6 +41,7 @@ export class SessionManager {
     if (row.branch) info.branch = row.branch;
     if (row.session_type) info.sessionType = row.session_type as SessionInfo["sessionType"];
     if (row.branch_renamed) info.branchRenamed = true;
+    if (row.merged_at) info.mergedAt = row.merged_at;
     return info;
   }
 
@@ -152,6 +154,22 @@ export class SessionManager {
     if (!row?.archived) return false;
     this.db.prepare("UPDATE sessions SET archived = 0 WHERE id = ?").run(id);
     return true;
+  }
+
+  /** Mark a session as merged (sets merged_at timestamp). */
+  markMerged(id: string): boolean {
+    const result = this.db.prepare(
+      "UPDATE sessions SET merged_at = datetime('now') WHERE id = ? AND merged_at IS NULL",
+    ).run(id);
+    return result.changes > 0;
+  }
+
+  /** List merged-but-not-archived sessions, most recently merged first. */
+  listMergedNotArchived(): SessionInfo[] {
+    const rows = this.db.prepare(
+      "SELECT * FROM sessions WHERE merged_at IS NOT NULL AND archived = 0 ORDER BY merged_at DESC",
+    ).all() as SessionRow[];
+    return rows.map((r) => this.fromRow(r));
   }
 
   /** List all archived sessions, most recently used first. */
