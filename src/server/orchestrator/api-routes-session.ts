@@ -35,6 +35,24 @@ import {
 import { getErrorMessage } from "./validation.js";
 import { generateBranchPrefix } from "./git-utils.js";
 
+/**
+ * Fetch latest origin refs and hard-reset a warm worktree to the current
+ * remote HEAD. Safe because warm sessions have zero user changes.
+ * Non-fatal — if fetch or reset fails, the session still works with older code.
+ */
+async function refreshWorktreeToLatestMain(
+  repoDir: string,
+  sessionDir: string,
+  createRepoGit: ApiDeps["createRepoGit"],
+  createGitManager: ApiDeps["createGitManager"],
+): Promise<void> {
+  const repoGit = createRepoGit(repoDir);
+  await repoGit.fetch("origin");
+  const defaultBranch = await repoGit.getDefaultBranch();
+  const sessionGit = createGitManager(sessionDir);
+  await sessionGit.rollback(`origin/${defaultBranch}`);
+}
+
 export async function registerSessionRoutes(
   app: FastifyInstance,
   deps: ApiDeps,
@@ -401,6 +419,11 @@ export async function registerSessionRoutes(
         // warm session would have the dir but no .git yet.
         const reusable = sessionManager.findUngraduatedWarm(url, repo.warmSessionId ?? undefined);
         if (reusable?.workspaceDir && existsSync(path.join(reusable.workspaceDir, ".git"))) {
+          try {
+            await refreshWorktreeToLatestMain(deps.getSharedRepoDir(url), reusable.workspaceDir, createRepoGit, createGitManager);
+          } catch (err) {
+            console.error(`[claim-session] Failed to refresh worktree to latest main:`, getErrorMessage(err));
+          }
           return { sessionId: reusable.id, sessionDir: reusable.workspaceDir };
         }
 
@@ -414,6 +437,11 @@ export async function registerSessionRoutes(
             deps.repoStore.setWarmSessionId(url, undefined);
             // Start warming the next session in background (with standby container)
             deps.warmSessionForRepo?.(url, { withStandby: true });
+            try {
+              await refreshWorktreeToLatestMain(deps.getSharedRepoDir(url), warmSession.workspaceDir, createRepoGit, createGitManager);
+            } catch (err) {
+              console.error(`[claim-session] Failed to refresh worktree to latest main:`, getErrorMessage(err));
+            }
             return { sessionId, sessionDir: warmSession.workspaceDir };
           }
         }
@@ -432,6 +460,11 @@ export async function registerSessionRoutes(
               const sessionId = freshRepo.warmSessionId;
               deps.repoStore.setWarmSessionId(url, undefined);
               deps.warmSessionForRepo?.(url, { withStandby: true });
+              try {
+                await refreshWorktreeToLatestMain(deps.getSharedRepoDir(url), warmSession.workspaceDir, createRepoGit, createGitManager);
+              } catch (err) {
+                console.error(`[claim-session] Failed to refresh worktree to latest main:`, getErrorMessage(err));
+              }
               return { sessionId, sessionDir: warmSession.workspaceDir };
             }
           }
