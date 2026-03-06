@@ -538,37 +538,40 @@ export function createDockerProxy(deps: DockerProxyDeps): http.Server {
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the Docker bridge network gateway IP (e.g., 172.17.0.1).
- * This is the IP that session containers use to reach the orchestrator.
+ * Resolve this container's own IP on a Docker network.
+ *
+ * Reads /etc/hostname to get the container ID, then inspects the container
+ * via the Docker API to find its IP on the given network.
  */
-export async function resolveBridgeGatewayIp(networkName = "bridge"): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const opts: http.RequestOptions = {
-      socketPath: DOCKER_SOCKET,
-      path: `/networks/${networkName}`,
-      method: "GET",
-    };
+export async function resolveOwnContainerIp(networkName = "bridge"): Promise<string> {
+  const { readFile } = await import("node:fs/promises");
+  const containerId = (await readFile("/etc/hostname", "utf-8")).trim();
 
-    const req = http.request(opts, (res) => {
-      const chunks: Buffer[] = [];
-      res.on("data", (chunk: Buffer) => chunks.push(chunk));
-      res.on("end", () => {
-        try {
-          const info = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>;
-          const ipam = info.IPAM as Record<string, unknown> | undefined;
-          const config = (ipam?.Config as Record<string, string>[] | undefined);
-          const gateway = config?.[0]?.Gateway;
-          if (!gateway) {
-            reject(new Error(`No gateway IP found for Docker network "${networkName}"`));
-            return;
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { socketPath: DOCKER_SOCKET, path: `/containers/${containerId}/json`, method: "GET" },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          try {
+            const info = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>;
+            const networkSettings = info.NetworkSettings as Record<string, unknown> | undefined;
+            const networks = networkSettings?.Networks as Record<string, Record<string, unknown>> | undefined;
+            const net = networks?.[networkName];
+            const ip = net?.IPAddress as string | undefined;
+            if (!ip) {
+              reject(new Error(`Container ${containerId} has no IP on network "${networkName}"`));
+              return;
+            }
+            resolve(ip);
+          } catch (err) {
+            reject(err instanceof Error ? err : new Error(String(err)));
           }
-          resolve(gateway);
-        } catch (err) {
-          reject(err instanceof Error ? err : new Error(String(err)));
-        }
-      });
-      res.on("error", reject);
-    });
+        });
+        res.on("error", reject);
+      },
+    );
 
     req.on("error", reject);
     req.end();

@@ -11,7 +11,7 @@ import { ContainerSessionRunner } from "./container-session-runner.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
 import { SessionRunnerRegistry } from "./session-runner.js";
 import { resolveSessionConfig } from "../shared/session-config.js";
-import { createDockerProxy, resolveBridgeGatewayIp } from "./docker-proxy.js";
+import { createDockerProxy, resolveOwnContainerIp } from "./docker-proxy.js";
 import type { SessionInfo as DockerProxySessionInfo } from "./docker-proxy.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
 import { getErrorMessage } from "./validation.js";
@@ -98,7 +98,7 @@ export async function setupContainerManager(
   let dockerProxyServer: HttpServer | null = null;
   if (containerManager && !isTestMode) {
     try {
-      const bridgeGatewayIp = await resolveBridgeGatewayIp(process.env.DOCKER_NETWORK);
+      const proxyAdvertiseIp = await resolveOwnContainerIp(process.env.DOCKER_NETWORK);
       const proxy = createDockerProxy({
         getSessionByContainerIp: (ip: string): DockerProxySessionInfo | undefined => {
           const sc = containerManager.getSessionByContainerIp(ip);
@@ -116,11 +116,11 @@ export async function setupContainerManager(
         },
       });
       await new Promise<void>((resolve) => {
-        proxy.listen(0, bridgeGatewayIp, () => {
+        proxy.listen(0, "0.0.0.0", () => {
           const addr = proxy.address();
           if (addr && typeof addr === "object") {
-            containerManager.setDockerProxy(bridgeGatewayIp, addr.port, process.env.SESSION_WORKER_DOCKER_IMAGE);
-            console.log(`[server] Docker API proxy listening on ${bridgeGatewayIp}:${addr.port}`);
+            containerManager.setDockerProxy(proxyAdvertiseIp, addr.port, process.env.SESSION_WORKER_DOCKER_IMAGE);
+            console.log(`[server] Docker API proxy listening on 0.0.0.0:${addr.port} (advertised as ${proxyAdvertiseIp})`);
           }
           resolve();
         });
