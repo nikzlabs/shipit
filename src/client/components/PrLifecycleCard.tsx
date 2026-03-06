@@ -195,17 +195,18 @@ function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: 
 
 // ---- Phase renderers ----
 
-function ReadyPhase({ card, sessionId }: { card: PrCardState; sessionId: string }) {
+function ReadyPhase({ card, sessionId, creating: externalCreating }: { card: PrCardState; sessionId: string; creating?: boolean }) {
   const quickCreate = usePrStore((s) => s.quickCreate);
-  const [creating, setCreating] = useState(false);
+  const [localCreating, setLocalCreating] = useState(false);
+  const creating = externalCreating || localCreating;
   const ins = card.totalInsertions ?? 0;
   const del = card.totalDeletions ?? 0;
   const hasDiffStats = ins > 0 || del > 0;
 
   const handleCreate = async () => {
-    setCreating(true);
+    setLocalCreating(true);
     await quickCreate(sessionId);
-    setCreating(false);
+    setLocalCreating(false);
   };
 
   return (
@@ -224,18 +225,10 @@ function ReadyPhase({ card, sessionId }: { card: PrCardState; sessionId: string 
           disabled={creating}
           className="bg-(--color-success) hover:bg-(--color-success) hover:opacity-90 text-(--color-text-inverse)"
         >
-          {creating ? "Creating..." : "Create PR"}
+          {creating && <CircleNotchIcon size={14} className="animate-spin" />}
+          {creating ? "Creating PR..." : "Create PR"}
         </Button>
       )}
-    </div>
-  );
-}
-
-function CreatingPhase() {
-  return (
-    <div className="flex items-center gap-2">
-      <Spinner />
-      <span className="text-xs text-(--color-text-secondary)">Creating PR...</span>
     </div>
   );
 }
@@ -445,8 +438,7 @@ export function PrLifecycleCard({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="mx-4 my-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-secondary)/60 px-4 py-2">
-      {card.phase === "ready" && <ReadyPhase card={card} sessionId={sessionId} />}
-      {card.phase === "creating" && <CreatingPhase />}
+      {(card.phase === "ready" || card.phase === "creating") && <ReadyPhase card={card} sessionId={sessionId} creating={card.phase === "creating"} />}
       {card.phase === "open" && <OpenPhase card={card} sessionId={sessionId} />}
       {card.phase === "merged" && <MergedPhase card={card} sessionId={sessionId} />}
       {card.phase === "closed" && <ClosedPhase card={card} sessionId={sessionId} />}

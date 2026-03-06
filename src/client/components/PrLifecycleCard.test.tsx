@@ -86,12 +86,19 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByText("Create PR")).toBeInTheDocument();
   });
 
-  it("renders creating phase with spinner text", () => {
-    setCard("s1", { cardId: "c1", phase: "creating" });
+  it("renders creating phase with spinner inside button", () => {
+    setCard("s1", {
+      cardId: "c1",
+      phase: "creating",
+      totalInsertions: 10,
+      totalDeletions: 2,
+    });
 
     render(<PrLifecycleCard sessionId="s1" />);
 
-    expect(screen.getByText("Creating PR...")).toBeInTheDocument();
+    const button = screen.getByRole("button", { name: /Creating PR/i });
+    expect(button).toBeInTheDocument();
+    expect(button).toBeDisabled();
   });
 
   it("renders open phase with branch flow and diff stats", () => {
