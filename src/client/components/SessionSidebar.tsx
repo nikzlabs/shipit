@@ -248,10 +248,11 @@ export function SessionSidebar({
 }: SessionSidebarProps) {
   const { width, isDragging, onMouseDown } = useSidebarResize();
 
-  // Filter sessions to active repo
-  const filteredSessions = activeRepoUrl
+  // Filter sessions to active repo, sorted most-recently-used first
+  const filteredSessions = (activeRepoUrl
     ? sessions.filter((s) => s.remoteUrl === activeRepoUrl)
-    : sessions.filter((s) => !s.remoteUrl);
+    : sessions.filter((s) => !s.remoteUrl)
+  ).sort((a, b) => (b.lastUsedAt ?? "").localeCompare(a.lastUsedAt ?? ""));
 
   if (collapsed) {
     return (

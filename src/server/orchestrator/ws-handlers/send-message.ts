@@ -95,6 +95,7 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
     // Graduate warm session on first message
     if (session?.warm) {
       ctx.sessionManager.setWarm(effectiveSessionId, false);
+      ctx.sessionManager.track(effectiveSessionId);
 
       // Set a placeholder title immediately (replaced async by AI-generated name below)
       ctx.sessionManager.rename(effectiveSessionId, userText.slice(0, 60) || "New session");
