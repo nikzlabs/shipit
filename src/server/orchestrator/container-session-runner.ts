@@ -11,295 +11,33 @@
  */
 
 import { EventEmitter } from "node:events";
-import http from "node:http";
 import { getErrorMessage } from "../shared/utils.js";
-import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess, PermissionMode } from "../shared/types.js";
+import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess } from "../shared/types.js";
 import type { WsServerMessage, ClaudeContentBlockToolUse } from "../shared/types.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup } from "./session-runner.js";
 import { runSystemTurn } from "./session-runner.js";
+import { connectSSE } from "./sse-client.js";
+import type { SSEEvent } from "./sse-client.js";
+import { workerPost, workerGet } from "./worker-http.js";
+import { truncateTerminalBuffer } from "./terminal-buffer.js";
+import { ProxyAgentProcess } from "./proxy-agent-process.js";
+import type { ProxyAgentRunner } from "./proxy-agent-process.js";
 
 // ---------------------------------------------------------------------------
-// SSE Client — connects to the worker's /events endpoint
+// Barrel re-exports for backwards compatibility
 // ---------------------------------------------------------------------------
-
-interface SSEEvent {
-  type: string;
-  data: string;
-}
-
-/**
- * Minimal SSE client using raw http.request. Avoids the EventSource polyfill
- * dependency. Parses "event:" and "data:" fields from the SSE stream.
- */
-function connectSSE(
-  url: string,
-  onEvent: (event: SSEEvent) => void,
-  onError: (err: Error) => void,
-  onClose: () => void,
-  onOpen?: () => void,
-): { close: () => void } {
-  const parsedUrl = new URL(url);
-  let destroyed = false;
-
-  const req = http.request(
-    {
-      hostname: parsedUrl.hostname,
-      port: parsedUrl.port,
-      path: parsedUrl.pathname,
-      method: "GET",
-      headers: { Accept: "text/event-stream" },
-    },
-    (res) => {
-      let buffer = "";
-      let currentEvent = "";
-      let currentData = "";
-
-      if (onOpen) onOpen();
-
-      res.setEncoding("utf-8");
-      res.on("data", (chunk: string) => {
-        buffer += chunk;
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? ""; // Keep incomplete last line
-
-        for (const line of lines) {
-          if (line.startsWith("event: ")) {
-            currentEvent = line.slice(7).trim();
-          } else if (line.startsWith("data: ")) {
-            currentData = line.slice(6);
-          } else if (line === "") {
-            // End of event
-            if (currentEvent && currentData) {
-              onEvent({ type: currentEvent, data: currentData });
-            }
-            currentEvent = "";
-            currentData = "";
-          }
-          // Skip comments (lines starting with ":")
-        }
-      });
-
-      res.on("end", () => {
-        if (!destroyed) onClose();
-      });
-
-      res.on("error", (err) => {
-        if (!destroyed) onError(err);
-      });
-    },
-  );
-
-  req.on("error", (err) => {
-    if (!destroyed) onError(err);
-  });
-
-  req.end();
-
-  return {
-    close: () => {
-      destroyed = true;
-      req.destroy();
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Helpers: HTTP calls to worker
-// ---------------------------------------------------------------------------
-
-async function workerPost(baseUrl: string, path: string, body?: unknown): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const url = new URL(path, baseUrl);
-    const payload = body !== undefined ? JSON.stringify(body) : undefined;
-    const headers: Record<string, string | number> = {};
-    if (payload) {
-      headers["Content-Type"] = "application/json";
-      headers["Content-Length"] = Buffer.byteLength(payload);
-    }
-
-    const req = http.request(
-      {
-        hostname: url.hostname,
-        port: url.port,
-        path: url.pathname,
-        method: "POST",
-        headers,
-      },
-      (res) => {
-        let data = "";
-        res.setEncoding("utf-8");
-        res.on("data", (chunk: string) => { data += chunk; });
-        res.on("end", () => {
-          try {
-            const parsed = JSON.parse(data) as Record<string, unknown>;
-            if (res.statusCode && res.statusCode >= 400) {
-              reject(new Error((parsed.error as string) ?? `HTTP ${res.statusCode}`));
-            } else {
-              resolve(parsed);
-            }
-          } catch {
-            reject(new Error(`Invalid response from worker: ${data}`));
-          }
-        });
-        res.on("error", reject);
-      },
-    );
-
-    req.on("error", reject);
-    if (payload) req.write(payload);
-    req.end();
-  });
-}
-
-async function workerGet(baseUrl: string, path: string): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const url = new URL(path, baseUrl);
-
-    const req = http.request(
-      {
-        hostname: url.hostname,
-        port: url.port,
-        path: url.pathname,
-        method: "GET",
-      },
-      (res) => {
-        let data = "";
-        res.setEncoding("utf-8");
-        res.on("data", (chunk: string) => { data += chunk; });
-        res.on("end", () => {
-          try {
-            const parsed = JSON.parse(data) as Record<string, unknown>;
-            if (res.statusCode && res.statusCode >= 400) {
-              reject(new Error((parsed.error as string) ?? `HTTP ${res.statusCode}`));
-            } else {
-              resolve(parsed);
-            }
-          } catch {
-            reject(new Error(`Invalid response from worker: ${data}`));
-          }
-        });
-        res.on("error", reject);
-      },
-    );
-
-    req.on("error", reject);
-    req.end();
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Terminal buffer truncation
-// ---------------------------------------------------------------------------
-
-/**
- * Truncate a terminal output buffer to approximately `maxLen` bytes,
- * cutting at a safe boundary instead of an arbitrary byte offset.
- *
- * Strategies (tried in order):
- * 1. Cut at the last newline within the target window — avoids splitting
- *    a line mid-content.
- * 2. Cut at the last ANSI SGR reset (\x1b[0m) — avoids replaying a
- *    partial escape sequence that would corrupt xterm.js rendering.
- * 3. Fall back to a raw byte cut if neither boundary is found within a
- *    reasonable search range (1KB backward from the cut point).
- *
- * Exported for testing.
- */
-export function truncateTerminalBuffer(buffer: string, maxLen: number): string {
-  if (buffer.length <= maxLen) return buffer;
-
-  // Start from the cut point (keep the tail)
-  const cutPoint = buffer.length - maxLen;
-  // Search forward from cutPoint within a 1KB window for a safe boundary
-  const searchEnd = Math.min(cutPoint + 1024, buffer.length);
-  const searchWindow = buffer.slice(cutPoint, searchEnd);
-
-  // Strategy 1: find the first newline after the cut point
-  const newlineIdx = searchWindow.indexOf("\n");
-  if (newlineIdx !== -1) {
-    return buffer.slice(cutPoint + newlineIdx + 1);
-  }
-
-  // Strategy 2: find the first ANSI SGR reset after the cut point
-  const resetIdx = searchWindow.indexOf("\x1b[0m");
-  if (resetIdx !== -1) {
-    return buffer.slice(cutPoint + resetIdx + 4); // skip past the reset sequence
-  }
-
-  // Strategy 3: raw cut (best effort)
-  return buffer.slice(cutPoint);
-}
-
-// ---------------------------------------------------------------------------
-// Proxy AgentProcess — bridges worker events to the AgentProcess interface
-// ---------------------------------------------------------------------------
-
-/**
- * A proxy AgentProcess that doesn't own a real process — it represents
- * the agent running inside the worker. Events are pushed in by the
- * ContainerSessionRunner's SSE listener. Methods delegate to the worker
- * via HTTP through the parent ContainerSessionRunner.
- */
-class ProxyAgentProcess extends EventEmitter<{
-  event: [AgentEvent];
-  done: [exitCode: number];
-  error: [Error];
-  auth_required: [];
-  log: [source: string, text: string];
-}> implements AgentProcess {
-  readonly agentId: AgentId;
-  readonly capabilities = {
-    supportsResume: true,
-    supportsImages: true,
-    supportsSystemPrompt: true,
-    supportsPermissionModes: true,
-    supportedPermissionModes: [] as PermissionMode[],
-    toolNames: [] as string[],
-    models: [] as string[],
-  };
-
-  private runner: ContainerSessionRunner;
-
-  constructor(agentId: AgentId, runner: ContainerSessionRunner) {
-    super();
-    this.agentId = agentId;
-    this.runner = runner;
-  }
-
-  /** Fire-and-forget POST to worker /agent/start. Errors emitted as events. */
-  run(params: AgentRunParams): void {
-    this.runner._startAgentViaProxy(this.agentId, params).catch((err: unknown) => {
-      this.emit("error", err instanceof Error ? err : new Error(String(err)));
-    });
-  }
-
-  /** Fire-and-forget POST to worker /agent/stdin. */
-  writeStdin(data: string): void {
-    this.runner.writeAgentStdin(data).catch((err: unknown) => {
-      this.emit("error", err instanceof Error ? err : new Error(String(err)));
-    });
-  }
-
-  /** Fire-and-forget POST to worker /agent/interrupt. */
-  interrupt(): void {
-    this.runner.interruptAgentOnWorker().catch((err: unknown) => {
-      this.emit("error", err instanceof Error ? err : new Error(String(err)));
-    });
-  }
-
-  /** Fire-and-forget POST to worker /agent/kill. */
-  kill(): void {
-    this.runner.killAgentOnWorker().catch(() => {
-      // Swallow kill errors — the agent may already be dead
-    });
-  }
-}
+export { connectSSE } from "./sse-client.js";
+export type { SSEEvent } from "./sse-client.js";
+export { workerPost, workerGet } from "./worker-http.js";
+export { truncateTerminalBuffer } from "./terminal-buffer.js";
+export { ProxyAgentProcess } from "./proxy-agent-process.js";
+export type { ProxyAgentRunner } from "./proxy-agent-process.js";
 
 // ---------------------------------------------------------------------------
 // ContainerSessionRunner
 // ---------------------------------------------------------------------------
 
-export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> implements SessionRunnerInterface {
+export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> implements SessionRunnerInterface, ProxyAgentRunner {
   readonly sessionId: string;
   readonly sessionDir: string;
   readonly supportsRemoteTerminal = true;
