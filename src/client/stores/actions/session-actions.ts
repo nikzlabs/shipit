@@ -58,19 +58,6 @@ export function handleSessionResume(
 }
 
 /**
- * Start a new session — resets state and navigates to /.
- * No WS message needed; the WS disconnects when leaving a session URL.
- */
-export function newSession(
-  navigate: (path: string) => void,
-) {
-  useSessionStore.getState().setSessionId(undefined);
-  resetSessionState();
-  useUiStore.getState().setShowTemplates(true);
-  navigate("/");
-}
-
-/**
  * Full reset of all stores (used when the server broadcasts full_reset_complete).
  */
 export function fullResetAllStores() {
