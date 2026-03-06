@@ -8,10 +8,62 @@
  * Containers run the session-worker process (src/server/session/session-worker.ts) which
  * exposes an HTTP + SSE interface on port 9100 inside the container. The
  * orchestrator reaches containers via their bridge IP — no host port mappings needed.
+ *
+ * Implementation is split across focused modules:
+ * - container-lifecycle.ts — create, destroy, cleanup, config building
+ * - container-discovery.ts — rediscover, orphan cleanup, IP lookup
+ * - container-health.ts   — health monitoring via Docker events
  */
 
 import Docker from "dockerode";
 import { EventEmitter } from "node:events";
+import {
+  createContainer,
+  destroyContainer,
+  buildContainerConfig,
+  type LifecycleDeps,
+} from "./container-lifecycle.js";
+import {
+  rediscoverContainers,
+  cleanupOrphanContainers,
+  getSessionByContainerIp,
+  type DiscoveryDeps,
+} from "./container-discovery.js";
+import {
+  startHealthMonitor,
+  stopHealthMonitor,
+  type HealthDeps,
+  type HealthMonitorState,
+} from "./container-health.js";
+
+// ---------------------------------------------------------------------------
+// Re-export sub-module public symbols for backwards compatibility
+// ---------------------------------------------------------------------------
+
+export {
+  buildMounts,
+  buildEnv,
+  waitForWorkerHealth,
+  createContainer,
+  cleanupSessionDockerResources,
+  destroyContainer,
+  buildContainerConfig,
+  type LifecycleDeps,
+} from "./container-lifecycle.js";
+
+export {
+  rediscoverContainers,
+  cleanupOrphanContainers,
+  getSessionByContainerIp,
+  type DiscoveryDeps,
+} from "./container-discovery.js";
+
+export {
+  startHealthMonitor,
+  stopHealthMonitor,
+  type HealthDeps,
+  type HealthMonitorState,
+} from "./container-health.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -117,7 +169,6 @@ const DEFAULT_IMAGE = process.env.SESSION_WORKER_IMAGE;
 const DEFAULT_NETWORK = process.env.DOCKER_NETWORK;
 const DEFAULT_MEMORY_LIMIT = 512 * 1024 * 1024; // 512 MB
 const DEFAULT_CPU_QUOTA = 50_000; // 0.5 CPU (50000 µs per 100ms period)
-const DEFAULT_CPU_PERIOD = 100_000; // 100ms
 const DEFAULT_PIDS_LIMIT = 256;
 const DEFAULT_WORKER_PORT = 9100;
 
@@ -148,7 +199,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private dockerProxyHost?: string;
   private dockerProxyPort?: number;
   private standbySessionIds = new Set<string>();
-  private eventStream: (NodeJS.ReadableStream & { destroy?: () => void }) | null = null;
+  private healthMonitorState: HealthMonitorState = { eventStream: null };
   private _disposed = false;
 
   constructor(opts: SessionContainerManagerOpts = {}) {
@@ -194,6 +245,52 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     return filters;
   }
 
+  // --- Dependency bundles for sub-modules ---
+
+  private lifecycleDeps(): LifecycleDeps {
+    return {
+      docker: this.docker,
+      containers: this.containers,
+      standbySessionIds: this.standbySessionIds,
+      networkName: this.networkName,
+      workerPort: this.workerPort,
+      skipHealthCheck: this.skipHealthCheck,
+      workspaceVolume: this.workspaceVolume,
+      credentialsVolume: this.credentialsVolume,
+      imageName: this.imageName,
+      defaultMemoryLimit: this.defaultMemoryLimit,
+      defaultCpuQuota: this.defaultCpuQuota,
+      defaultPidsLimit: this.defaultPidsLimit,
+      stackName: this.stackName,
+      dockerImageName: this.dockerImageName,
+      dockerProxyHost: this.dockerProxyHost,
+      dockerProxyPort: this.dockerProxyPort,
+      emitter: this,
+      baseLabels: () => this.baseLabels(),
+    };
+  }
+
+  private discoveryDeps(): DiscoveryDeps {
+    return {
+      docker: this.docker,
+      containers: this.containers,
+      standbySessionIds: this.standbySessionIds,
+      networkName: this.networkName,
+      workerPort: this.workerPort,
+      labelFilters: () => this.labelFilters(),
+    };
+  }
+
+  private healthDeps(): HealthDeps {
+    return {
+      docker: this.docker,
+      containers: this.containers,
+      standbySessionIds: this.standbySessionIds,
+      emitter: this,
+      labelFilters: () => this.labelFilters(),
+    };
+  }
+
   // --- Docker availability ---
 
   /** Check if Docker is available by pinging the daemon. */
@@ -226,217 +323,14 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     }
   }
 
-  // --- Container lifecycle ---
+  // --- Container lifecycle (delegates to container-lifecycle.ts) ---
 
   /**
    * Create and start a container for the given session.
    * Returns the SessionContainer with its bridge IP and worker URL.
    */
   async create(config: ContainerConfig): Promise<SessionContainer> {
-    if (this.containers.has(config.sessionId)) {
-      throw new Error(`Container already exists for session ${config.sessionId}`);
-    }
-
-    // Build mounts. When running inside Docker (orchestrator is itself a
-    // container), paths like /workspace/sessions/{uuid} exist in a named volume,
-    // not on the host. Use Docker volume subpaths (API 1.45+) to mount just
-    // the session subdir at /user for a short cwd that saves tokens.
-    const binds: string[] = [];
-    const mounts: {
-      Type: "volume"; Source: string; Target: string; ReadOnly?: boolean;
-      VolumeOptions?: { Subpath?: string };
-    }[] = [];
-    const workspaceDir = "/user";
-    if (this.workspaceVolume) {
-      // Mount the session subdir from the named volume at /user
-      const relPath = config.sessionDir.replace(/^\/workspace\//, "");
-      mounts.push({
-        Type: "volume",
-        Source: this.workspaceVolume,
-        Target: "/user",
-        VolumeOptions: { Subpath: relPath },
-      });
-    } else {
-      binds.push(`${config.sessionDir}:/user:rw`);
-    }
-    if (this.credentialsVolume) {
-      mounts.push({
-        Type: "volume",
-        Source: this.credentialsVolume,
-        Target: "/credentials",
-      });
-    } else {
-      binds.push(`${config.credentialsDir}:/credentials:rw`);
-    }
-    // For worktree sessions, mount the shared repo at its ORIGINAL absolute
-    // path so that the worktree's .git file (which contains an absolute gitdir
-    // reference like /workspace/repos/{hash}/.git/worktrees/{branch}) resolves
-    // correctly inside the container. Read-write is required because git commits
-    // in a worktree write objects to the shared repo's object store.
-    if (config.sharedRepoDir) {
-      if (this.workspaceVolume) {
-        const repoRelPath = config.sharedRepoDir.replace(/^\/workspace\//, "");
-        mounts.push({
-          Type: "volume",
-          Source: this.workspaceVolume,
-          Target: config.sharedRepoDir,
-          VolumeOptions: { Subpath: repoRelPath },
-        });
-      } else {
-        binds.push(`${config.sharedRepoDir}:${config.sharedRepoDir}:rw`);
-      }
-    }
-
-    // Build environment variables
-    const env: string[] = [
-      `SESSION_ID=${config.sessionId}`,
-      `WORKSPACE_DIR=${workspaceDir}`,
-      `WORKER_PORT=${this.workerPort}`,
-      "HOME=/root",
-    ];
-    if (config.dockerAccess) {
-      if (!this.dockerProxyHost || !this.dockerProxyPort) {
-        throw new Error(`Docker access requested but proxy not configured for session ${config.sessionId}`);
-      }
-      env.push(`DOCKER_HOST=tcp://${this.dockerProxyHost}:${this.dockerProxyPort}`);
-      const sessionPrefix = config.sessionId.slice(0, 12);
-      env.push(`COMPOSE_PROJECT_NAME=shipit-${sessionPrefix}`);
-    }
-    if (config.env) {
-      for (const [key, value] of Object.entries(config.env)) {
-        env.push(`${key}=${value}`);
-      }
-    }
-
-    // Use Docker-capable image when Docker access is requested
-    const imageName = (config.dockerAccess && this.dockerImageName)
-      ? this.dockerImageName
-      : config.imageName;
-
-    // Create session-specific bridge network for Docker-enabled sessions.
-    // Child containers created through the proxy join this network so they
-    // can communicate with each other but not with other sessions' containers.
-    let sessionNetworkName: string | undefined;
-    if (config.dockerAccess) {
-      sessionNetworkName = `shipit-session-${config.sessionId.slice(0, 12)}`;
-      try {
-        await this.docker.createNetwork({
-          Name: sessionNetworkName,
-          Driver: "bridge",
-          Labels: {
-            ...this.baseLabels(),
-            "shipit-parent-session": config.sessionId,
-          },
-        });
-      } catch (err) {
-        // Network may already exist from a previous run — log other errors
-        const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes("already exists")) {
-          console.warn(`[containers] Failed to create session network ${sessionNetworkName}:`, msg);
-        }
-      }
-      env.push(`SHIPIT_SESSION_NETWORK=${sessionNetworkName}`);
-    }
-
-    const sc: SessionContainer = {
-      id: "",
-      sessionId: config.sessionId,
-      containerIp: "",
-      workerUrl: "",
-      status: "starting",
-      hostWorkspaceDir: config.sessionDir,
-      dockerAccess: config.dockerAccess ?? false,
-      sessionNetworkName,
-      resourceLimits: (config.dockerAccess) ? {
-        memory: config.memoryLimit,
-        cpuQuota: config.cpuQuota,
-        pidsLimit: config.pidsLimit,
-      } : undefined,
-    };
-    this.containers.set(config.sessionId, sc);
-
-    try {
-      const container = await this.docker.createContainer({
-        Image: imageName,
-        Cmd: ["node", "--import", "tsx", "src/server/session/session-worker.ts"],
-        Labels: {
-          ...this.baseLabels(),
-          [CONTAINER_SESSION_ID_LABEL]: config.sessionId,
-          ...config.extraLabels,
-        },
-        HostConfig: {
-          Binds: binds.length > 0 ? binds : undefined,
-          Mounts: mounts.length > 0 ? mounts as Parameters<typeof this.docker.createContainer>[0]["HostConfig"] extends { Mounts?: infer M } ? M : never : undefined,
-          Memory: config.memoryLimit,
-          CpuQuota: config.cpuQuota,
-          CpuPeriod: DEFAULT_CPU_PERIOD,
-          PidsLimit: config.pidsLimit,
-          NetworkMode: this.networkName,
-          SecurityOpt: ["no-new-privileges"],
-          ReadonlyRootfs: false,
-          CapDrop: ["ALL"],
-          CapAdd: ["CHOWN", "SETUID", "SETGID", "FOWNER", "DAC_OVERRIDE", "NET_BIND_SERVICE", "KILL"],
-        },
-        Env: env,
-      });
-
-      await container.start();
-
-      // Get the container's IP on the bridge network
-      const info = await container.inspect();
-      const networks = info.NetworkSettings.Networks;
-      const networkInfo = networks[this.networkName];
-      if (!networkInfo?.IPAddress) {
-        throw new Error(`Container has no IP on network ${this.networkName}`);
-      }
-
-      sc.id = container.id;
-      sc.containerIp = networkInfo.IPAddress;
-      sc.workerUrl = `http://${sc.containerIp}:${this.workerPort}`;
-
-      // Wait for the worker process to be healthy before declaring the container ready.
-      if (!this.skipHealthCheck) {
-        await this.waitForWorkerHealth(sc.workerUrl);
-      }
-      sc.status = "running";
-
-      this.emit("container_started", config.sessionId);
-      return sc;
-    } catch (err) {
-      // Clean up on failure — stop/remove the container if it was created
-      this.containers.delete(config.sessionId);
-      if (sc.id) {
-        try {
-          const c = this.docker.getContainer(sc.id);
-          try { await c.stop({ t: 2 }); } catch { /* may not be running */ }
-          try { await c.remove({ force: true }); } catch { /* may already be gone */ }
-        } catch {
-          // Container reference invalid
-        }
-      }
-      throw err;
-    }
-  }
-
-  /**
-   * Poll the worker's /health endpoint until it responds.
-   * Retries every 500ms up to 30s before giving up.
-   */
-  private async waitForWorkerHealth(workerUrl: string): Promise<void> {
-    const maxWaitMs = 30_000;
-    const intervalMs = 500;
-    const deadline = Date.now() + maxWaitMs;
-
-    while (Date.now() < deadline) {
-      try {
-        const res = await fetch(`${workerUrl}/health`);
-        if (res.ok) return;
-      } catch {
-        // Worker not up yet — retry
-      }
-      await new Promise((r) => setTimeout(r, intervalMs));
-    }
-    throw new Error(`Worker at ${workerUrl} did not become healthy within ${maxWaitMs / 1000}s`);
+    return createContainer(this.lifecycleDeps(), config);
   }
 
   /**
@@ -446,106 +340,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * by the session through the Docker API proxy.
    */
   async destroy(sessionId: string): Promise<void> {
-    this.standbySessionIds.delete(sessionId);
-    const sc = this.containers.get(sessionId);
-    if (!sc) return;
-
-    sc.status = "stopping";
-
-    // Stop the session container first so it can't create new child resources
-    try {
-      const container = this.docker.getContainer(sc.id);
-      try {
-        await container.stop({ t: 5 });
-      } catch {
-        // Already stopped or doesn't exist
-      }
-    } catch {
-      // Container may already be gone
-    }
-
-    // Clean up Docker resources created through the proxy (after session is stopped)
-    await this.cleanupSessionDockerResources(sessionId);
-
-    // Remove the session container
-    try {
-      const container = this.docker.getContainer(sc.id);
-      try {
-        await container.remove({ force: true });
-      } catch {
-        // Already removed
-      }
-    } catch {
-      // Container may already be gone
-    }
-
-    sc.status = "stopped";
-    this.containers.delete(sessionId);
-    this.emit("container_destroyed", sessionId);
-  }
-
-  /**
-   * Clean up Docker resources (containers, networks, volumes) created by a
-   * session through the Docker API proxy. These are identified by the
-   * `shipit-parent-session` label.
-   */
-  private async cleanupSessionDockerResources(sessionId: string): Promise<void> {
-    const parentLabel = `shipit-parent-session=${sessionId}`;
-
-    // Stop and remove child containers
-    try {
-      const containers = await this.docker.listContainers({
-        all: true,
-        filters: { label: [parentLabel] },
-      });
-      for (const ci of containers) {
-        try {
-          const container = this.docker.getContainer(ci.Id);
-          if (ci.State === "running") {
-            await container.stop({ t: 5 });
-          }
-          await container.remove({ force: true });
-        } catch (err) {
-          console.warn(`[containers] Failed to clean up child container ${ci.Id.slice(0, 12)} for session ${sessionId}:`, err);
-        }
-      }
-    } catch {
-      // Docker may not be available
-    }
-
-    // Remove child networks
-    try {
-      const networks = await this.docker.listNetworks({
-        filters: { label: [parentLabel] },
-      });
-      for (const ni of networks) {
-        try {
-          const network = this.docker.getNetwork(ni.Id);
-          await network.remove();
-        } catch (err) {
-          console.warn(`[containers] Failed to clean up network ${ni.Id.slice(0, 12)} for session ${sessionId}:`, err);
-        }
-      }
-    } catch {
-      // Docker may not be available
-    }
-
-    // Remove child volumes
-    try {
-      const volumes = await this.docker.listVolumes({
-        filters: { label: [parentLabel] },
-      });
-      for (const vi of (volumes?.Volumes ?? [])) {
-        try {
-          const volume = this.docker.getVolume(vi.Name);
-          await volume.remove();
-        } catch (err) {
-          console.warn(`[containers] Failed to clean up volume ${vi.Name} for session ${sessionId}:`, err);
-        }
-      }
-    } catch {
-      // Docker may not be available
-    }
+    return destroyContainer(this.lifecycleDeps(), sessionId);
   }
 
   /** Stop and remove all session containers. Used for full_reset and shutdown. */
@@ -586,10 +381,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * Used by the Docker API proxy for source-IP routing.
    */
   getSessionByContainerIp(ip: string): SessionContainer | undefined {
-    for (const sc of this.containers.values()) {
-      if (sc.containerIp === ip) return sc;
-    }
-    return undefined;
+    return getSessionByContainerIp(this.containers, ip);
   }
 
   // --- Standby container support ---
@@ -627,7 +419,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     return this.standbySessionIds.size;
   }
 
-  // --- Orphan cleanup ---
+  // --- Orphan cleanup (delegates to container-discovery.ts) ---
 
   /**
    * Remove containers left over from a previous orchestrator run.
@@ -635,34 +427,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * any currently tracked session.
    */
   async cleanupOrphans(activeSessionIds: Set<string>): Promise<number> {
-    let removed = 0;
-    try {
-      const containers = await this.docker.listContainers({
-        all: true,
-        filters: {
-          label: this.labelFilters(),
-        },
-      });
-
-      for (const containerInfo of containers) {
-        const sessionId = containerInfo.Labels?.[CONTAINER_SESSION_ID_LABEL];
-        if (sessionId && !activeSessionIds.has(sessionId)) {
-          try {
-            const container = this.docker.getContainer(containerInfo.Id);
-            if (containerInfo.State === "running") {
-              await container.stop({ t: 5 });
-            }
-            await container.remove({ force: true });
-            removed++;
-          } catch {
-            // Container may already be gone
-          }
-        }
-      }
-    } catch {
-      // Docker may not be available
-    }
-    return removed;
+    return cleanupOrphanContainers(this.discoveryDeps(), activeSessionIds);
   }
 
   /**
@@ -681,112 +446,22 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       resourceLimits?: { memory: number; cpuQuota: number; pidsLimit: number };
     } | undefined,
   ): Promise<number> {
-    let count = 0;
-    try {
-      const containers = await this.docker.listContainers({
-        all: true,
-        filters: { label: this.labelFilters() },
-      });
-      for (const ci of containers) {
-        const sessionId = ci.Labels?.[CONTAINER_SESSION_ID_LABEL];
-        if (!sessionId || !activeSessionIds.has(sessionId)) continue;
-        if (this.containers.has(sessionId)) continue;
-        if (ci.State !== "running") continue;
-        try {
-          const container = this.docker.getContainer(ci.Id);
-          const info = await container.inspect();
-          const networkInfo = info.NetworkSettings?.Networks?.[this.networkName];
-          if (!networkInfo?.IPAddress) continue;
-          const resolved = sessionInfoResolver?.(sessionId);
-          // Skip containers whose session info can't be resolved — without a
-          // valid workspace dir, bind mount validation would be unsafe
-          if (!resolved?.workspaceDir) continue;
-          const dockerAccess = resolved.dockerAccess;
-          this.containers.set(sessionId, {
-            id: ci.Id,
-            sessionId,
-            containerIp: networkInfo.IPAddress,
-            workerUrl: `http://${networkInfo.IPAddress}:${this.workerPort}`,
-            status: "running",
-            hostWorkspaceDir: resolved.workspaceDir,
-            dockerAccess,
-            sessionNetworkName: dockerAccess ? `shipit-session-${sessionId.slice(0, 12)}` : undefined,
-            resourceLimits: dockerAccess ? resolved.resourceLimits : undefined,
-          });
-          if (ci.Labels?.[CONTAINER_STANDBY_LABEL] === "true") {
-            this.standbySessionIds.add(sessionId);
-          }
-          count++;
-        } catch {
-          // Container may have exited between list and inspect
-        }
-      }
-    } catch {
-      // Docker may not be available
-    }
-    return count;
+    return rediscoverContainers(this.discoveryDeps(), activeSessionIds, sessionInfoResolver);
   }
 
-  // --- Health monitoring via Docker event stream ---
+  // --- Health monitoring (delegates to container-health.ts) ---
 
   /**
    * Start listening for Docker events to detect container crashes (OOM, exit).
    * Emits "container_exited" when a session container dies unexpectedly.
    */
   async startHealthMonitor(): Promise<void> {
-    if (this.eventStream) return;
-
-    try {
-      this.eventStream = await this.docker.getEvents({
-        filters: {
-          type: ["container"],
-          event: ["die", "oom"],
-          label: this.labelFilters(),
-        },
-      });
-
-      this.eventStream.on("data", (chunk: Buffer) => {
-        try {
-          const event = JSON.parse(chunk.toString()) as {
-            Action?: string;
-            Actor?: { Attributes?: Record<string, string> };
-          };
-          const sessionId = event.Actor?.Attributes?.[CONTAINER_SESSION_ID_LABEL];
-          if (!sessionId) return;
-
-          const sc = this.containers.get(sessionId);
-          if (!sc) return;
-
-          if (event.Action === "die" || event.Action === "oom") {
-            // Skip if destroy() is already in-flight — it will handle cleanup
-            if (sc.status === "stopping") return;
-            const exitCode = Number(event.Actor?.Attributes?.exitCode ?? 1);
-            const error = event.Action === "oom" ? "Out of memory" : undefined;
-            sc.status = "stopped";
-            this.containers.delete(sessionId);
-            this.standbySessionIds.delete(sessionId);
-            this.emit("container_exited", sessionId, exitCode, error);
-          }
-        } catch {
-          // Malformed event — ignore
-        }
-      });
-
-      this.eventStream.on("error", () => {
-        // Event stream disconnected — will be restarted on next call
-        this.eventStream = null;
-      });
-    } catch {
-      // Docker events not available
-    }
+    return startHealthMonitor(this.healthDeps(), this.healthMonitorState);
   }
 
   /** Stop the Docker event stream. */
   stopHealthMonitor(): void {
-    if (this.eventStream) {
-      this.eventStream.destroy?.();
-      this.eventStream = null;
-    }
+    stopHealthMonitor(this.healthMonitorState);
   }
 
   // --- Build container config ---
@@ -806,18 +481,12 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     pidsLimit?: number;
     dockerAccess?: boolean;
   }): ContainerConfig {
-    return {
-      sessionId: opts.sessionId,
-      sessionDir: opts.sessionDir,
-      credentialsDir: opts.credentialsDir,
-      sharedRepoDir: opts.sharedRepoDir,
+    return buildContainerConfig({
       imageName: this.imageName,
-      memoryLimit: opts.memoryLimit ?? this.defaultMemoryLimit,
-      cpuQuota: opts.cpuQuota ?? this.defaultCpuQuota,
-      pidsLimit: opts.pidsLimit ?? this.defaultPidsLimit,
-      env: opts.env,
-      dockerAccess: opts.dockerAccess,
-    };
+      defaultMemoryLimit: this.defaultMemoryLimit,
+      defaultCpuQuota: this.defaultCpuQuota,
+      defaultPidsLimit: this.defaultPidsLimit,
+    }, opts);
   }
 
   // --- Dispose ---

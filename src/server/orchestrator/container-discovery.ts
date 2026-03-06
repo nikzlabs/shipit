@@ -1,0 +1,153 @@
+/**
+ * Container discovery — rediscover running containers and clean up orphans.
+ *
+ * Extracted from SessionContainerManager for single-responsibility modules.
+ */
+
+import type Docker from "dockerode";
+import type { SessionContainer } from "./session-container.js";
+import {
+  CONTAINER_SESSION_ID_LABEL,
+  CONTAINER_STANDBY_LABEL,
+} from "./session-container.js";
+
+// ---------------------------------------------------------------------------
+// Internal types for dependency injection
+// ---------------------------------------------------------------------------
+
+export interface DiscoveryDeps {
+  docker: Docker;
+  containers: Map<string, SessionContainer>;
+  standbySessionIds: Set<string>;
+  networkName: string;
+  workerPort: number;
+  labelFilters: () => string[];
+}
+
+// ---------------------------------------------------------------------------
+// Rediscover
+// ---------------------------------------------------------------------------
+
+/**
+ * Rediscover running containers from a previous orchestrator run.
+ * After restart, the in-memory containers map is empty even though Docker
+ * containers keep running. This function queries Docker for containers with
+ * the shipit-session label, and for each running container whose session ID
+ * is in the active set, populates the map so the runner factory can
+ * reconnect to them instead of creating duplicates.
+ */
+export async function rediscoverContainers(
+  deps: DiscoveryDeps,
+  activeSessionIds: Set<string>,
+  sessionInfoResolver?: (sessionId: string) => {
+    workspaceDir: string;
+    dockerAccess: boolean;
+    resourceLimits?: { memory: number; cpuQuota: number; pidsLimit: number };
+  } | undefined,
+): Promise<number> {
+  let count = 0;
+  try {
+    const containers = await deps.docker.listContainers({
+      all: true,
+      filters: { label: deps.labelFilters() },
+    });
+    for (const ci of containers) {
+      const sessionId = ci.Labels?.[CONTAINER_SESSION_ID_LABEL];
+      if (!sessionId || !activeSessionIds.has(sessionId)) continue;
+      if (deps.containers.has(sessionId)) continue;
+      if (ci.State !== "running") continue;
+      try {
+        const container = deps.docker.getContainer(ci.Id);
+        const info = await container.inspect();
+        const networkInfo = info.NetworkSettings?.Networks?.[deps.networkName];
+        if (!networkInfo?.IPAddress) continue;
+        const resolved = sessionInfoResolver?.(sessionId);
+        // Skip containers whose session info can't be resolved — without a
+        // valid workspace dir, bind mount validation would be unsafe
+        if (!resolved?.workspaceDir) continue;
+        const dockerAccess = resolved.dockerAccess;
+        deps.containers.set(sessionId, {
+          id: ci.Id,
+          sessionId,
+          containerIp: networkInfo.IPAddress,
+          workerUrl: `http://${networkInfo.IPAddress}:${deps.workerPort}`,
+          status: "running",
+          hostWorkspaceDir: resolved.workspaceDir,
+          dockerAccess,
+          sessionNetworkName: dockerAccess ? `shipit-session-${sessionId.slice(0, 12)}` : undefined,
+          resourceLimits: dockerAccess ? resolved.resourceLimits : undefined,
+        });
+        if (ci.Labels?.[CONTAINER_STANDBY_LABEL] === "true") {
+          deps.standbySessionIds.add(sessionId);
+        }
+        count++;
+      } catch {
+        // Container may have exited between list and inspect
+      }
+    }
+  } catch {
+    // Docker may not be available
+  }
+  return count;
+}
+
+// ---------------------------------------------------------------------------
+// Orphan cleanup
+// ---------------------------------------------------------------------------
+
+/**
+ * Remove containers left over from a previous orchestrator run.
+ * Scans for containers with the shipit-session label that don't match
+ * any currently tracked session.
+ */
+export async function cleanupOrphanContainers(
+  deps: DiscoveryDeps,
+  activeSessionIds: Set<string>,
+): Promise<number> {
+  let removed = 0;
+  try {
+    const containers = await deps.docker.listContainers({
+      all: true,
+      filters: {
+        label: deps.labelFilters(),
+      },
+    });
+
+    for (const containerInfo of containers) {
+      const sessionId = containerInfo.Labels?.[CONTAINER_SESSION_ID_LABEL];
+      if (sessionId && !activeSessionIds.has(sessionId)) {
+        try {
+          const container = deps.docker.getContainer(containerInfo.Id);
+          if (containerInfo.State === "running") {
+            await container.stop({ t: 5 });
+          }
+          await container.remove({ force: true });
+          removed++;
+        } catch {
+          // Container may already be gone
+        }
+      }
+    }
+  } catch {
+    // Docker may not be available
+  }
+  return removed;
+}
+
+// ---------------------------------------------------------------------------
+// IP lookup
+// ---------------------------------------------------------------------------
+
+/**
+ * Look up a session by its container's bridge IP address.
+ * Used by the Docker API proxy for source-IP routing.
+ */
+export function getSessionByContainerIp(
+  containers: Map<string, SessionContainer>,
+  ip: string,
+): SessionContainer | undefined {
+  for (const sc of containers.values()) {
+    if (sc.containerIp === ip) return sc;
+  }
+  return undefined;
+}
