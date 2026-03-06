@@ -341,6 +341,32 @@ export async function archiveSession(
   return { sessions: sessionManager.list() };
 }
 
+/** Maximum number of merged sessions to keep before archiving old ones. */
+const MAX_MERGED_SESSIONS = 5;
+
+/**
+ * Mark a session as merged and archive excess merged sessions beyond the limit.
+ * Called when a PR merge is detected — keeps the most recent merged sessions alive.
+ */
+export async function markMergedAndPruneExcess(
+  sessionManager: SessionManager,
+  runnerRegistry: SessionRunnerRegistry,
+  createRepoGit: (dir: string) => RepoGit,
+  getSharedRepoDir: (url: string) => string,
+  sessionId: string,
+): Promise<{ sessions: SessionInfo[] }> {
+  sessionManager.markMerged(sessionId);
+
+  const merged = sessionManager.listMergedNotArchived();
+  // Archive oldest merged sessions beyond the limit (list is sorted newest-first)
+  const toArchive = merged.slice(MAX_MERGED_SESSIONS);
+  for (const session of toArchive) {
+    await archiveSession(sessionManager, runnerRegistry, createRepoGit, getSharedRepoDir, session.id);
+  }
+
+  return { sessions: sessionManager.list() };
+}
+
 /**
  * Delete a session and cascade to related stores (chat history, usage).
  * Use this instead of calling sessionManager.delete() directly.

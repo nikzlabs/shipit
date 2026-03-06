@@ -16,7 +16,7 @@ import type { SessionInfo as DockerProxySessionInfo } from "./docker-proxy.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
 import { getErrorMessage } from "./validation.js";
 import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
-import { archiveSession, deleteSession } from "./services/session.js";
+import { deleteSession, markMergedAndPruneExcess } from "./services/session.js";
 import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
 import type { RepoGit } from "./repo-git.js";
@@ -450,13 +450,13 @@ export function createPrStatusPoller(
     },
     onMergeDetectedCb: async (sessionId) => {
       try {
-        const result = await archiveSession(
+        const result = await markMergedAndPruneExcess(
           sessionManager, runnerRegistry, createRepoGit, getSharedRepoDir, sessionId,
         );
         sseBroadcast("session_list", { sessions: result.sessions });
-        console.log(`[pr-poller] Post-merge archive complete for ${sessionId}`);
+        console.log(`[pr-poller] Post-merge: marked ${sessionId} as merged`);
       } catch (err) {
-        console.error(`[pr-poller] Post-merge archive failed for ${sessionId}:`, err);
+        console.error(`[pr-poller] Post-merge handling failed for ${sessionId}:`, err);
       }
     },
   });

@@ -93,6 +93,10 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_deploy_history_session ON deploy_history(session_id);
     `);
   },
+  // Migration 1: add merged_at timestamp for deferred post-merge archiving
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN merged_at TEXT");
+  },
 ];
 
 export class DatabaseManager {
