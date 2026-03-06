@@ -11,437 +11,58 @@
  */
 
 import http from "node:http";
-import fs from "node:fs/promises";
-import path from "node:path";
+
+import {
+  respond,
+  forbidden,
+  badRequest,
+  readBody,
+  forwardToDocker,
+  pipeToDocker,
+  PARENT_SESSION_LABEL,
+  MAX_BODY_SIZE,
+  DOCKER_SOCKET,
+  CONTAINER_NAME_RE,
+} from "./docker-proxy-helpers.js";
+import type { DockerProxyDeps, Route, RequestContext } from "./docker-proxy-helpers.js";
+import {
+  containerBelongsToSession,
+  networkBelongsToSession,
+  volumeBelongsToSession,
+  getExecParentContainerId,
+} from "./docker-proxy-auth.js";
+import { sanitizeContainerCreate } from "./docker-proxy-sanitize.js";
 
 // ---------------------------------------------------------------------------
-// Types
+// Re-exports for backwards compatibility
 // ---------------------------------------------------------------------------
 
-export interface SessionInfo {
-  sessionId: string;
-  hostWorkspaceDir: string;
-  dockerAccess: boolean;
-  /** Session-specific bridge network name for child containers. */
-  sessionNetworkName?: string;
-  /** Resource limits to enforce on child containers (from session config). */
-  resourceLimits?: {
-    /** Memory limit in bytes. */
-    memory: number;
-    /** CPU quota in microseconds per 100ms period. */
-    cpuQuota: number;
-    /** Maximum PIDs. */
-    pidsLimit: number;
-  };
-}
-
-export interface DockerProxyDeps {
-  /** Resolve source IP → session info. */
-  getSessionByContainerIp: (ip: string) => SessionInfo | undefined;
-  /** Docker daemon socket path. Defaults to /var/run/docker.sock. */
-  socketPath?: string;
-}
-
-export const PARENT_SESSION_LABEL = "shipit-parent-session";
-const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10 MB
-const DOCKER_SOCKET = "/var/run/docker.sock";
-
-// Docker container names: [a-zA-Z0-9][a-zA-Z0-9_.-]*
-// Docker container IDs: [0-9a-f]{12,64}
-// We use a single permissive pattern that covers both. The `/` separator in URL
-// paths prevents path traversal, and `:` is excluded since it only appears in
-// image references (handled by image routes with a separate pattern).
-const CONTAINER_NAME_RE = "[a-zA-Z0-9][a-zA-Z0-9_.-]*";
-
-// ---------------------------------------------------------------------------
-// Route matching
-// ---------------------------------------------------------------------------
-
-interface Route {
-  method: string;
-  pattern: RegExp;
-  handler: (ctx: RequestContext, match: RegExpMatchArray) => Promise<void>;
-}
-
-interface RequestContext {
-  req: http.IncomingMessage;
-  res: http.ServerResponse;
-  session: SessionInfo;
-  socketPath: string;
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function respond(res: http.ServerResponse, status: number, body: unknown): void {
-  const json = JSON.stringify(body);
-  res.writeHead(status, { "Content-Type": "application/json" });
-  res.end(json);
-}
-
-function forbidden(res: http.ServerResponse, reason: string): void {
-  respond(res, 403, { message: `Forbidden: ${reason}` });
-}
-
-function badRequest(res: http.ServerResponse, reason: string): void {
-  respond(res, 400, { message: `Bad request: ${reason}` });
-}
-
-async function readBody(req: http.IncomingMessage, maxSize: number): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    let rejected = false;
-    req.on("data", (chunk: Buffer) => {
-      if (rejected) return;
-      size += chunk.length;
-      if (size > maxSize) {
-        rejected = true;
-        reject(new Error("Request body too large"));
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on("end", () => { if (!rejected) resolve(Buffer.concat(chunks)); });
-    req.on("error", (err) => { if (!rejected) reject(err); });
-  });
-}
-
-/**
- * Forward a request to the Docker daemon via Unix socket.
- * Returns the daemon's response body as a Buffer plus the status code.
- */
-async function forwardToDocker(
-  socketPath: string,
-  method: string,
-  path: string,
-  headers: Record<string, string | string[] | undefined>,
-  body?: Buffer,
-): Promise<{ statusCode: number; headers: http.IncomingHttpHeaders; body: Buffer }> {
-  return new Promise((resolve, reject) => {
-    const reqHeaders: Record<string, string | string[] | undefined> = { ...headers };
-    delete reqHeaders.host;
-    delete reqHeaders.connection;
-
-    if (body) {
-      reqHeaders["content-length"] = String(body.length);
-    }
-
-    const opts: http.RequestOptions = {
-      socketPath,
-      path,
-      method,
-      headers: reqHeaders,
-    };
-
-    const dockerReq = http.request(opts, (dockerRes) => {
-      const chunks: Buffer[] = [];
-      dockerRes.on("data", (chunk: Buffer) => chunks.push(chunk));
-      dockerRes.on("end", () => {
-        resolve({
-          statusCode: dockerRes.statusCode ?? 500,
-          headers: dockerRes.headers,
-          body: Buffer.concat(chunks),
-        });
-      });
-      dockerRes.on("error", reject);
-    });
-
-    dockerReq.on("error", reject);
-    if (body) dockerReq.write(body);
-    dockerReq.end();
-  });
-}
-
-/**
- * Pipe a request through to the Docker daemon (for streaming endpoints).
- * Copies the request and streams the response back to the client.
- */
-function pipeToDocker(
-  socketPath: string,
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  overridePath?: string,
-): void {
-  const reqHeaders: Record<string, string | string[] | undefined> = { ...req.headers };
-  delete reqHeaders.host;
-  delete reqHeaders.connection;
-
-  const opts: http.RequestOptions = {
-    socketPath,
-    path: overridePath ?? req.url,
-    method: req.method,
-    headers: reqHeaders,
-  };
-
-  const dockerReq = http.request(opts, (dockerRes) => {
-    res.writeHead(dockerRes.statusCode ?? 500, dockerRes.headers);
-    dockerRes.on("error", () => {
-      res.destroy();
-    });
-    dockerRes.pipe(res);
-  });
-
-  dockerReq.on("error", (err) => {
-    if (!res.headersSent) {
-      respond(res, 502, { message: `Docker daemon error: ${err.message}` });
-    }
-  });
-
-  // Abort upstream request if client disconnects
-  res.on("close", () => {
-    if (!dockerReq.destroyed) dockerReq.destroy();
-  });
-
-  req.pipe(dockerReq);
-}
-
-/**
- * Check if a container belongs to a session by inspecting its labels.
- */
-async function containerBelongsToSession(
-  socketPath: string,
-  containerId: string,
-  sessionId: string,
-): Promise<boolean> {
-  try {
-    const result = await forwardToDocker(socketPath, "GET", `/containers/${containerId}/json`, {});
-    if (result.statusCode !== 200) return false;
-    const info = JSON.parse(result.body.toString()) as Record<string, unknown>;
-    return (info.Config as Record<string, unknown> | undefined)?.Labels !== undefined &&
-      ((info.Config as Record<string, unknown>).Labels as Record<string, string>)?.[PARENT_SESSION_LABEL] === sessionId;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Check if a network belongs to a session by inspecting its labels.
- */
-async function networkBelongsToSession(
-  socketPath: string,
-  networkId: string,
-  sessionId: string,
-): Promise<boolean> {
-  try {
-    const result = await forwardToDocker(socketPath, "GET", `/networks/${networkId}`, {});
-    if (result.statusCode !== 200) return false;
-    const info = JSON.parse(result.body.toString()) as Record<string, unknown>;
-    return (info.Labels as Record<string, string> | undefined)?.[PARENT_SESSION_LABEL] === sessionId;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Check if a volume belongs to a session by inspecting its labels.
- */
-async function volumeBelongsToSession(
-  socketPath: string,
-  volumeName: string,
-  sessionId: string,
-): Promise<boolean> {
-  try {
-    const result = await forwardToDocker(socketPath, "GET", `/volumes/${volumeName}`, {});
-    if (result.statusCode !== 200) return false;
-    const info = JSON.parse(result.body.toString()) as Record<string, unknown>;
-    return (info.Labels as Record<string, string> | undefined)?.[PARENT_SESSION_LABEL] === sessionId;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Resolve an exec ID to its parent container ID by querying the Docker daemon.
- */
-async function getExecParentContainerId(
-  socketPath: string,
-  execId: string,
-): Promise<string | undefined> {
-  try {
-    const result = await forwardToDocker(socketPath, "GET", `/exec/${execId}/json`, {});
-    if (result.statusCode !== 200) return undefined;
-    const info = JSON.parse(result.body.toString()) as Record<string, unknown>;
-    return info.ContainerID as string | undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Validate that a host path (from Binds or Mounts) is under the session's workspace.
- * Uses realpath to resolve symlinks.
- *
- * SECURITY NOTE: There is an inherent TOCTOU (time-of-check-time-of-use) race here.
- * A process inside the session container could create a symlink pointing inside the
- * workspace to pass this check, then swap it to point outside before Docker mounts it.
- * This is a fundamental limitation of path validation from outside the mount namespace
- * and cannot be fully mitigated at this layer. The container's restricted capabilities
- * (CapDrop: ALL) and network isolation reduce the blast radius.
- */
-async function isPathUnderWorkspace(hostPath: string, workspaceDir: string): Promise<boolean> {
-  try {
-    const resolved = await fs.realpath(hostPath);
-    const resolvedWorkspace = await fs.realpath(workspaceDir);
-    return resolved.startsWith(resolvedWorkspace + path.sep) || resolved === resolvedWorkspace;
-  } catch {
-    // Path doesn't exist — reject
-    return false;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Container create sanitization
-// ---------------------------------------------------------------------------
-
-async function sanitizeContainerCreate(
-  body: Record<string, unknown>,
-  session: SessionInfo,
-  socketPath: string,
-): Promise<{ error?: string }> {
-  const hostConfig = (body.HostConfig ?? {}) as Record<string, unknown>;
-
-  // Reject privileged mode (check for any truthy value, not just boolean true,
-  // to guard against type coercion with "true", 1, etc.)
-  if (hostConfig.Privileged) {
-    return { error: "Privileged mode is not allowed" };
-  }
-
-  // Reject CapAdd
-  if (Array.isArray(hostConfig.CapAdd) && hostConfig.CapAdd.length > 0) {
-    return { error: "Adding capabilities is not allowed" };
-  }
-
-  // Inject NET_RAW into CapDrop
-  const capDrop = Array.isArray(hostConfig.CapDrop) ? [...hostConfig.CapDrop as string[]] : [];
-  if (!capDrop.includes("NET_RAW")) {
-    capDrop.push("NET_RAW");
-  }
-  hostConfig.CapDrop = capDrop;
-
-  // Reject host and container NetworkMode (sharing another container's network namespace)
-  const networkMode = hostConfig.NetworkMode as string | undefined;
-  if (networkMode === "host" || (networkMode?.startsWith("container:"))) {
-    return { error: "NetworkMode host/container is not allowed" };
-  }
-
-  // Reject host/container PidMode
-  const pidMode = hostConfig.PidMode as string | undefined;
-  if (pidMode && (pidMode === "host" || pidMode.startsWith("container:"))) {
-    return { error: "PidMode host/container is not allowed" };
-  }
-
-  // Reject host/container IpcMode
-  const ipcMode = hostConfig.IpcMode as string | undefined;
-  if (ipcMode && (ipcMode === "host" || ipcMode.startsWith("container:"))) {
-    return { error: "IpcMode host/container is not allowed" };
-  }
-
-  // Reject host UTSMode
-  if (hostConfig.UTSMode === "host") {
-    return { error: "UTSMode host is not allowed" };
-  }
-
-  // Reject Devices
-  if (Array.isArray(hostConfig.Devices) && hostConfig.Devices.length > 0) {
-    return { error: "Device mappings are not allowed" };
-  }
-
-  // Validate Binds
-  if (Array.isArray(hostConfig.Binds)) {
-    for (const bind of hostConfig.Binds as string[]) {
-      // Format: host_path:container_path[:options]
-      const hostPath = bind.split(":")[0];
-      if (!(await isPathUnderWorkspace(hostPath, session.hostWorkspaceDir))) {
-        return { error: `Bind mount path ${hostPath} is outside session workspace` };
-      }
-    }
-  }
-
-  // Validate Mounts — only bind, volume, and tmpfs are allowed
-  if (Array.isArray(hostConfig.Mounts)) {
-    for (const mount of hostConfig.Mounts as Record<string, unknown>[]) {
-      if (mount.Type === "bind") {
-        const source = mount.Source as string;
-        if (!(await isPathUnderWorkspace(source, session.hostWorkspaceDir))) {
-          return { error: `Bind mount source ${source} is outside session workspace` };
-        }
-      } else if (mount.Type === "volume") {
-        const volumeName = mount.Source as string;
-        if (volumeName && !(await volumeBelongsToSession(socketPath, volumeName, session.sessionId))) {
-          return { error: `Volume ${volumeName} does not belong to this session` };
-        }
-      } else if (mount.Type === "tmpfs") {
-        // tmpfs mounts are safe — no host path involved
-      } else {
-        return { error: `Mount type "${String(mount.Type)}" is not allowed (only bind, volume, tmpfs)` };
-      }
-    }
-  }
-
-  // Docker's Volumes field in create is just a set of mount points, not named volumes.
-  // Named volumes referenced via Binds/Mounts are already validated above.
-
-  // Reject VolumesFrom
-  if (Array.isArray(hostConfig.VolumesFrom) && hostConfig.VolumesFrom.length > 0) {
-    return { error: "VolumesFrom is not allowed" };
-  }
-
-  // Strip fields that could weaken container isolation
-  delete hostConfig.SecurityOpt;
-  delete hostConfig.CgroupParent;
-  delete hostConfig.Sysctls;        // kernel parameter manipulation
-  delete hostConfig.UsernsMode;     // user namespace sharing
-  delete hostConfig.CgroupnsMode;   // cgroup namespace sharing
-  delete hostConfig.Runtime;        // custom runtimes (e.g., nvidia) may grant elevated access
-  delete hostConfig.ReadonlyPaths;  // removing default read-only paths weakens /proc isolation
-  delete hostConfig.MaskedPaths;    // removing default masked paths exposes sensitive /proc entries
-  delete hostConfig.GroupAdd;       // adding host groups (e.g., docker, disk) could escalate access
-
-  // Overwrite shipit-parent-session label (never merge)
-  const labels = (body.Labels ?? {}) as Record<string, string>;
-  labels[PARENT_SESSION_LABEL] = session.sessionId;
-  body.Labels = labels;
-
-  // Enforce resource limits on child containers — capped at session's own limits.
-  // Values <= 0 mean "unlimited" in Docker, so we always override them.
-  if (session.resourceLimits) {
-    const limits = session.resourceLimits;
-    const currentMemory = hostConfig.Memory as number | undefined;
-    if (!currentMemory || currentMemory <= 0 || currentMemory > limits.memory) {
-      hostConfig.Memory = limits.memory;
-    }
-    const currentCpuQuota = hostConfig.CpuQuota as number | undefined;
-    if (!currentCpuQuota || currentCpuQuota <= 0 || currentCpuQuota > limits.cpuQuota) {
-      hostConfig.CpuQuota = limits.cpuQuota;
-    }
-    // Cap CpuPeriod to the standard 100ms to prevent effective CPU limit bypass
-    // (inflating the period while quota is capped gives more CPU time)
-    const currentPeriod = hostConfig.CpuPeriod as number | undefined;
-    if (!currentPeriod || currentPeriod <= 0 || currentPeriod > 100_000) {
-      hostConfig.CpuPeriod = 100_000;
-    }
-    const currentPids = hostConfig.PidsLimit as number | undefined;
-    if (!currentPids || currentPids <= 0 || currentPids > limits.pidsLimit) {
-      hostConfig.PidsLimit = limits.pidsLimit;
-    }
-  }
-
-  // Inject session-specific network so child containers can communicate
-  if (session.sessionNetworkName) {
-    // If NetworkMode is not explicitly set or is "default", use session network
-    if (!hostConfig.NetworkMode || hostConfig.NetworkMode === "default" || hostConfig.NetworkMode === "bridge") {
-      hostConfig.NetworkMode = session.sessionNetworkName;
-    }
-  }
-
-  // Write back HostConfig
-  body.HostConfig = hostConfig;
-
-  return {};
-}
+export {
+  respond,
+  forbidden,
+  badRequest,
+  readBody,
+  forwardToDocker,
+  pipeToDocker,
+  PARENT_SESSION_LABEL,
+  MAX_BODY_SIZE,
+  DOCKER_SOCKET,
+  CONTAINER_NAME_RE,
+} from "./docker-proxy-helpers.js";
+export type {
+  SessionInfo,
+  DockerProxyDeps,
+  Route,
+  RequestContext,
+} from "./docker-proxy-helpers.js";
+export {
+  containerBelongsToSession,
+  networkBelongsToSession,
+  volumeBelongsToSession,
+  getExecParentContainerId,
+  isPathUnderWorkspace,
+} from "./docker-proxy-auth.js";
+export { sanitizeContainerCreate } from "./docker-proxy-sanitize.js";
 
 // ---------------------------------------------------------------------------
 // Route definitions
