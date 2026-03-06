@@ -1,5 +1,5 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: poll external preview server URL until ready with cancellation (external system sync)
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { WarningIcon, GearSixIcon, PlayIcon, CircleNotchIcon, ArrowClockwiseIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
@@ -168,159 +168,166 @@ export function PreviewFrame({
     return () => { state.cancelled = true; };
   }, [activePort, pollUrl, iframeReady, isContainerMode, targetKey]);
 
-  // Show install progress
-  if (installStatus?.status === "running") {
-    return (
-      <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
-        <div className="text-center space-y-3">
-          <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
-          <p>Installing dependencies...</p>
-          <p className="text-xs text-(--color-text-tertiary)">
-            This may take a moment.
-          </p>
-        </div>
-      </div>
-    );
-  }
+  // ---- Persistent iframe: never unmounted, src only changes when ready ----
+  // The iframe ref lets us imperatively navigate via src assignment so the
+  // DOM element is preserved across session switches (no remount = no flash).
+  const iframeRef = useRef<HTMLIFrameElement>(null);
 
-  // Show install error
-  if (installStatus?.status === "error") {
-    return (
-      <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
-        <div className="text-center space-y-2">
-          <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-error)" />
-          <p className="text-(--color-error)">Install failed</p>
-          {installStatus.message && (
-            <p className="text-xs text-(--color-text-tertiary) max-w-sm">
-              {installStatus.message}
-            </p>
-          )}
-          <p className="text-xs text-(--color-text-tertiary)">
-            Check the terminal logs for details.
-          </p>
-        </div>
-      </div>
-    );
-  }
+  // The URL the iframe is currently displaying (or should display).
+  // Updated only when polling confirms the new session's preview is reachable.
+  const [displayedUrl, setDisplayedUrl] = useState<string | null>(null);
 
-  // Show crash state when preview server exited with error
-  if (crashInfo && (!preview?.running)) {
-    return (
-      <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
-        <div className="text-center space-y-3 max-w-lg px-4">
-          <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-error)" />
-          <p className="text-(--color-error) font-medium">
-            Preview server crashed{crashInfo.exitCode !== null && crashInfo.exitCode !== undefined ? ` (exit code ${crashInfo.exitCode})` : ""}
-          </p>
-          {crashInfo.output && (
-            <pre className="text-left text-xs text-(--color-text-secondary) bg-(--color-bg-secondary) rounded p-3 max-h-48 overflow-auto whitespace-pre-wrap border border-(--color-border-secondary)">
-              {crashInfo.output}
-            </pre>
-          )}
-          <div className="flex items-center justify-center gap-2">
-            {onRestartPreview && (
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={onRestartPreview}
-              >
-                Retry
-              </Button>
-            )}
-            {onSendCrashToAgent && (
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={onSendCrashToAgent}
-              >
-                Fix with Claude
-              </Button>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  }
+  // Compute what the new URL *would* be once ready
+  const candidateUrl = preview?.running
+    ? (previewSubdomainUrl ?? (preview.url?.startsWith("/preview/") ? preview.url : `http://localhost:${activePort}`))
+    : null;
 
-  if (!preview?.running) {
-    // No status received yet but a session is active — the preview server is
-    // starting up.  Show a spinner instead of the static placeholder so the
-    // user doesn't think nothing is happening.
-    if (!preview && (sessionId || loading)) {
-      return (
-        <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
-          <div className="text-center space-y-3">
-            <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
-            <p>{loading && !sessionId ? "Syncing with latest changes..." : "Starting dev server..."}</p>
-          </div>
-        </div>
-      );
+  // When polling confirms the new preview is reachable, commit its URL.
+  // Also handle refresh: same session but refreshKey changed.
+  useEffect(() => {
+    if (iframeReady && candidateUrl) {
+      setDisplayedUrl(candidateUrl);
     }
+  }, [iframeReady, candidateUrl]);
 
-    // Show config missing state with option to set up
-    if (configMissing) {
-      return (
-        <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
-          <div className="text-center space-y-3">
-            <GearSixIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
-            <p>No preview configuration found.</p>
-            <p className="text-xs text-(--color-text-tertiary) max-w-sm">
-              Create a shipit.yaml file to configure how the preview server runs, or let Claude set it up for you.
-            </p>
-            {onInitPreviewConfig && (
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={onInitPreviewConfig}
-              >
-                Set up with Claude
-              </Button>
-            )}
-          </div>
-        </div>
-      );
+  // Force-reload the iframe on refresh click by re-assigning the same src.
+  // This avoids changing displayedUrl (which wouldn't trigger a navigation
+  // for the same value) and instead uses the DOM API directly.
+  const lastRefreshKey = useRef(refreshKey);
+  useEffect(() => {
+    if (refreshKey !== lastRefreshKey.current) {
+      lastRefreshKey.current = refreshKey;
+      if (iframeRef.current && displayedUrl) {
+        iframeRef.current.src = displayedUrl;
+      }
     }
+  }, [refreshKey, displayedUrl]);
 
-    return (
-      <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
-        <div className="text-center space-y-2">
-          <PlayIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
-          <p>Preview will appear here when a dev server is running.</p>
-          <p className="text-xs text-(--color-text-tertiary)">
-            Ask the agent to create a project to get started. Vite, Express, Next.js, and other servers are auto-detected.
-          </p>
-        </div>
-      </div>
-    );
+  // Whether the persistent iframe should be visible
+  const showIframe = !!displayedUrl;
+  // Whether we're transitioning (iframe shows old content, new session loading)
+  const isTransitioning = showIframe && !iframeReady;
+
+  // Remember the last port label so the top bar doesn't flash "Preview" during session switch
+  const lastPortLabel = useRef<string | null>(null);
+
+  // ---- Determine overlay content (replaces early returns) ----
+  // By computing overlay content instead of returning early, we keep a single
+  // DOM tree so the iframe element is never destroyed/recreated.
+  const isRunning = !!preview?.running;
+  const isManaged = isRunning && (preview.source === "vite" || preview.source === "managed") && activePort === preview.port;
+  const showSelector = isRunning && (detectedPorts.length > 1 || ((preview.source === "vite" || preview.source === "managed") && detectedPorts.length > 0));
+
+  // Compute current port label and remember it for transitions
+  const currentPortLabel = isRunning
+    ? (preview?.url?.startsWith("/preview/") ? `port ${activePort}` : `localhost:${activePort}`)
+    : null;
+  if (currentPortLabel) {
+    lastPortLabel.current = currentPortLabel;
   }
-
-  // Build the preview URL. Subdomain URL is ideal (absolute paths resolve
-  // naturally). When unavailable (IP-based access), fall back to the path-based
-  // proxy URL. Local mode (no container) uses localhost directly.
-  const activeUrl = previewSubdomainUrl
-    ?? (preview?.url?.startsWith("/preview/") ? preview.url : `http://localhost:${activePort}`);
-  const isManaged = (preview.source === "vite" || preview.source === "managed") && activePort === preview.port;
-  const showSelector = detectedPorts.length > 1 || ((preview.source === "vite" || preview.source === "managed") && detectedPorts.length > 0);
+  // Show last known port label during transitions (old iframe still visible)
+  const portLabel = currentPortLabel ?? (showIframe ? lastPortLabel.current : null);
 
   // Build the list of all available ports for the selector
   const allPorts: { port: number; label: string }[] = [];
-  if (preview.source === "vite" || preview.source === "managed") {
+  if (isRunning && (preview.source === "vite" || preview.source === "managed")) {
     const label = preview.source === "vite" ? `${preview.port} (Vite)` : `${preview.port} (Preview)`;
     allPorts.push({ port: preview.port, label });
   }
-  for (const p of detectedPorts) {
-    if (p !== preview.port || (preview.source !== "vite" && preview.source !== "managed")) {
-      allPorts.push({ port: p, label: `${p}` });
+  if (isRunning) {
+    for (const p of detectedPorts) {
+      if (p !== preview.port || (preview.source !== "vite" && preview.source !== "managed")) {
+        allPorts.push({ port: p, label: `${p}` });
+      }
     }
   }
 
   const hasErrors = errors.length > 0;
+  const showCrash = !!(crashInfo && !preview?.running);
+  const showInstallRunning = installStatus?.status === "running";
+  const showInstallError = installStatus?.status === "error";
+  const showStarting = !preview && (!!sessionId || !!loading);
+  const showConfigMissing = !isRunning && !showCrash && !showInstallRunning && !showInstallError && !showStarting && !!configMissing;
+  const showPlaceholder = !isRunning && !showCrash && !showInstallRunning && !showInstallError && !showStarting && !showConfigMissing;
+
+  // When not running, hide the iframe behind the overlay (but keep DOM element alive)
+  const hideIframe = !isRunning && !showStarting;
+
+  // Determine overlay content for the main area
+  let overlayContent: React.ReactNode = null;
+  if (showInstallRunning) {
+    overlayContent = (
+      <div className="text-center space-y-3">
+        <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
+        <p>Installing dependencies...</p>
+        <p className="text-xs text-(--color-text-tertiary)">This may take a moment.</p>
+      </div>
+    );
+  } else if (showInstallError) {
+    overlayContent = (
+      <div className="text-center space-y-2">
+        <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-error)" />
+        <p className="text-(--color-error)">Install failed</p>
+        {installStatus?.message && (
+          <p className="text-xs text-(--color-text-tertiary) max-w-sm">{installStatus.message}</p>
+        )}
+        <p className="text-xs text-(--color-text-tertiary)">Check the terminal logs for details.</p>
+      </div>
+    );
+  } else if (showCrash) {
+    overlayContent = (
+      <div className="text-center space-y-3 max-w-lg px-4">
+        <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-error)" />
+        <p className="text-(--color-error) font-medium">
+          Preview server crashed{crashInfo?.exitCode !== null && crashInfo?.exitCode !== undefined ? ` (exit code ${crashInfo.exitCode})` : ""}
+        </p>
+        {crashInfo?.output && (
+          <pre className="text-left text-xs text-(--color-text-secondary) bg-(--color-bg-secondary) rounded p-3 max-h-48 overflow-auto whitespace-pre-wrap border border-(--color-border-secondary)">
+            {crashInfo.output}
+          </pre>
+        )}
+        <div className="flex items-center justify-center gap-2">
+          {onRestartPreview && <Button variant="secondary" size="sm" onClick={onRestartPreview}>Retry</Button>}
+          {onSendCrashToAgent && <Button variant="primary" size="sm" onClick={onSendCrashToAgent}>Fix with Claude</Button>}
+        </div>
+      </div>
+    );
+  } else if (showStarting && !showIframe) {
+    overlayContent = (
+      <div className="text-center space-y-3">
+        <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
+        <p>{loading && !sessionId ? "Syncing with latest changes..." : "Starting dev server..."}</p>
+      </div>
+    );
+  } else if (showConfigMissing) {
+    overlayContent = (
+      <div className="text-center space-y-3">
+        <GearSixIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
+        <p>No preview configuration found.</p>
+        <p className="text-xs text-(--color-text-tertiary) max-w-sm">
+          Create a shipit.yaml file to configure how the preview server runs, or let Claude set it up for you.
+        </p>
+        {onInitPreviewConfig && <Button variant="primary" size="sm" onClick={onInitPreviewConfig}>Set up with Claude</Button>}
+      </div>
+    );
+  } else if (showPlaceholder) {
+    overlayContent = (
+      <div className="text-center space-y-2">
+        <PlayIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
+        <p>Preview will appear here when a dev server is running.</p>
+        <p className="text-xs text-(--color-text-tertiary)">
+          Ask the agent to create a project to get started. Vite, Express, Next.js, and other servers are auto-detected.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className={`flex flex-col h-full ${autoFixEnabled ? "ring-2 ring-(--color-autofix) ring-inset" : ""}`}>
+      {/* Top bar — always rendered for layout stability */}
       <div className="flex items-center justify-between px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs text-(--color-text-secondary)">
         <span className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-(--color-success)" />
+          <span className={`w-2 h-2 rounded-full ${isRunning || portLabel ? "bg-(--color-success)" : "bg-(--color-text-tertiary)"}`} />
           {showSelector ? (
             <select
               value={activePort}
@@ -334,13 +341,15 @@ export function PreviewFrame({
                 </option>
               ))}
             </select>
-          ) : (
+          ) : portLabel ? (
             <>
-              {preview?.url?.startsWith("/preview/") ? `port ${activePort}` : `localhost:${activePort}`}
-              {!isManaged && preview.source === "detected" && (
+              {portLabel}
+              {isRunning && !isManaged && preview.source === "detected" && (
                 <span className="text-(--color-warning)">(auto-detected)</span>
               )}
             </>
+          ) : (
+            <span className="text-(--color-text-tertiary)">Preview</span>
           )}
         </span>
         <div className="flex items-center gap-2">
@@ -381,26 +390,46 @@ export function PreviewFrame({
         </div>
       </div>
 
-      {/* Preview content: spinner until URL is reachable, then iframe */}
-      {iframeReady ? (
-        <iframe
-          key={`${sessionId}-${activePort}-${refreshKey}`}
-          src={activeUrl}
-          title="Live Preview"
-          className={`flex-1 w-full bg-white ${hasErrors && errorPanelOpen ? "min-h-0" : ""}`}
-          // In container mode the iframe loads from a subdomain of our own proxy,
-          // so sandbox is unnecessary and actually breaks cross-origin framing.
-          // In local mode (dev server on host), sandbox restricts the iframe.
-          {...(!isContainerMode && { sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-modals" })}
-        />
-      ) : (
-        <div className="flex-1 flex items-center justify-center bg-white text-(--color-text-secondary) text-sm">
-          <div className="text-center space-y-3">
-            <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
-            <p>Starting dev server...</p>
+      {/* Main content area — iframe is always in the same DOM position */}
+      <div className="flex-1 relative">
+        {/* Persistent iframe — never unmounted, src only changes when new preview is ready */}
+        {showIframe && (
+          <iframe
+            ref={iframeRef}
+            src={displayedUrl}
+            title="Live Preview"
+            className={`absolute inset-0 w-full h-full ${hideIframe ? "invisible" : ""} ${hasErrors && errorPanelOpen ? "max-h-[60%]" : ""}`}
+            {...(!isContainerMode && { sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-modals" })}
+          />
+        )}
+        {/* Transition overlay while polling for new session (iframe visible underneath) */}
+        {isTransitioning && showIframe && !overlayContent && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/10 pointer-events-none">
+            <CircleNotchIcon size={ICON_SIZE.MD} className="animate-spin text-(--color-accent)" />
           </div>
-        </div>
-      )}
+        )}
+        {/* Stale iframe with spinner during session switch (showStarting + old iframe still visible) */}
+        {showStarting && showIframe && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/10 pointer-events-none">
+            <CircleNotchIcon size={ICON_SIZE.MD} className="animate-spin text-(--color-accent)" />
+          </div>
+        )}
+        {/* State overlay — covers the iframe area */}
+        {overlayContent && (
+          <div className="absolute inset-0 flex items-center justify-center bg-(--color-bg-primary) text-(--color-text-secondary) text-sm z-10">
+            {overlayContent}
+          </div>
+        )}
+        {/* Spinner when no iframe has ever been shown and preview is running but polling */}
+        {isRunning && !showIframe && !iframeReady && !overlayContent && (
+          <div className="absolute inset-0 flex items-center justify-center bg-(--color-bg-primary) text-(--color-text-secondary) text-sm">
+            <div className="text-center space-y-3">
+              <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
+              <p>Starting dev server...</p>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Error panel */}
       {hasErrors && errorPanelOpen && (

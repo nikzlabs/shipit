@@ -415,6 +415,69 @@ describe("PreviewFrame", () => {
     const options = screen.getAllByRole("option");
     expect(options[0]).toHaveTextContent("3000 (Preview)");
   });
+
+  // ---- Stale iframe tests ----
+
+  it("shows stale iframe while polling for new session's preview", async () => {
+    const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const { rerender } = render(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
+    // Wait for iframe to become ready (fetch mock resolves immediately)
+    await screen.findByTitle("Live Preview");
+    expect(screen.getByTitle("Live Preview")).toHaveAttribute("src", "http://localhost:5173");
+
+    // Switch to session B with a different running preview — polling hasn't resolved yet
+    // Use a fetch that never resolves to simulate polling delay
+    vi.stubGlobal("fetch", vi.fn().mockReturnValue(new Promise(() => {})));
+    const previewB: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "vite" };
+    rerender(<PreviewFrame preview={previewB} sessionId="session-b" {...defaultProps} />);
+
+    // Stale iframe from session A should still be visible
+    const iframe = screen.getByTitle("Live Preview");
+    expect(iframe).toHaveAttribute("src", "http://localhost:5173");
+  });
+
+  it("shows stale iframe during session switch even when preview is null", async () => {
+    const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const { rerender } = render(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
+    await screen.findByTitle("Live Preview");
+
+    // Switch to session B where preview is null (waiting for WS message)
+    rerender(<PreviewFrame preview={null} sessionId="session-b" {...defaultProps} />);
+
+    // Stale iframe should be visible — dev server is already running, just waiting for WS
+    const iframe = screen.getByTitle("Live Preview");
+    expect(iframe).toHaveAttribute("src", "http://localhost:5173");
+    expect(screen.queryByText("Starting dev server...")).not.toBeInTheDocument();
+  });
+
+  it("shows spinner for fresh session start (no stale iframe)", () => {
+    // No previous preview → stale ref is null → show spinner
+    render(<PreviewFrame preview={null} sessionId="session-a" {...defaultProps} />);
+    expect(screen.getByText("Starting dev server...")).toBeInTheDocument();
+    expect(screen.queryByTitle("Live Preview")).not.toBeInTheDocument();
+  });
+
+  it("clears stale iframe on crash", async () => {
+    const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const { rerender } = render(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
+    await screen.findByTitle("Live Preview");
+
+    // Preview crashes
+    rerender(
+      <PreviewFrame
+        preview={{ running: false, port: 5173, url: "http://localhost:5173" }}
+        sessionId="session-a"
+        {...defaultProps}
+        crashInfo={{ exitCode: 1, output: "error" }}
+      />,
+    );
+
+    expect(screen.getByText(/Preview server crashed/)).toBeInTheDocument();
+    // Iframe is still in the DOM (persistent) but hidden behind crash overlay
+    const iframe = screen.queryByTitle("Live Preview");
+    expect(iframe).toBeInTheDocument();
+    expect(iframe).toHaveClass("invisible");
+  });
 });
 
 describe("formatErrorForMessage", () => {
