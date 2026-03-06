@@ -10,6 +10,7 @@ import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
 import { CodexAuthCard } from "./CodexAuthCard.js";
 import { GitHubTokenForm } from "./GitHubTokenForm.js";
 import { UtilityModelCard } from "./UtilityModelCard.js";
+import { useUiStore } from "../stores/ui-store.js";
 
 const MAX_LENGTH = 50_000;
 
@@ -38,7 +39,6 @@ export interface SettingsProps {
   onDeployConfigure: (targetId: string, credentials: Record<string, string>, projectName?: string) => void;
   onDeployDeleteConfig: (targetId: string) => void;
   hasActiveSession: boolean;
-  initialTab?: Tab;
   onDeployTabSelected?: () => void;
   onClose: () => void;
 }
@@ -66,11 +66,11 @@ export function Settings({
   onDeployConfigure,
   onDeployDeleteConfig,
   hasActiveSession,
-  initialTab,
   onDeployTabSelected,
   onClose,
 }: SettingsProps) {
-  const [activeTab, setActiveTab] = useState<Tab>(initialTab ?? "agent");
+  const activeTab = useUiStore((s) => s.settingsTab) ?? "agent";
+  const setActiveTab = useUiStore((s) => s.setSettingsTab);
   const [content, setContent] = useState(initialContent);
   const [confirmingLogout, setConfirmingLogout] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
@@ -88,9 +88,9 @@ export function Settings({
   const savedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Fire onDeployTabSelected when initialTab is "deploy" (one-time on mount equivalent)
+  // Fire onDeployTabSelected when opened on deploy tab (one-time on mount equivalent)
   const deployNotifiedRef = useRef(false);
-  if (initialTab === "deploy" && !deployNotifiedRef.current) {
+  if (activeTab === "deploy" && !deployNotifiedRef.current) {
     deployNotifiedRef.current = true;
     onDeployTabSelected?.();
   }

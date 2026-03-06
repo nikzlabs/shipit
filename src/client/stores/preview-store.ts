@@ -36,6 +36,8 @@ interface PreviewState {
   installStatus: InstallStatus | null;
   crashInfo: CrashInfo | null;
   errors: PreviewError[];
+  autoFixEnabled: boolean;
+  autoFixRetries: number;
 
   setStatus: (status: PreviewStatus | null) => void;
   setSelectedPort: (port: number | null) => void;
@@ -44,6 +46,10 @@ interface PreviewState {
   setCrashInfo: (info: CrashInfo | null) => void;
   addError: (error: PreviewError) => void;
   clearErrors: () => void;
+  setAutoFixEnabled: (enabled: boolean) => void;
+  setAutoFixRetries: (retries: number) => void;
+  disableAutoFix: () => void;
+  toggleAutoFix: () => void;
   reset: () => void;
 }
 
@@ -93,6 +99,8 @@ const initialState = {
   installStatus: null as InstallStatus | null,
   crashInfo: null as CrashInfo | null,
   errors: [] as PreviewError[],
+  autoFixEnabled: false,
+  autoFixRetries: 0,
 };
 
 export const usePreviewStore = create<PreviewState>((set) => ({
@@ -118,6 +126,15 @@ export const usePreviewStore = create<PreviewState>((set) => ({
     resetDedupState();
     set({ errors: [] });
   },
+
+  setAutoFixEnabled: (autoFixEnabled) => set({ autoFixEnabled }),
+
+  setAutoFixRetries: (autoFixRetries) => set({ autoFixRetries }),
+
+  disableAutoFix: () => set({ autoFixEnabled: false, autoFixRetries: 0 }),
+
+  toggleAutoFix: () =>
+    set((state) => ({ autoFixEnabled: !state.autoFixEnabled, ...(!state.autoFixEnabled ? {} : { autoFixRetries: 0 }) })),
 
   reset: () => {
     resetDedupState();

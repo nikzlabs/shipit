@@ -1,10 +1,12 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { TerminalPanel, type LogEntry } from "./TerminalPanel.js";
+import { useTerminalStore } from "../stores/terminal-store.js";
 
 beforeEach(() => {
   // jsdom doesn't implement scrollIntoView
   Element.prototype.scrollIntoView = vi.fn();
+  useTerminalStore.getState().reset();
 });
 
 afterEach(cleanup);
