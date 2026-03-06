@@ -53,9 +53,12 @@ export function isNativeBinarySignalCrash(exitCode: number): boolean {
 /** Max time (ms) after process start to consider a crash "immediate". */
 const QUICK_CRASH_THRESHOLD_MS = 10_000;
 
-// Resolve the vite binary from the project's own node_modules so we never
-// trigger an npx download when spawning in /workspace.
-const VITE_BIN = path.resolve(process.cwd(), "node_modules/.bin/vite");
+// Resolve the vite binary relative to the workspace at runtime so it points at
+// the node_modules that `npm install` actually populated (the workspace dir),
+// not the orchestrator's cwd which may differ.
+function resolveViteBin(workspaceDir: string): string {
+  return path.resolve(workspaceDir, "node_modules/.bin/vite");
+}
 
 // Resolve the absolute path to vite's ESM entry so the wrapper config written
 // to /workspace/.shipit/ can import it regardless of node_modules layout.
@@ -259,7 +262,7 @@ export class PreviewManager extends EventEmitter {
     const configPath = this.writeWrapperConfig(workspaceDir);
 
     this.proc = spawn(
-      VITE_BIN,
+      resolveViteBin(workspaceDir),
       ["--config", configPath, "--port", String(VITE_PORT), "--host", "0.0.0.0"],
       {
         cwd: workspaceDir,
