@@ -47,8 +47,8 @@ async function refreshWorktreeToLatestMain(
   createGitManager: ApiDeps["createGitManager"],
 ): Promise<void> {
   const repoGit = createRepoGit(repoDir);
-  await repoGit.fetch("origin");
   const defaultBranch = await repoGit.getDefaultBranch();
+  await repoGit.fetch("origin", defaultBranch);
   const sessionGit = createGitManager(sessionDir);
   await sessionGit.rollback(`origin/${defaultBranch}`);
 }
@@ -483,9 +483,14 @@ export async function registerSessionRoutes(
 
         const repoGit = createRepoGit(repoDir);
 
-        // Fetch latest refs so the worktree is not stale
+        // Fetch latest default branch so the worktree is not stale
+        let startPoint: string | undefined;
         try {
-          await repoGit.fetch("origin");
+          const defaultBranch = await repoGit.getDefaultBranch();
+          if (defaultBranch && !defaultBranch.includes("(")) {
+            await repoGit.fetch("origin", defaultBranch);
+            startPoint = `origin/${defaultBranch}`;
+          }
         } catch (err) {
           console.error(`[claim-session] Fetch origin failed for ${url}:`, getErrorMessage(err));
         }
@@ -493,16 +498,6 @@ export async function registerSessionRoutes(
         // Empty repos have no commits — create one so worktree add has a start point
         if (await repoGit.isEmpty()) {
           await repoGit.createInitialCommit();
-        }
-
-        let startPoint: string | undefined;
-        try {
-          const defaultBranch = await repoGit.getDefaultBranch();
-          if (defaultBranch && !defaultBranch.includes("(")) {
-            startPoint = `origin/${defaultBranch}`;
-          }
-        } catch {
-          // Fallback: let git use HEAD
         }
         await repoGit.createWorktree(sessionDir, branchPrefix, startPoint);
 
