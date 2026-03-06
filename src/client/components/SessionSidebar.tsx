@@ -275,7 +275,7 @@ export function SessionSidebar({
           title={activeRepoName || "Select repository"}
           aria-label="Repository"
         >
-          <GithubLogoIcon size={ICON_SIZE.SM} className="shrink-0" />
+          <GithubLogoIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0" />
         </Button>
         <div className="flex-1" />
         <Button
@@ -308,7 +308,7 @@ export function SessionSidebar({
         >
           <SidebarSimpleIcon size={ICON_SIZE.SM} />
         </Button>
-        <GithubLogoIcon size={ICON_SIZE.SM} className="shrink-0" />
+        <GithubLogoIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0" />
         <span className="flex-1 min-w-0 truncate text-xs font-medium text-(--color-text-primary)">
           {activeRepoName || "No repository"}
         </span>
