@@ -70,34 +70,29 @@ export function MessageInput({
           continue;
         }
 
-        setImages((prev) => {
-          if (prev.length >= MAX_IMAGES) {
-            setImageError(`Maximum ${MAX_IMAGES} images per message.`);
-            return prev;
-          }
-
-          const reader = new FileReader();
-          reader.onload = () => {
-            const base64Full = reader.result as string;
-            // Strip the data:image/...;base64, prefix
-            const base64 = base64Full.split(",")[1] ?? "";
-            const previewUrl = URL.createObjectURL(file);
-            setImages((current) => {
-              if (current.length >= MAX_IMAGES) return current;
-              return [
-                ...current,
-                {
-                  data: base64,
-                  mediaType: file.type,
-                  filename: file.name,
-                  previewUrl,
-                },
-              ];
-            });
-          };
-          reader.readAsDataURL(file);
-          return prev;
-        });
+        const reader = new FileReader();
+        reader.onload = () => {
+          const base64Full = reader.result as string;
+          // Strip the data:image/...;base64, prefix
+          const base64 = base64Full.split(",")[1] ?? "";
+          const previewUrl = URL.createObjectURL(file);
+          setImages((current) => {
+            if (current.length >= MAX_IMAGES) {
+              setImageError(`Maximum ${MAX_IMAGES} images per message.`);
+              return current;
+            }
+            return [
+              ...current,
+              {
+                data: base64,
+                mediaType: file.type,
+                filename: file.name,
+                previewUrl,
+              },
+            ];
+          });
+        };
+        reader.readAsDataURL(file);
       }
     },
     [clearImageError],
