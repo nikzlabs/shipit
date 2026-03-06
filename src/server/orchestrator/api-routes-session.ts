@@ -464,6 +464,14 @@ export async function registerSessionRoutes(
         await rm(sessionDir, { recursive: true, force: true });
 
         const repoGit = createRepoGit(repoDir);
+
+        // Fetch latest refs so the worktree is not stale
+        try {
+          await repoGit.fetch("origin");
+        } catch (err) {
+          console.error(`[claim-session] Fetch origin failed for ${url}:`, getErrorMessage(err));
+        }
+
         const isEmptyRepo = await repoGit.isEmpty();
 
         if (isEmptyRepo) {
@@ -501,8 +509,8 @@ export async function registerSessionRoutes(
         // No container is created here — it will be created on-demand when
         // the WebSocket connects and activateSession() calls getOrCreate().
 
-        // Start warming the next session in background
-        deps.warmSessionForRepo?.(url);
+        // Start warming the next session in background (with standby container)
+        deps.warmSessionForRepo?.(url, { withStandby: true });
 
         return { sessionId: appSessionId, sessionDir };
       } catch (err) {
