@@ -161,6 +161,7 @@ export function wireAgentListeners(
       if (turnSessionId) {
         ctx.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
         ctx.sessionManager.track(turnSessionId);
+        ctx.sseBroadcast("session_list", { sessions: ctx.sessionManager.list() });
       }
 
       const usageSessionId = turnSessionId ?? event.sessionId;
