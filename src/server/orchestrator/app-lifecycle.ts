@@ -661,13 +661,6 @@ export function createWarmPool(
 
         const repoGit = createRepoGit(repoDir);
 
-        // Always fetch latest so the worktree starts from current remote HEAD
-        try {
-          await repoGit.fetch("origin");
-        } catch (err) {
-          console.error(`[warm] Fetch origin failed for ${repoUrl}:`, getErrorMessage(err));
-        }
-
         // Remove the empty dir (worktree add needs it absent)
         await fs.rm(sessionDir, { recursive: true, force: true });
 

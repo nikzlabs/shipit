@@ -21,9 +21,9 @@ Client-side, the only remaining trigger is `App.tsx` `handleSendMessage`: when t
 
 ## Fresh Main Invariant (done)
 
-New sessions must never start from stale `origin/main`. Previously, `warmSessionForRepo()` only called `git fetch` when re-warming (after a session was claimed), not during initial warming. The sync fallback in `claim-session` also skipped fetch.
+New sessions must never start from stale `origin/main`. A warm session's worktree can sit for minutes/hours before being claimed, and `origin/main` can advance in that window.
 
-**Fix**: `git fetch origin` now runs unconditionally in `warmSessionForRepo()` and in the `claim-session` sync fallback path. Since warming is fire-and-forget in the background, there is no user-visible latency.
+**Fix**: At claim time (in `claim-session`), `refreshWorktreeToLatestMain()` runs `git fetch origin` in the shared repo and then `git reset --hard origin/{defaultBranch}` in the worktree. This applies to all three claim paths (reuse, warm, wait). Warm sessions have zero user changes, so the hard reset is safe. The sync fallback path already creates a fresh worktree with a fetch.
 
 ## Design
 
