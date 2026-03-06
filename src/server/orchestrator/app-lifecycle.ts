@@ -98,7 +98,7 @@ export async function setupContainerManager(
   let dockerProxyServer: HttpServer | null = null;
   if (containerManager && !isTestMode) {
     try {
-      const bridgeGatewayIp = await resolveBridgeGatewayIp();
+      const bridgeGatewayIp = await resolveBridgeGatewayIp(process.env.DOCKER_NETWORK);
       const proxy = createDockerProxy({
         getSessionByContainerIp: (ip: string): DockerProxySessionInfo | undefined => {
           const sc = containerManager.getSessionByContainerIp(ip);
