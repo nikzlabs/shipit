@@ -12,6 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { buildApp } from "../index.js";
+import { SessionManager } from "../sessions.js";
 import {
   TestClient,
   StubAuthManager,
@@ -19,17 +20,23 @@ import {
   waitForClaude,
   StubGitHubAuthManager,
   createTestCredentialStore,
+  createTestDatabaseManager,
 } from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
 
 describe("Integration: Preview config and session-switch cleanup", () => {
   let tmpDir: string;
   let port: number;
   let app: Awaited<ReturnType<typeof buildApp>>;
   let lastClaude: FakeClaudeProcess | null;
+  let dbManager: DatabaseManager;
+  let sessionManager: SessionManager;
 
   beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "preview-cfg-"));
     lastClaude = null;
+    sessionManager = new SessionManager(dbManager);
 
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
@@ -37,6 +44,7 @@ describe("Integration: Preview config and session-switch cleanup", () => {
       serveStatic: false,
       authManager: new StubAuthManager() as any,
       githubAuthManager: new StubGitHubAuthManager() as any,
+      sessionManager,
       agentFactory: () => {
         lastClaude = new FakeClaudeProcess() as any;
         return lastClaude as any;
@@ -50,6 +58,7 @@ describe("Integration: Preview config and session-switch cleanup", () => {
 
   afterEach(async () => {
     await app.close();
+    dbManager.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 

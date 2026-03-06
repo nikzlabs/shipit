@@ -65,8 +65,8 @@ export interface ApiDeps {
   warmSessionForRepo?: (repoUrl: string, opts?: { withStandby?: boolean }) => void;
   /** Returns the in-flight warming promise for a repo, if any. */
   waitForWarmSession?: (repoUrl: string) => Promise<void> | undefined;
-  /** Create session dir with custom options. */
-  createSessionDirFull: (title: string, opts?: { skipGitInit?: boolean }) => Promise<{ appSessionId: string; sessionDir: string }>;
+  /** Create session dir (same as createSessionDir — alias for claim-session). */
+  createSessionDirFull: (title: string) => Promise<{ appSessionId: string; sessionDir: string }>;
   /** Container manager — needed for standby cleanup on repo delete. */
   containerManager?: SessionContainerManager;
   /** PR status poller — needed for tracking new PRs. */

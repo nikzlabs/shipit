@@ -313,26 +313,14 @@ export default function App() {
           permissionMode: settings.permissionMode !== "auto" ? settings.permissionMode : undefined,
         });
       } else {
-        // No session yet (home page) — create one via HTTP, store pending WS message, navigate
-        try {
-          const res = await apiPost<{ sessionId: string }>("/api/sessions", {});
-          session.setPendingWsMessage({
-            type: "send_message",
-            text,
-            images,
-            files: settings.pendingFiles.length > 0 ? settings.pendingFiles : undefined,
-            permissionMode: settings.permissionMode !== "auto" ? settings.permissionMode : undefined,
-          });
-          void navigate(`/session/${res.sessionId}`);
-        } catch (err) {
-          console.error("[session] Failed to create session:", err);
-          session.setIsLoading(false);
-          session.setActivity(undefined);
-        }
+        // No session — can't send without one (sessions are created via claim-session)
+        console.warn("[session] No active session — cannot send message");
+        session.setIsLoading(false);
+        session.setActivity(undefined);
       }
       settings.clearPendingFiles();
     },
-    [send, requestPermission, disableAutoFix, apiPost, navigate, isNewSessionRoute],
+    [send, requestPermission, disableAutoFix, navigate, isNewSessionRoute],
   );
 
   const handleEditMessage = useCallback(
@@ -346,7 +334,7 @@ export default function App() {
       const pm = useSettingsStore.getState().permissionMode;
       send({ type: "send_message", text: newText, sessionId: sid, permissionMode: pm !== "auto" ? pm : undefined });
     },
-    [send, requestPermission, apiPost],
+    [send, requestPermission],
   );
 
   const handleSendErrors = useCallback(
@@ -528,23 +516,31 @@ export default function App() {
       useSessionStore.getState().setIsLoading(true);
       useSessionStore.getState().setActivity({ label: "Thinking..." });
       useUiStore.getState().setMobilePanel("chat");
-      // Create session via HTTP, then navigate (WS auto-connects and sends pending message)
+      // Claim a new session from the current repo, then navigate
+      const repoUrl = sessions.find((s) => s.id === useSessionStore.getState().sessionId)?.remoteUrl;
+      if (!repoUrl) {
+        console.warn("[session] No repo URL — cannot create feature session");
+        useSessionStore.getState().setIsLoading(false);
+        useSessionStore.getState().setActivity(undefined);
+        return;
+      }
       try {
-        const res = await apiPost<{ sessionId: string }>("/api/sessions", { title: feature.name });
+        const result = await useRepoStore.getState().claimSession(repoUrl);
+        if (!result) throw new Error("Failed to claim session");
         const pm = useSettingsStore.getState().permissionMode;
         useSessionStore.getState().setPendingWsMessage({
           type: "send_message",
           text,
           permissionMode: pm !== "auto" ? pm : undefined,
         });
-        void navigate(`/session/${res.sessionId}`);
+        void navigate(`/session/${result.sessionId}`);
       } catch (err) {
         console.error("[session] Failed to create session for feature:", err);
         useSessionStore.getState().setIsLoading(false);
         useSessionStore.getState().setActivity(undefined);
       }
     },
-    [requestPermission, apiPost, navigate],
+    [requestPermission, navigate, sessions],
   );
 
   const handleUsageBadgeClick = useCallback(() => {

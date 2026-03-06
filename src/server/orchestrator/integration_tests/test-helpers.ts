@@ -7,9 +7,13 @@
  */
 
 import { EventEmitter } from "node:events";
+import crypto from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import WebSocket from "ws";
 import type { WsServerMessage, WsClientMessage } from "../../shared/types.js";
+import type { SessionManager } from "../sessions.js";
+import { GitManager } from "../../shared/git.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { CredentialStore } from "../credential-store.js";
 import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
@@ -55,16 +59,15 @@ export class TestClient {
   /**
    * Connect to a per-session WebSocket.
    * If sessionId is provided, connects to /ws/sessions/:id directly.
-   * If not, creates a new session via POST /api/sessions first.
+   * If not, creates a new session via the test-only POST /api/_test/sessions endpoint.
    */
   static async connect(port: number, sessionId?: string): Promise<TestClient> {
     if (!sessionId) {
-      // Auto-create a session via HTTP
       const http = await import("node:http");
       const body = JSON.stringify({ title: "Test session" });
       const data = await new Promise<string>((resolve, reject) => {
         const req = http.request(
-          `http://127.0.0.1:${port}/api/sessions`,
+          `http://127.0.0.1:${port}/api/_test/sessions`,
           { method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) } },
           (res) => {
             let buf = "";
@@ -597,9 +600,29 @@ export class StubDeploymentStore {
 // ---------------------------------------------------------------------------
 
 /**
+ * Create a test session with a git-initialized workspace directory.
+ * Used by integration tests now that `POST /api/sessions` is removed.
+ * @param workspaceDir — the app's workspaceDir (sessions are placed in workspaceDir/sessions/UUID)
+ */
+export async function createTestSession(
+  sessionManager: SessionManager,
+  workspaceDir: string,
+  title = "Test session",
+): Promise<{ sessionId: string; sessionDir: string }> {
+  const sessionId = crypto.randomUUID();
+  const sessionsRoot = path.join(workspaceDir, "sessions");
+  const sessionDir = path.join(sessionsRoot, sessionId);
+  fs.mkdirSync(sessionDir, { recursive: true });
+  const git = new GitManager(sessionDir);
+  await git.init();
+  sessionManager.track(sessionId, title, sessionDir);
+  return { sessionId, sessionDir };
+}
+
+/**
  * Poll until the most recent FakeClaudeProcess has been started.
  * Replaces fixed `setTimeout(50)` waits which are flaky because
- * `createSessionDir()` adds async I/O overhead (mkdir + git init).
+ * `createSessionDir()` adds async I/O overhead (mkdir).
  *
  * @param notInstance — if provided, waits for a DIFFERENT instance
  *   (useful when a previous Claude from another test still has runCalled=true)

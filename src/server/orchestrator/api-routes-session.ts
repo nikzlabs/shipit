@@ -145,21 +145,6 @@ export async function registerSessionRoutes(
     return { sessions: listAllSessions(sessionManager) };
   });
 
-  // POST /api/sessions — create a new standalone session (no repo)
-  app.post<{ Body: { title?: string } }>(
-    "/api/sessions",
-    async (_request, reply) => {
-      try {
-        const title = _request.body?.title?.trim() || "New session";
-        const { appSessionId, sessionDir } = await deps.createSessionDir(title);
-        deps.sseBroadcast("session_list", { sessions: sessionManager.list() });
-        return { sessionId: appSessionId, sessionDir };
-      } catch (err) {
-        reply.code(500).send({ error: `Failed to create session: ${getErrorMessage(err)}` });
-      }
-    },
-  );
-
   // POST /api/sessions/:id/unarchive — restore an archived session
   app.post<{ Params: { id: string } }>(
     "/api/sessions/:id/unarchive",
@@ -410,8 +395,8 @@ export async function registerSessionRoutes(
         // (user clicked "New Session", navigated away without sending a message,
         // then clicked "New Session" again), return it instead of claiming a new one.
         // This avoids creating duplicate containers for sessions the user never used.
-        // We check for .git (file for worktrees, dir for standalone repos) to ensure
-        // the worktree/repo is fully initialized — the session directory is created
+        // We check for .git (file for worktrees) to ensure
+        // the worktree is fully initialized — the session directory is created
         // early (mkdir) but the git worktree is created later, so an in-progress
         // warm session would have the dir but no .git yet.
         const reusable = sessionManager.findUngraduatedWarm(url, repo.warmSessionId ?? undefined);
@@ -457,7 +442,7 @@ export async function registerSessionRoutes(
         if (request.raw.destroyed) return;
         const repoDir = deps.getSharedRepoDir(url);
         const branchPrefix = generateBranchPrefix();
-        const created = await deps.createSessionDirFull("Warm session", { skipGitInit: true });
+        const created = await deps.createSessionDirFull("Warm session");
         const { appSessionId, sessionDir } = created;
 
         // Remove the empty dir (worktree add needs it absent)
@@ -472,27 +457,21 @@ export async function registerSessionRoutes(
           console.error(`[claim-session] Fetch origin failed for ${url}:`, getErrorMessage(err));
         }
 
-        const isEmptyRepo = await repoGit.isEmpty();
-
-        if (isEmptyRepo) {
-          await mkdir(sessionDir, { recursive: true });
-          const sessionGit = createGitManager(sessionDir);
-          await sessionGit.init();
-          const cloneUrl = deps.githubAuthManager.getAuthenticatedCloneUrl(url);
-          await sessionGit.addRemote("origin", cloneUrl);
-          await sessionGit.checkoutNewBranch(branchPrefix);
-        } else {
-          let startPoint: string | undefined;
-          try {
-            const defaultBranch = await repoGit.getDefaultBranch();
-            if (defaultBranch && !defaultBranch.includes("(")) {
-              startPoint = `origin/${defaultBranch}`;
-            }
-          } catch {
-            // Fallback: let git use HEAD
-          }
-          await repoGit.createWorktree(sessionDir, branchPrefix, startPoint);
+        // Empty repos have no commits — create one so worktree add has a start point
+        if (await repoGit.isEmpty()) {
+          await repoGit.createInitialCommit();
         }
+
+        let startPoint: string | undefined;
+        try {
+          const defaultBranch = await repoGit.getDefaultBranch();
+          if (defaultBranch && !defaultBranch.includes("(")) {
+            startPoint = `origin/${defaultBranch}`;
+          }
+        } catch {
+          // Fallback: let git use HEAD
+        }
+        await repoGit.createWorktree(sessionDir, branchPrefix, startPoint);
 
         // Configure credentials
         if (deps.githubAuthManager.authenticated) {
@@ -502,7 +481,7 @@ export async function registerSessionRoutes(
         sessionManager.setRemoteUrl(appSessionId, url);
         sessionManager.setWorktreeInfo(appSessionId, {
           branch: branchPrefix,
-          sessionType: isEmptyRepo ? "standalone" : "worktree",
+          sessionType: "worktree",
         });
         sessionManager.setWarm(appSessionId, true);
 

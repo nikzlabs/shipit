@@ -16,7 +16,7 @@ export async function createRepoWithTemplate(
   sessionManager: SessionManager,
   createGitManager: (dir: string) => GitManager,
   createRepoGit: (dir: string) => RepoGit,
-  createSessionDir: (title: string, opts?: { skipGitInit?: boolean }) => Promise<{ appSessionId: string; sessionDir: string }>,
+  createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string }>,
   githubAuthManager: {
     authenticated: boolean;
     createRepo: (name: string, opts: { description?: string; isPrivate?: boolean }) => Promise<{ success: boolean; cloneUrl?: string; message?: string }>;
@@ -61,7 +61,7 @@ export async function createRepoWithTemplate(
 
   // 4. Create session dir (skip git init — worktree handles this)
   const branchPrefix = generateBranchPrefix();
-  const { appSessionId, sessionDir } = await createSessionDir(template.name, { skipGitInit: true });
+  const { appSessionId, sessionDir } = await createSessionDir(template.name);
 
   // Remove the empty dir (worktree add needs it absent)
   await fs.rm(sessionDir, { recursive: true, force: true });
@@ -113,6 +113,9 @@ export async function applyTemplate(
     const created = await createSessionDir(template.name);
     appSessionId = created.appSessionId;
     sessionDir = created.sessionDir;
+    // New session directory needs git init before we can commit template files
+    const newGit = createGitManager(sessionDir);
+    await newGit.init();
   }
 
   await applyTemplateFiles(template, sessionDir);
