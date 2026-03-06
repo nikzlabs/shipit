@@ -11,7 +11,7 @@ import { useTheme } from "./hooks/useTheme.js";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts.js";
 import { useConnectionSync } from "./hooks/useConnectionSync.js";
 import { useAutoFix } from "./hooks/useAutoFix.js";
-import { SunIcon, MoonIcon, GearSixIcon, DownloadSimpleIcon, RocketIcon, CircleNotchIcon } from "@phosphor-icons/react";
+import { DownloadSimpleIcon, CircleNotchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "./design-tokens.js";
 import { useMessageHandler } from "./hooks/useMessageHandler.js";
 import { useApi } from "./hooks/useApi.js";
@@ -22,18 +22,15 @@ import { MessageList } from "./components/MessageList.js";
 import { PreviewFrame } from "./components/PreviewFrame.js";
 import { usePreviewErrors, type PreviewError } from "./hooks/usePreviewErrors.js";
 import { GitHistory } from "./components/GitHistory.js";
-import { AuthOverlay } from "./components/AuthOverlay.js";
+import { AuthOverlayContainer } from "./AuthOverlay.js";
 import { Settings } from "./components/Settings.js";
-import { SessionSidebar } from "./components/SessionSidebar.js";
+import { AppLayout } from "./AppLayout.js";
 import { DocsViewer } from "./components/DocsViewer.js";
 import { FileTree } from "./components/FileTree.js";
 import { FileContentViewer } from "./components/FileContentViewer.js";
 import { TerminalPanel } from "./components/TerminalPanel.js";
 import { InteractiveTerminal, type InteractiveTerminalHandle } from "./components/InteractiveTerminal.js";
-import { ResizeHandle } from "./components/ResizeHandle.js";
 import { SearchBar } from "./components/SearchBar.js";
-import { ConnectionBanner } from "./components/ConnectionBanner.js";
-import { MobileTabBar } from "./components/MobileTabBar.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
 import { HomeScreen } from "./components/HomeScreen.js";
 import { AddRepoDialog } from "./components/AddRepoDialog.js";
@@ -41,7 +38,6 @@ import { AllSessionsDialog } from "./components/AllSessionsDialog.js";
 import { NewRepoDialog } from "./components/NewRepoDialog.js";
 import { UsageModal } from "./components/UsageModal.js";
 import { StatusBar } from "./components/StatusBar.js";
-import { OnboardingWizard } from "./components/OnboardingWizard.js";
 import { DeployModal } from "./components/DeployModal.js";
 import { FeaturesPanel } from "./components/FeaturesPanel.js";
 
@@ -49,7 +45,6 @@ import type { TurnDiffData } from "./components/DiffPanel.js";
 // eslint-disable-next-line no-restricted-syntax -- lazy() named-export pattern
 const DiffPanel = lazy(() => import("./components/DiffPanel.js").then(m => ({ default: m.DiffPanel })));
 import { PrLifecycleCard } from "./components/PrLifecycleCard.js";
-import { Toast } from "./components/Toast.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentPicker, type AgentOption } from "./components/AgentPicker.js";
 import type { AgentId } from "../server/shared/types.js";
@@ -66,7 +61,6 @@ import { useUiStore } from "./stores/ui-store.js";
 import { useRepoStore } from "./stores/repo-store.js";
 import { resumeSessionInternal, handleSessionResume, resetSessionState } from "./stores/actions/session-actions.js";
 import { parseRepoLabel, parseRepoName, repoLabelToNewPath, parseNewSessionSlug } from "./utils/repo-label.js";
-import { RepoSwitcher } from "./components/RepoSwitcher.js";
 
 export default function App() {
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
@@ -657,8 +651,22 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen bg-(--color-bg-primary) text-(--color-text-primary)">
-      {authUrl !== null && !showOnboarding && <AuthOverlay url={authUrl} onPasteCode={(code) => { apiPost("/api/auth/code", { code }).catch(() => {}); }} onApiKey={(key) => { apiPost("/api/auth/api-key", { key }).catch(() => {}); }} />}
-      {showOnboarding && <OnboardingWizard initialStep={gitIdentityNeeded ? 1 : 2} onGitIdentitySubmit={(name: string, email: string) => useGitStore.getState().submitGitIdentity(name, email).catch(() => {})} onGitHubTokenSubmit={async (token: string) => { const result = await useSettingsStore.getState().submitGitHubToken(token); if (result) { usePrStore.getState().setImportSearchResults(result.repos); return true; } return false; }} agents={agentList} onClaudeApiKeySubmit={async (key: string) => { try { await apiPost("/api/auth/api-key", { key }); const data = await apiGet<{ agents: AgentOption[] }>("/api/bootstrap"); useUiStore.getState().setAgentList(data.agents); return true; } catch { return false; } }} onCodexApiKeySubmit={async (key: string) => { try { const result = await apiPost<{ agents: AgentOption[] }>(`/api/agents/codex/env`, { key: "OPENAI_API_KEY", value: key }); useUiStore.getState().setAgentList(result.agents); return true; } catch { return false; } }} onStartClaudeAuth={() => { apiPost("/api/auth/start", {}).catch(() => {}); }} authUrl={authUrl} onPasteAuthCode={(code: string) => { apiPost("/api/auth/code", { code }).catch(() => {}); }} onRefreshAgents={async () => { const data = await apiGet<{ agents: AgentOption[] }>("/api/bootstrap"); useUiStore.getState().setAgentList(data.agents); }} onComplete={() => { setOnboardingDismissed(true); if (gitIdentityNeeded) useGitStore.getState().setIdentityNeeded(false); }} />}
+      <AuthOverlayContainer
+        authUrl={authUrl}
+        showOnboarding={showOnboarding}
+        onPasteCode={(code: string) => { apiPost("/api/auth/code", { code }).catch(() => {}); }}
+        onApiKey={(key: string) => { apiPost("/api/auth/api-key", { key }).catch(() => {}); }}
+        gitIdentityNeeded={gitIdentityNeeded}
+        agentList={agentList}
+        onGitIdentitySubmit={(name: string, email: string) => useGitStore.getState().submitGitIdentity(name, email).catch(() => {})}
+        onGitHubTokenSubmit={async (token: string) => { const result = await useSettingsStore.getState().submitGitHubToken(token); if (result) { usePrStore.getState().setImportSearchResults(result.repos); return true; } return false; }}
+        onClaudeApiKeySubmit={async (key: string) => { try { await apiPost("/api/auth/api-key", { key }); const data = await apiGet<{ agents: AgentOption[] }>("/api/bootstrap"); useUiStore.getState().setAgentList(data.agents); return true; } catch { return false; } }}
+        onCodexApiKeySubmit={async (key: string) => { try { const result = await apiPost<{ agents: AgentOption[] }>(`/api/agents/codex/env`, { key: "OPENAI_API_KEY", value: key }); useUiStore.getState().setAgentList(result.agents); return true; } catch { return false; } }}
+        onStartClaudeAuth={() => { apiPost("/api/auth/start", {}).catch(() => {}); }}
+        onPasteAuthCode={(code: string) => { apiPost("/api/auth/code", { code }).catch(() => {}); }}
+        onRefreshAgents={async () => { const data = await apiGet<{ agents: AgentOption[] }>("/api/bootstrap"); useUiStore.getState().setAgentList(data.agents); }}
+        onComplete={() => { setOnboardingDismissed(true); if (gitIdentityNeeded) useGitStore.getState().setIdentityNeeded(false); }}
+      />
       {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
       {settingsOpen && (
         <Settings
@@ -696,98 +704,62 @@ export default function App() {
       )}
       {showUsageModal && <UsageModal currentSessionUsage={currentSessionUsage} allUsage={allUsageStats} sessions={sessions} onClose={() => useUiStore.getState().setShowUsageModal(false)} modelInfo={modelInfo} contextTokens={contextTokens} turnTokens={turnTokens} />}
 
-      <header className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-(--color-border-primary)">
-        <div className="flex items-center gap-3 sm:gap-4 min-w-0">
-          <h1 className="text-lg font-semibold tracking-tight shrink-0 flex items-center gap-1.5 cursor-pointer hover:opacity-80 transition-opacity" onClick={() => navigate("/")} role="link">
-            <img src={theme === "dark" ? "/favicon.svg" : "/favicon-light.svg"} alt="" className="w-5 h-5" />
-            ShipIt
-          </h1>
-        </div>
-        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-          <button onClick={handleDeployOpen} className="hidden sm:inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-(--color-accent-subtle) text-(--color-accent) hover:bg-(--color-accent) hover:text-(--color-accent-text) transition-colors font-medium" title="Deploy to production" aria-label="Deploy">
-            <RocketIcon size={ICON_SIZE.SM} />
-            Deploy
-          </button>
-          <button onClick={() => handleSettingsOpen()} className={`hidden sm:inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${hasSystemPrompt || githubStatus.authenticated ? "text-(--color-accent) hover:text-(--color-accent-hover) hover:bg-(--color-bg-hover)" : "text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"}`} title="Settings" aria-label="Settings">
-            <GearSixIcon size={ICON_SIZE.SM} />
-          </button>
-          {currentSessionUsage && currentSessionUsage.totalCostUsd > 0 && (
-            <button onClick={handleUsageBadgeClick} className="hidden sm:inline text-xs px-2 py-0.5 rounded-full bg-(--color-accent-subtle) text-(--color-accent) hover:bg-(--color-accent) hover:text-(--color-accent-text) transition-colors cursor-pointer" title="View usage details">
-              {currentSessionUsage.totalCostUsd < 0.01 ? `$${currentSessionUsage.totalCostUsd.toFixed(3)}` : `$${currentSessionUsage.totalCostUsd.toFixed(2)}`}
-            </button>
-          )}
-          <Button variant="ghost" size="sm" onClick={toggleTheme} title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"} aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}>
-            {theme === "dark" ? (
-              <SunIcon size={ICON_SIZE.SM} />
-            ) : (
-              <MoonIcon size={ICON_SIZE.SM} />
-            )}
-          </Button>
-        </div>
-      </header>
-
-      {!showNewSessionView && wsSessionId && <ConnectionBanner status={status} reconnectAttempt={reconnectAttempt} onReconnect={reconnect} />}
-
-      {/* PR lifecycle card is rendered inline in the message list via PrLifecycleCard */}
-
-      {isMobile ? (
-        <>
-          <div className="flex flex-col flex-1 min-h-0">
-            {(showHomeScreen && !showNewSessionView) || mobilePanel === "chat" ? <div className="flex flex-col flex-1 min-h-0">{chatPanel}</div> : <div className="flex flex-col flex-1 min-h-0 bg-(--color-bg-secondary)">{rightPanel}</div>}
-          </div>
-          {(!showHomeScreen || showNewSessionView) && <MobileTabBar activePanel={mobilePanel} onChangePanel={(p) => useUiStore.getState().setMobilePanel(p)} />}
-        </>
-      ) : (
-        <div className="flex flex-1 min-h-0">
-          <div className="relative shrink-0">
-            <SessionSidebar
-              sessions={sessions}
-              activeRepoUrl={activeRepoUrl}
-              activeRepoName={activeRepoName}
-              activeRepoStatus={activeRepo?.status}
-              currentSessionId={sessionId}
-              onResume={(sid) => {
-                const session = sessions.find((s) => s.id === sid);
-                if (session?.remoteUrl) useRepoStore.getState().setActiveRepoUrl(session.remoteUrl);
-                handleSessionResume(sid, navigate);
-              }}
-              onArchive={async (sid) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId && activeRepoUrl) { void handleNewSessionForRepo(activeRepoUrl); } }}
-              onRename={(sid, title) => useSessionStore.getState().renameSession(sid, title)}
-              onOpenRepoSwitcher={() => useRepoStore.getState().setRepoSwitcherOpen(!repoSwitcherOpen)}
-              onNewSession={() => { if (activeRepoUrl) void handleNewSessionForRepo(activeRepoUrl); }}
-              collapsed={sidebarCollapsed}
-              onToggleCollapse={() => useUiStore.getState().setSidebarCollapsed(!sidebarCollapsed)}
-            />
-            <RepoSwitcher
-              open={repoSwitcherOpen}
-              onClose={() => useRepoStore.getState().setRepoSwitcherOpen(false)}
-              repos={repos}
-              activeRepoUrl={activeRepoUrl}
-              onSelectRepo={(url) => useRepoStore.getState().setActiveRepoUrl(url)}
-              onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)}
-              onCreateNew={() => {
-                useRepoStore.getState().setAddRepoDialogOpen(false);
-                // eslint-disable-next-line no-restricted-syntax -- fire-and-forget one-liner
-                if (templates.length === 0) apiGet<{ templates: typeof templates }>("/api/bootstrap").then((d) => useUiStore.getState().setTemplates(d.templates)).catch(() => {});
-                useRepoStore.getState().setNewRepoDialogOpen(true);
-              }}
-            />
-          </div>
-          <div ref={containerRef} className="flex flex-1 min-h-0">
-            <div className={`flex flex-col min-w-0 ${showHomeScreen ? "" : "border-r border-(--color-border-primary)"}`} style={{ width: showHomeScreen ? "100%" : `${fraction * 100}%` }}>
-              {chatPanel}
-            </div>
-            {!showHomeScreen && (
-              <>
-                <ResizeHandle isDragging={isDragging} onMouseDown={onMouseDown} onTouchStart={onTouchStart} />
-                <div className={`min-w-0 flex flex-col bg-(--color-bg-secondary) ${isDragging ? "pointer-events-none" : ""}`} style={{ width: `${(1 - fraction) * 100}%` }}>{rightPanel}</div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-
-      {toast && <Toast toast={toast} onDismiss={() => useUiStore.getState().setToast(null)} />}
+      <AppLayout
+        theme={theme}
+        toggleTheme={toggleTheme}
+        onDeployOpen={handleDeployOpen}
+        onSettingsOpen={() => handleSettingsOpen()}
+        hasSystemPrompt={hasSystemPrompt}
+        githubAuthenticated={githubStatus.authenticated}
+        currentSessionUsage={currentSessionUsage}
+        onUsageBadgeClick={handleUsageBadgeClick}
+        onNavigateHome={() => navigate("/")}
+        showConnectionBanner={!showNewSessionView && !!wsSessionId}
+        connectionStatus={status}
+        reconnectAttempt={reconnectAttempt}
+        onReconnect={reconnect}
+        isMobile={isMobile}
+        showHomeScreen={showHomeScreen}
+        showNewSessionView={showNewSessionView}
+        mobilePanel={mobilePanel}
+        onMobilePanelChange={(p) => useUiStore.getState().setMobilePanel(p)}
+        chatPanel={chatPanel}
+        rightPanel={rightPanel}
+        fraction={fraction}
+        isDragging={isDragging}
+        onMouseDown={onMouseDown}
+        onTouchStart={onTouchStart}
+        containerRef={containerRef}
+        sessions={sessions}
+        activeRepoUrl={activeRepoUrl}
+        activeRepoName={activeRepoName}
+        activeRepoStatus={activeRepo?.status}
+        currentSessionId={sessionId}
+        sidebarCollapsed={sidebarCollapsed}
+        onResumeSession={(sid: string) => {
+          const session = sessions.find((s) => s.id === sid);
+          if (session?.remoteUrl) useRepoStore.getState().setActiveRepoUrl(session.remoteUrl);
+          handleSessionResume(sid, navigate);
+        }}
+        onArchiveSession={async (sid: string) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId && activeRepoUrl) { void handleNewSessionForRepo(activeRepoUrl); } }}
+        onRenameSession={(sid: string, title: string) => useSessionStore.getState().renameSession(sid, title)}
+        onOpenRepoSwitcher={() => useRepoStore.getState().setRepoSwitcherOpen(!repoSwitcherOpen)}
+        onNewSession={() => { if (activeRepoUrl) void handleNewSessionForRepo(activeRepoUrl); }}
+        onToggleSidebarCollapse={() => useUiStore.getState().setSidebarCollapsed(!sidebarCollapsed)}
+        repoSwitcherOpen={repoSwitcherOpen}
+        onCloseRepoSwitcher={() => useRepoStore.getState().setRepoSwitcherOpen(false)}
+        repos={repos}
+        onSelectRepo={(url: string) => useRepoStore.getState().setActiveRepoUrl(url)}
+        onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)}
+        onCreateNewRepo={() => {
+          useRepoStore.getState().setAddRepoDialogOpen(false);
+          // eslint-disable-next-line no-restricted-syntax -- fire-and-forget one-liner
+          if (templates.length === 0) apiGet<{ templates: typeof templates }>("/api/bootstrap").then((d) => useUiStore.getState().setTemplates(d.templates)).catch(() => {});
+          useRepoStore.getState().setNewRepoDialogOpen(true);
+        }}
+        toast={toast}
+        onDismissToast={() => useUiStore.getState().setToast(null)}
+      />
       <AddRepoDialog
         open={addRepoDialogOpen}
         onClose={() => useRepoStore.getState().setAddRepoDialogOpen(false)}
