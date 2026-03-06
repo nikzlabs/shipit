@@ -91,12 +91,16 @@ export function runInstallCommand(opts: RunInstallOptions): Promise<number> {
   return new Promise((resolve, reject) => {
     const proc = spawn("sh", ["-c", command], {
       cwd,
-      // Force npm to re-evaluate optional dependencies for the current
-      // platform.  Without this, npm may skip platform-specific native
-      // binaries (e.g. @rollup/rollup-linux-arm64-gnu) when a lock file
-      // generated on another OS/arch is present.
-      // See https://github.com/npm/cli/issues/4828
-      env: { ...process.env, npm_config_force: "true" },
+      // - NODE_ENV=development: the session worker container sets
+      //   NODE_ENV=production which causes npm to skip devDependencies.
+      //   User projects need devDeps (vite, tsx, etc.) to run their dev
+      //   servers, so override to development for installs.
+      // - npm_config_force: force npm to re-evaluate optional dependencies
+      //   for the current platform.  Without this, npm may skip
+      //   platform-specific native binaries (e.g. @rollup/rollup-linux-arm64-gnu)
+      //   when a lock file generated on another OS/arch is present.
+      //   See https://github.com/npm/cli/issues/4828
+      env: { ...process.env, NODE_ENV: "development", npm_config_force: "true" },
       stdio: ["ignore", "pipe", "pipe"],
     });
 
