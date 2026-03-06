@@ -25,9 +25,9 @@ export class RepoGit {
     await this.git.raw(args);
   }
 
-  /** Fetch all branches from a remote. */
-  async fetch(remote = "origin"): Promise<void> {
-    await this.git.fetch(remote);
+  /** Fetch a single branch from a remote. */
+  async fetch(remote: string, branch: string): Promise<void> {
+    await this.git.fetch(remote, branch);
   }
 
   /**
