@@ -1,5 +1,11 @@
 # Remove Standalone Sessions — Checklist
 
+## Fresh main invariant
+
+- [x] Fetch unconditionally in `warmSessionForRepo` (`app-lifecycle.ts`) — removed `withStandby` guard
+- [x] Add `git fetch` to sync fallback in `claim-session` (`api-routes-session.ts`)
+- [x] Pass `withStandby: true` from sync fallback re-warm call
+
 ## Server
 
 - [ ] Remove `POST /api/sessions` endpoint from `api-routes.ts`
