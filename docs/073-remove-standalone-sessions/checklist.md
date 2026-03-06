@@ -2,9 +2,9 @@
 
 ## Fresh main invariant
 
-- [x] Fetch unconditionally in `warmSessionForRepo` (`app-lifecycle.ts`) — removed `withStandby` guard
-- [x] Add `git fetch` to sync fallback in `claim-session` (`api-routes-session.ts`)
-- [x] Pass `withStandby: true` from sync fallback re-warm call
+- [x] Add `refreshWorktreeToLatestMain()` helper — fetch + hard-reset at claim time
+- [x] Call helper in all three claim paths (reuse, warm, wait) in `api-routes-session.ts`
+- [x] Remove redundant warming-time fetch from `app-lifecycle.ts`
 
 ## Server
 
