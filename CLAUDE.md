@@ -112,6 +112,7 @@ Three-layer system: browser (React SPA) → orchestrator (Fastify) → session w
 | `deployment-architecture` | Deploy targets, framework detection, deploy flow |
 | `add-endpoint` | How to add HTTP endpoints, WS messages, deploy targets, activity labels |
 | `testing-and-quality` | Test patterns, integration tests, quality checklist |
+| `docs-navigator` | Feature docs index — find the right `docs/NNN-*` for a task |
 
 ## Code conventions
 
