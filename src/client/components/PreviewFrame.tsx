@@ -4,6 +4,7 @@ import { WarningIcon, GearSixIcon, PlayIcon, CircleNotchIcon, ArrowClockwiseIcon
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import type { PreviewError } from "../hooks/usePreviewErrors.js";
+import { usePreviewStore } from "../stores/preview-store.js";
 
 export interface PreviewStatus {
   running: boolean;
@@ -35,12 +36,6 @@ interface PreviewFrameProps {
   onSendErrors: (errors: PreviewError[]) => void;
   /** Called to clear all errors. */
   onClearErrors: () => void;
-  /** Whether auto-fix is enabled. */
-  autoFixEnabled: boolean;
-  /** Called to toggle auto-fix. */
-  onToggleAutoFix: () => void;
-  /** Current auto-fix retry count (for display). */
-  autoFixRetries: number;
   /** Show loading spinner even without a sessionId (e.g. during session claim). */
   loading?: boolean;
   /** Whether no preview config was found for the session. */
@@ -88,9 +83,6 @@ export function PreviewFrame({
   errors,
   onSendErrors,
   onClearErrors,
-  autoFixEnabled,
-  onToggleAutoFix,
-  autoFixRetries,
   configMissing,
   installStatus,
   onInitPreviewConfig,
@@ -98,6 +90,9 @@ export function PreviewFrame({
   onRestartPreview,
   onSendCrashToAgent,
 }: PreviewFrameProps) {
+  const autoFixEnabled = usePreviewStore((s) => s.autoFixEnabled);
+  const autoFixRetries = usePreviewStore((s) => s.autoFixRetries);
+  const onToggleAutoFix = usePreviewStore((s) => s.toggleAutoFix);
   const [refreshKey, setRefreshKey] = useState(0);
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
 

@@ -1,10 +1,11 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: relay errors to server API, auto-fix timer with cooldown/retry (external system sync + cleanup)
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import { formatErrorForMessage } from "../components/PreviewFrame.js";
 import type { PreviewError } from "./usePreviewErrors.js";
 import type { WsClientMessage } from "../../server/shared/types.js";
 import { useApi } from "./useApi.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { usePreviewStore } from "../stores/preview-store.js";
 
 export function useAutoFix(params: {
   previewErrors: PreviewError[];
@@ -15,9 +16,9 @@ export function useAutoFix(params: {
   const { previewErrors, isLoading, status, send } = params;
   const { post: apiPost } = useApi();
 
-  const [autoFixEnabled, setAutoFixEnabled] = useState(false);
+  const autoFixEnabled = usePreviewStore((s) => s.autoFixEnabled);
+  const autoFixRetries = usePreviewStore((s) => s.autoFixRetries);
   const autoFixRetriesRef = useRef(0);
-  const [autoFixRetries, setAutoFixRetries] = useState(0);
   const autoFixCooldownRef = useRef(false);
   const autoFixErrorSignatureRef = useRef<string | null>(null);
 
@@ -60,9 +61,8 @@ export function useAutoFix(params: {
     prevErrorCountRef.current = previewErrors.length;
 
     if (autoFixRetriesRef.current >= 3) {
-      setAutoFixEnabled(false);
+      usePreviewStore.getState().disableAutoFix();
       autoFixRetriesRef.current = 0;
-      setAutoFixRetries(0);
       return;
     }
 
@@ -71,10 +71,10 @@ export function useAutoFix(params: {
     const sig = previewErrors.map((e) => e.message).join("|");
     if (sig === autoFixErrorSignatureRef.current) {
       autoFixRetriesRef.current += 1;
-      setAutoFixRetries(autoFixRetriesRef.current);
+      usePreviewStore.getState().setAutoFixRetries(autoFixRetriesRef.current);
     } else {
       autoFixRetriesRef.current = 1;
-      setAutoFixRetries(1);
+      usePreviewStore.getState().setAutoFixRetries(1);
       autoFixErrorSignatureRef.current = sig;
     }
 
@@ -90,21 +90,18 @@ export function useAutoFix(params: {
   }, [previewErrors.length, autoFixEnabled, isLoading, previewErrors, handleSendAutoFix]);
 
   const handleToggleAutoFix = useCallback(() => {
-    setAutoFixEnabled((prev) => {
-      if (!prev) {
-        autoFixRetriesRef.current = 0;
-        setAutoFixRetries(0);
-        autoFixErrorSignatureRef.current = null;
-        autoFixCooldownRef.current = false;
-      }
-      return !prev;
-    });
+    const store = usePreviewStore.getState();
+    if (!store.autoFixEnabled) {
+      autoFixRetriesRef.current = 0;
+      autoFixErrorSignatureRef.current = null;
+      autoFixCooldownRef.current = false;
+    }
+    store.toggleAutoFix();
   }, []);
 
   const disableAutoFix = useCallback(() => {
-    setAutoFixEnabled(false);
+    usePreviewStore.getState().disableAutoFix();
     autoFixRetriesRef.current = 0;
-    setAutoFixRetries(0);
   }, []);
 
   return {

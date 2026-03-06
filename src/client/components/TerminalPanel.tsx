@@ -1,6 +1,7 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: scroll event listener + DOM scrollIntoView (browser API subscription + DOM sync)
-import { useEffect, useRef, useState, useMemo } from "react";
+import { useEffect, useRef, useMemo } from "react";
 import { Button } from "./ui/button.js";
+import { useTerminalStore } from "../stores/terminal-store.js";
 
 export type LogSource = "stderr" | "stdout" | "server" | "preview" | "deploy" | "install";
 
@@ -66,26 +67,13 @@ export function TerminalPanel({ entries, onClear, terminalMode, onTerminalModeCh
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
-  const [hiddenSources, setHiddenSources] = useState<Set<LogSource>>(new Set());
+  const hiddenSources = useTerminalStore((s) => s.hiddenSources);
+  const toggleSource = useTerminalStore((s) => s.toggleSource);
 
   const filteredEntries = useMemo(
     () => hiddenSources.size === 0 ? entries : entries.filter((e) => !hiddenSources.has(e.source)),
     [entries, hiddenSources],
   );
-
-  const toggleSource = (source: LogSource) => {
-    setHiddenSources((prev) => {
-      const next = new Set(prev);
-      if (next.has(source)) {
-        next.delete(source);
-      } else {
-        // Don't allow hiding all sources
-        if (next.size >= ALL_SOURCES.length - 1) return prev;
-        next.add(source);
-      }
-      return next;
-    });
-  };
 
   // Track whether user has scrolled up (disable auto-scroll)
   useEffect(() => {

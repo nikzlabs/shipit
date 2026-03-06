@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { LogEntry } from "../components/TerminalPanel.js";
+import type { LogEntry, LogSource } from "../components/TerminalPanel.js";
 
 export type TerminalMode = "logs" | "shell";
 
@@ -10,18 +10,23 @@ export interface TerminalState {
   entries: LogEntry[];
   mode: TerminalMode;
   shellStarted: boolean;
+  hiddenSources: Set<LogSource>;
 
   addEntry: (entry: Omit<LogEntry, "id">) => void;
   clearEntries: () => void;
   setMode: (mode: TerminalMode) => void;
   setShellStarted: (started: boolean) => void;
+  toggleSource: (source: LogSource) => void;
   reset: () => void;
 }
+
+const ALL_SOURCES_COUNT = 6; // stderr, stdout, server, preview, deploy, install
 
 const initialState = {
   entries: [] as LogEntry[],
   mode: "logs" as TerminalMode,
   shellStarted: false,
+  hiddenSources: new Set<LogSource>(),
 };
 
 export const useTerminalStore = create<TerminalState>((set) => ({
@@ -41,5 +46,18 @@ export const useTerminalStore = create<TerminalState>((set) => ({
 
   setShellStarted: (started) => set({ shellStarted: started }),
 
-  reset: () => set({ ...initialState }),
+  toggleSource: (source) =>
+    set((state) => {
+      const next = new Set(state.hiddenSources);
+      if (next.has(source)) {
+        next.delete(source);
+      } else {
+        // Don't allow hiding all sources
+        if (next.size >= ALL_SOURCES_COUNT - 1) return state;
+        next.add(source);
+      }
+      return { hiddenSources: next };
+    }),
+
+  reset: () => set({ ...initialState, hiddenSources: new Set() }),
 }));

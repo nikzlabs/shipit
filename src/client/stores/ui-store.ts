@@ -51,7 +51,7 @@ interface UiState {
   contextTokens: number;
   turnTokens: TurnTokenData[];
   settingsOpen: boolean;
-  initialSettingsTab: SettingsTab;
+  settingsTab: SettingsTab;
   sidebarCollapsed: boolean;
   toast: ToastData | null;
   features: FeatureInfo[];
@@ -74,7 +74,7 @@ interface UiState {
   ) => void;
   appendTurnToken: (token: TurnTokenData) => void;
   setSettingsOpen: (open: boolean) => void;
-  setInitialSettingsTab: (tab: SettingsTab) => void;
+  setSettingsTab: (tab: SettingsTab) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setToast: (toast: ToastData | null) => void;
   setFeatures: (features: FeatureInfo[]) => void;
@@ -100,7 +100,7 @@ const initialState = {
   contextTokens: 0,
   turnTokens: [] as TurnTokenData[],
   settingsOpen: false,
-  initialSettingsTab: undefined as SettingsTab,
+  settingsTab: undefined as SettingsTab,
   sidebarCollapsed: getSavedSidebarCollapsed(),
   toast: null as ToastData | null,
   features: [] as FeatureInfo[],
@@ -149,7 +149,7 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
 
-  setInitialSettingsTab: (initialSettingsTab) => set({ initialSettingsTab }),
+  setSettingsTab: (settingsTab) => set({ settingsTab }),
 
   setSidebarCollapsed: (collapsed) => {
     saveSidebarCollapsed(collapsed);

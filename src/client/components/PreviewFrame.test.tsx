@@ -1,11 +1,13 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { PreviewFrame, formatErrorForMessage, type PreviewStatus } from "./PreviewFrame.js";
+import { usePreviewStore } from "../stores/preview-store.js";
 import type { PreviewError } from "../hooks/usePreviewErrors.js";
 
 // Mock fetch so the URL-reachability poll resolves immediately in tests
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response()));
+  usePreviewStore.getState().reset();
 });
 
 afterEach(() => {
@@ -20,9 +22,6 @@ const defaultProps = {
   errors: [] as PreviewError[],
   onSendErrors: vi.fn(),
   onClearErrors: vi.fn(),
-  autoFixEnabled: false,
-  onToggleAutoFix: vi.fn(),
-  autoFixRetries: 0,
 };
 
 function makeError(overrides: Partial<PreviewError> = {}): PreviewError {
@@ -217,17 +216,18 @@ describe("PreviewFrame", () => {
     expect(screen.getByText("Auto-fix")).toBeInTheDocument();
   });
 
-  it("calls onToggleAutoFix when toggle is clicked", () => {
-    const onToggleAutoFix = vi.fn();
+  it("toggles autoFix in store when toggle is clicked", () => {
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
-    render(<PreviewFrame preview={preview} {...defaultProps} onToggleAutoFix={onToggleAutoFix} />);
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    expect(usePreviewStore.getState().autoFixEnabled).toBe(false);
     fireEvent.click(screen.getByText("Auto-fix"));
-    expect(onToggleAutoFix).toHaveBeenCalled();
+    expect(usePreviewStore.getState().autoFixEnabled).toBe(true);
   });
 
   it("shows retry count when auto-fix is active with retries", () => {
+    usePreviewStore.setState({ autoFixEnabled: true, autoFixRetries: 2 });
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
-    render(<PreviewFrame preview={preview} {...defaultProps} autoFixEnabled={true} autoFixRetries={2} />);
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
     expect(screen.getByText("Auto-fix (2/3)")).toBeInTheDocument();
   });
 
