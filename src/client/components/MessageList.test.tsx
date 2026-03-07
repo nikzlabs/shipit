@@ -1410,4 +1410,48 @@ describe("MessageList", () => {
       expect(screen.getByTestId("subagent-task")).toBeInTheDocument();
     });
   });
+
+  describe("single active indicator", () => {
+    it("does not show TypingDots when message is followed by a tool-group", () => {
+      const messages: ChatMessage[] = [
+        { role: "assistant", text: "Let me read the file", toolUse: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "a.ts" } }], streaming: true },
+      ];
+      render(<MessageList messages={messages} isLoading={true} />);
+      // The message bubble should NOT show typing dots because a tool-group follows
+      expect(document.querySelector(".typing-dot")).not.toBeInTheDocument();
+    });
+
+    it("shows TypingDots when streaming message is the last visual element (no tools)", () => {
+      const messages: ChatMessage[] = [
+        { role: "assistant", text: "Thinking about this...", streaming: true },
+      ];
+      render(<MessageList messages={messages} isLoading={true} />);
+      expect(document.querySelector(".typing-dot")).toBeInTheDocument();
+    });
+
+    it("only the last tool-group shows a spinner when multiple groups exist", () => {
+      const messages: ChatMessage[] = [
+        { role: "assistant", text: "Reading", toolUse: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "a.ts" } }], streaming: true },
+        { role: "assistant", text: "Editing", toolUse: [{ type: "tool_use", id: "t2", name: "Edit", input: { file_path: "b.ts", old_string: "a", new_string: "b" } }], streaming: true },
+      ];
+      render(<MessageList messages={messages} isLoading={true} />);
+      // There should be exactly one spinner (the tool-spinner class) in the DOM
+      const spinners = document.querySelectorAll(".tool-spinner");
+      expect(spinners).toHaveLength(1);
+    });
+
+    it("does not show spinner on tool that already has a result", () => {
+      const messages: ChatMessage[] = [
+        {
+          role: "assistant",
+          text: "",
+          toolUse: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }],
+          toolResults: [{ toolUseId: "t1", content: "file.txt" }],
+          streaming: true,
+        },
+      ];
+      render(<MessageList messages={messages} isLoading={true} />);
+      expect(document.querySelector(".tool-spinner")).not.toBeInTheDocument();
+    });
+  });
 });

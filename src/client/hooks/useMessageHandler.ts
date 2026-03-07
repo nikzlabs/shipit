@@ -113,9 +113,9 @@ export function useMessageHandler(params: {
                 },
               ];
             }
-            const closed = last?.role === "assistant" && last.streaming
-              ? [...prev.slice(0, -1), { ...last, streaming: false }]
-              : prev;
+            const closed = prev.map((m) =>
+              m.role === "assistant" && m.streaming ? { ...m, streaming: false } : m
+            );
             return [
               ...closed,
               {
@@ -174,13 +174,11 @@ export function useMessageHandler(params: {
         session.setIsLoading(false);
         session.setActivity(undefined);
         notify("The agent has finished responding.");
-        session.setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          if (last?.role === "assistant") {
-            return [...prev.slice(0, -1), { ...last, streaming: false }];
-          }
-          return prev;
-        });
+        session.setMessages((prev) =>
+          prev.map((m) =>
+            m.role === "assistant" && m.streaming ? { ...m, streaming: false } : m
+          )
+        );
       }
     }
 
@@ -188,11 +186,9 @@ export function useMessageHandler(params: {
       session.setIsLoading(false);
       session.setActivity(undefined);
       session.setMessages((prev) => {
-        const last = prev[prev.length - 1];
-        const updated =
-          last?.role === "assistant" && last.streaming
-            ? [...prev.slice(0, -1), { ...last, streaming: false }]
-            : prev;
+        const updated = prev.map((m) =>
+          m.role === "assistant" && m.streaming ? { ...m, streaming: false } : m
+        );
         return [
           ...updated,
           { role: "assistant", text: `Error: ${data.message}`, streaming: false, isError: true },
@@ -444,10 +440,13 @@ export function useMessageHandler(params: {
       session.setQueuedMessages([]);
       session.setMessages((prev) => {
         const last = prev[prev.length - 1];
+        const closed = prev.map((m) =>
+          m.role === "assistant" && m.streaming ? { ...m, streaming: false } : m
+        );
         if (last?.role === "assistant" && last.streaming) {
-          return [...prev.slice(0, -1), { ...last, streaming: false, text: `${last.text  }\n\n_(Interrupted by user)_` }];
+          return [...closed.slice(0, -1), { ...last, streaming: false, text: `${last.text}\n\n_(Interrupted by user)_` }];
         }
-        return prev;
+        return closed;
       });
     }
 
