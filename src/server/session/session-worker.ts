@@ -240,8 +240,14 @@ export class SessionWorker extends EventEmitter {
 
     app.post("/preview/restart", async () => {
       if (this.preview) {
-        // restart() clears the install marker so dependencies re-install
-        await this.preview.restart(this.workspaceDir);
+        // restart() clears the install marker so dependencies re-install.
+        // Fire-and-forget — events stream via SSE (same as /preview/start).
+        this.preview.restart(this.workspaceDir).catch((err: unknown) => {
+          this.broadcastSSE({
+            type: "preview_config_error",
+            data: { message: getErrorMessage(err) },
+          });
+        });
       } else {
         this.preview = this._createPreviewManager();
         this.wirePreviewEvents(this.preview);

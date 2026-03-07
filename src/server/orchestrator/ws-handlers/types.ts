@@ -120,7 +120,7 @@ export interface AppCtx {
   // Repo management
   repoStore: RepoStore;
   /** Warm a session for a repo (called after graduation). */
-  warmSessionForRepo: (repoUrl: string, opts?: { withStandby?: boolean }) => void;
+  warmSessionForRepo: (repoUrl: string, opts?: { withStandby?: boolean }) => Promise<void>;
 
   // Factories
   generateText: (prompt: string, cwd?: string) => Promise<string>;

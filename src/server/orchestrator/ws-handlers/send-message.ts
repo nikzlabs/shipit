@@ -175,9 +175,10 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
         ctx.repoStore.touch(session.remoteUrl);
       }
 
-      // Start warming the next session for this repo in the background
+      // Start warming the next session for this repo in the background.
+      // Intentionally not awaited — warming is independent of the user's message.
       if (session.remoteUrl) {
-        ctx.warmSessionForRepo(session.remoteUrl, { withStandby: true });
+        void ctx.warmSessionForRepo(session.remoteUrl, { withStandby: true });
       }
     }
 
