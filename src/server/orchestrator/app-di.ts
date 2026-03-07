@@ -12,6 +12,7 @@ import { UsageManager } from "./usage.js";
 import { FeatureManager } from "./features.js";
 import { DeploymentManager } from "./deployment-manager.js";
 import { DeploymentStore } from "./deployment-store.js";
+import { SecretStore } from "./secret-store.js";
 import { CredentialStore } from "./credential-store.js";
 import { initGlobalGitConfig } from "./git-config.js";
 import { VercelTarget } from "./deploy-targets/vercel.js";
@@ -81,7 +82,7 @@ export interface AppDeps {
    * Spawns a short-lived Claude process, collects text output, and returns it.
    * Inject a stub in tests.
    */
-  generateText?: (prompt: string, cwd?: string) => Promise<string>;
+  generateText?: (prompt: string, cwd: string) => Promise<string>;
   /**
    * Unified credential store for git identity, GitHub token, agent API keys.
    * Defaults to `new CredentialStore(credentialsDir)`.
@@ -142,8 +143,9 @@ export interface ManagerSet {
   deploymentManager: DeploymentManager;
   deploymentStore: DeploymentStore;
   featureManager: FeatureManager;
-  generateText: (prompt: string, cwd?: string) => Promise<string>;
+  generateText: (prompt: string, cwd: string) => Promise<string>;
   isTestMode: boolean;
+  secretStore: SecretStore;
 }
 
 /**
@@ -244,6 +246,9 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // ---- Deployment store ----
   const deploymentStore = deps.deploymentStore ?? new DeploymentStore(databaseManager);
 
+  // ---- Secret store ----
+  const secretStore = new SecretStore(databaseManager);
+
   // ---- Feature manager ----
   const featureManager = deps.featureManager ?? new FeatureManager(workspaceDir);
 
@@ -251,7 +256,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // Tests inject a stub. In production, agentFactory is unavailable (agents
   // live inside session containers), so the default uses agentFactory only
   // when provided, otherwise returns empty string (feature gracefully degrades).
-  const generateText = deps.generateText ?? ((prompt: string, cwd?: string): Promise<string> => {
+  const generateText = deps.generateText ?? ((prompt: string, cwd: string): Promise<string> => {
     if (!agentFactory) {
       // No in-process agent available — return empty to degrade gracefully.
       return Promise.resolve("");
@@ -301,6 +306,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
     githubAuthManager,
     deploymentManager,
     deploymentStore,
+    secretStore,
     featureManager,
     generateText,
     isTestMode,

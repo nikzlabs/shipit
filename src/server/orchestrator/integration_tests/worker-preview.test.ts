@@ -45,6 +45,7 @@ describe("Worker Preview Endpoints", () => {
       agentFactory: () => new FakeWorkerAgent(),
       port: 0,
       host: "127.0.0.1",
+      workerMode: "preview",
       createPreviewManager: () => {
         lastPreview = new StubPreview();
         return lastPreview as unknown as PreviewManager;
@@ -157,6 +158,7 @@ describe("ContainerSessionRunner Preview Proxy", () => {
       agentFactory: () => new FakeWorkerAgent(),
       port: 0,
       host: "127.0.0.1",
+      workerMode: "preview",
       createPreviewManager: () => {
         lastPreview = new StubPreview();
         return lastPreview as unknown as PreviewManager;

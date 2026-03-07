@@ -58,15 +58,14 @@ export class ClaudeProcess extends EventEmitter {
       args.push("--system-prompt", effectiveSystemPrompt);
     }
 
-    const spawnCwd = cwd ?? "/workspace";
-    console.log("[claude] spawning:", "claude", args.join(" ").slice(0, 200), "| cwd:", spawnCwd);
+    console.log("[claude] spawning:", "claude", args.join(" ").slice(0, 200), "| cwd:", cwd);
 
     try {
       this.proc = pty.spawn("claude", args, {
         name: "xterm-256color",
         cols: 200,
         rows: 24,
-        cwd: spawnCwd,
+        cwd,
         env: { ...process.env, HOME: "/root" } as Record<string, string>,
       });
     } catch (err) {

@@ -16,6 +16,7 @@ import type {
 import {
   CONTAINER_SESSION_ID_LABEL,
 } from "./session-container.js";
+import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -64,6 +65,20 @@ interface MountSpec {
 /** Container-internal mount point for the shared dependency cache. */
 export const DEP_CACHE_CONTAINER_PATH = "/dep-cache";
 
+/**
+ * Container-internal mount point for the shared git repo. Hidden path to
+ * prevent the AI agent from discovering and writing to the shared repo
+ * instead of the session worktree at /user.
+ */
+export const INTERNAL_GIT_MOUNT = "/.shipit-internal-git";
+
+/**
+ * Host-side directory (relative to /workspace) for .git override files.
+ * Each file rewrites the worktree gitdir reference to use INTERNAL_GIT_MOUNT
+ * so the original /workspace/repos/... path is never exposed inside containers.
+ */
+const GIT_OVERRIDE_DIR = "/workspace/.git-overrides";
+
 export function buildMounts(
   config: ContainerConfig,
   workspaceVolume: string | undefined,
@@ -71,18 +86,18 @@ export function buildMounts(
 ): MountSpec {
   const binds: string[] = [];
   const mounts: MountSpec["mounts"] = [];
-  const workspaceDir = "/user";
+  const workspaceDir = CONTAINER_WORKSPACE_DIR;
 
   if (workspaceVolume) {
     const relPath = config.sessionDir.replace(/^\/workspace\//, "");
     mounts.push({
       Type: "volume",
       Source: workspaceVolume,
-      Target: "/user",
+      Target: CONTAINER_WORKSPACE_DIR,
       VolumeOptions: { Subpath: relPath },
     });
   } else {
-    binds.push(`${config.sessionDir}:/user:rw`);
+    binds.push(`${config.sessionDir}:${CONTAINER_WORKSPACE_DIR}:rw`);
   }
 
   if (credentialsVolume) {
@@ -95,22 +110,32 @@ export function buildMounts(
     binds.push(`${config.credentialsDir}:/credentials:rw`);
   }
 
-  // For worktree sessions, mount the shared repo at its ORIGINAL absolute
-  // path so that the worktree's .git file (which contains an absolute gitdir
-  // reference like /workspace/repos/{hash}/.git/worktrees/{branch}) resolves
-  // correctly inside the container. Read-write is required because git commits
-  // in a worktree write objects to the shared repo's object store.
+  // For worktree sessions, mount the shared repo at a HIDDEN path so the AI
+  // agent cannot discover it by exploring /workspace. The worktree's .git file
+  // (which contains an absolute gitdir reference) is overridden via a separate
+  // mount to point at the hidden path. Read-write is required because git
+  // commits in a worktree write objects to the shared repo's object store.
   if (config.sharedRepoDir) {
     if (workspaceVolume) {
       const repoRelPath = config.sharedRepoDir.replace(/^\/workspace\//, "");
       mounts.push({
         Type: "volume",
         Source: workspaceVolume,
-        Target: config.sharedRepoDir,
+        Target: INTERNAL_GIT_MOUNT,
         VolumeOptions: { Subpath: repoRelPath },
       });
+      // Shadow /user/.git with a rewritten gitdir reference pointing to the
+      // hidden mount path instead of the original /workspace/repos/... path.
+      const gitOverrideRelPath = `.git-overrides/${config.sessionId}`;
+      mounts.push({
+        Type: "volume",
+        Source: workspaceVolume,
+        Target: `${CONTAINER_WORKSPACE_DIR}/.git`,
+        VolumeOptions: { Subpath: gitOverrideRelPath },
+      });
     } else {
-      binds.push(`${config.sharedRepoDir}:${config.sharedRepoDir}:rw`);
+      binds.push(`${config.sharedRepoDir}:${INTERNAL_GIT_MOUNT}:rw`);
+      binds.push(`${config.sessionDir}/.git-override:${CONTAINER_WORKSPACE_DIR}/.git:rw`);
     }
   }
 
@@ -133,17 +158,21 @@ export function buildMounts(
   return { binds, mounts, workspaceDir };
 }
 
+export type WorkerMode = "session" | "preview";
+
 export function buildEnv(
   config: ContainerConfig,
   workspaceDir: string,
   workerPort: number,
   dockerProxyHost: string | undefined,
   dockerProxyPort: number | undefined,
+  workerMode: WorkerMode = "session",
 ): string[] {
   const env: string[] = [
     `SESSION_ID=${config.sessionId}`,
     `WORKSPACE_DIR=${workspaceDir}`,
     `WORKER_PORT=${workerPort}`,
+    `WORKER_MODE=${workerMode}`,
     "HOME=/root",
   ];
 
@@ -192,6 +221,46 @@ export async function waitForWorkerHealth(workerUrl: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Git override helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Write a .git override file that rewrites the gitdir reference from the
+ * original host path to the hidden container-internal mount path.
+ *
+ * The override file is mounted at /user/.git inside the container, shadowing
+ * the original worktree .git file so that git resolves against
+ * INTERNAL_GIT_MOUNT instead of /workspace/repos/....
+ */
+export function writeGitOverride(config: ContainerConfig, workspaceVolume: string | undefined): void {
+  if (!config.sharedRepoDir) return;
+
+  const gitdirContent = `gitdir: ${INTERNAL_GIT_MOUNT}/.git/worktrees/${config.sessionId}\n`;
+
+  if (workspaceVolume) {
+    // Volume mode: write to the .git-overrides directory on the workspace volume
+    fs.mkdirSync(GIT_OVERRIDE_DIR, { recursive: true });
+    fs.writeFileSync(`${GIT_OVERRIDE_DIR}/${config.sessionId}`, gitdirContent);
+  } else {
+    // Bind mode: write alongside the session directory
+    fs.writeFileSync(`${config.sessionDir}/.git-override`, gitdirContent);
+  }
+}
+
+/** Remove the .git override file created by writeGitOverride. */
+export function removeGitOverride(sessionId: string, sessionDir: string | undefined, workspaceVolume: string | undefined): void {
+  try {
+    if (workspaceVolume) {
+      fs.unlinkSync(`${GIT_OVERRIDE_DIR}/${sessionId}`);
+    } else if (sessionDir) {
+      fs.unlinkSync(`${sessionDir}/.git-override`);
+    }
+  } catch {
+    // File may not exist
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Create
 // ---------------------------------------------------------------------------
 
@@ -208,6 +277,10 @@ export async function createContainer(
     fs.mkdirSync(config.depCacheDir, { recursive: true });
   }
 
+  // Write the .git override file before computing mounts (it will be mounted
+  // at /user/.git to shadow the original worktree gitdir reference).
+  writeGitOverride(config, deps.workspaceVolume);
+
   const { binds, mounts, workspaceDir } = buildMounts(
     config,
     deps.workspaceVolume,
@@ -220,6 +293,7 @@ export async function createContainer(
     deps.workerPort,
     deps.dockerProxyHost,
     deps.dockerProxyPort,
+    "session",
   );
 
   // Use Docker-capable image when Docker access is requested
@@ -269,8 +343,11 @@ export async function createContainer(
   };
   deps.containers.set(config.sessionId, sc);
 
+  const shortId = config.sessionId.slice(0, 12);
+
   try {
     const container = await deps.docker.createContainer({
+      name: `agent-${shortId}`,
       Image: imageName,
       Cmd: ["node", "--import", "tsx", "src/server/session/session-worker.ts"],
       Labels: {
@@ -439,9 +516,165 @@ export async function destroyContainer(
     // Container may already be gone
   }
 
+  // Clean up the .git override file
+  removeGitOverride(sessionId, sc.hostWorkspaceDir, deps.workspaceVolume);
+
   sc.status = "stopped";
   deps.containers.delete(sessionId);
   deps.emitter.emit("container_destroyed", sessionId);
+}
+
+// ---------------------------------------------------------------------------
+// Preview container
+// ---------------------------------------------------------------------------
+
+/** Label used to associate preview containers with their session. */
+export const PREVIEW_CONTAINER_LABEL = "shipit-preview-for";
+
+/**
+ * Build mounts for the preview container — workspace only, no credentials.
+ */
+export function buildPreviewMounts(
+  config: ContainerConfig,
+  workspaceVolume: string | undefined,
+): MountSpec {
+  const binds: string[] = [];
+  const mounts: MountSpec["mounts"] = [];
+  const workspaceDir = CONTAINER_WORKSPACE_DIR;
+
+  if (workspaceVolume) {
+    const relPath = config.sessionDir.replace(/^\/workspace\//, "");
+    mounts.push({
+      Type: "volume",
+      Source: workspaceVolume,
+      Target: CONTAINER_WORKSPACE_DIR,
+      VolumeOptions: { Subpath: relPath },
+    });
+  } else {
+    binds.push(`${config.sessionDir}:${CONTAINER_WORKSPACE_DIR}:rw`);
+  }
+
+  // Worktree: mount shared repo at hidden path (same as session container)
+  if (config.sharedRepoDir) {
+    if (workspaceVolume) {
+      const repoRelPath = config.sharedRepoDir.replace(/^\/workspace\//, "");
+      mounts.push({
+        Type: "volume",
+        Source: workspaceVolume,
+        Target: INTERNAL_GIT_MOUNT,
+        VolumeOptions: { Subpath: repoRelPath },
+      });
+      const gitOverrideRelPath = `.git-overrides/${config.sessionId}`;
+      mounts.push({
+        Type: "volume",
+        Source: workspaceVolume,
+        Target: `${CONTAINER_WORKSPACE_DIR}/.git`,
+        VolumeOptions: { Subpath: gitOverrideRelPath },
+      });
+    } else {
+      binds.push(`${config.sharedRepoDir}:${INTERNAL_GIT_MOUNT}:rw`);
+      binds.push(`${config.sessionDir}/.git-override:${CONTAINER_WORKSPACE_DIR}/.git:rw`);
+    }
+  }
+
+  // Dependency cache
+  if (config.depCacheDir) {
+    if (workspaceVolume) {
+      const cacheRelPath = config.depCacheDir.replace(/^\/workspace\//, "");
+      mounts.push({
+        Type: "volume",
+        Source: workspaceVolume,
+        Target: DEP_CACHE_CONTAINER_PATH,
+        VolumeOptions: { Subpath: cacheRelPath },
+      });
+    } else {
+      binds.push(`${config.depCacheDir}:${DEP_CACHE_CONTAINER_PATH}:rw`);
+    }
+  }
+
+  return { binds, mounts, workspaceDir };
+}
+
+/**
+ * Create a preview container for the given session. Shares the workspace
+ * volume but has no credentials mount. The preview worker receives secrets
+ * via PUT /secrets after the container is healthy.
+ */
+export async function createPreviewContainer(
+  deps: LifecycleDeps,
+  config: ContainerConfig,
+  previewMemoryLimit: number,
+  previewPidsLimit?: number,
+): Promise<{ id: string; ip: string; workerUrl: string }> {
+  // Ensure the .git override file exists (may already exist from session container).
+  writeGitOverride(config, deps.workspaceVolume);
+
+  // Ensure the dep cache directory exists on the host before mounting.
+  if (config.depCacheDir) {
+    fs.mkdirSync(config.depCacheDir, { recursive: true });
+  }
+
+  const { binds, mounts, workspaceDir } = buildPreviewMounts(
+    config,
+    deps.workspaceVolume,
+  );
+
+  const env = buildEnv(
+    config,
+    workspaceDir,
+    deps.workerPort,
+    undefined, // no Docker proxy for preview
+    undefined,
+    "preview",
+  );
+
+  const shortId = config.sessionId.slice(0, 12);
+
+  const container = await deps.docker.createContainer({
+    name: `preview-${shortId}`,
+    Image: config.imageName,
+    Cmd: ["node", "--import", "tsx", "src/server/session/session-worker.ts"],
+    Labels: {
+      ...deps.baseLabels(),
+      [PREVIEW_CONTAINER_LABEL]: config.sessionId,
+      "shipit-parent-session": config.sessionId,
+    },
+    HostConfig: {
+      Binds: binds.length > 0 ? binds : undefined,
+      Mounts: mounts.length > 0 ? mounts as Parameters<typeof deps.docker.createContainer>[0]["HostConfig"] extends { Mounts?: infer M } ? M : never : undefined,
+      Memory: previewMemoryLimit,
+      CpuQuota: config.cpuQuota,
+      CpuPeriod: DEFAULT_CPU_PERIOD,
+      PidsLimit: previewPidsLimit ?? config.pidsLimit,
+      NetworkMode: deps.networkName,
+      SecurityOpt: ["no-new-privileges"],
+      ReadonlyRootfs: false,
+      CapDrop: ["ALL"],
+      CapAdd: ["CHOWN", "SETUID", "SETGID", "FOWNER", "DAC_OVERRIDE", "NET_BIND_SERVICE", "KILL"],
+    },
+    Env: env,
+  });
+
+  await container.start();
+
+  const info = await container.inspect();
+  const networks = info.NetworkSettings.Networks;
+  const networkInfo = networks[deps.networkName];
+  if (!networkInfo?.IPAddress) {
+    // Clean up on failure
+    try { await container.stop({ t: 2 }); } catch { /* */ }
+    try { await container.remove({ force: true }); } catch { /* */ }
+    throw new Error(`Preview container has no IP on network ${deps.networkName}`);
+  }
+
+  const ip = networkInfo.IPAddress;
+  const workerUrl = `http://${ip}:${deps.workerPort}`;
+
+  if (!deps.skipHealthCheck) {
+    await waitForWorkerHealth(workerUrl);
+  }
+
+  return { id: container.id, ip, workerUrl };
 }
 
 // ---------------------------------------------------------------------------
