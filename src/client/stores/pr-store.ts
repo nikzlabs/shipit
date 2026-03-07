@@ -299,7 +299,24 @@ export const usePrStore = create<PrState>((set, get) => ({
         const data = await res.json() as { message?: string; error?: string };
         return data.message || data.error || "Failed to merge pull request";
       }
-      // State updates come from SSE (merged detection)
+      const data = await res.json() as { success: boolean; message: string; autoMergeEnabled?: boolean };
+      if (!data.success) {
+        return data.message || "Failed to merge pull request";
+      }
+      // Optimistically update card phase so the button disappears immediately
+      // instead of waiting for SSE poller to detect the merge.
+      if (!data.autoMergeEnabled) {
+        set((state) => {
+          const existing = state.cardBySession[sessionId];
+          if (!existing) return state;
+          return {
+            cardBySession: {
+              ...state.cardBySession,
+              [sessionId]: { ...existing, phase: "merged" as const },
+            },
+          };
+        });
+      }
       return null;
     } catch (err) {
       return err instanceof Error ? err.message : "Failed to merge pull request";
