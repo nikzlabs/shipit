@@ -42,7 +42,7 @@ export function RepoSelector({
     new Map(
       sessions
         .filter((s) => s.remoteUrl)
-        .map((s) => [s.remoteUrl!, s.remoteUrl!]),
+        .map((s) => [s.remoteUrl, s.remoteUrl]),
     ).values(),
   );
 

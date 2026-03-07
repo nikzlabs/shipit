@@ -7,8 +7,8 @@ import type { SessionInfo } from "../../server/shared/types.js";
 afterEach(cleanup);
 
 const mockSessions: SessionInfo[] = [
-  { id: "sess-1", title: "Build landing page", createdAt: "2026-01-01", lastUsedAt: "2026-01-02" },
-  { id: "sess-2", title: "Fix API routes", createdAt: "2026-01-03", lastUsedAt: "2026-01-04" },
+  { id: "sess-1", title: "Build landing page", createdAt: "2026-01-01", lastUsedAt: "2026-01-02", remoteUrl: "" },
+  { id: "sess-2", title: "Fix API routes", createdAt: "2026-01-03", lastUsedAt: "2026-01-04", remoteUrl: "" },
 ];
 
 const mockCurrentUsage: SessionUsage = {
