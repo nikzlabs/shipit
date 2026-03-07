@@ -43,6 +43,7 @@ import {
 export {
   buildMounts,
   buildEnv,
+  DEP_CACHE_CONTAINER_PATH,
   waitForWorkerHealth,
   createContainer,
   cleanupSessionDockerResources,
@@ -75,6 +76,8 @@ export interface ContainerConfig {
   sessionDir: string;
   /** Host path: /workspace/repos/{hash} (for worktree sessions) */
   sharedRepoDir?: string;
+  /** Host path: /workspace/repos/{hash}/.dep-cache (shared dependency cache) */
+  depCacheDir?: string;
   /** Host path: /credentials (Claude CLI auth, GitHub token) */
   credentialsDir: string;
   /** Container image name. */
@@ -475,6 +478,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     sessionDir: string;
     credentialsDir: string;
     sharedRepoDir?: string;
+    depCacheDir?: string;
     env?: Record<string, string>;
     memoryLimit?: number;
     cpuQuota?: number;

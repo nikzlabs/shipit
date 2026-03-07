@@ -6,6 +6,7 @@
  */
 
 import type Docker from "dockerode";
+import fs from "node:fs";
 import type { EventEmitter } from "node:events";
 import type {
   ContainerConfig,
@@ -60,6 +61,9 @@ interface MountSpec {
   workspaceDir: string;
 }
 
+/** Container-internal mount point for the shared dependency cache. */
+export const DEP_CACHE_CONTAINER_PATH = "/dep-cache";
+
 export function buildMounts(
   config: ContainerConfig,
   workspaceVolume: string | undefined,
@@ -110,6 +114,22 @@ export function buildMounts(
     }
   }
 
+  // Mount the per-repo dependency cache so npm/yarn/pnpm share downloaded
+  // packages across all sessions for the same repository.
+  if (config.depCacheDir) {
+    if (workspaceVolume) {
+      const cacheRelPath = config.depCacheDir.replace(/^\/workspace\//, "");
+      mounts.push({
+        Type: "volume",
+        Source: workspaceVolume,
+        Target: DEP_CACHE_CONTAINER_PATH,
+        VolumeOptions: { Subpath: cacheRelPath },
+      });
+    } else {
+      binds.push(`${config.depCacheDir}:${DEP_CACHE_CONTAINER_PATH}:rw`);
+    }
+  }
+
   return { binds, mounts, workspaceDir };
 }
 
@@ -126,6 +146,14 @@ export function buildEnv(
     `WORKER_PORT=${workerPort}`,
     "HOME=/root",
   ];
+
+  // Point npm/yarn/pnpm caches at the shared per-repo cache mount so
+  // subsequent sessions skip network downloads for already-cached packages.
+  if (config.depCacheDir) {
+    env.push(`npm_config_cache=${DEP_CACHE_CONTAINER_PATH}/npm`);
+    env.push(`YARN_CACHE_FOLDER=${DEP_CACHE_CONTAINER_PATH}/yarn`);
+    env.push(`PNPM_STORE_DIR=${DEP_CACHE_CONTAINER_PATH}/pnpm`);
+  }
   if (config.dockerAccess) {
     if (!dockerProxyHost || !dockerProxyPort) {
       throw new Error(`Docker access requested but proxy not configured for session ${config.sessionId}`);
@@ -173,6 +201,11 @@ export async function createContainer(
 ): Promise<SessionContainer> {
   if (deps.containers.has(config.sessionId)) {
     throw new Error(`Container already exists for session ${config.sessionId}`);
+  }
+
+  // Ensure the dep cache directory exists on the host before mounting.
+  if (config.depCacheDir) {
+    fs.mkdirSync(config.depCacheDir, { recursive: true });
   }
 
   const { binds, mounts, workspaceDir } = buildMounts(
@@ -422,6 +455,7 @@ export function buildContainerConfig(
     sessionDir: string;
     credentialsDir: string;
     sharedRepoDir?: string;
+    depCacheDir?: string;
     env?: Record<string, string>;
     memoryLimit?: number;
     cpuQuota?: number;
@@ -434,6 +468,7 @@ export function buildContainerConfig(
     sessionDir: opts.sessionDir,
     credentialsDir: opts.credentialsDir,
     sharedRepoDir: opts.sharedRepoDir,
+    depCacheDir: opts.depCacheDir,
     imageName: deps.imageName,
     memoryLimit: opts.memoryLimit ?? deps.defaultMemoryLimit,
     cpuQuota: opts.cpuQuota ?? deps.defaultCpuQuota,
