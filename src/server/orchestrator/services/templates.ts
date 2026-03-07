@@ -5,18 +5,14 @@
 import fs from "node:fs/promises";
 import type { SessionManager } from "../sessions.js";
 import type { GitManager } from "../../shared/git.js";
-import type { RepoGit } from "../repo-git.js";
 import type { SessionInfo } from "../../shared/types.js";
 import { getTemplate, applyTemplate as applyTemplateFiles } from "../templates.js";
-import { generateBranchPrefix } from "../git-utils.js";
 import { ServiceError } from "./types.js";
 
-/** Create a GitHub repo with a template applied, committed, and pushed. */
+/** Create a GitHub repo with a template applied, committed, and pushed.
+ *  Does NOT create a session — the caller should warm one via warmSessionForRepo(). */
 export async function createRepoWithTemplate(
-  sessionManager: SessionManager,
   createGitManager: (dir: string) => GitManager,
-  createRepoGit: (dir: string) => RepoGit,
-  createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string }>,
   githubAuthManager: {
     authenticated: boolean;
     createRepo: (name: string, opts: { description?: string; isPrivate?: boolean }) => Promise<{ success: boolean; cloneUrl?: string; message?: string }>;
@@ -27,7 +23,7 @@ export async function createRepoWithTemplate(
   templateId: string,
   description?: string,
   isPrivate?: boolean,
-): Promise<{ success: boolean; repoUrl?: string; sessionId?: string; message?: string }> {
+): Promise<{ success: boolean; repoUrl?: string; message?: string }> {
   const trimmedName = repoName.trim();
   if (!trimmedName) throw new ServiceError(400, "Repository name is required");
   if (!/^[a-zA-Z0-9._-]+$/.test(trimmedName)) throw new ServiceError(400, "Repository name contains invalid characters");
@@ -59,32 +55,9 @@ export async function createRepoWithTemplate(
   await sharedGit.autoCommit(`Initial setup: ${template.name}`);
   await sharedGit.push("origin", "main");
 
-  // 4. Create session dir (skip git init — worktree handles this)
-  const branchPrefix = generateBranchPrefix();
-  const { appSessionId, sessionDir } = await createSessionDir(template.name);
-
-  // Remove the empty dir (worktree add needs it absent)
-  await fs.rm(sessionDir, { recursive: true, force: true });
-
-  // 5. Create worktree from the shared repo
-  const repoGit = createRepoGit(repoDir);
-  await repoGit.createWorktree(sessionDir, branchPrefix);
-
-  // 6. Configure git credentials in the worktree
-  githubAuthManager.configureGitCredentials(sessionDir);
-
-  // 7. Update session metadata
-  sessionManager.setRemoteUrl(appSessionId, repoResult.cloneUrl);
-  sessionManager.setWorktreeInfo(appSessionId, {
-    branch: branchPrefix,
-    sessionType: "worktree",
-  });
-  sessionManager.setBranchRenamed(appSessionId, true);
-
   return {
     success: true,
     repoUrl: repoResult.cloneUrl,
-    sessionId: appSessionId,
   };
 }
 

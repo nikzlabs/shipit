@@ -797,13 +797,14 @@ export default function App() {
           onSubmit={async (name, description, isPrivate, templateId) => {
             useSessionStore.getState().setCreatingRepo(true);
             try {
-              const res = await apiPost<{ success: boolean; repoUrl?: string; sessionId?: string; message?: string }>(
+              const res = await apiPost<{ success: boolean; repoUrl?: string; message?: string }>(
                 "/api/repos",
                 { repoName: name, description, isPrivate, templateId },
               );
-              if (res.success && res.sessionId) {
+              if (res.success && res.repoUrl) {
                 useRepoStore.getState().setNewRepoDialogOpen(false);
-                void navigate(`/session/${res.sessionId}`);
+                useRepoStore.getState().setActiveRepoUrl(res.repoUrl);
+                void navigate(repoLabelToNewPath(res.repoUrl));
               } else {
                 useUiStore.getState().setToast({ message: res.message || "Failed to create repository" });
               }
