@@ -77,5 +77,20 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
   }
 
   flushTools();
+
+  // Post-process: only the last streaming element should show active indicators.
+  // Earlier tool-groups/subagents must not display spinners.
+  let foundStreaming = false;
+  for (let i = elements.length - 1; i >= 0; i--) {
+    const el = elements[i];
+    if ((el.kind === "tool-group" || el.kind === "subagent") && el.streaming) {
+      if (foundStreaming) {
+        el.streaming = false;
+      } else {
+        foundStreaming = true;
+      }
+    }
+  }
+
   return elements;
 }
