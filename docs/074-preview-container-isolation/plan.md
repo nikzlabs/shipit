@@ -181,9 +181,29 @@ When Docker Compose is configured, the user may define their own preview service
 - The preview proxy routes by port — compose services use different ports than the built-in preview
 - Docker Compose services do NOT get the secrets volume (they define their own env in docker-compose.yml)
 
+### No single-container fallback
+
+The old mode (preview running inside the session container) is fully removed, not gated behind a flag. Reasons:
+
+- **Maintaining two code paths costs more than it saves.** Every lifecycle operation (create, destroy, reconnect, rediscover, cleanup, health check), SSE handling, preview proxy routing, and the secrets UI would all need branching logic. The single-container path would rot as all development focuses on the dual-container path.
+- **The resource overhead is negligible.** An idle preview container (Node worker, no dev server) uses ~30 MB. Not worth an entire alternate architecture to save.
+- **Security should not be optional.** The whole point is that Claude can't read `.env.local`. A fallback mode that re-enables that defeats the purpose.
+- **Testing surface doubles** if both paths must be covered. One path means one set of integration tests.
+
+If something breaks with the preview container, the fix is to fix it — not to fall back.
+
 ### Migration
 
-This is a non-breaking change. The preview proxy already routes by container IP:port — switching from session container IP to preview container IP is transparent to the client. The secrets editor is a new UI surface, not a modification of existing flows.
+This is a clean cut-over, not a gradual migration:
+
+1. **Remove** preview-related code from the session worker (preview endpoints, preview manager initialization, install runner, port scanner imports). The session worker becomes agent + terminal + file watcher only.
+2. **Remove** preview start/stop/restart forwarding from `ContainerSessionRunner` to the session worker URL. All preview commands go to the preview worker URL.
+3. **Remove** `POST /preview/start` and `POST /preview/stop` from the session worker's endpoint registration.
+4. **Move** `PreviewManager`, `install-runner.ts`, `port-scanner.ts`, `vite-error-plugin.ts`, and `preview-config.ts` — these are only imported by the preview worker now. No code changes needed to the modules themselves; they just run in a different container.
+5. **Update** the preview proxy to read `previewContainerIp` instead of `containerIp`. The proxy's subdomain parsing, path-based fallback, and WebSocket upgrade logic are unchanged.
+6. **Update** integration tests to expect the dual-container topology. Remove any tests that assert preview behavior through the session worker.
+
+The client is unaffected — the preview proxy switch is transparent. The secrets editor is a new UI surface.
 
 ## Key files
 
@@ -192,7 +212,7 @@ This is a non-breaking change. The preview proxy already routes by container IP:
 | `src/server/orchestrator/container-lifecycle.ts` | `createPreviewContainer()`, secrets volume, reduced session memory |
 | `src/server/orchestrator/session-container.ts` | Track preview container, dual create/destroy, secrets volume cleanup |
 | `src/server/orchestrator/preview-proxy.ts` | Use `previewContainerIp` for routing |
-| `src/server/session/session-worker.ts` | `WORKER_MODE=preview` flag, secrets endpoints, symlink init |
-| `src/server/orchestrator/container-session-runner.ts` | Dual SSE streams, preview URL routing |
+| `src/server/session/session-worker.ts` | Remove preview endpoints and PreviewManager init, add `WORKER_MODE=preview` path |
+| `src/server/orchestrator/container-session-runner.ts` | Dual SSE streams, preview URL routing, remove session-worker preview forwarding |
 | `src/server/orchestrator/api-routes.ts` | Secrets proxy endpoints |
 | `src/client/components/` | Secrets editor panel |
