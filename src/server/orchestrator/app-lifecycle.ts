@@ -15,6 +15,7 @@ import { createDockerProxy, resolveOwnContainerIp } from "./docker-proxy.js";
 import type { SessionInfo as DockerProxySessionInfo } from "./docker-proxy.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
 import { getErrorMessage } from "./validation.js";
+import { workerPost } from "./worker-http.js";
 import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
 import { deleteSession, markMergedAndPruneExcess } from "./services/session.js";
 import type { SessionManager } from "./sessions.js";
@@ -740,8 +741,15 @@ export function createWarmPool(
               depCacheDir: getDepCacheDir(repoUrl),
             });
             // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget in sync warming callback
-            containerManager.createStandby(config).then((sc) => {
+            containerManager.createStandby(config).then(async (sc) => {
               console.log(`[warm] Standby container ready for ${appSessionId} at ${sc.workerUrl}`);
+              // Pre-run install so the user doesn't wait for it on activation.
+              try {
+                await workerPost(sc.workerUrl, "/preview/start");
+                console.log(`[warm] Pre-started preview/install for ${appSessionId}`);
+              } catch (err: unknown) {
+                console.error(`[warm] Pre-start preview failed for ${appSessionId}:`, getErrorMessage(err));
+              }
             }).catch((err: unknown) => {
               console.error(`[warm] Standby container failed for ${appSessionId}:`, getErrorMessage(err));
             });

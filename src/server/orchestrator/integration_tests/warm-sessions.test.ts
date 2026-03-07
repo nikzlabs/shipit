@@ -206,8 +206,9 @@ describe("Integration: warm session lifecycle", () => {
       expect(body.sessionId).toBe(warmSessionId);
       expect(body.sessionDir).toBeDefined();
 
-      // The repo's warmSessionId should be cleared after claiming
-      expect(repoStore.get(REPO_URL)!.warmSessionId).toBeUndefined();
+      // The claimed session should no longer be the warm session
+      // (claim-session clears the old one and immediately re-warms a new one)
+      expect(repoStore.get(REPO_URL)!.warmSessionId).not.toBe(warmSessionId);
     }, 15000);
 
     it("triggers re-warming after claim", async () => {
