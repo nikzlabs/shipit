@@ -342,8 +342,11 @@ export async function createContainer(
   };
   deps.containers.set(config.sessionId, sc);
 
+  const shortId = config.sessionId.slice(0, 12);
+
   try {
     const container = await deps.docker.createContainer({
+      name: `agent-${shortId}`,
       Image: imageName,
       Cmd: ["node", "--import", "tsx", "src/server/session/session-worker.ts"],
       Labels: {
@@ -623,7 +626,10 @@ export async function createPreviewContainer(
     "preview",
   );
 
+  const shortId = config.sessionId.slice(0, 12);
+
   const container = await deps.docker.createContainer({
+    name: `preview-${shortId}`,
     Image: config.imageName,
     Cmd: ["node", "--import", "tsx", "src/server/session/session-worker.ts"],
     Labels: {
