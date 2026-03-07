@@ -466,12 +466,15 @@ export type SessionRunnerFactory = (opts: {
   defaultAgentId: AgentId;
   /** Absolute path to the shared repo backing this worktree session (container mount). */
   sharedRepoDir?: string;
+  /** Absolute path to the per-repo dependency cache directory (container mount). */
+  depCacheDir?: string;
 }) => SessionRunnerInterface;
 
 export class SessionRunnerRegistry {
   private runners = new Map<string, SessionRunnerInterface>();
   private _runnerFactory: SessionRunnerFactory;
   private _sharedRepoDirResolver?: (sessionId: string) => string | undefined;
+  private _depCacheDirResolver?: (sessionId: string) => string | undefined;
   private _onRunnerIdle?: (sessionId: string) => void;
   private _onRunnerCreated?: (runner: SessionRunnerInterface) => void;
 
@@ -487,6 +490,11 @@ export class SessionRunnerRegistry {
      */
     sharedRepoDirResolver?: (sessionId: string) => string | undefined;
     /**
+     * Optional resolver that returns the per-repo dependency cache directory.
+     * Mounted into containers so npm/yarn/pnpm share cached downloads.
+     */
+    depCacheDirResolver?: (sessionId: string) => string | undefined;
+    /**
      * Called when a runner transitions to idle (agent finished, queue empty).
      * Used by the orchestrator to enforce idle container limits.
      */
@@ -499,6 +507,7 @@ export class SessionRunnerRegistry {
   }) {
     this._runnerFactory = opts?.runnerFactory ?? ((o) => new SessionRunner(o));
     this._sharedRepoDirResolver = opts?.sharedRepoDirResolver;
+    this._depCacheDirResolver = opts?.depCacheDirResolver;
     this._onRunnerIdle = opts?.onRunnerIdle;
     this._onRunnerCreated = opts?.onRunnerCreated;
   }
@@ -515,6 +524,7 @@ export class SessionRunnerRegistry {
       sessionDir,
       defaultAgentId,
       sharedRepoDir: this._sharedRepoDirResolver?.(sessionId),
+      depCacheDir: this._depCacheDirResolver?.(sessionId),
     });
     runner.on("disposed", () => this.runners.delete(sessionId));
     if (this._onRunnerIdle) {

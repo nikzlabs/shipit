@@ -34,6 +34,7 @@ import {
   wireEventHandlers,
   createSessionDirFactory,
   createSharedRepoDirHelper,
+  createDepCacheDirHelper,
   createWarmPool,
   runRepoMigration,
   scheduleStartupTasks,
@@ -58,6 +59,7 @@ export {
   wireEventHandlers,
   createSessionDirFactory,
   createSharedRepoDirHelper,
+  createDepCacheDirHelper,
   createWarmPool,
   runRepoMigration,
   scheduleStartupTasks,
@@ -112,6 +114,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Shared repo directory ----
   const getSharedRepoDir = createSharedRepoDirHelper(workspaceDir);
+  const getDepCacheDir = createDepCacheDirHelper(getSharedRepoDir);
 
   // ---- SSE (Server-Sent Events) ----
   const { sseClients, sseBroadcast } = createSSE();
@@ -136,7 +139,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     effectiveRunnerFactory, sessionManager, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
-    getSharedRepoDir,
+    getSharedRepoDir, getDepCacheDir,
   });
   registryHolder.ref = runnerRegistry;
 
@@ -161,7 +164,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const { warmSessionForRepo, waitForWarmSession } = createWarmPool({
     repoStore, sessionManager, createRepoGit,
     githubAuthManager, credentialStore, containerManager,
-    credentialsDir, getSharedRepoDir, createSessionDir, sseBroadcast,
+    credentialsDir, getSharedRepoDir, getDepCacheDir, createSessionDir, sseBroadcast,
   });
 
   // ---- Migration: derive RepoStore from existing sessions ----
