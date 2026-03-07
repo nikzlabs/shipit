@@ -57,16 +57,18 @@ Users store secrets (API keys for Clerk, Stripe, Supabase, etc.) in `.env.local`
 
 1. **Orchestrator-managed secrets (per-repo)** — secrets are stored in the orchestrator's SQLite database, keyed by repo URL (from `SessionInfo.remoteUrl`). This follows the same pattern as `DeploymentStore`. A new `SecretStore` class provides `saveSecrets(repoUrl, secrets)` and `loadSecrets(repoUrl)`. Secrets persist across sessions for the same repo — users enter their Clerk/Stripe keys once, and every session for that repo gets them.
 
-2. **Injection via `config.env`** — at container creation time, the orchestrator loads the repo's secrets from the database and passes them as container environment variables through the existing `config.env` mechanism in `container-lifecycle.ts`. The `buildContainerConfig()` call in `app-lifecycle.ts` merges the repo's secrets into `env`, and `buildEnv()` (lines 137-141) spreads them into the Docker container's `Env` array. No secrets volume or filesystem-based injection needed — the dev server reads env vars natively (Vite, Next.js, etc. all support `process.env`).
+2. **Injection at creation time** — when creating a preview container, the orchestrator loads the repo's secrets from the database and passes them as container environment variables via `config.env` in `container-lifecycle.ts`. The `buildContainerConfig()` call in `session-container.ts` merges the repo's secrets into `env`, and `buildEnv()` spreads them into the Docker container's `Env` array. The dev server reads env vars natively (Vite, Next.js, etc. all support `process.env`).
 
-3. **Session container gets no secrets** — only the preview container's `config.env` includes the repo secrets. The session container (where Claude runs) is created without them. Claude cannot access them via `process.env`, `printenv`, or any filesystem path.
+3. **Runtime updates via preview worker** — Docker container env vars are immutable after creation, so runtime secret changes use a different path. The preview worker exposes `PUT /secrets`, which accepts a `Record<string, string>`. On receipt, it merges the key-value pairs into `process.env` of the worker process, then restarts the dev server child process. The restarted dev server inherits the updated `process.env`. This is the same mechanism used for warm pool activation (see below).
 
-4. **User edits** — the user manages secrets through the **Secrets tab** in the Settings modal (under the Project section, alongside Deploy). The orchestrator handles reads and writes:
+4. **Session container gets no secrets** — only the preview container receives repo secrets (at creation via `config.env`, at runtime via `PUT /secrets`). The session container (where Claude runs) is created without them. Claude cannot access them via `process.env`, `printenv`, or any filesystem path.
+
+5. **User edits** — the user manages secrets through the **Secrets tab** in the Settings modal (under the Project section, alongside Deploy). The orchestrator handles reads and writes:
    - `GET /api/secrets?repoUrl=...` — load secrets from the database
-   - `PUT /api/secrets` — save secrets to the database, then push them to the active preview container via `PUT /preview-worker/secrets`
-   - The preview worker sets the new env vars and restarts the dev server
+   - `PUT /api/secrets` — save secrets to the database, then push them to the active preview container(s) via `PUT /secrets` on each preview worker
+   - The preview worker merges the new values into `process.env` and restarts the dev server
 
-5. **Persistence** — secrets live in the orchestrator's SQLite database, keyed by repo URL. They survive across sessions, container restarts, and workspace resets. On each container creation, secrets are loaded fresh from the database into `config.env`.
+6. **Persistence** — secrets live in the orchestrator's SQLite database, keyed by repo URL. They survive across sessions, container restarts, and workspace resets. On each container creation, secrets are loaded fresh from the database into `config.env`. On runtime edits, they are pushed to the preview worker via HTTP.
 
 #### `.env.local` file handling
 
@@ -112,7 +114,7 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 
 - `buildEnv()` — add `WORKER_MODE` to the env vars passed to Docker. Session containers get `WORKER_MODE=session`, preview containers get `WORKER_MODE=preview`.
 
-- `buildSessionContainerConfig()` — reduce default memory from 512 MB to 256 MB
+- `buildContainerConfig()` — reduce default memory from 512 MB to 256 MB for session containers
 
 #### `session-container.ts` / `SessionContainerManager`
 
@@ -144,7 +146,7 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 #### Orchestrator API
 
 - `GET /api/secrets?repoUrl=...` — load secrets from `SecretStore` (database). Not session-scoped — secrets are per-repo.
-- `PUT /api/secrets` — save secrets to `SecretStore`, then push to the active preview container(s) for sessions using that repo. The push calls `PUT /preview-worker/secrets` on each preview worker, which sets the new env vars and restarts the dev server.
+- `PUT /api/secrets` — save secrets to `SecretStore`, then push to the active preview container(s) for sessions using that repo. The push calls `PUT /secrets` on each preview worker, which merges the values into `process.env` and restarts the dev server.
 - These routes are always registered (secrets can be configured before a session has a preview container).
 
 #### `SecretStore` (new)
@@ -183,7 +185,7 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 
 ### Warm pool
 
-Warm (standby) sessions pre-create both containers. The preview container sits idle until activated — minimal resource usage since no dev server is running. When the warm session is activated and assigned a repo URL, the orchestrator loads secrets from the database and pushes them to the preview worker's env before starting the dev server.
+Warm (standby) sessions pre-create both containers. The preview container sits idle until activated — minimal resource usage since no dev server is running. Warm containers are created without repo secrets (no repo URL yet). When the warm session is activated and assigned a repo URL, the orchestrator loads secrets from the database and pushes them to the preview worker via `PUT /secrets` (the runtime update path). The preview worker merges them into `process.env` before the dev server starts.
 
 ### Session clone / fork (worktrees)
 
@@ -199,7 +201,7 @@ When Docker Compose is configured, the user may define their own preview service
 - The built-in preview container still starts (for the default dev server)
 - Docker Compose services run in their own containers on the session network
 - The preview proxy routes by port — compose services use different ports than the built-in preview
-- Docker Compose services do NOT get the secrets volume by default — they define their own env in `docker-compose.yml`. If users need shared secrets (e.g., a backend API needing the same database URL as the frontend), they can define the same env vars in their `docker-compose.yml` `environment` block, or the orchestrator could inject them into compose services in a future enhancement. This is a future enhancement — out of scope for the initial implementation.
+- Docker Compose services do NOT get repo secrets by default — they define their own env in `docker-compose.yml`. If users need shared secrets (e.g., a backend API needing the same database URL as the frontend), they can define the same env vars in their compose `environment` block. Orchestrator-managed injection into compose services is a future enhancement — out of scope for the initial implementation.
 
 ### No single-container fallback
 
@@ -216,10 +218,9 @@ If something breaks with the preview container, the fix is to fix it — not to 
 
 This is a clean cut-over, not a gradual migration:
 
-1. **Remove** preview-related code from the session worker (preview endpoints, preview manager initialization, install runner, port scanner imports). The session worker becomes agent + terminal + file watcher only.
+1. **Gate preview code behind `WORKER_MODE`** — `session-worker.ts` serves both roles (same Docker image). When `WORKER_MODE=session`: register only agent, terminal, file watcher endpoints. When `WORKER_MODE=preview`: register only preview, secrets, health, and events endpoints. `PreviewManager`, `install-runner.ts`, `port-scanner.ts`, `vite-error-plugin.ts`, and `preview-config.ts` are imported conditionally — only when `WORKER_MODE=preview`.
 2. **Remove** preview start/stop/restart forwarding from `ContainerSessionRunner` to the session worker URL. All preview commands go to the preview worker URL.
-3. **Remove** `POST /preview/start` and `POST /preview/stop` from the session worker's endpoint registration.
-4. **Conditional imports** — `PreviewManager`, `install-runner.ts`, `port-scanner.ts`, `vite-error-plugin.ts`, and `preview-config.ts` stay in the same codebase (both containers use the same Docker image). They are imported conditionally: only when `WORKER_MODE=preview`. The session worker's code path no longer imports or initializes them.
+3. **Add `PUT /secrets` endpoint** to the preview worker — accepts `Record<string, string>`, merges into `process.env`, restarts the dev server child process.
 5. **Update** the preview proxy to read `previewContainerIp` instead of `containerIp`. The proxy's subdomain parsing, path-based fallback, and WebSocket upgrade logic are unchanged.
 6. **Update** integration tests to expect the dual-container topology. Remove any tests that assert preview behavior through the session worker.
 
@@ -233,7 +234,7 @@ The client is unaffected — the preview proxy switch is transparent. The secret
 | `src/server/orchestrator/session-container.ts` | Track preview container, dual create/destroy, `DEFAULT_MEMORY_LIMIT` reduction |
 | `src/server/orchestrator/container-discovery.ts` | `rediscoverContainers()` and `cleanupOrphanContainers()` handle preview containers via `shipit-preview-for` label |
 | `src/server/orchestrator/preview-proxy.ts` | Use `previewContainerIp` for routing |
-| `src/server/session/session-worker.ts` | Remove preview endpoints and PreviewManager init, add `WORKER_MODE=preview` path |
+| `src/server/session/session-worker.ts` | Gate endpoints behind `WORKER_MODE`: session path (agent/terminal/files) vs preview path (preview/secrets/health) |
 | `src/server/orchestrator/container-session-runner.ts` | `previewWorkerUrl`, dual SSE streams, per-stream reconnection, preview URL routing |
 | `src/server/orchestrator/secret-store.ts` | New `SecretStore` class — per-repo secrets in SQLite |
 | `src/server/orchestrator/api-routes.ts` | Secrets CRUD endpoints (`GET/PUT /api/secrets`) |
