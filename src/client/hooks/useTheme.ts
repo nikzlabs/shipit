@@ -6,12 +6,27 @@ import { useState, useEffect, useCallback } from "react";
  * added by creating a CSS file in `src/client/themes/`, importing it in
  * `index.css`, and registering the class name in `KNOWN_THEMES` below.
  */
-export type Theme = "light" | "dark" | (string & {});
+export type Theme = "light" | "dark" | "midnight" | "forest" | "rose" | (string & {});
+
+export interface ThemeOption {
+  id: Theme;
+  label: string;
+  /** Short description shown in the picker */
+  description: string;
+}
+
+export const THEME_OPTIONS: ThemeOption[] = [
+  { id: "light", label: "Light", description: "Clean and bright" },
+  { id: "dark", label: "Dark", description: "Classic dark mode" },
+  { id: "midnight", label: "Midnight", description: "Deep blue tones" },
+  { id: "forest", label: "Forest", description: "Green and earthy" },
+  { id: "rose", label: "Rosé", description: "Warm pink and mauve" },
+];
 
 const STORAGE_KEY = "shipit-theme";
 
 /** All theme class names that may be applied to <html>. */
-const KNOWN_THEMES = ["dark"] as const;
+const KNOWN_THEMES = ["dark", "midnight", "forest", "rose"] as const;
 
 function getInitialTheme(): Theme {
   try {

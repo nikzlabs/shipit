@@ -1,7 +1,7 @@
 import type { ReactNode, RefObject } from "react";
-import { SunIcon, MoonIcon, GearSixIcon, RocketIcon } from "@phosphor-icons/react";
+import { GearSixIcon, RocketIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "./design-tokens.js";
-import { Button } from "./components/ui/button.js";
+import { ThemePicker } from "./components/ThemePicker.js";
 import { SessionSidebar } from "./components/SessionSidebar.js";
 import { RepoSwitcher } from "./components/RepoSwitcher.js";
 import { ResizeHandle } from "./components/ResizeHandle.js";
@@ -15,7 +15,7 @@ import type { SessionInfo, RepoInfo } from "../server/shared/types.js";
 interface AppLayoutProps {
   // Header
   theme: Theme;
-  toggleTheme: () => void;
+  onSelectTheme: (theme: Theme) => void;
   onDeployOpen: () => void;
   onSettingsOpen: () => void;
   hasSystemPrompt: boolean;
@@ -75,7 +75,7 @@ interface AppLayoutProps {
 
 export function AppLayout({
   theme,
-  toggleTheme,
+  onSelectTheme,
   onDeployOpen,
   onSettingsOpen,
   hasSystemPrompt,
@@ -125,7 +125,7 @@ export function AppLayout({
       <header className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-(--color-border-primary)">
         <div className="flex items-center gap-3 sm:gap-4 min-w-0">
           <h1 className="text-lg font-semibold tracking-tight shrink-0 flex items-center gap-1.5 cursor-pointer hover:opacity-80 transition-opacity" onClick={onNavigateHome} role="link">
-            <img src={theme === "dark" ? "/favicon.svg" : "/favicon-light.svg"} alt="" className="w-5 h-5" />
+            <img src={theme === "light" ? "/favicon-light.svg" : "/favicon.svg"} alt="" className="w-5 h-5" />
             ShipIt
           </h1>
         </div>
@@ -142,13 +142,7 @@ export function AppLayout({
               {currentSessionUsage.totalCostUsd < 0.01 ? `$${currentSessionUsage.totalCostUsd.toFixed(3)}` : `$${currentSessionUsage.totalCostUsd.toFixed(2)}`}
             </button>
           )}
-          <Button variant="ghost" size="sm" onClick={toggleTheme} title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"} aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}>
-            {theme === "dark" ? (
-              <SunIcon size={ICON_SIZE.SM} />
-            ) : (
-              <MoonIcon size={ICON_SIZE.SM} />
-            )}
-          </Button>
+          <ThemePicker theme={theme} onSelectTheme={onSelectTheme} />
         </div>
       </header>
 

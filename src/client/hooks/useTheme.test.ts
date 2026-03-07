@@ -1,18 +1,20 @@
 import { describe, it, expect, afterEach, vi, beforeEach } from "vitest";
 import { renderHook, cleanup, act } from "@testing-library/react";
-import { useTheme } from "./useTheme.js";
+import { useTheme, THEME_OPTIONS } from "./useTheme.js";
+
+const ALL_THEME_CLASSES = ["dark", "midnight", "forest", "rose", "solarized"];
 
 afterEach(() => {
   cleanup();
   localStorage.clear();
   // Remove all theme classes that tests may have applied
-  document.documentElement.classList.remove("dark", "solarized");
+  document.documentElement.classList.remove(...ALL_THEME_CLASSES);
 });
 
 describe("useTheme", () => {
   beforeEach(() => {
     localStorage.clear();
-    document.documentElement.classList.remove("dark", "solarized");
+    document.documentElement.classList.remove(...ALL_THEME_CLASSES);
   });
 
   it("defaults to dark theme when no stored preference", () => {
@@ -102,5 +104,54 @@ describe("useTheme", () => {
 
     rerender();
     expect(result.current.toggle).toBe(firstToggle);
+  });
+
+  it("setTheme applies midnight theme class", () => {
+    const { result } = renderHook(() => useTheme());
+
+    act(() => result.current.setTheme("midnight"));
+
+    expect(result.current.theme).toBe("midnight");
+    expect(document.documentElement.classList.contains("midnight")).toBe(true);
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+    expect(localStorage.getItem("shipit-theme")).toBe("midnight");
+  });
+
+  it("setTheme applies forest theme class", () => {
+    const { result } = renderHook(() => useTheme());
+
+    act(() => result.current.setTheme("forest"));
+
+    expect(result.current.theme).toBe("forest");
+    expect(document.documentElement.classList.contains("forest")).toBe(true);
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+    expect(localStorage.getItem("shipit-theme")).toBe("forest");
+  });
+
+  it("setTheme applies rose theme class", () => {
+    const { result } = renderHook(() => useTheme());
+
+    act(() => result.current.setTheme("rose"));
+
+    expect(result.current.theme).toBe("rose");
+    expect(document.documentElement.classList.contains("rose")).toBe(true);
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+    expect(localStorage.getItem("shipit-theme")).toBe("rose");
+  });
+
+  it("switching from one custom theme to another removes old class", () => {
+    const { result } = renderHook(() => useTheme());
+
+    act(() => result.current.setTheme("midnight"));
+    expect(document.documentElement.classList.contains("midnight")).toBe(true);
+
+    act(() => result.current.setTheme("forest"));
+    expect(document.documentElement.classList.contains("forest")).toBe(true);
+    expect(document.documentElement.classList.contains("midnight")).toBe(false);
+  });
+
+  it("THEME_OPTIONS includes all five themes", () => {
+    const ids = THEME_OPTIONS.map((t) => t.id);
+    expect(ids).toEqual(["light", "dark", "midnight", "forest", "rose"]);
   });
 });
