@@ -522,19 +522,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       for (const entry of logBuffer) { send(entry); }
       if (!getGitIdentity()) { send({ type: "git_identity_required" }); }
 
-      // Always re-send preview_status after initial setup.  The first send
-      // happens in attachToRunner(), but React 18 automatic batching can
-      // swallow it when many WS messages arrive in the same rendering cycle
-      // (e.g. log buffer replay above).  On the session-reuse path the
-      // client resets preview state before reconnecting, so this re-send
-      // is the only way to recover it.
-      {
-        const runner = runnerRegistry.get(sessionId);
-        if (runner?.previewStatusKnown) {
-          send(runner.buildPreviewStatus());
-        }
-      }
-
       // Always send PR lifecycle card for sessions with a remote.
       // The SSE pr_status snapshot handles open/merged PRs; this covers the
       // "ready" phase (branch info + diff stats, no PR created yet).
