@@ -519,11 +519,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       for (const entry of logBuffer) { send(entry); }
       if (!getGitIdentity()) { send({ type: "git_identity_required" }); }
 
-      // Re-send preview_status after the log buffer so it isn't lost if the
-      // browser batches rapid WS messages (React 18 automatic batching can
-      // cause intermediate setLastMessage() calls to be skipped when many
-      // frames arrive within a single rendering cycle).
-      if (logBuffer.length > 0) {
+      // Always re-send preview_status after initial setup.  The first send
+      // happens in attachToRunner(), but React 18 automatic batching can
+      // swallow it when many WS messages arrive in the same rendering cycle
+      // (e.g. log buffer replay above).  On the session-reuse path the
+      // client resets preview state before reconnecting, so this re-send
+      // is the only way to recover it.
+      {
         const runner = runnerRegistry.get(sessionId);
         if (runner?.previewStatusKnown) {
           send(runner.buildPreviewStatus());

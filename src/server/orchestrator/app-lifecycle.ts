@@ -618,7 +618,7 @@ export interface WarmPoolDeps {
 export function createWarmPool(
   poolDeps: WarmPoolDeps,
 ): {
-  warmSessionForRepo: (repoUrl: string, opts?: { withStandby?: boolean }) => void;
+  warmSessionForRepo: (repoUrl: string, opts?: { withStandby?: boolean }) => Promise<void>;
   waitForWarmSession: (repoUrl: string) => Promise<void> | undefined;
 } {
   const {
@@ -630,7 +630,7 @@ export function createWarmPool(
   const warmingInProgress = new Set<string>();
   const warmingPromises = new Map<string, Promise<void>>();
 
-  const warmSessionForRepo = (repoUrl: string, opts?: { withStandby?: boolean }): void => {
+  const warmSessionForRepo = async (repoUrl: string, opts?: { withStandby?: boolean }): Promise<void> => {
     const repo = repoStore.get(repoUrl);
     if (repo?.status !== "ready") return;
     // Don't warm if already has a warm session or is currently warming
@@ -641,7 +641,6 @@ export function createWarmPool(
     }
     warmingInProgress.add(repoUrl);
 
-    // Fire-and-forget — warming runs entirely in the background.
     // The promise is stored so the claim endpoint can await it instead
     // of falling to the expensive slow path.
     const p = (async () => {
@@ -739,6 +738,7 @@ export function createWarmPool(
       }
     })();
     warmingPromises.set(repoUrl, p);
+    return p;
   };
 
   const waitForWarmSession = (repoUrl: string): Promise<void> | undefined => {
@@ -758,7 +758,7 @@ export interface StartupDeps {
   usageManager: UsageManager;
   containerManager: SessionContainerManager | null;
   getSharedRepoDir: (repoUrl: string) => string;
-  warmSessionForRepo: (repoUrl: string) => void;
+  warmSessionForRepo: (repoUrl: string) => Promise<void>;
 }
 
 /**
@@ -842,7 +842,7 @@ export function scheduleStartupTasks(
             });
           }
           repoStore.setWarmSessionId(repo.url, undefined);
-          warmSessionForRepo(repo.url);
+          void warmSessionForRepo(repo.url);
         } else {
           console.log(`[warm] Warm session ${repo.warmSessionId} validated (worktree exists)`);
         }
@@ -850,12 +850,12 @@ export function scheduleStartupTasks(
     }
     // Re-warm repos that have no warm session at all (+ migrated repos)
     for (const url of migratedRepoUrls) {
-      warmSessionForRepo(url);
+      void warmSessionForRepo(url);
     }
     for (const repo of repoStore.list()) {
       if (!repo.warmSessionId && repo.status === "ready"
           && !migratedRepoUrls.includes(repo.url)) {
-        warmSessionForRepo(repo.url);
+        void warmSessionForRepo(repo.url);
       }
     }
   }, 0);

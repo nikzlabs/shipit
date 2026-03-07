@@ -25,9 +25,11 @@ export class RepoGit {
     await this.git.raw(args);
   }
 
-  /** Fetch a single branch from a remote. */
+  /** Fetch a single branch from a remote (force-updates the tracking ref). */
   async fetch(remote: string, branch: string): Promise<void> {
-    await this.git.fetch(remote, branch);
+    // --force: prevent "unable to update local ref" errors when concurrent
+    // fetches race on the same shared repo (safe for remote tracking refs).
+    await this.git.fetch(remote, branch, ["--force"]);
   }
 
   /**
