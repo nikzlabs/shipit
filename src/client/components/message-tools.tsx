@@ -45,7 +45,7 @@ export function ToolCallGroup({ items, isStreaming }: {
 
 export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQuestionDisabled, grouped }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void; isQuestionDisabled: boolean; grouped?: boolean }) {
   // Show a spinner on the last tool when the message is still streaming
-  const inProgress = isLast && isStreaming;
+  const inProgress = isLast && isStreaming && !result;
   const [collapsed, setCollapsed] = useState(true);
   const hasResult = !!result;
 

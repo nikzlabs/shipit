@@ -375,6 +375,57 @@ describe("buildVisualElements", () => {
         expect(elements[0].streaming).toBe(false);
       }
     });
+
+    it("only the last tool-group has streaming:true when multiple groups exist", () => {
+      const elements = buildVisualElements([
+        toolMsg([tool("t1", "Read")], { text: "Reading", streaming: true }),
+        toolMsg([tool("t2", "Edit")], { text: "Editing", streaming: true }),
+      ]);
+      // message(0), tool-group(t1), message(1), tool-group(t2)
+      expect(elements).toHaveLength(4);
+      expect(elements[1].kind).toBe("tool-group");
+      if (elements[1].kind === "tool-group") {
+        expect(elements[1].streaming).toBe(false);
+      }
+      expect(elements[3].kind).toBe("tool-group");
+      if (elements[3].kind === "tool-group") {
+        expect(elements[3].streaming).toBe(true);
+      }
+    });
+
+    it("earlier tool-groups lose streaming after post-processing", () => {
+      const elements = buildVisualElements([
+        toolMsg([tool("t1", "Bash")], { streaming: true }),
+        toolMsg([tool("t2", "Read")], { text: "checking", streaming: true }),
+        toolMsg([tool("t3", "Grep")], { streaming: true }),
+      ]);
+      // tool-group(t1), message(1), tool-group(t2, t3)
+      expect(elements[0].kind).toBe("tool-group");
+      if (elements[0].kind === "tool-group") {
+        expect(elements[0].streaming).toBe(false);
+      }
+      expect(elements[2].kind).toBe("tool-group");
+      if (elements[2].kind === "tool-group") {
+        expect(elements[2].streaming).toBe(true);
+      }
+    });
+
+    it("subagent streaming is also de-duped", () => {
+      const elements = buildVisualElements([
+        toolMsg([tool("t1", "Task", { description: "plan" })], { streaming: true }),
+        toolMsg([tool("t2", "Bash")], { streaming: true }),
+      ]);
+      const subagent = elements.find((e) => e.kind === "subagent");
+      const group = elements.find((e) => e.kind === "tool-group");
+      expect(subagent).toBeDefined();
+      expect(group).toBeDefined();
+      if (subagent?.kind === "subagent") {
+        expect(subagent.streaming).toBe(false);
+      }
+      if (group?.kind === "tool-group") {
+        expect(group.streaming).toBe(true);
+      }
+    });
   });
 
   describe("messageIndices tracking", () => {

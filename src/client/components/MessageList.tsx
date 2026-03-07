@@ -175,7 +175,7 @@ export function MessageList({
         </div>
       )}
 
-      {buildVisualElements(messages).map((el) => {
+      {buildVisualElements(messages).map((el, elIdx, allElements) => {
         // ── Tool-group: grouped tool calls from consecutive assistant messages ──
         if (el.kind === "tool-group") {
           return (
@@ -360,7 +360,7 @@ export function MessageList({
                 );
               })()}
 
-              {msg.streaming && (
+              {msg.streaming && allElements[elIdx + 1]?.kind !== "tool-group" && (
                 <span className="inline-flex items-center ml-1 align-middle">
                   <TypingDots />
                 </span>
