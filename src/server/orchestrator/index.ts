@@ -355,27 +355,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         if (runner.running || runner.queueLength > 0) {
           send({ type: "session_status", sessionId: runner.sessionId, running: runner.running, queueLength: runner.queueLength });
         }
-        // Send preview_status on attach only if the runner has definitive state.
-        // For container runners waiting on SSE, the runner will emit the status
-        // itself once the worker reports its preview state. Until then, the client
-        // stays at preview=null (shows a loading spinner).
-        if (runner.previewStatusKnown) {
-          send(runner.buildPreviewStatus());
-        } else {
-          // Preview state not yet known (SSE still connecting to worker).
-          // The normal message listener already forwards preview_status, but
-          // React 18 batching can swallow it when many WS messages arrive in
-          // the same tick. Register a one-shot listener that re-sends
-          // preview_status in a separate microtask to avoid being batched.
+        // Don't send preview_status here — it's sent once after the log
+        // buffer replay (see below) so React 18 batching can't swallow it.
+        // For container runners where preview state isn't yet known (SSE
+        // still connecting), register a one-shot listener that sends it
+        // once the worker reports its preview state.
+        if (!runner.previewStatusKnown) {
           previewRetryListener = (msg: WsServerMessage) => {
             if (msg.type === "preview_status") {
               runner.off("message", previewRetryListener!);
               previewRetryListener = null;
-              queueMicrotask(() => {
-                if (socket.readyState === 1) {
-                  send(runner.buildPreviewStatus());
-                }
-              });
             }
           };
           runner.on("message", previewRetryListener);
@@ -521,6 +510,17 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       const logBuffer = getLogBuffer();
       for (const entry of logBuffer) { send(entry); }
       if (!getGitIdentity()) { send({ type: "git_identity_required" }); }
+
+      // Send preview_status after the log buffer so it's the last
+      // synchronous message.  Sending it earlier (inside attachToRunner)
+      // caused React 18 automatic batching to swallow it when many WS
+      // messages arrived in the same rendering cycle.
+      {
+        const runner = runnerRegistry.get(sessionId);
+        if (runner?.previewStatusKnown) {
+          send(runner.buildPreviewStatus());
+        }
+      }
 
       // Always send PR lifecycle card for sessions with a remote.
       // The SSE pr_status snapshot handles open/merged PRs; this covers the
