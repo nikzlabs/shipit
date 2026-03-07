@@ -12,6 +12,7 @@ import { UsageManager } from "./usage.js";
 import { FeatureManager } from "./features.js";
 import { DeploymentManager } from "./deployment-manager.js";
 import { DeploymentStore } from "./deployment-store.js";
+import { SecretStore } from "./secret-store.js";
 import { CredentialStore } from "./credential-store.js";
 import { initGlobalGitConfig } from "./git-config.js";
 import { VercelTarget } from "./deploy-targets/vercel.js";
@@ -144,6 +145,7 @@ export interface ManagerSet {
   featureManager: FeatureManager;
   generateText: (prompt: string, cwd?: string) => Promise<string>;
   isTestMode: boolean;
+  secretStore: SecretStore;
 }
 
 /**
@@ -244,6 +246,9 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // ---- Deployment store ----
   const deploymentStore = deps.deploymentStore ?? new DeploymentStore(databaseManager);
 
+  // ---- Secret store ----
+  const secretStore = new SecretStore(databaseManager);
+
   // ---- Feature manager ----
   const featureManager = deps.featureManager ?? new FeatureManager(workspaceDir);
 
@@ -301,6 +306,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
     githubAuthManager,
     deploymentManager,
     deploymentStore,
+    secretStore,
     featureManager,
     generateText,
     isTestMode,

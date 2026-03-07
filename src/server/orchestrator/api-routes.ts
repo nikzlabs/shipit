@@ -33,6 +33,8 @@ import { registerSessionRoutes } from "./api-routes-session.js";
 import { registerPreviewRoutes } from "./api-routes-preview.js";
 import { registerGitHubRoutes } from "./api-routes-github.js";
 import { registerDeployRoutes } from "./api-routes-deploy.js";
+import { registerSecretsRoutes } from "./api-routes-secrets.js";
+import type { SecretStore } from "./secret-store.js";
 
 /**
  * Dependencies needed by API routes. A subset of AppDeps — only the
@@ -73,6 +75,8 @@ export interface ApiDeps {
   prStatusPoller?: PrStatusPoller;
   /** Database manager — needed for full reset to clear all tables atomically. */
   databaseManager?: DatabaseManager;
+  /** Secret store — per-repo env var secrets for preview containers. */
+  secretStore?: SecretStore;
 }
 
 /**
@@ -120,4 +124,11 @@ export async function registerApiRoutes(
   await registerPreviewRoutes(app, deps);
   await registerGitHubRoutes(app, deps);
   await registerDeployRoutes(app, deps);
+  if (deps.secretStore) {
+    await registerSecretsRoutes(app, {
+      secretStore: deps.secretStore,
+      runnerRegistry: deps.runnerRegistry,
+      sessionManager: deps.sessionManager,
+    });
+  }
 }

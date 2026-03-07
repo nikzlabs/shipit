@@ -133,17 +133,21 @@ export function buildMounts(
   return { binds, mounts, workspaceDir };
 }
 
+export type WorkerMode = "session" | "preview";
+
 export function buildEnv(
   config: ContainerConfig,
   workspaceDir: string,
   workerPort: number,
   dockerProxyHost: string | undefined,
   dockerProxyPort: number | undefined,
+  workerMode: WorkerMode = "session",
 ): string[] {
   const env: string[] = [
     `SESSION_ID=${config.sessionId}`,
     `WORKSPACE_DIR=${workspaceDir}`,
     `WORKER_PORT=${workerPort}`,
+    `WORKER_MODE=${workerMode}`,
     "HOME=/root",
   ];
 
@@ -220,6 +224,7 @@ export async function createContainer(
     deps.workerPort,
     deps.dockerProxyHost,
     deps.dockerProxyPort,
+    "session",
   );
 
   // Use Docker-capable image when Docker access is requested
@@ -442,6 +447,144 @@ export async function destroyContainer(
   sc.status = "stopped";
   deps.containers.delete(sessionId);
   deps.emitter.emit("container_destroyed", sessionId);
+}
+
+// ---------------------------------------------------------------------------
+// Preview container
+// ---------------------------------------------------------------------------
+
+/** Label used to associate preview containers with their session. */
+export const PREVIEW_CONTAINER_LABEL = "shipit-preview-for";
+
+/**
+ * Build mounts for the preview container — workspace only, no credentials.
+ */
+export function buildPreviewMounts(
+  config: ContainerConfig,
+  workspaceVolume: string | undefined,
+): MountSpec {
+  const binds: string[] = [];
+  const mounts: MountSpec["mounts"] = [];
+  const workspaceDir = "/user";
+
+  if (workspaceVolume) {
+    const relPath = config.sessionDir.replace(/^\/workspace\//, "");
+    mounts.push({
+      Type: "volume",
+      Source: workspaceVolume,
+      Target: "/user",
+      VolumeOptions: { Subpath: relPath },
+    });
+  } else {
+    binds.push(`${config.sessionDir}:/user:rw`);
+  }
+
+  // Worktree: mount shared repo at its original absolute path
+  if (config.sharedRepoDir) {
+    if (workspaceVolume) {
+      const repoRelPath = config.sharedRepoDir.replace(/^\/workspace\//, "");
+      mounts.push({
+        Type: "volume",
+        Source: workspaceVolume,
+        Target: config.sharedRepoDir,
+        VolumeOptions: { Subpath: repoRelPath },
+      });
+    } else {
+      binds.push(`${config.sharedRepoDir}:${config.sharedRepoDir}:rw`);
+    }
+  }
+
+  // Dependency cache
+  if (config.depCacheDir) {
+    if (workspaceVolume) {
+      const cacheRelPath = config.depCacheDir.replace(/^\/workspace\//, "");
+      mounts.push({
+        Type: "volume",
+        Source: workspaceVolume,
+        Target: DEP_CACHE_CONTAINER_PATH,
+        VolumeOptions: { Subpath: cacheRelPath },
+      });
+    } else {
+      binds.push(`${config.depCacheDir}:${DEP_CACHE_CONTAINER_PATH}:rw`);
+    }
+  }
+
+  return { binds, mounts, workspaceDir };
+}
+
+/**
+ * Create a preview container for the given session. Shares the workspace
+ * volume but has no credentials mount. The preview worker receives secrets
+ * via PUT /secrets after the container is healthy.
+ */
+export async function createPreviewContainer(
+  deps: LifecycleDeps,
+  config: ContainerConfig,
+  previewMemoryLimit: number,
+): Promise<{ id: string; ip: string; workerUrl: string }> {
+  // Ensure the dep cache directory exists on the host before mounting.
+  if (config.depCacheDir) {
+    fs.mkdirSync(config.depCacheDir, { recursive: true });
+  }
+
+  const { binds, mounts, workspaceDir } = buildPreviewMounts(
+    config,
+    deps.workspaceVolume,
+  );
+
+  const env = buildEnv(
+    config,
+    workspaceDir,
+    deps.workerPort,
+    undefined, // no Docker proxy for preview
+    undefined,
+    "preview",
+  );
+
+  const container = await deps.docker.createContainer({
+    Image: config.imageName,
+    Cmd: ["node", "--import", "tsx", "src/server/session/session-worker.ts"],
+    Labels: {
+      ...deps.baseLabels(),
+      [PREVIEW_CONTAINER_LABEL]: config.sessionId,
+      "shipit-parent-session": config.sessionId,
+    },
+    HostConfig: {
+      Binds: binds.length > 0 ? binds : undefined,
+      Mounts: mounts.length > 0 ? mounts as Parameters<typeof deps.docker.createContainer>[0]["HostConfig"] extends { Mounts?: infer M } ? M : never : undefined,
+      Memory: previewMemoryLimit,
+      CpuQuota: config.cpuQuota,
+      CpuPeriod: DEFAULT_CPU_PERIOD,
+      PidsLimit: config.pidsLimit,
+      NetworkMode: deps.networkName,
+      SecurityOpt: ["no-new-privileges"],
+      ReadonlyRootfs: false,
+      CapDrop: ["ALL"],
+      CapAdd: ["CHOWN", "SETUID", "SETGID", "FOWNER", "DAC_OVERRIDE", "NET_BIND_SERVICE", "KILL"],
+    },
+    Env: env,
+  });
+
+  await container.start();
+
+  const info = await container.inspect();
+  const networks = info.NetworkSettings.Networks;
+  const networkInfo = networks[deps.networkName];
+  if (!networkInfo?.IPAddress) {
+    // Clean up on failure
+    try { await container.stop({ t: 2 }); } catch { /* */ }
+    try { await container.remove({ force: true }); } catch { /* */ }
+    throw new Error(`Preview container has no IP on network ${deps.networkName}`);
+  }
+
+  const ip = networkInfo.IPAddress;
+  const workerUrl = `http://${ip}:${deps.workerPort}`;
+
+  if (!deps.skipHealthCheck) {
+    await waitForWorkerHealth(workerUrl);
+  }
+
+  return { id: container.id, ip, workerUrl };
 }
 
 // ---------------------------------------------------------------------------

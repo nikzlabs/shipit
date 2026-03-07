@@ -444,7 +444,7 @@ describe("SessionContainerManager", () => {
       });
 
       expect(config.imageName).toBe("shipit-session-worker:test");
-      expect(config.memoryLimit).toBe(512 * 1024 * 1024);
+      expect(config.memoryLimit).toBe(256 * 1024 * 1024);
       expect(config.cpuQuota).toBe(50_000);
       expect(config.pidsLimit).toBe(256);
     });

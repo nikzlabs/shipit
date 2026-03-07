@@ -34,6 +34,7 @@ type SettingsTab =
   | "instructions"
   | "advanced"
   | "deploy"
+  | "secrets"
   | undefined;
 
 interface UiState {
