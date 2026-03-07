@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi, beforeEach } from "vitest";
 import { renderHook, cleanup, act } from "@testing-library/react";
 import { useTheme, THEME_OPTIONS } from "./useTheme.js";
 
-const ALL_THEME_CLASSES = ["dark", "midnight", "forest", "rose", "solarized"];
+const ALL_THEME_CLASSES = ["dark", "midnight", "forest", "rose", "claude", "codex", "warm-light", "cool-light", "slate", "solarized", "high-contrast"];
 
 afterEach(() => {
   cleanup();
@@ -139,6 +139,54 @@ describe("useTheme", () => {
     expect(localStorage.getItem("shipit-theme")).toBe("rose");
   });
 
+  it("setTheme applies claude theme class", () => {
+    const { result } = renderHook(() => useTheme());
+
+    act(() => result.current.setTheme("claude"));
+
+    expect(result.current.theme).toBe("claude");
+    expect(document.documentElement.classList.contains("claude")).toBe(true);
+    expect(localStorage.getItem("shipit-theme")).toBe("claude");
+  });
+
+  it("setTheme applies codex theme class", () => {
+    const { result } = renderHook(() => useTheme());
+
+    act(() => result.current.setTheme("codex"));
+
+    expect(result.current.theme).toBe("codex");
+    expect(document.documentElement.classList.contains("codex")).toBe(true);
+    expect(localStorage.getItem("shipit-theme")).toBe("codex");
+  });
+
+  it("setTheme applies warm-light as class (light variant)", () => {
+    const { result } = renderHook(() => useTheme());
+
+    act(() => result.current.setTheme("warm-light"));
+
+    expect(result.current.theme).toBe("warm-light");
+    expect(document.documentElement.classList.contains("warm-light")).toBe(true);
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+  });
+
+  it("setTheme applies solarized theme class", () => {
+    const { result } = renderHook(() => useTheme());
+
+    act(() => result.current.setTheme("solarized"));
+
+    expect(result.current.theme).toBe("solarized");
+    expect(document.documentElement.classList.contains("solarized")).toBe(true);
+  });
+
+  it("setTheme applies high-contrast theme class", () => {
+    const { result } = renderHook(() => useTheme());
+
+    act(() => result.current.setTheme("high-contrast"));
+
+    expect(result.current.theme).toBe("high-contrast");
+    expect(document.documentElement.classList.contains("high-contrast")).toBe(true);
+  });
+
   it("switching from one custom theme to another removes old class", () => {
     const { result } = renderHook(() => useTheme());
 
@@ -150,8 +198,12 @@ describe("useTheme", () => {
     expect(document.documentElement.classList.contains("midnight")).toBe(false);
   });
 
-  it("THEME_OPTIONS includes all five themes", () => {
+  it("THEME_OPTIONS includes all twelve themes", () => {
     const ids = THEME_OPTIONS.map((t) => t.id);
-    expect(ids).toEqual(["light", "dark", "midnight", "forest", "rose"]);
+    expect(ids).toEqual([
+      "light", "warm-light", "cool-light",
+      "dark", "slate", "midnight", "forest", "rose",
+      "claude", "codex", "solarized", "high-contrast",
+    ]);
   });
 });

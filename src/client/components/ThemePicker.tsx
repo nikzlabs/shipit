@@ -8,10 +8,17 @@ import { THEME_OPTIONS, type Theme } from "../hooks/useTheme.js";
 /** Preview swatch colors for each theme (bg-primary, accent, bg-secondary). */
 const SWATCHES: Record<string, [string, string, string]> = {
   light: ["#ffffff", "#2563eb", "#f9fafb"],
+  "warm-light": ["#fdf8f0", "#c07828", "#f5ede0"],
+  "cool-light": ["#f4f6fa", "#4f46e5", "#e8ecf4"],
   dark: ["#030712", "#3b82f6", "#111827"],
+  slate: ["#0f1219", "#5090d0", "#181d28"],
   midnight: ["#0b1120", "#5b8af7", "#121d33"],
   forest: ["#0c1410", "#34d399", "#131f19"],
   rose: ["#150c14", "#ec4899", "#1f1320"],
+  claude: ["#1a1410", "#d97757", "#231c16"],
+  codex: ["#0a0e0a", "#38c870", "#111a11"],
+  solarized: ["#002b36", "#b58900", "#073642"],
+  "high-contrast": ["#000000", "#00d4ff", "#0a0a0a"],
 };
 
 interface ThemePickerProps {
@@ -48,7 +55,7 @@ export function ThemePicker({ theme, onSelectTheme }: ThemePickerProps) {
       </Button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1 w-52 bg-(--color-bg-elevated) border border-(--color-border-primary) rounded-lg shadow-lg z-50 py-1">
+        <div className="absolute right-0 top-full mt-1 w-52 max-h-80 overflow-y-auto bg-(--color-bg-elevated) border border-(--color-border-primary) rounded-lg shadow-lg z-50 py-1">
           {THEME_OPTIONS.map((opt) => (
             <button
               key={opt.id}
