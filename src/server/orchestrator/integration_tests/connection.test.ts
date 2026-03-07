@@ -72,7 +72,6 @@ describe("Integration: Connection", () => {
   it("returns error for invalid JSON", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // consume preview_status from attachToRunner
-    await client.receive(); // consume preview_status re-send
 
     client.sendRaw("not valid json {{{");
     const msg = await client.receive();
