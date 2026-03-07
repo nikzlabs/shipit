@@ -9,6 +9,9 @@
  * server-driven auto-fix loop.
  */
 
+import fs from "node:fs";
+import path from "node:path";
+
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { SessionManager } from "./sessions.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
@@ -239,11 +242,17 @@ export class PrStatusPoller {
   /** sessionId → last known GraphQL PR node (cached for extracting check details). */
   private lastPrNodes = new Map<string, GraphQLPrNode>();
 
+  /** Optional: resolves a repo URL to its shared clone directory on disk. */
+  private getSharedRepoDir?: (repoUrl: string) => string;
+  /** repoKey (owner/repo) → whether the repo has .github/workflows files. */
+  private repoHasWorkflows = new Map<string, boolean>();
+
   constructor(opts: {
     githubAuth: GitHubAuthManager;
     sessionManager: SessionManager;
     sseBroadcast: (event: string, data: unknown) => void;
     runnerRegistry?: SessionRunnerRegistry;
+    getSharedRepoDir?: (repoUrl: string) => string;
     fetchAndFixCb?: (sessionId: string, owner: string, repo: string, failedChecks: { databaseId: number; name: string; conclusion: string; title: string }[]) => Promise<void>;
     onMergeDetectedCb?: (sessionId: string) => Promise<void>;
   }) {
@@ -251,6 +260,7 @@ export class PrStatusPoller {
     this.sessionManager = opts.sessionManager;
     this.sseBroadcast = opts.sseBroadcast;
     this.runnerRegistry = opts.runnerRegistry;
+    this.getSharedRepoDir = opts.getSharedRepoDir;
     this.fetchAndFixCb = opts.fetchAndFixCb;
     this.onMergeDetectedCb = opts.onMergeDetectedCb;
   }
@@ -429,6 +439,36 @@ export class PrStatusPoller {
     return result;
   }
 
+  /**
+   * Check whether a repo has GitHub Actions workflow files.
+   * Result is cached per repoKey.
+   */
+  private checkRepoHasWorkflows(repoKey: string, repoUrl: string): boolean {
+    const cached = this.repoHasWorkflows.get(repoKey);
+    if (cached !== undefined) return cached;
+
+    if (!this.getSharedRepoDir) {
+      return false;
+    }
+
+    let hasWorkflows = false;
+    try {
+      const repoDir = this.getSharedRepoDir(repoUrl);
+      const workflowDir = path.join(repoDir, ".github", "workflows");
+      if (fs.existsSync(workflowDir)) {
+        const entries = fs.readdirSync(workflowDir);
+        hasWorkflows = entries.some(
+          (f) => f.endsWith(".yml") || f.endsWith(".yaml"),
+        );
+      }
+    } catch {
+      // If we can't read the directory, assume no workflows
+    }
+
+    this.repoHasWorkflows.set(repoKey, hasWorkflows);
+    return hasWorkflows;
+  }
+
   private startPolling(repoKey: string, owner: string, repo: string): void {
     const timer = setInterval(() => {
       this.pollRepo(repoKey, owner, repo).catch((err: unknown) => {
@@ -496,6 +536,17 @@ export class PrStatusPoller {
         this.lastPrNodes.set(session.id, prNode);
 
         const summary = parsePrNode(prNode, session.id);
+
+        // If GitHub reports no checks yet but the repo has workflow files,
+        // treat as "pending" — checks just haven't registered yet.
+        if (
+          summary.checks.state === "none" &&
+          session.remoteUrl &&
+          this.checkRepoHasWorkflows(repoKey, session.remoteUrl)
+        ) {
+          summary.checks.state = "pending";
+        }
+
         const prev = this.lastKnown.get(session.id);
 
         // Handle auto-fix state transitions

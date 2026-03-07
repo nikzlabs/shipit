@@ -120,6 +120,12 @@ export async function registerGitHubRoutes(
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
       try {
+        // Block merge if CI checks haven't registered yet (workflow files exist but no checks reported)
+        const prStatus = deps.prStatusPoller?.getStatus(request.params.id);
+        if (prStatus?.checks.state === "pending" && prStatus.checks.total === 0) {
+          return { success: false, message: "Waiting for CI checks to start" };
+        }
+
         const git = createGitManager(dir);
         return await mergePullRequest(git, deps.githubAuthManager, request.body?.method);
       } catch (err) {
