@@ -34,6 +34,9 @@ export interface SettingsProps {
   onGitIdentitySave: (name: string, email: string) => void;
   maxIdleContainers: number;
   onMaxIdleContainersSave: (n: number) => void;
+  agentSystemInstructionsEnabled: boolean;
+  agentSystemInstructions: string;
+  onToggleAgentSystemInstructions: (enabled: boolean) => void;
   deployTargets: DeployTargetInfo[];
   deployConfigStatus: Record<string, { configured: boolean; projectName?: string }>;
   onDeployConfigure: (targetId: string, credentials: Record<string, string>, projectName?: string) => void;
@@ -61,6 +64,9 @@ export function Settings({
   onGitIdentitySave,
   maxIdleContainers,
   onMaxIdleContainersSave,
+  agentSystemInstructionsEnabled,
+  agentSystemInstructions,
+  onToggleAgentSystemInstructions,
   deployTargets,
   deployConfigStatus,
   onDeployConfigure,
@@ -85,6 +91,7 @@ export function Settings({
   const [gitSaved, setGitSaved] = useState(false);
   const [idleContainers, setIdleContainers] = useState(maxIdleContainers);
   const [idleContainersSaved, setIdleContainersSaved] = useState(false);
+  const [instructionsExpanded, setInstructionsExpanded] = useState(false);
   const savedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -257,10 +264,59 @@ export function Settings({
 
           {activeTab === "instructions" && (
             <div className="flex-1 min-w-0 px-5 py-4 flex flex-col gap-3 overflow-y-auto">
-              <p className="text-sm text-(--color-text-secondary)">
-                These instructions are sent to the agent with every message. Use them to define project
-                conventions, preferred libraries, or style guidelines.
-              </p>
+              {/* Agent system instructions (built-in) */}
+              <div className="rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3 space-y-2" data-testid="agent-system-instructions">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-medium text-(--color-text-primary)">ShipIt Agent Instructions</h3>
+                    <p className="text-xs text-(--color-text-tertiary) mt-0.5">
+                      Built-in context sent with every message to help the agent understand the ShipIt environment.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => onToggleAgentSystemInstructions(!agentSystemInstructionsEnabled)}
+                    className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+                      agentSystemInstructionsEnabled ? "bg-(--color-accent)" : "bg-(--color-bg-hover)"
+                    }`}
+                    role="switch"
+                    aria-checked={agentSystemInstructionsEnabled}
+                    data-testid="agent-instructions-toggle"
+                  >
+                    <span
+                      className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                        agentSystemInstructionsEnabled ? "translate-x-4.5" : "translate-x-0.5"
+                      }`}
+                    />
+                  </button>
+                </div>
+                {agentSystemInstructions && (
+                  <div>
+                    <button
+                      onClick={() => setInstructionsExpanded(!instructionsExpanded)}
+                      className="text-xs text-(--color-text-link) hover:text-(--color-accent) transition-colors"
+                      data-testid="agent-instructions-expand"
+                    >
+                      {instructionsExpanded ? "Hide instructions" : "View instructions"}
+                    </button>
+                    {instructionsExpanded && (
+                      <pre className="mt-2 text-xs text-(--color-text-secondary) whitespace-pre-wrap bg-(--color-bg-primary) rounded-md p-2 border border-(--color-border-secondary) max-h-48 overflow-y-auto" data-testid="agent-instructions-content">
+                        {agentSystemInstructions}
+                      </pre>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="border-t border-(--color-border-secondary)" />
+
+              {/* User custom instructions */}
+              <div>
+                <h3 className="text-sm font-medium text-(--color-text-primary) mb-1">Your Instructions</h3>
+                <p className="text-xs text-(--color-text-secondary) mb-2">
+                  Custom instructions sent to the agent with every message. Use them to define project
+                  conventions, preferred libraries, or style guidelines.
+                </p>
+              </div>
 
               <textarea
                 ref={textareaRef}

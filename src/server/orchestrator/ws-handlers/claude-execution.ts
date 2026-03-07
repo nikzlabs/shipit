@@ -4,6 +4,7 @@ import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, resolveFileAttachments, formatFileContext } from "../validation.js";
 import { wireAgentListeners } from "./agent-listeners.js";
 import { postTurnCommit } from "./post-turn.js";
+import { AGENT_SYSTEM_INSTRUCTIONS } from "../agent-instructions.js";
 
 /** Full handler context — send-message handlers need all three sub-contexts. */
 type FullCtx = ConnectionCtx & RunnerCtx & AppCtx;
@@ -219,8 +220,12 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
     }
   });
 
-  // Build the system prompt, incorporating conversation replay (from rollback/fork)
-  let systemPrompt = await ctx.readSystemPrompt();
+  // Build the system prompt, incorporating agent system instructions and conversation replay
+  const agentInstructions = ctx.credentialStore.getAgentSystemInstructionsEnabled()
+    ? AGENT_SYSTEM_INSTRUCTIONS
+    : undefined;
+  const userSystemPrompt = await ctx.readSystemPrompt();
+  let systemPrompt = [agentInstructions, userSystemPrompt].filter(Boolean).join("\n\n") || undefined;
   const activeAppSessionId = ctx.getActiveAppSessionId();
   if (activeAppSessionId) {
     const sessionReplay = ctx.sessionManager.consumeConversationReplay(activeAppSessionId);

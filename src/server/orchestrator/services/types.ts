@@ -21,6 +21,8 @@ export interface GlobalSettings {
   agents: AgentInfo[];
   defaultAgentId: AgentId;
   maxIdleContainers: number;
+  agentSystemInstructionsEnabled: boolean;
+  agentSystemInstructions: string;
 }
 
 export interface GitHubStatus {
