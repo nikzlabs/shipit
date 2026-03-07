@@ -47,7 +47,7 @@ Every session gets two containers on the same bridge network:
 
 The core security property: **Claude cannot read user secrets, but the preview can.**
 
-Users configure secrets (API keys for Clerk, Stripe, Supabase, etc.) through the ShipIt Secrets tab. These must be:
+Users typically store secrets (API keys for Clerk, Stripe, Supabase, etc.) in `.env` or `.env.local` files. In ShipIt, these are managed through the Secrets tab instead. These must be:
 - Available to the dev server as environment variables
 - Editable by the user (through the ShipIt UI)
 - Persistent across sessions and preview restarts
