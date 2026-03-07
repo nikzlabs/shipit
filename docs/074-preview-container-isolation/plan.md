@@ -114,7 +114,7 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 
 - `buildEnv()` — add `WORKER_MODE` to the env vars passed to Docker. Session containers get `WORKER_MODE=session`, preview containers get `WORKER_MODE=preview`.
 
-- `buildContainerConfig()` — reduce default memory from 512 MB to 256 MB for session containers
+- No changes to `buildContainerConfig()` memory defaults — `DEFAULT_MEMORY_LIMIT` lives in `session-container.ts`
 
 #### `session-container.ts` / `SessionContainerManager`
 
@@ -140,6 +140,7 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 
 - Add `previewWorkerUrl` field (today only `workerUrl` exists, pointing at the session container). All preview-related POSTs (`/preview/start`, `/preview/stop`, `/preview/restart`) go to `previewWorkerUrl` instead of `workerUrl`.
 - `startWorkerResources()` pushes secrets via `PUT /secrets`, then sends `POST /preview/start` to `previewWorkerUrl`
+- `stopWorkerResources()` sends `POST /preview/stop` to `previewWorkerUrl` (today it sends to `workerUrl`)
 - Preview SSE events come from the preview container's `/events` endpoint
 - Connect two SSE streams: one to session worker (agent, terminal, files), one to preview worker (preview events). Each stream has independent reconnection state (backoff counter, reconnect timer). The existing `handleSSEDisconnect()` logic is refactored to be per-stream rather than global.
 
@@ -236,9 +237,9 @@ The following code exists today for preview-in-session-container and must be del
 | `session-worker.ts` | Preview endpoint registrations (`POST /preview/start`, `/preview/stop`, `/preview/restart`, `GET /preview/status`) in `WORKER_MODE=session` path | These endpoints only exist in the `WORKER_MODE=preview` path |
 | `session-worker.ts` | `PreviewManager` instantiation, `_preview` field, `_previewLogBuffer`, `_lastPreviewExitCode`, `wirePreviewEvents()` in `WORKER_MODE=session` path | Moved to `WORKER_MODE=preview` path only |
 | `session-worker.ts` | Preview-related SSE events (`preview_ready`, `preview_stopped`, `preview_config_*`, `preview_install_status`, `preview_log`) in `WORKER_MODE=session` path | Only emitted by the preview worker's SSE stream |
-| `container-session-runner.ts` | `startPreviewOnWorker()`, `stopPreviewOnWorker()`, `restartPreviewOnWorker()` sending to `this.workerUrl` | Replaced by methods sending to `this.previewWorkerUrl` |
+| `container-session-runner.ts` | `startPreviewOnWorker()`, `stopPreviewOnWorker()`, `restartPreviewOnWorker()` sending to `this.workerUrl`; `startWorkerResources()` and `stopWorkerResources()` sending preview commands to `this.workerUrl` | All replaced by methods sending to `this.previewWorkerUrl`. `startWorkerResources()` also gains the secrets push step. |
 | `container-session-runner.ts` | Preview SSE event handling (`preview_ready`, `preview_stopped`, etc.) on the session SSE stream | Handled on the preview SSE stream instead |
-| `api-routes-preview.ts` | `POST /api/sessions/:id/preview/restart` calling `containerRunner.restartPreviewOnWorker()` | Same route, but the runner method now targets `previewWorkerUrl` |
+| `api-routes-preview.ts` | All three routes (`GET preview-status`, `POST preview/restart`, `POST preview-errors`) calling methods on `containerRunner` that target `workerUrl` | Same routes, but the runner methods now target `previewWorkerUrl` |
 | `preview-proxy.ts` | `sc.containerIp` used as the proxy target IP | Replaced with `sc.previewContainerIp` |
 
 No old code should remain that sends preview commands to the session container or expects preview events on the session SSE stream.
@@ -255,6 +256,6 @@ No old code should remain that sends preview commands to the session container o
 | `src/server/orchestrator/container-session-runner.ts` | `previewWorkerUrl`, secrets push before preview start, dual SSE streams, per-stream reconnection |
 | `src/server/orchestrator/secret-store.ts` | New `SecretStore` class — per-repo secrets in SQLite |
 | `src/server/orchestrator/api-routes.ts` | Secrets CRUD endpoints (`GET/PUT /api/secrets`) |
-| `src/server/orchestrator/api-routes-preview.ts` | Preview restart route now targets `previewWorkerUrl` |
+| `src/server/orchestrator/api-routes-preview.ts` | All preview routes (`preview-status`, `preview/restart`, `preview-errors`) now target `previewWorkerUrl` |
 | `src/client/components/Settings.tsx` | Secrets tab in Settings modal (Project section) |
 | `src/client/stores/ui-store.ts` | Add `"secrets"` to `SettingsTab` type |
