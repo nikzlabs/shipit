@@ -803,6 +803,7 @@ export default function App() {
               );
               if (res.success && res.sessionId) {
                 useRepoStore.getState().setNewRepoDialogOpen(false);
+                if (res.repoUrl) useRepoStore.getState().setActiveRepoUrl(res.repoUrl);
                 void navigate(`/session/${res.sessionId}`);
               } else {
                 useUiStore.getState().setToast({ message: res.message || "Failed to create repository" });
