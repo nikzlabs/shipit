@@ -163,7 +163,7 @@ function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: 
       <button
         onClick={handleMerge}
         disabled={merging}
-        className="px-2 py-0.5 text-xs font-medium bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-l transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        className="px-2 py-0.5 text-xs font-medium whitespace-nowrap bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-l transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {merging ? "Merging..." : label}
       </button>
