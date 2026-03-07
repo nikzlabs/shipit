@@ -15,6 +15,23 @@ import {
   CONTAINER_STACK_LABEL,
 } from "./session-container.js";
 import type { ContainerConfig } from "./session-container.js";
+import { INTERNAL_GIT_MOUNT } from "./container-lifecycle.js";
+
+// Stub fs operations used by writeGitOverride / removeGitOverride so tests
+// don't touch the real filesystem.
+vi.mock("node:fs", async (importOriginal) => {
+  // eslint-disable-next-line no-restricted-syntax -- vi.mock requires dynamic import for original module
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    default: {
+      ...actual,
+      mkdirSync: vi.fn(),
+      writeFileSync: vi.fn(),
+      unlinkSync: vi.fn(),
+    },
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Mock Docker types
@@ -246,20 +263,20 @@ describe("SessionContainerManager", () => {
       );
     });
 
-    it("includes shared repo mount for worktree sessions (bind mount)", async () => {
+    it("includes shared repo mount at hidden path for worktree sessions (bind mount)", async () => {
       const config = buildConfig({
         sharedRepoDir: "/workspace/repos/abc123",
       });
       await manager.create(config);
 
-      // Shared repo is mounted at its original absolute path (not /repo)
-      // so that worktree .git file references resolve correctly inside
-      // the container.
+      // Shared repo is mounted at a hidden internal path so the AI agent
+      // cannot discover it. A .git override file is mounted at /user/.git
+      // to rewrite the gitdir reference.
       expect(mockDocker.createContainer).toHaveBeenCalledWith(
         expect.objectContaining({
           HostConfig: expect.objectContaining({
             Binds: expect.arrayContaining([
-              "/workspace/repos/abc123:/workspace/repos/abc123:rw",
+              `/workspace/repos/abc123:${INTERNAL_GIT_MOUNT}:rw`,
             ]),
           }),
         }),
@@ -283,7 +300,7 @@ describe("SessionContainerManager", () => {
       await manager.create(config);
 
       // When using a workspace volume, shared repo is mounted via volume
-      // subpath at the original absolute path for worktree .git references.
+      // subpath at a hidden internal path so the AI agent cannot discover it.
       expect(mockDocker.createContainer).toHaveBeenCalledWith(
         expect.objectContaining({
           HostConfig: expect.objectContaining({
@@ -291,7 +308,7 @@ describe("SessionContainerManager", () => {
               expect.objectContaining({
                 Type: "volume",
                 Source: "shipit_workspace",
-                Target: "/workspace/repos/abc123",
+                Target: INTERNAL_GIT_MOUNT,
                 VolumeOptions: { Subpath: "repos/abc123" },
               }),
             ]),

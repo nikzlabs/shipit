@@ -64,6 +64,20 @@ interface MountSpec {
 /** Container-internal mount point for the shared dependency cache. */
 export const DEP_CACHE_CONTAINER_PATH = "/dep-cache";
 
+/**
+ * Container-internal mount point for the shared git repo. Hidden path to
+ * prevent the AI agent from discovering and writing to the shared repo
+ * instead of the session worktree at /user.
+ */
+export const INTERNAL_GIT_MOUNT = "/.shipit-internal-git";
+
+/**
+ * Host-side directory (relative to /workspace) for .git override files.
+ * Each file rewrites the worktree gitdir reference to use INTERNAL_GIT_MOUNT
+ * so the original /workspace/repos/... path is never exposed inside containers.
+ */
+const GIT_OVERRIDE_DIR = "/workspace/.git-overrides";
+
 export function buildMounts(
   config: ContainerConfig,
   workspaceVolume: string | undefined,
@@ -95,22 +109,32 @@ export function buildMounts(
     binds.push(`${config.credentialsDir}:/credentials:rw`);
   }
 
-  // For worktree sessions, mount the shared repo at its ORIGINAL absolute
-  // path so that the worktree's .git file (which contains an absolute gitdir
-  // reference like /workspace/repos/{hash}/.git/worktrees/{branch}) resolves
-  // correctly inside the container. Read-write is required because git commits
-  // in a worktree write objects to the shared repo's object store.
+  // For worktree sessions, mount the shared repo at a HIDDEN path so the AI
+  // agent cannot discover it by exploring /workspace. The worktree's .git file
+  // (which contains an absolute gitdir reference) is overridden via a separate
+  // mount to point at the hidden path. Read-write is required because git
+  // commits in a worktree write objects to the shared repo's object store.
   if (config.sharedRepoDir) {
     if (workspaceVolume) {
       const repoRelPath = config.sharedRepoDir.replace(/^\/workspace\//, "");
       mounts.push({
         Type: "volume",
         Source: workspaceVolume,
-        Target: config.sharedRepoDir,
+        Target: INTERNAL_GIT_MOUNT,
         VolumeOptions: { Subpath: repoRelPath },
       });
+      // Shadow /user/.git with a rewritten gitdir reference pointing to the
+      // hidden mount path instead of the original /workspace/repos/... path.
+      const gitOverrideRelPath = `.git-overrides/${config.sessionId}`;
+      mounts.push({
+        Type: "volume",
+        Source: workspaceVolume,
+        Target: "/user/.git",
+        VolumeOptions: { Subpath: gitOverrideRelPath },
+      });
     } else {
-      binds.push(`${config.sharedRepoDir}:${config.sharedRepoDir}:rw`);
+      binds.push(`${config.sharedRepoDir}:${INTERNAL_GIT_MOUNT}:rw`);
+      binds.push(`${config.sessionDir}/.git-override:/user/.git:rw`);
     }
   }
 
@@ -196,6 +220,46 @@ export async function waitForWorkerHealth(workerUrl: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Git override helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Write a .git override file that rewrites the gitdir reference from the
+ * original host path to the hidden container-internal mount path.
+ *
+ * The override file is mounted at /user/.git inside the container, shadowing
+ * the original worktree .git file so that git resolves against
+ * INTERNAL_GIT_MOUNT instead of /workspace/repos/....
+ */
+export function writeGitOverride(config: ContainerConfig, workspaceVolume: string | undefined): void {
+  if (!config.sharedRepoDir) return;
+
+  const gitdirContent = `gitdir: ${INTERNAL_GIT_MOUNT}/.git/worktrees/${config.sessionId}\n`;
+
+  if (workspaceVolume) {
+    // Volume mode: write to the .git-overrides directory on the workspace volume
+    fs.mkdirSync(GIT_OVERRIDE_DIR, { recursive: true });
+    fs.writeFileSync(`${GIT_OVERRIDE_DIR}/${config.sessionId}`, gitdirContent);
+  } else {
+    // Bind mode: write alongside the session directory
+    fs.writeFileSync(`${config.sessionDir}/.git-override`, gitdirContent);
+  }
+}
+
+/** Remove the .git override file created by writeGitOverride. */
+export function removeGitOverride(sessionId: string, sessionDir: string | undefined, workspaceVolume: string | undefined): void {
+  try {
+    if (workspaceVolume) {
+      fs.unlinkSync(`${GIT_OVERRIDE_DIR}/${sessionId}`);
+    } else if (sessionDir) {
+      fs.unlinkSync(`${sessionDir}/.git-override`);
+    }
+  } catch {
+    // File may not exist
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Create
 // ---------------------------------------------------------------------------
 
@@ -211,6 +275,10 @@ export async function createContainer(
   if (config.depCacheDir) {
     fs.mkdirSync(config.depCacheDir, { recursive: true });
   }
+
+  // Write the .git override file before computing mounts (it will be mounted
+  // at /user/.git to shadow the original worktree gitdir reference).
+  writeGitOverride(config, deps.workspaceVolume);
 
   const { binds, mounts, workspaceDir } = buildMounts(
     config,
@@ -444,6 +512,9 @@ export async function destroyContainer(
     // Container may already be gone
   }
 
+  // Clean up the .git override file
+  removeGitOverride(sessionId, sc.hostWorkspaceDir, deps.workspaceVolume);
+
   sc.status = "stopped";
   deps.containers.delete(sessionId);
   deps.emitter.emit("container_destroyed", sessionId);
@@ -479,18 +550,26 @@ export function buildPreviewMounts(
     binds.push(`${config.sessionDir}:/user:rw`);
   }
 
-  // Worktree: mount shared repo at its original absolute path
+  // Worktree: mount shared repo at hidden path (same as session container)
   if (config.sharedRepoDir) {
     if (workspaceVolume) {
       const repoRelPath = config.sharedRepoDir.replace(/^\/workspace\//, "");
       mounts.push({
         Type: "volume",
         Source: workspaceVolume,
-        Target: config.sharedRepoDir,
+        Target: INTERNAL_GIT_MOUNT,
         VolumeOptions: { Subpath: repoRelPath },
       });
+      const gitOverrideRelPath = `.git-overrides/${config.sessionId}`;
+      mounts.push({
+        Type: "volume",
+        Source: workspaceVolume,
+        Target: "/user/.git",
+        VolumeOptions: { Subpath: gitOverrideRelPath },
+      });
     } else {
-      binds.push(`${config.sharedRepoDir}:${config.sharedRepoDir}:rw`);
+      binds.push(`${config.sharedRepoDir}:${INTERNAL_GIT_MOUNT}:rw`);
+      binds.push(`${config.sessionDir}/.git-override:/user/.git:rw`);
     }
   }
 
@@ -522,6 +601,9 @@ export async function createPreviewContainer(
   config: ContainerConfig,
   previewMemoryLimit: number,
 ): Promise<{ id: string; ip: string; workerUrl: string }> {
+  // Ensure the .git override file exists (may already exist from session container).
+  writeGitOverride(config, deps.workspaceVolume);
+
   // Ensure the dep cache directory exists on the host before mounting.
   if (config.depCacheDir) {
     fs.mkdirSync(config.depCacheDir, { recursive: true });

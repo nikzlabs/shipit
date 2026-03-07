@@ -748,9 +748,12 @@ export function createWarmPool(
             containerManager.createStandby(config).then(async (sc) => {
               console.log(`[warm] Standby container ready for ${appSessionId} at ${sc.workerUrl}`);
               // Pre-run install so the user doesn't wait for it on activation.
+              // Preview endpoints live on the preview container, not the session container.
               try {
-                await workerPost(sc.workerUrl, "/preview/start");
-                console.log(`[warm] Pre-started preview/install for ${appSessionId}`);
+                if (sc.previewWorkerUrl) {
+                  await workerPost(sc.previewWorkerUrl, "/preview/start");
+                  console.log(`[warm] Pre-started preview/install for ${appSessionId}`);
+                }
               } catch (err: unknown) {
                 console.error(`[warm] Pre-start preview failed for ${appSessionId}:`, getErrorMessage(err));
               }
