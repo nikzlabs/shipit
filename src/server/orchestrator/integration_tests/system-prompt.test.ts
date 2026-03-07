@@ -20,6 +20,7 @@ import {
   createTestDatabaseManager,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
+import { AGENT_SYSTEM_INSTRUCTIONS } from "../agent-instructions.js";
 
 describe("Integration: System prompt", () => {
   let app: FastifyInstance;
@@ -78,19 +79,46 @@ describe("Integration: System prompt", () => {
     client.send({ type: "send_message", text: "Hello" });
     await waitForClaude(() => lastClaude);
 
-    expect(lastClaude.lastSystemPrompt).toBe("Be concise.");
+    expect(lastClaude.lastSystemPrompt).toBe(`${AGENT_SYSTEM_INSTRUCTIONS}\n\nBe concise.`);
 
     client.close();
   });
 
-  it("system prompt is undefined when no file exists", async () => {
+  it("system prompt contains only agent instructions when no user prompt file exists", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     client.send({ type: "send_message", text: "Hello" });
     await waitForClaude(() => lastClaude);
 
-    expect(lastClaude.lastSystemPrompt).toBeUndefined();
+    expect(lastClaude.lastSystemPrompt).toBe(AGENT_SYSTEM_INSTRUCTIONS);
+
+    client.close();
+  });
+
+  it("agent system instructions are omitted when disabled", async () => {
+    // Disable agent system instructions
+    const disableRes = await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { agentSystemInstructionsEnabled: false },
+    });
+    expect(disableRes.statusCode).toBe(200);
+
+    // Set a user system prompt
+    await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { systemPrompt: "Be concise." },
+    });
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Hello" });
+    await waitForClaude(() => lastClaude);
+
+    expect(lastClaude.lastSystemPrompt).toBe("Be concise.");
 
     client.close();
   });

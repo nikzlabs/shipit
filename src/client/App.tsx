@@ -132,6 +132,8 @@ export default function App() {
   const githubStatus = useSettingsStore((s) => s.githubStatus);
   const hasSystemPrompt = useSettingsStore((s) => s.hasSystemPrompt);
   const systemPromptContent = useSettingsStore((s) => s.systemPromptContent);
+  const agentSystemInstructionsEnabled = useSettingsStore((s) => s.agentSystemInstructionsEnabled);
+  const agentSystemInstructions = useSettingsStore((s) => s.agentSystemInstructions);
   const maxIdleContainers = useSettingsStore((s) => s.maxIdleContainers);
 
   const rightTab = useUiStore((s) => s.rightTab);
@@ -450,11 +452,13 @@ export default function App() {
     useUiStore.getState().setSettingsTab(tab);
     useUiStore.getState().setSettingsOpen(true);
     try {
-      const data = await apiGet<{ settings: { gitIdentity: { name: string; email: string }; systemPrompt: string; agents: AgentOption[]; defaultAgentId: string; maxIdleContainers?: number } }>("/api/bootstrap");
+      const data = await apiGet<{ settings: { gitIdentity: { name: string; email: string }; systemPrompt: string; agents: AgentOption[]; defaultAgentId: string; maxIdleContainers?: number; agentSystemInstructionsEnabled?: boolean; agentSystemInstructions?: string } }>("/api/bootstrap");
       useGitStore.getState().setIdentity(data.settings.gitIdentity);
       useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
       useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
       if (data.settings.maxIdleContainers !== null && data.settings.maxIdleContainers !== undefined) useSettingsStore.getState().setMaxIdleContainers(data.settings.maxIdleContainers);
+      if (data.settings.agentSystemInstructionsEnabled !== undefined) useSettingsStore.getState().setAgentSystemInstructionsEnabled(data.settings.agentSystemInstructionsEnabled);
+      if (data.settings.agentSystemInstructions) useSettingsStore.getState().setAgentSystemInstructions(data.settings.agentSystemInstructions);
       useUiStore.getState().setAgentList(data.settings.agents);
     } catch { /* ignore */ }
   }, [apiGet]);
@@ -682,6 +686,9 @@ export default function App() {
           onGitIdentitySave={(name, email) => useGitStore.getState().submitGitIdentity(name, email).catch(() => {})}
           maxIdleContainers={maxIdleContainers}
           onMaxIdleContainersSave={async (n) => { try { const raw = await apiPut("/api/settings", { maxIdleContainers: n }); const res = raw as Record<string, unknown>; if (res.maxIdleContainers !== null && res.maxIdleContainers !== undefined) useSettingsStore.getState().setMaxIdleContainers(res.maxIdleContainers as number); } catch (err) { console.error("[settings] Failed to save max idle containers:", err); } }}
+          agentSystemInstructionsEnabled={agentSystemInstructionsEnabled}
+          agentSystemInstructions={agentSystemInstructions}
+          onToggleAgentSystemInstructions={async (enabled) => { try { const raw = await apiPut("/api/settings", { agentSystemInstructionsEnabled: enabled }); const res = raw as Record<string, unknown>; if (res.agentSystemInstructionsEnabled !== undefined) useSettingsStore.getState().setAgentSystemInstructionsEnabled(!!res.agentSystemInstructionsEnabled); } catch (err) { console.error("[settings] Failed to toggle agent system instructions:", err); } }}
           deployTargets={deployTargets} deployConfigStatus={deployConfigStatus}
           onDeployConfigure={(targetId, creds, projectName) => { const sid = useSessionStore.getState().sessionId; if (sid) useDeployStore.getState().configure(sid, targetId, creds, projectName).catch(() => {}); }}
           onDeployDeleteConfig={(targetId) => { const sid = useSessionStore.getState().sessionId; if (sid) useDeployStore.getState().deleteConfig(sid, targetId).catch(() => {}); }}

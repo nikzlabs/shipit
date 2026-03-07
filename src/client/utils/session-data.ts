@@ -47,6 +47,8 @@ interface BootstrapResponse {
     gitIdentity: { name: string; email: string };
     systemPrompt: string;
     maxIdleContainers?: number | null;
+    agentSystemInstructionsEnabled?: boolean;
+    agentSystemInstructions?: string;
   };
 }
 
@@ -134,5 +136,7 @@ export async function loadBootstrapData(): Promise<void> {
   useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
   useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
   if (data.settings.maxIdleContainers !== null && data.settings.maxIdleContainers !== undefined) useSettingsStore.getState().setMaxIdleContainers(data.settings.maxIdleContainers);
+  if (data.settings.agentSystemInstructionsEnabled !== undefined) useSettingsStore.getState().setAgentSystemInstructionsEnabled(data.settings.agentSystemInstructionsEnabled);
+  if (data.settings.agentSystemInstructions) useSettingsStore.getState().setAgentSystemInstructions(data.settings.agentSystemInstructions);
   useUiStore.getState().setBootstrapLoaded(true);
 }

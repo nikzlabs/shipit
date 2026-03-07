@@ -52,13 +52,14 @@ export async function registerBootstrapRoutes(
   );
 
   // PUT /api/settings — save global settings
-  app.put<{ Body: { gitIdentity?: { name: string; email: string }; systemPrompt?: string; maxIdleContainers?: number } }>(
+  app.put<{ Body: { gitIdentity?: { name: string; email: string }; systemPrompt?: string; maxIdleContainers?: number; agentSystemInstructionsEnabled?: boolean } }>(
     "/api/settings",
     async (request, reply) => {
       try {
         return await saveGlobalSettings(
           deps.agentRegistry, deps.defaultAgentId, deps.workspaceDir, deps.credentialStore,
           request.body.gitIdentity, request.body.systemPrompt, request.body.maxIdleContainers,
+          request.body.agentSystemInstructionsEnabled,
         );
       } catch (err) {
         if (err instanceof ServiceError) {
