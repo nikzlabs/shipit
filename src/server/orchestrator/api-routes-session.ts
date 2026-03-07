@@ -379,7 +379,7 @@ export async function registerSessionRoutes(
           deps.repoStore.add(result.repoUrl);
           deps.repoStore.setReady(result.repoUrl);
           deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });
-          deps.warmSessionForRepo?.(result.repoUrl);
+          void deps.warmSessionForRepo?.(result.repoUrl);
           // Wait for the warm session so we can return its ID
           const warmingPromise = deps.waitForWarmSession?.(result.repoUrl);
           if (warmingPromise) {
