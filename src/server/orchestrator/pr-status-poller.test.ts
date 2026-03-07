@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { PrStatusPoller, parsePrNode, extractHeadSha, extractFailedCheckRuns } from "./pr-status-poller.js";
 import type { SessionManager } from "./sessions.js";
@@ -630,6 +631,133 @@ describe("PrStatusPoller — catch-up probe", () => {
     // Probe should NOT have been called since the GraphQL query found an open PR
     expect(githubAuth.findPullRequestAnyState).not.toHaveBeenCalled();
 
+    poller.destroy();
+  });
+});
+
+// ---- Workflow detection: none → pending override ----
+
+describe("PrStatusPoller — workflow-aware CI state", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("overrides checks.state to 'pending' when repo has workflow files and no checks reported", async () => {
+    const noCiNode = makeGraphQLPrNode({
+      commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
+    });
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [noCiNode] } } },
+    };
+
+    const githubAuth = makeGitHubAuth(graphqlResult);
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const sseBroadcast = vi.fn();
+
+    // Mock fs to simulate workflow files existing
+    const existsSyncSpy = vi.spyOn(fs, "existsSync").mockReturnValue(true);
+    const readdirSyncSpy = vi.spyOn(fs, "readdirSync").mockReturnValue(["ci.yml"] as never);
+
+    const poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      getSharedRepoDir: () => "/repos/owner/repo",
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
+      updates: [expect.objectContaining({
+        sessionId: "s1",
+        checks: expect.objectContaining({ state: "pending", total: 0 }),
+      })],
+    }));
+
+    existsSyncSpy.mockRestore();
+    readdirSyncSpy.mockRestore();
+    poller.destroy();
+  });
+
+  it("keeps checks.state as 'none' when repo has no workflow files", async () => {
+    const noCiNode = makeGraphQLPrNode({
+      commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
+    });
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [noCiNode] } } },
+    };
+
+    const githubAuth = makeGitHubAuth(graphqlResult);
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const sseBroadcast = vi.fn();
+
+    // Mock fs to simulate no workflow directory
+    const existsSyncSpy = vi.spyOn(fs, "existsSync").mockReturnValue(false);
+
+    const poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      getSharedRepoDir: () => "/repos/owner/repo",
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
+      updates: [expect.objectContaining({
+        sessionId: "s1",
+        checks: expect.objectContaining({ state: "none", total: 0 }),
+      })],
+    }));
+
+    existsSyncSpy.mockRestore();
+    poller.destroy();
+  });
+
+  it("does not override when checks already reported", async () => {
+    // PR with actual checks (state: "success")
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+    };
+
+    const githubAuth = makeGitHubAuth(graphqlResult);
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const sseBroadcast = vi.fn();
+
+    const existsSyncSpy = vi.spyOn(fs, "existsSync").mockReturnValue(true);
+    const readdirSyncSpy = vi.spyOn(fs, "readdirSync").mockReturnValue(["ci.yml"] as never);
+
+    const poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      getSharedRepoDir: () => "/repos/owner/repo",
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Should remain "success", not overridden to "pending"
+    expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
+      updates: [expect.objectContaining({
+        checks: expect.objectContaining({ state: "success" }),
+      })],
+    }));
+
+    existsSyncSpy.mockRestore();
+    readdirSyncSpy.mockRestore();
     poller.destroy();
   });
 });
