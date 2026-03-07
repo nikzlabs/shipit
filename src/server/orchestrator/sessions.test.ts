@@ -114,7 +114,7 @@ describe("SessionManager", () => {
     const mgr = new SessionManager(dbManager);
     mgr.track("sess-1");
     const list = mgr.list();
-    list.push({ id: "fake", title: "fake", createdAt: "", lastUsedAt: "" });
+    list.push({ id: "fake", title: "fake", createdAt: "", lastUsedAt: "", remoteUrl: "" });
     expect(mgr.list()).toHaveLength(1);
   });
 

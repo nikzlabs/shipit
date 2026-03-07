@@ -19,7 +19,7 @@ export interface SessionInfo {
   /** Per-session workspace directory, e.g. "/workspace/sessions/abc123". */
   workspaceDir?: string;
   /** Cached origin remote URL (e.g. "https://github.com/owner/repo.git"). */
-  remoteUrl?: string;
+  remoteUrl: string;
   /** Whether this session has been archived (hidden from sidebar). */
   archived?: boolean;
   /** If this session is a worktree, the branch name. */

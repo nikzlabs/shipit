@@ -106,7 +106,7 @@ describe("Integration: bootstrap sessions remoteUrl caching", () => {
 
     const res = await app.inject({ method: "GET", url: "/api/bootstrap" });
     expect(res.statusCode).toBe(200);
-    const sessions = res.json().sessions as { id: string; remoteUrl?: string }[];
+    const sessions = res.json().sessions as { id: string; remoteUrl: string }[];
     const session = sessions.find((s) => s.id === "sess-remote");
     expect(session?.remoteUrl).toBe("https://github.com/owner/repo.git");
   });
@@ -124,7 +124,7 @@ describe("Integration: bootstrap sessions remoteUrl caching", () => {
 
     const res = await app.inject({ method: "GET", url: "/api/bootstrap" });
     expect(res.statusCode).toBe(200);
-    const sessions = res.json().sessions as { id: string; remoteUrl?: string }[];
+    const sessions = res.json().sessions as { id: string; remoteUrl: string }[];
     const session = sessions.find((s) => s.id === "sess-git");
     expect(session?.remoteUrl).toBe("https://github.com/lazy/populated.git");
 
@@ -137,10 +137,10 @@ describe("Integration: bootstrap sessions remoteUrl caching", () => {
 
     const res = await app.inject({ method: "GET", url: "/api/bootstrap" });
     expect(res.statusCode).toBe(200);
-    const sessions = res.json().sessions as { id: string; remoteUrl?: string }[];
+    const sessions = res.json().sessions as { id: string; remoteUrl: string }[];
     const session = sessions.find((s) => s.id === "sess-missing");
-    // Should not crash and remoteUrl stays undefined
-    expect(session?.remoteUrl).toBeUndefined();
+    // Should not crash and remoteUrl stays empty
+    expect(session?.remoteUrl).toBe("");
   });
 
 });

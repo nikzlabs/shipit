@@ -11,6 +11,7 @@ const baseSession = (overrides: Partial<SessionInfo> = {}): SessionInfo => ({
   title: "My session",
   createdAt: new Date(Date.now() - 60_000).toISOString(),
   lastUsedAt: new Date(Date.now() - 60_000).toISOString(),
+  remoteUrl: "",
   ...overrides,
 });
 
