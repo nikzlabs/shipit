@@ -31,10 +31,10 @@ export class SessionManager {
       title: row.title,
       createdAt: row.created_at,
       lastUsedAt: row.last_used_at,
+      remoteUrl: row.remote_url ?? "",
     };
     if (row.agent_session_id) info.agentSessionId = row.agent_session_id;
     if (row.workspace_dir) info.workspaceDir = row.workspace_dir;
-    if (row.remote_url) info.remoteUrl = row.remote_url;
     if (row.conversation_replay) info.conversationReplay = row.conversation_replay;
     if (row.archived) info.archived = true;
     if (row.warm) info.warm = true;
