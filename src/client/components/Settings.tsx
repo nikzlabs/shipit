@@ -14,7 +14,7 @@ import { useUiStore } from "../stores/ui-store.js";
 
 const MAX_LENGTH = 50_000;
 
-type Tab = "agent" | "github" | "git" | "instructions" | "advanced" | "deploy";
+type Tab = "agent" | "github" | "git" | "instructions" | "advanced" | "deploy" | "secrets";
 
 export interface SettingsProps {
   initialContent: string;
@@ -43,6 +43,9 @@ export interface SettingsProps {
   onDeployDeleteConfig: (targetId: string) => void;
   hasActiveSession: boolean;
   onDeployTabSelected?: () => void;
+  repoUrl?: string;
+  onSecretsSave?: (repoUrl: string, secrets: Record<string, string>) => void;
+  onSecretsLoad?: (repoUrl: string) => Promise<Record<string, string>>;
   onClose: () => void;
 }
 
@@ -73,6 +76,9 @@ export function Settings({
   onDeployDeleteConfig,
   hasActiveSession,
   onDeployTabSelected,
+  repoUrl,
+  onSecretsSave,
+  onSecretsLoad,
   onClose,
 }: SettingsProps) {
   const activeTab = useUiStore((s) => s.settingsTab) ?? "agent";
@@ -92,6 +98,10 @@ export function Settings({
   const [idleContainers, setIdleContainers] = useState(maxIdleContainers);
   const [idleContainersSaved, setIdleContainersSaved] = useState(false);
   const [instructionsExpanded, setInstructionsExpanded] = useState(false);
+  const [secretEntries, setSecretEntries] = useState<{ key: string; value: string }[]>([]);
+  const [secretsLoaded, setSecretsLoaded] = useState(false);
+  const [secretsSaving, setSecretsSaving] = useState(false);
+  const [secretsSaved, setSecretsSaved] = useState(false);
   const savedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -100,6 +110,20 @@ export function Settings({
   if (activeTab === "deploy" && !deployNotifiedRef.current) {
     deployNotifiedRef.current = true;
     onDeployTabSelected?.();
+  }
+
+  // Load secrets when secrets tab is opened
+  const secretsLoadedRef = useRef(false);
+  if (activeTab === "secrets" && !secretsLoadedRef.current && repoUrl && onSecretsLoad) {
+    secretsLoadedRef.current = true;
+    // eslint-disable-next-line no-restricted-syntax -- fire-and-forget in sync render context
+    void onSecretsLoad(repoUrl).then((secrets) => {
+      const entries = Object.entries(secrets).map(([key, value]) => ({ key, value }));
+      setSecretEntries(entries);
+      setSecretsLoaded(true);
+    }).catch(() => {
+      setSecretsLoaded(true);
+    });
   }
 
   // Sync local git identity state when props change (e.g. fetched from server)
@@ -162,6 +186,7 @@ export function Settings({
       case "instructions": return "Instructions";
       case "advanced": return "Advanced";
       case "deploy": return "Deploy";
+      case "secrets": return "Secrets";
     }
   };
 
@@ -231,6 +256,21 @@ export function Settings({
               data-testid="settings-tab-deploy"
             >
               Deploy
+            </button>
+            <button
+              onClick={() => { if (hasActiveSession) { setActiveTab("secrets"); } }}
+              disabled={!hasActiveSession}
+              title={!hasActiveSession ? "Requires active session" : undefined}
+              className={`w-full text-left px-4 py-2 text-sm transition-colors ${
+                !hasActiveSession
+                  ? "text-(--color-text-tertiary) cursor-not-allowed"
+                  : activeTab === "secrets"
+                    ? "bg-(--color-bg-secondary) text-(--color-text-primary) font-medium"
+                    : "text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"
+              }`}
+              data-testid="settings-tab-secrets"
+            >
+              Secrets
             </button>
           </nav>
 
@@ -511,6 +551,106 @@ export function Settings({
                   {resetting ? "Resetting..." : confirmingReset ? "Click again to confirm reset" : "Reset Everything"}
                 </button>
               </div>
+            </div>
+          )}
+
+          {activeTab === "secrets" && (
+            <div className="flex-1 min-w-0 px-5 py-4 flex flex-col gap-4 overflow-y-auto" data-testid="secrets-tab">
+              <div className="space-y-1">
+                <h3 className="text-sm font-medium text-(--color-text-primary)">Environment Variables</h3>
+                <p className="text-xs text-(--color-text-secondary)">
+                  Secrets are injected into the preview container only. Claude never sees them.
+                </p>
+              </div>
+
+              {!secretsLoaded ? (
+                <p className="text-sm text-(--color-text-tertiary)">Loading...</p>
+              ) : (
+                <>
+                  <div className="space-y-2">
+                    {secretEntries.map((entry, idx) => (
+                      <div key={idx} className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={entry.key}
+                          onChange={(e) => {
+                            const next = [...secretEntries];
+                            next[idx] = { ...next[idx], key: e.target.value };
+                            setSecretEntries(next);
+                            setSecretsSaved(false);
+                          }}
+                          placeholder="KEY"
+                          className="flex-1 rounded-md bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus) font-mono"
+                          data-testid={`secret-key-${idx}`}
+                        />
+                        <input
+                          type="password"
+                          value={entry.value}
+                          onChange={(e) => {
+                            const next = [...secretEntries];
+                            next[idx] = { ...next[idx], value: e.target.value };
+                            setSecretEntries(next);
+                            setSecretsSaved(false);
+                          }}
+                          placeholder="value"
+                          className="flex-1 rounded-md bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus) font-mono"
+                          data-testid={`secret-value-${idx}`}
+                        />
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            setSecretEntries(secretEntries.filter((_, i) => i !== idx));
+                            setSecretsSaved(false);
+                          }}
+                          className="text-(--color-text-tertiary) hover:text-(--color-error) shrink-0"
+                          aria-label="Remove secret"
+                          data-testid={`secret-remove-${idx}`}
+                        >
+                          &times;
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      setSecretEntries([...secretEntries, { key: "", value: "" }]);
+                      setSecretsSaved(false);
+                    }}
+                    className="text-xs text-(--color-text-link) hover:text-(--color-accent) transition-colors self-start"
+                    data-testid="secret-add"
+                  >
+                    + Add variable
+                  </button>
+
+                  <div className="flex justify-end mt-2">
+                    <Button
+                      variant="primary"
+                      size="md"
+                      disabled={secretsSaving}
+                      onClick={() => {
+                        if (!repoUrl || !onSecretsSave) return;
+                        setSecretsSaving(true);
+                        const secrets: Record<string, string> = {};
+                        for (const entry of secretEntries) {
+                          const k = entry.key.trim();
+                          if (k) secrets[k] = entry.value;
+                        }
+                        onSecretsSave(repoUrl, secrets);
+                        setTimeout(() => {
+                          setSecretsSaving(false);
+                          setSecretsSaved(true);
+                        }, 500);
+                      }}
+                      className="rounded-md"
+                      data-testid="secrets-save"
+                    >
+                      {secretsSaving ? "Saving..." : secretsSaved ? "Saved" : "Save"}
+                    </Button>
+                  </div>
+                </>
+              )}
             </div>
           )}
 

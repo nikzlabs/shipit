@@ -158,8 +158,8 @@ export async function mergePullRequest(
 /** Generate a PR description using the agent's generateText capability. */
 export async function generatePrDescription(
   git: GitManager,
-  generateText: (prompt: string, cwd?: string) => Promise<string>,
-  sessionDir?: string,
+  generateText: (prompt: string, cwd: string) => Promise<string>,
+  sessionDir: string,
 ): Promise<{ description: string }> {
   const log = await git.log(20);
   const diff = await git.diffSummary();
@@ -192,10 +192,10 @@ export async function quickCreatePr(
   git: GitManager,
   githubAuthManager: GitHubAuthManager,
   chatHistoryManager: ChatHistoryManager,
-  generateText: (prompt: string, cwd?: string) => Promise<string>,
+  generateText: (prompt: string, cwd: string) => Promise<string>,
   sessionId: string,
   sessionTitle: string,
-  sessionDir?: string,
+  sessionDir: string,
 ): Promise<{
   number: number;
   url: string;
@@ -289,10 +289,10 @@ export async function quickCreatePr(
 async function generatePrDescriptionFromContext(
   git: GitManager,
   chatHistoryManager: ChatHistoryManager,
-  generateText: (prompt: string, cwd?: string) => Promise<string>,
+  generateText: (prompt: string, cwd: string) => Promise<string>,
   sessionId: string,
   baseBranch: string,
-  sessionDir?: string,
+  sessionDir: string,
 ): Promise<string> {
   try {
     const messages = chatHistoryManager.load(sessionId);

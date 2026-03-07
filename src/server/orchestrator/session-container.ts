@@ -19,6 +19,7 @@ import Docker from "dockerode";
 import { EventEmitter } from "node:events";
 import {
   createContainer,
+  createPreviewContainer,
   destroyContainer,
   buildContainerConfig,
   type LifecycleDeps,
@@ -46,10 +47,14 @@ export {
   DEP_CACHE_CONTAINER_PATH,
   waitForWorkerHealth,
   createContainer,
+  createPreviewContainer,
+  buildPreviewMounts,
+  PREVIEW_CONTAINER_LABEL,
   cleanupSessionDockerResources,
   destroyContainer,
   buildContainerConfig,
   type LifecycleDeps,
+  type WorkerMode,
 } from "./container-lifecycle.js";
 
 export {
@@ -115,6 +120,12 @@ export interface SessionContainer {
   sessionNetworkName?: string;
   /** Resource limits for child containers created through the proxy. */
   resourceLimits?: { memory: number; cpuQuota: number; pidsLimit: number };
+  /** Preview container Docker ID. */
+  previewContainerId?: string;
+  /** Preview container bridge network IP. */
+  previewContainerIp?: string;
+  /** Preview worker URL (e.g. http://172.18.0.4:9100). */
+  previewWorkerUrl?: string;
 }
 
 export interface SessionContainerManagerEvents {
@@ -170,7 +181,9 @@ export interface SessionContainerManagerOpts {
 
 const DEFAULT_IMAGE = process.env.SESSION_WORKER_IMAGE;
 const DEFAULT_NETWORK = process.env.DOCKER_NETWORK;
-const DEFAULT_MEMORY_LIMIT = 512 * 1024 * 1024; // 512 MB
+const DEFAULT_MEMORY_LIMIT = 256 * 1024 * 1024; // 256 MB (session container)
+const DEFAULT_PREVIEW_MEMORY_LIMIT = 512 * 1024 * 1024; // 512 MB (preview container)
+const DEFAULT_PREVIEW_PIDS_LIMIT = 1024; // preview runs npm + vite + esbuild — needs more PIDs
 const DEFAULT_CPU_QUOTA = 50_000; // 0.5 CPU (50000 µs per 100ms period)
 const DEFAULT_PIDS_LIMIT = 256;
 const DEFAULT_WORKER_PORT = 9100;
@@ -333,7 +346,23 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * Returns the SessionContainer with its bridge IP and worker URL.
    */
   async create(config: ContainerConfig): Promise<SessionContainer> {
-    return createContainer(this.lifecycleDeps(), config);
+    const sc = await createContainer(this.lifecycleDeps(), config);
+    // Spawn the preview container on the same network
+    try {
+      const preview = await createPreviewContainer(
+        this.lifecycleDeps(),
+        config,
+        DEFAULT_PREVIEW_MEMORY_LIMIT,
+        DEFAULT_PREVIEW_PIDS_LIMIT,
+      );
+      sc.previewContainerId = preview.id;
+      sc.previewContainerIp = preview.ip;
+      sc.previewWorkerUrl = preview.workerUrl;
+    } catch (err) {
+      console.error(`[containers] Failed to create preview container for ${config.sessionId}:`, err);
+      // Session container is usable without preview — don't fail the whole create
+    }
+    return sc;
   }
 
   /**

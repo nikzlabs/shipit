@@ -8,6 +8,7 @@ import {
   buildEnv,
   buildContainerConfig,
   DEP_CACHE_CONTAINER_PATH,
+  INTERNAL_GIT_MOUNT,
 } from "./container-lifecycle.js";
 import type { ContainerConfig } from "./session-container.js";
 
@@ -40,10 +41,11 @@ describe("buildMounts", () => {
     expect(result.mounts).toHaveLength(0);
   });
 
-  it("mounts sharedRepoDir as bind mount when no volume", () => {
+  it("mounts sharedRepoDir at hidden path as bind mount when no volume", () => {
     const config = baseConfig({ sharedRepoDir: "/workspace/repos/abc123" });
     const result = buildMounts(config, undefined, undefined);
-    expect(result.binds).toContain("/workspace/repos/abc123:/workspace/repos/abc123:rw");
+    expect(result.binds).toContain(`/workspace/repos/abc123:${INTERNAL_GIT_MOUNT}:rw`);
+    expect(result.binds).toContain("/workspace/sessions/sess-1/.git-override:/user/.git:rw");
   });
 
   it("mounts depCacheDir at /dep-cache as bind mount when no volume", () => {
@@ -77,7 +79,7 @@ describe("buildMounts", () => {
       depCacheDir: "/workspace/repos/abc123/.dep-cache",
     });
     const result = buildMounts(config, undefined, undefined);
-    expect(result.binds).toContain("/workspace/repos/abc123:/workspace/repos/abc123:rw");
+    expect(result.binds).toContain(`/workspace/repos/abc123:${INTERNAL_GIT_MOUNT}:rw`);
     expect(result.binds).toContain("/workspace/repos/abc123/.dep-cache:/dep-cache:rw");
   });
 });

@@ -42,7 +42,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   readonly sessionDir: string;
   readonly supportsRemoteTerminal = true;
 
-  // Worker connection
+  // Worker connection (session container)
   private workerUrl: string;
   private _workerReady: Promise<void>;
   private _resolveWorkerReady!: () => void;
@@ -52,6 +52,17 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private static readonly MAX_RECONNECT_DELAY_MS = 10_000;
   private _sseConnected: Promise<void> | null = null;
   private _resolveSseConnected: (() => void) | null = null;
+
+  // Preview worker connection (separate container)
+  private previewWorkerUrl: string | null = null;
+  private previewSseConnection: { close: () => void } | null = null;
+  private previewSseReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private previewSseReconnectAttempts = 0;
+  private _previewSseConnected: Promise<void> | null = null;
+  private _resolvePreviewSseConnected: (() => void) | null = null;
+
+  /** Optional callback to load secrets for this session's repo. */
+  private _secretsLoader: (() => Promise<Record<string, string>>) | null = null;
 
   // Agent state (mirrored locally for synchronous access by HandlerContext)
   private _agent: ProxyAgentProcess | null = null;
@@ -99,6 +110,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private static readonly MAX_PREVIEW_LOG_LINES = 50;
   /** Exit code from the last preview process exit, or null if never exited / exited cleanly. */
   private _lastPreviewExitCode: number | null = null;
+  /** Timestamp of last lockfile-triggered preview restart (prevents feedback loop with npm install). */
+  private _lastLockfileRestartTime = 0;
+  /** Cooldown (ms) before another lockfile change can trigger a restart. */
+  private static readonly LOCKFILE_RESTART_COOLDOWN_MS = 30_000;
 
   // Auto-push timer
   private _pushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -121,12 +136,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     sessionDir: string;
     defaultAgentId: AgentId;
     workerUrl: string;
+    previewWorkerUrl?: string;
   }) {
     super();
     this.sessionId = opts.sessionId;
     this.sessionDir = opts.sessionDir;
     this._agentId = opts.defaultAgentId;
     this.workerUrl = opts.workerUrl;
+    this.previewWorkerUrl = opts.previewWorkerUrl ?? null;
     // If workerUrl looks like a placeholder, defer readiness until setWorkerUrl() is called.
     if (opts.workerUrl === "http://0.0.0.0:0") {
       this._workerReady = new Promise<void>((resolve) => { this._resolveWorkerReady = resolve; });
@@ -140,6 +157,21 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   setWorkerUrl(url: string): void {
     this.workerUrl = url;
     this._resolveWorkerReady();
+  }
+
+  /** Update the preview worker URL once the preview container is ready. */
+  setPreviewWorkerUrl(url: string): void {
+    this.previewWorkerUrl = url;
+  }
+
+  /** Set the secrets loader callback (called before preview start). */
+  setSecretsLoader(loader: () => Promise<Record<string, string>>): void {
+    this._secretsLoader = loader;
+  }
+
+  /** Get the effective URL for preview commands. Falls back to session worker URL. */
+  private getPreviewUrl(): string {
+    return this.previewWorkerUrl ?? this.workerUrl;
   }
 
   // --- Agent state (same interface as SessionRunner) ---
@@ -273,11 +305,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     console.log(`[container-runner:${this.sessionId}] attachViewer (count=${this._viewerCount}, disposed=${this._disposed})`);
     if (!this._workerResourcesStarted && !this._disposed) {
       this._workerResourcesStarted = true;
-      // Connect SSE first, then start resources so we don't miss events.
-      // The worker replays current preview state on SSE connect (preview_ready
-      // if running). startWorkerResources() triggers /preview/start which always
-      // produces a definitive event (preview_ready, preview_config_missing, etc.).
-      // No timer needed — the event-driven flow covers all cases.
+      // Connect session SSE first, then start resources so we don't miss events.
+      // startWorkerResources() also connects preview SSE and starts preview.
       // eslint-disable-next-line no-restricted-syntax -- sync method chains async operations
       void this.connectEventStream().then(() => {
         if (!this._disposed) void this.startWorkerResources();
@@ -434,14 +463,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   // --- Worker communication: preview ---
 
-  /** Start the preview server inside the container. */
+  /** Start the preview server inside the preview container. */
   async startPreviewOnWorker(): Promise<void> {
-    await workerPost(this.workerUrl, "/preview/start");
+    await workerPost(this.getPreviewUrl(), "/preview/start");
   }
 
-  /** Stop the preview server inside the container. */
+  /** Stop the preview server inside the preview container. */
   async stopPreviewOnWorker(): Promise<void> {
-    await workerPost(this.workerUrl, "/preview/stop");
+    await workerPost(this.getPreviewUrl(), "/preview/stop");
     this._workerPreviewPorts = [];
   }
 
@@ -450,7 +479,20 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._lastPreviewExitCode = null;
     this._previewLogBuffer = [];
     this._workerPreviewPorts = [];
-    await workerPost(this.workerUrl, "/preview/restart");
+    await workerPost(this.getPreviewUrl(), "/preview/restart");
+  }
+
+  /** Push secrets to the preview worker via PUT /secrets. */
+  async pushSecretsToPreview(secrets: Record<string, string>): Promise<void> {
+    const url = this.getPreviewUrl();
+    const res = await fetch(`${url}/secrets`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(secrets),
+    });
+    if (!res.ok) {
+      throw new Error(`PUT /secrets failed: ${res.status} ${await res.text()}`);
+    }
   }
 
   /** Get the file tree from the container's workspace. */
@@ -460,35 +502,53 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   // --- Worker resource lifecycle ---
 
-  /** Start preview and file watcher on the worker (called when first viewer attaches). */
+  /** Start file watcher on session worker, push secrets and start preview on preview worker. */
   private async startWorkerResources(): Promise<void> {
     console.log(`[container-runner:${this.sessionId}] Waiting for worker to be ready...`);
     await this._workerReady;
     if (this._disposed) { console.log(`[container-runner:${this.sessionId}] Disposed before worker ready`); return; }
     console.log(`[container-runner:${this.sessionId}] Starting worker resources at ${this.workerUrl}`);
+
+    // Start file watcher on session worker
     try {
       await workerPost(this.workerUrl, "/files/watch");
       console.log(`[container-runner:${this.sessionId}] File watcher started on worker`);
     } catch (err) {
       console.error(`[container-runner:${this.sessionId}] Failed to start file watcher:`, err);
     }
+
+    // Connect preview SSE stream if preview worker is available
+    if (this.previewWorkerUrl) {
+      await this.connectPreviewEventStream();
+    }
+
+    // Push secrets to preview worker before starting preview
+    const previewUrl = this.getPreviewUrl();
     try {
-      await workerPost(this.workerUrl, "/preview/start");
-      console.log(`[container-runner:${this.sessionId}] Preview started on worker`);
+      const secrets = this._secretsLoader ? await this._secretsLoader() : {};
+      await this.pushSecretsToPreview(secrets);
+      console.log(`[container-runner:${this.sessionId}] Secrets pushed to preview worker (${Object.keys(secrets).length} keys)`);
     } catch (err) {
-      // "Preview already running" = reconnect case — SSE replay delivers current state
+      console.error(`[container-runner:${this.sessionId}] Failed to push secrets:`, err);
+    }
+
+    // Start preview on preview worker
+    try {
+      await workerPost(previewUrl, "/preview/start");
+      console.log(`[container-runner:${this.sessionId}] Preview started on preview worker`);
+    } catch (err) {
       const msg = getErrorMessage(err);
       if (msg.includes("already running")) {
-        console.log(`[container-runner:${this.sessionId}] Preview already running on worker`);
+        console.log(`[container-runner:${this.sessionId}] Preview already running on preview worker`);
       } else {
         console.error(`[container-runner:${this.sessionId}] Failed to start preview:`, err);
       }
     }
   }
 
-  /** Stop preview and file watcher on the worker (called when last viewer detaches). */
+  /** Stop preview on preview worker and file watcher on session worker. */
   private async stopWorkerResources(): Promise<void> {
-    try { await workerPost(this.workerUrl, "/preview/stop"); } catch { /* container may be gone */ }
+    try { await workerPost(this.getPreviewUrl(), "/preview/stop"); } catch { /* container may be gone */ }
     try { await workerPost(this.workerUrl, "/files/unwatch"); } catch { /* container may be gone */ }
   }
 
@@ -591,6 +651,148 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     }
   }
 
+  // --- Preview SSE connection (separate stream from preview container) ---
+
+  private connectPreviewEventStream(): Promise<void> {
+    if (!this.previewWorkerUrl || this.previewSseConnection || this._disposed) {
+      return this._previewSseConnected ?? Promise.resolve();
+    }
+
+    this._previewSseConnected = new Promise<void>((resolve) => {
+      this._resolvePreviewSseConnected = resolve;
+    });
+
+    this._connectPreviewEventStreamNow();
+    return this._previewSseConnected;
+  }
+
+  private _connectPreviewEventStreamNow(): void {
+    if (!this.previewWorkerUrl) return;
+
+    this.previewSseConnection = connectSSE(
+      `${this.previewWorkerUrl}/events`,
+      (event) => this.handlePreviewSSEEvent(event),
+      (err) => {
+        console.error(`[container-runner:${this.sessionId}] Preview SSE error:`, err.message);
+        this.previewSseConnection = null;
+        this.schedulePreviewReconnect();
+      },
+      () => {
+        this.previewSseConnection = null;
+        if (this._workerResourcesStarted && !this._disposed) {
+          this.schedulePreviewReconnect();
+        }
+      },
+      () => {
+        this.previewSseReconnectAttempts = 0;
+        if (this._resolvePreviewSseConnected) {
+          this._resolvePreviewSseConnected();
+          this._resolvePreviewSseConnected = null;
+        }
+      },
+    );
+  }
+
+  private schedulePreviewReconnect(): void {
+    if (this._disposed || this.previewSseReconnectTimer) return;
+
+    const delay = Math.min(
+      1000 * Math.pow(2, this.previewSseReconnectAttempts),
+      ContainerSessionRunner.MAX_RECONNECT_DELAY_MS,
+    );
+    this.previewSseReconnectAttempts++;
+
+    this.previewSseReconnectTimer = setTimeout(() => {
+      this.previewSseReconnectTimer = null;
+      void this.connectPreviewEventStream();
+    }, delay);
+  }
+
+  private disconnectPreviewEventStream(): void {
+    if (this.previewSseConnection) {
+      this.previewSseConnection.close();
+      this.previewSseConnection = null;
+    }
+    if (this.previewSseReconnectTimer) {
+      clearTimeout(this.previewSseReconnectTimer);
+      this.previewSseReconnectTimer = null;
+    }
+  }
+
+  /** Handle events from the preview SSE stream (preview events only). */
+  private handlePreviewSSEEvent(event: SSEEvent): void {
+    try {
+      const data = JSON.parse(event.data) as Record<string, unknown>;
+
+      switch (event.type) {
+        case "preview_ready":
+          this._previewStateReceived = true;
+          this._workerPreviewPorts = (data.ports as number[]) ?? [];
+          this._previewLogBuffer = [];
+          this._lastPreviewExitCode = null;
+          this.emitMessage(this.buildPreviewStatus());
+          break;
+
+        case "preview_stopped":
+          this._previewStateReceived = true;
+          this._workerPreviewPorts = [];
+          this._lastPreviewExitCode = (data.code as number) ?? null;
+          this.emitMessage(this.buildPreviewStatus());
+          break;
+
+        case "preview_config_missing":
+          this._previewStateReceived = true;
+          this.emitMessage({
+            type: "preview_config_missing",
+            checked: (data.checked as string[]) ?? [],
+          } as WsServerMessage);
+          break;
+
+        case "preview_config_error":
+          this._previewStateReceived = true;
+          this.emitMessage({
+            type: "preview_config_error",
+            message: (data.message as string) ?? "",
+          } as WsServerMessage);
+          break;
+
+        case "preview_install_status":
+          this._previewStateReceived = true;
+          this.emitMessage({
+            type: "install_status",
+            ...data,
+          } as WsServerMessage);
+          break;
+
+        case "preview_startup_step":
+          this._previewStateReceived = true;
+          this.emitMessage({
+            type: "startup_step",
+            ...data,
+            sessionId: this.sessionId,
+          } as WsServerMessage);
+          break;
+
+        case "preview_log": {
+          const text = (data.text as string) ?? "";
+          this._previewLogBuffer.push(text);
+          if (this._previewLogBuffer.length > ContainerSessionRunner.MAX_PREVIEW_LOG_LINES) {
+            this._previewLogBuffer.shift();
+          }
+          this.emitMessage({
+            type: "log_entry",
+            source: (data.source as string) ?? "preview",
+            text,
+            timestamp: new Date().toISOString(),
+          } as WsServerMessage);
+          break;
+        }
+      }
+    } catch (err) {
+      console.error(`[container-runner:${this.sessionId}] Failed to parse preview SSE event:`, err);
+    }
+  }
+
   private scheduleReconnect(): void {
     if (this._disposed || this.sseReconnectTimer) return;
 
@@ -656,9 +858,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           this.emitMessage({ type: "terminal_exit", exitCode: data.exitCode as number | null });
           break;
 
-        // --- Preview events ---
+        // --- Preview events (only handled here when no separate preview SSE) ---
 
         case "preview_ready":
+          if (this.previewWorkerUrl) break; // Handled by preview SSE stream
           this._previewStateReceived = true;
           this._workerPreviewPorts = (data.ports as number[]) ?? [];
           this._previewLogBuffer = [];
@@ -667,6 +870,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           break;
 
         case "preview_stopped":
+          if (this.previewWorkerUrl) break;
           this._previewStateReceived = true;
           this._workerPreviewPorts = [];
           this._lastPreviewExitCode = (data.code as number) ?? null;
@@ -674,6 +878,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           break;
 
         case "preview_config_missing":
+          if (this.previewWorkerUrl) break;
           this._previewStateReceived = true;
           this.emitMessage({
             type: "preview_config_missing",
@@ -682,6 +887,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           break;
 
         case "preview_config_error":
+          if (this.previewWorkerUrl) break;
           this._previewStateReceived = true;
           this.emitMessage({
             type: "preview_config_error",
@@ -690,6 +896,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           break;
 
         case "preview_install_status":
+          if (this.previewWorkerUrl) break;
           this._previewStateReceived = true;
           this.emitMessage({
             type: "install_status",
@@ -698,6 +905,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           break;
 
         case "preview_startup_step":
+          if (this.previewWorkerUrl) break;
           this._previewStateReceived = true;
           this.emitMessage({
             type: "startup_step",
@@ -707,6 +915,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           break;
 
         case "preview_log": {
+          if (this.previewWorkerUrl) break;
           const text = (data.text as string) ?? "";
           this._previewLogBuffer.push(text);
           if (this._previewLogBuffer.length > ContainerSessionRunner.MAX_PREVIEW_LOG_LINES) {
@@ -723,16 +932,29 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
         // --- File watcher events ---
 
-        case "file_changes":
-          this.emitMessage({ type: "files_changed", paths: (data.paths as string[]) ?? [] } as WsServerMessage);
-          // Detect shipit.yaml changes and restart preview on worker
-          if ((data.paths as string[])?.some((p: string) => p === "shipit.yaml" || p.endsWith("/shipit.yaml"))) {
-            // eslint-disable-next-line no-restricted-syntax -- fire-and-forget preview restart in sync handler
-            workerPost(this.workerUrl, "/preview/stop")
-              .then(() => workerPost(this.workerUrl, "/preview/start"))
-              .catch((err: unknown) => console.warn(`[container-runner:${this.sessionId}] Preview restart after shipit.yaml change failed:`, err));
+        case "file_changes": {
+          const paths = (data.paths as string[]) ?? [];
+          this.emitMessage({ type: "files_changed", paths } as WsServerMessage);
+
+          const configChanged = paths.some((p: string) => p === "shipit.yaml" || p.endsWith("/shipit.yaml"));
+          const lockfileChanged = paths.some((p: string) =>
+            /\/(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb)$/.test(p) ||
+            /^(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb)$/.test(p),
+          );
+
+          // Config changes always trigger restart; lockfile changes are
+          // debounced to prevent a feedback loop where npm install writes
+          // package-lock.json → file watcher fires → restart → npm install → ...
+          const shouldRestart = configChanged || (lockfileChanged &&
+            Date.now() - this._lastLockfileRestartTime > ContainerSessionRunner.LOCKFILE_RESTART_COOLDOWN_MS);
+          if (shouldRestart) {
+            if (lockfileChanged) this._lastLockfileRestartTime = Date.now();
+            // Use /preview/restart (not stop+start) so clearInstallMarker() runs
+            workerPost(this.getPreviewUrl(), "/preview/restart")
+              .catch((err: unknown) => console.warn(`[container-runner:${this.sessionId}] Preview restart after config/lockfile change failed:`, err));
           }
           break;
+        }
       }
     } catch (err) {
       console.error(`[container-runner:${this.sessionId}] Failed to parse SSE event:`, err);
@@ -776,8 +998,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this._lastPreviewExitCode = null;
       this._previewLogBuffer = [];
       // eslint-disable-next-line no-restricted-syntax -- fire-and-forget preview restart
-      workerPost(this.workerUrl, "/preview/stop")
-        .then(() => workerPost(this.workerUrl, "/preview/start"))
+      workerPost(this.getPreviewUrl(), "/preview/stop")
+        .then(() => workerPost(this.getPreviewUrl(), "/preview/start"))
         .catch(() => {});
     }
   }
@@ -799,6 +1021,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // would force a full restart on reconnect.
 
     this.disconnectEventStream();
+    this.disconnectPreviewEventStream();
     this.clearPushTimer();
     this._messageQueue.length = 0;
     this._turnEventBuffer = [];

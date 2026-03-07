@@ -97,6 +97,18 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN merged_at TEXT");
   },
+  // Migration 2: secrets table for per-repo environment variables (preview container isolation)
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS secrets (
+        repo_url TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        PRIMARY KEY (repo_url, key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_secrets_repo ON secrets(repo_url);
+    `);
+  },
 ];
 
 export class DatabaseManager {
@@ -136,6 +148,7 @@ export class DatabaseManager {
       this.db.prepare("DELETE FROM repos").run();
       this.db.prepare("DELETE FROM deploy_configs").run();
       this.db.prepare("DELETE FROM deploy_history").run();
+      this.db.prepare("DELETE FROM secrets").run();
     })();
   }
 

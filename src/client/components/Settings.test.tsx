@@ -693,3 +693,101 @@ describe("Settings - Tab switching", () => {
     expect(screen.queryByTestId("github-token-form")).not.toBeInTheDocument();
   });
 });
+
+describe("Settings - Secrets tab", () => {
+  function renderOnSecretsTab(props: Partial<SettingsProps> = {}) {
+    useUiStore.getState().setSettingsTab("secrets");
+    return render(
+      <Settings
+        {...defaultProps}
+        hasActiveSession={true}
+        repoUrl="https://github.com/org/repo"
+        onSecretsLoad={async () => ({})}
+        onSecretsSave={vi.fn()}
+        {...props}
+      />,
+    );
+  }
+
+  it("renders secrets tab content", async () => {
+    renderOnSecretsTab();
+    await waitFor(() => {
+      expect(screen.getByTestId("secrets-tab")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Environment Variables")).toBeInTheDocument();
+  });
+
+  it("loads existing secrets on render", async () => {
+    const onSecretsLoad = vi.fn().mockResolvedValue({ API_KEY: "secret123" });
+    renderOnSecretsTab({ onSecretsLoad });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-key-0")).toHaveValue("API_KEY");
+    });
+  });
+
+  it("adds a new row when Add variable is clicked", async () => {
+    renderOnSecretsTab({ onSecretsLoad: async () => ({}) });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-add")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("secret-add"));
+    expect(screen.getByTestId("secret-key-0")).toBeInTheDocument();
+    expect(screen.getByTestId("secret-value-0")).toBeInTheDocument();
+  });
+
+  it("removes a row when remove button is clicked", async () => {
+    const onSecretsLoad = vi.fn().mockResolvedValue({ KEY_A: "a", KEY_B: "b" });
+    renderOnSecretsTab({ onSecretsLoad });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-key-0")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("secret-remove-0"));
+    expect(screen.queryByTestId("secret-key-1")).not.toBeInTheDocument();
+  });
+
+  it("calls onSecretsSave with key-value object on save", async () => {
+    const onSecretsSave = vi.fn();
+    const onSecretsLoad = vi.fn().mockResolvedValue({});
+    renderOnSecretsTab({ onSecretsSave, onSecretsLoad });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-add")).toBeInTheDocument();
+    });
+
+    // Add a row and fill in values
+    fireEvent.click(screen.getByTestId("secret-add"));
+    fireEvent.change(screen.getByTestId("secret-key-0"), { target: { value: "MY_KEY" } });
+    fireEvent.change(screen.getByTestId("secret-value-0"), { target: { value: "my_value" } });
+
+    fireEvent.click(screen.getByTestId("secrets-save"));
+    expect(onSecretsSave).toHaveBeenCalledWith(
+      "https://github.com/org/repo",
+      { MY_KEY: "my_value" },
+    );
+  });
+
+  it("Secrets tab is disabled when no active session", () => {
+    render(<Settings {...defaultProps} hasActiveSession={false} />);
+    expect(screen.getByTestId("settings-tab-secrets")).toBeDisabled();
+  });
+
+  it("Secrets tab is enabled when session is active", () => {
+    render(<Settings {...defaultProps} hasActiveSession={true} />);
+    expect(screen.getByTestId("settings-tab-secrets")).not.toBeDisabled();
+  });
+
+  it("secret values use password input type", async () => {
+    const onSecretsLoad = vi.fn().mockResolvedValue({ KEY: "secret" });
+    renderOnSecretsTab({ onSecretsLoad });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-value-0")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("secret-value-0")).toHaveAttribute("type", "password");
+  });
+});

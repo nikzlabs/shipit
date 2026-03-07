@@ -83,7 +83,7 @@ export interface AgentRunParams {
   sessionId?: string;
   systemPrompt?: string;
   images?: ImageAttachment[];
-  cwd?: string;
+  cwd: string;
   permissionMode?: PermissionMode;
 }
 

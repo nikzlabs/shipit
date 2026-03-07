@@ -123,7 +123,7 @@ export interface AppCtx {
   warmSessionForRepo: (repoUrl: string, opts?: { withStandby?: boolean }) => Promise<void>;
 
   // Factories
-  generateText: (prompt: string, cwd?: string) => Promise<string>;
+  generateText: (prompt: string, cwd: string) => Promise<string>;
   getSharedRepoDir: (repoUrl: string) => string;
 
   // PR lifecycle

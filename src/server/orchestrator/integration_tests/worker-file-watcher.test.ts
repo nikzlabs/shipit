@@ -215,9 +215,8 @@ describe("ContainerSessionRunner File Watcher Proxy", () => {
 // ---------------------------------------------------------------------------
 
 describe("Worker Cleanup", () => {
-  it("cleans up terminal, preview, and file watcher on stop", async () => {
+  it("cleans up terminal and file watcher on stop (session mode)", async () => {
     let terminal: StubTerminal | null = null;
-    let preview: StubPreview | null = null;
     let watcher: StubWatcher | null = null;
 
     const worker = new SessionWorker({
@@ -228,10 +227,6 @@ describe("Worker Cleanup", () => {
         terminal = new StubTerminal();
         return terminal as unknown as TerminalProcess;
       },
-      createPreviewManager: () => {
-        preview = new StubPreview();
-        return preview as unknown as PreviewManager;
-      },
       createFileWatcher: () => {
         watcher = new StubWatcher();
         return watcher as unknown as FileWatcher;
@@ -240,20 +235,44 @@ describe("Worker Cleanup", () => {
 
     await worker.start();
 
-    // Start all resources
+    // Start session-mode resources (terminal + file watcher)
     await worker.getApp().inject({ method: "POST", url: "/terminal/start", payload: {} });
-    await worker.getApp().inject({ method: "POST", url: "/preview/start" });
     await worker.getApp().inject({ method: "POST", url: "/files/watch" });
 
     expect(terminal!.startCalled).toBe(true);
-    expect(preview!.startCalled).toBe(true);
     expect(watcher!.startCalled).toBe(true);
 
     // Stop worker — should clean up all resources
     await worker.stop();
 
     expect(terminal!.killed).toBe(true);
-    expect(preview!.stopCalled).toBe(true);
     expect(watcher!.stopCalled).toBe(true);
+  });
+
+  it("cleans up preview on stop (preview mode)", async () => {
+    let preview: StubPreview | null = null;
+
+    const worker = new SessionWorker({
+      agentFactory: () => new FakeWorkerAgent(),
+      port: 0,
+      host: "127.0.0.1",
+      workerMode: "preview",
+      createPreviewManager: () => {
+        preview = new StubPreview();
+        return preview as unknown as PreviewManager;
+      },
+    });
+
+    await worker.start();
+
+    // Start preview-mode resources
+    await worker.getApp().inject({ method: "POST", url: "/preview/start" });
+
+    expect(preview!.startCalled).toBe(true);
+
+    // Stop worker — should clean up preview
+    await worker.stop();
+
+    expect(preview!.stopCalled).toBe(true);
   });
 });

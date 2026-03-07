@@ -173,6 +173,7 @@ export function buildRunnerFactory(
         sessionDir: o.sessionDir,
         defaultAgentId: o.defaultAgentId,
         workerUrl: existing.workerUrl,
+        previewWorkerUrl: existing.previewWorkerUrl,
       });
     }
 
@@ -197,6 +198,7 @@ export function buildRunnerFactory(
               mgr.claimStandby(o.sessionId);
               console.log(`[container] Standby container ready for ${o.sessionId} at ${sc.workerUrl}`);
               runner.setWorkerUrl(sc.workerUrl);
+              if (sc.previewWorkerUrl) runner.setPreviewWorkerUrl(sc.previewWorkerUrl);
               return;
             }
             if (!sc) break; // Creation failed and entry was removed
@@ -219,6 +221,7 @@ export function buildRunnerFactory(
           const sc = await mgr.create(config);
           console.log(`[container] Container ready for ${o.sessionId} at ${sc.workerUrl}`);
           runner.setWorkerUrl(sc.workerUrl);
+          if (sc.previewWorkerUrl) runner.setPreviewWorkerUrl(sc.previewWorkerUrl);
         } catch (err) {
           console.error(`[container] Failed to start container for ${o.sessionId}:`, getErrorMessage(err));
           runner.dispose();
@@ -256,6 +259,7 @@ export function buildRunnerFactory(
         const sc = await mgr.create(config);
         console.log(`[container] Container ready for ${o.sessionId} at ${sc.workerUrl}`);
         runner.setWorkerUrl(sc.workerUrl);
+        if (sc.previewWorkerUrl) runner.setPreviewWorkerUrl(sc.previewWorkerUrl);
       } catch (err) {
         console.error(`[container] Failed to start container for ${o.sessionId}:`, getErrorMessage(err));
         runner.dispose();
@@ -744,9 +748,12 @@ export function createWarmPool(
             containerManager.createStandby(config).then(async (sc) => {
               console.log(`[warm] Standby container ready for ${appSessionId} at ${sc.workerUrl}`);
               // Pre-run install so the user doesn't wait for it on activation.
+              // Preview endpoints live on the preview container, not the session container.
               try {
-                await workerPost(sc.workerUrl, "/preview/start");
-                console.log(`[warm] Pre-started preview/install for ${appSessionId}`);
+                if (sc.previewWorkerUrl) {
+                  await workerPost(sc.previewWorkerUrl, "/preview/start");
+                  console.log(`[warm] Pre-started preview/install for ${appSessionId}`);
+                }
               } catch (err: unknown) {
                 console.error(`[warm] Pre-start preview failed for ${appSessionId}:`, getErrorMessage(err));
               }
