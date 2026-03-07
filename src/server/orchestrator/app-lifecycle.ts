@@ -209,6 +209,7 @@ export function buildRunnerFactory(
             sessionDir: o.sessionDir,
             credentialsDir,
             sharedRepoDir: o.sharedRepoDir,
+            depCacheDir: o.depCacheDir,
             memoryLimit: sessionConfig.resources.memory * 1024 * 1024,
             cpuQuota: Math.round(sessionConfig.resources.cpu * 100_000),
             pidsLimit: sessionConfig.resources.pids,
@@ -233,6 +234,7 @@ export function buildRunnerFactory(
       sessionDir: o.sessionDir,
       credentialsDir,
       sharedRepoDir: o.sharedRepoDir,
+      depCacheDir: o.depCacheDir,
       memoryLimit: sessionConfig.resources.memory * 1024 * 1024,
       cpuQuota: Math.round(sessionConfig.resources.cpu * 100_000),
       pidsLimit: sessionConfig.resources.pids,
@@ -323,6 +325,7 @@ export interface RunnerRegistryDeps {
   sseBroadcast: (event: string, data: unknown) => void;
   enforceIdleContainerLimit: () => void;
   getSharedRepoDir: (repoUrl: string) => string;
+  getDepCacheDir: (repoUrl: string) => string;
 }
 
 /**
@@ -335,7 +338,7 @@ export function createRunnerRegistry(
     effectiveRunnerFactory, sessionManager, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
-    getSharedRepoDir,
+    getSharedRepoDir, getDepCacheDir,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -344,6 +347,13 @@ export function createRunnerRegistry(
       const session = sessionManager.get(sessionId);
       if (session?.remoteUrl && session?.sessionType === "worktree") {
         return getSharedRepoDir(session.remoteUrl);
+      }
+      return undefined;
+    },
+    depCacheDirResolver: (sessionId: string) => {
+      const session = sessionManager.get(sessionId);
+      if (session?.remoteUrl) {
+        return getDepCacheDir(session.remoteUrl);
       }
       return undefined;
     },
@@ -595,6 +605,15 @@ export function createSharedRepoDirHelper(
   };
 }
 
+/** Create the `getDepCacheDir` helper — returns a per-repo cache directory. */
+export function createDepCacheDirHelper(
+  getSharedRepoDir: (repoUrl: string) => string,
+): (repoUrl: string) => string {
+  return (repoUrl: string): string => {
+    return path.join(getSharedRepoDir(repoUrl), ".dep-cache");
+  };
+}
+
 // ---- Warm session pool ----
 
 /** Dependencies for warm session pool. */
@@ -607,6 +626,7 @@ export interface WarmPoolDeps {
   containerManager: SessionContainerManager | null;
   credentialsDir: string;
   getSharedRepoDir: (repoUrl: string) => string;
+  getDepCacheDir: (repoUrl: string) => string;
   createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string }>;
   sseBroadcast: (event: string, data: unknown) => void;
 }
@@ -624,7 +644,7 @@ export function createWarmPool(
   const {
     repoStore, sessionManager, createRepoGit,
     githubAuthManager, credentialStore, containerManager,
-    credentialsDir, getSharedRepoDir, createSessionDir, sseBroadcast,
+    credentialsDir, getSharedRepoDir, getDepCacheDir, createSessionDir, sseBroadcast,
   } = poolDeps;
 
   const warmingInProgress = new Set<string>();
@@ -717,6 +737,7 @@ export function createWarmPool(
               sessionDir,
               credentialsDir,
               sharedRepoDir: repoDir,
+              depCacheDir: getDepCacheDir(repoUrl),
             });
             // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget in sync warming callback
             containerManager.createStandby(config).then((sc) => {
