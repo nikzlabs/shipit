@@ -110,6 +110,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private static readonly MAX_PREVIEW_LOG_LINES = 50;
   /** Exit code from the last preview process exit, or null if never exited / exited cleanly. */
   private _lastPreviewExitCode: number | null = null;
+  /** Timestamp of last lockfile-triggered preview restart (prevents feedback loop with npm install). */
+  private _lastLockfileRestartTime = 0;
+  /** Cooldown (ms) before another lockfile change can trigger a restart. */
+  private static readonly LOCKFILE_RESTART_COOLDOWN_MS = 30_000;
 
   // Auto-push timer
   private _pushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -938,7 +942,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
             /^(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb)$/.test(p),
           );
 
-          if (configChanged || lockfileChanged) {
+          // Config changes always trigger restart; lockfile changes are
+          // debounced to prevent a feedback loop where npm install writes
+          // package-lock.json → file watcher fires → restart → npm install → ...
+          const shouldRestart = configChanged || (lockfileChanged &&
+            Date.now() - this._lastLockfileRestartTime > ContainerSessionRunner.LOCKFILE_RESTART_COOLDOWN_MS);
+          if (shouldRestart) {
+            if (lockfileChanged) this._lastLockfileRestartTime = Date.now();
             // Use /preview/restart (not stop+start) so clearInstallMarker() runs
             workerPost(this.getPreviewUrl(), "/preview/restart")
               .catch((err: unknown) => console.warn(`[container-runner:${this.sessionId}] Preview restart after config/lockfile change failed:`, err));

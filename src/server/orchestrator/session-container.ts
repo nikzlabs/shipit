@@ -183,6 +183,7 @@ const DEFAULT_IMAGE = process.env.SESSION_WORKER_IMAGE;
 const DEFAULT_NETWORK = process.env.DOCKER_NETWORK;
 const DEFAULT_MEMORY_LIMIT = 256 * 1024 * 1024; // 256 MB (session container)
 const DEFAULT_PREVIEW_MEMORY_LIMIT = 512 * 1024 * 1024; // 512 MB (preview container)
+const DEFAULT_PREVIEW_PIDS_LIMIT = 1024; // preview runs npm + vite + esbuild — needs more PIDs
 const DEFAULT_CPU_QUOTA = 50_000; // 0.5 CPU (50000 µs per 100ms period)
 const DEFAULT_PIDS_LIMIT = 256;
 const DEFAULT_WORKER_PORT = 9100;
@@ -352,6 +353,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         this.lifecycleDeps(),
         config,
         DEFAULT_PREVIEW_MEMORY_LIMIT,
+        DEFAULT_PREVIEW_PIDS_LIMIT,
       );
       sc.previewContainerId = preview.id;
       sc.previewContainerIp = preview.ip;

@@ -603,6 +603,7 @@ export async function createPreviewContainer(
   deps: LifecycleDeps,
   config: ContainerConfig,
   previewMemoryLimit: number,
+  previewPidsLimit?: number,
 ): Promise<{ id: string; ip: string; workerUrl: string }> {
   // Ensure the .git override file exists (may already exist from session container).
   writeGitOverride(config, deps.workspaceVolume);
@@ -643,7 +644,7 @@ export async function createPreviewContainer(
       Memory: previewMemoryLimit,
       CpuQuota: config.cpuQuota,
       CpuPeriod: DEFAULT_CPU_PERIOD,
-      PidsLimit: config.pidsLimit,
+      PidsLimit: previewPidsLimit ?? config.pidsLimit,
       NetworkMode: deps.networkName,
       SecurityOpt: ["no-new-privileges"],
       ReadonlyRootfs: false,
