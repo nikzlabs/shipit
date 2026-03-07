@@ -135,6 +135,10 @@ export class PreviewManager extends EventEmitter {
   private _processLogs: string[] = [];
   /** Whether we've already retried once for a native module crash (prevents infinite loop). */
   private _nativeModuleRetried = false;
+  /** Rolling log buffer for startup_step messages (last N lines). */
+  private _startupLogBuffer: string[] = [];
+  /** Timestamp when the install step started. */
+  private _installStartTime = 0;
 
   get running(): boolean {
     return this._running;
@@ -152,6 +156,21 @@ export class PreviewManager extends EventEmitter {
 
   get config(): PreviewConfig | null {
     return this._config;
+  }
+
+  private static readonly MAX_STARTUP_LOG_LINES = 5;
+
+  /** Append text to the rolling startup log buffer and return the current lines. */
+  private pushStartupLog(text: string): string[] {
+    // Split incoming chunks into individual lines, filter blanks
+    const lines = text.split("\n").filter((l) => l.trim());
+    for (const line of lines) {
+      this._startupLogBuffer.push(line);
+      if (this._startupLogBuffer.length > PreviewManager.MAX_STARTUP_LOG_LINES) {
+        this._startupLogBuffer.shift();
+      }
+    }
+    return [...this._startupLogBuffer];
   }
 
   /**
@@ -204,7 +223,10 @@ export class PreviewManager extends EventEmitter {
       const installDone = isInstallDone(workspaceDir);
       console.log("[preview-manager] install needed, isInstallDone:", installDone);
       if (!installDone) {
+        this._installStartTime = Date.now();
+        this._startupLogBuffer = [];
         this.emit("install_status", { status: "running" });
+        this.emit("startup_step", { stepId: "install", status: "running" });
 
         const cwd = config.mode.kind === "command" && config.mode.directory
           ? path.resolve(workspaceDir, config.mode.directory)
@@ -216,23 +238,40 @@ export class PreviewManager extends EventEmitter {
             cwd,
             onOutput: (text) => {
               this.emit("log", { source: "install", text });
+              const logLines = this.pushStartupLog(text);
+              this.emit("startup_step", { stepId: "install", status: "running", logLines });
             },
           });
 
           if (exitCode !== 0) {
-            this.emit("install_status", {
+            const message = `Install command exited with code ${exitCode}`;
+            this.emit("install_status", { status: "error", message });
+            this.emit("startup_step", {
+              stepId: "install",
               status: "error",
-              message: `Install command exited with code ${exitCode}`,
+              message,
+              durationMs: Date.now() - this._installStartTime,
+              logLines: [...this._startupLogBuffer],
             });
             return; // Do not start preview
           }
 
           markInstallDone(workspaceDir);
           this.emit("install_status", { status: "complete" });
+          this.emit("startup_step", {
+            stepId: "install",
+            status: "complete",
+            durationMs: Date.now() - this._installStartTime,
+          });
         } catch (err) {
-          this.emit("install_status", {
+          const message = `Install failed: ${getErrorMessage(err)}`;
+          this.emit("install_status", { status: "error", message });
+          this.emit("startup_step", {
+            stepId: "install",
             status: "error",
-            message: `Install failed: ${getErrorMessage(err)}`,
+            message,
+            durationMs: Date.now() - this._installStartTime,
+            logLines: [...this._startupLogBuffer],
           });
           return;
         }
@@ -240,6 +279,8 @@ export class PreviewManager extends EventEmitter {
     }
 
     // ---- Start preview ----
+    this._startupLogBuffer = [];
+    this.emit("startup_step", { stepId: "dev_server", status: "running" });
     if (config.mode.kind === "html") {
       this.startHtmlMode(workspaceDir);
     } else {
@@ -278,6 +319,11 @@ export class PreviewManager extends EventEmitter {
         if (!this._running) {
           this._running = true;
           this._ports = [VITE_PORT];
+          this.emit("startup_step", {
+            stepId: "dev_server",
+            status: "complete",
+            durationMs: Date.now() - this._processStartTime,
+          });
           this.emit("ready", this._ports);
         }
       }
@@ -336,6 +382,11 @@ export class PreviewManager extends EventEmitter {
           if (port > 0 && port <= 65535) {
             this._running = true;
             this._ports = [port];
+            this.emit("startup_step", {
+              stepId: "dev_server",
+              status: "complete",
+              durationMs: Date.now() - this._processStartTime,
+            });
             this.emit("ready", this._ports);
           }
         }
@@ -378,6 +429,11 @@ export class PreviewManager extends EventEmitter {
           if (!this._running) {
             this._running = true;
             this._ports = [port];
+            this.emit("startup_step", {
+              stepId: "dev_server",
+              status: "complete",
+              durationMs: Date.now() - this._processStartTime,
+            });
             this.emit("ready", this._ports);
           } else {
             this._ports = [...this._ports, port];
@@ -469,6 +525,14 @@ export class PreviewManager extends EventEmitter {
       this._running = false;
       this._ports = [];
       this.proc = null;
+      if (code !== null && code !== 0) {
+        this.emit("startup_step", {
+          stepId: "dev_server",
+          status: "error",
+          message: `Preview server exited with code ${code}`,
+          durationMs: Date.now() - this._processStartTime,
+        });
+      }
       this.emit("stopped", code);
     });
 
@@ -478,6 +542,11 @@ export class PreviewManager extends EventEmitter {
       this._running = false;
       this._ports = [];
       this.proc = null;
+      this.emit("startup_step", {
+        stepId: "dev_server",
+        status: "error",
+        message: `Spawn error: ${err.message}`,
+      });
       this.emit("error", err);
     });
   }

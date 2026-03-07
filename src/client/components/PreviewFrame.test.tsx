@@ -35,9 +35,10 @@ function makeError(overrides: Partial<PreviewError> = {}): PreviewError {
 }
 
 describe("PreviewFrame", () => {
-  it("shows placeholder when preview is null and no session", () => {
+  it("shows nothing when preview is null and no session", () => {
     render(<PreviewFrame preview={null} {...defaultProps} />);
-    expect(screen.getByText(/Preview will appear here/)).toBeInTheDocument();
+    // No overlay content — empty preview area
+    expect(screen.queryByText(/Preview will appear here/)).not.toBeInTheDocument();
   });
 
   it("shows spinner when preview is null but session is active", () => {
@@ -45,20 +46,19 @@ describe("PreviewFrame", () => {
     expect(screen.getByText("Starting dev server...")).toBeInTheDocument();
   });
 
-  it("shows syncing message when loading is true (claiming session)", () => {
-    render(<PreviewFrame preview={null} loading={true} {...defaultProps} />);
-    expect(screen.getByText("Syncing with latest changes...")).toBeInTheDocument();
+  it("shows startup steps with fetch running when initialized", () => {
+    usePreviewStore.getState().initStartupSteps();
+    render(<PreviewFrame preview={null} {...defaultProps} />);
+    expect(screen.getByText(/Fetching latest changes/)).toBeInTheDocument();
+    expect(screen.getByText("Installing dependencies")).toBeInTheDocument();
+    expect(screen.getByText("Starting dev server")).toBeInTheDocument();
   });
 
-  it("shows starting dev server when loading with sessionId already set", () => {
-    render(<PreviewFrame preview={null} loading={true} sessionId="abc-123" {...defaultProps} />);
-    expect(screen.getByText("Starting dev server...")).toBeInTheDocument();
-  });
-
-  it("shows placeholder when preview is not running", () => {
-    const preview: PreviewStatus = { running: false, port: 5173, url: "http://localhost:5173" };
-    render(<PreviewFrame preview={preview} {...defaultProps} />);
-    expect(screen.getByText(/Preview will appear here/)).toBeInTheDocument();
+  it("shows fetch duration after completing", () => {
+    usePreviewStore.getState().initStartupSteps();
+    usePreviewStore.getState().setStartupStep({ stepId: "fetch", status: "complete", durationMs: 1200 });
+    render(<PreviewFrame preview={null} {...defaultProps} />);
+    expect(screen.getByText("(1.2s)")).toBeInTheDocument();
   });
 
   it("renders iframe when preview is running", async () => {
@@ -375,28 +375,19 @@ describe("PreviewFrame", () => {
     expect(screen.queryByText("Set up with Claude")).not.toBeInTheDocument();
   });
 
-  // ---- Install status tests ----
+  // ---- Install status tests (via startup steps) ----
 
-  it("shows install running state", () => {
-    render(
-      <PreviewFrame
-        preview={null}
-        {...defaultProps}
-        installStatus={{ status: "running" }}
-      />,
-    );
+  it("shows install running state via startup steps", () => {
+    usePreviewStore.getState().initStartupSteps();
+    usePreviewStore.getState().setStartupStep({ stepId: "install", status: "running" });
+    render(<PreviewFrame preview={null} {...defaultProps} />);
     expect(screen.getByText(/Installing dependencies/)).toBeInTheDocument();
   });
 
-  it("shows install error state with message", () => {
-    render(
-      <PreviewFrame
-        preview={null}
-        {...defaultProps}
-        installStatus={{ status: "error", message: "exit code 1" }}
-      />,
-    );
-    expect(screen.getByText(/Install failed/)).toBeInTheDocument();
+  it("shows install error state with message via startup steps", () => {
+    usePreviewStore.getState().initStartupSteps();
+    usePreviewStore.getState().setStartupStep({ stepId: "install", status: "error", message: "exit code 1" });
+    render(<PreviewFrame preview={null} {...defaultProps} />);
     expect(screen.getByText(/exit code 1/)).toBeInTheDocument();
   });
 
