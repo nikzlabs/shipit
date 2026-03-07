@@ -365,7 +365,7 @@ export async function registerSessionRoutes(
       }
       try {
         const result = await createRepoWithTemplate(
-          sessionManager, createGitManager, createRepoGit, deps.createSessionDir,
+          createGitManager,
           deps.githubAuthManager, deps.getSharedRepoDir,
           body.repoName, body.templateId,
           body.description, body.isPrivate,
@@ -374,11 +374,12 @@ export async function registerSessionRoutes(
           reply.code(400).send(result);
           return;
         }
-        // Also track in RepoStore
+        // Track in RepoStore and warm a session in background
         if (result.repoUrl) {
           deps.repoStore.add(result.repoUrl);
           deps.repoStore.setReady(result.repoUrl);
           deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });
+          deps.warmSessionForRepo?.(result.repoUrl);
         }
         return result;
       } catch (err) {
