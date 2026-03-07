@@ -662,7 +662,7 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
 
     // Mock fs to simulate workflow files existing
     const existsSyncSpy = vi.spyOn(fs, "existsSync").mockReturnValue(true);
-    const readdirSyncSpy = vi.spyOn(fs, "readdirSync").mockReturnValue(["ci.yml"] as unknown as fs.Dirent[]);
+    const readdirSyncSpy = vi.spyOn(fs, "readdirSync").mockReturnValue(["ci.yml"] as never);
 
     const poller = new PrStatusPoller({
       githubAuth,
@@ -737,7 +737,7 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     const sseBroadcast = vi.fn();
 
     const existsSyncSpy = vi.spyOn(fs, "existsSync").mockReturnValue(true);
-    const readdirSyncSpy = vi.spyOn(fs, "readdirSync").mockReturnValue(["ci.yml"] as unknown as fs.Dirent[]);
+    const readdirSyncSpy = vi.spyOn(fs, "readdirSync").mockReturnValue(["ci.yml"] as never);
 
     const poller = new PrStatusPoller({
       githubAuth,
