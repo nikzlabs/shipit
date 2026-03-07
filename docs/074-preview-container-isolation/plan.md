@@ -59,7 +59,7 @@ Users typically store secrets (API keys for Clerk, Stripe, Supabase, etc.) in `.
 
 2. **Injection via preview worker** — the preview worker exposes `PUT /secrets`, which accepts a `Record<string, string>`. This is a **full replace**, not a merge: the worker tracks which keys were set by previous `PUT /secrets` calls, removes any that are absent from the new payload, and sets all new key-value pairs in `process.env`. This ensures that when a user deletes a secret in the UI, it is actually removed from the dev server's environment — not just orphaned until container restart. After updating `process.env`, the worker restarts the dev server child process (if running). The restarted dev server inherits the updated `process.env`. The dev server reads env vars natively (Vite, Next.js, etc. all support `process.env`). No secrets are passed at container creation — this keeps a single code path for all scenarios (fresh sessions, warm pool activation, and user edits).
 
-3. **Startup sequence** — the orchestrator creates the preview container, waits for the worker health check, pushes secrets via `PUT /secrets`, then sends `POST /preview/start`. Secrets are always pushed before the dev server starts — even if the repo has no secrets configured, the push is a no-op (empty `Record<string, string>`).
+3. **Startup sequence** — the orchestrator creates the preview container, waits for the worker health check, pushes secrets via `PUT /secrets`, then sends `POST /preview/start`. Secrets are always pushed before the dev server starts — even if the repo has no secrets configured (or the session has no `remoteUrl`), the push sends an empty `Record<string, string>` and the preview starts normally.
 
 4. **Session container gets no secrets** — only the preview container receives repo secrets (via `PUT /secrets`). The session container (where Claude runs) never receives them. Claude cannot access them via `process.env`, `printenv`, or any filesystem path.
 
@@ -185,10 +185,6 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 ### Warm pool
 
 Warm (standby) sessions pre-create both containers. The preview container sits idle until activated — minimal resource usage since no dev server is running. Warm containers are created without repo secrets (no repo URL yet). When the warm session is activated and assigned a repo URL, the orchestrator loads secrets from the database and pushes them to the preview worker via `PUT /secrets` (the runtime update path). The preview worker sets them in `process.env` before the dev server starts.
-
-### Sessions without a repo URL
-
-Standalone sessions (no GitHub repo) have `remoteUrl = null`. Since secrets are keyed by repo URL, these sessions have no secrets — the orchestrator skips the `PUT /secrets` call (or sends an empty payload). The preview container starts with no injected secrets, which is correct: there's no repo to associate secrets with. If the session later gets a remote URL (e.g., user connects a repo), the orchestrator loads secrets for that URL and pushes them.
 
 ### Session clone / fork (worktrees)
 
