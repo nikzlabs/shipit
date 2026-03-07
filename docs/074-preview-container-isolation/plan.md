@@ -33,14 +33,10 @@ Every session gets two containers on the same bridge network:
 │  • Session worker (:9100)    │   │  • Preview worker (:9100)    │
 │                              │   │                              │
 │  /user    ← workspace vol    │   │  /user    ← workspace vol   │
-│  /credentials ← creds vol   │   │  /secrets ← secrets vol     │
-│                              │   │  (populated from DB on start)│
-│                              │   │  (no credentials mount)      │
-│  NO /secrets mount           │   │                              │
-│  .env.local is a dangling    │   │  init: move workspace .env*  │
-│  symlink (target /secrets/   │   │    to /secrets/, then        │
-│  not mounted here)           │   │    symlink /user/.env.local  │
-│                              │   │    → /secrets/.env.local     │
+│  /credentials ← creds vol   │   │  (no credentials mount)      │
+│                              │   │                              │
+│  env: no repo secrets        │   │  env: repo secrets injected  │
+│                              │   │    via config.env at create  │
 └──────────────────────────────┘   └──────────────────────────────┘
          ▲                                 ▲
          │         bridge network          │
@@ -61,27 +57,24 @@ Users store secrets (API keys for Clerk, Stripe, Supabase, etc.) in `.env.local`
 
 1. **Orchestrator-managed secrets (per-repo)** — secrets are stored in the orchestrator's SQLite database, keyed by repo URL (from `SessionInfo.remoteUrl`). This follows the same pattern as `DeploymentStore`. A new `SecretStore` class provides `saveSecrets(repoUrl, secrets)` and `loadSecrets(repoUrl)`. Secrets persist across sessions for the same repo — users enter their Clerk/Stripe keys once, and every session for that repo gets them.
 
-2. **Secrets volume (per-session, ephemeral)** — a per-session named Docker volume (`shipit-secrets-{sessionId}`), mounted at `/secrets` in the preview container only. The orchestrator **populates** this volume at container start by writing the repo's secrets from the database to `/secrets/.env.local` via the preview worker's `PUT /secrets` endpoint. The volume is ephemeral — it's destroyed with the session. The database is the source of truth.
+2. **Injection via `config.env`** — at container creation time, the orchestrator loads the repo's secrets from the database and passes them as container environment variables through the existing `config.env` mechanism in `container-lifecycle.ts`. The `buildContainerConfig()` call in `app-lifecycle.ts` merges the repo's secrets into `env`, and `buildEnv()` (lines 137-141) spreads them into the Docker container's `Env` array. No secrets volume or filesystem-based injection needed — the dev server reads env vars natively (Vite, Next.js, etc. all support `process.env`).
 
-3. **Init: symlink** — the preview container's entrypoint creates symlinks at `/user/.env.local` → `/secrets/.env.local` (and other supported patterns). If a real `.env.local` exists at `/user/.env.local` (e.g., Claude scaffolded it, or the repo included one), it is **moved** to `/secrets/.env.local` first (only if the secrets volume doesn't already have one — don't overwrite orchestrator-provided secrets). Vite/Next.js resolves the symlink and reads the real file from `/secrets`.
+3. **Session container gets no secrets** — only the preview container's `config.env` includes the repo secrets. The session container (where Claude runs) is created without them. Claude cannot access them via `process.env`, `printenv`, or any filesystem path.
 
-4. **Claude sees a dangling symlink** — in the session container, `/user/.env.local` exists as a symlink pointing to `/secrets/.env.local`. Since `/secrets` is not mounted in the session container, the symlink is dangling. `readFile`, `cat`, and `grep` all fail with ENOENT. Claude could run `readlink` and see the target path (`/secrets/.env.local`), but this leaks only the path name, not the contents — an acceptable trade-off.
-
-5. **User edits** — the user manages secrets through the **Secrets tab** in the Settings modal (under the Project section, alongside Deploy). The orchestrator handles reads and writes:
+4. **User edits** — the user manages secrets through the **Secrets tab** in the Settings modal (under the Project section, alongside Deploy). The orchestrator handles reads and writes:
    - `GET /api/secrets?repoUrl=...` — load secrets from the database
    - `PUT /api/secrets` — save secrets to the database, then push them to the active preview container via `PUT /preview-worker/secrets`
-   - The preview worker writes to `/secrets/.env.local` and restarts the dev server
+   - The preview worker sets the new env vars and restarts the dev server
 
-6. **Persistence** — secrets live in the orchestrator's SQLite database, keyed by repo URL. They survive across sessions, container restarts, and workspace resets. The per-session secrets volume is ephemeral and rebuilt from the database on each session start.
+5. **Persistence** — secrets live in the orchestrator's SQLite database, keyed by repo URL. They survive across sessions, container restarts, and workspace resets. On each container creation, secrets are loaded fresh from the database into `config.env`.
 
-#### Supported secret files
+#### `.env.local` file handling
 
-The symlink init handles common dotenv patterns:
-- `.env.local` (highest priority, git-ignored by convention)
-- `.env.development.local`
-- `.env` (if it exists on the secrets volume — user explicitly put it there)
+Since secrets are injected via container env vars (not filesystem), `.env.local` files in the workspace are handled simply:
 
-Files that exist on the workspace volume but NOT on the secrets volume are left alone (e.g., `.env.example` committed to the repo stays visible to Claude for reference).
+- If a `.env.local` exists in the repo (committed or scaffolded by Claude), it stays as-is in the workspace. Claude can read it, but it only contains non-sensitive defaults or placeholders.
+- The preview container's env vars take precedence over `.env.local` values (standard env var priority: `process.env` > dotenv files).
+- Users put real secrets (Clerk keys, Stripe keys, database URLs) in the Secrets tab, not in `.env.local`.
 
 ### Resource limits
 
@@ -96,9 +89,9 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 
 ### Key properties
 
-1. **Same workspace volume** — both containers mount `/user` from the same source (bind mount or named volume with subpath). File watcher stays in the session container and sees changes from both Claude and the dev server. The file watcher only emits relative paths (never reads file contents), so dangling `.env*` symlinks don't cause errors in the watcher itself. `scanFileTree()` does not follow symlinks (uses `entry.isDirectory()` which returns false for symlinks), so dangling `.env*` symlinks appear as regular files in the tree but fail on read — which is the desired behavior. Claude CLI's file reads will get ENOENT, which it already handles.
+1. **Same workspace volume** — both containers mount `/user` from the same source (bind mount or named volume with subpath). File watcher stays in the session container and sees changes from both Claude and the dev server.
 
-2. **Secrets only in preview** — the secrets volume is mounted only in the preview container. No credentials mount in preview, no secrets mount in session.
+2. **Secrets only in preview** — repo secrets are passed as container env vars only to the preview container via `config.env`. The session container (Claude) never receives them. No credentials mount in preview, no secrets in session.
 
 3. **Independent resource limits** — the preview container gets its own memory/CPU/PID limits. A runaway build can't starve Claude.
 
@@ -112,11 +105,10 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 
 - New `createPreviewContainer()` function that creates a container with:
   - Same workspace mount as the session container (reuse `buildMounts` but skip credentials)
-  - Secrets volume mount at `/secrets` (`shipit-secrets-{sessionId}`)
+  - Repo secrets injected via `config.env` (loaded from `SecretStore` at creation time)
   - Env via `buildEnv()` with `WORKER_MODE=preview` added (plus `WORKSPACE_DIR`, `WORKER_PORT`)
   - Same network as the session container
   - Labels: `shipit-preview-for={sessionId}` for cleanup association, plus `shipit-parent-session={sessionId}` so `cleanupSessionDockerResources()` catches it
-  - Entry command includes init step: move `.env*` from workspace to secrets volume, then create symlinks
 
 - `buildEnv()` — add `WORKER_MODE` to the env vars passed to Docker. Session containers get `WORKER_MODE=session`, preview containers get `WORKER_MODE=preview`.
 
@@ -126,7 +118,7 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 
 - `SessionContainer` gains `previewContainerIp`, `previewContainerId`, and `previewWorkerUrl` (constructed as `http://{previewContainerIp}:{workerPort}` after inspecting the preview container's bridge network IP, same pattern as the session container)
 - `create()` spawns both containers (session first, then preview, in parallel if possible)
-- `destroy()` tears down both containers + secrets volume
+- `destroy()` tears down both containers
 - `rediscover()` and `cleanupOrphans()` (delegated to `container-discovery.ts`) handle preview containers via the `shipit-preview-for` label
 - Health check waits for both workers
 
@@ -140,7 +132,7 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 - In preview mode, only register preview endpoints (`/preview/*`, `/secrets`, `/health`, `/events`)
 - Skip agent, terminal, and file watcher initialization
 - SSE stream only emits preview events
-- Init step: move any real `.env*` files from `/user/` to `/secrets/` (if not already present on secrets volume), then create symlinks from `/user/.env*` → `/secrets/.env*`
+- No filesystem-based secrets init needed — secrets arrive as container env vars via `config.env`
 
 #### `container-session-runner.ts`
 
@@ -157,10 +149,10 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 
 #### `SecretStore` (new)
 
-- New class following `DeploymentStore` pattern. SQLite table `secrets` with columns: `repo_url TEXT`, `env_file TEXT` (e.g., `.env.local`), `contents TEXT` (encrypted at rest with a key from the credentials volume).
-- `saveSecrets(repoUrl, envFile, contents)` — upsert
-- `loadSecrets(repoUrl)` — returns all env files for a repo
-- `deleteSecrets(repoUrl, envFile)` — remove a specific file
+- New class following `DeploymentStore` pattern. SQLite table `secrets` with columns: `repo_url TEXT`, `key TEXT`, `value TEXT`. Stores individual key-value pairs rather than raw file contents, since secrets are injected as env vars via `config.env`.
+- `saveSecrets(repoUrl, secrets: Record<string, string>)` — upsert all key-value pairs for a repo
+- `loadSecrets(repoUrl)` — returns `Record<string, string>` of all secrets for a repo
+- `deleteSecret(repoUrl, key)` — remove a specific secret
 
 #### Client
 
@@ -177,21 +169,21 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 
 ### Lifecycle
 
-1. **Create**: `SessionContainerManager.create()` spawns both containers + secrets volume. The preview container starts, runs init (symlinks). The orchestrator populates `/secrets/.env.local` from the database via the preview worker. The dev server does NOT start yet (waits for `POST /preview/start`).
+1. **Create**: `SessionContainerManager.create()` spawns both containers. The preview container starts with repo secrets injected as env vars via `config.env`. The dev server does NOT start yet (waits for `POST /preview/start`).
 
 2. **Start preview**: `ContainerSessionRunner.startWorkerResources()` sends `/preview/start` to the preview worker URL. The preview container runs install + dev server.
 
 3. **File changes**: File watcher in the session container detects changes and emits `file_changes`. If `shipit.yaml` changed, the runner sends `/preview/restart` to the preview worker.
 
-4. **Secrets edit**: User edits secrets in the Settings → Secrets tab → `PUT /api/secrets` → orchestrator saves to database + pushes to preview worker → preview worker writes to `/secrets/.env.local` → preview auto-restarts.
+4. **Secrets edit**: User edits secrets in the Settings → Secrets tab → `PUT /api/secrets` → orchestrator saves to database + pushes updated env vars to preview worker → preview worker restarts the dev server with new env.
 
-5. **Destroy**: `SessionContainerManager.destroy()` stops both containers. `cleanupSessionDockerResources()` removes the secrets volume via the `shipit-parent-session` label. Secrets remain in the database for the next session.
+5. **Destroy**: `SessionContainerManager.destroy()` stops both containers. Secrets remain in the database for the next session.
 
 6. **Reconnect**: Runner reconnects both SSE streams. Preview worker replays `preview_ready`/`preview_stopped` state on reconnect (already implemented).
 
 ### Warm pool
 
-Warm (standby) sessions pre-create both containers + secrets volume. The preview container sits idle until activated — minimal resource usage since no dev server is running. Secrets are populated from the database when the warm session is activated and assigned a repo URL.
+Warm (standby) sessions pre-create both containers. The preview container sits idle until activated — minimal resource usage since no dev server is running. When the warm session is activated and assigned a repo URL, the orchestrator loads secrets from the database and pushes them to the preview worker's env before starting the dev server.
 
 ### Session clone / fork (worktrees)
 
@@ -237,7 +229,7 @@ The client is unaffected — the preview proxy switch is transparent. The secret
 
 | File | Change |
 |------|--------|
-| `src/server/orchestrator/container-lifecycle.ts` | `createPreviewContainer()`, secrets volume, reduced session memory |
+| `src/server/orchestrator/container-lifecycle.ts` | `createPreviewContainer()`, secrets via `config.env`, reduced session memory |
 | `src/server/orchestrator/session-container.ts` | Track preview container, dual create/destroy, `DEFAULT_MEMORY_LIMIT` reduction |
 | `src/server/orchestrator/container-discovery.ts` | `rediscoverContainers()` and `cleanupOrphanContainers()` handle preview containers via `shipit-preview-for` label |
 | `src/server/orchestrator/preview-proxy.ts` | Use `previewContainerIp` for routing |
