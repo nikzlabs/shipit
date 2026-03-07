@@ -156,8 +156,10 @@ function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: 
     const error = await merge(sessionId, method);
     if (error) {
       setToast({ message: `Merge failed: ${error}` });
+      setMerging(false);
     }
-    setMerging(false);
+    // On success, keep merging=true — the card will transition to "merged" phase
+    // via the optimistic store update, so this component unmounts.
   };
 
   return (
