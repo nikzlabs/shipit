@@ -437,6 +437,7 @@ export function createPrStatusPoller(
     sessionManager,
     sseBroadcast,
     runnerRegistry,
+    getSharedRepoDir,
     fetchAndFixCb: async (sessionId, owner, repo, failedChecks) => {
       const runner = runnerRegistry.get(sessionId);
       if (!runner) return;

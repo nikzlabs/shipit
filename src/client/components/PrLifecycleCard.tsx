@@ -65,9 +65,11 @@ function CiIndicator({ checks }: { checks: PrCardState["checks"] }) {
     );
   }
   // pending
+  const pendingLabel = checks.total === 0 ? "CI" : `CI ${checks.passed}/${checks.total}`;
+  const pendingTitle = checks.total === 0 ? "Waiting for CI checks to start" : `CI running  ${checks.passed}/${checks.total}`;
   return (
-    <span className="text-(--color-warning) text-xs flex items-center gap-1 animate-pulse" title={`CI running  ${checks.passed}/${checks.total}`}>
-      <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin" /> CI {checks.passed}/{checks.total}
+    <span className="text-(--color-warning) text-xs flex items-center gap-1 animate-pulse" title={pendingTitle}>
+      <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin" /> {pendingLabel}
     </span>
   );
 }
