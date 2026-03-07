@@ -144,7 +144,7 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 #### Orchestrator API
 
 - `GET /api/secrets?repoUrl=...` — load secrets from `SecretStore` (database). Not session-scoped — secrets are per-repo.
-- `PUT /api/secrets` — save secrets to `SecretStore`, then push to the active preview container(s) for sessions using that repo. The push calls `PUT /preview-worker/secrets` on each preview worker, which writes to `/secrets/.env.local` and restarts the dev server.
+- `PUT /api/secrets` — save secrets to `SecretStore`, then push to the active preview container(s) for sessions using that repo. The push calls `PUT /preview-worker/secrets` on each preview worker, which sets the new env vars and restarts the dev server.
 - These routes are always registered (secrets can be configured before a session has a preview container).
 
 #### `SecretStore` (new)
@@ -158,7 +158,7 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 
 - **Secrets tab** in Settings modal, under the Project section (alongside Deploy). Added to the `SettingsTab` type in `ui-store.ts`.
 - Key-value editor for `.env.local` entries: each row has a key input, a masked value input (with show/hide toggle), and a delete button. An "Add variable" button appends a new empty row.
-- Save button calls `PUT /api/secrets` with the repo URL and serialized `.env.local` content.
+- Save button calls `PUT /api/secrets` with the repo URL and the key-value pairs as `Record<string, string>`.
 - The tab is available regardless of whether a session is active — users can pre-configure secrets before starting a session.
 
 ### SSE architecture
@@ -187,7 +187,7 @@ Warm (standby) sessions pre-create both containers. The preview container sits i
 
 ### Session clone / fork (worktrees)
 
-When a session is forked (worktree branch), it shares the same repo URL → same secrets. The new session's preview container gets the same `.env.local` contents from the database, populated at container start. No manual re-entry needed.
+When a session is forked (worktree branch), it shares the same repo URL → same secrets. The new session's preview container gets the same secrets from the database, injected as env vars at container start. No manual re-entry needed.
 
 ### In-process SessionRunner (test mode)
 
@@ -199,7 +199,7 @@ When Docker Compose is configured, the user may define their own preview service
 - The built-in preview container still starts (for the default dev server)
 - Docker Compose services run in their own containers on the session network
 - The preview proxy routes by port — compose services use different ports than the built-in preview
-- Docker Compose services do NOT get the secrets volume by default — they define their own env in `docker-compose.yml`. If users need shared secrets (e.g., a backend API needing the same database URL as the frontend), they can reference the secrets volume explicitly in their compose file. This is a future enhancement — out of scope for the initial implementation.
+- Docker Compose services do NOT get the secrets volume by default — they define their own env in `docker-compose.yml`. If users need shared secrets (e.g., a backend API needing the same database URL as the frontend), they can define the same env vars in their `docker-compose.yml` `environment` block, or the orchestrator could inject them into compose services in a future enhancement. This is a future enhancement — out of scope for the initial implementation.
 
 ### No single-container fallback
 
@@ -207,7 +207,7 @@ The old mode (preview running inside the session container) is fully removed, no
 
 - **Maintaining two code paths costs more than it saves.** Every lifecycle operation (create, destroy, reconnect, rediscover, cleanup, health check), SSE handling, preview proxy routing, and the secrets UI would all need branching logic. The single-container path would rot as all development focuses on the dual-container path.
 - **The resource overhead is negligible.** An idle preview container (Node worker, no dev server) uses ~30 MB. Not worth an entire alternate architecture to save.
-- **Security should not be optional.** The whole point is that Claude can't read `.env.local`. A fallback mode that re-enables that defeats the purpose.
+- **Security should not be optional.** The whole point is that Claude can't access user secrets. A fallback mode that re-enables that defeats the purpose.
 - **Testing surface doubles** if both paths must be covered. One path means one set of integration tests.
 
 If something breaks with the preview container, the fix is to fix it — not to fall back.
