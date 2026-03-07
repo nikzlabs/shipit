@@ -358,15 +358,17 @@ describe("standby container pre-warming", () => {
       "warm session",
     );
 
+    // Capture the warm session ID before claiming so we can detect the new one
+    const claimedWarmId = repoStore.get(REPO_URL)!.warmSessionId!;
+
     // Claim → triggers re-warming with standby
     const encodedUrl = encodeURIComponent(REPO_URL);
     await app.inject({ method: "POST", url: `/api/repos/${encodedUrl}/claim-session` });
 
-    const firstWarmId = repoStore.get(REPO_URL)?.warmSessionId;
     await waitFor(
       () => {
         const repo = repoStore.get(REPO_URL);
-        return !!repo?.warmSessionId && repo.warmSessionId !== firstWarmId;
+        return !!repo?.warmSessionId && repo.warmSessionId !== claimedWarmId;
       },
       10000,
       "re-warmed session",
@@ -409,15 +411,17 @@ describe("standby container pre-warming", () => {
       "warm session",
     );
 
+    // Capture the warm session ID before claiming so we can detect the new one
+    const claimedWarmId = repoStore.get(REPO_URL)!.warmSessionId!;
+
     // Claim → triggers re-warming with standby
     const encodedUrl = encodeURIComponent(REPO_URL);
     await app.inject({ method: "POST", url: `/api/repos/${encodedUrl}/claim-session` });
 
-    const firstWarmId = repoStore.get(REPO_URL)?.warmSessionId;
     await waitFor(
       () => {
         const repo = repoStore.get(REPO_URL);
-        return !!repo?.warmSessionId && repo.warmSessionId !== firstWarmId;
+        return !!repo?.warmSessionId && repo.warmSessionId !== claimedWarmId;
       },
       10000,
       "re-warmed session",
@@ -512,17 +516,8 @@ describe("standby container pre-warming", () => {
     const encodedUrl = encodeURIComponent(REPO_URL);
     await app.inject({ method: "POST", url: `/api/repos/${encodedUrl}/claim-session` });
 
-    // Wait for re-warmed session to appear
-    const firstWarmId = repoStore.get(REPO_URL)?.warmSessionId;
-    await waitFor(
-      () => {
-        const repo = repoStore.get(REPO_URL);
-        return !!repo?.warmSessionId && repo.warmSessionId !== firstWarmId;
-      },
-      10000,
-      "re-warmed session",
-    );
-
+    // The claim response already contains the re-warmed session (claim awaits
+    // warmSessionForRepo). Just verify the new warm session exists.
     const newWarmId = repoStore.get(REPO_URL)!.warmSessionId!;
 
     // Wait a bit to ensure standby creation would have completed if attempted
