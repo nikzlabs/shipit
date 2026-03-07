@@ -20,12 +20,12 @@ A separate preview container eliminates all of these by construction.
 
 ### Container topology
 
-Every session gets two containers on the same bridge network:
+Every session gets at minimum two built-in containers on the same bridge network. Users may add more via Docker Compose (see "Docker Compose interaction" below). Both built-in containers use the same Docker image (`shipit-session-worker`), differentiated by the `WORKER_MODE` env var:
 
 ```
 ┌──────────────────────────────┐   ┌──────────────────────────────┐
 │  Session Container           │   │  Preview Container           │
-│  (shipit-session-worker)     │   │  (shipit-preview-worker)     │
+│  WORKER_MODE=session         │   │  WORKER_MODE=preview         │
 │                              │   │                              │
 │  • Claude CLI                │   │  • Dev server (Vite, etc.)   │
 │  • File watcher              │   │  • Install runner            │
@@ -55,13 +55,13 @@ Users typically store secrets (API keys for Clerk, Stripe, Supabase, etc.) in `.
 
 #### How it works
 
-1. **Orchestrator-managed secrets (per-repo)** — secrets are stored in the orchestrator's SQLite database, keyed by repo URL (from `SessionInfo.remoteUrl`). This follows the same pattern as `DeploymentStore`. A new `SecretStore` class provides `saveSecrets(repoUrl, secrets)` and `loadSecrets(repoUrl)`. Secrets persist across sessions for the same repo — users enter their Clerk/Stripe keys once, and every session for that repo gets them.
+1. **Orchestrator-managed secrets (per-repo)** — secrets are stored in the orchestrator's SQLite database, keyed by repo URL (from `SessionInfo.remoteUrl`). A new `SecretStore` class follows `DeploymentStore`'s structural pattern (SQLite via `DatabaseManager`, class wrapping prepared statements) but uses `repo_url` as the key instead of `session_id`. `SecretStore` provides `saveSecrets(repoUrl, secrets)` and `loadSecrets(repoUrl)`. Secrets persist across sessions for the same repo — users enter their Clerk/Stripe keys once, and every session for that repo gets them.
 
 2. **Injection via preview worker** — the preview worker exposes `PUT /secrets`, which accepts a `Record<string, string>`. This is a **full replace**, not a merge: the worker tracks which keys were set by previous `PUT /secrets` calls, removes any that are absent from the new payload, and sets all new key-value pairs in `process.env`. This ensures that when a user deletes a secret in the UI, it is actually removed from the dev server's environment — not just orphaned until container restart. After updating `process.env`, the worker restarts the dev server child process (if running). The restarted dev server inherits the updated `process.env`. The dev server reads env vars natively (Vite, Next.js, etc. all support `process.env`). No secrets are passed at container creation — this keeps a single code path for all scenarios (fresh sessions, warm pool activation, and user edits).
 
 3. **Startup sequence** — the orchestrator creates the preview container, waits for the worker health check, pushes secrets via `PUT /secrets`, then sends `POST /preview/start`. Secrets are always pushed before the dev server starts — even if the repo has no secrets configured (or the session has no `remoteUrl`), the push sends an empty `Record<string, string>` and the preview starts normally.
 
-4. **Session container gets no secrets** — only the preview container receives repo secrets (via `PUT /secrets`). The session container (where Claude runs) never receives them. Claude cannot access them via `process.env`, `printenv`, or any filesystem path.
+4. **Session container gets no secrets** — only the built-in preview container receives repo secrets (via `PUT /secrets`). The session container (where Claude runs) never receives them. Claude cannot access them via `process.env`, `printenv`, or any filesystem path. User-provided containers (Docker Compose) manage their own env vars independently.
 
 5. **User edits** — the user manages secrets through the **Secrets tab** in the Settings modal (under the Project section, alongside Deploy). The orchestrator handles reads and writes:
    - `GET /api/secrets?repoUrl=...` — load secrets from the database
@@ -84,18 +84,18 @@ With the preview in its own container, resource limits can be right-sized:
 
 | Container | Memory | CPU | PIDs | Rationale |
 |-----------|--------|-----|------|-----------|
-| Session (Claude) | 256 MB | 0.5 | 256 | Claude CLI + node-pty + file watcher. ~60-85 MB typical, 150 MB peak. |
+| Session (Claude) | 256 MB | 0.5 | 256 | Claude CLI + node-pty + file watcher. ~60-85 MB typical, 150 MB peak. Claude-triggered `npm install` also runs here but is typically lightweight (single package adds). |
 | Preview (dev server) | 512 MB | 0.5 | 256 | Vite/webpack builds are memory-hungry. Keep at 512 MB. |
 
 This saves ~256 MB per session compared to today's single 512 MB container, while giving the preview MORE headroom (it no longer shares with Claude).
 
 ### Key properties
 
-1. **Same workspace volume** — both containers mount `/user` from the same source (bind mount or named volume with subpath). File watcher stays in the session container and sees changes from both Claude and the dev server.
+1. **Same workspace volume** — all containers in the session (built-in and user-provided) mount `/user` from the same source (bind mount or named volume with subpath). File watcher stays in the session container and sees changes from all containers. See "Shared workspace contract" below.
 
-2. **Secrets only in preview** — repo secrets are pushed to the preview worker via `PUT /secrets`. The session container (Claude) never receives them. No credentials mount in preview, no secrets in session.
+2. **Secrets only in built-in preview** — repo secrets are pushed to the built-in preview worker via `PUT /secrets`. The session container (Claude) never receives them. User-provided containers (Docker Compose) manage their own env vars. No credentials mount in preview, no secrets in session.
 
-3. **Independent resource limits** — the preview container gets its own memory/CPU/PID limits. A runaway build can't starve Claude.
+3. **Independent resource limits** — each container gets its own memory/CPU/PID limits. A runaway build can't starve Claude.
 
 4. **Same bridge network** — the preview container joins the shipit bridge network so the orchestrator's preview proxy can reach it by IP.
 
@@ -108,13 +108,13 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 - New `createPreviewContainer()` function that creates a container with:
   - Same workspace mount as the session container (reuse `buildMounts` but skip credentials)
   - No repo secrets at creation time — secrets are pushed via `PUT /secrets` after the worker is healthy
-  - Env via `buildEnv()` with `WORKER_MODE=preview` added (plus `WORKSPACE_DIR`, `WORKER_PORT`)
+  - Env via `buildEnv()` with `WORKER_MODE=preview` added (`WORKSPACE_DIR` and `WORKER_PORT` are already set by `buildEnv()`)
   - Same network as the session container
   - Labels: `shipit-preview-for={sessionId}` for cleanup association, plus `shipit-parent-session={sessionId}` so `cleanupSessionDockerResources()` catches it
 
 - `buildEnv()` — add `WORKER_MODE` to the env vars passed to Docker. Session containers get `WORKER_MODE=session`, preview containers get `WORKER_MODE=preview`.
 
-- No changes to `buildContainerConfig()` memory defaults — `DEFAULT_MEMORY_LIMIT` lives in `session-container.ts`
+- No changes to `buildContainerConfig()` memory defaults — `DEFAULT_MEMORY_LIMIT` lives in `session-container.ts` and is passed to `buildContainerConfig()` (in `container-lifecycle.ts`) via `LifecycleDeps.defaultMemoryLimit`
 
 #### `session-container.ts` / `SessionContainerManager`
 
@@ -143,6 +143,9 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 - `stopWorkerResources()` sends `POST /preview/stop` to `previewWorkerUrl` (today it sends to `workerUrl`)
 - Preview SSE events come from the preview container's `/events` endpoint
 - Connect two SSE streams: one to session worker (agent, terminal, files), one to preview worker (preview events). Each stream has independent reconnection state (backoff counter, reconnect timer). The existing `handleSSEDisconnect()` logic is refactored to be per-stream rather than global.
+- `file_changes` handler: extend to restart the preview on lockfile changes (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lockb`) in addition to `shipit.yaml` changes. Restart calls go to `previewWorkerUrl`.
+- `_previewStateReceived` flag: must track events from the preview SSE stream only (not the session stream), since preview events no longer arrive on the session SSE stream.
+- File watcher endpoints (`/files/watch`, `/files/unwatch`, `/files/tree`) continue targeting `workerUrl` (session container) — no change needed, the file watcher stays in the session container.
 
 #### Orchestrator API
 
@@ -159,13 +162,15 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 #### Client
 
 - **Secrets tab** in Settings modal, under the Project section (alongside Deploy). Added to the `SettingsTab` type in `ui-store.ts`.
-- Key-value editor for `.env.local` entries: each row has a key input, a masked value input (with show/hide toggle), and a delete button. An "Add variable" button appends a new empty row.
+- Key-value editor for environment variables: each row has a key input, a masked value input (with show/hide toggle), and a delete button. An "Add variable" button appends a new empty row.
 - Save button calls `PUT /api/secrets` with the repo URL and the key-value pairs as `Record<string, string>`.
 - The tab is available regardless of whether a session is active — users can pre-configure secrets before starting a session.
 
 ### SSE architecture
 
 **Dual SSE streams** — the runner connects to both `session:9100/events` and `preview:9100/events`. Keeps containers fully independent. The runner already handles SSE reconnection.
+
+The preview worker's `/events` stream emits: `preview_ready`, `preview_stopped`, `preview_config_missing`, `preview_config_error`, `preview_install_status`, `preview_startup_step`, `preview_log`. The session worker's `/events` stream emits agent, terminal, and file watcher events only — no preview events.
 
 **Independent reconnection** — each SSE stream reconnects independently. If the preview container restarts (e.g., OOM, manual restart) while the session container stays up, only the preview SSE stream drops and reconnects. The runner tracks connection state per stream and does not tear down the session stream when the preview stream disconnects. The health status reflects both streams: if either is down, the runner reports degraded health but continues operating on the healthy stream.
 
@@ -175,7 +180,7 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 
 2. **Start preview**: `ContainerSessionRunner.startWorkerResources()` waits for both workers to be healthy (`_workerReady` for session, then poll preview worker `/health`), pushes secrets via `PUT /secrets`, then sends `POST /preview/start` to the preview worker URL. The preview container runs install + dev server with secrets in `process.env`.
 
-3. **File changes**: File watcher in the session container detects changes and emits `file_changes`. If `shipit.yaml` changed, the runner sends `/preview/restart` to the preview worker.
+3. **File changes**: File watcher in the session container detects changes and emits `file_changes`. The runner restarts the preview on `shipit.yaml` or lockfile changes (see "Claude-triggered installs" below).
 
 4. **Secrets edit**: User edits secrets in the Settings → Secrets tab → `PUT /api/secrets` → orchestrator saves to database + pushes updated env vars to preview worker → preview worker restarts the dev server with new env.
 
@@ -183,9 +188,63 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 
 6. **Reconnect**: Runner reconnects both SSE streams. Preview worker replays `preview_ready`/`preview_stopped` state on reconnect (already implemented).
 
+### Dependency install and test execution
+
+All containers in a session share the `/user` workspace volume (see "Shared workspace contract" below), so `node_modules` written by one container is visible to every other. This creates interactions that need explicit handling:
+
+#### Install runs in the preview container
+
+`install-runner.ts` moves to the preview worker (`WORKER_MODE=preview`). The preview container runs `npm install` (or the command from `shipit.yaml`) before starting the dev server. Since `node_modules` lives on the shared volume, the installed packages are also available to Claude in the session container — tests invoked by Claude (`npm test`, `npx vitest`, etc.) can find their dependencies.
+
+#### Timing: Claude may run tests before install finishes
+
+Today, Claude and install share a container and Claude can observe install progress. In the new design, Claude in the session container has no visibility into the preview container's install step. If Claude runs `npm test` while install is still in progress, it will fail with missing modules.
+
+This is acceptable for the initial implementation — the same race exists today (Claude can run tests before install completes), and in practice Claude waits for the dev server to be ready before running tests. If this becomes a problem, a future enhancement could:
+- Expose install status on the session SSE stream (the preview worker emits `install_status` events, which the runner already forwards to the client — Claude's terminal could also check this)
+- Add a `/install/status` endpoint on the preview worker that the session container can poll
+
+#### Claude-triggered installs (`npm install <pkg>`)
+
+Claude frequently installs packages via the terminal (e.g., `npm install zod`). This runs in the session container and writes to the shared `node_modules`. Tests in the session container work immediately. However, the preview container's dev server won't pick up the new dependency until it restarts — it has already resolved its module graph.
+
+**Fix: restart preview on lockfile changes.** The file watcher (session container) already detects `shipit.yaml` changes and triggers a preview restart ([container-session-runner.ts:729](src/server/orchestrator/container-session-runner.ts#L729)). Extend this to also trigger on lockfile changes:
+
+```typescript
+case "file_changes": {
+  const paths = (data.paths as string[]) ?? [];
+  this.emitMessage({ type: "files_changed", paths } as WsServerMessage);
+
+  const configChanged = paths.some((p) => p === "shipit.yaml" || p.endsWith("/shipit.yaml"));
+  const lockfileChanged = paths.some((p) =>
+    /\/(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb)$/.test(p) ||
+    /^(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb)$/.test(p)
+  );
+
+  if (configChanged || lockfileChanged) {
+    workerPost(this.previewWorkerUrl, "/preview/restart")
+      .catch(/* ... */);
+  }
+  break;
+}
+```
+
+The `/preview/restart` endpoint calls `PreviewManager.restart()`, which calls `clearInstallMarker()` before `start()` — so install re-runs with the updated lockfile. Using `/preview/restart` instead of stop+start is important: a bare `/preview/start` would check `isInstallDone()`, find the existing marker, and skip install entirely.
+
+#### Shared workspace contract
+
+All containers in a session — the session container, the built-in preview container, and any user-provided containers (custom Docker image or Docker Compose services) — mount the same `/user` workspace volume. This is the fundamental contract: code, `node_modules`, config files, and build artifacts are visible to every container. Install runs once (in the preview container) and the results are shared.
+
+**Compatibility is the user's responsibility.** When users provide custom preview images (via a single Docker image or `docker-compose.yml`), they must ensure their images are compatible with the shared workspace:
+- Same OS architecture (guaranteed if running on the same Docker host)
+- Compatible Node.js version if both containers run Node (native `node_modules` binaries like `@rollup/rollup-linux-x64-gnu` are ABI-specific)
+- Compatible system libraries (e.g., glibc vs musl — an Alpine-based custom image won't run binaries compiled in the Debian-based session container)
+
+**Default images** — the base `shipit-session-worker` image and the Docker-capable variant built from `Dockerfile.session-worker.docker` (see [doc 061](../061-self-hosting/plan.md)) share the same base, so native binaries are always compatible between the session and built-in preview containers.
+
 ### Warm pool
 
-Warm (standby) sessions pre-create both containers. The preview container sits idle until activated — minimal resource usage since no dev server is running. Warm containers are created without repo secrets (no repo URL yet). When the warm session is activated and assigned a repo URL, the orchestrator loads secrets from the database and pushes them to the preview worker via `PUT /secrets` (the runtime update path). The preview worker sets them in `process.env` before the dev server starts.
+Warm (standby) sessions pre-create the two built-in containers (session + preview). User-provided containers (Docker Compose) are not pre-created — they start when the session is activated and the compose stack is brought up. The preview container sits idle until activated — minimal resource usage since no dev server is running. Warm containers are created without repo secrets (no repo URL yet). When the warm session is activated and assigned a repo URL, the orchestrator loads secrets from the database and pushes them to the preview worker via `PUT /secrets` (the runtime update path). The preview worker sets them in `process.env` before the dev server starts.
 
 ### Session clone / fork (worktrees)
 
@@ -197,10 +256,12 @@ The in-process `SessionRunner` (used in integration tests) is not affected by th
 
 ### Docker Compose interaction
 
-When Docker Compose is configured, the user may define their own preview services. In that case:
+When Docker Compose is configured, the user may define their own preview services (custom images, multiple containers). All containers — built-in and user-provided — share the `/user` workspace volume (see "Shared workspace contract" above).
+
 - The built-in preview container still starts (for the default dev server)
 - Docker Compose services run in their own containers on the session network
 - The preview proxy routes by port — compose services use different ports than the built-in preview
+- User-provided containers must be compatible with the shared workspace (OS, Node version, system libraries)
 - Docker Compose services do NOT get repo secrets by default — they define their own env in `docker-compose.yml`. If users need shared secrets (e.g., a backend API needing the same database URL as the frontend), they can define the same env vars in their compose `environment` block. Orchestrator-managed injection into compose services is a future enhancement — out of scope for the initial implementation.
 
 ### No single-container fallback
@@ -235,11 +296,11 @@ The following code exists today for preview-in-session-container and must be del
 | File | What to remove | Replacement |
 |------|---------------|-------------|
 | `session-worker.ts` | Preview endpoint registrations (`POST /preview/start`, `/preview/stop`, `/preview/restart`, `GET /preview/status`) in `WORKER_MODE=session` path | These endpoints only exist in the `WORKER_MODE=preview` path |
-| `session-worker.ts` | `PreviewManager` instantiation, `_preview` field, `_previewLogBuffer`, `_lastPreviewExitCode`, `wirePreviewEvents()` in `WORKER_MODE=session` path | Moved to `WORKER_MODE=preview` path only |
-| `session-worker.ts` | Preview-related SSE events (`preview_ready`, `preview_stopped`, `preview_config_*`, `preview_install_status`, `preview_log`) in `WORKER_MODE=session` path | Only emitted by the preview worker's SSE stream |
+| `session-worker.ts` | `PreviewManager` instantiation, `preview` field, `_previewLogBuffer`, `_lastPreviewExitCode`, `wirePreviewEvents()` in `WORKER_MODE=session` path | Moved to `WORKER_MODE=preview` path only |
+| `session-worker.ts` | Preview-related SSE events (`preview_ready`, `preview_stopped`, `preview_config_*`, `preview_install_status`, `preview_startup_step`, `preview_log`) in `WORKER_MODE=session` path | Only emitted by the preview worker's SSE stream |
 | `container-session-runner.ts` | `startPreviewOnWorker()`, `stopPreviewOnWorker()`, `restartPreviewOnWorker()` sending to `this.workerUrl`; `startWorkerResources()` and `stopWorkerResources()` sending preview commands to `this.workerUrl` | All replaced by methods sending to `this.previewWorkerUrl`. `startWorkerResources()` also gains the secrets push step. |
 | `container-session-runner.ts` | Preview SSE event handling (`preview_ready`, `preview_stopped`, etc.) on the session SSE stream | Handled on the preview SSE stream instead |
-| `api-routes-preview.ts` | All three routes (`GET preview-status`, `POST preview/restart`, `POST preview-errors`) calling methods on `containerRunner` that target `workerUrl` | Same routes, but the runner methods now target `previewWorkerUrl` |
+| `api-routes-preview.ts` | `POST preview/restart` calls `restartPreviewOnWorker()` which targets `workerUrl` | Same route, but the runner method now targets `previewWorkerUrl`. `GET preview-status` uses in-memory runner state (no worker call). `POST preview-errors` broadcasts a log entry (no worker call). Neither needs URL changes. |
 | `preview-proxy.ts` | `sc.containerIp` used as the proxy target IP | Replaced with `sc.previewContainerIp` |
 
 No old code should remain that sends preview commands to the session container or expects preview events on the session SSE stream.
@@ -248,12 +309,12 @@ No old code should remain that sends preview commands to the session container o
 
 | File | Change |
 |------|--------|
-| `src/server/orchestrator/container-lifecycle.ts` | `createPreviewContainer()`, `WORKER_MODE` env var, reduced session memory |
+| `src/server/orchestrator/container-lifecycle.ts` | `createPreviewContainer()`, `WORKER_MODE` env var |
 | `src/server/orchestrator/session-container.ts` | Track preview container, dual create/destroy, `DEFAULT_MEMORY_LIMIT` reduction |
 | `src/server/orchestrator/container-discovery.ts` | `rediscoverContainers()` and `cleanupOrphanContainers()` handle preview containers via `shipit-preview-for` label |
 | `src/server/orchestrator/preview-proxy.ts` | Use `previewContainerIp` for routing |
 | `src/server/session/session-worker.ts` | Gate endpoints behind `WORKER_MODE`: session path (agent/terminal/files) vs preview path (preview/secrets/health) |
-| `src/server/orchestrator/container-session-runner.ts` | `previewWorkerUrl`, secrets push before preview start, dual SSE streams, per-stream reconnection |
+| `src/server/orchestrator/container-session-runner.ts` | `previewWorkerUrl`, secrets push before preview start, dual SSE streams, per-stream reconnection, lockfile-triggered preview restart |
 | `src/server/orchestrator/secret-store.ts` | New `SecretStore` class — per-repo secrets in SQLite |
 | `src/server/orchestrator/api-routes.ts` | Secrets CRUD endpoints (`GET/PUT /api/secrets`) |
 | `src/server/orchestrator/api-routes-preview.ts` | All preview routes (`preview-status`, `preview/restart`, `preview-errors`) now target `previewWorkerUrl` |
