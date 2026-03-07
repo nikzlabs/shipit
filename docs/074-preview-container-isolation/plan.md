@@ -36,9 +36,10 @@ Every session gets two containers on the same bridge network:
 │  /credentials ← creds vol   │   │  /secrets ← secrets vol     │
 │                              │   │  (no credentials mount)      │
 │  NO /secrets mount           │   │                              │
-│  .env.local does not exist   │   │  init: symlink               │
-│  in this container           │   │    /secrets/.env.local       │
-│                              │   │    → /user/.env.local        │
+│  .env.local is a dangling    │   │  init: move workspace .env*  │
+│  symlink (target /secrets/   │   │    to /secrets/, then        │
+│  not mounted here)           │   │    symlink /user/.env.local  │
+│                              │   │    → /secrets/.env.local     │
 └──────────────────────────────┘   └──────────────────────────────┘
          ▲                                 ▲
          │         bridge network          │
@@ -59,9 +60,13 @@ Users store secrets (API keys for Clerk, Stripe, Supabase, etc.) in `.env.local`
 
 1. **Secrets volume** — a per-session named Docker volume (`shipit-secrets-{sessionId}`), mounted at `/secrets` in the preview container only. The session container does not mount it.
 
-2. **Symlink on init** — the preview container's entrypoint creates symlinks from `/secrets/.env.local` → `/user/.env.local` (and any other `.env*` files). Vite/Next.js finds the file at the expected project root path.
+2. **Init: move + symlink** — the preview container's entrypoint runs an init step:
+   1. For each supported `.env*` pattern: if a real file exists at `/user/.env.local` (e.g., Claude scaffolded it, or the repo included one), **move** it to `/secrets/.env.local` (only if the secrets volume doesn't already have one — don't overwrite user-edited secrets).
+   2. Create a symlink at `/user/.env.local` → `/secrets/.env.local`. Vite/Next.js resolves the symlink and reads the real file from `/secrets`.
 
-3. **Claude sees nothing** — in the session container, `/user/.env.local` does not exist. Claude CLI cannot read, cat, or grep it. There is no path it can access to reach the secrets volume.
+   This handles the common case where Claude creates a `.env.local` as part of project scaffolding — the file is transparently relocated to the secrets volume.
+
+3. **Claude sees a dangling symlink** — in the session container, `/user/.env.local` exists as a symlink pointing to `/secrets/.env.local`. Since `/secrets` is not mounted in the session container, the symlink is dangling. `readFile`, `cat`, and `grep` all fail with ENOENT. Claude could run `readlink` and see the target path (`/secrets/.env.local`), but this leaks only the path name, not the contents — an acceptable trade-off.
 
 4. **User edits** — the preview worker exposes `GET /secrets` and `PUT /secrets` endpoints. The orchestrator proxies these through a new UI panel (secrets editor). Edits write directly to `/secrets/.env.local` on the secrets volume. The preview worker restarts the dev server when secrets change.
 
@@ -89,7 +94,7 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 
 ### Key properties
 
-1. **Same workspace volume** — both containers mount `/user` from the same source (bind mount or named volume with subpath). File watcher stays in the session container and sees changes from both Claude and the dev server.
+1. **Same workspace volume** — both containers mount `/user` from the same source (bind mount or named volume with subpath). File watcher stays in the session container and sees changes from both Claude and the dev server. The file watcher only emits relative paths (never reads file contents), so dangling `.env*` symlinks don't cause errors in the watcher itself. `scanFileTree()` does not follow symlinks (uses `entry.isDirectory()` which returns false for symlinks), so dangling `.env*` symlinks appear as regular files in the tree but fail on read — which is the desired behavior. Claude CLI's file reads will get ENOENT, which it already handles.
 
 2. **Secrets only in preview** — the secrets volume is mounted only in the preview container. No credentials mount in preview, no secrets mount in session.
 
@@ -106,19 +111,21 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 - New `createPreviewContainer()` function that creates a container with:
   - Same workspace mount as the session container (reuse `buildMounts` but skip credentials)
   - Secrets volume mount at `/secrets` (`shipit-secrets-{sessionId}`)
-  - Minimal env (just `WORKSPACE_DIR`, `WORKER_PORT`)
+  - Env via `buildEnv()` with `WORKER_MODE=preview` added (plus `WORKSPACE_DIR`, `WORKER_PORT`)
   - Same network as the session container
-  - Label: `shipit-preview-for={sessionId}` for cleanup association
-  - Entry command includes init step to create `.env*` symlinks
+  - Labels: `shipit-preview-for={sessionId}` for cleanup association, plus `shipit-parent-session={sessionId}` so `cleanupSessionDockerResources()` catches it
+  - Entry command includes init step: move `.env*` from workspace to secrets volume, then create symlinks
+
+- `buildEnv()` — add `WORKER_MODE` to the env vars passed to Docker. Session containers get `WORKER_MODE=session`, preview containers get `WORKER_MODE=preview`.
 
 - `buildSessionContainerConfig()` — reduce default memory from 512 MB to 256 MB
 
 #### `session-container.ts` / `SessionContainerManager`
 
-- `SessionContainer` gains optional `previewContainerIp` and `previewContainerId`
+- `SessionContainer` gains `previewContainerIp`, `previewContainerId`, and `previewWorkerUrl` (constructed as `http://{previewContainerIp}:{workerPort}` after inspecting the preview container's bridge network IP, same pattern as the session container)
 - `create()` spawns both containers (session first, then preview, in parallel if possible)
 - `destroy()` tears down both containers + secrets volume
-- `rediscover()` and `cleanupOrphans()` handle preview containers via the `shipit-preview-for` label
+- `rediscover()` and `cleanupOrphans()` (delegated to `container-discovery.ts`) handle preview containers via the `shipit-preview-for` label
 - Health check waits for both workers
 
 #### `preview-proxy.ts`
@@ -127,17 +134,18 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 
 #### `session-worker.ts` (preview mode)
 
-- Add `WORKER_MODE=preview` env var
+- Add new `WORKER_MODE` env var (does not exist today). Values: `session` (default, current behavior) or `preview`
 - In preview mode, only register preview endpoints (`/preview/*`, `/secrets`, `/health`, `/events`)
 - Skip agent, terminal, and file watcher initialization
 - SSE stream only emits preview events
-- Init step: create symlinks from `/secrets/.env*` → `/user/.env*`
+- Init step: move any real `.env*` files from `/user/` to `/secrets/` (if not already present on secrets volume), then create symlinks from `/user/.env*` → `/secrets/.env*`
 
 #### `container-session-runner.ts`
 
-- `startWorkerResources()` sends `POST /preview/start` to the **preview worker URL** instead of the session worker URL
+- Add `previewWorkerUrl` field (today only `workerUrl` exists, pointing at the session container). All preview-related POSTs (`/preview/start`, `/preview/stop`, `/preview/restart`) go to `previewWorkerUrl` instead of `workerUrl`.
+- `startWorkerResources()` sends `POST /preview/start` to `previewWorkerUrl`
 - Preview SSE events come from the preview container's `/events` endpoint
-- Connect two SSE streams: one to session worker (agent, terminal, files), one to preview worker (preview events)
+- Connect two SSE streams: one to session worker (agent, terminal, files), one to preview worker (preview events). Each stream has independent reconnection state (backoff counter, reconnect timer). The existing `handleSSEDisconnect()` logic is refactored to be per-stream rather than global.
 
 #### Orchestrator API
 
@@ -153,7 +161,9 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 
 ### SSE architecture
 
-**Dual SSE streams** — the runner connects to both `session:9100/events` and `preview:9100/events`. Keeps containers fully independent. The runner already handles SSE reconnection; adding a second stream is straightforward.
+**Dual SSE streams** — the runner connects to both `session:9100/events` and `preview:9100/events`. Keeps containers fully independent. The runner already handles SSE reconnection.
+
+**Independent reconnection** — each SSE stream reconnects independently. If the preview container restarts (e.g., OOM, manual restart) while the session container stays up, only the preview SSE stream drops and reconnects. The runner tracks connection state per stream and does not tear down the session stream when the preview stream disconnects. The health status reflects both streams: if either is down, the runner reports degraded health but continues operating on the healthy stream.
 
 ### Lifecycle
 
@@ -173,13 +183,27 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 
 Warm (standby) sessions pre-create both containers + secrets volume. The preview container sits idle until activated — minimal resource usage since no dev server is running.
 
+### Session clone / fork (worktrees)
+
+When a session is forked (worktree branch), the secrets volume is **not** cloned. The new session gets a fresh, empty secrets volume. Rationale:
+
+- Secrets are user-managed, not code. Cloning them silently could surprise users (e.g., a forked session hitting a production database).
+- The secrets editor UI makes it easy to re-enter keys for a new branch.
+- Docker volumes don't support copy-on-write — cloning requires reading all files from the source volume and writing to the target, adding latency to fork.
+
+If users request it, a future "copy secrets from session X" action can be added to the secrets editor.
+
+### In-process SessionRunner (test mode)
+
+The in-process `SessionRunner` (used in integration tests) is not affected by this change. It does not run a preview today (`getPreview()` returns `null`, `buildPreviewStatus()` returns hardcoded "not running"). This remains unchanged — the dual-container topology only applies to `ContainerSessionRunner`. No preview worker mock is needed for `SessionRunner`.
+
 ### Docker Compose interaction
 
 When Docker Compose is configured, the user may define their own preview services. In that case:
 - The built-in preview container still starts (for the default dev server)
 - Docker Compose services run in their own containers on the session network
 - The preview proxy routes by port — compose services use different ports than the built-in preview
-- Docker Compose services do NOT get the secrets volume (they define their own env in docker-compose.yml)
+- Docker Compose services do NOT get the secrets volume by default — they define their own env in `docker-compose.yml`. If users need shared secrets (e.g., a backend API needing the same database URL as the frontend), they can reference the secrets volume explicitly in their compose file. This is a future enhancement — out of scope for the initial implementation.
 
 ### No single-container fallback
 
@@ -199,7 +223,7 @@ This is a clean cut-over, not a gradual migration:
 1. **Remove** preview-related code from the session worker (preview endpoints, preview manager initialization, install runner, port scanner imports). The session worker becomes agent + terminal + file watcher only.
 2. **Remove** preview start/stop/restart forwarding from `ContainerSessionRunner` to the session worker URL. All preview commands go to the preview worker URL.
 3. **Remove** `POST /preview/start` and `POST /preview/stop` from the session worker's endpoint registration.
-4. **Move** `PreviewManager`, `install-runner.ts`, `port-scanner.ts`, `vite-error-plugin.ts`, and `preview-config.ts` — these are only imported by the preview worker now. No code changes needed to the modules themselves; they just run in a different container.
+4. **Conditional imports** — `PreviewManager`, `install-runner.ts`, `port-scanner.ts`, `vite-error-plugin.ts`, and `preview-config.ts` stay in the same codebase (both containers use the same Docker image). They are imported conditionally: only when `WORKER_MODE=preview`. The session worker's code path no longer imports or initializes them.
 5. **Update** the preview proxy to read `previewContainerIp` instead of `containerIp`. The proxy's subdomain parsing, path-based fallback, and WebSocket upgrade logic are unchanged.
 6. **Update** integration tests to expect the dual-container topology. Remove any tests that assert preview behavior through the session worker.
 
@@ -210,9 +234,10 @@ The client is unaffected — the preview proxy switch is transparent. The secret
 | File | Change |
 |------|--------|
 | `src/server/orchestrator/container-lifecycle.ts` | `createPreviewContainer()`, secrets volume, reduced session memory |
-| `src/server/orchestrator/session-container.ts` | Track preview container, dual create/destroy, secrets volume cleanup |
+| `src/server/orchestrator/session-container.ts` | Track preview container, dual create/destroy, `DEFAULT_MEMORY_LIMIT` reduction |
+| `src/server/orchestrator/container-discovery.ts` | `rediscoverContainers()` and `cleanupOrphanContainers()` handle preview containers via `shipit-preview-for` label |
 | `src/server/orchestrator/preview-proxy.ts` | Use `previewContainerIp` for routing |
 | `src/server/session/session-worker.ts` | Remove preview endpoints and PreviewManager init, add `WORKER_MODE=preview` path |
-| `src/server/orchestrator/container-session-runner.ts` | Dual SSE streams, preview URL routing, remove session-worker preview forwarding |
+| `src/server/orchestrator/container-session-runner.ts` | `previewWorkerUrl`, dual SSE streams, per-stream reconnection, preview URL routing |
 | `src/server/orchestrator/api-routes.ts` | Secrets proxy endpoints |
 | `src/client/components/` | Secrets editor panel |
