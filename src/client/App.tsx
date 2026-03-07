@@ -391,6 +391,18 @@ export default function App() {
     [send],
   );
 
+  const handleSendFollowUp = useCallback(
+    (text: string) => {
+      const session = useSessionStore.getState();
+      session.setMessages((prev) => [...prev, { role: "user", text }]);
+      session.setIsLoading(true);
+      session.setActivity({ label: "Thinking..." });
+      const pm = useSettingsStore.getState().permissionMode;
+      send({ type: "send_message", text, sessionId: session.sessionId, permissionMode: pm !== "auto" ? pm : undefined });
+    },
+    [send],
+  );
+
   const handleRollback = useCallback(
     (messageIndex: number, mode: "code" | "code_and_chat" | "fork", parentCommitHash: string) => {
       if (mode === "code") {
@@ -619,7 +631,7 @@ export default function App() {
         <HomeScreen onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)} hasRepos={repos.length > 0} />
       ) : (
         <>
-          <MessageList messages={messages} isLoading={isLoading} activity={activity} searchMatches={search.matches} currentMatch={search.currentMatch} onEditMessage={handleEditMessage} onAnswerQuestion={handleAnswerQuestion} onRollback={handleRollback} />
+          <MessageList messages={messages} isLoading={isLoading} activity={activity} searchMatches={search.matches} currentMatch={search.currentMatch} onEditMessage={handleEditMessage} onAnswerQuestion={handleAnswerQuestion} onSendFollowUp={handleSendFollowUp} onRollback={handleRollback} />
           {wsSessionId && <PrLifecycleCard sessionId={wsSessionId} />}
         </>
       )}

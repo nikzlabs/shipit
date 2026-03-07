@@ -116,8 +116,8 @@ describe("buildVisualElements", () => {
       expect(elements[1]).toMatchObject({ kind: "message", index: 1, hideTools: false });
     });
 
-    it("STANDALONE_TOOLS contains exactly AskUserQuestion and TodoWrite", () => {
-      expect(STANDALONE_TOOLS).toEqual(new Set(["AskUserQuestion", "TodoWrite"]));
+    it("STANDALONE_TOOLS contains exactly AskUserQuestion, TodoWrite, and ExitPlanMode", () => {
+      expect(STANDALONE_TOOLS).toEqual(new Set(["AskUserQuestion", "TodoWrite", "ExitPlanMode"]));
     });
 
     it("SUBAGENT_TOOLS contains exactly Task and Skill", () => {

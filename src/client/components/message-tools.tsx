@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { DiffBlock } from "./DiffBlock.js";
 import { ToolSpinner } from "./StreamingIndicator.js";
 import { AskUserQuestion, type AskQuestionItem } from "./AskUserQuestion.js";
+import { PlanApproval } from "./PlanApproval.js";
 import { ToolResult } from "./ToolResult.js";
 import { Button } from "./ui/button.js";
 import { sessionRelativePath } from "../path-utils.js";
@@ -43,7 +44,7 @@ export function ToolCallGroup({ items, isStreaming }: {
   );
 }
 
-export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, isQuestionDisabled, grouped }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void; isQuestionDisabled: boolean; grouped?: boolean }) {
+export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, onSendFollowUp, isQuestionDisabled, grouped }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void; onSendFollowUp?: (text: string) => void; isQuestionDisabled: boolean; grouped?: boolean }) {
   // Show a spinner on the last tool when the message is still streaming
   const inProgress = isLast && isStreaming && !result;
   const [collapsed, setCollapsed] = useState(true);
@@ -80,6 +81,15 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
         toolUseId={tool.id}
         questions={questions}
         onAnswer={onAnswerQuestion ?? (() => {})}
+        disabled={isQuestionDisabled || isStreaming}
+      />
+    );
+  }
+
+  if (tool.name === "ExitPlanMode") {
+    return (
+      <PlanApproval
+        onSend={onSendFollowUp ?? (() => {})}
         disabled={isQuestionDisabled || isStreaming}
       />
     );
