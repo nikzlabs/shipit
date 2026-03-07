@@ -7,7 +7,6 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { EventEmitter } from "node:events";
 import {
   SessionContainerManager,
   CONTAINER_SESSION_ID_LABEL,
