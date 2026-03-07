@@ -16,6 +16,7 @@ interface CredentialData {
   githubToken?: string;
   utilityModel?: UtilityModelConfig;
   maxIdleContainers?: number;
+  agentSystemInstructionsEnabled?: boolean;
 }
 
 const DEFAULT_CREDENTIALS_DIR = "/credentials";
@@ -123,6 +124,17 @@ export class CredentialStore {
 
   setMaxIdleContainers(n: number): void {
     this.data.maxIdleContainers = n;
+    this.save();
+  }
+
+  // ---- Agent system instructions ----
+
+  getAgentSystemInstructionsEnabled(): boolean {
+    return this.data.agentSystemInstructionsEnabled ?? true;
+  }
+
+  setAgentSystemInstructionsEnabled(enabled: boolean): void {
+    this.data.agentSystemInstructionsEnabled = enabled;
     this.save();
   }
 

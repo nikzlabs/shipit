@@ -9,10 +9,14 @@ interface SettingsState {
   githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
   pendingFiles: FileContextRef[];
   maxIdleContainers: number;
+  agentSystemInstructionsEnabled: boolean;
+  agentSystemInstructions: string;
 
   setHasSystemPrompt: (has: boolean) => void;
   setSystemPromptContent: (content: string) => void;
   setMaxIdleContainers: (n: number) => void;
+  setAgentSystemInstructionsEnabled: (enabled: boolean) => void;
+  setAgentSystemInstructions: (text: string) => void;
   setPermissionMode: (mode: PermissionMode) => void;
   setGithubStatus: (status: { authenticated: boolean; username?: string; avatarUrl?: string }) => void;
   addPendingFile: (filePath: string) => void;
@@ -41,12 +45,18 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   githubStatus: { authenticated: false },
   pendingFiles: [],
   maxIdleContainers: 5,
+  agentSystemInstructionsEnabled: true,
+  agentSystemInstructions: "",
 
   setHasSystemPrompt: (has) => set({ hasSystemPrompt: has }),
 
   setSystemPromptContent: (content) => set({ systemPromptContent: content }),
 
   setMaxIdleContainers: (n) => set({ maxIdleContainers: n }),
+
+  setAgentSystemInstructionsEnabled: (enabled) => set({ agentSystemInstructionsEnabled: enabled }),
+
+  setAgentSystemInstructions: (text) => set({ agentSystemInstructions: text }),
 
   setPermissionMode: (mode) => {
     savePermissionMode(mode);

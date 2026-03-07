@@ -10,6 +10,7 @@ import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { ALLOWED_ENV_KEYS } from "../../shared/agent-registry.js";
 import type { AgentId } from "../../shared/types.js";
 import { getGitIdentity, setGitIdentity as writeGitIdentity } from "../git-config.js";
+import { AGENT_SYSTEM_INSTRUCTIONS } from "../agent-instructions.js";
 import { ServiceError } from "./types.js";
 import type { AgentInfo, GlobalSettings } from "./types.js";
 
@@ -52,7 +53,8 @@ export async function getGlobalSettings(
 
   const agents = listAgents(agentRegistry);
   const maxIdleContainers = credentialStore?.getMaxIdleContainers() ?? 5;
-  return { gitIdentity, systemPrompt, agents, defaultAgentId, maxIdleContainers };
+  const agentSystemInstructionsEnabled = credentialStore?.getAgentSystemInstructionsEnabled() ?? true;
+  return { gitIdentity, systemPrompt, agents, defaultAgentId, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions: AGENT_SYSTEM_INSTRUCTIONS };
 }
 
 // ---- Mutation operations ----
@@ -81,6 +83,7 @@ export async function saveGlobalSettings(
   gitIdentity?: { name: string; email: string },
   systemPrompt?: string,
   maxIdleContainers?: number,
+  agentSystemInstructionsEnabled?: boolean,
 ): Promise<GlobalSettings> {
   // Save git identity if provided
   if (gitIdentity) {
@@ -112,6 +115,11 @@ export async function saveGlobalSettings(
   if (maxIdleContainers !== undefined) {
     const n = Math.max(0, Math.floor(maxIdleContainers));
     credentialStore.setMaxIdleContainers(n);
+  }
+
+  // Save agent system instructions toggle if provided
+  if (agentSystemInstructionsEnabled !== undefined) {
+    credentialStore.setAgentSystemInstructionsEnabled(agentSystemInstructionsEnabled);
   }
 
   return getGlobalSettings(agentRegistry, defaultAgentId, workspaceDir, credentialStore);
