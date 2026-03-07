@@ -228,12 +228,12 @@ describe("ClaudeProcess", () => {
       mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
-      claude.run("hello world");
+      claude.run("hello world", undefined, undefined, undefined, "/user");
 
       expect(mockPtySpawn).toHaveBeenCalledWith(
         "claude",
         expect.arrayContaining(["-p", "hello world", "--output-format", "stream-json"]),
-        expect.objectContaining({ cwd: "/workspace", name: "xterm-256color" }),
+        expect.objectContaining({ cwd: "/user", name: "xterm-256color" }),
       );
     });
 

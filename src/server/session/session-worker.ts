@@ -18,6 +18,7 @@ import type { AgentProcess, AgentRunParams, AgentEvent, AgentId } from "./agents
 import { TerminalProcess } from "./terminal.js";
 import { PreviewManager } from "./preview-manager.js";
 import { FileWatcher } from "./file-watcher.js";
+import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
 import { scanFileTree } from "../shared/file-tree.js";
 import type { ServerResponse } from "node:http";
 import { getErrorMessage } from "../shared/utils.js";
@@ -581,7 +582,7 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
   const worker = new SessionWorker({
     agentFactory: () => new ClaudeAdapter(new ClaudeProcess()),
     port: Number(process.env.WORKER_PORT) || 9100,
-    workspaceDir: process.env.WORKSPACE_DIR || "/user",
+    workspaceDir: process.env.WORKSPACE_DIR || CONTAINER_WORKSPACE_DIR,
     workerMode,
   });
 

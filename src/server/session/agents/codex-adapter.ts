@@ -117,7 +117,7 @@ export class CodexAdapter
       return;
     }
 
-    const cwd = params.cwd ?? "/workspace";
+    const cwd = params.cwd;
     const env: Record<string, string> = {
       ...process.env as Record<string, string>,
     };

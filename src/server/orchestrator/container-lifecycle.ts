@@ -16,6 +16,7 @@ import type {
 import {
   CONTAINER_SESSION_ID_LABEL,
 } from "./session-container.js";
+import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -85,18 +86,18 @@ export function buildMounts(
 ): MountSpec {
   const binds: string[] = [];
   const mounts: MountSpec["mounts"] = [];
-  const workspaceDir = "/user";
+  const workspaceDir = CONTAINER_WORKSPACE_DIR;
 
   if (workspaceVolume) {
     const relPath = config.sessionDir.replace(/^\/workspace\//, "");
     mounts.push({
       Type: "volume",
       Source: workspaceVolume,
-      Target: "/user",
+      Target: CONTAINER_WORKSPACE_DIR,
       VolumeOptions: { Subpath: relPath },
     });
   } else {
-    binds.push(`${config.sessionDir}:/user:rw`);
+    binds.push(`${config.sessionDir}:${CONTAINER_WORKSPACE_DIR}:rw`);
   }
 
   if (credentialsVolume) {
@@ -129,12 +130,12 @@ export function buildMounts(
       mounts.push({
         Type: "volume",
         Source: workspaceVolume,
-        Target: "/user/.git",
+        Target: `${CONTAINER_WORKSPACE_DIR}/.git`,
         VolumeOptions: { Subpath: gitOverrideRelPath },
       });
     } else {
       binds.push(`${config.sharedRepoDir}:${INTERNAL_GIT_MOUNT}:rw`);
-      binds.push(`${config.sessionDir}/.git-override:/user/.git:rw`);
+      binds.push(`${config.sessionDir}/.git-override:${CONTAINER_WORKSPACE_DIR}/.git:rw`);
     }
   }
 
@@ -539,18 +540,18 @@ export function buildPreviewMounts(
 ): MountSpec {
   const binds: string[] = [];
   const mounts: MountSpec["mounts"] = [];
-  const workspaceDir = "/user";
+  const workspaceDir = CONTAINER_WORKSPACE_DIR;
 
   if (workspaceVolume) {
     const relPath = config.sessionDir.replace(/^\/workspace\//, "");
     mounts.push({
       Type: "volume",
       Source: workspaceVolume,
-      Target: "/user",
+      Target: CONTAINER_WORKSPACE_DIR,
       VolumeOptions: { Subpath: relPath },
     });
   } else {
-    binds.push(`${config.sessionDir}:/user:rw`);
+    binds.push(`${config.sessionDir}:${CONTAINER_WORKSPACE_DIR}:rw`);
   }
 
   // Worktree: mount shared repo at hidden path (same as session container)
@@ -567,12 +568,12 @@ export function buildPreviewMounts(
       mounts.push({
         Type: "volume",
         Source: workspaceVolume,
-        Target: "/user/.git",
+        Target: `${CONTAINER_WORKSPACE_DIR}/.git`,
         VolumeOptions: { Subpath: gitOverrideRelPath },
       });
     } else {
       binds.push(`${config.sharedRepoDir}:${INTERNAL_GIT_MOUNT}:rw`);
-      binds.push(`${config.sessionDir}/.git-override:/user/.git:rw`);
+      binds.push(`${config.sessionDir}/.git-override:${CONTAINER_WORKSPACE_DIR}/.git:rw`);
     }
   }
 

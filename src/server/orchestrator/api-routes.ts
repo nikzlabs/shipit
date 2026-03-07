@@ -61,7 +61,7 @@ export interface ApiDeps {
   getSharedRepoDir: (repoUrl: string) => string;
   createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string }>;
   // Phase 3 additions
-  generateText: (prompt: string, cwd?: string) => Promise<string>;
+  generateText: (prompt: string, cwd: string) => Promise<string>;
   sessionsRoot: string;
   /** Warm a session for a repo (called after clone, after graduation, etc.). */
   warmSessionForRepo?: (repoUrl: string, opts?: { withStandby?: boolean }) => Promise<void>;

@@ -82,7 +82,7 @@ export interface AppDeps {
    * Spawns a short-lived Claude process, collects text output, and returns it.
    * Inject a stub in tests.
    */
-  generateText?: (prompt: string, cwd?: string) => Promise<string>;
+  generateText?: (prompt: string, cwd: string) => Promise<string>;
   /**
    * Unified credential store for git identity, GitHub token, agent API keys.
    * Defaults to `new CredentialStore(credentialsDir)`.
@@ -143,7 +143,7 @@ export interface ManagerSet {
   deploymentManager: DeploymentManager;
   deploymentStore: DeploymentStore;
   featureManager: FeatureManager;
-  generateText: (prompt: string, cwd?: string) => Promise<string>;
+  generateText: (prompt: string, cwd: string) => Promise<string>;
   isTestMode: boolean;
   secretStore: SecretStore;
 }
@@ -256,7 +256,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // Tests inject a stub. In production, agentFactory is unavailable (agents
   // live inside session containers), so the default uses agentFactory only
   // when provided, otherwise returns empty string (feature gracefully degrades).
-  const generateText = deps.generateText ?? ((prompt: string, cwd?: string): Promise<string> => {
+  const generateText = deps.generateText ?? ((prompt: string, cwd: string): Promise<string> => {
     if (!agentFactory) {
       // No in-process agent available — return empty to degrade gracefully.
       return Promise.resolve("");
