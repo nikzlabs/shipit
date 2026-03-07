@@ -697,6 +697,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           } as WsServerMessage);
           break;
 
+        case "preview_startup_step":
+          this._previewStateReceived = true;
+          this.emitMessage({
+            type: "startup_step",
+            ...data,
+            sessionId: this.sessionId,
+          } as WsServerMessage);
+          break;
+
         case "preview_log": {
           const text = (data.text as string) ?? "";
           this._previewLogBuffer.push(text);

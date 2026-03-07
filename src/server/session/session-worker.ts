@@ -31,7 +31,7 @@ export interface WorkerSSEEvent {
     | "agent_event" | "agent_done" | "agent_error" | "agent_auth_required" | "agent_log"
     | "terminal_data" | "terminal_exit"
     | "preview_ready" | "preview_stopped" | "preview_config_missing"
-    | "preview_config_error" | "preview_install_status" | "preview_log"
+    | "preview_config_error" | "preview_install_status" | "preview_startup_step" | "preview_log"
     | "file_changes";
   data: unknown;
 }
@@ -431,6 +431,10 @@ export class SessionWorker extends EventEmitter {
 
     preview.on("install_status", (status: { status: string; message?: string }) => {
       this.broadcastSSE({ type: "preview_install_status", data: status });
+    });
+
+    preview.on("startup_step", (step: { stepId: string; status: string; durationMs?: number; message?: string; logLines?: string[] }) => {
+      this.broadcastSSE({ type: "preview_startup_step", data: step });
     });
 
     preview.on("log", (entry: { source: string; text: string }) => {

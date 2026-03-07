@@ -474,9 +474,22 @@ export function useMessageHandler(params: {
       }
     }
 
+    if (data.type === "startup_step") {
+      const currentSessionId = session.sessionId;
+      if (data.sessionId && currentSessionId && data.sessionId !== currentSessionId) return;
+      preview.setStartupStep({
+        stepId: data.stepId,
+        status: data.status,
+        durationMs: data.durationMs,
+        message: data.message,
+        logLines: data.logLines ?? [],
+      });
+    }
+
     if (data.type === "preview_status" && data.running) {
       preview.setConfigMissing(false);
       preview.setInstallStatus(null);
+      preview.clearStartupSteps();
     }
 
     if (data.type === "turn_diff") {

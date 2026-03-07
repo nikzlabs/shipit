@@ -1,10 +1,11 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: poll external preview server URL until ready with cancellation (external system sync)
 import { useState, useEffect, useRef } from "react";
-import { WarningIcon, GearSixIcon, PlayIcon, CircleNotchIcon, ArrowClockwiseIcon } from "@phosphor-icons/react";
+import { WarningIcon, GearSixIcon, CircleNotchIcon, ArrowClockwiseIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import type { PreviewError } from "../hooks/usePreviewErrors.js";
 import { usePreviewStore } from "../stores/preview-store.js";
+import { StartupSteps } from "./StartupSteps.js";
 
 export interface PreviewStatus {
   running: boolean;
@@ -36,12 +37,8 @@ interface PreviewFrameProps {
   onSendErrors: (errors: PreviewError[]) => void;
   /** Called to clear all errors. */
   onClearErrors: () => void;
-  /** Show loading spinner even without a sessionId (e.g. during session claim). */
-  loading?: boolean;
   /** Whether no preview config was found for the session. */
   configMissing?: boolean;
-  /** Install command status (running, complete, or error). */
-  installStatus?: { status: "running" | "complete" | "error"; message?: string } | null;
   /** Called when user clicks "Set up with Claude" to generate shipit.yaml. */
   onInitPreviewConfig?: () => void;
   /** Crash information when preview server exited with error. */
@@ -76,7 +73,6 @@ export { formatErrorForMessage };
 export function PreviewFrame({
   preview,
   sessionId,
-  loading,
   detectedPorts,
   selectedPort,
   onSelectPort,
@@ -84,7 +80,6 @@ export function PreviewFrame({
   onSendErrors,
   onClearErrors,
   configMissing,
-  installStatus,
   onInitPreviewConfig,
   crashInfo,
   onRestartPreview,
@@ -243,37 +238,19 @@ export function PreviewFrame({
   }
 
   const hasErrors = errors.length > 0;
+  const startupSteps = usePreviewStore((s) => s.startupSteps);
   const showCrash = !!(crashInfo && !preview?.running);
-  const showInstallRunning = installStatus?.status === "running";
-  const showInstallError = installStatus?.status === "error";
-  const showStarting = !preview && (!!sessionId || !!loading);
-  const showConfigMissing = !isRunning && !showCrash && !showInstallRunning && !showInstallError && !showStarting && !!configMissing;
-  const showPlaceholder = !isRunning && !showCrash && !showInstallRunning && !showInstallError && !showStarting && !showConfigMissing;
+  const showStartupSteps = startupSteps.length > 0 && !isRunning && !showCrash;
+  const showStarting = !showStartupSteps && !preview && !!sessionId;
+  const showConfigMissing = !isRunning && !showCrash && !showStartupSteps && !showStarting && !!configMissing;
 
   // When not running, hide the iframe behind the overlay (but keep DOM element alive)
   const hideIframe = !isRunning && !showStarting;
 
   // Determine overlay content for the main area
   let overlayContent: React.ReactNode = null;
-  if (showInstallRunning) {
-    overlayContent = (
-      <div className="text-center space-y-3">
-        <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
-        <p>Installing dependencies...</p>
-        <p className="text-xs text-(--color-text-tertiary)">This may take a moment.</p>
-      </div>
-    );
-  } else if (showInstallError) {
-    overlayContent = (
-      <div className="text-center space-y-2">
-        <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-error)" />
-        <p className="text-(--color-error)">Install failed</p>
-        {installStatus?.message && (
-          <p className="text-xs text-(--color-text-tertiary) max-w-sm">{installStatus.message}</p>
-        )}
-        <p className="text-xs text-(--color-text-tertiary)">Check the terminal logs for details.</p>
-      </div>
-    );
+  if (showStartupSteps) {
+    overlayContent = <StartupSteps steps={startupSteps} />;
   } else if (showCrash) {
     overlayContent = (
       <div className="text-center space-y-3 max-w-lg px-4">
@@ -296,7 +273,7 @@ export function PreviewFrame({
     overlayContent = (
       <div className="text-center space-y-3">
         <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
-        <p>{loading && !sessionId ? "Syncing with latest changes..." : "Starting dev server..."}</p>
+        <p>Starting dev server...</p>
       </div>
     );
   } else if (showConfigMissing) {
@@ -308,16 +285,6 @@ export function PreviewFrame({
           Create a shipit.yaml file to configure how the preview server runs, or let Claude set it up for you.
         </p>
         {onInitPreviewConfig && <Button variant="primary" size="sm" onClick={onInitPreviewConfig}>Set up with Claude</Button>}
-      </div>
-    );
-  } else if (showPlaceholder) {
-    overlayContent = (
-      <div className="text-center space-y-2">
-        <PlayIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
-        <p>Preview will appear here when a dev server is running.</p>
-        <p className="text-xs text-(--color-text-tertiary)">
-          Ask the agent to create a project to get started. Vite, Express, Next.js, and other servers are auto-detected.
-        </p>
       </div>
     );
   }

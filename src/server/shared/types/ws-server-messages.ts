@@ -240,6 +240,26 @@ export interface WsInstallStatus {
   message?: string;
 }
 
+// ---- Startup step messages ----
+
+export type StartupStepId = "fetch" | "install" | "dev_server";
+export type StartupStepStatus = "pending" | "running" | "complete" | "error";
+
+/** Server → Client: progressive startup step update. */
+export interface WsStartupStep {
+  type: "startup_step";
+  stepId: StartupStepId;
+  status: StartupStepStatus;
+  /** Duration in milliseconds (set when status is "complete"). */
+  durationMs?: number;
+  /** Human-readable error message (set when status is "error"). */
+  message?: string;
+  /** Rolling log lines (last N) for this step. */
+  logLines?: string[];
+  /** Session that owns this step — client discards stale messages. */
+  sessionId?: string;
+}
+
 /** Server → Client: no preview config found for the session. */
 export interface WsPreviewConfigMissing {
   type: "preview_config_missing";
@@ -396,4 +416,5 @@ export type WsServerMessage =
   | WsSystemUserMessage
   | WsCommitLinked
   | WsRollbackComplete
-  | WsSessionForked;
+  | WsSessionForked
+  | WsStartupStep;

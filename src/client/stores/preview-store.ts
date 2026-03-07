@@ -6,6 +6,14 @@ interface InstallStatus {
   message?: string;
 }
 
+export interface StartupStep {
+  stepId: "fetch" | "install" | "dev_server";
+  status: "pending" | "running" | "complete" | "error";
+  durationMs?: number;
+  message?: string;
+  logLines: string[];
+}
+
 interface CrashInfo {
   exitCode: number | null;
   output: string;
@@ -38,6 +46,7 @@ interface PreviewState {
   errors: PreviewError[];
   autoFixEnabled: boolean;
   autoFixRetries: number;
+  startupSteps: StartupStep[];
 
   setStatus: (status: PreviewStatus | null) => void;
   setSelectedPort: (port: number | null) => void;
@@ -50,6 +59,9 @@ interface PreviewState {
   setAutoFixRetries: (retries: number) => void;
   disableAutoFix: () => void;
   toggleAutoFix: () => void;
+  initStartupSteps: () => void;
+  setStartupStep: (update: Partial<StartupStep> & { stepId: string }) => void;
+  clearStartupSteps: () => void;
   reset: () => void;
 }
 
@@ -101,6 +113,7 @@ const initialState = {
   errors: [] as PreviewError[],
   autoFixEnabled: false,
   autoFixRetries: 0,
+  startupSteps: [] as StartupStep[],
 };
 
 export const usePreviewStore = create<PreviewState>((set) => ({
@@ -135,6 +148,24 @@ export const usePreviewStore = create<PreviewState>((set) => ({
 
   toggleAutoFix: () =>
     set((state) => ({ autoFixEnabled: !state.autoFixEnabled, ...(!state.autoFixEnabled ? {} : { autoFixRetries: 0 }) })),
+
+  initStartupSteps: () =>
+    set({
+      startupSteps: [
+        { stepId: "fetch", status: "running", logLines: [] },
+        { stepId: "install", status: "pending", logLines: [] },
+        { stepId: "dev_server", status: "pending", logLines: [] },
+      ],
+    }),
+
+  setStartupStep: (update) =>
+    set((state) => ({
+      startupSteps: state.startupSteps.map((s) =>
+        s.stepId === update.stepId ? { ...s, ...update, logLines: update.logLines ?? s.logLines } : s,
+      ),
+    })),
+
+  clearStartupSteps: () => set({ startupSteps: [] }),
 
   reset: () => {
     resetDedupState();

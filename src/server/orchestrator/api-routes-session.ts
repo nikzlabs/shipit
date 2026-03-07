@@ -45,7 +45,8 @@ async function refreshWorktreeToLatestMain(
   sessionDir: string,
   createRepoGit: ApiDeps["createRepoGit"],
   createGitManager: ApiDeps["createGitManager"],
-): Promise<{ headChanged: boolean }> {
+): Promise<{ headChanged: boolean; fetchDurationMs: number }> {
+  const t0 = Date.now();
   const repoGit = createRepoGit(repoDir);
   const defaultBranch = await repoGit.getDefaultBranch();
   await repoGit.fetch("origin", defaultBranch);
@@ -59,7 +60,7 @@ async function refreshWorktreeToLatestMain(
     // Inlined here because orchestrator cannot import from session/.
     try { unlinkSync(path.join(sessionDir, ".shipit", ".install-done")); } catch { /* marker may not exist */ }
   }
-  return { headChanged };
+  return { headChanged, fetchDurationMs: Date.now() - t0 };
 }
 
 export async function registerSessionRoutes(
@@ -454,11 +455,13 @@ export async function registerSessionRoutes(
           // warm session would have the dir but no .git yet.
           const reusable = sessionManager.findUngraduatedWarm(url, repo.warmSessionId ?? undefined);
           if (reusable?.workspaceDir && existsSync(path.join(reusable.workspaceDir, ".git"))) {
+            let fetchDurationMs = 0;
             try {
-              const { headChanged } = await refreshWorktreeToLatestMain(deps.getSharedRepoDir(url), reusable.workspaceDir, createRepoGit, createGitManager);
+              const result = await refreshWorktreeToLatestMain(deps.getSharedRepoDir(url), reusable.workspaceDir, createRepoGit, createGitManager);
+              fetchDurationMs = result.fetchDurationMs;
               // If HEAD moved, restart preview so it re-runs install with new deps.
               // The reuse path has an already-running container with preview started.
-              if (headChanged) {
+              if (result.headChanged) {
                 const runner = deps.runnerRegistry.get(reusable.id);
                 if (runner && "restartPreviewOnWorker" in runner) {
                   // Fire-and-forget — don't block claim-session on install.
@@ -469,7 +472,7 @@ export async function registerSessionRoutes(
             } catch (err) {
               console.error(`[claim-session] Failed to refresh worktree to latest main:`, getErrorMessage(err));
             }
-            return { sessionId: reusable.id, sessionDir: reusable.workspaceDir };
+            return { sessionId: reusable.id, sessionDir: reusable.workspaceDir, fetchDurationMs };
           }
 
           // Warm path: claim the pre-warmed session (worktree + metadata only).
@@ -481,15 +484,17 @@ export async function registerSessionRoutes(
             if (warmSession?.workspaceDir) {
               const sessionId = currentRepo.warmSessionId;
               deps.repoStore.setWarmSessionId(url, undefined);
+              let fetchDurationMs = 0;
               try {
-                await refreshWorktreeToLatestMain(deps.getSharedRepoDir(url), warmSession.workspaceDir, createRepoGit, createGitManager);
+                const result = await refreshWorktreeToLatestMain(deps.getSharedRepoDir(url), warmSession.workspaceDir, createRepoGit, createGitManager);
+                fetchDurationMs = result.fetchDurationMs;
               } catch (err) {
                 console.error(`[claim-session] Failed to refresh worktree to latest main:`, getErrorMessage(err));
               }
               // Start warming the next session AFTER fetch completes to avoid
               // concurrent git operations on the same shared repo.
               if (deps.warmSessionForRepo) await deps.warmSessionForRepo(url, { withStandby: true });
-              return { sessionId, sessionDir: warmSession.workspaceDir };
+              return { sessionId, sessionDir: warmSession.workspaceDir, fetchDurationMs };
             }
           }
 
@@ -506,13 +511,15 @@ export async function registerSessionRoutes(
               if (warmSession?.workspaceDir) {
                 const sessionId = freshRepo.warmSessionId;
                 deps.repoStore.setWarmSessionId(url, undefined);
+                let fetchDurationMs = 0;
                 try {
-                  await refreshWorktreeToLatestMain(deps.getSharedRepoDir(url), warmSession.workspaceDir, createRepoGit, createGitManager);
+                  const result = await refreshWorktreeToLatestMain(deps.getSharedRepoDir(url), warmSession.workspaceDir, createRepoGit, createGitManager);
+                  fetchDurationMs = result.fetchDurationMs;
                 } catch (err) {
                   console.error(`[claim-session] Failed to refresh worktree to latest main:`, getErrorMessage(err));
                 }
                 if (deps.warmSessionForRepo) await deps.warmSessionForRepo(url, { withStandby: true });
-                return { sessionId, sessionDir: warmSession.workspaceDir };
+                return { sessionId, sessionDir: warmSession.workspaceDir, fetchDurationMs };
               }
             }
           }
@@ -531,6 +538,7 @@ export async function registerSessionRoutes(
           const repoGit = createRepoGit(repoDir);
 
           // Fetch latest default branch so the worktree is not stale
+          const fetchT0 = Date.now();
           let startPoint: string | undefined;
           try {
             const defaultBranch = await repoGit.getDefaultBranch();
@@ -541,6 +549,7 @@ export async function registerSessionRoutes(
           } catch (err) {
             console.error(`[claim-session] Fetch origin failed for ${url}:`, getErrorMessage(err));
           }
+          const fetchDurationMs = Date.now() - fetchT0;
 
           // Empty repos have no commits — create one so worktree add has a start point
           if (await repoGit.isEmpty()) {
@@ -566,7 +575,7 @@ export async function registerSessionRoutes(
           // Start warming the next session in background (with standby container)
           if (deps.warmSessionForRepo) await deps.warmSessionForRepo(url, { withStandby: true });
 
-          return { sessionId: appSessionId, sessionDir };
+          return { sessionId: appSessionId, sessionDir, fetchDurationMs };
         });
       } catch (err) {
         if (err instanceof ServiceError) {
