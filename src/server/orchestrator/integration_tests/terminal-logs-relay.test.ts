@@ -285,12 +285,11 @@ describe("Integration: Terminal/logs relay", () => {
 
     // Second client connects to the same session — should get buffered preview log entries
     const client2 = await TestClient.connect(port, client1.sessionId);
-    await client2.receive(); // preview_status
 
-    // Collect messages and check for the preview log
+    // Collect all messages (preview_status, log buffer, etc.) and search for the preview log
     const messages: WsServerMessage[] = [];
     try {
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < 10; i++) {
         messages.push(await client2.receive(500));
       }
     } catch {
