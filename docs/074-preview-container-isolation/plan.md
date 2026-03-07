@@ -34,6 +34,7 @@ Every session gets two containers on the same bridge network:
 │                              │   │                              │
 │  /user    ← workspace vol    │   │  /user    ← workspace vol   │
 │  /credentials ← creds vol   │   │  /secrets ← secrets vol     │
+│                              │   │  (populated from DB on start)│
 │                              │   │  (no credentials mount)      │
 │  NO /secrets mount           │   │                              │
 │  .env.local is a dangling    │   │  init: move workspace .env*  │
@@ -58,19 +59,20 @@ Users store secrets (API keys for Clerk, Stripe, Supabase, etc.) in `.env.local`
 
 #### How it works
 
-1. **Secrets volume** — a per-session named Docker volume (`shipit-secrets-{sessionId}`), mounted at `/secrets` in the preview container only. The session container does not mount it.
+1. **Orchestrator-managed secrets (per-repo)** — secrets are stored in the orchestrator's SQLite database, keyed by repo URL (from `SessionInfo.remoteUrl`). This follows the same pattern as `DeploymentStore`. A new `SecretStore` class provides `saveSecrets(repoUrl, secrets)` and `loadSecrets(repoUrl)`. Secrets persist across sessions for the same repo — users enter their Clerk/Stripe keys once, and every session for that repo gets them.
 
-2. **Init: move + symlink** — the preview container's entrypoint runs an init step:
-   1. For each supported `.env*` pattern: if a real file exists at `/user/.env.local` (e.g., Claude scaffolded it, or the repo included one), **move** it to `/secrets/.env.local` (only if the secrets volume doesn't already have one — don't overwrite user-edited secrets).
-   2. Create a symlink at `/user/.env.local` → `/secrets/.env.local`. Vite/Next.js resolves the symlink and reads the real file from `/secrets`.
+2. **Secrets volume (per-session, ephemeral)** — a per-session named Docker volume (`shipit-secrets-{sessionId}`), mounted at `/secrets` in the preview container only. The orchestrator **populates** this volume at container start by writing the repo's secrets from the database to `/secrets/.env.local` via the preview worker's `PUT /secrets` endpoint. The volume is ephemeral — it's destroyed with the session. The database is the source of truth.
 
-   This handles the common case where Claude creates a `.env.local` as part of project scaffolding — the file is transparently relocated to the secrets volume.
+3. **Init: symlink** — the preview container's entrypoint creates symlinks at `/user/.env.local` → `/secrets/.env.local` (and other supported patterns). If a real `.env.local` exists at `/user/.env.local` (e.g., Claude scaffolded it, or the repo included one), it is **moved** to `/secrets/.env.local` first (only if the secrets volume doesn't already have one — don't overwrite orchestrator-provided secrets). Vite/Next.js resolves the symlink and reads the real file from `/secrets`.
 
-3. **Claude sees a dangling symlink** — in the session container, `/user/.env.local` exists as a symlink pointing to `/secrets/.env.local`. Since `/secrets` is not mounted in the session container, the symlink is dangling. `readFile`, `cat`, and `grep` all fail with ENOENT. Claude could run `readlink` and see the target path (`/secrets/.env.local`), but this leaks only the path name, not the contents — an acceptable trade-off.
+4. **Claude sees a dangling symlink** — in the session container, `/user/.env.local` exists as a symlink pointing to `/secrets/.env.local`. Since `/secrets` is not mounted in the session container, the symlink is dangling. `readFile`, `cat`, and `grep` all fail with ENOENT. Claude could run `readlink` and see the target path (`/secrets/.env.local`), but this leaks only the path name, not the contents — an acceptable trade-off.
 
-4. **User edits** — the preview worker exposes `GET /secrets` and `PUT /secrets` endpoints. The orchestrator proxies these through a new UI panel (secrets editor). Edits write directly to `/secrets/.env.local` on the secrets volume. The preview worker restarts the dev server when secrets change.
+5. **User edits** — the user manages secrets through the **Secrets tab** in the Settings modal (under the Project section, alongside Deploy). The orchestrator handles reads and writes:
+   - `GET /api/secrets?repoUrl=...` — load secrets from the database
+   - `PUT /api/secrets` — save secrets to the database, then push them to the active preview container via `PUT /preview-worker/secrets`
+   - The preview worker writes to `/secrets/.env.local` and restarts the dev server
 
-5. **Persistence** — the named volume persists across preview container restarts (and even session container restarts). Secrets survive until the session is destroyed, at which point `cleanupSessionDockerResources()` removes the volume via the `shipit-parent-session` label.
+6. **Persistence** — secrets live in the orchestrator's SQLite database, keyed by repo URL. They survive across sessions, container restarts, and workspace resets. The per-session secrets volume is ephemeral and rebuilt from the database on each session start.
 
 #### Supported secret files
 
@@ -149,15 +151,23 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 
 #### Orchestrator API
 
-- `GET /api/sessions/:id/secrets` — proxy to preview worker's `GET /secrets`, returns list of secret files and their contents
-- `PUT /api/sessions/:id/secrets` — proxy to preview worker's `PUT /secrets`, writes secret files and restarts preview
-- Routes only registered when preview container is available
+- `GET /api/secrets?repoUrl=...` — load secrets from `SecretStore` (database). Not session-scoped — secrets are per-repo.
+- `PUT /api/secrets` — save secrets to `SecretStore`, then push to the active preview container(s) for sessions using that repo. The push calls `PUT /preview-worker/secrets` on each preview worker, which writes to `/secrets/.env.local` and restarts the dev server.
+- These routes are always registered (secrets can be configured before a session has a preview container).
+
+#### `SecretStore` (new)
+
+- New class following `DeploymentStore` pattern. SQLite table `secrets` with columns: `repo_url TEXT`, `env_file TEXT` (e.g., `.env.local`), `contents TEXT` (encrypted at rest with a key from the credentials volume).
+- `saveSecrets(repoUrl, envFile, contents)` — upsert
+- `loadSecrets(repoUrl)` — returns all env files for a repo
+- `deleteSecrets(repoUrl, envFile)` — remove a specific file
 
 #### Client
 
-- Secrets editor panel (accessible from preview toolbar or settings)
-- Key-value editor for `.env.local` entries
-- Changes saved via `PUT /api/sessions/:id/secrets`
+- **Secrets tab** in Settings modal, under the Project section (alongside Deploy). Added to the `SettingsTab` type in `ui-store.ts`.
+- Key-value editor for `.env.local` entries: each row has a key input, a masked value input (with show/hide toggle), and a delete button. An "Add variable" button appends a new empty row.
+- Save button calls `PUT /api/secrets` with the repo URL and serialized `.env.local` content.
+- The tab is available regardless of whether a session is active — users can pre-configure secrets before starting a session.
 
 ### SSE architecture
 
@@ -167,31 +177,25 @@ This saves ~256 MB per session compared to today's single 512 MB container, whil
 
 ### Lifecycle
 
-1. **Create**: `SessionContainerManager.create()` spawns both containers + secrets volume. The preview container starts, runs init (symlinks), but does NOT start the dev server yet (waits for `POST /preview/start`).
+1. **Create**: `SessionContainerManager.create()` spawns both containers + secrets volume. The preview container starts, runs init (symlinks). The orchestrator populates `/secrets/.env.local` from the database via the preview worker. The dev server does NOT start yet (waits for `POST /preview/start`).
 
 2. **Start preview**: `ContainerSessionRunner.startWorkerResources()` sends `/preview/start` to the preview worker URL. The preview container runs install + dev server.
 
 3. **File changes**: File watcher in the session container detects changes and emits `file_changes`. If `shipit.yaml` changed, the runner sends `/preview/restart` to the preview worker.
 
-4. **Secrets edit**: User edits secrets in the UI → `PUT /api/sessions/:id/secrets` → preview worker writes to `/secrets/.env.local` → preview auto-restarts.
+4. **Secrets edit**: User edits secrets in the Settings → Secrets tab → `PUT /api/secrets` → orchestrator saves to database + pushes to preview worker → preview worker writes to `/secrets/.env.local` → preview auto-restarts.
 
-5. **Destroy**: `SessionContainerManager.destroy()` stops both containers. `cleanupSessionDockerResources()` removes the secrets volume via the `shipit-parent-session` label.
+5. **Destroy**: `SessionContainerManager.destroy()` stops both containers. `cleanupSessionDockerResources()` removes the secrets volume via the `shipit-parent-session` label. Secrets remain in the database for the next session.
 
 6. **Reconnect**: Runner reconnects both SSE streams. Preview worker replays `preview_ready`/`preview_stopped` state on reconnect (already implemented).
 
 ### Warm pool
 
-Warm (standby) sessions pre-create both containers + secrets volume. The preview container sits idle until activated — minimal resource usage since no dev server is running.
+Warm (standby) sessions pre-create both containers + secrets volume. The preview container sits idle until activated — minimal resource usage since no dev server is running. Secrets are populated from the database when the warm session is activated and assigned a repo URL.
 
 ### Session clone / fork (worktrees)
 
-When a session is forked (worktree branch), the secrets volume is **not** cloned. The new session gets a fresh, empty secrets volume. Rationale:
-
-- Secrets are user-managed, not code. Cloning them silently could surprise users (e.g., a forked session hitting a production database).
-- The secrets editor UI makes it easy to re-enter keys for a new branch.
-- Docker volumes don't support copy-on-write — cloning requires reading all files from the source volume and writing to the target, adding latency to fork.
-
-If users request it, a future "copy secrets from session X" action can be added to the secrets editor.
+When a session is forked (worktree branch), it shares the same repo URL → same secrets. The new session's preview container gets the same `.env.local` contents from the database, populated at container start. No manual re-entry needed.
 
 ### In-process SessionRunner (test mode)
 
@@ -239,5 +243,7 @@ The client is unaffected — the preview proxy switch is transparent. The secret
 | `src/server/orchestrator/preview-proxy.ts` | Use `previewContainerIp` for routing |
 | `src/server/session/session-worker.ts` | Remove preview endpoints and PreviewManager init, add `WORKER_MODE=preview` path |
 | `src/server/orchestrator/container-session-runner.ts` | `previewWorkerUrl`, dual SSE streams, per-stream reconnection, preview URL routing |
-| `src/server/orchestrator/api-routes.ts` | Secrets proxy endpoints |
-| `src/client/components/` | Secrets editor panel |
+| `src/server/orchestrator/secret-store.ts` | New `SecretStore` class — per-repo secrets in SQLite |
+| `src/server/orchestrator/api-routes.ts` | Secrets CRUD endpoints (`GET/PUT /api/secrets`) |
+| `src/client/components/Settings.tsx` | Secrets tab in Settings modal (Project section) |
+| `src/client/stores/ui-store.ts` | Add `"secrets"` to `SettingsTab` type |
