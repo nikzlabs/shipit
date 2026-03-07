@@ -101,6 +101,7 @@ export function MessageList({
   currentMatch,
   onEditMessage,
   onAnswerQuestion,
+  onSendFollowUp,
   onRollback,
 }: {
   messages: ChatMessage[];
@@ -110,6 +111,7 @@ export function MessageList({
   currentMatch?: SearchMatch;
   onEditMessage?: (messageIndex: number, newText: string) => void;
   onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void;
+  onSendFollowUp?: (text: string) => void;
   onRollback?: (messageIndex: number, mode: RollbackMode, parentCommitHash: string) => void;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -352,6 +354,7 @@ export function MessageList({
                           isLast={toolIdx === msg.toolUse!.length - 1}
                           isStreaming={!!msg.streaming}
                           onAnswerQuestion={onAnswerQuestion}
+                          onSendFollowUp={onSendFollowUp}
                           isQuestionDisabled={questionDisabled}
                         />
                       );

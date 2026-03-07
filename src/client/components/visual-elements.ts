@@ -1,7 +1,7 @@
 import type { ChatMessage, ToolUseBlock, ToolResultBlock } from "./MessageList.js";
 
 // Tools that render as standalone items outside the grouped container
-export const STANDALONE_TOOLS = new Set(["AskUserQuestion", "TodoWrite"]);
+export const STANDALONE_TOOLS = new Set(["AskUserQuestion", "TodoWrite", "ExitPlanMode"]);
 
 // Tools extracted into their own top-level visual elements (not grouped, not inside message bubbles)
 export const SUBAGENT_TOOLS = new Set(["Task", "Skill"]);
