@@ -2,40 +2,47 @@
 import { useState, useEffect, useCallback } from "react";
 
 /**
- * Theme type — "light" and "dark" are built-in; additional themes can be
- * added by creating a CSS file in `src/client/themes/`, importing it in
- * `index.css`, and registering the class name in `KNOWN_THEMES` below.
+ * Single source of truth for all themes.
+ * To add a theme: create a CSS file, import it in index.css, add an entry here.
  */
-export type Theme = "light" | "dark" | "midnight" | "forest" | "rose" | "claude" | "codex" | "warm-light" | "cool-light" | "solarized" | "solarized-light" | "claude-light" | "codex-light" | "high-contrast" | (string & {});
+const THEME_DEFS = [
+  { id: "light", label: "Light", description: "Clean and bright", light: true },
+  { id: "warm-light", label: "Warm Light", description: "Cream and sand tones", light: true },
+  { id: "cool-light", label: "Cool Light", description: "Blue-gray and indigo", light: true },
+  { id: "solarized-light", label: "Solarized Light", description: "Classic cream and yellow", light: true },
+  { id: "claude-light", label: "Claude Light", description: "Parchment and terracotta", light: true },
+  { id: "codex-light", label: "Codex Light", description: "Mint and terminal green", light: true },
+  { id: "dark", label: "Dark", description: "Classic dark mode", light: false },
+  { id: "midnight", label: "Midnight", description: "Deep blue tones", light: false },
+  { id: "forest", label: "Forest", description: "Green and earthy", light: false },
+  { id: "rose", label: "Rosé", description: "Warm pink and mauve", light: false },
+  { id: "claude", label: "Claude Dark", description: "Terracotta and warmth", light: false },
+  { id: "codex", label: "Codex Dark", description: "Terminal green", light: false },
+  { id: "solarized", label: "Solarized Dark", description: "Classic Solarized Dark", light: false },
+  { id: "high-contrast", label: "High Contrast", description: "Maximum readability", light: false },
+] as const;
+
+// ── Derived types and collections (no duplication) ──
+
+export type Theme = (typeof THEME_DEFS)[number]["id"] | (string & {});
 
 export interface ThemeOption {
   id: Theme;
   label: string;
-  /** Short description shown in the picker */
   description: string;
 }
 
-export const THEME_OPTIONS: ThemeOption[] = [
-  { id: "light", label: "Light", description: "Clean and bright" },
-  { id: "warm-light", label: "Warm Light", description: "Cream and sand tones" },
-  { id: "cool-light", label: "Cool Light", description: "Blue-gray and indigo" },
-  { id: "solarized-light", label: "Solarized Light", description: "Classic cream and yellow" },
-  { id: "claude-light", label: "Claude Light", description: "Parchment and terracotta" },
-  { id: "codex-light", label: "Codex Light", description: "Mint and terminal green" },
-  { id: "dark", label: "Dark", description: "Classic dark mode" },
-  { id: "midnight", label: "Midnight", description: "Deep blue tones" },
-  { id: "forest", label: "Forest", description: "Green and earthy" },
-  { id: "rose", label: "Rosé", description: "Warm pink and mauve" },
-  { id: "claude", label: "Claude Dark", description: "Terracotta and warmth" },
-  { id: "codex", label: "Codex Dark", description: "Terminal green" },
-  { id: "solarized", label: "Solarized Dark", description: "Classic Solarized Dark" },
-  { id: "high-contrast", label: "High Contrast", description: "Maximum readability" },
-];
+export const THEME_OPTIONS: ThemeOption[] = [...THEME_DEFS];
 
-const STORAGE_KEY = "shipit-theme";
+/** Themes that use a light background (need light favicon, etc.). */
+export const LIGHT_THEMES = new Set<string>(
+  THEME_DEFS.filter((t) => t.light).map((t) => t.id),
+);
 
 /** All theme class names that may be applied to <html>. */
-const KNOWN_THEMES = ["dark", "midnight", "forest", "rose", "claude", "codex", "warm-light", "cool-light", "solarized", "solarized-light", "claude-light", "codex-light", "high-contrast"] as const;
+const KNOWN_THEMES = THEME_DEFS.filter((t) => t.id !== "light").map((t) => t.id);
+
+const STORAGE_KEY = "shipit-theme";
 
 function getInitialTheme(): Theme {
   try {
@@ -56,9 +63,6 @@ function applyTheme(theme: Theme): void {
     cl.add(theme);
   }
 }
-
-/** Themes that use a light background (need light favicon, etc.). */
-export const LIGHT_THEMES = new Set(["light", "warm-light", "cool-light", "solarized-light", "claude-light", "codex-light"]);
 
 export function useTheme() {
   const [theme, setTheme] = useState<Theme>(getInitialTheme);

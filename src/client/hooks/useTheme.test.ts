@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi, beforeEach } from "vitest";
 import { renderHook, cleanup, act } from "@testing-library/react";
 import { useTheme, THEME_OPTIONS } from "./useTheme.js";
 
-const ALL_THEME_CLASSES = ["dark", "midnight", "forest", "rose", "claude", "codex", "warm-light", "cool-light", "solarized", "solarized-light", "claude-light", "codex-light", "high-contrast"];
+const ALL_THEME_CLASSES = THEME_OPTIONS.map((t) => t.id).filter((id) => id !== "light");
 
 afterEach(() => {
   cleanup();
