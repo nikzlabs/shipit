@@ -9,7 +9,7 @@ import { ConnectionBanner } from "./components/ConnectionBanner.js";
 import { MobileTabBar } from "./components/MobileTabBar.js";
 import { Toast } from "./components/Toast.js";
 import type { WsStatus } from "./hooks/useWebSocket.js";
-import type { Theme } from "./hooks/useTheme.js";
+import { LIGHT_THEMES, type Theme } from "./hooks/useTheme.js";
 import type { SessionInfo, RepoInfo } from "../server/shared/types.js";
 
 interface AppLayoutProps {
@@ -125,7 +125,7 @@ export function AppLayout({
       <header className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-(--color-border-primary)">
         <div className="flex items-center gap-3 sm:gap-4 min-w-0">
           <h1 className="text-lg font-semibold tracking-tight shrink-0 flex items-center gap-1.5 cursor-pointer hover:opacity-80 transition-opacity" onClick={onNavigateHome} role="link">
-            <img src={theme === "light" ? "/favicon-light.svg" : "/favicon.svg"} alt="" className="w-5 h-5" />
+            <img src={LIGHT_THEMES.has(theme) ? "/favicon-light.svg" : "/favicon.svg"} alt="" className="w-5 h-5" />
             ShipIt
           </h1>
         </div>

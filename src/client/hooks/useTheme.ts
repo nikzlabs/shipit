@@ -55,6 +55,9 @@ function applyTheme(theme: Theme): void {
   }
 }
 
+/** Themes that use a light background (need light favicon, etc.). */
+export const LIGHT_THEMES = new Set(["light", "warm-light", "cool-light"]);
+
 export function useTheme() {
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
 

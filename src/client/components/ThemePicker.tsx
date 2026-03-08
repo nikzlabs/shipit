@@ -1,5 +1,5 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: document mousedown listener for click-outside with cleanup (browser API subscription)
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { PaletteIcon, CheckIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
@@ -28,7 +28,9 @@ interface ThemePickerProps {
 
 export function ThemePicker({ theme, onSelectTheme }: ThemePickerProps) {
   const [open, setOpen] = useState(false);
+  const [focusIndex, setFocusIndex] = useState(-1);
   const ref = useRef<HTMLDivElement>(null);
+  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   // Close on outside click
   useEffect(() => {
@@ -42,35 +44,92 @@ export function ThemePicker({ theme, onSelectTheme }: ThemePickerProps) {
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
+  // Focus the active item when dropdown opens
+  useEffect(() => {
+    if (open) {
+      const activeIndex = THEME_OPTIONS.findIndex((o) => o.id === theme);
+      setFocusIndex(activeIndex >= 0 ? activeIndex : 0);
+    }
+  }, [open, theme]);
+
+  // Scroll focused item into view
+  useEffect(() => {
+    if (open && focusIndex >= 0) {
+      itemRefs.current[focusIndex]?.scrollIntoView({ block: "nearest" });
+    }
+  }, [open, focusIndex]);
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (!open) return;
+      switch (e.key) {
+        case "ArrowDown":
+          e.preventDefault();
+          setFocusIndex((i) => (i + 1) % THEME_OPTIONS.length);
+          break;
+        case "ArrowUp":
+          e.preventDefault();
+          setFocusIndex(
+            (i) => (i - 1 + THEME_OPTIONS.length) % THEME_OPTIONS.length,
+          );
+          break;
+        case "Enter": {
+          e.preventDefault();
+          if (focusIndex >= 0 && focusIndex < THEME_OPTIONS.length) {
+            onSelectTheme(THEME_OPTIONS[focusIndex].id);
+            setOpen(false);
+          }
+          break;
+        }
+        case "Escape":
+          e.preventDefault();
+          setOpen(false);
+          break;
+      }
+    },
+    [open, focusIndex, onSelectTheme],
+  );
+
   return (
-    <div ref={ref} className="relative inline-block">
+    <div ref={ref} className="relative inline-block" onKeyDown={handleKeyDown}>
       <Button
         variant="ghost"
         size="sm"
         onClick={() => setOpen(!open)}
         title="Change theme"
         aria-label="Change theme"
+        aria-haspopup="listbox"
+        aria-expanded={open}
       >
         <PaletteIcon size={ICON_SIZE.SM} />
       </Button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1 w-52 max-h-80 overflow-y-auto bg-(--color-bg-elevated) border border-(--color-border-primary) rounded-lg shadow-lg z-50 py-1">
-          {THEME_OPTIONS.map((opt) => (
+        <div
+          role="listbox"
+          aria-label="Theme options"
+          className="absolute right-0 top-full mt-1 w-52 max-h-80 overflow-y-auto bg-(--color-bg-elevated) border border-(--color-border-primary) rounded-lg shadow-lg z-50 py-1"
+        >
+          {THEME_OPTIONS.map((opt, i) => (
             <button
               key={opt.id}
+              ref={(el) => {
+                itemRefs.current[i] = el;
+              }}
+              role="option"
+              aria-selected={theme === opt.id}
               onClick={() => {
                 onSelectTheme(opt.id);
                 setOpen(false);
               }}
-              className="w-full text-left px-3 py-2 text-xs hover:bg-(--color-bg-hover) text-(--color-text-primary) flex items-center gap-2.5"
+              className={`w-full text-left px-3 py-2 text-xs hover:bg-(--color-bg-hover) text-(--color-text-primary) flex items-center gap-2.5${i === focusIndex ? " bg-(--color-bg-hover)" : ""}`}
             >
               {/* Color swatch */}
               <span className="flex gap-0.5 shrink-0">
                 {(SWATCHES[opt.id] ?? ["#888", "#888", "#888"]).map(
-                  (color, i) => (
+                  (color, j) => (
                     <span
-                      key={i}
+                      key={j}
                       className="w-3 h-3 rounded-sm border border-white/10"
                       style={{ backgroundColor: color }}
                     />
