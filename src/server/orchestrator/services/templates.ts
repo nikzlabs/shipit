@@ -42,7 +42,7 @@ export async function createRepoWithTemplate(
     return { success: false, message: repoResult.message || "Failed to create repository" };
   }
 
-  // 2. Set up the shared repo dir — acts as the main clone for all sessions
+  // 2. Set up the bare repo cache dir — acts as the reference clone for all sessions
   const repoDir = getSharedRepoDir(repoResult.cloneUrl);
   await fs.mkdir(repoDir, { recursive: true });
   const sharedGit = createGitManager(repoDir);

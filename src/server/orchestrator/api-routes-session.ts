@@ -1,12 +1,13 @@
 /**
  * Session management API routes.
  * Handles: session CRUD, switching, renaming, status, history, usage,
- * worktrees, features, fork, template, repos, claim-session.
+ * siblings, features, fork, template, repos, claim-session.
  */
 
 import { existsSync, unlinkSync } from "node:fs";
 import { mkdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
+import simpleGit from "simple-git";
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import { resolveSessionDir } from "./api-routes.js";
@@ -36,28 +37,38 @@ import { getErrorMessage } from "./validation.js";
 import { generateBranchPrefix } from "./git-utils.js";
 
 /**
- * Fetch latest origin refs and hard-reset a warm worktree to the current
+ * Fetch latest origin refs and hard-reset a warm session clone to the current
  * remote HEAD. Safe because warm sessions have zero user changes.
  * Non-fatal — if fetch or reset fails, the session still works with older code.
  */
-async function refreshWorktreeToLatestMain(
-  repoDir: string,
+async function refreshCloneToLatestMain(
   sessionDir: string,
-  createRepoGit: ApiDeps["createRepoGit"],
   createGitManager: ApiDeps["createGitManager"],
 ): Promise<{ headChanged: boolean; fetchDurationMs: number }> {
   const t0 = Date.now();
-  const repoGit = createRepoGit(repoDir);
-  const defaultBranch = await repoGit.getDefaultBranch();
-  await repoGit.fetch("origin", defaultBranch);
   const sessionGit = createGitManager(sessionDir);
   const headBefore = await sessionGit.getHeadHash();
-  await sessionGit.rollback(`origin/${defaultBranch}`);
+  // Fetch directly in the session clone and reset to origin's default branch
+  await simpleGit(sessionDir).fetch("origin");
+  try {
+    const remoteHead = await simpleGit(sessionDir).raw(["rev-parse", "origin/HEAD"]);
+    if (remoteHead.trim()) {
+      await sessionGit.rollback(remoteHead.trim());
+    }
+  } catch {
+    try {
+      await sessionGit.rollback("origin/main");
+    } catch {
+      try {
+        await sessionGit.rollback("origin/master");
+      } catch {
+        // Can't determine default branch — skip reset
+      }
+    }
+  }
   const headAfter = await sessionGit.getHeadHash();
   const headChanged = headBefore !== headAfter;
   if (headChanged) {
-    // Clear the install-done marker so the preview manager re-runs install.
-    // Inlined here because orchestrator cannot import from session/.
     try { unlinkSync(path.join(sessionDir, ".shipit", ".install-done")); } catch { /* marker may not exist */ }
   }
   return { headChanged, fetchDurationMs: Date.now() - t0 };
@@ -70,8 +81,7 @@ export async function registerSessionRoutes(
   const { sessionManager, createGitManager, createRepoGit } = deps;
 
   // Per-repo promise chain: serializes claim-session requests for the same repo
-  // so git operations (fetch, reset, worktree add) never run concurrently on
-  // the same shared repo.  No mutex library — just a simple chain of promises.
+  // so git operations (fetch, clone) never run concurrently on the same bare cache.
   const claimChains = new Map<string, Promise<unknown>>();
   async function serializeClaim<T>(repoUrl: string, fn: () => Promise<T>): Promise<T> {
     const prev = claimChains.get(repoUrl) ?? Promise.resolve();
@@ -109,7 +119,6 @@ export async function registerSessionRoutes(
     }
     let messages = getChatHistory(deps.chatHistoryManager, request.params.id) as Record<string, unknown>[];
 
-    // Also return git log and file tree for the session workspace (if it exists)
     let commits: Awaited<ReturnType<typeof getGitLog>> = [];
     let fileTree: Awaited<ReturnType<typeof getFileTree>> = [];
     if (session.workspaceDir) {
@@ -129,13 +138,9 @@ export async function registerSessionRoutes(
     const runner = deps.runnerRegistry.get(request.params.id);
     const agentRunning = runner?.running ?? false;
 
-    // If the agent is mid-turn, replace persisted in-progress messages with
-    // the live state from the runner's chatMessageGroups. This covers text
-    // accumulated since the last agent_tool_result persistence boundary.
     if (agentRunning && runner) {
       const liveGroups = runner.chatMessageGroups;
       if (liveGroups.length > 0) {
-        // Remove persisted in-progress entries (stale snapshot)
         const kept = messages.filter((m) => !m.inProgress);
         for (const g of liveGroups) {
           if (g.text || g.toolUse.length > 0) {
@@ -165,7 +170,7 @@ export async function registerSessionRoutes(
     return { stats: getUsageStats(deps.usageManager) };
   });
 
-  // GET /api/sessions/:id/worktrees — sibling worktrees
+  // GET /api/sessions/:id/worktrees — sibling sessions
   app.get<{ Params: { id: string } }>("/api/sessions/:id/worktrees", async (request, reply) => {
     const session = sessionManager.get(request.params.id);
     if (!session) {
@@ -274,7 +279,7 @@ export async function registerSessionRoutes(
     },
   );
 
-  // POST /api/sessions/:id/fork — fork session into a new worktree branch
+  // POST /api/sessions/:id/fork — fork session into a new clone with branch
   app.post<{ Params: { id: string }; Body: { branchName: string; startPoint?: string } }>(
     "/api/sessions/:id/fork",
     async (request, reply) => {
@@ -287,7 +292,6 @@ export async function registerSessionRoutes(
           request.params.id, dir,
           request.body.branchName, request.body.startPoint,
         );
-        // Broadcast updated session list via SSE
         deps.sseBroadcast("session_list", { sessions: result.sessions });
         return result;
       } catch (err) {
@@ -315,31 +319,28 @@ export async function registerSessionRoutes(
     async (_request, reply) => {
       const body = _request.body;
 
-      // If "url" is provided, this is an "add existing repo" flow
       if (body.url) {
         try {
           const repo = addRepo(deps.repoStore, body.url);
-          // If already ready, no need to clone
           if (repo.status === "ready") {
             return { repo };
           }
-          // Clone in background
+          // Clone bare cache in background
           const repoUrl = repo.url;
-          const repoDir = deps.getSharedRepoDir(repoUrl);
+          const cacheDir = deps.getSharedRepoDir(repoUrl);
           void (async () => {
             try {
               // eslint-disable-next-line no-restricted-syntax -- stat existence-check idiom
-              const exists = await stat(repoDir).then(() => true, () => false);
+              const exists = await stat(cacheDir).then(() => true, () => false);
               if (!exists) {
-                await mkdir(repoDir, { recursive: true });
+                await mkdir(cacheDir, { recursive: true });
                 const cloneUrl = deps.githubAuthManager.getAuthenticatedCloneUrl(repoUrl);
-                const repoGit = createRepoGit(repoDir);
-                await repoGit.clone(cloneUrl);
-                console.log("[repos] Cloned repo to shared dir:", repoDir);
+                const cacheGit = createRepoGit(cacheDir);
+                await cacheGit.cloneBare(cloneUrl);
+                console.log("[repos] Cloned bare cache:", cacheDir);
               }
               deps.repoStore.setReady(repoUrl);
               deps.sseBroadcast("repo_status", { url: repoUrl, status: "ready" });
-              // Start warming a session
               const warmFn = deps.warmSessionForRepo;
               if (warmFn) await warmFn(repoUrl);
             } catch (err) {
@@ -358,7 +359,6 @@ export async function registerSessionRoutes(
         }
       }
 
-      // Otherwise it's a "create new repo with template" flow
       if (!body.repoName || !body.templateId) {
         reply.code(400).send({ error: "Either 'url' or both 'repoName' and 'templateId' are required" });
         return;
@@ -374,13 +374,11 @@ export async function registerSessionRoutes(
           reply.code(400).send(result);
           return;
         }
-        // Track in RepoStore and warm a session
         if (result.repoUrl) {
           deps.repoStore.add(result.repoUrl);
           deps.repoStore.setReady(result.repoUrl);
           deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });
           void deps.warmSessionForRepo?.(result.repoUrl);
-          // Wait for the warm session so we can return its ID
           const warmingPromise = deps.waitForWarmSession?.(result.repoUrl);
           if (warmingPromise) {
             await warmingPromise;
@@ -407,7 +405,6 @@ export async function registerSessionRoutes(
     async (request, reply) => {
       try {
         const url = decodeURIComponent(request.params.url);
-        // If there's a warm session, destroy its standby container + dispose runner
         const repo = deps.repoStore.get(url);
         if (repo?.warmSessionId) {
           if (deps.containerManager?.isStandby(repo.warmSessionId)) {
@@ -430,7 +427,7 @@ export async function registerSessionRoutes(
     },
   );
 
-  // POST /api/repos/:url/claim-session — claim the warm session for a repo
+  // POST /api/repos/:url/claim-session — claim a warm session for a repo
   app.post<{ Params: { url: string } }>(
     "/api/repos/:url/claim-session",
     async (request, reply) => {
@@ -445,49 +442,32 @@ export async function registerSessionRoutes(
         return;
       }
 
-      // Serialize all claim-session work per repo so git operations
-      // (fetch, reset, worktree add) never run concurrently on the
-      // same shared repo — eliminates "cannot lock ref" CAS errors.
       try {
         return await serializeClaim(url, async () => {
-          // Wait for any in-progress warming (e.g. from session graduation) to
-          // finish before doing git operations on the shared repo.
           const inFlightWarming = deps.waitForWarmSession?.(url);
           if (inFlightWarming) await inFlightWarming;
 
-          // Reuse path: if a previously-claimed warm session for this repo exists
-          // (user clicked "New Session", navigated away without sending a message,
-          // then clicked "New Session" again), return it instead of claiming a new one.
-          // This avoids creating duplicate containers for sessions the user never used.
-          // We check for .git (file for worktrees) to ensure
-          // the worktree is fully initialized — the session directory is created
-          // early (mkdir) but the git worktree is created later, so an in-progress
-          // warm session would have the dir but no .git yet.
+          // Reuse path: check for previously-claimed warm session.
+          // Check for .git/ directory (full clone) to ensure the clone is ready.
           const reusable = sessionManager.findUngraduatedWarm(url, repo.warmSessionId ?? undefined);
           if (reusable?.workspaceDir && existsSync(path.join(reusable.workspaceDir, ".git"))) {
             let fetchDurationMs = 0;
             try {
-              const result = await refreshWorktreeToLatestMain(deps.getSharedRepoDir(url), reusable.workspaceDir, createRepoGit, createGitManager);
+              const result = await refreshCloneToLatestMain(reusable.workspaceDir, createGitManager);
               fetchDurationMs = result.fetchDurationMs;
-              // If HEAD moved, restart preview so it re-runs install with new deps.
-              // The reuse path has an already-running container with preview started.
               if (result.headChanged) {
                 const runner = deps.runnerRegistry.get(reusable.id);
                 if (runner && "restartPreviewOnWorker" in runner) {
-                  // Fire-and-forget — don't block claim-session on install.
-                  // The client will receive install_status events via WS after reconnecting.
                   void (runner as { restartPreviewOnWorker: () => Promise<void> }).restartPreviewOnWorker();
                 }
               }
             } catch (err) {
-              console.error(`[claim-session] Failed to refresh worktree to latest main:`, getErrorMessage(err));
+              console.error(`[claim-session] Failed to refresh clone to latest main:`, getErrorMessage(err));
             }
             return { sessionId: reusable.id, sessionDir: reusable.workspaceDir, fetchDurationMs };
           }
 
-          // Warm path: claim the pre-warmed session (worktree + metadata only).
-          // No container is created here — it will be created on-demand when
-          // the WebSocket connects and activateSession() calls getOrCreate().
+          // Warm path: claim the pre-warmed session.
           const currentRepo = deps.repoStore.get(url);
           if (currentRepo?.warmSessionId) {
             const warmSession = sessionManager.get(currentRepo.warmSessionId);
@@ -496,25 +476,20 @@ export async function registerSessionRoutes(
               deps.repoStore.setWarmSessionId(url, undefined);
               let fetchDurationMs = 0;
               try {
-                const result = await refreshWorktreeToLatestMain(deps.getSharedRepoDir(url), warmSession.workspaceDir, createRepoGit, createGitManager);
+                const result = await refreshCloneToLatestMain(warmSession.workspaceDir, createGitManager);
                 fetchDurationMs = result.fetchDurationMs;
               } catch (err) {
-                console.error(`[claim-session] Failed to refresh worktree to latest main:`, getErrorMessage(err));
+                console.error(`[claim-session] Failed to refresh clone to latest main:`, getErrorMessage(err));
               }
-              // Start warming the next session AFTER fetch completes to avoid
-              // concurrent git operations on the same shared repo.
               if (deps.warmSessionForRepo) await deps.warmSessionForRepo(url, { withStandby: true });
               return { sessionId, sessionDir: warmSession.workspaceDir, fetchDurationMs };
             }
           }
 
-          // If warming is in progress, wait for it instead of creating from scratch.
-          // This prevents cascade: rapid "New Session" clicks each falling to the
-          // slow path while the replacement warm session is still being created.
+          // Waiting path: wait for in-progress warming.
           const warmingPromise = deps.waitForWarmSession?.(url);
           if (warmingPromise) {
             await warmingPromise;
-            // Re-check — the warm session should now be available
             const freshRepo = deps.repoStore.get(url);
             if (freshRepo?.warmSessionId) {
               const warmSession = sessionManager.get(freshRepo.warmSessionId);
@@ -523,10 +498,10 @@ export async function registerSessionRoutes(
                 deps.repoStore.setWarmSessionId(url, undefined);
                 let fetchDurationMs = 0;
                 try {
-                  const result = await refreshWorktreeToLatestMain(deps.getSharedRepoDir(url), warmSession.workspaceDir, createRepoGit, createGitManager);
+                  const result = await refreshCloneToLatestMain(warmSession.workspaceDir, createGitManager);
                   fetchDurationMs = result.fetchDurationMs;
                 } catch (err) {
-                  console.error(`[claim-session] Failed to refresh worktree to latest main:`, getErrorMessage(err));
+                  console.error(`[claim-session] Failed to refresh clone to latest main:`, getErrorMessage(err));
                 }
                 if (deps.warmSessionForRepo) await deps.warmSessionForRepo(url, { withStandby: true });
                 return { sessionId, sessionDir: warmSession.workspaceDir, fetchDurationMs };
@@ -534,55 +509,48 @@ export async function registerSessionRoutes(
             }
           }
 
-          // No warm session available — create one synchronously.
-          // If the client already disconnected (rapid navigation), skip the expensive work.
+          // Slow path: clone from bare cache synchronously.
           if (request.raw.destroyed) return undefined;
-          const repoDir = deps.getSharedRepoDir(url);
+          const cacheDir = deps.getSharedRepoDir(url);
           const branchPrefix = generateBranchPrefix();
           const created = await deps.createSessionDirFull("Warm session");
           const { appSessionId, sessionDir } = created;
 
-          // Remove the empty dir (worktree add needs it absent)
           await rm(sessionDir, { recursive: true, force: true });
 
-          const repoGit = createRepoGit(repoDir);
+          const cacheGit = createRepoGit(cacheDir);
 
-          // Fetch latest default branch so the worktree is not stale
           const fetchT0 = Date.now();
-          let startPoint: string | undefined;
           try {
-            const defaultBranch = await repoGit.getDefaultBranch();
-            if (defaultBranch && !defaultBranch.includes("(")) {
-              await repoGit.fetch("origin", defaultBranch);
-              startPoint = `origin/${defaultBranch}`;
-            }
+            await cacheGit.fetchCache();
           } catch (err) {
-            console.error(`[claim-session] Fetch origin failed for ${url}:`, getErrorMessage(err));
+            console.error(`[claim-session] Fetch cache failed for ${url}:`, getErrorMessage(err));
           }
           const fetchDurationMs = Date.now() - fetchT0;
 
-          // Empty repos have no commits — create one so worktree add has a start point
-          if (await repoGit.isEmpty()) {
-            await repoGit.createInitialCommit();
-          }
-          await repoGit.createWorktree(sessionDir, branchPrefix, startPoint);
+          await cacheGit.cloneFromCache(sessionDir);
 
-          // Configure credentials
+          let startPoint: string | undefined;
+          try {
+            const defaultBranch = await cacheGit.getDefaultBranch();
+            if (defaultBranch && !defaultBranch.includes("(")) {
+              startPoint = `origin/${defaultBranch}`;
+            }
+          } catch {
+            // Fallback
+          }
+          const branchArgs = ["checkout", "-b", branchPrefix];
+          if (startPoint) branchArgs.push(startPoint);
+          await simpleGit(sessionDir).raw(branchArgs);
+
           if (deps.githubAuthManager.authenticated) {
             deps.githubAuthManager.configureGitCredentials(sessionDir);
           }
 
           sessionManager.setRemoteUrl(appSessionId, url);
-          sessionManager.setWorktreeInfo(appSessionId, {
-            branch: branchPrefix,
-            sessionType: "worktree",
-          });
+          sessionManager.setBranch(appSessionId, branchPrefix);
           sessionManager.setWarm(appSessionId, true);
 
-          // No container is created here — it will be created on-demand when
-          // the WebSocket connects and activateSession() calls getOrCreate().
-
-          // Start warming the next session in background (with standby container)
           if (deps.warmSessionForRepo) await deps.warmSessionForRepo(url, { withStandby: true });
 
           return { sessionId: appSessionId, sessionDir, fetchDurationMs };

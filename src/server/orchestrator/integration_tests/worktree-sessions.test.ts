@@ -18,7 +18,7 @@ import {
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 
-describe("Integration: Worktree sessions", () => {
+describe("Integration: Session clones", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
@@ -28,7 +28,7 @@ describe("Integration: Worktree sessions", () => {
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-worktree-"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-session-clone-"));
     lastClaude = null;
 
     sessionManager = new SessionManager(dbManager);
@@ -109,7 +109,7 @@ describe("Integration: Worktree sessions", () => {
 
   // ---- fork_session (HTTP) ----
 
-  it("fork_session creates a worktree session via HTTP", async () => {
+  it("fork_session creates a cloned session via HTTP", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
@@ -170,20 +170,20 @@ describe("Integration: Worktree sessions", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  // ---- list_worktrees ----
+  // ---- list sibling sessions ----
 
-  it("list_worktrees returns 404 for nonexistent session", async () => {
+  it("list sibling sessions returns 404 for nonexistent session", async () => {
     const res = await app.inject({ method: "GET", url: "/api/sessions/nonexistent/worktrees" });
     expect(res.statusCode).toBe(404);
   });
 
-  it("list_worktrees returns empty for session without remoteUrl", async () => {
+  it("list sibling sessions returns empty for session without remoteUrl", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     const sessionId = await createAndActivateSession(client, "Parent");
 
-    // Sessions without remoteUrl have no branch, so worktrees list is filtered to entries with branch
+    // Sessions without remoteUrl have no branch, so sibling sessions list is filtered to entries with branch
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/worktrees` });
     expect(res.statusCode).toBe(200);
     const worktrees = res.json().worktrees;
@@ -192,9 +192,9 @@ describe("Integration: Worktree sessions", () => {
     client.close();
   });
 
-  // ---- archive_session with worktree ----
+  // ---- archive_session with clone ----
 
-  it("archive_session cleans up worktree when archiving child session", async () => {
+  it("archive_session cleans up clone when archiving child session", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
@@ -220,7 +220,7 @@ describe("Integration: Worktree sessions", () => {
     const child = sessionManager.get(childId);
     expect(child?.archived).toBe(true);
 
-    // The worktree directory should have been removed
+    // The session directory should have been removed
     expect(fs.existsSync(childDir)).toBe(false);
   }, 15_000);
 
@@ -235,7 +235,7 @@ describe("Integration: Worktree sessions", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("merge_session merges a worktree branch into the parent session via HTTP", async () => {
+  it("merge_session merges a session branch into the parent session via HTTP", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
@@ -255,7 +255,7 @@ describe("Integration: Worktree sessions", () => {
     const childSession = sessionManager.get(childId);
     const childDir = childSession!.workspaceDir!;
 
-    // Make changes in the child worktree
+    // Make changes in the child session
     fs.writeFileSync(path.join(childDir, "feature.txt"), "new feature");
     const childGit = new GitManager(childDir);
     await childGit.autoCommit("Add feature");

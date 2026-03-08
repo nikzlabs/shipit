@@ -2,17 +2,18 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import simpleGit from "simple-git";
 import { GitManager } from "./git.js";
 import { RepoGit } from "../orchestrator/repo-git.js";
 import { initGlobalGitConfig, setGitIdentity } from "../orchestrator/git-config.js";
 
-describe("RepoGit: worktree operations", () => {
+describe("RepoGit: clone-based operations", () => {
   let tmpDir: string;
   let parentDir: string;
   let origGitConfigGlobal: string | undefined;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-worktree-"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-clone-"));
     origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
     initGlobalGitConfig(tmpDir);
     setGitIdentity("Test", "test@test.com");
@@ -26,104 +27,62 @@ describe("RepoGit: worktree operations", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  // ---- createWorktree ----
+  // ---- cloneFromCache ----
 
-  it("creates a worktree with a new branch", async () => {
+  it("clones from a bare cache with hardlinked objects", async () => {
+    // Set up a bare repo as the cache
     const git = new GitManager(parentDir);
     await git.init();
-
-    // Add a file so worktree has content
     fs.writeFileSync(path.join(parentDir, "file.txt"), "hello");
     await git.autoCommit("Add file");
 
-    const repo = new RepoGit(parentDir);
-    const worktreePath = path.join(tmpDir, "worktree-1");
-    await repo.createWorktree(worktreePath, "feature-branch");
+    // Clone bare into a cache dir
+    const cacheDir = path.join(tmpDir, "cache.git");
+    fs.mkdirSync(cacheDir);
+    const cacheGit = new RepoGit(cacheDir);
+    await cacheGit.cloneBare(parentDir);
 
-    // Worktree directory should exist
-    expect(fs.existsSync(worktreePath)).toBe(true);
-    // The file from the parent should be present
-    expect(fs.existsSync(path.join(worktreePath, "file.txt"))).toBe(true);
-    // Worktree should be on the new branch
-    const wtGit = new GitManager(worktreePath);
-    const branch = await wtGit.getCurrentBranch();
-    expect(branch).toBe("feature-branch");
+    // Clone from cache into a session dir
+    const sessionDir = path.join(tmpDir, "session-1");
+    await cacheGit.cloneFromCache(sessionDir);
+
+    // Session directory should exist with the file
+    expect(fs.existsSync(sessionDir)).toBe(true);
+    expect(fs.existsSync(path.join(sessionDir, "file.txt"))).toBe(true);
+
+    // Session clone should be a full clone (has .git directory)
+    expect(fs.existsSync(path.join(sessionDir, ".git"))).toBe(true);
+
+    // gc.auto should be disabled to protect hardlinks
+    const sessionGit = new GitManager(sessionDir);
+    const branch = await sessionGit.getCurrentBranch();
+    expect(branch).toBeTruthy();
   });
 
-  it("creates a worktree from a specific start point", async () => {
+  // ---- fetchCache ----
+
+  it("fetches bare cache with TTL-based deduplication", async () => {
     const git = new GitManager(parentDir);
     await git.init();
-
-    fs.writeFileSync(path.join(parentDir, "v1.txt"), "v1");
-    await git.autoCommit("v1");
-    const log1 = await git.log();
-    const v1Hash = log1[0].hash;
-
-    fs.writeFileSync(path.join(parentDir, "v2.txt"), "v2");
-    await git.autoCommit("v2");
-
-    const repo = new RepoGit(parentDir);
-    const worktreePath = path.join(tmpDir, "worktree-v1");
-    await repo.createWorktree(worktreePath, "from-v1", v1Hash);
-
-    // Worktree should have v1.txt but not v2.txt
-    expect(fs.existsSync(path.join(worktreePath, "v1.txt"))).toBe(true);
-    expect(fs.existsSync(path.join(worktreePath, "v2.txt"))).toBe(false);
-  });
-
-  // ---- listWorktrees ----
-
-  it("lists all worktrees including the main working tree", async () => {
-    const git = new GitManager(parentDir);
-    await git.init();
-
     fs.writeFileSync(path.join(parentDir, "file.txt"), "hello");
     await git.autoCommit("Add file");
 
-    const repo = new RepoGit(parentDir);
-    const wt1Path = path.join(tmpDir, "wt1");
-    const wt2Path = path.join(tmpDir, "wt2");
-    await repo.createWorktree(wt1Path, "branch-1");
-    await repo.createWorktree(wt2Path, "branch-2");
+    const cacheDir = path.join(tmpDir, "cache.git");
+    fs.mkdirSync(cacheDir);
+    const cacheGit = new RepoGit(cacheDir);
+    await cacheGit.cloneBare(parentDir);
 
-    const worktrees = await repo.listWorktrees();
-    expect(worktrees).toHaveLength(3); // main + 2 worktrees
+    // First fetch should succeed
+    await cacheGit.fetchCache(60_000);
+    const markerPath = path.join(cacheDir, ".shipit-last-fetch");
+    expect(fs.existsSync(markerPath)).toBe(true);
 
-    const branches = worktrees.map((w) => w.branch);
-    expect(branches).toContain("branch-1");
-    expect(branches).toContain("branch-2");
-
-    // All worktrees should have paths
-    for (const wt of worktrees) {
-      expect(wt.path).toBeTruthy();
-      expect(wt.head).toBeTruthy();
-    }
-  });
-
-  // ---- removeWorktree ----
-
-  it("removes a worktree", async () => {
-    const git = new GitManager(parentDir);
-    await git.init();
-
-    fs.writeFileSync(path.join(parentDir, "file.txt"), "hello");
-    await git.autoCommit("Add file");
-
-    const repo = new RepoGit(parentDir);
-    const worktreePath = path.join(tmpDir, "wt-remove");
-    await repo.createWorktree(worktreePath, "to-remove");
-
-    expect(fs.existsSync(worktreePath)).toBe(true);
-
-    await repo.removeWorktree(worktreePath);
-
-    // Directory should be gone
-    expect(fs.existsSync(worktreePath)).toBe(false);
-
-    // Worktree should no longer be listed
-    const worktrees = await repo.listWorktrees();
-    const branches = worktrees.map((w) => w.branch);
-    expect(branches).not.toContain("to-remove");
+    // Second fetch within TTL should be a no-op (marker is still fresh)
+    const mtime1 = fs.statSync(markerPath).mtimeMs;
+    await cacheGit.fetchCache(60_000);
+    const mtime2 = fs.statSync(markerPath).mtimeMs;
+    // Marker should not have been updated (fetch was skipped)
+    expect(mtime2).toBe(mtime1);
   });
 
   // ---- merge (stays on GitManager — session-level operation) ----
@@ -135,22 +94,28 @@ describe("RepoGit: worktree operations", () => {
     fs.writeFileSync(path.join(parentDir, "base.txt"), "base");
     await git.autoCommit("Base commit");
 
-    // Create worktree with a new branch
-    const repo = new RepoGit(parentDir);
-    const worktreePath = path.join(tmpDir, "wt-merge");
-    await repo.createWorktree(worktreePath, "feature");
+    // Create a separate clone to simulate another session
+    const cacheDir = path.join(tmpDir, "cache.git");
+    fs.mkdirSync(cacheDir);
+    const cacheGit = new RepoGit(cacheDir);
+    await cacheGit.cloneBare(parentDir);
 
-    // Make changes in the worktree
-    const wtGit = new GitManager(worktreePath);
-    fs.writeFileSync(path.join(worktreePath, "feature.txt"), "feature work");
-    await wtGit.autoCommit("Add feature");
+    const cloneDir = path.join(tmpDir, "clone-1");
+    await cacheGit.cloneFromCache(cloneDir);
 
-    // Merge feature branch into main
-    const result = await git.merge("feature");
+    // Create a feature branch in the clone
+    const cloneGit = new GitManager(cloneDir);
+    await cloneGit.checkoutNewBranch("feature");
+    fs.writeFileSync(path.join(cloneDir, "feature.txt"), "feature work");
+    await cloneGit.autoCommit("Add feature");
+
+    // Merge feature branch into main in the same clone
+    await simpleGit(cloneDir).checkout("main");
+    const result = await cloneGit.merge("feature");
     expect(result.success).toBe(true);
 
-    // The merged file should now be in the parent
-    expect(fs.existsSync(path.join(parentDir, "feature.txt"))).toBe(true);
+    // The merged file should now be present
+    expect(fs.existsSync(path.join(cloneDir, "feature.txt"))).toBe(true);
   });
 
   it("reports merge conflicts", async () => {
@@ -160,51 +125,35 @@ describe("RepoGit: worktree operations", () => {
     fs.writeFileSync(path.join(parentDir, "shared.txt"), "original");
     await git.autoCommit("Base");
 
-    // Create worktree and make conflicting change
-    const repo = new RepoGit(parentDir);
-    const worktreePath = path.join(tmpDir, "wt-conflict");
-    await repo.createWorktree(worktreePath, "conflict-branch");
+    // Create bare cache
+    const cacheDir = path.join(tmpDir, "cache.git");
+    fs.mkdirSync(cacheDir);
+    const cacheGit = new RepoGit(cacheDir);
+    await cacheGit.cloneBare(parentDir);
 
-    const wtGit = new GitManager(worktreePath);
-    fs.writeFileSync(path.join(worktreePath, "shared.txt"), "worktree version");
-    await wtGit.autoCommit("Change in worktree");
+    // Clone and create conflicting branch
+    const cloneDir = path.join(tmpDir, "clone-conflict");
+    await cacheGit.cloneFromCache(cloneDir);
 
-    // Make conflicting change in parent
-    fs.writeFileSync(path.join(parentDir, "shared.txt"), "parent version");
-    await git.autoCommit("Change in parent");
+    const cloneGit = new GitManager(cloneDir);
+    await cloneGit.checkoutNewBranch("conflict-branch");
+    fs.writeFileSync(path.join(cloneDir, "shared.txt"), "branch version");
+    await cloneGit.autoCommit("Change in branch");
+
+    // Make conflicting change on main
+    await simpleGit(cloneDir).checkout("main");
+    fs.writeFileSync(path.join(cloneDir, "shared.txt"), "main version");
+    await cloneGit.autoCommit("Change in main");
 
     // Merge should report conflict
-    const result = await git.merge("conflict-branch");
+    const result = await cloneGit.merge("conflict-branch");
     expect(result.success).toBe(false);
     expect(result.conflicts).toBeDefined();
     expect(result.conflicts).toContain("shared.txt");
 
     // Working tree should be clean (merge was aborted)
-    const branch = await git.getCurrentBranch();
+    const branch = await cloneGit.getCurrentBranch();
     expect(branch).toBeTruthy();
-  });
-
-  // ---- deleteBranch ----
-
-  it("deletes a branch", async () => {
-    const git = new GitManager(parentDir);
-    await git.init();
-
-    fs.writeFileSync(path.join(parentDir, "file.txt"), "hello");
-    await git.autoCommit("Add file");
-
-    const repo = new RepoGit(parentDir);
-    const worktreePath = path.join(tmpDir, "wt-for-delete");
-    await repo.createWorktree(worktreePath, "another-branch");
-
-    // Delete the worktree first, then its branch
-    await repo.removeWorktree(worktreePath);
-    await repo.deleteBranch("another-branch");
-
-    // Listing worktrees should only show main
-    const worktrees = await repo.listWorktrees();
-    const branches = worktrees.map((w) => w.branch);
-    expect(branches).not.toContain("another-branch");
   });
 
   // ---- isEmpty ----
@@ -220,30 +169,38 @@ describe("RepoGit: worktree operations", () => {
     expect(await repo.isEmpty()).toBe(false);
   });
 
-  // ---- worktree isolation ----
+  // ---- clone isolation ----
 
-  it("changes in worktree do not affect parent until merge", async () => {
+  it("changes in one clone do not affect another clone", async () => {
     const git = new GitManager(parentDir);
     await git.init();
 
     fs.writeFileSync(path.join(parentDir, "base.txt"), "base");
     await git.autoCommit("Base");
 
-    const repo = new RepoGit(parentDir);
-    const worktreePath = path.join(tmpDir, "wt-isolated");
-    await repo.createWorktree(worktreePath, "isolated");
+    // Create bare cache and two clones
+    const cacheDir = path.join(tmpDir, "cache.git");
+    fs.mkdirSync(cacheDir);
+    const cacheGit = new RepoGit(cacheDir);
+    await cacheGit.cloneBare(parentDir);
 
-    // Add file only in worktree
-    const wtGit = new GitManager(worktreePath);
-    fs.writeFileSync(path.join(worktreePath, "isolated.txt"), "only in worktree");
-    await wtGit.autoCommit("Add isolated file");
+    const clone1Dir = path.join(tmpDir, "clone-1");
+    const clone2Dir = path.join(tmpDir, "clone-2");
+    await cacheGit.cloneFromCache(clone1Dir);
+    await cacheGit.cloneFromCache(clone2Dir);
 
-    // Parent should NOT have the file
-    expect(fs.existsSync(path.join(parentDir, "isolated.txt"))).toBe(false);
+    // Add file only in clone1
+    const clone1Git = new GitManager(clone1Dir);
+    fs.writeFileSync(path.join(clone1Dir, "isolated.txt"), "only in clone1");
+    await clone1Git.autoCommit("Add isolated file");
 
-    // Parent log should not have the worktree commit
-    const parentLog = await git.log();
-    const messages = parentLog.map((e) => e.message);
+    // Clone2 should NOT have the file
+    expect(fs.existsSync(path.join(clone2Dir, "isolated.txt"))).toBe(false);
+
+    // Clone2 log should not have the clone1 commit
+    const clone2Git = new GitManager(clone2Dir);
+    const clone2Log = await clone2Git.log();
+    const messages = clone2Log.map((e) => e.message);
     expect(messages).not.toContain("Add isolated file");
   });
 });

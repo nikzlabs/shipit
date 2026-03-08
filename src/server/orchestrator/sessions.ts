@@ -39,7 +39,6 @@ export class SessionManager {
     if (row.archived) info.archived = true;
     if (row.warm) info.warm = true;
     if (row.branch) info.branch = row.branch;
-    if (row.session_type) info.sessionType = row.session_type as SessionInfo["sessionType"];
     if (row.branch_renamed) info.branchRenamed = true;
     if (row.merged_at) info.mergedAt = row.merged_at;
     return info;
@@ -217,10 +216,17 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET branch_renamed = ? WHERE id = ?").run(renamed ? 1 : 0, id);
   }
 
-  /** Set branch and session type on a session. */
-  setWorktreeInfo(id: string, info: { branch: string; sessionType: "worktree" }): void {
+  /** Set the branch name on a session. */
+  setBranch(id: string, branch: string): void {
     this.db.prepare(
-      "UPDATE sessions SET branch = ?, session_type = ? WHERE id = ?",
-    ).run(info.branch, info.sessionType, id);
+      "UPDATE sessions SET branch = ? WHERE id = ?",
+    ).run(branch, id);
+  }
+
+  /**
+   * @deprecated Use setBranch() instead. Kept for migration compatibility.
+   */
+  setWorktreeInfo(id: string, info: { branch: string; sessionType?: "worktree" }): void {
+    this.setBranch(id, info.branch);
   }
 }

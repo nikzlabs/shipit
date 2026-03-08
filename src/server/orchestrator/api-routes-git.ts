@@ -173,7 +173,7 @@ export async function registerGitRoutes(
     },
   );
 
-  // POST /api/sessions/:id/git/merge — merge a worktree branch into this session
+  // POST /api/sessions/:id/git/merge — merge a branch into this session
   app.post<{ Params: { id: string }; Body: { sourceSessionId: string } }>(
     "/api/sessions/:id/git/merge",
     async (request, reply) => {

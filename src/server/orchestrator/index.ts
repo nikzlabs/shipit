@@ -112,9 +112,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     deps, isTestMode, credentialsDir, sessionManager,
   });
 
-  // ---- Shared repo directory ----
-  const getSharedRepoDir = createSharedRepoDirHelper(workspaceDir);
-  const getDepCacheDir = createDepCacheDirHelper(getSharedRepoDir);
+  // ---- Bare repo cache directory ----
+  const getBareCacheDir = createSharedRepoDirHelper(workspaceDir);
+  const getDepCacheDir = createDepCacheDirHelper(workspaceDir);
 
   // ---- SSE (Server-Sent Events) ----
   const { sseClients, sseBroadcast } = createSSE();
@@ -139,14 +139,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     effectiveRunnerFactory, sessionManager, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
-    getSharedRepoDir, getDepCacheDir,
+    getDepCacheDir,
   });
   registryHolder.ref = runnerRegistry;
 
   // ---- PR Status Poller ----
   const prStatusPoller = createPrStatusPoller({
     deps, githubAuthManager, sessionManager, sseBroadcast,
-    runnerRegistry, createRepoGit, getSharedRepoDir,
+    runnerRegistry, createRepoGit, getBareCacheDir,
   });
 
   // ---- Event wiring (deployment + auth) ----
@@ -164,18 +164,18 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const { warmSessionForRepo, waitForWarmSession } = createWarmPool({
     repoStore, sessionManager, createRepoGit,
     githubAuthManager, credentialStore, containerManager,
-    credentialsDir, getSharedRepoDir, getDepCacheDir, createSessionDir, sseBroadcast,
+    credentialsDir, getBareCacheDir, getDepCacheDir, createSessionDir, sseBroadcast,
   });
 
   // ---- Migration: derive RepoStore from existing sessions ----
   const migratedRepoUrls = await runRepoMigration({
-    repoStore, sessionManager, getSharedRepoDir,
+    repoStore, sessionManager, getSharedRepoDir: getBareCacheDir,
   });
 
   // ---- Startup: validate warm sessions + re-warm missing ----
   const startupTimer = scheduleStartupTasks({
     repoStore, sessionManager, chatHistoryManager, usageManager,
-    containerManager, getSharedRepoDir, warmSessionForRepo,
+    containerManager, getBareCacheDir, warmSessionForRepo,
   }, migratedRepoUrls);
 
   // SSE endpoint — long-lived HTTP response with text/event-stream
@@ -252,7 +252,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     authManager,
     broadcastLog,
     sseBroadcast,
-    getSharedRepoDir,
+    getSharedRepoDir: getBareCacheDir,
     createSessionDir,
     generateText,
     sessionsRoot,
@@ -499,7 +499,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         githubAuthManager, deploymentManager, deploymentStore,
         featureManager, usageManager, authManager, agentRegistry, credentialStore,
         repoStore, warmSessionForRepo, generateText,
-        getSharedRepoDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
+        getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
         prStatusPoller,
         workspaceDir, sessionsRoot, defaultAgentId,
       };

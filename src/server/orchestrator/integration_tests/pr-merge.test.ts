@@ -248,7 +248,7 @@ describe("PrStatusPoller onMergeDetected callback", () => {
     // Seed the session in the poller + authenticate
     await githubAuth.setToken("test-token");
     sessionManager.track(sessionId, "Test session", sessionDir);
-    sessionManager.setWorktreeInfo(sessionId, { branch: "shipit/test-feature", sessionType: "worktree" });
+    sessionManager.setBranch(sessionId, "shipit/test-feature");
     sessionManager.setRemoteUrl(sessionId, "https://github.com/test-user/test-repo.git");
 
     // Set GraphQL result BEFORE tracking so the initial poll picks it up
