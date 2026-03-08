@@ -361,7 +361,7 @@ export function SessionSidebar({
       {/* New Session button */}
       <div className="shrink-0 border-t border-(--color-border-primary) px-3 py-3">
         <Button
-          variant="primary"
+          variant="ghost"
           onClick={onNewSession}
           disabled={!activeRepoUrl || activeRepoStatus === "cloning"}
           className="w-full justify-center gap-2"
