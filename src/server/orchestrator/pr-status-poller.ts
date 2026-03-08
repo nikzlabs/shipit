@@ -360,11 +360,29 @@ export class PrStatusPoller {
       if (enabled) {
         // Clear any previous error when re-enabling
         delete state.error;
+      } else {
+        // Clear managed flag when disabling
+        state.managed = false;
+        delete state.settingsUrl;
       }
     }
 
     this.broadcastSessionStatus(sessionId);
     return state;
+  }
+
+  /** Mark auto-merge as ShipIt-managed (GitHub native unavailable). */
+  setAutoMergeManaged(sessionId: string, managed: boolean, settingsUrl?: string): void {
+    let state = this.autoMergeStates.get(sessionId);
+    if (!state) {
+      state = { enabled: false, mergeMethod: "squash", managed, settingsUrl };
+      this.autoMergeStates.set(sessionId, state);
+    } else {
+      state.managed = managed;
+      state.settingsUrl = settingsUrl;
+    }
+
+    this.broadcastSessionStatus(sessionId);
   }
 
   /** Set an auto-merge error (toggle reverts to OFF). */
@@ -432,6 +450,8 @@ export class PrStatusPoller {
         autoMerge: {
           enabled: mergeState.enabled,
           mergeMethod: mergeState.mergeMethod,
+          managed: mergeState.managed,
+          settingsUrl: mergeState.settingsUrl,
           error: mergeState.error,
         },
       };
@@ -552,6 +572,11 @@ export class PrStatusPoller {
         // Handle auto-fix state transitions
         this.handleAutoFixTransition(session.id, prev, summary, prNode, owner, repo);
 
+        // Handle ShipIt-managed auto-merge
+        this.handleManagedAutoMerge(session.id, summary, owner, repo).catch((err: unknown) => {
+          console.error(`[pr-poller] Managed auto-merge error for ${session.id}:`, err);
+        });
+
         // Attach automation state before comparison and broadcast
         const withAutomation = this.attachAutomationState(summary);
 
@@ -632,6 +657,51 @@ export class PrStatusPoller {
       this.onMergeDetectedCb(sessionId).catch((err: unknown) => {
         console.error(`[pr-poller] Post-merge archive error for ${sessionId}:`, err);
       });
+    }
+  }
+
+  /** Handle ShipIt-managed auto-merge: merge via REST when CI passes. */
+  private async handleManagedAutoMerge(
+    sessionId: string,
+    summary: PrStatusSummary,
+    owner: string,
+    repo: string,
+  ): Promise<void> {
+    const mergeState = this.autoMergeStates.get(sessionId);
+    if (!mergeState?.enabled || !mergeState.managed) return;
+
+    // Only merge when CI passes
+    if (summary.checks.state !== "success") return;
+
+    if (!summary.mergeable) {
+      mergeState.error = {
+        code: "no_branch_protection",
+        message: "PR has merge conflicts",
+        settingsUrl: summary.prUrl,
+      };
+      this.broadcastSessionStatus(sessionId);
+      return;
+    }
+
+    // Attempt the merge via REST API
+    const result = await this.githubAuth.mergePullRequest(
+      owner, repo, summary.prNumber, mergeState.mergeMethod,
+    );
+
+    if (result.success) {
+      // Merge succeeded — disable, poller will detect merged state next cycle
+      mergeState.enabled = false;
+      mergeState.managed = false;
+      delete mergeState.error;
+      this.broadcastSessionStatus(sessionId);
+    } else {
+      // Merge failed — surface error, stays enabled for retry next poll
+      mergeState.error = {
+        code: "no_branch_protection",
+        message: result.message,
+        settingsUrl: summary.prUrl,
+      };
+      this.broadcastSessionStatus(sessionId);
     }
   }
 

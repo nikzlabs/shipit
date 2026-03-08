@@ -52,6 +52,10 @@ export interface PrCardState {
   autoMerge?: {
     enabled: boolean;
     mergeMethod: "squash" | "merge" | "rebase";
+    /** True when ShipIt manages the merge (GitHub native unavailable). */
+    managed?: boolean;
+    /** GitHub settings URL for configuring branch protection. */
+    settingsUrl?: string;
     error?: { code: string; message: string; settingsUrl: string };
   };
   /** Error message (error phase). */

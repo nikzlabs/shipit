@@ -163,6 +163,10 @@ export interface PrAutoMergeError {
 export interface AutoMergeState {
   enabled: boolean;
   mergeMethod: "squash" | "merge" | "rebase";
+  /** True when GitHub native auto-merge failed and ShipIt manages the merge. */
+  managed?: boolean;
+  /** GitHub settings URL — shown in tooltip when managed. */
+  settingsUrl?: string;
   error?: PrAutoMergeError;
 }
 
@@ -199,6 +203,10 @@ export interface PrStatusSummary {
   autoMerge?: {
     enabled: boolean;
     mergeMethod: "squash" | "merge" | "rebase";
+    /** True when ShipIt manages the merge (GitHub native auto-merge unavailable). */
+    managed?: boolean;
+    /** GitHub settings URL for configuring branch protection. */
+    settingsUrl?: string;
     error?: PrAutoMergeError;
   };
 }
