@@ -114,6 +114,13 @@ Three-layer system: browser (React SPA) → orchestrator (Fastify) → session w
 | `testing-and-quality` | Test patterns, integration tests, quality checklist |
 | `docs-navigator` | Feature docs index — find the right `docs/NNN-*` for a task |
 
+## Workflow
+
+- **Read before coding** — before changing a feature, read its `docs/NNN-feature/plan.md` and the source files listed under "Key files". Trace the data flow for similar features to understand existing patterns.
+- **Identify all touchpoints** — plan which files need changes (server, client, types, tests) before writing code.
+- **Co-locate tests** — place tests next to source files (`foo.ts` → `foo.test.ts`). Follow patterns from neighboring test files.
+- **Update docs when done** — update the relevant `plan.md` with new subsystems, patterns, or key files you added. Mark completed checklist items with `[x]`; if all items are done, delete `checklist.md`.
+
 ## Code conventions
 
 - **ESM throughout** — `"type": "module"` in package.json. Use `.js` extensions in relative imports (e.g., `import { foo } from "./bar.js"`).
