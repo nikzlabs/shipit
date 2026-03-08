@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi, beforeEach } from "vitest";
 import { renderHook, cleanup, act } from "@testing-library/react";
 import { useTheme, THEME_OPTIONS } from "./useTheme.js";
 
-const ALL_THEME_CLASSES = ["dark", "midnight", "forest", "rose", "claude", "codex", "warm-light", "cool-light", "slate", "solarized", "high-contrast"];
+const ALL_THEME_CLASSES = ["dark", "midnight", "forest", "rose", "claude", "codex", "warm-light", "cool-light", "solarized", "solarized-light", "claude-light", "codex-light", "high-contrast"];
 
 afterEach(() => {
   cleanup();
@@ -201,8 +201,8 @@ describe("useTheme", () => {
   it("THEME_OPTIONS includes all fourteen themes", () => {
     const ids = THEME_OPTIONS.map((t) => t.id);
     expect(ids).toEqual([
-      "light", "warm-light", "cool-light", "solarized-light", "claude-light",
-      "dark", "slate", "midnight", "forest", "rose",
+      "light", "warm-light", "cool-light", "solarized-light", "claude-light", "codex-light",
+      "dark", "midnight", "forest", "rose",
       "claude", "codex", "solarized", "high-contrast",
     ]);
   });

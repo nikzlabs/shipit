@@ -1,5 +1,6 @@
-/* Light theme — default (no class needed on <html>) */
-:root {
+/* Light theme — :root provides defaults, .light is used by the theme picker */
+:root,
+.light {
   /* Surfaces */
   --color-bg-primary: #ffffff;
   --color-bg-secondary: #f9fafb;

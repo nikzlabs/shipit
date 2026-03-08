@@ -9,14 +9,14 @@
 @import "./themes/codex.css";
 @import "./themes/warm-light.css";
 @import "./themes/cool-light.css";
-@import "./themes/slate.css";
 @import "./themes/solarized.css";
 @import "./themes/solarized-light.css";
 @import "./themes/claude-light.css";
+@import "./themes/codex-light.css";
 @import "./themes/high-contrast.css";
 
 /* Class-based dark mode for Tailwind v4 — includes all dark-like themes */
-@custom-variant dark (&:where(.dark, .dark *, .midnight, .midnight *, .forest, .forest *, .rose, .rose *, .claude, .claude *, .codex, .codex *, .slate, .slate *, .solarized, .solarized *, .high-contrast, .high-contrast *));
+@custom-variant dark (&:where(.dark, .dark *, .midnight, .midnight *, .forest, .forest *, .rose, .rose *, .claude, .claude *, .codex, .codex *, .solarized, .solarized *, .high-contrast, .high-contrast *));
 
 /* ── Shared motion tokens (theme-independent) ── */
 :root {
