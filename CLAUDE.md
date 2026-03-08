@@ -155,6 +155,69 @@ Three-layer system: browser (React SPA) → orchestrator (Fastify) → session w
 | `testing-and-quality` | Test patterns, integration tests, quality checklist |
 | `docs-navigator` | Feature docs index — find the right `docs/NNN-*` for a task |
 
+## Key patterns
+
+These are non-obvious architectural patterns that aren't apparent from the file structure alone.
+
+### Orchestrator ↔ container communication
+
+Session containers run a Fastify server (`session-worker.ts`) that exposes HTTP endpoints for agent control, terminal, file operations, and secrets. The orchestrator talks to containers exclusively over HTTP — never Docker exec.
+
+- **Commands flow via HTTP**: `worker-http.ts` sends requests to the container's worker URL (e.g., `POST /agent/start`, `POST /terminal/resize`). `ContainerSessionRunner` wraps these calls and exposes them as the `SessionRunner` interface.
+- **Events flow back via SSE**: Containers stream real-time events (agent output, terminal data, file changes) over `GET /events`. The orchestrator's `sse-client.ts` connects to this endpoint and relays events to the browser's WebSocket.
+- **Proxy agent pattern**: `ProxyAgentProcess` implements the `AgentProcess` interface but delegates everything to the container over HTTP+SSE. This lets orchestrator code treat local and remote agents identically.
+- **Two worker modes**: Containers run in either `"session"` mode (agent, terminal, files) or `"preview"` mode (dev server, secrets). Each session gets two containers.
+
+### WS handler context (three-level DI)
+
+WS handlers receive a composed context object with three layers. Handlers declare exactly which layers they need:
+
+- **`ConnectionCtx`** — per-WebSocket-connection: `send()`, `broadcastLog()`, `getActiveDir()`, `activateSession()`
+- **`RunnerCtx`** — per-session-runner: `agentFactory()`, `getAgent()`, turn state accumulators, message queue, terminal
+- **`AppCtx`** — app-wide singletons: all managers, factories, config
+
+Handlers that need everything use `FullCtx = ConnectionCtx & RunnerCtx & AppCtx`. Simpler handlers declare only what they need (e.g., terminal handlers need `ConnectionCtx & RunnerCtx` only).
+
+### Service layer pattern
+
+Three-tier: **Routes/WS handlers → Services → Managers**
+
+- Services (`services/*.ts`) are pure async functions that compose manager calls and return typed results.
+- Services take domain types (not handler context), making them testable and reusable by both HTTP routes and WS handlers.
+- Application errors use `ServiceError(statusCode, message)` with HTTP semantics. Routes catch these and respond with the given status code.
+
+### WS message type system
+
+Messages use discriminated unions with a `type` literal field (`ws-client-messages.ts`, `ws-server-messages.ts`). The dispatch switch in `index.ts` narrows each message to its specific type before passing to the handler — handlers receive the narrowed type, not the union.
+
+### Post-turn flow
+
+After Claude finishes a turn (`agent_result` event in `claude-execution.ts`):
+1. `postTurnCommit()` auto-commits changes
+2. `scheduleAutoPush()` debounces a push (5s) if GitHub auth is configured
+3. PR lifecycle card is emitted if a remote exists
+
+**Critical**: Session context (sessionId, sessionDir) is captured at turn *start*, not at the "done" event. This prevents session switches mid-turn from corrupting commits.
+
+### Client dual-channel communication
+
+The browser uses two parallel channels:
+- **Per-session WebSocket** (`/ws/sessions/{id}`) — streaming agent output, diffs, preview status. Managed by `useWebSocket` with exponential backoff reconnection (2s → 30s cap).
+- **Global SSE** (`/api/events` via `useServerEvents`) — session list, repo status, auth events, PR status. Always active.
+
+### Client store patterns
+
+- **Cross-store access**: Stores reference each other via `useXStore.getState()` inside actions, not subscriptions. This avoids circular dependencies.
+- **Coordinated resets**: `stores/actions/session-actions.ts` is the single source of truth for resetting stores during session switches.
+- **Hydration order**: HTTP bootstrap loads once on mount → per-session WS triggers `loadSessionHistory()` on connect → WS messages stream real-time updates. Guards prevent race conditions (e.g., WS data arriving before HTTP response).
+- **Stale message guard**: `useMessageHandler` checks `data.sessionId !== currentSessionId` to discard messages from previous sessions after a switch.
+
+### Integration test patterns
+
+- **`TestClient`** buffers WS messages from connection time, preventing races where the server sends before the test listens. Tests call `receive()` which returns buffered or waits for new messages.
+- **Container mocking**: `isTestMode` flag in `buildApp()` enables `POST /api/_test/sessions` to create sessions without Docker.
+- **Fakes with test controls**: `FakeClaudeProcess`, `StubGitHubAuthManager`, etc. have injection methods (`setPrData()`, `setCheckStatus()`) for test scenarios.
+
 ## Workflow
 
 - **Read before coding** — before changing a feature, read its `docs/NNN-feature/plan.md` and the source files listed under "Key files". Trace the data flow for similar features to understand existing patterns.
