@@ -33,7 +33,7 @@ import {
   createLogBuffer,
   wireEventHandlers,
   createSessionDirFactory,
-  createSharedRepoDirHelper,
+  createBareCacheDirHelper,
   createDepCacheDirHelper,
   createWarmPool,
   runRepoMigration,
@@ -58,7 +58,7 @@ export {
   createLogBuffer,
   wireEventHandlers,
   createSessionDirFactory,
-  createSharedRepoDirHelper,
+  createBareCacheDirHelper,
   createDepCacheDirHelper,
   createWarmPool,
   runRepoMigration,
@@ -113,7 +113,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   });
 
   // ---- Bare repo cache directory ----
-  const getBareCacheDir = createSharedRepoDirHelper(workspaceDir);
+  const getBareCacheDir = createBareCacheDirHelper(workspaceDir);
   const getDepCacheDir = createDepCacheDirHelper(workspaceDir);
 
   // ---- SSE (Server-Sent Events) ----

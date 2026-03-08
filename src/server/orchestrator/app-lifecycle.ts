@@ -699,7 +699,6 @@ export function createWarmPool(
         await cacheGit.cloneFromCache(sessionDir);
 
         // Checkout a new branch from the default branch
-        const sessionGit = createRepoGit(sessionDir);
         let startPoint: string | undefined;
         try {
           const defaultBranch = await cacheGit.getDefaultBranch();
