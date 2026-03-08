@@ -23,6 +23,7 @@ import {
   CaretDownIcon,
   ArrowLeftIcon,
   WarningIcon,
+  InfoIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 
@@ -116,22 +117,48 @@ function AutoFixToggle({ sessionId, autoFix }: { sessionId: string; autoFix?: Pr
   );
 }
 
+/** Hover tooltip explaining ShipIt-managed auto-merge with a link to GitHub settings. */
+function ManagedMergeInfo({ settingsUrl }: { settingsUrl?: string }) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <span className="relative" onMouseEnter={() => setVisible(true)} onMouseLeave={() => setVisible(false)}>
+      <InfoIcon size={ICON_SIZE.XS} className="text-(--color-text-secondary) cursor-help" />
+      {visible && (
+        <div className="absolute left-0 top-full z-50 pt-1">
+          <div className="w-64 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-elevated) shadow-xl p-2.5 text-xs text-(--color-text-secondary)">
+            GitHub auto-merge requires branch protection rules. ShipIt will merge this PR when CI passes.
+            {settingsUrl && (
+              <a href={settingsUrl} target="_blank" rel="noopener noreferrer"
+                className="block mt-1 underline hover:opacity-80 text-(--color-text-link)">
+                Configure in GitHub settings
+              </a>
+            )}
+          </div>
+        </div>
+      )}
+    </span>
+  );
+}
+
 function AutoMergeToggle({ sessionId, autoMerge }: { sessionId: string; autoMerge?: PrCardState["autoMerge"] }) {
   const toggleAutoMerge = usePrStore((s) => s.toggleAutoMerge);
   const enabled = autoMerge?.enabled ?? false;
 
   return (
-    <Button
-      variant="ghost"
-      size="sm"
-      onClick={() => toggleAutoMerge(sessionId, !enabled)}
-      title={enabled ? "Disable auto-merge" : "Enable auto-merge"}
-    >
-      Auto-merge
-      <span className={`inline-block w-6 h-3.5 rounded-full transition-colors ${enabled ? "bg-(--color-success)" : "bg-(--color-text-tertiary)"}`}>
-        <span className={`block w-2.5 h-2.5 mt-0.5 rounded-full bg-(--color-text-inverse) transition-transform ${enabled ? "translate-x-3" : "translate-x-0.5"}`} />
-      </span>
-    </Button>
+    <span className="flex items-center gap-1">
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => toggleAutoMerge(sessionId, !enabled)}
+        title={enabled ? "Disable auto-merge" : "Enable auto-merge"}
+      >
+        Auto-merge
+        <span className={`inline-block w-6 h-3.5 rounded-full transition-colors ${enabled ? "bg-(--color-success)" : "bg-(--color-text-tertiary)"}`}>
+          <span className={`block w-2.5 h-2.5 mt-0.5 rounded-full bg-(--color-text-inverse) transition-transform ${enabled ? "translate-x-3" : "translate-x-0.5"}`} />
+        </span>
+      </Button>
+      {autoMerge?.managed && <ManagedMergeInfo settingsUrl={autoMerge.settingsUrl} />}
+    </span>
   );
 }
 
@@ -307,7 +334,12 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
           Will merge when CI passes
         </div>
       )}
-      {autoMerge?.error && (
+      {autoMerge?.error && autoMerge.managed && (
+        <div className="mt-1 text-xs text-(--color-warning) pl-5 flex items-center gap-1">
+          <WarningIcon size={12} /> {autoMerge.error.message}
+        </div>
+      )}
+      {autoMerge?.error && !autoMerge.managed && (
         <div className="mt-1 text-xs text-(--color-warning) pl-5 flex items-center gap-1">
           <WarningIcon size={12} /> {autoMerge.error.message}{" "}
           <a

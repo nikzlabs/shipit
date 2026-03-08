@@ -371,7 +371,7 @@ export async function toggleAutoMerge(
   prStatusPoller: PrStatusPoller,
   sessionId: string,
   enabled: boolean,
-): Promise<{ enabled: boolean; mergeMethod: "squash" | "merge" | "rebase" } | { error: PrAutoMergeError }> {
+): Promise<{ enabled: boolean; mergeMethod: "squash" | "merge" | "rebase"; managed?: boolean } | { error: PrAutoMergeError }> {
   if (!githubAuth.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
 
   const prStatus = prStatusPoller.getStatus(sessionId);
@@ -389,20 +389,23 @@ export async function toggleAutoMerge(
     const result = await githubAuth.enableAutoMerge(owner, repo, prStatus.prNumber, graphqlMethod);
 
     if (!result.success) {
+      // Fallback: ShipIt-managed auto-merge when GitHub native isn't available
       const settingsUrl = `https://github.com/${owner}/${repo}/settings`;
-      const error: PrAutoMergeError = result.message.includes("auto-merge") || result.message.includes("auto merge")
-        ? { code: "auto_merge_not_enabled", message: "Auto-merge is not enabled for this repository.", settingsUrl }
-        : { code: "no_branch_protection", message: "Auto-merge requires branch protection rules.", settingsUrl: `${settingsUrl}/branches` };
+      const branchSettingsUrl = `${settingsUrl}/branches`;
 
-      prStatusPoller.setAutoMergeEnabled(sessionId, false);
-      prStatusPoller.setAutoMergeError(sessionId, error);
-      return { error };
+      prStatusPoller.setAutoMergeEnabled(sessionId, true);
+      prStatusPoller.setAutoMergeManaged(sessionId, true, branchSettingsUrl);
+      return { enabled: true, mergeMethod, managed: true };
     }
 
     prStatusPoller.setAutoMergeEnabled(sessionId, true);
     return { enabled: true, mergeMethod };
   } else {
-    await githubAuth.disableAutoMerge(owner, repo, prStatus.prNumber);
+    const currentState = prStatusPoller.getAutoMergeState(sessionId);
+    // Skip GitHub API call if this was ShipIt-managed (nothing to disable on GitHub)
+    if (!currentState?.managed) {
+      await githubAuth.disableAutoMerge(owner, repo, prStatus.prNumber);
+    }
     prStatusPoller.setAutoMergeEnabled(sessionId, false);
     return { enabled: false, mergeMethod };
   }
