@@ -29,7 +29,7 @@ npm install
 ```
 src/
   server/
-    session/         Code that runs inside a session context
+    session/         Code that runs inside a session container
       claude.ts      ClaudeProcess — spawns CLI, parses NDJSON, emits events
       terminal.ts    TerminalProcess — interactive PTY
       preview-manager.ts  PreviewManager — spawns/manages preview server
@@ -40,41 +40,66 @@ src/
       vite-error-plugin.ts  Injects error-capture script into preview HTML
       session-worker.ts   Fastify server that runs inside each container
       agents/        Agent process adapters
-        agent-process.ts, agent-registry.ts, claude-adapter.ts, codex-adapter.ts
+        agent-process.ts   Base agent interface
+        agent-registry.ts  Registry of available agents
+        claude-adapter.ts, codex-adapter.ts  CLI adapters
+        tool-map.ts        Tool name normalization
+        index.ts           Barrel export
 
     orchestrator/    Code that runs in the main process
-      index.ts       Entry point — buildApp(), DI setup, WS switch dispatcher
-      api-routes.ts  HTTP REST API routes (registered via registerApiRoutes())
+      index.ts       Entry point — buildApp()
+      app-di.ts      Dependency injection setup
+      app-lifecycle.ts  Server startup/shutdown hooks
+      api-routes.ts  Route registration dispatcher
+      api-routes-*.ts  Domain-specific HTTP routes (bootstrap, deploy, files,
+                       git, github, preview, secrets, session)
       validation.ts  Input validation, error formatting
       repo-git.ts    RepoGit — clone, fetch, worktree lifecycle, branch deletion
+      repo-store.ts  RepoStore — persists repo metadata
       git-utils.ts   generateBranchPrefix(), parseGitHubRemote()
       git-config.ts  Global git config helpers
       sessions.ts    SessionManager — persists session metadata to JSON
       session-runner.ts   SessionRunner + SessionRunnerRegistry
       container-session-runner.ts  ContainerSessionRunner (proxy)
       session-container.ts  SessionContainerManager — Docker orchestration
+      container-lifecycle.ts  Container start/stop/restart logic
+      container-discovery.ts  Find running containers
+      container-health.ts     Container health checks
       preview-proxy.ts     Reverse proxy for container previews
+      docker-proxy.ts      Docker socket proxy for secure container access
       auth.ts        AuthManager — Claude CLI OAuth
       github-auth.ts GitHubAuthManager — GitHub token + API
+      github-auth-checks.ts, github-auth-prs.ts, github-auth-repos.ts
       credential-store.ts  CredentialStore — unified credentials
+      secret-store.ts      SecretStore — user secrets
       deployment-manager.ts  DeploymentManager — target registry, build, deploy dispatch
       deployment-store.ts    DeploymentStore — credentials and deploy history
       deploy-targets/        DeployTarget implementations (Vercel, Cloudflare)
       features.ts    FeatureManager — scans docs/ for feature status
       session-namer.ts  AI-powered session naming
       chat-history.ts  ChatHistoryManager — per-session message persistence
-      threads.ts     ThreadManager — conversation threads and checkpoints
       usage.ts       UsageManager — per-session cost tracking
+      pr-status-poller.ts  Polls GitHub for PR/CI status updates
+      proxy-agent-process.ts  Proxies agent commands to session containers
+      agent-instructions.ts   Generates system prompts for agents
       templates.ts   Project scaffolding templates
+      templates-backend.ts, templates-frontend.ts, templates-fullstack.ts
       markdown.ts    findMarkdownFiles() — docs discovery
+      sse-client.ts  SSE client for container event streams
+      worker-http.ts HTTP client for session worker endpoints
+      terminal-buffer.ts  Server-side terminal output buffering
       ws-handlers/   WebSocket-only message handlers (streaming, per-connection state)
         types.ts     HandlerContext interface shared by all handlers
-        send-message.ts  send_message, answer_question, home_send_with_repo
-        session-handlers.ts, terminal-handlers.ts, misc-handlers.ts,
-        deploy-handlers.ts, thread-handlers.ts
+        send-message.ts    send_message, answer_question, home_send_with_repo
+        claude-execution.ts  Claude process lifecycle management
+        agent-listeners.ts   Agent event stream listeners
+        post-turn.ts         Post-turn actions (auto-commit, auto-push)
+        rollback-handlers.ts Git rollback via WS
+        terminal-handlers.ts, misc-handlers.ts, deploy-handlers.ts
       services/      Business logic layer — pure functions consumed by routes and WS handlers
-        session.ts, git.ts, github.ts, deploy.ts, settings.ts, threads.ts,
-        templates.ts, files.ts, misc.ts, types.ts
+        session.ts, git.ts, github.ts, github-ci-fix.ts, deploy.ts,
+        settings.ts, templates.ts, files.ts, misc.ts, repos.ts,
+        replay.ts, types.ts, index.ts
       integration_tests/  Integration tests — one file per feature area
         test-helpers.ts   Shared stubs (TestClient, FakeClaudeProcess, etc.)
 
@@ -82,15 +107,31 @@ src/
       types/         All type definitions
         index.ts, ws-client-messages.ts, ws-server-messages.ts, domain-types.ts,
         claude-types.ts, agent-types.ts, attachment-types.ts, deployment-types.ts,
-        github-types.ts, terminal-types.ts, thread-types.ts, usage-types.ts
+        github-types.ts, terminal-types.ts, usage-types.ts
       types.ts       Barrel re-export of types/
       git.ts         GitManager — init, autoCommit, log, push, pull, diff, rollback
       file-tree.ts   scanFileTree() — workspace directory listing
+      agent-registry.ts  Shared agent registry (used by both layers)
+      session-config.ts  Session configuration parsing
+      database.ts    Database abstraction
+      utils.ts       Shared utility functions
+      strip-ansi.ts  ANSI escape code stripping
+      fs-constants.ts  Filesystem path constants
 
   client/          React 19 frontend (Vite + Tailwind CSS v4)
-    App.tsx        Main orchestrator — state, layout, WebSocket dispatch
+    App.tsx        Root component — routing, provider setup
+    AppLayout.tsx  Main layout — panels, sidebar, WebSocket dispatch
+    main.tsx       Vite entry point
     components/    UI components (MessageList, FileTree, PreviewFrame, etc.)
     hooks/         Custom hooks (useWebSocket, useSearch, useResizablePanel, etc.)
+    stores/        Zustand state stores
+      session-store.ts, ui-store.ts, git-store.ts, pr-store.ts,
+      preview-store.ts, file-store.ts, terminal-store.ts,
+      settings-store.ts, deploy-store.ts, repo-store.ts
+      actions/     Store action creators (session-actions.ts)
+    themes/        Theme CSS files (dark.css, light.css)
+    utils/         Client utilities (dates, local-storage, repo-label, session-data)
+    design-tokens.ts  Icon sizes, spacing, and design constants
     index.css      Tailwind imports + custom animations
     test-setup.ts  Imports @testing-library/jest-dom/vitest
 ```
