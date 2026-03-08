@@ -167,6 +167,9 @@ Session containers run a Fastify server (`session-worker.ts`) that exposes HTTP 
 - **Events flow back via SSE**: Containers stream real-time events (agent output, terminal data, file changes) over `GET /events`. The orchestrator's `sse-client.ts` connects to this endpoint and relays events to the browser's WebSocket.
 - **Proxy agent pattern**: `ProxyAgentProcess` implements the `AgentProcess` interface but delegates everything to the container over HTTP+SSE. This lets orchestrator code treat local and remote agents identically.
 - **Two worker modes**: Containers run in either `"session"` mode (agent, terminal, files) or `"preview"` mode (dev server, secrets). Each session gets two containers.
+- **SSE reconnection**: Exponential backoff (1s, 2s, 4s… capped at 10s). On reconnect, terminal output is replayed with a reset sequence (`\x1bc`) to avoid corrupted xterm.js rendering. Terminal retries are limited to 3 attempts.
+- **Backpressure**: If an SSE client can't keep up with terminal output, the PTY is paused until `drain` fires. This prevents unbounded memory growth.
+- **Multi-viewer**: Multiple browser tabs can attach to the same runner. The runner broadcasts to all via `emitMessage()`. Resources (SSE, preview) start on first viewer attach and persist after detach for fast re-attach.
 
 ### WS handler context (three-level DI)
 
@@ -198,6 +201,18 @@ After Claude finishes a turn (`agent_result` event in `claude-execution.ts`):
 3. PR lifecycle card is emitted if a remote exists
 
 **Critical**: Session context (sessionId, sessionDir) is captured at turn *start*, not at the "done" event. This prevents session switches mid-turn from corrupting commits.
+
+### Message group boundaries
+
+Agent events are grouped into chat history entries based on tool-result boundaries. Each `agent_tool_result` sets a `needsNewMessageGroup` flag so the next `agent_assistant` event starts a fresh group. This preserves the visual message structure when reloading — groups map 1:1 to message bubbles in the UI. Key file: `agent-listeners.ts`.
+
+### Preview routing
+
+Browser previews reach containers through a reverse proxy (`preview-proxy.ts`):
+- **Subdomain routing** (primary): `{sessionId}--{port}.localhost` → container. Avoids path prefix conflicts with frameworks like Vite.
+- **Path-based routing** (fallback): `/preview/:sessionId/:port/*` for debugging.
+- **HMR patching**: Injects a script that rewrites dev-server WebSocket URLs to use page origin, so hot-reload works through the proxy.
+- **Config-driven restarts**: File changes to `shipit.yaml` trigger immediate preview restart. Lockfile changes (`package-lock.json`, `yarn.lock`) are debounced with a 30s cooldown to avoid npm-install feedback loops.
 
 ### Client dual-channel communication
 
