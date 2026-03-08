@@ -198,7 +198,7 @@ export default function App() {
   }, [newSessionRepoSlug, repos]);
   const search = useSearch(messages);
   const { notify, requestPermission } = useNotification();
-  const { theme, toggle: toggleTheme } = useTheme();
+  const { theme, setTheme } = useTheme();
   const { errors: previewErrors, clearErrors: clearPreviewErrors } = usePreviewErrors();
 
   const { disableAutoFix } = useAutoFix({
@@ -723,7 +723,7 @@ export default function App() {
 
       <AppLayout
         theme={theme}
-        toggleTheme={toggleTheme}
+        onSelectTheme={setTheme}
         onDeployOpen={handleDeployOpen}
         onSettingsOpen={() => handleSettingsOpen()}
         hasSystemPrompt={hasSystemPrompt}

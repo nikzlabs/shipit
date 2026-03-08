@@ -1,0 +1,78 @@
+/* Claude theme — inspired by Claude Code desktop: warm dark with terracotta accent */
+.claude {
+  /* Surfaces */
+  --color-bg-primary: #1a1410;
+  --color-bg-secondary: #231c16;
+  --color-bg-tertiary: #2e2519;
+  --color-bg-elevated: #2e2519;
+  --color-bg-overlay: rgba(0, 0, 0, 0.7);
+  --color-bg-hover: rgba(217, 119, 87, 0.08);
+  --color-bg-active: rgba(217, 119, 87, 0.14);
+
+  /* Text */
+  --color-text-primary: #e8e0d8;
+  --color-text-secondary: #a89a8c;
+  --color-text-tertiary: #7a6e62;
+  --color-text-inverse: #1a1410;
+  --color-text-link: #e09070;
+
+  /* Borders */
+  --color-border-primary: #2e2519;
+  --color-border-secondary: #43382c;
+  --color-border-focus: #d97757;
+
+  /* Accent */
+  --color-accent: #d97757;
+  --color-accent-hover: #c4603f;
+  --color-accent-text: #ffffff;
+  --color-accent-subtle: rgba(217, 119, 87, 0.15);
+
+  /* Status */
+  --color-success: #5cb870;
+  --color-success-subtle: rgba(92, 184, 112, 0.15);
+  --color-success-border: rgba(92, 184, 112, 0.3);
+  --color-error: #e05252;
+  --color-error-subtle: rgba(224, 82, 82, 0.15);
+  --color-warning: #e0a040;
+  --color-warning-subtle: rgba(224, 160, 64, 0.15);
+  --color-info: #e09070;
+  --color-info-subtle: rgba(224, 144, 112, 0.15);
+
+  /* Domain-specific */
+  --color-pr: #c4a0e0;
+  --color-pr-subtle: rgba(196, 160, 224, 0.15);
+  --color-pr-border: rgba(196, 160, 224, 0.3);
+  --color-folder: #e0c060;
+  --color-autofix: #e09050;
+
+  /* Context meter */
+  --color-context-ok: #5cb870;
+  --color-context-mid: #e0c060;
+  --color-context-high: #e09050;
+  --color-context-full: #e05252;
+
+  /* Scrollbar */
+  --color-scrollbar-thumb: rgba(122, 110, 98, 0.4);
+  --color-scrollbar-thumb-hover: rgba(168, 154, 140, 0.5);
+
+  /* Syntax highlighting (warm, earthy tones) */
+  --color-syntax-base: #d4ccc4;
+  --color-syntax-bg: #1e1812;
+  --color-syntax-keyword: #e08060;
+  --color-syntax-title: #c4a0e0;
+  --color-syntax-attr: #d0a870;
+  --color-syntax-string: #90b878;
+  --color-syntax-string-regexp: #d0a870;
+  --color-syntax-builtin: #e0a040;
+  --color-syntax-comment: #6e6258;
+  --color-syntax-tag: #e08060;
+  --color-syntax-section: #c4a0e0;
+  --color-syntax-bullet: #d0a870;
+  --color-syntax-addition: #90b878;
+  --color-syntax-addition-bg: #1a2a18;
+  --color-syntax-deletion: #e08060;
+  --color-syntax-deletion-bg: #2d1a14;
+
+  /* Typography */
+  --font-size-code: 13px;
+}
