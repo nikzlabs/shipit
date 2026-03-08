@@ -6,7 +6,7 @@ import { useState, useEffect, useCallback } from "react";
  * added by creating a CSS file in `src/client/themes/`, importing it in
  * `index.css`, and registering the class name in `KNOWN_THEMES` below.
  */
-export type Theme = "light" | "dark" | "midnight" | "forest" | "rose" | "claude" | "codex" | "warm-light" | "cool-light" | "slate" | "solarized" | "high-contrast" | (string & {});
+export type Theme = "light" | "dark" | "midnight" | "forest" | "rose" | "claude" | "codex" | "warm-light" | "cool-light" | "slate" | "solarized" | "solarized-light" | "claude-light" | "high-contrast" | (string & {});
 
 export interface ThemeOption {
   id: Theme;
@@ -19,6 +19,8 @@ export const THEME_OPTIONS: ThemeOption[] = [
   { id: "light", label: "Light", description: "Clean and bright" },
   { id: "warm-light", label: "Warm Light", description: "Cream and sand tones" },
   { id: "cool-light", label: "Cool Light", description: "Blue-gray and indigo" },
+  { id: "solarized-light", label: "Solarized Light", description: "Classic cream and yellow" },
+  { id: "claude-light", label: "Claude Light", description: "Parchment and terracotta" },
   { id: "dark", label: "Dark", description: "Classic dark mode" },
   { id: "slate", label: "Slate", description: "Warm blue-gray dark" },
   { id: "midnight", label: "Midnight", description: "Deep blue tones" },
@@ -26,14 +28,14 @@ export const THEME_OPTIONS: ThemeOption[] = [
   { id: "rose", label: "Rosé", description: "Warm pink and mauve" },
   { id: "claude", label: "Claude", description: "Terracotta and warmth" },
   { id: "codex", label: "Codex", description: "Terminal green" },
-  { id: "solarized", label: "Solarized", description: "Classic Solarized Dark" },
+  { id: "solarized", label: "Solarized Dark", description: "Classic Solarized Dark" },
   { id: "high-contrast", label: "High Contrast", description: "Maximum readability" },
 ];
 
 const STORAGE_KEY = "shipit-theme";
 
 /** All theme class names that may be applied to <html>. */
-const KNOWN_THEMES = ["dark", "midnight", "forest", "rose", "claude", "codex", "warm-light", "cool-light", "slate", "solarized", "high-contrast"] as const;
+const KNOWN_THEMES = ["dark", "midnight", "forest", "rose", "claude", "codex", "warm-light", "cool-light", "slate", "solarized", "solarized-light", "claude-light", "high-contrast"] as const;
 
 function getInitialTheme(): Theme {
   try {
@@ -56,7 +58,7 @@ function applyTheme(theme: Theme): void {
 }
 
 /** Themes that use a light background (need light favicon, etc.). */
-export const LIGHT_THEMES = new Set(["light", "warm-light", "cool-light"]);
+export const LIGHT_THEMES = new Set(["light", "warm-light", "cool-light", "solarized-light", "claude-light"]);
 
 export function useTheme() {
   const [theme, setTheme] = useState<Theme>(getInitialTheme);

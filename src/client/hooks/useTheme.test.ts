@@ -198,10 +198,10 @@ describe("useTheme", () => {
     expect(document.documentElement.classList.contains("midnight")).toBe(false);
   });
 
-  it("THEME_OPTIONS includes all twelve themes", () => {
+  it("THEME_OPTIONS includes all fourteen themes", () => {
     const ids = THEME_OPTIONS.map((t) => t.id);
     expect(ids).toEqual([
-      "light", "warm-light", "cool-light",
+      "light", "warm-light", "cool-light", "solarized-light", "claude-light",
       "dark", "slate", "midnight", "forest", "rose",
       "claude", "codex", "solarized", "high-contrast",
     ]);

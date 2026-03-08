@@ -11,6 +11,8 @@
 @import "./themes/cool-light.css";
 @import "./themes/slate.css";
 @import "./themes/solarized.css";
+@import "./themes/solarized-light.css";
+@import "./themes/claude-light.css";
 @import "./themes/high-contrast.css";
 
 /* Class-based dark mode for Tailwind v4 — includes all dark-like themes */
