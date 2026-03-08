@@ -116,7 +116,7 @@ function createFakeDocker() {
 // ---------------------------------------------------------------------------
 
 function getSharedRepoDirForUrl(workspaceDir: string, repoUrl: string): string {
-  return path.join(workspaceDir, "repos", repoUrlToHash(repoUrl));
+  return path.join(workspaceDir, "repo-cache", repoUrlToHash(repoUrl));
 }
 
 function createSharedRepo(repoDir: string): void {

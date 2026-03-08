@@ -358,8 +358,9 @@ export async function archiveSession(
   // Dispose runner
   runnerRegistry.dispose(sessionId);
 
-  // Clean up session workspace directory (full clone)
-  if (session?.workspaceDir) {
+  // Clean up session workspace directory for repo-backed clones only.
+  // Standalone sessions preserve their directory so they can be unarchived.
+  if (session?.remoteUrl && session?.workspaceDir) {
     try {
       await fs.rm(session.workspaceDir, { recursive: true, force: true });
       console.log("[server] Removed session workspace:", session.workspaceDir);
