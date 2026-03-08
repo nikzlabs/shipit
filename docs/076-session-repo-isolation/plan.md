@@ -83,6 +83,35 @@ Current warm pool flow in `app-lifecycle.ts`:
 New flow:
 1. Fetch bare cache (if stale) → `git clone --local /workspace/repo-cache/{hash} /workspace/sessions/{uuid}` → checkout branch
 
+### Claim-session flow
+
+`api-routes-session.ts` has a `claim-session` endpoint with significant worktree logic:
+- Per-repo promise chain serializes git operations (fetch, reset, worktree add) to avoid lock contention — this serialization **remains needed** for bare cache fetches
+- Checks for `.git` (file for worktrees) to verify a warm session is fully initialized — change to check `.git/` (directory) instead
+- `refreshWarmSessionToLatestMain()` fetches the shared repo and hard-resets the worktree — change to fetch the session clone's origin directly and reset
+- Cold path creates a session dir, deletes it, then calls `repoGit.createWorktree()` — change to clone from bare cache
+- Calls `sessionManager.setWorktreeInfo()` with `sessionType: "worktree"` — remove or replace with branch-only setter
+
+### Unarchiving sessions
+
+`unarchiveSession()` in `services/session.ts` recreates a worktree when restoring an archived session:
+- Checks `session.sessionType === "worktree"` to decide if worktree recreation is needed
+- Re-clones the shared repo if it was cleaned up, then calls `repoGit.createWorktree()`
+- Retries worktree creation 3x with exponential backoff for lock contention
+
+With separate clones:
+- Clone from bare cache (create cache if needed) into the session directory
+- Checkout the session's branch
+- Retry logic still applies but for clone operations instead of worktree add
+- No need to check sessionType — all sessions with `remoteUrl` need clone restoration
+
+### Merge sessions
+
+`mergeSession()` in `services/session.ts` merges a worktree branch into the active session. With separate clones:
+- Source session's branch must be pushed to the remote first (or fetched directly from its clone)
+- Active session fetches the branch from origin and merges
+- Alternative: add the source session's clone as a git remote temporarily, fetch, merge, remove remote
+
 ### Forking sessions
 
 Currently `forkSession()` creates a new worktree from the shared repo at the source session's branch. With separate clones:
@@ -108,16 +137,35 @@ Preview containers (`buildPreviewMounts()`) currently receive the same `INTERNAL
 
 | File | Change |
 |------|--------|
-| `repo-git.ts` | Replace worktree operations (`createWorktree`, `removeWorktree`, `listWorktrees`) with bare cache management + `git clone --local` |
-| `container-lifecycle.ts` | Remove `INTERNAL_GIT_MOUNT`, `GIT_OVERRIDE_DIR`, `writeGitOverride()`, `removeGitOverride()`, shared repo mount in `buildMounts()` and `buildPreviewMounts()` |
-| `session-container.ts` | Remove `sharedRepoDir` from `ContainerConfig` |
-| `app-lifecycle.ts` | Replace worktree creation with clone in session creation paths; rewrite warm pool flow (`warmSessionForRepo`) to clone from bare cache instead of creating worktree; remove `sharedRepoDirResolver` from registry setup |
+| `repo-git.ts` | Replace worktree operations (`createWorktree`, `removeWorktree`, `listWorktrees`) with bare cache management + `git clone --local`. Add `cloneBare()`, `cloneFromCache()`, `fetchCache()`. Keep `fetch()` with `--force` for concurrent safety. Keep `getDefaultBranch()`, `isEmpty()`, `createInitialCommit()`. Change `deleteBranch()` to push deletion to remote instead of local-only delete. |
+| `container-lifecycle.ts` | Remove `INTERNAL_GIT_MOUNT`, `GIT_OVERRIDE_DIR`, `writeGitOverride()`, `removeGitOverride()`, shared repo mount blocks in `buildMounts()` (lines 118–140) and `buildPreviewMounts()` (lines 557–578). Remove `writeGitOverride()` calls from `createContainer()` and `createPreviewContainer()`. Remove `removeGitOverride()` call from `destroyContainer()`. (~85 lines removed) |
+| `session-container.ts` | Remove `sharedRepoDir` from `ContainerConfig` interface |
+| `app-lifecycle.ts` | Replace worktree creation with clone in session creation paths; rewrite warm pool flow (`warmSessionForRepo`) to clone from bare cache; remove `sharedRepoDirResolver` from registry setup; update `getSharedRepoDir()` helper to `getBareCacheDir()` |
+| `api-routes-session.ts` | Rewrite `claim-session` cold path to clone from bare cache instead of worktree add; change `.git` file check to `.git/` directory check for warm session readiness; update `refreshWarmSessionToLatestMain()` to fetch session clone directly; remove `setWorktreeInfo()` calls with `sessionType: "worktree"` |
 | `session-runner.ts` | Remove `sharedRepoDirResolver` from `SessionRunnerFactory` signature and `SessionRunnerRegistry` |
-| `services/session.ts` | Rewrite `archiveSession()` to delete clone directory instead of `removeWorktree()` + `.git` file parsing; update `forkSession()` to clone instead of worktree creation |
+| `services/session.ts` | Rewrite `archiveSession()` to delete clone directory instead of `removeWorktree()` + `.git` file parsing; rewrite `forkSession()` to clone from bare cache + transfer uncommitted changes; rewrite `unarchiveSession()` to clone from bare cache instead of recreating worktree; update `mergeSession()` for cross-clone branch merging; remove `listWorktrees()` function (or rename to `listSiblings()`) |
 | `domain-types.ts` | Remove `sessionType?: "worktree"` from `SessionInfo` |
-| `sessions.ts` | Remove `session_type` database column; migration to drop column after all worktree sessions are gone |
+| `sessions.ts` | Remove `session_type` column; rename `setWorktreeInfo()` to `setBranch()` (branch-only, no session type) |
+| `ws-handlers/send-message.ts` | Remove `sessionType` reference in `setWorktreeInfo()` call; update error message about workspace unavailability |
+| `ws-handlers/rollback-handlers.ts` | Update comment referencing "worktree" in fork-as-new-session |
+| `api-routes-git.ts` | Update merge endpoint comment referencing "worktree branch" |
+| `app-di.ts` | Update `createRepoGit` factory comment |
 | `container-discovery.ts` | No shared repo fields to rediscover |
 | `shared/git.ts` | No changes — `GitManager` already operates on a single directory |
+
+## Test files to update
+
+| Test file | Change |
+|-----------|--------|
+| `git-worktree.test.ts` | Rewrite or replace — tests `createWorktree`, `removeWorktree`, `listWorktrees`. Replace with tests for `cloneBare()`, `cloneFromCache()`, `fetchCache()`. |
+| `session-container.test.ts` | Remove assertions for `sharedRepoDir` mount, gitdir override mount. Simplify mount expectations. |
+| `container-lifecycle.test.ts` | Remove tests for `writeGitOverride()`, `removeGitOverride()`, shared repo mount logic. |
+| `worktree-sessions.test.ts` | Major rewrite — fork, list worktrees, archive worktree, merge worktree tests all change. Rename to `clone-sessions.test.ts`. |
+| `warm-sessions.test.ts` | Update warm session creation from worktree add to clone. Update `.git` file check to `.git/` directory check. |
+| `http-phase3.test.ts` | Update fork and merge test cases. |
+| `http-reads.test.ts` | Update `/api/sessions/:id/worktrees` test (endpoint may be renamed or repurposed). |
+| `repos.test.ts` | Update worktree-from-nonexistent-repo test. |
+| `pr-merge.test.ts` | Update `setWorktreeInfo()` call. |
 
 ## Migration
 
@@ -133,3 +181,5 @@ Preview containers (`buildPreviewMounts()`) currently receive the same `INTERNAL
 - **Concurrent clones** — multiple sessions cloning from the same bare cache simultaneously. Git handles this safely via lockfiles.
 - **Bare cache gc during clone** — if `git gc` runs in the bare cache while a `git clone --local` is in progress, hardlinked objects could be deleted from under the clone. Mitigate by serializing cache maintenance behind a lock that clone operations also acquire.
 - **Fork session complexity** — forking now requires cloning + patching uncommitted changes instead of a simple worktree add. Mitigate by using `git diff` / `git apply` or `rsync` for working tree state transfer.
+- **Concurrent bare cache fetches** — multiple claim-session requests can trigger simultaneous `git fetch` on the same bare cache. The existing `--force` flag on fetch prevents "unable to update local ref" errors, but fetches should still be serialized per cache entry (reuse the existing per-repo promise chain from `api-routes-session.ts`).
+- **Cross-clone merge complexity** — `mergeSession()` currently merges branches within the same shared repo. With separate clones, the source branch must be pushed to origin first or the source clone added as a temporary remote. Either approach adds a network round-trip.
