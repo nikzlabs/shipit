@@ -1,0 +1,78 @@
+/* Warm Light theme — cream and sand tones with amber accent */
+.warm-light {
+  /* Surfaces */
+  --color-bg-primary: #fdf8f0;
+  --color-bg-secondary: #f5ede0;
+  --color-bg-tertiary: #ede4d4;
+  --color-bg-elevated: #fdf8f0;
+  --color-bg-overlay: rgba(0, 0, 0, 0.5);
+  --color-bg-hover: rgba(180, 120, 40, 0.06);
+  --color-bg-active: rgba(180, 120, 40, 0.1);
+
+  /* Text */
+  --color-text-primary: #2c2416;
+  --color-text-secondary: #5c5040;
+  --color-text-tertiary: #a89878;
+  --color-text-inverse: #fdf8f0;
+  --color-text-link: #b06820;
+
+  /* Borders */
+  --color-border-primary: #e4d8c4;
+  --color-border-secondary: #d0c0a4;
+  --color-border-focus: #c07828;
+
+  /* Accent */
+  --color-accent: #c07828;
+  --color-accent-hover: #a86418;
+  --color-accent-text: #ffffff;
+  --color-accent-subtle: rgba(192, 120, 40, 0.12);
+
+  /* Status */
+  --color-success: #2d8a4e;
+  --color-success-subtle: rgba(45, 138, 78, 0.1);
+  --color-success-border: rgba(45, 138, 78, 0.3);
+  --color-error: #c43030;
+  --color-error-subtle: rgba(196, 48, 48, 0.1);
+  --color-warning: #b07010;
+  --color-warning-subtle: rgba(176, 112, 16, 0.1);
+  --color-info: #b06820;
+  --color-info-subtle: rgba(176, 104, 32, 0.1);
+
+  /* Domain-specific */
+  --color-pr: #7840b0;
+  --color-pr-subtle: rgba(120, 64, 176, 0.1);
+  --color-pr-border: rgba(120, 64, 176, 0.3);
+  --color-folder: #c09820;
+  --color-autofix: #d07020;
+
+  /* Context meter */
+  --color-context-ok: #2d8a4e;
+  --color-context-mid: #c09820;
+  --color-context-high: #d07020;
+  --color-context-full: #c43030;
+
+  /* Scrollbar */
+  --color-scrollbar-thumb: rgba(168, 152, 120, 0.4);
+  --color-scrollbar-thumb-hover: rgba(122, 108, 86, 0.6);
+
+  /* Syntax highlighting (warm paper tones) */
+  --color-syntax-base: #3c3424;
+  --color-syntax-bg: #fdf8f0;
+  --color-syntax-keyword: #a84020;
+  --color-syntax-title: #7840b0;
+  --color-syntax-attr: #0060a0;
+  --color-syntax-string: #286830;
+  --color-syntax-string-regexp: #286830;
+  --color-syntax-builtin: #b07010;
+  --color-syntax-comment: #908060;
+  --color-syntax-tag: #2d8a4e;
+  --color-syntax-section: #0060a0;
+  --color-syntax-bullet: #906810;
+  --color-syntax-addition: #286830;
+  --color-syntax-addition-bg: #f0f8f0;
+  --color-syntax-deletion: #a84020;
+  --color-syntax-deletion-bg: #fef0e8;
+
+  /* Typography */
+  --font-size-code: 13px;
+}

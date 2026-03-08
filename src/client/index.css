@@ -2,9 +2,21 @@
 @plugin "@tailwindcss/typography";
 @import "./themes/light.css";
 @import "./themes/dark.css";
+@import "./themes/midnight.css";
+@import "./themes/forest.css";
+@import "./themes/rose.css";
+@import "./themes/claude.css";
+@import "./themes/codex.css";
+@import "./themes/warm-light.css";
+@import "./themes/cool-light.css";
+@import "./themes/solarized.css";
+@import "./themes/solarized-light.css";
+@import "./themes/claude-light.css";
+@import "./themes/codex-light.css";
+@import "./themes/high-contrast.css";
 
-/* Class-based dark mode for Tailwind v4 */
-@custom-variant dark (&:where(.dark, .dark *));
+/* Class-based dark mode for Tailwind v4 — includes all dark-like themes */
+@custom-variant dark (&:where(.dark, .dark *, .midnight, .midnight *, .forest, .forest *, .rose, .rose *, .claude, .claude *, .codex, .codex *, .solarized, .solarized *, .high-contrast, .high-contrast *));
 
 /* ── Shared motion tokens (theme-independent) ── */
 :root {
