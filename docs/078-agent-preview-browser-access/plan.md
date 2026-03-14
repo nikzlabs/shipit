@@ -39,8 +39,8 @@ The Playwright MCP server provides these tools (standard `@anthropic-ai/mcp-play
 
 | Tool | Purpose |
 |------|---------|
-| `browser_navigate` | Go to a URL |
-| `browser_snapshot` | Get an accessibility-tree snapshot of the page (text, buttons, links, form fields) |
+| `browser_navigate` | Go to a URL (read-only — does not mutate state) |
+| `browser_snapshot` | Get an accessibility-tree snapshot of the page |
 | `browser_click` | Click an element by accessibility reference |
 | `browser_type` | Type text into an input field |
 | `browser_take_screenshot` | Capture a PNG screenshot of the viewport |
@@ -71,15 +71,19 @@ The browser navigates to the preview container's internal URL (e.g., `http://<pr
 
 ### Preview URL data flow
 
-The session container doesn't know the preview container's address today. Here's the full data flow to get it there:
+The session container doesn't know the preview container's address today. The preview URL is delivered at **agent start time** (not container creation time) via the existing `/agent/start` HTTP body. This avoids the sequencing problem where the preview container hasn't been created yet when the session container starts.
 
-1. **Orchestrator knows the preview URL.** `ContainerSessionRunner` holds `previewWorkerUrl` (set via `setPreviewWorkerUrl()` when the preview container starts). The preview container's dev server address is derived from this (same host, different port).
+Here's the full data flow:
 
-2. **Pass `PREVIEW_HOST` as a container env var.** At session container creation time (`SessionContainerManager`), set `PREVIEW_HOST=<preview-container-ip>` in the container's environment, alongside existing env vars like `WORKSPACE_DIR`. This is simpler than threading it through `AgentRunParams` — it's always available and doesn't require changes to the agent type system.
+1. **Orchestrator knows the preview URL.** `ContainerSessionRunner` holds `previewWorkerUrl` (set via `setPreviewWorkerUrl()` when the preview container starts) and `_detectedPorts` (populated from preview status). The preview container's dev server address is derived from these: same host as `previewWorkerUrl`, with the detected preview port.
 
-3. **Session worker reads `PREVIEW_HOST`.** When generating the MCP config and system prompt at `/agent/start` time, `session-worker.ts` reads `process.env.PREVIEW_HOST` to construct the preview URL. If the preview port is dynamic, the orchestrator can also pass `PREVIEW_PORT` as an env var (updated on preview restart via a worker HTTP call).
+2. **Orchestrator passes preview URL at agent start time.** `_startAgentViaProxy()` in `container-session-runner.ts` already POSTs to `/agent/start` with `{ agentId, params }`. We add a `previewUrl` field to `AgentRunParams` in `agent-types.ts`. The orchestrator resolves the preview URL from `previewWorkerUrl` + detected port before calling `_startAgentViaProxy()`.
 
-4. **Stale URL handling.** If the preview restarts and the port changes mid-turn, the URL in the system prompt goes stale. This is acceptable for v1 — the agent can re-navigate if it gets a connection error. Future improvement: the MCP server could resolve the port dynamically by querying the preview worker's `/preview/status` endpoint.
+3. **Session worker receives preview URL in `/agent/start` body.** `session-worker.ts` reads `params.previewUrl` from the request, generates the MCP config file, injects the preview URL into the system prompt, and passes the MCP config path to the agent via `params.mcpConfigPath`. Line 160 already spreads params: `this.agent.run({ ...params, cwd: this.workspaceDir })`.
+
+4. **Preview URL is absent when preview isn't running.** If `previewUrl` is null/undefined, the MCP config is still generated (browser tools still work for external URLs), but the system prompt omits the preview URL section and instead says: "The preview is not running yet. You can use browser tools to navigate to external URLs."
+
+5. **Stale URL on port change.** If the preview restarts mid-turn and the port changes, the URL in the system prompt goes stale. Mitigation for v1: the system prompt tells the agent to retry on connection error. Concrete v2 improvement: write the current preview port to a well-known file (`/tmp/preview-port`) that the session worker updates via a new `POST /config/preview-port` endpoint on preview restart. The MCP server's environment can include this path so it resolves the port dynamically.
 
 ### MCP configuration
 
@@ -98,7 +102,7 @@ The session worker generates an MCP config file at agent start time and passes i
 }
 ```
 
-The config file is written to `/tmp/mcp-config-<sessionId>.json` (deterministic path, overwritten per turn rather than accumulated). Cleanup happens in the `onExit` handler.
+The config file is written to `/tmp/mcp-config-<sessionId>.json` (deterministic path, overwritten per turn rather than accumulated). Cleanup happens in the `onExit` handler of `ClaudeProcess`.
 
 ### Preview URL injection
 
@@ -112,6 +116,9 @@ that let you interact with the live preview. The preview is running at:
 
   {previewUrl}
 
+This is the primary preview port. If the project serves on multiple ports, adjust
+the port number as needed.
+
 Use browser_snapshot to see what's on the page. Use browser_click and browser_type
 to interact with UI elements. This is useful for verifying your changes work correctly.
 
@@ -122,7 +129,7 @@ If the preview is not running or you get a connection error, the dev server may 
 have started yet. Wait a moment and try again, or check with the user.
 ```
 
-The `{previewUrl}` placeholder is resolved at agent start time in `session-worker.ts` using `PREVIEW_HOST` and the detected preview port.
+The `{previewUrl}` placeholder is resolved at agent start time in `session-worker.ts` using the `previewUrl` field from `AgentRunParams`.
 
 ### Allowed tools
 
@@ -132,13 +139,13 @@ Browser tools are added to the auto-mode allowlist. The Claude CLI supports `mcp
 const AUTO_TOOLS = "Write,Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,mcp__playwright__*";
 ```
 
-> **Action item**: Verify wildcard support in `--allowedTools` before implementation. If the CLI requires exact names, enumerate each tool explicitly.
+> **Action item**: Verify wildcard support in `--allowedTools` before implementation. If the CLI requires exact names, enumerate each tool explicitly. The plan/normal mode lists below already use explicit names as a fallback-safe pattern.
 
-For plan and normal modes, only read-only browser tools are allowed:
+For plan and normal modes, only read-only browser tools are allowed. `browser_navigate` is included because it's read-only (doesn't mutate state) and is required before `browser_snapshot` can read a page:
 
 ```typescript
-const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot";
-const NORMAL_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot";
+const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot";
+const NORMAL_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot";
 ```
 
 ### `ClaudeProcess.run()` signature change
@@ -162,34 +169,48 @@ interface ClaudeRunOptions {
 run(opts: ClaudeRunOptions)
 ```
 
-`ClaudeAdapter.run()` extracts `mcpConfigPath` from the MCP config file generated by the session worker and passes it through. The `AgentRunParams` type in `agent-types.ts` gets a new optional `mcpConfigPath` field.
+**Call sites that must be updated atomically:**
+- `ClaudeAdapter.run()` (line 124) — currently destructures `AgentRunParams` and calls `this.inner.run()` with positional args
+- `session-worker.ts` standalone entry point (line ~583) — directly instantiates and calls `ClaudeProcess.run()`
+- All tests that call `ClaudeProcess.run()` directly
+
+The `AgentRunParams` type in `agent-types.ts` gets two new optional fields: `mcpConfigPath?: string` and `previewUrl?: string`.
 
 ### Tool activity labels
 
-Browser tool calls appear in the UI's activity stream. The `activityFromTool()` function in `StreamingIndicator.tsx` needs new cases. Rather than adding individual cases for every MCP tool, add a generic `mcp__` prefix handler in the `default` branch:
+Browser tool calls appear in the UI's activity stream. The `activityFromTool()` function in `StreamingIndicator.tsx` needs new cases. Add a generic `mcp__` prefix handler in the `default` branch that works for any MCP server, with specific labels for known Playwright tools:
 
 ```typescript
 default: {
-  // Generic MCP tool label: "mcp__playwright__browser_navigate" → "Navigating browser"
-  if (toolName.startsWith("mcp__playwright__browser_")) {
-    const action = toolName.replace("mcp__playwright__browser_", "");
-    const labels: Record<string, string> = {
-      navigate: "Navigating to page",
-      snapshot: "Reading page content",
-      click: "Clicking element",
-      type: "Typing text",
-      take_screenshot: "Taking screenshot",
-      scroll: "Scrolling page",
-      hover: "Hovering element",
-      select_option: "Selecting option",
+  // Generic MCP tool handling — works for any MCP server
+  if (toolName.startsWith("mcp__")) {
+    // Known Playwright browser tool labels
+    const BROWSER_LABELS: Record<string, string> = {
+      "mcp__playwright__browser_navigate": "Navigating to page",
+      "mcp__playwright__browser_snapshot": "Reading page content",
+      "mcp__playwright__browser_click": "Clicking element",
+      "mcp__playwright__browser_type": "Typing text",
+      "mcp__playwright__browser_take_screenshot": "Taking screenshot",
+      "mcp__playwright__browser_scroll": "Scrolling page",
+      "mcp__playwright__browser_hover": "Hovering element",
+      "mcp__playwright__browser_select_option": "Selecting option",
     };
-    return { label: labels[action] ?? `Browser: ${action}`, tool: toolName };
+    const label = BROWSER_LABELS[toolName];
+    if (label) {
+      return { label, tool: toolName };
+    }
+    // Fallback for unknown MCP tools: "mcp__foo__bar_baz" → "Using bar baz..."
+    const parts = toolName.split("__");
+    const toolPart = parts.length >= 3 ? parts.slice(2).join(" ").replace(/_/g, " ") : toolName;
+    return { label: `Using ${toolPart}...`, tool: toolName };
   }
   return { label: `Using ${toolName}...`, tool: toolName };
 }
 ```
 
-Additionally, add a `"browser"` variant to the `CanonicalTool` union in `tool-map.ts` and map the MCP tool names to it, so code that uses `canonicalizeTool()` can identify browser tools:
+This approach future-proofs for additional MCP servers without requiring code changes for each one.
+
+Additionally, add a `"browser"` variant to the `CanonicalTool` union in `tool-map.ts` and map the MCP tool names to it. This is safe — `CanonicalTool` is currently only consumed by `canonicalizeTool()` and `agentToolName()` in `tool-map.ts` itself (plus tests and the barrel export in `agents/index.ts`). No downstream code switches on canonical names for tool-specific behavior like diff rendering:
 
 ```typescript
 export type CanonicalTool = /* existing */ | "browser";
@@ -200,7 +221,11 @@ const CLAUDE_TOOL_MAP: Record<string, CanonicalTool> = {
   "mcp__playwright__browser_navigate": "browser",
   "mcp__playwright__browser_snapshot": "browser",
   "mcp__playwright__browser_click": "browser",
-  // etc.
+  "mcp__playwright__browser_type": "browser",
+  "mcp__playwright__browser_take_screenshot": "browser",
+  "mcp__playwright__browser_scroll": "browser",
+  "mcp__playwright__browser_hover": "browser",
+  "mcp__playwright__browser_select_option": "browser",
 };
 ```
 
@@ -208,15 +233,15 @@ const CLAUDE_TOOL_MAP: Record<string, CanonicalTool> = {
 
 | File | Change |
 |------|--------|
-| `src/server/session/claude.ts` | Refactor `run()` to options object; add `--mcp-config` flag |
-| `src/server/session/session-worker.ts` | Generate MCP config file at `/agent/start`; read `PREVIEW_HOST` env var |
-| `src/server/session/agents/claude-adapter.ts` | Forward `mcpConfigPath` from `AgentRunParams` to `ClaudeProcess` |
-| `src/server/shared/types/agent-types.ts` | Add `mcpConfigPath?: string` to `AgentRunParams` |
+| `src/server/session/claude.ts` | Refactor `run()` to options object; add `--mcp-config` flag; clean up config in `onExit` |
+| `src/server/session/session-worker.ts` | Generate MCP config file at `/agent/start` using `params.previewUrl`; also update standalone entry point |
+| `src/server/session/agents/claude-adapter.ts` | Update `run()` to forward options object (not positional args) to `ClaudeProcess` |
+| `src/server/shared/types/agent-types.ts` | Add `mcpConfigPath?: string` and `previewUrl?: string` to `AgentRunParams` |
 | `src/server/session/agents/tool-map.ts` | Add `"browser"` to `CanonicalTool`; add MCP tool mappings to `CLAUDE_TOOL_MAP` |
-| `src/client/components/StreamingIndicator.tsx` | Add browser tool labels to `activityFromTool()` |
-| `src/server/orchestrator/agent-instructions.ts` | Add browser access section to system prompt |
-| `src/server/orchestrator/session-container.ts` | Pass `PREVIEW_HOST` env var at container creation |
-| `src/server/orchestrator/container-session-runner.ts` | Resolve preview host/port for env var injection |
+| `src/client/components/StreamingIndicator.tsx` | Add generic `mcp__` prefix handler with Playwright labels to `activityFromTool()` |
+| `src/server/orchestrator/agent-instructions.ts` | Add browser access section to system prompt template |
+| `src/server/orchestrator/container-session-runner.ts` | Resolve preview URL from `previewWorkerUrl` + detected port; pass in `AgentRunParams` to `_startAgentViaProxy()` |
+| `src/server/orchestrator/proxy-agent-process.ts` | Forward `previewUrl` through to container |
 | `Dockerfile.session-worker.dev` | Install `@anthropic-ai/mcp-playwright` (pinned) + `npx playwright install --with-deps chromium` |
 
 ## Considerations
@@ -250,7 +275,7 @@ No additional attack surface beyond what the agent already has via Bash.
 
 Screenshots from `browser_take_screenshot` are returned as base64 in the MCP tool result. The CLI includes them in the NDJSON event stream as image content blocks. The existing image rendering in the chat UI handles display — no new plumbing needed.
 
-Note: a 1280x720 PNG screenshot is ~500KB-1MB base64. This flows through the PTY buffer, NDJSON parser, SSE stream, and WebSocket. Verify that no message size limits are hit in practice (e.g., `MAX_TURN_BUFFER` event count in `container-session-runner.ts`, WebSocket frame size).
+Note: a 1280x720 PNG screenshot is ~500KB-1MB base64. This flows through the PTY buffer, NDJSON parser, SSE stream, and WebSocket. Verify that no message size limits are hit in practice (e.g., `MAX_TURN_BUFFER` at 1000 events in `container-session-runner.ts`, WebSocket frame size limits).
 
 ### PTY noise from MCP server
 
@@ -268,4 +293,4 @@ This design only covers the Claude CLI. The Codex agent uses JSON-RPC and does n
 
 **Expose orchestrator's Playwright MCP** — Route browser commands through the orchestrator instead of running Chromium in-container. Adds latency, complexity, and a new proxy layer. The in-container approach is simpler.
 
-**Thread preview URL through `AgentRunParams`** — More explicit but requires touching the agent type system, every call site that constructs params, and the `/agent/start` HTTP body schema. An env var set at container creation is simpler and always available.
+**`PREVIEW_HOST` env var at container creation** — Rejected because the session container starts before the preview container, so the preview IP is unknown at session container creation time. Docker env vars can't be updated post-creation. Passing the preview URL at agent start time (via `AgentRunParams` in the `/agent/start` HTTP body) avoids this sequencing problem entirely — the orchestrator has the preview URL by then.
