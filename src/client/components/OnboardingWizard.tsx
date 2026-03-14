@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect syncs step state with initialStep prop changes from parent
 import { useState, useEffect } from "react";
 import { GithubLogoIcon } from "@phosphor-icons/react";
 import type { AgentOption } from "./AgentPicker.js";

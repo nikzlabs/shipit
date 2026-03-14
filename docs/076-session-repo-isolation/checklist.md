@@ -8,6 +8,7 @@
 - [x] Change `deleteBranch()` to push deletion to remote (`git push origin --delete`)
 - [x] Configure `gc.auto=0` in session clones during `cloneFromCache()`
 - [x] Add fetch-before-clone with 60s TTL (track last-fetch timestamp per cache entry)
+- [ ] Add lock file for bare cache gc serialization with clone operations (deferred — fetchCache TTL + per-repo promise chain provide partial coverage; full lock needed if gc.auto is re-enabled)
 
 ## Container lifecycle
 
@@ -30,7 +31,7 @@
 - [x] Rewrite `warmSessionForRepo()` — clone from bare cache instead of worktree
 - [x] Remove `sharedRepoDirResolver` from registry setup
 - [x] Update standby container creation — no shared repo mount
-- [x] Rename `getSharedRepoDir()` to `getBareCacheDir()` (with deprecated alias)
+- [x] Rename `getSharedRepoDir()` to `getBareCacheDir()` (deprecated alias removed)
 
 ## API routes
 
@@ -57,7 +58,7 @@
 
 - [x] Remove `sessionType?: "worktree"` from `SessionInfo` in `domain-types.ts`
 - [x] Add `setBranch()` to `sessions.ts` (branch-only, no session type)
-- [x] Keep `setWorktreeInfo()` as deprecated wrapper
+- [x] Remove deprecated `setWorktreeInfo()` wrapper
 - [x] Update `app-di.ts` comment for `createRepoGit` factory
 - [x] Update `api-routes-git.ts` merge endpoint comment
 

@@ -48,23 +48,26 @@ async function refreshCloneToLatestMain(
   const t0 = Date.now();
   const sessionGit = createGitManager(sessionDir);
   const headBefore = await sessionGit.getHeadHash();
+  const sg = simpleGit(sessionDir);
   // Fetch directly in the session clone and reset to origin's default branch
-  await simpleGit(sessionDir).fetch("origin");
+  await sg.fetch("origin");
+  // Try origin/HEAD first, then fall back to common default branch names.
+  // Avoid `git remote set-head --auto` here — it hits the network and can
+  // hang if credentials aren't configured in this clone yet.
+  let resetTarget: string | undefined;
   try {
-    const remoteHead = await simpleGit(sessionDir).raw(["rev-parse", "origin/HEAD"]);
-    if (remoteHead.trim()) {
-      await sessionGit.rollback(remoteHead.trim());
-    }
+    resetTarget = (await sg.raw(["rev-parse", "origin/HEAD"])).trim();
   } catch {
-    try {
-      await sessionGit.rollback("origin/main");
-    } catch {
+    // origin/HEAD not set — try common defaults
+    for (const branch of ["origin/main", "origin/master"]) {
       try {
-        await sessionGit.rollback("origin/master");
-      } catch {
-        // Can't determine default branch — skip reset
-      }
+        resetTarget = (await sg.raw(["rev-parse", branch])).trim();
+        break;
+      } catch { /* try next */ }
     }
+  }
+  if (resetTarget) {
+    await sessionGit.rollback(resetTarget);
   }
   const headAfter = await sessionGit.getHeadHash();
   const headChanged = headBefore !== headAfter;

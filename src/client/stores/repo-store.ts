@@ -138,16 +138,19 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   },
 
   claimSession: async (url, signal) => {
+    const { usePreviewStore } = await import("./preview-store.js");
     try {
       // Show startup steps immediately — fetch is "running" while the HTTP call is in flight
-      const { usePreviewStore } = await import("./preview-store.js");
       usePreviewStore.getState().initStartupSteps();
       const res = await fetch(`/api/repos/${encodeURIComponent(url)}/claim-session`, {
         method: "POST",
         headers: { Accept: "application/json" },
         signal,
       });
-      if (!res.ok) return null;
+      if (!res.ok) {
+        usePreviewStore.getState().clearStartupSteps();
+        return null;
+      }
       const data = await res.json() as { sessionId: string; sessionDir: string; fetchDurationMs?: number };
       // Mark fetch step complete with server-reported duration
       usePreviewStore.getState().setStartupStep({
@@ -157,6 +160,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       });
       return data;
     } catch (err) {
+      usePreviewStore.getState().clearStartupSteps();
       if (err instanceof DOMException && err.name === "AbortError") return null;
       console.error("[repo-store] claimSession failed:", err);
       return null;

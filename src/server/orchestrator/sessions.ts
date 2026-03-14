@@ -222,11 +222,4 @@ export class SessionManager {
       "UPDATE sessions SET branch = ? WHERE id = ?",
     ).run(branch, id);
   }
-
-  /**
-   * @deprecated Use setBranch() instead. Kept for migration compatibility.
-   */
-  setWorktreeInfo(id: string, info: { branch: string; sessionType?: "worktree" }): void {
-    this.setBranch(id, info.branch);
-  }
 }

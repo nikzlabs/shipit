@@ -208,17 +208,20 @@ export async function mergeSession(
     }
   }
 
-  const result = await git.merge(mergeRef);
-
-  // Clean up temporary merge remote after merge
+  let result: Awaited<ReturnType<typeof git.merge>>;
   try {
-    const remotes = await sg.getRemotes();
-    for (const r of remotes) {
-      if (r.name.startsWith("merge-source-")) {
-        await sg.removeRemote(r.name);
+    result = await git.merge(mergeRef);
+  } finally {
+    // Clean up temporary merge remotes even if merge throws
+    try {
+      const remotes = await sg.getRemotes();
+      for (const r of remotes) {
+        if (r.name.startsWith("merge-source-")) {
+          await sg.removeRemote(r.name);
+        }
       }
-    }
-  } catch { /* ignore cleanup errors */ }
+    } catch { /* ignore cleanup errors */ }
+  }
 
   if (result.success) {
     return {

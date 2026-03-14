@@ -615,9 +615,6 @@ export function createDepCacheDirHelper(
   };
 }
 
-/** @deprecated Alias for createBareCacheDirHelper — callers still use the old name. */
-export const createSharedRepoDirHelper = createBareCacheDirHelper;
-
 // ---- Warm session pool ----
 
 /** Dependencies for warm session pool. */

@@ -86,7 +86,7 @@ export class RepoGit {
    * then falls back to querying the remote.
    */
   async getDefaultBranch(remote = "origin"): Promise<string> {
-    // Try local symbolic-ref first (set by git clone, no network call)
+    // Non-bare repos: check refs/remotes/origin/HEAD (set by git clone, no network)
     try {
       const head = await this.git.raw(["symbolic-ref", `refs/remotes/${remote}/HEAD`]);
       const match = /refs\/remotes\/[^/]+\/(.+)/.exec(head.trim());
@@ -95,7 +95,7 @@ export class RepoGit {
       // symbolic-ref not set — fall through
     }
 
-    // For bare repos, try HEAD directly
+    // Bare repos: HEAD points directly at refs/heads/<branch>
     try {
       const head = await this.git.raw(["symbolic-ref", "HEAD"]);
       const match = /refs\/heads\/(.+)/.exec(head.trim());
@@ -104,10 +104,7 @@ export class RepoGit {
       // No HEAD — fall through
     }
 
-    // Fall back to remote query (requires network + credentials)
-    const result = await this.git.remote(["show", remote]);
-    const match = /HEAD branch:\s*(\S+)/.exec((result ?? ""));
-    return match?.[1] ?? "main";
+    return "main";
   }
 
   /** Delete a remote branch. Used during session cleanup. */
