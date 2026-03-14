@@ -1,10 +1,11 @@
 /**
- * Session services — reads (list, status, history, worktrees) and mutations
- * (rename, archive).
+ * Session services — reads (list, status, history, siblings) and mutations
+ * (rename, archive, fork, unarchive, merge).
  */
 
 import path from "node:path";
 import fs from "node:fs/promises";
+import simpleGit from "simple-git";
 import type { SessionManager } from "../sessions.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { UsageManager } from "../usage.js";
@@ -68,7 +69,7 @@ export function getChatHistory(
   return chatHistoryManager.load(sessionId);
 }
 
-/** Get worktrees (sibling sessions sharing the same repo). */
+/** Get sibling sessions sharing the same repo. */
 export function listWorktrees(
   sessionManager: SessionManager,
   sessionId: string,
@@ -87,11 +88,11 @@ export function listWorktrees(
   return worktrees;
 }
 
-/** Fork a session into a new worktree branch. */
+/** Fork a session into a new clone with its own branch. */
 export async function forkSession(
   sessionManager: SessionManager,
   createRepoGit: (dir: string) => RepoGit,
-  getSharedRepoDir: (repoUrl: string) => string,
+  getBareCacheDir: (repoUrl: string) => string,
   sessionsRoot: string,
   githubAuthManager: { authenticated: boolean; configureGitCredentials: (dir: string) => void },
   _threadManager: { init: (sessionId: string) => void },
@@ -108,23 +109,31 @@ export async function forkSession(
 
   const activeSession = sessionManager.get(activeSessionId);
 
-  // Determine which repo to create the worktree from
-  let gitDir: string;
-  if (activeSession?.remoteUrl) {
-    gitDir = getSharedRepoDir(activeSession.remoteUrl);
-  } else {
-    gitDir = activeSessionDir;
-  }
-
   const crypto = await import("node:crypto");
   const newSessionId = crypto.randomUUID();
   const newSessionDir = path.join(sessionsRoot, newSessionId);
 
-  const repoGit = createRepoGit(gitDir);
-  await repoGit.createWorktree(newSessionDir, trimmed, startPoint);
+  if (activeSession?.remoteUrl) {
+    // Clone from bare cache
+    const cacheDir = getBareCacheDir(activeSession.remoteUrl);
+    const cacheGit = createRepoGit(cacheDir);
+    await cacheGit.fetchCache();
+    await cacheGit.cloneFromCache(newSessionDir);
+    // Checkout the branch at the specified start point
+    const branchArgs = ["checkout", "-b", trimmed];
+    if (startPoint) branchArgs.push(startPoint);
+    await simpleGit(newSessionDir).raw(branchArgs);
+  } else {
+    // Local repo — clone directly from the active session
+    await simpleGit().raw(["clone", "--local", activeSessionDir, newSessionDir]);
+    const branchArgs = ["checkout", "-b", trimmed];
+    if (startPoint) branchArgs.push(startPoint);
+    await simpleGit(newSessionDir).raw(branchArgs);
+    // Disable auto-gc
+    await simpleGit(newSessionDir).raw(["config", "gc.auto", "0"]);
+  }
 
-  // Configure GitHub credentials in the worktree
-  // (identity is inherited from global git config automatically)
+  // Configure GitHub credentials
   if (githubAuthManager.authenticated) {
     githubAuthManager.configureGitCredentials(newSessionDir);
   }
@@ -132,10 +141,7 @@ export async function forkSession(
   // Track in session manager
   const title = `${activeSession?.title ?? "Session"} (${trimmed})`;
   sessionManager.track(newSessionId, title, newSessionDir);
-  sessionManager.setWorktreeInfo(newSessionId, {
-    branch: trimmed,
-    sessionType: "worktree",
-  });
+  sessionManager.setBranch(newSessionId, trimmed);
   sessionManager.setBranchRenamed(newSessionId, true);
   if (activeSession?.remoteUrl) {
     sessionManager.setRemoteUrl(newSessionId, activeSession.remoteUrl);
@@ -150,7 +156,7 @@ export async function forkSession(
   };
 }
 
-/** Merge a worktree branch into the active session. */
+/** Merge a session's branch into the active session. */
 export async function mergeSession(
   sessionManager: SessionManager,
   createGitManager: (dir: string) => GitManager,
@@ -162,10 +168,60 @@ export async function mergeSession(
 
   const sourceSession = sessionManager.get(trimmedId);
   if (!sourceSession) throw new ServiceError(404, "Source session not found");
-  if (!sourceSession.branch) throw new ServiceError(400, "Source session has no branch (not a worktree)");
+  if (!sourceSession.branch) throw new ServiceError(400, "Source session has no branch");
 
   const git = createGitManager(activeSessionDir);
-  const result = await git.merge(sourceSession.branch);
+  const sg = simpleGit(activeSessionDir);
+
+  // With separate clones, we need to get the source branch into this clone.
+  // Strategy 1: Push source to origin, then fetch in target (production path).
+  // Strategy 2: Add source clone as a local remote and fetch (local/test path).
+  let mergeRef = `origin/${sourceSession.branch}`;
+  let fetched = false;
+
+  if (sourceSession.workspaceDir) {
+    // Try pushing source branch to origin and fetching
+    const sourceGit = createGitManager(sourceSession.workspaceDir);
+    try {
+      await sourceGit.push("origin", sourceSession.branch);
+      await sg.fetch("origin", sourceSession.branch);
+      fetched = true;
+    } catch {
+      // Origin push/fetch failed — use local remote instead
+    }
+
+    if (!fetched) {
+      // Add the source session directory as a temporary local remote
+      const remoteName = `merge-source-${trimmedId.slice(0, 8)}`;
+      try {
+        await sg.addRemote(remoteName, sourceSession.workspaceDir);
+      } catch {
+        // Remote may already exist from a previous attempt
+      }
+      try {
+        await sg.fetch(remoteName, sourceSession.branch);
+        mergeRef = `${remoteName}/${sourceSession.branch}`;
+        fetched = true;
+      } catch {
+        // Fetch from local remote also failed
+      }
+    }
+  }
+
+  let result: Awaited<ReturnType<typeof git.merge>>;
+  try {
+    result = await git.merge(mergeRef);
+  } finally {
+    // Clean up temporary merge remotes even if merge throws
+    try {
+      const remotes = await sg.getRemotes();
+      for (const r of remotes) {
+        if (r.name.startsWith("merge-source-")) {
+          await sg.removeRemote(r.name);
+        }
+      }
+    } catch { /* ignore cleanup errors */ }
+  }
 
   if (result.success) {
     return {
@@ -187,11 +243,11 @@ export function listAllSessions(
   return sessionManager.listAll();
 }
 
-/** Unarchive (restore) a session, recreating worktree if needed. */
+/** Unarchive (restore) a session, recreating clone if needed. */
 export async function unarchiveSession(
   sessionManager: SessionManager,
   createRepoGit: (dir: string) => RepoGit,
-  getSharedRepoDir: (url: string) => string,
+  getBareCacheDir: (url: string) => string,
   githubAuthManager: GitHubAuthManager,
   repoStore: RepoStore,
   sessionId: string,
@@ -199,31 +255,48 @@ export async function unarchiveSession(
   const session = sessionManager.get(sessionId);
   if (!session?.archived) throw new ServiceError(404, "Session not found or not archived");
 
-  // Worktree sessions need their checkout and branch restored
-  if (session.sessionType === "worktree" && session.remoteUrl && session.workspaceDir) {
-    const repoDir = getSharedRepoDir(session.remoteUrl);
+  // Sessions with remoteUrl need their clone restored
+  if (session.remoteUrl && session.workspaceDir) {
+    const cacheDir = getBareCacheDir(session.remoteUrl);
 
-    // Re-clone shared repo if it was deleted (last session for this repo)
+    // Ensure bare cache exists (re-clone if it was cleaned up)
     // eslint-disable-next-line no-restricted-syntax -- stat existence-check idiom
-    const repoExists = await fs.stat(repoDir).then(() => true, () => false);
-    if (!repoExists) {
-      await fs.mkdir(repoDir, { recursive: true });
+    const cacheExists = await fs.stat(cacheDir).then(() => true, () => false);
+    if (!cacheExists) {
+      await fs.mkdir(cacheDir, { recursive: true });
       const cloneUrl = githubAuthManager.getAuthenticatedCloneUrl(session.remoteUrl);
-      const repoGit = createRepoGit(repoDir);
-      await repoGit.clone(cloneUrl);
+      const cacheGit = createRepoGit(cacheDir);
+      await cacheGit.cloneBare(cloneUrl);
       repoStore.add(session.remoteUrl);
       repoStore.setReady(session.remoteUrl);
     }
 
-    const repoGit = createRepoGit(repoDir);
+    const cacheGit = createRepoGit(cacheDir);
 
-    // Remove stale remnants so worktree add succeeds (needs absent dir)
+    // Remove stale remnants
     await fs.rm(session.workspaceDir, { recursive: true, force: true });
 
+    // Clone from bare cache into session dir
+    // Retry clone (lock contention)
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await cacheGit.fetchCache();
+        await cacheGit.cloneFromCache(session.workspaceDir);
+        break;
+      } catch (cloneErr) {
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+        } else {
+          throw cloneErr;
+        }
+      }
+    }
+
+    // Create a new branch
     const newBranch = generateBranchPrefix();
     let startPoint: string | undefined;
     try {
-      const defaultBranch = await repoGit.getDefaultBranch();
+      const defaultBranch = await cacheGit.getDefaultBranch();
       if (defaultBranch && !defaultBranch.includes("(")) {
         startPoint = `origin/${defaultBranch}`;
       }
@@ -231,29 +304,16 @@ export async function unarchiveSession(
       // Fallback: let git use HEAD
     }
 
-    // Retry worktree creation (git lock contention)
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        await repoGit.createWorktree(session.workspaceDir, newBranch, startPoint);
-        break;
-      } catch (wtErr) {
-        if (attempt < 2) {
-          await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
-        } else {
-          throw wtErr;
-        }
-      }
-    }
+    const branchArgs = ["checkout", "-b", newBranch];
+    if (startPoint) branchArgs.push(startPoint);
+    await simpleGit(session.workspaceDir).raw(branchArgs);
 
     // Configure credentials
     if (githubAuthManager.authenticated) {
       githubAuthManager.configureGitCredentials(session.workspaceDir);
     }
 
-    sessionManager.setWorktreeInfo(sessionId, {
-      branch: newBranch,
-      sessionType: "worktree",
-    });
+    sessionManager.setBranch(sessionId, newBranch);
   }
 
   sessionManager.unarchive(sessionId);
@@ -277,63 +337,54 @@ export function renameSession(
   return renamed;
 }
 
-/** Archive a session, cleaning up worktrees and shared repos. */
+/** Archive a session, cleaning up clone directory. */
 export async function archiveSession(
   sessionManager: SessionManager,
   runnerRegistry: SessionRunnerRegistry,
   createRepoGit: (dir: string) => RepoGit,
-  getSharedRepoDir: (url: string) => string,
+  getBareCacheDir: (url: string) => string,
   sessionId: string,
 ): Promise<{ sessions: SessionInfo[] }> {
   const session = sessionManager.get(sessionId);
 
-  // Worktree cleanup
-  if (session?.sessionType === "worktree" && session.workspaceDir) {
+  // Try to delete the remote branch
+  if (session?.branch && session.remoteUrl) {
     try {
-      let repoDir: string | null = null;
-      if (session.remoteUrl) {
-        repoDir = getSharedRepoDir(session.remoteUrl);
-      } else {
-        const dotGit = path.join(session.workspaceDir, ".git");
-        const stat = await fs.stat(dotGit).catch(() => null);
-        if (stat?.isFile()) {
-          const content = await fs.readFile(dotGit, "utf-8");
-          const match = /gitdir:\s*(.+)/.exec(content);
-          if (match) {
-            const gitDir = path.resolve(path.dirname(dotGit), match[1].trim());
-            const mainGitDir = path.resolve(gitDir, "..", "..");
-            repoDir = path.dirname(mainGitDir);
-          }
-        }
-      }
-      if (repoDir) {
-        const repoGit = createRepoGit(repoDir);
-        await repoGit.removeWorktree(session.workspaceDir);
-        if (session.branch) {
-          await repoGit.deleteBranch(session.branch);
-        }
-      }
+      const cacheDir = getBareCacheDir(session.remoteUrl);
+      const cacheGit = createRepoGit(cacheDir);
+      await cacheGit.deleteBranch(session.branch);
     } catch (err) {
-      console.warn("[server] Worktree cleanup failed:", String(err));
+      console.warn("[server] Remote branch cleanup failed:", String(err));
     }
   }
 
   // Dispose runner
   runnerRegistry.dispose(sessionId);
 
+  // Clean up session workspace directory for repo-backed clones only.
+  // Standalone sessions preserve their directory so they can be unarchived.
+  if (session?.remoteUrl && session?.workspaceDir) {
+    try {
+      await fs.rm(session.workspaceDir, { recursive: true, force: true });
+      console.log("[server] Removed session workspace:", session.workspaceDir);
+    } catch (err) {
+      console.warn("[server] Session workspace cleanup failed:", String(err));
+    }
+  }
+
   // Archive
   sessionManager.archive(sessionId);
 
-  // Clean up shared repo if no remaining sessions
+  // Clean up bare cache if no remaining sessions reference this repo
   if (session?.remoteUrl) {
     const remaining = sessionManager.findAllByRemoteUrl(session.remoteUrl);
     if (remaining.length === 0) {
       try {
-        const repoDir = getSharedRepoDir(session.remoteUrl);
-        await fs.rm(repoDir, { recursive: true, force: true });
-        console.log("[server] Cleaned up shared repo (no remaining sessions):", repoDir);
+        const cacheDir = getBareCacheDir(session.remoteUrl);
+        await fs.rm(cacheDir, { recursive: true, force: true });
+        console.log("[server] Cleaned up bare cache (no remaining sessions):", cacheDir);
       } catch (err) {
-        console.warn("[server] Shared repo cleanup failed:", String(err));
+        console.warn("[server] Bare cache cleanup failed:", String(err));
       }
     }
   }
@@ -352,7 +403,7 @@ export async function markMergedAndPruneExcess(
   sessionManager: SessionManager,
   runnerRegistry: SessionRunnerRegistry,
   createRepoGit: (dir: string) => RepoGit,
-  getSharedRepoDir: (url: string) => string,
+  getBareCacheDir: (url: string) => string,
   sessionId: string,
 ): Promise<{ sessions: SessionInfo[] }> {
   sessionManager.markMerged(sessionId);
@@ -361,7 +412,7 @@ export async function markMergedAndPruneExcess(
   // Archive oldest merged sessions beyond the limit (list is sorted newest-first)
   const toArchive = merged.slice(MAX_MERGED_SESSIONS);
   for (const session of toArchive) {
-    await archiveSession(sessionManager, runnerRegistry, createRepoGit, getSharedRepoDir, session.id);
+    await archiveSession(sessionManager, runnerRegistry, createRepoGit, getBareCacheDir, session.id);
   }
 
   return { sessions: sessionManager.list() };

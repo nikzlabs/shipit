@@ -464,8 +464,6 @@ export type SessionRunnerFactory = (opts: {
   sessionId: string;
   sessionDir: string;
   defaultAgentId: AgentId;
-  /** Absolute path to the shared repo backing this worktree session (container mount). */
-  sharedRepoDir?: string;
   /** Absolute path to the per-repo dependency cache directory (container mount). */
   depCacheDir?: string;
 }) => SessionRunnerInterface;
@@ -473,7 +471,6 @@ export type SessionRunnerFactory = (opts: {
 export class SessionRunnerRegistry {
   private runners = new Map<string, SessionRunnerInterface>();
   private _runnerFactory: SessionRunnerFactory;
-  private _sharedRepoDirResolver?: (sessionId: string) => string | undefined;
   private _depCacheDirResolver?: (sessionId: string) => string | undefined;
   private _onRunnerIdle?: (sessionId: string) => void;
   private _onRunnerCreated?: (runner: SessionRunnerInterface) => void;
@@ -484,11 +481,6 @@ export class SessionRunnerRegistry {
      * (used in tests). Production overrides with ContainerSessionRunner factory.
      */
     runnerFactory?: SessionRunnerFactory;
-    /**
-     * Optional resolver that returns the shared repo directory for a session.
-     * Used in container mode to mount the parent git repo for worktree sessions.
-     */
-    sharedRepoDirResolver?: (sessionId: string) => string | undefined;
     /**
      * Optional resolver that returns the per-repo dependency cache directory.
      * Mounted into containers so npm/yarn/pnpm share cached downloads.
@@ -506,7 +498,6 @@ export class SessionRunnerRegistry {
     onRunnerCreated?: (runner: SessionRunnerInterface) => void;
   }) {
     this._runnerFactory = opts?.runnerFactory ?? ((o) => new SessionRunner(o));
-    this._sharedRepoDirResolver = opts?.sharedRepoDirResolver;
     this._depCacheDirResolver = opts?.depCacheDirResolver;
     this._onRunnerIdle = opts?.onRunnerIdle;
     this._onRunnerCreated = opts?.onRunnerCreated;
@@ -523,7 +514,6 @@ export class SessionRunnerRegistry {
       sessionId,
       sessionDir,
       defaultAgentId,
-      sharedRepoDir: this._sharedRepoDirResolver?.(sessionId),
       depCacheDir: this._depCacheDirResolver?.(sessionId),
     });
     runner.on("disposed", () => this.runners.delete(sessionId));

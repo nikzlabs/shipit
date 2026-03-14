@@ -142,10 +142,7 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
               const newBranchName = `shipit/${nameResult.slug}-${randomSlug}`;
               const sessionGit = ctx.createGitManager(session.workspaceDir!);
               await sessionGit.renameBranch(currentBranch, newBranchName);
-              ctx.sessionManager.setWorktreeInfo(effectiveSessionId, {
-                branch: newBranchName,
-                sessionType: session.sessionType ?? "worktree",
-              });
+              ctx.sessionManager.setBranch(effectiveSessionId, newBranchName);
             }
             ctx.sessionManager.rename(effectiveSessionId, nameResult.title);
             const updatedSession = ctx.sessionManager.get(effectiveSessionId);
@@ -190,7 +187,7 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
       } catch {
         ctx.send({
           type: "error",
-          message: "This session's workspace is no longer available. The worktree may have been cleaned up.",
+          message: "This session's workspace is no longer available. The clone may have been cleaned up.",
         });
         return;
       }

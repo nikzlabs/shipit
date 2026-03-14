@@ -74,7 +74,7 @@ export async function handleRollbackCodeAndChat(ctx: ConnectionCtx & AppCtx, msg
 }
 
 /**
- * Fork as new session — create a new session (worktree) at the rollback point,
+ * Fork as new session — create a new session (clone) at the rollback point,
  * with truncated chat history + conversation replay.
  */
 export async function handleForkSessionFromMessage(ctx: ConnectionCtx & AppCtx, msg: WsForkSessionFromMessage): Promise<void> {

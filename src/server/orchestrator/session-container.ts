@@ -79,9 +79,7 @@ export interface ContainerConfig {
   sessionId: string;
   /** Host path: /workspace/sessions/{uuid} */
   sessionDir: string;
-  /** Host path: /workspace/repos/{hash} (for worktree sessions) */
-  sharedRepoDir?: string;
-  /** Host path: /workspace/repos/{hash}/.dep-cache (shared dependency cache) */
+  /** Host path: /workspace/dep-cache/{hash} (shared dependency cache) */
   depCacheDir?: string;
   /** Host path: /credentials (Claude CLI auth, GitHub token) */
   credentialsDir: string;
@@ -506,7 +504,6 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     sessionId: string;
     sessionDir: string;
     credentialsDir: string;
-    sharedRepoDir?: string;
     depCacheDir?: string;
     env?: Record<string, string>;
     memoryLimit?: number;
