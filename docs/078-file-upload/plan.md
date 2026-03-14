@@ -4,7 +4,7 @@ status: planned
 
 # File Upload — Browser-to-Container File Transfer
 
-Allow users to upload files from their local machine into a session's workspace so the agent can reference and operate on them. Uploaded files land in a dedicated `/user/uploads/` directory and are passed to the agent as file context.
+Allow users to upload files from their local machine into a session container so the agent can reference and operate on them. Uploaded files land in `/uploads/`, a top-level directory outside the git repo, and are passed to the agent as file context.
 
 ## Motivation
 
@@ -15,19 +15,23 @@ Users often have local assets they want the agent to work with — design mockup
 ### Directory layout inside the container
 
 ```
-/user/                          # Session workspace (existing)
-  uploads/                      # Uploaded files land here
-    screenshot.png
-    data.csv
-    starter-kit.zip
+/user/                          # Git repo / session workspace (existing, unchanged)
+  src/
+  package.json
+  ...
+/uploads/                       # Uploaded files — outside the repo entirely
+  screenshot.png
+  data.csv
+  starter-kit.zip
 ```
 
-**Why a dedicated `uploads/` dir?**
-- Keeps uploaded files separate from repo-tracked files — avoids polluting `git status` with user uploads (the dir can be `.gitignore`d by default).
+**Why `/uploads/` at the container root (not inside `/user/`)?**
+- `/user/` is the git repo root. Putting uploads inside it means they're in the worktree — even with `.gitignore`, the agent could `git add -f` them, they'd show up in `find`, and they'd clutter the workspace.
+- A top-level `/uploads/` is completely outside git. No `.gitignore` hacks needed, no risk of accidental commits, clean separation.
+- The container already has a bind mount for `/user`. Adding a second mount (or a Docker volume) for `/uploads` is straightforward.
 - Gives the agent a predictable, well-known path to reference.
-- Easy to clean up or list.
 
-**Scratch space**: The agent can use `/tmp` for temporary work (unpacking ZIPs, intermediate processing). `/tmp` is already available in every container and is ephemeral by nature — no need for a custom scratch directory. The agent instructions should mention that `/tmp` is available for scratch work and that uploaded files are in `/user/uploads/`.
+**Scratch space**: The agent can use `/tmp` for temporary work (unpacking ZIPs, intermediate processing). `/tmp` is already available in every container and is ephemeral by nature — no need for a custom scratch directory. The agent instructions should mention that `/tmp` is available for scratch work and that uploaded files are at `/uploads/`.
 
 ### Upload flow
 
@@ -41,7 +45,7 @@ Browser                    Orchestrator                   Session Worker
   │                            │  POST /files/upload          │
   │                            │  (multipart/form-data)       │
   │                            │ ──────────────────────────>  │
-  │                            │                              │ write to /user/uploads/
+  │                            │                              │ write to /uploads/
   │                            │                              │ ─────┐
   │                            │          200 { paths }       │ <────┘
   │                            │ <────────────────────────── │
@@ -55,8 +59,8 @@ Browser                    Orchestrator                   Session Worker
 
 1. **Browser** sends a `multipart/form-data` POST with one or more files.
 2. **Orchestrator** validates the request (auth, session exists, file count/size limits) and forwards the multipart payload to the session worker.
-3. **Session worker** writes files to `/user/uploads/`, creating the directory if needed. Returns the written paths.
-4. **Browser** receives the paths and can automatically attach them to the next `send_message` as file context refs, or the user can reference them via `@uploads/filename`.
+3. **Session worker** writes files to `/uploads/`, creating the directory if needed. Returns the written paths.
+4. **Browser** receives the paths and can automatically attach them to the next `send_message` as file context refs, or the user can reference them via `@/uploads/filename`.
 
 ### API design
 
@@ -75,8 +79,8 @@ Response:
 ```json
 {
   "files": [
-    { "name": "data.csv", "path": "uploads/data.csv", "size": 4096 },
-    { "name": "starter.zip", "path": "uploads/starter.zip", "size": 102400 }
+    { "name": "data.csv", "path": "/uploads/data.csv", "size": 4096 },
+    { "name": "starter.zip", "path": "/uploads/starter.zip", "size": 102400 }
   ]
 }
 ```
@@ -91,7 +95,7 @@ Parts:
   file[]  — one or more files
 ```
 
-Same response shape. The worker writes to `${CONTAINER_WORKSPACE_DIR}/uploads/`.
+Same response shape. The worker writes to `/uploads/` (a separate mount, outside the workspace).
 
 ### Limits
 
@@ -149,9 +153,9 @@ Limits are enforced at both the orchestrator (fast rejection) and worker (defens
 Add to the agent instructions (in `agent-instructions.ts`) when uploads exist:
 
 ```
-Uploaded files are available at /user/uploads/. Use /tmp for temporary
-scratch work (e.g., unpacking archives). The uploads directory is not
-git-tracked.
+Uploaded files are available at /uploads/. This directory is outside the
+git repo (/user/) so files there are never committed. Use /tmp for
+temporary scratch work (e.g., unpacking archives).
 ```
 
 #### Auto-attachment
@@ -160,18 +164,15 @@ When files are uploaded alongside a message, they're attached as `FileContextRef
 
 ### File watcher integration
 
-The existing `FileWatcher` already watches `/user`. Uploaded files will trigger `file_changes` events, which updates the file tree in the UI automatically. No additional work needed — just ensure `uploads/` isn't in the ignore list.
+The existing `FileWatcher` watches `/user` (the repo). Since `/uploads/` is outside `/user`, uploaded files won't trigger `file_changes` events automatically. Options:
+- Start a second watcher on `/uploads/` and emit upload-specific events.
+- Skip watching — the client already knows what was uploaded (it initiated the upload). The file tree panel could show `/uploads/` as a virtual section populated from upload responses rather than the file watcher.
 
-### .gitignore handling
+Recommendation: skip watching for now. The client tracks uploads locally.
 
-On session creation (or first upload), ensure `uploads/` is in `.gitignore`:
+### No .gitignore needed
 
-```
-# ShipIt uploads (not tracked)
-uploads/
-```
-
-This prevents uploaded files from appearing in `git status` and being auto-committed. The agent can explicitly `git add -f uploads/somefile` if the user wants a file tracked.
+Since `/uploads/` is outside the repo root (`/user/`), there's no git interaction at all — no `.gitignore` entry needed, no risk of auto-commits, no `git status` noise.
 
 ## Key files
 
@@ -181,6 +182,7 @@ This prevents uploaded files from appearing in `git status` and being auto-commi
 | Orchestrator route | `src/server/orchestrator/api-routes-files.ts` | Add `POST /sessions/:id/files/upload` |
 | Worker HTTP client | `src/server/orchestrator/worker-http.ts` | Add `workerUpload()` for multipart forwarding |
 | Container runner | `src/server/orchestrator/container-session-runner.ts` | Add `uploadFiles()` method |
+| Container setup | `src/server/orchestrator/session-container.ts` | Add `/uploads` volume mount to container creation |
 | Agent instructions | `src/server/orchestrator/agent-instructions.ts` | Add uploads/scratch context |
 | Validation | `src/server/orchestrator/validation.ts` | Add upload validation (size, type, count) |
 | Client input | `src/client/components/MessageInput.tsx` | Add file attach button, extend drop zone |
