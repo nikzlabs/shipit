@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { GithubLogoIcon } from "@phosphor-icons/react";
 import type { AgentOption } from "./AgentPicker.js";
 import { Button } from "./ui/button.js";
@@ -53,6 +53,13 @@ export function OnboardingWizard({
   initialStep = 1,
 }: OnboardingWizardProps) {
   const [step, setStep] = useState<1 | 2>(initialStep);
+
+  // If initialStep changes to 1 after mount (e.g. git_identity_required
+  // arrives via WS after the wizard was already triggered by agent_list
+  // via SSE), jump back to step 1.
+  useEffect(() => {
+    if (initialStep === 1) setStep(1);
+  }, [initialStep]);
 
   // Step 1 state
   const [mode, setMode] = useState<"github" | "manual">("github");

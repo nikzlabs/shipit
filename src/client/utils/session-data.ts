@@ -133,6 +133,9 @@ export async function loadBootstrapData(): Promise<void> {
     avatarUrl: data.githubStatus.avatarUrl,
   });
   useGitStore.getState().setIdentity(data.settings.gitIdentity);
+  if (!data.settings.gitIdentity.name && !data.settings.gitIdentity.email) {
+    useGitStore.getState().setIdentityNeeded(true);
+  }
   useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
   useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
   if (data.settings.maxIdleContainers !== null && data.settings.maxIdleContainers !== undefined) useSettingsStore.getState().setMaxIdleContainers(data.settings.maxIdleContainers);
