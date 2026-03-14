@@ -291,9 +291,9 @@ describe("Integration: Phase 1 GET endpoints", () => {
     expect(body.pr).toBeNull();
   });
 
-  // ---- Worktrees ----
+  // ---- Sibling sessions ----
 
-  it("GET /api/sessions/:id/worktrees returns worktree list", async () => {
+  it("GET /api/sessions/:id/worktrees returns sibling session list", async () => {
     await createSession("s1", "Session 1");
 
     const res = await app.inject({ method: "GET", url: "/api/sessions/s1/worktrees" });

@@ -34,7 +34,7 @@ export interface AppDeps {
    */
   createGitManager?: (workspaceDir: string) => GitManager;
   /**
-   * Factory for creating RepoGit instances (shared-repo and worktree ops).
+   * Factory for creating RepoGit instances (bare cache and clone ops).
    * Defaults to `(dir) => new RepoGit(dir)`.
    */
   createRepoGit?: (repoDir: string) => RepoGit;

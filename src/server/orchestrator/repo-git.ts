@@ -1,17 +1,20 @@
+import fs from "node:fs";
+import path from "node:path";
 import simpleGit, { type SimpleGit } from "simple-git";
 
 /**
- * RepoGit — shared-repo and worktree lifecycle management.
+ * RepoGit — bare cache management and per-session clone lifecycle.
  *
- * Operates on a shared repo directory (one clone per remote URL).
- * Used by the orchestrator to clone, fetch, and manage worktrees
- * across multiple sessions. Contrast with GitManager which operates
- * on a single session workspace.
+ * Manages a bare repo cache directory (one per remote URL) and creates
+ * independent full clones for each session. No worktrees — each session
+ * gets its own complete .git/ directory via hardlinked local clones.
  */
 export class RepoGit {
   private git: SimpleGit;
+  readonly repoDir: string;
 
   constructor(repoDir: string) {
+    this.repoDir = repoDir;
     this.git = simpleGit(repoDir);
   }
 
@@ -25,10 +28,55 @@ export class RepoGit {
     await this.git.raw(args);
   }
 
+  /**
+   * Clone a remote repository as a bare repo into this directory.
+   * Used to create the repo cache at /workspace/repo-cache/{hash}.
+   */
+  async cloneBare(url: string): Promise<void> {
+    // Clone bare into the current directory. simple-git operates on repoDir,
+    // but `git clone --bare` needs the parent to exist with the target as ".".
+    await this.git.raw(["clone", "--bare", url, "."]);
+    console.log("[git] Cloned bare repo:", this.repoDir);
+  }
+
+  /**
+   * Fetch all refs in the bare cache from origin.
+   * Skips if the last fetch was less than `ttlMs` ago.
+   */
+  async fetchCache(ttlMs = 60_000): Promise<void> {
+    const markerPath = path.join(this.repoDir, ".shipit-last-fetch");
+    try {
+      const stat = fs.statSync(markerPath);
+      if (Date.now() - stat.mtimeMs < ttlMs) {
+        return; // Fresh enough
+      }
+    } catch {
+      // Marker doesn't exist — proceed with fetch
+    }
+    await this.git.raw(["fetch", "--all", "--force", "--prune"]);
+    // Touch the marker file
+    fs.writeFileSync(markerPath, String(Date.now()));
+    console.log("[git] Fetched bare cache:", this.repoDir);
+  }
+
+  /**
+   * Clone from the bare cache into a session directory using --local
+   * for hardlinked objects (fast, disk-efficient on same filesystem).
+   * Configures gc.auto=0 to prevent hardlink breakage.
+   */
+  async cloneFromCache(sessionDir: string): Promise<void> {
+    // git clone --local creates hardlinks for objects on the same volume
+    await simpleGit().raw(["clone", "--local", this.repoDir, sessionDir]);
+    // Disable auto-gc in the session clone to prevent hardlink breakage
+    const sessionGit = simpleGit(sessionDir);
+    await sessionGit.raw(["config", "gc.auto", "0"]);
+    console.log("[git] Cloned from cache:", this.repoDir, "→", sessionDir);
+  }
+
   /** Fetch a single branch from a remote (force-updates the tracking ref). */
   async fetch(remote: string, branch: string): Promise<void> {
     // --force: prevent "unable to update local ref" errors when concurrent
-    // fetches race on the same shared repo (safe for remote tracking refs).
+    // fetches race on the same repo (safe for remote tracking refs).
     await this.git.fetch(remote, branch, ["--force"]);
   }
 
@@ -38,7 +86,7 @@ export class RepoGit {
    * then falls back to querying the remote.
    */
   async getDefaultBranch(remote = "origin"): Promise<string> {
-    // Try local symbolic-ref first (set by git clone, no network call)
+    // Non-bare repos: check refs/remotes/origin/HEAD (set by git clone, no network)
     try {
       const head = await this.git.raw(["symbolic-ref", `refs/remotes/${remote}/HEAD`]);
       const match = /refs\/remotes\/[^/]+\/(.+)/.exec(head.trim());
@@ -47,55 +95,22 @@ export class RepoGit {
       // symbolic-ref not set — fall through
     }
 
-    // Fall back to remote query (requires network + credentials)
-    const result = await this.git.remote(["show", remote]);
-    const match = /HEAD branch:\s*(\S+)/.exec((result ?? ""));
-    return match?.[1] ?? "main";
-  }
-
-  /** Create a new worktree with a new branch. */
-  async createWorktree(
-    worktreePath: string,
-    branchName: string,
-    startPoint?: string,
-  ): Promise<void> {
-    const args = ["worktree", "add", worktreePath, "-b", branchName];
-    if (startPoint) args.push(startPoint);
-    await this.git.raw(args);
-    console.log("[git] Created worktree:", worktreePath, "branch:", branchName);
-  }
-
-  /** Remove a worktree. */
-  async removeWorktree(worktreePath: string): Promise<void> {
-    await this.git.raw(["worktree", "remove", worktreePath, "--force"]);
-    console.log("[git] Removed worktree:", worktreePath);
-  }
-
-  /** List all worktrees for this repo. */
-  async listWorktrees(): Promise<{ path: string; branch: string; head: string }[]> {
-    const output = await this.git.raw(["worktree", "list", "--porcelain"]);
-    const worktrees: { path: string; branch: string; head: string }[] = [];
-    let current: Partial<{ path: string; branch: string; head: string }> = {};
-
-    for (const line of output.split("\n")) {
-      if (line.startsWith("worktree ")) {
-        if (current.path) worktrees.push(current as { path: string; branch: string; head: string });
-        current = { path: line.replace("worktree ", "") };
-      } else if (line.startsWith("HEAD ")) {
-        current.head = line.replace("HEAD ", "");
-      } else if (line.startsWith("branch ")) {
-        current.branch = line.replace("branch refs/heads/", "");
-      }
+    // Bare repos: HEAD points directly at refs/heads/<branch>
+    try {
+      const head = await this.git.raw(["symbolic-ref", "HEAD"]);
+      const match = /refs\/heads\/(.+)/.exec(head.trim());
+      if (match) return match[1];
+    } catch {
+      // No HEAD — fall through
     }
-    if (current.path) worktrees.push(current as { path: string; branch: string; head: string });
 
-    return worktrees;
+    return "main";
   }
 
-  /** Delete a local branch. */
+  /** Delete a remote branch. Used during session cleanup. */
   async deleteBranch(branchName: string): Promise<void> {
-    await this.git.branch(["-D", branchName]);
-    console.log("[git] Deleted branch:", branchName);
+    await this.git.raw(["push", "origin", "--delete", branchName]);
+    console.log("[git] Deleted remote branch:", branchName);
   }
 
   /**
@@ -113,10 +128,10 @@ export class RepoGit {
 
   /**
    * Create an initial empty commit in an empty repo so that
-   * `git worktree add` has a valid start point.
+   * clones have a valid HEAD.
    */
   async createInitialCommit(): Promise<void> {
     await this.git.commit("Initial commit", { "--allow-empty": null });
-    console.log("[git] Created initial commit in shared repo");
+    console.log("[git] Created initial commit in bare cache");
   }
 }

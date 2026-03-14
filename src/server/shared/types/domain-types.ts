@@ -22,10 +22,8 @@ export interface SessionInfo {
   remoteUrl: string;
   /** Whether this session has been archived (hidden from sidebar). */
   archived?: boolean;
-  /** If this session is a worktree, the branch name. */
+  /** Branch name for sessions cloned from a repo. */
   branch?: string;
-  /** Session type — all sessions are worktrees. */
-  sessionType?: "worktree";
   /** If true, this is a pre-created warm session not yet visible in the sidebar. */
   warm?: boolean;
   /** True once the branch has been renamed with a descriptive slug after graduation. */

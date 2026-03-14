@@ -146,7 +146,7 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
   // ---- POST /api/sessions/:id/fork ----
 
   describe("POST /api/sessions/:id/fork", () => {
-    it("forks a session into a new worktree branch", async () => {
+    it("forks a session into a new branch", async () => {
       await createSession("s1", "Session 1");
 
       const res = await app.inject({
@@ -198,10 +198,10 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
   // ---- POST /api/sessions/:id/git/merge ----
 
   describe("POST /api/sessions/:id/git/merge", () => {
-    it("merges a worktree branch", async () => {
+    it("merges a session branch", async () => {
       await createSession("s1", "Session 1");
 
-      // Fork first to create a worktree session with a branch
+      // Fork first to create a session with a branch
       const forkRes = await app.inject({
         method: "POST",
         url: "/api/sessions/s1/fork",

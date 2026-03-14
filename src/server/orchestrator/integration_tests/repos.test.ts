@@ -173,7 +173,7 @@ describe("POST /api/repos/:url/claim-session", () => {
     repoStore.add(repoUrl);
     repoStore.setReady(repoUrl);
 
-    // Create the shared repo dir with a valid git repo so the claim path works
+    // Create the cached repo dir with a valid git repo so the claim path works
     const repoDir = path.join(tmpDir, "repos");
     fs.mkdirSync(repoDir, { recursive: true });
 
@@ -190,8 +190,8 @@ describe("POST /api/repos/:url/claim-session", () => {
       expect(body.sessionId).toBeDefined();
       expect(body.sessionDir).toBeDefined();
     } else {
-      // Expected when shared repo dir hash doesn't match — the fallback tries
-      // to create a worktree from a nonexistent repo dir
+      // Expected when cached repo dir hash doesn't match — the fallback tries
+      // to clone from a nonexistent repo dir
       expect(res.statusCode).toBe(500);
     }
   });

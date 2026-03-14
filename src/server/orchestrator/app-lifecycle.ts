@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import type { Server as HttpServer } from "node:http";
 import type { FastifyInstance } from "fastify";
 import type { GitManager } from "../shared/git.js";
+import simpleGit from "simple-git";
 import { generateBranchPrefix, repoUrlToHash, pushToOrigin } from "./git-utils.js";
 import { SessionContainerManager } from "./session-container.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
@@ -211,7 +212,6 @@ export function buildRunnerFactory(
             sessionId: o.sessionId,
             sessionDir: o.sessionDir,
             credentialsDir,
-            sharedRepoDir: o.sharedRepoDir,
             depCacheDir: o.depCacheDir,
             memoryLimit: sessionConfig.resources.memory * 1024 * 1024,
             cpuQuota: Math.round(sessionConfig.resources.cpu * 100_000),
@@ -237,7 +237,6 @@ export function buildRunnerFactory(
       sessionId: o.sessionId,
       sessionDir: o.sessionDir,
       credentialsDir,
-      sharedRepoDir: o.sharedRepoDir,
       depCacheDir: o.depCacheDir,
       memoryLimit: sessionConfig.resources.memory * 1024 * 1024,
       cpuQuota: Math.round(sessionConfig.resources.cpu * 100_000),
@@ -329,7 +328,6 @@ export interface RunnerRegistryDeps {
   autoPushDebounceMs: number;
   sseBroadcast: (event: string, data: unknown) => void;
   enforceIdleContainerLimit: () => void;
-  getSharedRepoDir: (repoUrl: string) => string;
   getDepCacheDir: (repoUrl: string) => string;
 }
 
@@ -343,18 +341,11 @@ export function createRunnerRegistry(
     effectiveRunnerFactory, sessionManager, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
-    getSharedRepoDir, getDepCacheDir,
+    getDepCacheDir,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
     ...(effectiveRunnerFactory ? { runnerFactory: effectiveRunnerFactory } : {}),
-    sharedRepoDirResolver: (sessionId: string) => {
-      const session = sessionManager.get(sessionId);
-      if (session?.remoteUrl && session?.sessionType === "worktree") {
-        return getSharedRepoDir(session.remoteUrl);
-      }
-      return undefined;
-    },
     depCacheDirResolver: (sessionId: string) => {
       const session = sessionManager.get(sessionId);
       if (session?.remoteUrl) {
@@ -433,7 +424,7 @@ export interface PrPollerDeps {
   sseBroadcast: (event: string, data: unknown) => void;
   runnerRegistry: SessionRunnerRegistry;
   createRepoGit: (dir: string) => RepoGit;
-  getSharedRepoDir: (repoUrl: string) => string;
+  getBareCacheDir: (repoUrl: string) => string;
 }
 
 /**
@@ -444,7 +435,7 @@ export function createPrStatusPoller(
 ): PrStatusPoller {
   const {
     deps, githubAuthManager, sessionManager, sseBroadcast,
-    runnerRegistry, createRepoGit, getSharedRepoDir,
+    runnerRegistry, createRepoGit, getBareCacheDir,
   } = pollerDeps;
 
   const prStatusPoller = deps.prStatusPoller ?? new PrStatusPoller({
@@ -452,7 +443,7 @@ export function createPrStatusPoller(
     sessionManager,
     sseBroadcast,
     runnerRegistry,
-    getSharedRepoDir,
+    getSharedRepoDir: getBareCacheDir,
     fetchAndFixCb: async (sessionId, owner, repo, failedChecks) => {
       const runner = runnerRegistry.get(sessionId);
       if (!runner) return;
@@ -467,7 +458,7 @@ export function createPrStatusPoller(
     onMergeDetectedCb: async (sessionId) => {
       try {
         const result = await markMergedAndPruneExcess(
-          sessionManager, runnerRegistry, createRepoGit, getSharedRepoDir, sessionId,
+          sessionManager, runnerRegistry, createRepoGit, getBareCacheDir, sessionId,
         );
         sseBroadcast("session_list", { sessions: result.sessions });
         console.log(`[pr-poller] Post-merge: marked ${sessionId} as merged`);
@@ -599,24 +590,28 @@ export function createSessionDirFactory(
   };
 }
 
-// ---- Shared repo directory ----
+// ---- Bare cache directory ----
 
-/** Create the `getSharedRepoDir` helper. */
-export function createSharedRepoDirHelper(
+/** Create the `getBareCacheDir` helper — returns the bare repo cache path. */
+export function createBareCacheDirHelper(
   workspaceDir: string,
 ): (repoUrl: string) => string {
-  const reposRoot = path.join(workspaceDir, "repos");
+  const cacheRoot = path.join(workspaceDir, "repo-cache");
   return (repoUrl: string): string => {
-    return path.join(reposRoot, repoUrlToHash(repoUrl));
+    return path.join(cacheRoot, repoUrlToHash(repoUrl));
   };
 }
 
-/** Create the `getDepCacheDir` helper — returns a per-repo cache directory. */
+/**
+ * Create the `getDepCacheDir` helper — returns a per-repo dependency cache
+ * directory decoupled from the bare cache. Lives at /workspace/dep-cache/{hash}.
+ */
 export function createDepCacheDirHelper(
-  getSharedRepoDir: (repoUrl: string) => string,
+  workspaceDir: string,
 ): (repoUrl: string) => string {
+  const depCacheRoot = path.join(workspaceDir, "dep-cache");
   return (repoUrl: string): string => {
-    return path.join(getSharedRepoDir(repoUrl), ".dep-cache");
+    return path.join(depCacheRoot, repoUrlToHash(repoUrl));
   };
 }
 
@@ -631,7 +626,7 @@ export interface WarmPoolDeps {
   credentialStore: CredentialStore;
   containerManager: SessionContainerManager | null;
   credentialsDir: string;
-  getSharedRepoDir: (repoUrl: string) => string;
+  getBareCacheDir: (repoUrl: string) => string;
   getDepCacheDir: (repoUrl: string) => string;
   createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string }>;
   sseBroadcast: (event: string, data: unknown) => void;
@@ -650,7 +645,7 @@ export function createWarmPool(
   const {
     repoStore, sessionManager, createRepoGit,
     githubAuthManager, credentialStore, containerManager,
-    credentialsDir, getSharedRepoDir, getDepCacheDir, createSessionDir, sseBroadcast,
+    credentialsDir, getBareCacheDir, getDepCacheDir, createSessionDir, sseBroadcast,
   } = poolDeps;
 
   const warmingInProgress = new Set<string>();
@@ -671,10 +666,10 @@ export function createWarmPool(
     // of falling to the expensive slow path.
     const p = (async () => {
       try {
-        const repoDir = getSharedRepoDir(repoUrl);
+        const cacheDir = getBareCacheDir(repoUrl);
         // eslint-disable-next-line no-restricted-syntax -- stat existence-check idiom
-        const repoExists = await fs.stat(repoDir).then(() => true, () => false);
-        if (!repoExists) return;
+        const cacheExists = await fs.stat(cacheDir).then(() => true, () => false);
+        if (!cacheExists) return;
 
         const branchPrefix = generateBranchPrefix();
         const created = await createSessionDir("Warm session");
@@ -684,48 +679,44 @@ export function createWarmPool(
         sessionManager.setWarm(appSessionId, true);
         sessionManager.setRemoteUrl(appSessionId, repoUrl);
 
-        const repoGit = createRepoGit(repoDir);
+        const cacheGit = createRepoGit(cacheDir);
 
-        // Remove the empty dir (worktree add needs it absent)
-        await fs.rm(sessionDir, { recursive: true, force: true });
-
-        // Empty repos have no commits — create one so worktree add has a start point
-        if (await repoGit.isEmpty()) {
-          await repoGit.createInitialCommit();
+        // Fetch latest refs in the bare cache (with 60s TTL).
+        // Non-fatal — cache may not have a reachable remote (e.g. tests).
+        try {
+          await cacheGit.fetchCache();
+        } catch (fetchErr) {
+          console.warn("[warm] Cache fetch failed (non-fatal):", String(fetchErr));
         }
 
+        // Remove the empty dir (clone needs it absent or will create a subdirectory)
+        await fs.rm(sessionDir, { recursive: true, force: true });
+
+        // Clone from bare cache into session dir (hardlinked, fast)
+        await cacheGit.cloneFromCache(sessionDir);
+
+        // Checkout a new branch from the default branch
         let startPoint: string | undefined;
         try {
-          const defaultBranch = await repoGit.getDefaultBranch();
+          const defaultBranch = await cacheGit.getDefaultBranch();
           if (defaultBranch && !defaultBranch.includes("(")) {
             startPoint = `origin/${defaultBranch}`;
           }
         } catch {
           // Fallback: let git use HEAD
         }
-        // Retry worktree creation (git lock contention)
-        for (let attempt = 0; attempt < 3; attempt++) {
-          try {
-            await repoGit.createWorktree(sessionDir, branchPrefix, startPoint);
-            break;
-          } catch (wtErr) {
-            if (attempt < 2) {
-              await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
-            } else {
-              throw wtErr;
-            }
-          }
-        }
+
+        // Create branch in the session clone
+        const branchArgs = ["checkout", "-b", branchPrefix];
+        if (startPoint) branchArgs.push(startPoint);
+        await simpleGit(sessionDir).raw(branchArgs);
 
         // Configure credentials
         if (githubAuthManager.authenticated) {
           githubAuthManager.configureGitCredentials(sessionDir);
         }
 
-        sessionManager.setWorktreeInfo(appSessionId, {
-          branch: branchPrefix,
-          sessionType: "worktree",
-        });
+        sessionManager.setBranch(appSessionId, branchPrefix);
 
         // Store the warm session ID on the repo.
         // Container + runner are created on-demand when the user activates
@@ -741,7 +732,6 @@ export function createWarmPool(
               sessionId: appSessionId,
               sessionDir,
               credentialsDir,
-              sharedRepoDir: repoDir,
               depCacheDir: getDepCacheDir(repoUrl),
             });
             // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget in sync warming callback
@@ -794,7 +784,7 @@ export interface StartupDeps {
   chatHistoryManager: ChatHistoryManager;
   usageManager: UsageManager;
   containerManager: SessionContainerManager | null;
-  getSharedRepoDir: (repoUrl: string) => string;
+  getBareCacheDir: (repoUrl: string) => string;
   warmSessionForRepo: (repoUrl: string) => Promise<void>;
 }
 
@@ -872,7 +862,7 @@ export function scheduleStartupTasks(
       if (repo.warmSessionId && repo.status === "ready") {
         const ws = sessionManager.get(repo.warmSessionId);
         if (!ws?.workspaceDir || !existsSync(ws.workspaceDir)) {
-          console.log(`[warm] Stale warm session ${repo.warmSessionId} — worktree missing, re-warming`);
+          console.log(`[warm] Stale warm session ${repo.warmSessionId} — clone missing, re-warming`);
           if (containerManager?.isStandby(repo.warmSessionId)) {
             containerManager.destroy(repo.warmSessionId).catch((err: unknown) => {
               console.error(`[warm] Failed to destroy stale standby:`, getErrorMessage(err));
@@ -881,7 +871,7 @@ export function scheduleStartupTasks(
           repoStore.setWarmSessionId(repo.url, undefined);
           void warmSessionForRepo(repo.url);
         } else {
-          console.log(`[warm] Warm session ${repo.warmSessionId} validated (worktree exists)`);
+          console.log(`[warm] Warm session ${repo.warmSessionId} validated (clone exists)`);
         }
       }
     }

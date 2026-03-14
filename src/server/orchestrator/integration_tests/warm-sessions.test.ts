@@ -33,9 +33,9 @@ import { DatabaseManager } from "../../shared/database.js";
 const REPO_URL = "https://github.com/owner/test-repo.git";
 
 /**
- * Create a git repo that simulates a cloned shared repo with at least
+ * Create a git repo that simulates a bare cache repo with at least
  * one commit on a default branch. Needed because warmSessionForRepo
- * and claim-session create worktrees from this shared repo.
+ * and claim-session clone from this cached repo.
  */
 function createSharedRepo(repoDir: string): void {
   fs.mkdirSync(repoDir, { recursive: true });
@@ -48,7 +48,7 @@ function createSharedRepo(repoDir: string): void {
     cwd: repoDir,
     stdio: "ignore",
   });
-  // Create origin/main ref that worktree can branch from
+  // Create origin/main ref that clone can branch from
   execSync("git update-ref refs/remotes/origin/main HEAD", {
     cwd: repoDir,
     stdio: "ignore",
@@ -56,7 +56,7 @@ function createSharedRepo(repoDir: string): void {
 }
 
 function getSharedRepoDirForUrl(workspaceDir: string, repoUrl: string): string {
-  return path.join(workspaceDir, "repos", repoUrlToHash(repoUrl));
+  return path.join(workspaceDir, "repo-cache", repoUrlToHash(repoUrl));
 }
 
 /** Poll until a condition becomes true. */
@@ -97,8 +97,8 @@ describe("Integration: warm session lifecycle", () => {
 
     const credentialStore = createTestCredentialStore(tmpDir);
 
-    // Create the shared repo directory BEFORE buildApp — warmSessionForRepo
-    // needs this directory to exist when creating worktrees.
+    // Create the cached repo directory BEFORE buildApp — warmSessionForRepo
+    // needs this directory to exist when cloning sessions.
     const repoDir = getSharedRepoDirForUrl(tmpDir, REPO_URL);
     createSharedRepo(repoDir);
 
@@ -166,7 +166,7 @@ describe("Integration: warm session lifecycle", () => {
       expect(visibleSessions.find((s) => s.id === repo.warmSessionId)).toBeUndefined();
     }, 15000);
 
-    it("warm session has a worktree directory with repo files", async () => {
+    it("warm session has a cloned directory with repo files", async () => {
       await waitFor(
         () => !!repoStore.get(REPO_URL)?.warmSessionId,
         10000,
@@ -179,7 +179,7 @@ describe("Integration: warm session lifecycle", () => {
       const stat = await fsp.stat(session.workspaceDir!);
       expect(stat.isDirectory()).toBe(true);
 
-      // Should contain the README.md from the shared repo
+      // Should contain the README.md from the cached repo
       const readme = path.join(session.workspaceDir!, "README.md");
       const content = await fsp.readFile(readme, "utf-8");
       expect(content).toBe("# test\n");

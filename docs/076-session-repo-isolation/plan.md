@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 ---
 
 # Session Repo Isolation — Separate Clones per Session
