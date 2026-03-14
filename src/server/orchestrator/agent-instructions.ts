@@ -24,6 +24,10 @@ A preview server may already be running in the side panel, showing the user a li
 
 If you need to install dependencies (npm install, etc.), run the command in bash. ShipIt will detect the changes and reload the preview.
 
+## Uploaded files
+
+Users can upload files from their browser. Uploaded files are available at /uploads/ inside the container. This directory is outside the git repo (/user/) so files there are never committed. Use /tmp for temporary scratch work (e.g., unpacking archives).
+
 ## Terminal
 
 The user has access to an interactive terminal in the UI. You can run shell commands via your Bash tool. For long-running processes, prefer letting the preview system handle dev servers rather than starting them in bash.

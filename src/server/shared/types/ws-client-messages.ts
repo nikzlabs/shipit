@@ -1,4 +1,4 @@
-import type { ImageAttachment, FileContextRef, PermissionMode } from "./attachment-types.js";
+import type { ImageAttachment, FileContextRef, PermissionMode, UploadRef } from "./attachment-types.js";
 import type { AgentId } from "../../session/agents/agent-process.js";
 import type { WsTerminalStart, WsTerminalInput, WsTerminalResize, WsClearLogs } from "./terminal-types.js";
 import type {
@@ -12,6 +12,7 @@ export interface WsSendMessage {
   sessionId?: string;
   images?: ImageAttachment[];
   files?: FileContextRef[];
+  uploads?: UploadRef[];
   permissionMode?: PermissionMode;
 }
 

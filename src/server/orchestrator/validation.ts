@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import type { ImageAttachment, FileAttachment, FileContextRef } from "../shared/types.js";
+import type { ImageAttachment, FileAttachment, FileContextRef, UploadRef } from "../shared/types.js";
 
 // Re-exported from shared for backward compatibility — prefer importing from "../shared/utils.js" directly.
 export { getErrorMessage } from "../shared/utils.js";
@@ -134,4 +134,76 @@ export async function resolveFileAttachments(
   }
 
   return { files: validated, error: null };
+}
+
+// ---- Upload ref resolution ----
+
+/** Extensions for binary file detection based on extension. */
+const BINARY_EXTENSIONS = new Set([
+  ".zip", ".gz", ".tar", ".bz2", ".7z", ".rar", ".xz",
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".svg",
+  ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+  ".exe", ".dll", ".so", ".dylib", ".bin",
+  ".mp3", ".mp4", ".wav", ".avi", ".mov", ".mkv",
+  ".woff", ".woff2", ".ttf", ".otf", ".eot",
+  ".sqlite", ".db",
+]);
+
+/** Check if a file path refers to a likely binary file based on its extension. */
+function isBinaryUpload(filePath: string): boolean {
+  const ext = path.extname(filePath).toLowerCase();
+  return BINARY_EXTENSIONS.has(ext);
+}
+
+/**
+ * Resolve upload refs into FileAttachment entries (for text files) or
+ * reference-only entries (for binary files). Reads from the host uploads
+ * directory which is bind-mounted as /uploads/ in the container.
+ */
+export async function resolveUploadRefs(
+  uploads: UploadRef[],
+  sessionDir: string,
+): Promise<{ files: FileAttachment[]; error: string | null }> {
+  const uploadsDir = path.join(sessionDir, "uploads");
+  const result: FileAttachment[] = [];
+
+  for (const ref of uploads) {
+    // Validate path format
+    if (!ref.path.startsWith("/uploads/")) {
+      return { files: [], error: `Invalid upload path: ${ref.path}` };
+    }
+    const filename = path.basename(ref.path);
+    const hostPath = path.join(uploadsDir, filename);
+
+    // Path traversal check
+    if (!hostPath.startsWith(`${uploadsDir}/`)) {
+      return { files: [], error: `Invalid upload path: ${ref.path}` };
+    }
+
+    if (isBinaryUpload(ref.path)) {
+      // For binary files, include a reference the agent can use
+      result.push({
+        path: ref.path,
+        content: `[Binary file uploaded at ${ref.path} — use Bash tool to read/process this file inside the container]`,
+      });
+    } else {
+      // For text files, read and include content
+      try {
+        const content = await fs.readFile(hostPath, "utf-8");
+        // Cap at 100KB per file (same as workspace file refs)
+        if (Buffer.byteLength(content, "utf-8") > MAX_FILE_SIZE_BYTES) {
+          result.push({
+            path: ref.path,
+            content: `[File ${ref.path} is too large to include inline (>100KB). Use Bash tool to read it at ${ref.path}]`,
+          });
+        } else {
+          result.push({ path: ref.path, content });
+        }
+      } catch {
+        return { files: [], error: `Upload not found: ${ref.path}` };
+      }
+    }
+  }
+
+  return { files: result, error: null };
 }

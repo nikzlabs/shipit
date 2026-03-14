@@ -1,7 +1,7 @@
 import type { WsServerMessage, ImageAttachment, FileAttachment, PermissionMode } from "../../shared/types.js";
 import type { AgentEvent } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
-import { getErrorMessage, resolveFileAttachments, formatFileContext } from "../validation.js";
+import { getErrorMessage, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
 import { wireAgentListeners } from "./agent-listeners.js";
 import { postTurnCommit } from "./post-turn.js";
 import { AGENT_SYSTEM_INSTRUCTIONS } from "../agent-instructions.js";
@@ -194,6 +194,18 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
           return;
         }
         nextValidatedFiles = fileResult.files;
+      }
+      // Resolve upload refs for the queued message
+      const nextUploadRefs = next.uploads && next.uploads.length > 0 ? next.uploads : undefined;
+      if (nextUploadRefs) {
+        const dir = capturedSessionDir ?? ctx.workspaceDir;
+        const uploadResult = await resolveUploadRefs(nextUploadRefs, dir);
+        if (uploadResult.error) {
+          emitDone({ type: "error", message: uploadResult.error });
+          ctx.setIsClaudeRunning(false);
+          return;
+        }
+        nextValidatedFiles = [...nextValidatedFiles, ...uploadResult.files];
       }
       const nextSession = capturedSessionId
         ? ctx.sessionManager.get(capturedSessionId)

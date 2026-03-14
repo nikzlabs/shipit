@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
+import fastifyMultipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import path from "node:path";
 import fs from "node:fs/promises";
@@ -106,6 +107,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
 
   await app.register(fastifyWebsocket);
+  await app.register(fastifyMultipart, {
+    limits: {
+      fileSize: 50 * 1024 * 1024, // 50 MB per file
+      files: 20,                   // max 20 files per request
+    },
+  });
 
   // ---- Container manager (Docker isolation) ----
   const { containerManager, dockerProxyServer } = await setupContainerManager({

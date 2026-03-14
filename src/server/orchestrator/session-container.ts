@@ -81,6 +81,8 @@ export interface ContainerConfig {
   sessionDir: string;
   /** Host path: /workspace/dep-cache/{hash} (shared dependency cache) */
   depCacheDir?: string;
+  /** Host path: /workspace/sessions/{uuid}/uploads (uploaded files) */
+  uploadsDir?: string;
   /** Host path: /credentials (Claude CLI auth, GitHub token) */
   credentialsDir: string;
   /** Container image name. */

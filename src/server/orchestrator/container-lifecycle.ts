@@ -7,6 +7,7 @@
 
 import type Docker from "dockerode";
 import fs from "node:fs";
+import path from "node:path";
 import type { EventEmitter } from "node:events";
 import type {
   ContainerConfig,
@@ -94,6 +95,21 @@ export function buildMounts(
     });
   } else {
     binds.push(`${config.credentialsDir}:/credentials:rw`);
+  }
+
+  // Mount the uploads directory for user-uploaded files.
+  if (config.uploadsDir) {
+    if (workspaceVolume) {
+      const uploadsRelPath = config.uploadsDir.replace(/^\/workspace\//, "");
+      mounts.push({
+        Type: "volume",
+        Source: workspaceVolume,
+        Target: "/uploads",
+        VolumeOptions: { Subpath: uploadsRelPath },
+      });
+    } else {
+      binds.push(`${config.uploadsDir}:/uploads:rw`);
+    }
   }
 
   // Mount the per-repo dependency cache so npm/yarn/pnpm share downloaded
@@ -187,6 +203,11 @@ export async function createContainer(
 ): Promise<SessionContainer> {
   if (deps.containers.has(config.sessionId)) {
     throw new Error(`Container already exists for session ${config.sessionId}`);
+  }
+
+  // Ensure the uploads directory exists on the host before mounting.
+  if (config.uploadsDir) {
+    fs.mkdirSync(config.uploadsDir, { recursive: true });
   }
 
   // Ensure the dep cache directory exists on the host before mounting.
@@ -572,6 +593,7 @@ export function buildContainerConfig(
     sessionDir: string;
     credentialsDir: string;
     depCacheDir?: string;
+    uploadsDir?: string;
     env?: Record<string, string>;
     memoryLimit?: number;
     cpuQuota?: number;
@@ -584,6 +606,7 @@ export function buildContainerConfig(
     sessionDir: opts.sessionDir,
     credentialsDir: opts.credentialsDir,
     depCacheDir: opts.depCacheDir,
+    uploadsDir: opts.uploadsDir ?? path.join(opts.sessionDir, "uploads"),
     imageName: deps.imageName,
     memoryLimit: opts.memoryLimit ?? deps.defaultMemoryLimit,
     cpuQuota: opts.cpuQuota ?? deps.defaultCpuQuota,
