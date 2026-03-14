@@ -70,7 +70,7 @@ describe("ClaudeProcess", () => {
       const events: unknown[] = [];
       claude.on("event", (e) => events.push(e));
 
-      claude.run("test prompt");
+      claude.run({ prompt: "test prompt" });
 
       // Simulate PTY data with a complete JSON line
       const event = { type: "system", subtype: "init", session_id: "abc123" };
@@ -88,7 +88,7 @@ describe("ClaudeProcess", () => {
       const events: unknown[] = [];
       claude.on("event", (e) => events.push(e));
 
-      claude.run("test");
+      claude.run({ prompt: "test" });
 
       const event1 = { type: "system", subtype: "init", session_id: "abc" };
       const event2 = { type: "assistant", message: { content: [{ type: "text", text: "hi" }] } };
@@ -108,7 +108,7 @@ describe("ClaudeProcess", () => {
       const events: unknown[] = [];
       claude.on("event", (e) => events.push(e));
 
-      claude.run("test");
+      claude.run({ prompt: "test" });
 
       const event = { type: "result", subtype: "success", session_id: "xyz" };
       const json = JSON.stringify(event);
@@ -132,7 +132,7 @@ describe("ClaudeProcess", () => {
       const events: unknown[] = [];
       claude.on("event", (e) => events.push(e));
 
-      claude.run("test");
+      claude.run({ prompt: "test" });
 
       mockProc.simulateData("some random text\n");
       mockProc.simulateData("not json either\n");
@@ -148,7 +148,7 @@ describe("ClaudeProcess", () => {
       const events: unknown[] = [];
       claude.on("event", (e) => events.push(e));
 
-      claude.run("test");
+      claude.run({ prompt: "test" });
 
       const event = { type: "system", subtype: "init", session_id: "abc" };
       mockProc.simulateData(`\n\n${  JSON.stringify(event)  }\n\n`);
@@ -166,7 +166,7 @@ describe("ClaudeProcess", () => {
       claude.on("event", (e) => events.push(e));
       claude.on("done", (code: number | null) => { doneCode = code; });
 
-      claude.run("test");
+      claude.run({ prompt: "test" });
 
       // Send data without trailing newline
       const event = { type: "result", subtype: "success", session_id: "abc" };
@@ -190,7 +190,7 @@ describe("ClaudeProcess", () => {
       let authRequired = false;
       claude.on("auth_required", () => { authRequired = true; });
 
-      claude.run("test");
+      claude.run({ prompt: "test" });
 
       // With PTY, auth errors come through the combined data stream
       mockProc.simulateData("Error: not authenticated\n");
@@ -216,7 +216,7 @@ describe("ClaudeProcess", () => {
         let authRequired = false;
         claude.on("auth_required", () => { authRequired = true; });
 
-        claude.run("test");
+        claude.run({ prompt: "test" });
         mockProc.simulateData(`${keyword  }\n`);
         expect(authRequired).toBe(true);
       }
@@ -229,7 +229,7 @@ describe("ClaudeProcess", () => {
       mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
-      claude.run("hello world", undefined, undefined, undefined, "/workspace");
+      claude.run({ prompt: "hello world", cwd: "/workspace" });
 
       expect(mockPtySpawn).toHaveBeenCalledWith(
         "claude",
@@ -243,7 +243,7 @@ describe("ClaudeProcess", () => {
       mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
-      claude.run("hello", "session-123");
+      claude.run({ prompt: "hello", sessionId: "session-123" });
 
       expect(mockPtySpawn).toHaveBeenCalledWith(
         "claude",
@@ -257,7 +257,7 @@ describe("ClaudeProcess", () => {
       mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
-      claude.run("hello");
+      claude.run({ prompt: "hello" });
 
       const args = mockPtySpawn.mock.calls[0][1] as string[];
       expect(args).not.toContain("--resume");
@@ -268,13 +268,51 @@ describe("ClaudeProcess", () => {
       mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
-      claude.run("test", undefined, undefined, undefined, "/my/project");
+      claude.run({ prompt: "test", cwd: "/my/project" });
 
       expect(mockPtySpawn).toHaveBeenCalledWith(
         "claude",
         expect.any(Array),
         expect.objectContaining({ cwd: "/my/project" }),
       );
+    });
+
+    it("includes --mcp-config flag when mcpConfigPath is provided", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test", mcpConfigPath: "/tmp/mcp-config.json" });
+
+      expect(mockPtySpawn).toHaveBeenCalledWith(
+        "claude",
+        expect.arrayContaining(["--mcp-config", "/tmp/mcp-config.json"]),
+        expect.any(Object),
+      );
+    });
+
+    it("does not include --mcp-config when mcpConfigPath is not provided", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test" });
+
+      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      expect(args).not.toContain("--mcp-config");
+    });
+
+    it("includes browser tools in allowed tools list", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test" });
+
+      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const toolsIdx = args.indexOf("--allowedTools");
+      const tools = args[toolsIdx + 1];
+      expect(tools).toContain("mcp__playwright__");
     });
   });
 
@@ -284,7 +322,7 @@ describe("ClaudeProcess", () => {
       mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
-      claude.run("test");
+      claude.run({ prompt: "test" });
       claude.kill();
 
       expect(mockProc.kill).toHaveBeenCalled();
@@ -307,7 +345,7 @@ describe("ClaudeProcess", () => {
       const errors: Error[] = [];
       claude.on("error", (err) => errors.push(err));
 
-      claude.run("test");
+      claude.run({ prompt: "test" });
 
       expect(errors).toHaveLength(1);
       expect(errors[0].message).toBe("spawn ENOENT");
@@ -323,7 +361,7 @@ describe("ClaudeProcess", () => {
       const logs: { source: string; text: string }[] = [];
       claude.on("log", (source: string, text: string) => logs.push({ source, text }));
 
-      claude.run("test");
+      claude.run({ prompt: "test" });
 
       mockProc.simulateData("Some debug output\n");
 
@@ -339,7 +377,7 @@ describe("ClaudeProcess", () => {
       const logs: { source: string; text: string }[] = [];
       claude.on("log", (source: string, text: string) => logs.push({ source, text }));
 
-      claude.run("test");
+      claude.run({ prompt: "test" });
 
       const event = { type: "system", subtype: "init", session_id: "abc" };
       mockProc.simulateData(`${JSON.stringify(event)  }\n`);
@@ -354,7 +392,7 @@ describe("ClaudeProcess", () => {
       mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
-      claude.run("test");
+      claude.run({ prompt: "test" });
       claude.writeStdin("answer text\n");
 
       expect(mockProc.write).toHaveBeenCalledWith("answer text\n");
@@ -373,9 +411,8 @@ describe("ClaudeProcess", () => {
       mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
-      // Images param is accepted but ignored — orchestrator saves them to disk
-      // and prepends references to the prompt before calling run().
-      claude.run("describe this", undefined, undefined, [{ data: "base64", mediaType: "image/png" }]);
+      const images = [{ data: "base64data", mediaType: "image/png" }];
+      claude.run({ prompt: "describe this", images });
 
       const args = mockPtySpawn.mock.calls[0][1] as string[];
       const promptIdx = args.indexOf("-p") + 1;
@@ -393,7 +430,7 @@ describe("ClaudeProcess", () => {
       const logs: { source: string; text: string }[] = [];
       claude.on("log", (source: string, text: string) => logs.push({ source, text }));
 
-      claude.run("test");
+      claude.run({ prompt: "test" });
 
       // Advance timer by 30 seconds
       vi.advanceTimersByTime(30_000);
@@ -411,7 +448,7 @@ describe("ClaudeProcess", () => {
       const logs: { source: string; text: string }[] = [];
       claude.on("log", (source: string, text: string) => logs.push({ source, text }));
 
-      claude.run("test");
+      claude.run({ prompt: "test" });
 
       // Receive data before timeout
       mockProc.simulateData("some output\n");
@@ -431,7 +468,7 @@ describe("ClaudeProcess", () => {
       const logs: { source: string; text: string }[] = [];
       claude.on("log", (source: string, text: string) => logs.push({ source, text }));
 
-      claude.run("test");
+      claude.run({ prompt: "test" });
 
       // Exit before timeout
       mockProc.simulateExit(0);
@@ -451,7 +488,7 @@ describe("ClaudeProcess", () => {
       const logs: { source: string; text: string }[] = [];
       claude.on("log", (source: string, text: string) => logs.push({ source, text }));
 
-      claude.run("test");
+      claude.run({ prompt: "test" });
 
       // Kill before timeout
       claude.kill();

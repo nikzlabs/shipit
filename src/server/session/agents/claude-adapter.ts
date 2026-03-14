@@ -122,14 +122,15 @@ export class ClaudeAdapter
   }
 
   run(params: AgentRunParams): void {
-    this.inner.run(
-      params.prompt,
-      params.sessionId,
-      params.systemPrompt,
-      params.images,
-      params.cwd,
-      params.permissionMode,
-    );
+    this.inner.run({
+      prompt: params.prompt,
+      sessionId: params.sessionId,
+      systemPrompt: params.systemPrompt,
+      images: params.images,
+      cwd: params.cwd,
+      permissionMode: params.permissionMode,
+      mcpConfigPath: params.mcpConfigPath,
+    });
   }
 
   writeStdin(data: string): void {

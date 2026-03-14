@@ -21,4 +21,30 @@ describe("activityFromTool", () => {
     const result = activityFromTool("Skill", {});
     expect(result).toEqual({ label: "Running skill: unknown...", tool: "Skill" });
   });
+
+  it("returns browser activity labels for known Playwright MCP tools", () => {
+    expect(activityFromTool("mcp__playwright__browser_navigate", {})).toEqual({
+      label: "Navigating to page",
+      tool: "mcp__playwright__browser_navigate",
+    });
+    expect(activityFromTool("mcp__playwright__browser_snapshot", {})).toEqual({
+      label: "Reading page content",
+      tool: "mcp__playwright__browser_snapshot",
+    });
+    expect(activityFromTool("mcp__playwright__browser_click", {})).toEqual({
+      label: "Clicking element",
+      tool: "mcp__playwright__browser_click",
+    });
+    expect(activityFromTool("mcp__playwright__browser_take_screenshot", {})).toEqual({
+      label: "Taking screenshot",
+      tool: "mcp__playwright__browser_take_screenshot",
+    });
+  });
+
+  it("returns generic label for unknown MCP tools", () => {
+    expect(activityFromTool("mcp__foo__bar_baz", {})).toEqual({
+      label: "Using bar baz...",
+      tool: "mcp__foo__bar_baz",
+    });
+  });
 });

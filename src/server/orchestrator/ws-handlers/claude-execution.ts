@@ -7,7 +7,8 @@ import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
 import { wireAgentListeners } from "./agent-listeners.js";
 import { postTurnCommit } from "./post-turn.js";
-import { AGENT_SYSTEM_INSTRUCTIONS } from "../agent-instructions.js";
+import { buildAgentSystemInstructions } from "../agent-instructions.js";
+import { ContainerSessionRunner } from "../container-session-runner.js";
 
 /**
  * Save base64 images to the session's uploads directory on the host.
@@ -258,9 +259,15 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
     }
   });
 
+  // Resolve preview URL from the container runner (if available)
+  let previewUrl: string | undefined;
+  if (runner instanceof ContainerSessionRunner) {
+    previewUrl = runner.resolvePreviewUrl();
+  }
+
   // Build the system prompt, incorporating agent system instructions and conversation replay
   const agentInstructions = ctx.credentialStore.getAgentSystemInstructionsEnabled()
-    ? AGENT_SYSTEM_INSTRUCTIONS
+    ? buildAgentSystemInstructions(previewUrl)
     : undefined;
   const userSystemPrompt = await ctx.readSystemPrompt();
   let systemPrompt = [agentInstructions, userSystemPrompt].filter(Boolean).join("\n\n") || undefined;
@@ -295,6 +302,7 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
     systemPrompt,
     cwd: activeDir,
     permissionMode,
+    previewUrl,
   });
   ctx.broadcastLog("server", "Agent process started");
 }

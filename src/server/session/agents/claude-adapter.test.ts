@@ -6,21 +6,14 @@ import type { ClaudeEvent } from "../../shared/types.js";
 /** Minimal fake ClaudeProcess for testing the adapter in isolation. */
 class FakeInnerProcess extends EventEmitter {
   runCalled = false;
-  lastArgs: unknown[] = [];
   killed = false;
   stdinData: string[] = [];
 
-  run(
-    prompt: string,
-    sessionId?: string,
-    systemPrompt?: string,
-    images?: unknown[],
-    cwd?: string,
-    permissionMode?: string,
-  ) {
+  run(opts: Record<string, unknown>) {
     this.runCalled = true;
-    this.lastArgs = [prompt, sessionId, systemPrompt, images, cwd, permissionMode];
+    this.lastRunOpts = opts;
   }
+  lastRunOpts: Record<string, unknown> = {};
 
   writeStdin(data: string) {
     this.stdinData.push(data);
@@ -218,7 +211,7 @@ describe("ClaudeAdapter", () => {
     expect(logs).toEqual([["stderr", "debug info"]]);
   });
 
-  it("delegates run() to inner process with positional args", () => {
+  it("delegates run() to inner process with options object", () => {
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);
 
@@ -232,12 +225,12 @@ describe("ClaudeAdapter", () => {
     });
 
     expect(inner.runCalled).toBe(true);
-    expect(inner.lastArgs[0]).toBe("Hello");
-    expect(inner.lastArgs[1]).toBe("sess-1");
-    expect(inner.lastArgs[2]).toBe("Be helpful");
-    expect(inner.lastArgs[3]).toEqual([{ data: "abc", mediaType: "image/png" }]);
-    expect(inner.lastArgs[4]).toBe("/workspace");
-    expect(inner.lastArgs[5]).toBe("auto");
+    expect(inner.lastRunOpts.prompt).toBe("Hello");
+    expect(inner.lastRunOpts.sessionId).toBe("sess-1");
+    expect(inner.lastRunOpts.systemPrompt).toBe("Be helpful");
+    expect(inner.lastRunOpts.images).toEqual([{ data: "abc", mediaType: "image/png" }]);
+    expect(inner.lastRunOpts.cwd).toBe("/workspace");
+    expect(inner.lastRunOpts.permissionMode).toBe("auto");
   });
 
   it("delegates writeStdin() to inner process", () => {

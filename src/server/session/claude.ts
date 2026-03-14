@@ -4,6 +4,17 @@ import { EventEmitter } from "node:events";
 import type { ClaudeEvent, ImageAttachment, PermissionMode } from "../shared/types.js";
 import { stripAnsi } from "../shared/strip-ansi.js";
 
+export interface ClaudeRunOptions {
+  prompt: string;
+  sessionId?: string;
+  systemPrompt?: string;
+  images?: ImageAttachment[];
+  cwd?: string;
+  permissionMode?: PermissionMode;
+  /** Path to an MCP config JSON file passed via --mcp-config. */
+  mcpConfigPath?: string;
+}
+
 export class ClaudeProcess extends EventEmitter {
   private proc: IPty | null = null;
   private buffer = "";
@@ -19,10 +30,12 @@ export class ClaudeProcess extends EventEmitter {
    * Images are handled by the orchestrator before reaching this method —
    * they're saved to the host uploads directory and referenced in the prompt.
    */
-  run(prompt: string, sessionId?: string, systemPrompt?: string, _images?: ImageAttachment[], cwd?: string, permissionMode?: PermissionMode): void {
-    const AUTO_TOOLS = "Write,Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch,AskUserQuestion";
-    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch";
-    const NORMAL_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion";
+  run(opts: ClaudeRunOptions): void {
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath } = opts;
+
+    const AUTO_TOOLS = "Write,Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,mcp__playwright__*";
+    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot";
+    const NORMAL_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot";
 
     const tools = permissionMode === "plan"
       ? PLAN_TOOLS
@@ -43,6 +56,10 @@ export class ClaudeProcess extends EventEmitter {
 
     if (sessionId) {
       args.push("--resume", sessionId);
+    }
+
+    if (mcpConfigPath) {
+      args.push("--mcp-config", mcpConfigPath);
     }
 
     // Build effective system prompt, injecting normal-mode instructions if needed
