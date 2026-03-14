@@ -34,14 +34,22 @@ Users often have local assets they want the agent to work with — design mockup
 
 **Scratch space**: The agent can use `/tmp` for temporary work (unpacking ZIPs, intermediate processing). `/tmp` is already available in every container and is ephemeral by nature — no need for a custom scratch directory. Note that `/tmp` is cleared on container restart, so scratch work there is not durable. The agent instructions should mention that `/tmp` is available for scratch work and that uploaded files are at `/uploads/`.
 
-**Storage**: `/uploads/` is a host bind mount from the session's directory on the orchestrator host:
+**Storage**: `/uploads/` is mounted from the session's directory, using the same mounting strategy as the workspace (`buildMounts` in `container-lifecycle.ts`):
 
-```
-Host:       /workspace/sessions/{uuid}/uploads/
-Container:  /uploads/
-```
+- **Bind mount mode** (direct host paths):
+  ```
+  Host:       /workspace/sessions/{uuid}/uploads/
+  Container:  /uploads/
+  ```
+- **Volume mode** (`workspaceVolume` set — used when the orchestrator itself runs in Docker):
+  ```
+  Volume subpath:  sessions/{uuid}/uploads
+  Container:       /uploads/
+  ```
 
-This ties upload lifecycle to the session — uploads persist across container restarts but are cleaned up when the session is deleted. No Docker volumes needed.
+This mirrors how the workspace mount works and ties upload lifecycle to the session — uploads persist across container restarts but are cleaned up when the session is deleted.
+
+The uploads directory is created eagerly at container creation time (`fs.mkdirSync(..., { recursive: true })` in `createContainer`), matching the existing pattern for `depCacheDir`. This means uploads work even before the container starts — the orchestrator writes to the host/volume path regardless of container state, and files appear inside the container when it starts.
 
 ### Upload flow
 
@@ -75,7 +83,7 @@ Browser                    Orchestrator
 #### Upload endpoint
 
 ```
-POST /api/sessions/:id/files/upload
+POST /api/sessions/:id/files/uploads
 Content-Type: multipart/form-data
 
 Parts:
@@ -127,7 +135,9 @@ This endpoint is needed for **state recovery** — when the user refreshes the b
 
 **No file type restrictions.** The agent can already create and execute arbitrary files via terminal commands, so blocking `.exe` or `.sh` uploads provides no real security benefit. It would also be trivially bypassed (rename extension) and overly restrictive (`.sh` scripts are common legitimate uploads). The size limits are the meaningful guardrail.
 
-The orchestrator checks `Content-Length` early to reject oversized requests before buffering. The 500 MB session quota is checked by summing existing files in the uploads directory before writing — removed files free up quota.
+The orchestrator checks `Content-Length` as a **coarse request-level guard** (reject if total body > 500 MB) to avoid buffering obviously oversized requests. Per-file size limits (50 MB) are enforced during multipart stream parsing, since `Content-Length` for multipart includes boundaries and headers, not just file data.
+
+The 500 MB session quota is checked by summing existing files in the uploads directory before writing — removed files free up quota. Note: concurrent uploads to the same session could both pass the quota check (TOCTOU race). This is acceptable as a soft limit — the quota exists to prevent accidental disk exhaustion, not as a hard security boundary. If needed later, a per-session upload mutex (`Map<sessionId, Promise>` chain) can serialize writes.
 
 ### Filename handling
 
@@ -141,7 +151,7 @@ The orchestrator checks `Content-Length` early to reject oversized requests befo
 #### Upload trigger points
 
 1. **Drag-and-drop** onto the chat input area (extend existing image drop zone to accept all file types).
-2. **File picker button** — a paperclip/attach icon next to the existing image upload button in `MessageInput.tsx`, or unify both into a single attach button.
+2. **Repurpose existing attach button** — `MessageInput.tsx` already has a `PaperclipIcon` button wired to a hidden `<input type="file">` that currently only accepts images. Remove the `accept` filter so it opens a file picker for all types. No new button needed.
 3. **Paste** — for image files (already works), extend to detect non-image files if the browser supports it.
 
 #### Upload UX flow
@@ -162,10 +172,10 @@ The orchestrator checks `Content-Length` early to reject oversized requests befo
 
 #### Icons
 
-- Attach button: `Paperclip` (MD size)
-- Upload progress: `CircleNotch` with `animate-spin`
-- Upload complete: `File` icon
-- Upload error: `WarningCircle` with `--color-error`
+- Attach button: `PaperclipIcon` (MD size) — already exists in `MessageInput.tsx`
+- Upload progress: `CircleNotchIcon` with `animate-spin`
+- Upload complete: `FileIcon`
+- Upload error: `WarningCircleIcon` with `--color-error`
 
 ### Agent integration
 
@@ -179,15 +189,28 @@ git repo (/user/) so files there are never committed. Use /tmp for
 temporary scratch work (e.g., unpacking archives).
 ```
 
-#### Auto-attachment
+#### Upload references in `send_message`
 
-When files are uploaded alongside a message, they're attached as `FileContextRef` entries so Claude sees their content. For binary files (ZIP, images, PDFs), only the path is provided — the agent reads them with tools as needed.
+Uploaded files use a new `UploadRef` type, distinct from `FileContextRef`:
+
+```typescript
+interface UploadRef {
+  path: string;       // absolute container path, e.g. "/uploads/data.csv"
+  type: "upload";
+}
+```
+
+The `send_message` WS message adds an optional `uploads?: UploadRef[]` field alongside the existing `files?: FileContextRef[]`. This keeps the two paths separate — `resolveFileAttachments()` continues to handle workspace file refs (relative paths, 100KB content limit, path traversal guard), while upload refs bypass that pipeline entirely.
+
+For **text uploads** (CSV, JSON, code files), the send-message handler reads content from the host uploads directory and passes it to Claude as context. For **binary uploads** (ZIP, images, PDFs), only the container path is provided — the agent reads them with tools as needed. Binary detection uses a simple extension check (same as the existing file read endpoint's `isBinaryFile`).
 
 ### File tree and `@`-reference integration
 
 The existing `FileWatcher` watches `/user` (the repo). Since `/uploads/` is outside `/user`, uploaded files won't appear in the file tree or `@`-autocomplete automatically.
 
-**Approach**: The client tracks uploads locally (from upload responses + `GET /files/uploads` on reconnect) and renders them as a virtual "Uploads" section in the file tree panel. The `@`-autocomplete is extended to search this local upload list in addition to the workspace file tree, matching on `@/uploads/filename`.
+**Approach**: The client tracks uploads locally (from upload responses + `GET /files/uploads` on reconnect) and renders them as a virtual "Uploads" section in the file tree panel. The `@`-autocomplete is extended to search this local upload list in addition to the workspace file tree.
+
+**`@`-reference pattern**: Existing `@` refs use relative paths (`@src/utils/foo.ts`). Upload refs use absolute paths (`@/uploads/data.csv`) — the leading `/` distinguishes them. The autocomplete regex (`@([^\s]*)`) already matches both forms, but the resolution logic needs to route `/uploads/...` paths to the upload ref handler instead of `resolveFileAttachments`.
 
 No second file watcher needed — the client is the source of truth for upload state, hydrated from the list endpoint on reconnect.
 
@@ -199,16 +222,44 @@ Since `/uploads/` is outside the repo root (`/user/`), there's no git interactio
 
 | Area | File | Changes |
 |------|------|---------|
-| Orchestrator route | `src/server/orchestrator/api-routes-files.ts` | Add `POST /sessions/:id/files/upload` and `GET /sessions/:id/files/uploads` |
+| Orchestrator route | `src/server/orchestrator/api-routes-files.ts` | Add `POST /sessions/:id/files/uploads` and `GET /sessions/:id/files/uploads` |
 | Upload service | `src/server/orchestrator/services/files.ts` | Upload logic: validate, write to host uploads dir, list uploads |
 | Container setup | `src/server/orchestrator/session-container.ts` | Add `/uploads` bind mount to session container creation |
 | Agent instructions | `src/server/orchestrator/agent-instructions.ts` | Add uploads/scratch context |
-| Validation | `src/server/orchestrator/validation.ts` | Add upload validation (size, count, quota) |
+| Validation | `src/server/orchestrator/validation.ts` | Add upload validation (size, count, quota); route `/uploads/` refs separately from workspace refs |
+| WS types | `src/server/shared/types/ws-client-messages.ts` | Add `uploads?: UploadRef[]` to `send_message` |
 | Client input | `src/client/components/MessageInput.tsx` | Add file attach button, extend drop zone |
 | Upload chips | `src/client/components/FileUploadChips.tsx` | New — upload progress/status chips |
 | Upload hook | `src/client/hooks/useFileUpload.ts` | New — upload state, API calls, reconnect hydration |
 | File autocomplete | `src/client/components/FileAutoComplete.tsx` | Extend to search uploads list |
 | Types | `src/server/shared/types/attachment-types.ts` | Add upload-related types |
+
+## Test plan
+
+### Integration tests (`api-routes-files.test.ts` or new `upload.integration.test.ts`)
+
+- Upload single file → verify file written to session uploads dir, response has correct path/size/type
+- Upload multiple files → verify all written, response lists all
+- Upload exceeding per-file limit (>50 MB) → 413 rejected
+- Upload exceeding session quota (>500 MB cumulative) → 413 rejected
+- Upload with path traversal filename (`../../etc/passwd`) → sanitized, written to flat uploads dir
+- Upload with collision → numeric suffix appended
+- List uploads for session with files → returns all uploads
+- List uploads for session with no uploads dir → returns empty list
+- Upload to nonexistent session → 404
+
+### Unit tests
+
+- Filename sanitization (traversal, null bytes, control chars, collision suffix)
+- Quota calculation (sum existing files, check against limit)
+- Binary detection for upload refs (extension-based)
+
+### Client tests
+
+- `FileUploadChips` renders uploading/ready/error states
+- `useFileUpload` hook: triggers upload on file select, tracks progress, hydrates from list endpoint on reconnect
+- `MessageInput` drop zone accepts non-image files
+- `FileAutoComplete` matches `@/uploads/` paths from upload list
 
 ## Non-goals (for now)
 
@@ -219,5 +270,4 @@ Since `/uploads/` is outside the repo root (`/user/`), there's no git interactio
 
 ## Open questions
 
-1. **Unified attach button vs separate?** — Should image upload and file upload share one button (with a type filter toggle), or remain separate? Recommendation: unify into one `Paperclip` button that opens a file picker with no type filter, and keep the image paste/drop behavior as-is.
-2. **Upload before session start?** — Should users be able to upload files to a session that hasn't started yet (e.g., "start from uploaded ZIP")? Could queue uploads and flush on session start. The host uploads directory could be created eagerly at session creation time, before the container starts.
+1. **Upload before session start?** — Should users be able to upload files to a session that hasn't started yet (e.g., "start from uploaded ZIP")? Since the uploads directory is created eagerly at container creation and the orchestrator writes directly to the host path, this works at the storage level. The question is whether the UI should allow it and how uploaded files are surfaced before the agent starts.
