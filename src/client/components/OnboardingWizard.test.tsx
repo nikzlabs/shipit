@@ -181,6 +181,17 @@ describe("OnboardingWizard", () => {
       expect(screen.getByText("Agent Setup")).toBeInTheDocument();
       expect(screen.queryByText("Connect GitHub")).not.toBeInTheDocument();
     });
+
+    it("navigates back to step 1 when initialStep changes from 2 to 1", () => {
+      const props = defaultProps();
+      const { rerender } = render(<OnboardingWizard {...props} initialStep={2} />);
+      expect(screen.getByText("Agent Setup")).toBeInTheDocument();
+
+      // Simulate git_identity_required arriving after wizard already opened at step 2
+      rerender(<OnboardingWizard {...props} initialStep={1} />);
+      expect(screen.getByText("Connect GitHub")).toBeInTheDocument();
+      expect(screen.queryByText("Agent Setup")).not.toBeInTheDocument();
+    });
   });
 
   it("does not dismiss when clicking the backdrop", () => {
