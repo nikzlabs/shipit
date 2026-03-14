@@ -620,7 +620,7 @@ export async function createPreviewContainer(
   );
 
   const env = buildEnv(
-    config,
+    { ...config, dockerAccess: false },
     workspaceDir,
     deps.workerPort,
     undefined, // no Docker proxy for preview
