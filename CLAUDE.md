@@ -24,6 +24,10 @@ npm install
 - `npm run dev` — start dev server (tsx)
 - `npm run build` — build client with Vite
 
+## Debugging the UI
+
+The Playwright MCP server is configured and launches its own browser. Use `browser_navigate` to open the ShipIt UI (e.g. `http://127.0.0.1:3000`), then `browser_snapshot` to read page state, `browser_click` to press buttons, `browser_fill_form` to type text, and `browser_take_screenshot` for visual checks.
+
 ## Project structure
 
 ```
