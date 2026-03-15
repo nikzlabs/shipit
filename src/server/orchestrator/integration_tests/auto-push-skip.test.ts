@@ -93,7 +93,7 @@ async function createSession(): Promise<{ sessionId: string; sessionDir: string 
   const sessionsDir = path.join(tmpDir, "sessions");
   const entries = fs.readdirSync(sessionsDir);
   const sessionId = entries[0];
-  const sessionDir = path.join(sessionsDir, sessionId);
+  const sessionDir = path.join(sessionsDir, sessionId, "workspace");
 
   return { sessionId, sessionDir };
 }

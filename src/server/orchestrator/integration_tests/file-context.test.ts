@@ -65,7 +65,7 @@ describe("Integration: File context attachments", () => {
 
   /** Get the session's workspace directory (files are resolved relative to it). */
   const getSessionDir = (client: TestClient) =>
-    path.join(tmpDir, "sessions", client.sessionId);
+    path.join(tmpDir, "sessions", client.sessionId, "workspace");
 
   it("sends file context prepended to the prompt", async () => {
     const client = await TestClient.connect(port);

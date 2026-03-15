@@ -85,7 +85,7 @@ export async function applyTemplate(
   } else {
     const created = await createSessionDir(template.name);
     appSessionId = created.appSessionId;
-    sessionDir = created.sessionDir;
+    sessionDir = created.workspaceDir;
     // New session directory needs git init before we can commit template files
     const newGit = createGitManager(sessionDir);
     await newGit.init();

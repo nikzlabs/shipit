@@ -284,10 +284,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       "/api/_test/sessions",
       async (_request) => {
         const title = _request.body?.title?.trim() || "Test session";
-        const { appSessionId, sessionDir } = await createSessionDir(title);
-        const git = createGitManager(sessionDir);
+        const { appSessionId, sessionDir, workspaceDir } = await createSessionDir(title);
+        const git = createGitManager(workspaceDir);
         await git.init();
-        return { sessionId: appSessionId, sessionDir };
+        return { sessionId: appSessionId, sessionDir, workspaceDir };
       },
     );
   }

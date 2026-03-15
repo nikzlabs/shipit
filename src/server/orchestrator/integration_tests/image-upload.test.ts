@@ -69,7 +69,7 @@ describe("Integration: Image upload", () => {
   // A minimal 1x1 red PNG (valid base64)
   const TINY_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg==";
 
-  it("send_message with valid images passes them to ClaudeProcess", async () => {
+  it("send_message with valid images saves them to uploads and references in prompt", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
@@ -83,12 +83,15 @@ describe("Integration: Image upload", () => {
 
     await waitForClaude(() => lastClaude);
 
-    // The FakeClaudeProcess should have been called with images
+    // Images are saved to disk by the orchestrator and referenced in the prompt.
+    // The agent receives the modified prompt, not inline base64 images.
     expect(lastClaude.runCalled).toBe(true);
-    expect(lastClaude.lastPrompt).toBe("Make it look like this");
-    expect(lastClaude.lastImages).toHaveLength(1);
-    expect(lastClaude.lastImages![0].mediaType).toBe("image/png");
-    expect(lastClaude.lastImages![0].data).toBe(TINY_PNG_BASE64);
+    expect(lastClaude.lastPrompt).toContain("Make it look like this");
+    expect(lastClaude.lastPrompt).toContain("<attached_images>");
+    expect(lastClaude.lastPrompt).toContain("/uploads/");
+    expect(lastClaude.lastPrompt).toContain(".png");
+    // Images are NOT passed inline — they're saved to disk instead
+    expect(lastClaude.lastImages).toBeUndefined();
 
     // Simulate Claude finishing
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "img-session-1" });
