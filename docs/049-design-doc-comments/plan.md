@@ -424,26 +424,38 @@ Two viewer components exist today. Comments must work in both.
 - `ToolResult` — inline in chat, shows truncated file content / bash output / grep results. Uses highlight.js. Read-only snippet, not a full viewer.
 - `DiffBlock` — one-liner summary card (`edit src/foo.ts +40 -12`). Not a viewer.
 
-### Strategy: Unified Comment Widget via Monaco
+### Strategy: Two Comment UIs by File Type
 
-Rather than building two parallel comment UIs (custom React gutter for FilePreviewModal, Monaco widgets for DiffPanel), we **upgrade FilePreviewModal to use Monaco `Editor` (read-only) for code files**. This gives us:
+Comments work on **all text files** — code and markdown — but the comment UI differs by file type because the viewing experience differs.
 
-- Line numbers for free
-- A single comment implementation using Monaco's `ViewZone` API (injected DOM elements between lines) and glyph margin decorations
-- Consistent look and feel across both viewers
-- Language detection already shared (`getLanguageFromPath()` in DiffPanel)
+| File type | Viewer | Comment anchor | Comment UI |
+|---|---|---|---|
+| Code (`.ts`, `.py`, etc.) | Monaco `Editor` (read-only) | Line number | Monaco `ViewZone` + glyph margin — shared `MonacoCommentWidgets` module |
+| Code diffs | Monaco `DiffEditor` | Line number (modified side) | Same `MonacoCommentWidgets` on modified editor |
+| Markdown (`.md`) | Rendered HTML (`marked`) | `## ` section heading | `MarkdownSectionComments` — extracted from `DocReviewPanel`, reused in `FilePreviewModal` |
+| Image / binary | `<img>` / placeholder | N/A | No comments |
 
-**What stays the same**: Markdown rendering (`marked`), image display, and binary placeholder in FilePreviewModal are unchanged — comments only apply to code files.
+**Why two UIs**: Line-level comments on raw markdown source ("line 47") are meaningless when you're reading rendered HTML. Section-anchored comments match how people actually read prose. Code viewers already have line numbers and benefit from precise line anchoring.
 
-**Bundle impact**: Monaco is already loaded for DiffPanel, so no new bundle cost. The `@monaco-editor/react` package lazy-loads the Monaco core on first use.
+**Key reuse**: The section-comment UI from Part 1's `DocReviewPanel` becomes a shared `MarkdownSectionComments` component. `DocReviewPanel` composes it (adding AI review, drift handling, server persistence). `FilePreviewModal` uses it directly for any `.md` file (with client-side comment store, same as code comments).
+
+**Monaco upgrade**: `FilePreviewModal` replaces highlight.js `<pre><code>` with Monaco `Editor` (read-only) for code files. Monaco is already loaded for `DiffPanel`, so no new bundle cost. Markdown/image/binary rendering stays as-is.
 
 ### UX Flow
 
-1. User opens a file via the file tree, a chat link, or a grep result → `FilePreviewModal` opens with Monaco (read-only) for code files.
+**Code files** (`.ts`, `.py`, `.go`, etc.):
+1. User opens a file via the file tree, a chat link, or a grep result → `FilePreviewModal` opens with Monaco (read-only).
 2. **Glyph margin `+` icon**: Hovering over the glyph margin (left of line numbers) highlights the row. Clicking opens a comment input widget below that line.
 3. User types a comment, presses Cmd/Ctrl+Enter to save. The comment appears as an inline card (Monaco `ViewZone`) pinned to that line.
 4. User can also add comments in `DiffPanel` on the **modified** (right) side — same glyph margin interaction, same ViewZone rendering.
-5. User repeats across files. A badge shows total pending comment count.
+
+**Markdown files** (`.md`):
+1. User opens a `.md` file → `FilePreviewModal` renders it as HTML (existing behavior) with section-comment affordances.
+2. Each `## ` section has a `[+]` button. Clicking it opens a comment input below that section.
+3. User types a comment, presses Cmd/Ctrl+Enter to save. The comment appears as an inline card anchored to that section — same card styling as code comments.
+
+**Both flows converge**:
+5. User repeats across any number of files (code and markdown). A badge shows total pending comment count.
 6. User clicks "Send N comments". All comments are formatted with file context and sent as a `send_message` to the current session.
 7. After sending, all comments are cleared.
 
@@ -489,18 +501,60 @@ In DiffPanel, comments appear on the **modified** (right) editor only:
 └──────────────────────────────────────────────────────────┘
 ```
 
+In FilePreviewModal for markdown files, section-anchored comments (reuses `MarkdownSectionComments`):
+
+```
+┌─ FilePreviewModal (rendered markdown) ───────────────────┐
+│  docs/012-deployment/plan.md                     [Close]  │
+│───────────────────────────────────────────────────────────│
+│                                                           │
+│  ## Summary                                        [+]    │
+│  Add deployment support for Vercel and Cloudflare...      │
+│                                                           │
+│  ## Architecture                                   [+]    │
+│  The deployment system uses a plugin-based approach...    │
+│                                                           │
+│    ┌─ 💬 § Architecture ─────────────────────────┐       │
+│    │ This should also support Netlify.            │       │
+│    │                               [Edit] [Del]  │       │
+│    └──────────────────────────────────────────────┘       │
+│                                                           │
+│  ## Testing                                        [+]    │
+│  ...                                                      │
+│                                                           │
+│───────────────────────────────────────────────────────────│
+│  1 comment on this file          [Send 1 comment ▶]      │
+└───────────────────────────────────────────────────────────┘
+```
+
 ### Comment Data Model
 
 Comments are stored in a **persisted Zustand store** (`localStorage`) keyed by session ID. They survive page refresh but are scoped to the session they were created in. Cleared after send.
 
 ```typescript
-interface FileComment {
-  id: string;          // crypto.randomUUID()
-  filePath: string;    // "src/server/api-routes.ts"
-  line: number;        // 1-based line number
-  text: string;        // The comment text
+// Line-anchored comment (code files + diffs)
+interface LineComment {
+  id: string;              // crypto.randomUUID()
+  kind: "line";
+  filePath: string;        // "src/server/api-routes.ts"
+  line: number;            // 1-based line number
+  text: string;
 }
+
+// Section-anchored comment (markdown files)
+interface SectionComment {
+  id: string;              // crypto.randomUUID()
+  kind: "section";
+  filePath: string;        // "docs/012-deployment/plan.md"
+  sectionHeading: string;  // "## Architecture"
+  sectionIndex: number;    // 0-based, for ordering
+  text: string;
+}
+
+type FileComment = LineComment | SectionComment;
 ```
+
+The `kind` discriminant lets prompt construction format each comment appropriately — line comments include a code snippet with context, section comments reference the heading.
 
 ### Client-Side — File Comments
 
@@ -552,17 +606,43 @@ function createCommentWidgetManager(
 
 5. **Diff editor access**: For `DiffPanel`, use `editor.getModifiedEditor()` to get the right-side editor instance, then attach widgets to that.
 
+#### `MarkdownSectionComments` (new shared component)
+
+**File**: `src/client/components/MarkdownSectionComments.tsx`
+
+Extracted from `DocReviewPanel`'s section rendering. Renders markdown split by `## ` headings, with `[+]` buttons and inline comment cards. Used by both `DocReviewPanel` (Part 1) and `FilePreviewModal` (for `.md` files).
+
+```typescript
+interface MarkdownSectionCommentsProps {
+  content: string;                  // Raw markdown
+  comments: SectionComment[];       // Only section-kind comments
+  onAddComment: (sectionHeading: string, sectionIndex: number, text: string) => void;
+  onEditComment: (commentId: string, text: string) => void;
+  onDeleteComment: (commentId: string) => void;
+}
+```
+
+`DocReviewPanel` wraps this component, adding: AI review button, drift detection/re-anchoring, server persistence, review history, and the "Send" flow that creates a new session. When used directly in `FilePreviewModal`, it gets simpler callbacks wired to the client-side comment store.
+
 #### `FilePreviewModal` changes
 
 **File**: `src/client/components/FilePreviewModal.tsx`
 
-Current state: renders code with highlight.js in `<pre><code>`, no line numbers, no interactivity.
+Current state: renders code with highlight.js in `<pre><code>`, markdown with `marked`, images with `<img>`, binary with placeholder text.
 
-Changes for code files only (markdown/image/binary unchanged):
-1. Replace `<pre><code>` with Monaco `Editor` (read-only, `vs-dark` theme)
-2. On `editorDidMount`, call `createCommentWidgetManager()` to attach comment UI
-3. Pass comments from the comment store, wire up add/edit/delete callbacks
-4. Add a footer bar showing comment count + "Send N comments" button
+Changes by file type:
+
+**Code files**: Replace `<pre><code>` with Monaco `Editor` (read-only, `vs-dark` theme).
+1. On `editorDidMount`, call `createCommentWidgetManager()` to attach comment UI
+2. Pass comments from the comment store, wire up add/edit/delete callbacks
+3. Add a footer bar showing comment count + "Send N comments" button
+
+**Markdown files**: Keep rendered HTML view, add section comments.
+1. Replace the plain `marked` render with `<MarkdownSectionComments>` component
+2. Wire callbacks to the comment store (using `SectionComment` kind)
+3. Same footer bar with count + "Send" button
+
+**Image/binary**: No changes.
 
 ```typescript
 // Inside FilePreviewModal, for code files:
@@ -647,7 +727,14 @@ import { persist } from "zustand/middleware";
 
 interface FileCommentStore {
   commentsBySession: Record<string, FileComment[]>;
-  addComment: (sessionId: string, filePath: string, line: number, text: string) => void;
+
+  // Line comments (code files + diffs)
+  addLineComment: (sessionId: string, filePath: string, line: number, text: string) => void;
+
+  // Section comments (markdown files)
+  addSectionComment: (sessionId: string, filePath: string, sectionHeading: string, sectionIndex: number, text: string) => void;
+
+  // Common operations
   editComment: (sessionId: string, commentId: string, text: string) => void;
   deleteComment: (sessionId: string, commentId: string) => void;
   clearComments: (sessionId: string) => void;
@@ -666,7 +753,7 @@ The "Send N comments" affordance appears in:
 
 ### Prompt Construction (File Comments)
 
-Built client-side. No new server endpoints needed — sends via existing `send_message`.
+Built client-side. No new server endpoints needed — sends via existing `send_message`. Handles both `LineComment` and `SectionComment` kinds.
 
 ```typescript
 function buildFileCommentsPrompt(comments: FileComment[], fileContents: Map<string, string>): string {
@@ -679,9 +766,11 @@ function buildFileCommentsPrompt(comments: FileComment[], fileContents: Map<stri
   let prompt = "I have the following comments on the code:\n\n";
 
   for (const [filePath, fileComments] of byFile) {
-    const sorted = fileComments.sort((a, b) => a.line - b.line);
     const lines = (fileContents.get(filePath) ?? "").split("\n");
 
+    // Line comments — include code snippet with context
+    const lineComments = fileComments.filter((c): c is LineComment => c.kind === "line");
+    const sorted = lineComments.sort((a, b) => a.line - b.line);
     for (const comment of sorted) {
       const start = Math.max(0, comment.line - 3);
       const end = Math.min(lines.length, comment.line + 2);
@@ -695,6 +784,15 @@ function buildFileCommentsPrompt(comments: FileComment[], fileContents: Map<stri
 
       prompt += `**${filePath}:${comment.line}**\n`;
       prompt += "```\n" + snippet + "\n```\n";
+      prompt += `Comment: ${comment.text}\n\n`;
+    }
+
+    // Section comments — reference the heading
+    const sectionComments = fileComments.filter((c): c is SectionComment => c.kind === "section");
+    const sortedSections = sectionComments.sort((a, b) => a.sectionIndex - b.sectionIndex);
+    for (const comment of sortedSections) {
+      const heading = comment.sectionHeading || "(Introduction)";
+      prompt += `**${filePath} → ${heading}**\n`;
       prompt += `Comment: ${comment.text}\n\n`;
     }
   }
@@ -718,7 +816,7 @@ Full files are also attached via `FileContextRef` so Claude has broader context.
 
 ## Shared Design Details
 
-### Section Parsing (Design Doc)
+### Section Parsing (shared by `MarkdownSectionComments`, `DocReviewPanel`, and prompt construction)
 
 ```typescript
 interface MarkdownSection {
@@ -822,14 +920,26 @@ function parseMarkdownSections(content: string): MarkdownSection[] {
 8. Glyph margin decorations added for lines with comments
 9. Works with diff editor (modified side only)
 
+### Component Tests — `MarkdownSectionComments` (`src/client/components/MarkdownSectionComments.test.tsx`)
+
+1. Renders sections from `## ` headings with `[+]` buttons
+2. Preamble (content before first `## `) rendered with `[+]`
+3. Add comment flow: click `[+]` → type → Cmd+Enter → `onAddComment` called with heading + index
+4. Cancel input: Escape closes textarea
+5. Shows existing comments under correct sections
+6. Edit comment flow: click edit → textarea → save → `onEditComment` called
+7. Delete comment: click delete → `onDeleteComment` called
+8. Comment card styling matches design (blue accent, border-l-2)
+
 ### Component Tests — `FilePreviewModal` comment integration (`src/client/components/FilePreviewModal.test.tsx`)
 
 1. Code files render with Monaco Editor (not `<pre><code>`)
-2. Markdown/image files still use existing renderers (no Monaco)
-3. Comment manager created on editor mount
-4. Comments from store displayed via `setComments()`
-5. Footer shows comment count and "Send" button
-6. Send button disabled with 0 comments, enabled with 1+
+2. Markdown files render with `MarkdownSectionComments` (not plain `marked` output)
+3. Image/binary files unchanged (no comment UI)
+4. Code: comment manager created on editor mount
+5. Markdown: section comments wired to comment store
+6. Footer shows comment count and "Send" button
+7. Send button disabled with 0 comments, enabled with 1+
 
 ### Component Tests — `DiffPanel` comment integration (`src/client/components/DiffPanel.test.tsx`)
 
@@ -841,21 +951,24 @@ function parseMarkdownSections(content: string): MarkdownSection[] {
 
 ### Unit Tests — File Comment Prompt Construction
 
-1. Single file, single comment: correct snippet with context
-2. Single file, multiple comments: sorted by line
+1. Single file, single line comment: correct snippet with context
+2. Single file, multiple line comments: sorted by line
 3. Multiple files: grouped by file
-4. Comment near start/end of file: context doesn't overflow
-5. Empty file content fallback
+4. Line comment near start/end of file: context doesn't overflow
+5. Section comment on markdown: includes heading reference
+6. Mixed line + section comments across files: both formatted correctly
+7. Empty file content fallback
 
 ### Store Tests — Comment Store
 
-1. Add comment to correct session
-2. Edit comment text by ID
-3. Delete comment by ID
-4. Clear comments for session, others unaffected
-5. Get comments filtered by file
-6. Session isolation
-7. Persistence via localStorage
+1. `addLineComment`: stores with correct kind, filePath, line
+2. `addSectionComment`: stores with correct kind, filePath, sectionHeading, sectionIndex
+3. Edit comment text by ID (both kinds)
+4. Delete comment by ID
+5. Clear comments for session, others unaffected
+6. Get comments filtered by file (returns both kinds)
+7. Session isolation
+8. Persistence via localStorage
 
 ### Prompt Construction Tests — Design Doc
 
@@ -876,12 +989,14 @@ function parseMarkdownSections(content: string): MarkdownSection[] {
 | `src/server/orchestrator/api-routes.ts` | Add review HTTP endpoints |
 | `src/server/orchestrator/index.ts` | Instantiate `ReviewStore`, inject into deps |
 | `src/server/shared/types/domain-types.ts` | Add `DocReview`, `ReviewComment`, `FileComment` types |
-| `src/client/components/DocReviewPanel.tsx` | New — review UI with section parsing, comment management |
+| `src/client/components/MarkdownSectionComments.tsx` | New — shared section-anchored comment UI for rendered markdown |
+| `src/client/components/MarkdownSectionComments.test.tsx` | New — component tests |
+| `src/client/components/DocReviewPanel.tsx` | New — wraps `MarkdownSectionComments` with AI review, drift, server persistence |
 | `src/client/components/DocReviewPanel.test.tsx` | New — component tests |
 | `src/client/components/FeaturesPanel.tsx` | Add "Review" button, `onReviewFeature` prop |
 | `src/client/components/MonacoCommentWidgets.ts` | New — shared ViewZone/decoration logic for comments in any Monaco editor |
 | `src/client/components/MonacoCommentWidgets.test.ts` | New — unit tests |
-| `src/client/components/FilePreviewModal.tsx` | Replace highlight.js with Monaco Editor for code files; attach comment widgets |
+| `src/client/components/FilePreviewModal.tsx` | Code files: highlight.js → Monaco. Markdown: `marked` → `MarkdownSectionComments`. Both get comment support. |
 | `src/client/components/DiffPanel.tsx` | Enable glyph margin, attach comment widgets to modified editor |
 | `src/client/stores/comment-store.ts` | New — persisted Zustand store for file comments |
 | `src/client/App.tsx` | Wire both comment flows, add review state and send handlers |
@@ -890,19 +1005,18 @@ function parseMarkdownSections(content: string): MarkdownSection[] {
 ## Scope & Non-Goals
 
 **In scope**:
-- Section-anchored comments on `plan.md` files (human and AI), server-persisted
-- Line-anchored comments on any source file (FilePreviewModal + DiffPanel), client-side persisted
-- Editable comments in both viewers (add, edit, delete)
+- Section-anchored comments on `plan.md` files (human and AI) via Features panel, server-persisted
+- Line-anchored comments on code files (FilePreviewModal + DiffPanel), client-side persisted
+- Section-anchored comments on any `.md` file opened in FilePreviewModal, client-side persisted
+- Editable comments in all viewers (add, edit, delete)
 - HTTP CRUD endpoints for design doc reviews
 - AI review via one-shot Claude CLI invocation
 - Review history for design docs
 - Send → new session (design doc reviews) / send → current session (file comments)
-- Prompt construction for both flows
-- Upgrade FilePreviewModal from highlight.js to Monaco for code files
+- Prompt construction for both line and section comment kinds
+- Upgrade FilePreviewModal: highlight.js → Monaco for code, plain `marked` → `MarkdownSectionComments` for markdown
 
 **Not in scope (future work)**:
-- Comments on `checklist.md` files
-- Comments on rendered markdown (file comments are line-based, for source files)
 - Collaborative review (multiple users)
 - Comment resolution tracking
 - Streaming AI review
@@ -911,4 +1025,4 @@ function parseMarkdownSections(content: string): MarkdownSection[] {
 
 ## Complexity
 
-Medium. Server-side work (ReviewStore + HTTP endpoints + service layer) follows established patterns. AI review flow adds moderate complexity. The `MonacoCommentWidgets` module (~200-250 lines) is the key shared abstraction — ViewZone management, glyph margin handlers, and React-in-DOM rendering. DocReviewPanel is ~300-400 lines. FilePreviewModal Monaco upgrade is ~50 lines of changes. DiffPanel changes are ~30 lines. Comment store is ~30 lines. Total: ~900-1300 lines of new code.
+Medium. Server-side work (ReviewStore + HTTP endpoints + service layer) follows established patterns. AI review flow adds moderate complexity. Two shared UI abstractions: `MonacoCommentWidgets` (~200-250 lines) for code/diff viewers, `MarkdownSectionComments` (~150-200 lines) extracted from `DocReviewPanel` for markdown. `DocReviewPanel` wraps the markdown component (~200 lines of its own for AI review, drift, server persistence). FilePreviewModal changes are ~80 lines (branching by file type). DiffPanel changes ~30 lines. Comment store ~40 lines. Total: ~1000-1400 lines of new code.
