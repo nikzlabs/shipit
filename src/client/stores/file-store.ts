@@ -1,19 +1,20 @@
 import { create } from "zustand";
 import type { FileTreeNode } from "../components/FileTree.js";
+import type { DocEntry } from "../../server/shared/types.js";
 
 interface FileState {
   tree: FileTreeNode[];
   viewingFile: string | null;
   viewingFileContent: string | null;
   viewingFileBinary: boolean;
-  docFiles: string[];
+  docFiles: DocEntry[];
   selectedDoc: string | null;
   docContent: string | null;
 
   setTree: (tree: FileTreeNode[]) => void;
   setViewingFile: (path: string | null) => void;
   closeViewer: () => void;
-  setDocFiles: (files: string[]) => void;
+  setDocFiles: (files: DocEntry[]) => void;
   selectDoc: (file: string | null) => void;
   setDocContent: (content: string | null) => void;
   setViewingFileContent: (content: string | null) => void;
@@ -33,7 +34,7 @@ const initialState = {
   viewingFile: null as string | null,
   viewingFileContent: null as string | null,
   viewingFileBinary: false,
-  docFiles: [] as string[],
+  docFiles: [] as DocEntry[],
   selectedDoc: null as string | null,
   docContent: null as string | null,
 };
@@ -102,8 +103,8 @@ export const useFileStore = create<FileState>((set) => ({
     if (!res.ok) {
       throw new Error(`Failed to fetch docs: ${res.status}`);
     }
-    const { files } = await res.json() as { files: string[] };
-    set({ docFiles: files });
+    const { docs } = await res.json() as { docs: DocEntry[] };
+    set({ docFiles: docs });
   },
 
   fetchDoc: async (sessionId, filePath) => {

@@ -1,6 +1,6 @@
 import type { ChatMessage } from "../components/MessageList.js";
 import type { GitCommit } from "../components/GitHistory.js";
-import type { SessionInfo, RepoInfo, FileTreeNode, FeatureInfo } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, FileTreeNode } from "../../server/shared/types.js";
 import type { AgentOption } from "../components/AgentPicker.js";
 import type { TemplateInfo } from "../components/TemplateSelector.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -41,7 +41,6 @@ interface BootstrapResponse {
   repos?: RepoInfo[];
   agents: AgentOption[];
   templates: TemplateInfo[];
-  features?: FeatureInfo[];
   githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
   settings: {
     gitIdentity: { name: string; email: string };

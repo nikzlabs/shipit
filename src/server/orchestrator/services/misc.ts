@@ -14,7 +14,6 @@ import type { AgentId } from "../../shared/types.js";
 import type { UsageManager } from "../usage.js";
 import type { DatabaseManager } from "../../shared/database.js";
 import type { CredentialStore } from "../credential-store.js";
-import { FeatureManager } from "../features.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import { listTemplates } from "../templates.js";
 import { ServiceError } from "./types.js";
@@ -29,12 +28,6 @@ import { listRepos } from "./repos.js";
 /** Get usage stats. */
 export function getUsageStats(usageManager: UsageManager) {
   return usageManager.getStats();
-}
-
-/** List features by scanning the docs/ directory in the given workspace. */
-export async function listFeatures(workspaceDir: string) {
-  const fm = new FeatureManager(workspaceDir);
-  return fm.list();
 }
 
 /** Get all data needed for the initial bootstrap. */

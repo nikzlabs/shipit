@@ -9,7 +9,6 @@ import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
 import { ChatHistoryManager } from "./chat-history.js";
 import { UsageManager } from "./usage.js";
-import { FeatureManager } from "./features.js";
 import { DeploymentManager } from "./deployment-manager.js";
 import { DeploymentStore } from "./deployment-store.js";
 import { SecretStore } from "./secret-store.js";
@@ -72,11 +71,6 @@ export interface AppDeps {
    * Deployment store instance. Defaults to `new DeploymentStore(workspaceDir)`.
    */
   deploymentStore?: DeploymentStore;
-  /**
-   * Feature manager instance. Defaults to `new FeatureManager(workspaceDir)`.
-   * Scans docs/ for feature directories and parses status from frontmatter.
-   */
-  featureManager?: FeatureManager;
   /**
    * Text generation function for AI-powered features (e.g., PR description).
    * Spawns a short-lived Claude process, collects text output, and returns it.
@@ -142,7 +136,6 @@ export interface ManagerSet {
   githubAuthManager: GitHubAuthManager;
   deploymentManager: DeploymentManager;
   deploymentStore: DeploymentStore;
-  featureManager: FeatureManager;
   generateText: (prompt: string, cwd: string) => Promise<string>;
   isTestMode: boolean;
   secretStore: SecretStore;
@@ -249,9 +242,6 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // ---- Secret store ----
   const secretStore = new SecretStore(databaseManager);
 
-  // ---- Feature manager ----
-  const featureManager = deps.featureManager ?? new FeatureManager(workspaceDir);
-
   // ---- Text generation (AI-powered features) ----
   // Tests inject a stub. In production, agentFactory is unavailable (agents
   // live inside session containers), so the default uses agentFactory only
@@ -307,7 +297,6 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
     deploymentManager,
     deploymentStore,
     secretStore,
-    featureManager,
     generateText,
     isTestMode,
   };

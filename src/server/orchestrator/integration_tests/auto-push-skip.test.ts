@@ -18,7 +18,6 @@ import { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
-import { FeatureManager } from "../features.js";
 import type { WsServerMessage } from "../../shared/types.js";
 
 let tmpDir: string;
@@ -51,7 +50,6 @@ beforeEach(async () => {
     serveStatic: false,
     deploymentManager: new StubDeploymentManager() as any,
     deploymentStore: new StubDeploymentStore() as any,
-    featureManager: new FeatureManager(tmpDir),
     autoPushDebounceMs: 100,
   });
 

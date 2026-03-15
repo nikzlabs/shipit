@@ -1,6 +1,6 @@
 import type { ClaudeEvent } from "./claude-types.js";
 import type { AgentId, AgentEvent } from "./agent-types.js";
-import type { GitCommitInfo, SessionInfo, FeatureInfo, FileTreeNode, WsChatHistoryMessage, FileDiff, RepoInfo } from "./domain-types.js";
+import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, WsChatHistoryMessage, FileDiff, RepoInfo } from "./domain-types.js";
 import type {
   WsGitHubStatus,
   WsGitHubPushResult,
@@ -92,7 +92,7 @@ export interface WsSessionRenamed {
 
 export interface WsDocList {
   type: "doc_list";
-  files: string[];
+  docs: DocEntry[];
 }
 
 export interface WsDocContent {
@@ -163,13 +163,6 @@ export interface WsTemplateApplied {
   type: "template_applied";
   templateId: string;
   name: string;
-}
-
-// ---- Feature server messages ----
-
-export interface WsFeatureList {
-  type: "feature_list";
-  features: FeatureInfo[];
 }
 
 // ---- Model info ----
@@ -375,7 +368,6 @@ export type WsServerMessage =
   | WsUsageStats
   | WsUsageUpdate
   | WsTemplateApplied
-  | WsFeatureList
   | WsGlobalSettings
   | WsFilesChanged
   | WsGitHubStatus
