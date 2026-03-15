@@ -17,7 +17,7 @@ function makeFeature(overrides?: Partial<FeatureInfo>): FeatureInfo {
 describe("FeaturesPanel", () => {
   const defaultProps = () => ({
     features: [] as FeatureInfo[],
-    onStartSession: vi.fn(),
+    onFeatureClick: vi.fn(),
     onRefresh: vi.fn(),
   });
 
@@ -114,13 +114,13 @@ describe("FeaturesPanel", () => {
   });
 
   describe("interactions", () => {
-    it("calls onStartSession when Start Session button is clicked", () => {
+    it("calls onFeatureClick when a feature row is clicked", () => {
       const props = defaultProps();
       const feature = makeFeature({ id: "001-auth", name: "Auth", number: 1 });
       props.features = [feature];
       render(<FeaturesPanel {...props} />);
-      fireEvent.click(screen.getByText("Start Session"));
-      expect(props.onStartSession).toHaveBeenCalledWith(feature);
+      fireEvent.click(screen.getByText("Auth"));
+      expect(props.onFeatureClick).toHaveBeenCalledWith(feature);
     });
 
     it("calls onRefresh when Reload is clicked", () => {
