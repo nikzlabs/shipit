@@ -242,6 +242,7 @@ The browser uses two parallel channels:
 - **Read before coding** — before changing a feature, read its `docs/NNN-feature/plan.md` and the source files listed under "Key files". Trace the data flow for similar features to understand existing patterns.
 - **Identify all touchpoints** — plan which files need changes (server, client, types, tests) before writing code.
 - **Co-locate tests** — place tests next to source files (`foo.ts` → `foo.test.ts`). Follow patterns from neighboring test files.
+- **Lint and typecheck before finishing** — always run `npm run lint` and `npm run typecheck` after code changes and fix any errors before considering work complete.
 - **Update docs when done** — update the relevant `plan.md` with new subsystems, patterns, or key files you added. Mark completed checklist items with `[x]`; if all items are done, delete `checklist.md`.
 
 ## Code conventions
