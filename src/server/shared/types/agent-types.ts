@@ -85,6 +85,10 @@ export interface AgentRunParams {
   images?: ImageAttachment[];
   cwd: string;
   permissionMode?: PermissionMode;
+  /** Path to MCP config JSON file (e.g., for Playwright browser tools). */
+  mcpConfigPath?: string;
+  /** Internal preview URL the agent can navigate to (e.g., http://preview-host:5173). */
+  previewUrl?: string;
 }
 
 // ---- AgentProcess interface ----

@@ -24,6 +24,17 @@ describe("canonicalizeTool", () => {
     expect(canonicalizeTool("codex", "apply_patch")).toBe("file_edit");
   });
 
+  it("maps MCP Playwright browser tool names to browser", () => {
+    expect(canonicalizeTool("claude", "mcp__playwright__browser_navigate")).toBe("browser");
+    expect(canonicalizeTool("claude", "mcp__playwright__browser_snapshot")).toBe("browser");
+    expect(canonicalizeTool("claude", "mcp__playwright__browser_click")).toBe("browser");
+    expect(canonicalizeTool("claude", "mcp__playwright__browser_type")).toBe("browser");
+    expect(canonicalizeTool("claude", "mcp__playwright__browser_take_screenshot")).toBe("browser");
+    expect(canonicalizeTool("claude", "mcp__playwright__browser_scroll")).toBe("browser");
+    expect(canonicalizeTool("claude", "mcp__playwright__browser_hover")).toBe("browser");
+    expect(canonicalizeTool("claude", "mcp__playwright__browser_select_option")).toBe("browser");
+  });
+
   it("returns null for unknown tool names", () => {
     expect(canonicalizeTool("claude", "UnknownTool")).toBeNull();
     expect(canonicalizeTool("codex", "UnknownTool")).toBeNull();

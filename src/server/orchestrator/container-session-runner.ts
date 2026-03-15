@@ -174,6 +174,28 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     return this.previewWorkerUrl ?? this.workerUrl;
   }
 
+  /**
+   * Resolve the internal preview URL that the agent can navigate to.
+   * Combines the preview worker's host with the first detected preview port.
+   * Returns undefined if preview is not available.
+   */
+  resolvePreviewUrl(): string | undefined {
+    const baseUrl = this.previewWorkerUrl;
+    if (!baseUrl) return undefined;
+
+    // Use the first detected preview port (from either managed or detected sources)
+    const port = this._workerPreviewPorts[0] ?? this._detectedPorts[0];
+    if (!port) return undefined;
+
+    // Extract host from the preview worker URL (e.g., "http://172.17.0.3:9100" → "172.17.0.3")
+    try {
+      const parsed = new URL(baseUrl);
+      return `http://${parsed.hostname}:${port}`;
+    } catch {
+      return undefined;
+    }
+  }
+
   // --- Agent state (same interface as SessionRunner) ---
 
   get running(): boolean { return this._isRunning; }

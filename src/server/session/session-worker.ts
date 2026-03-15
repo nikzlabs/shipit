@@ -14,6 +14,7 @@
 import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
 import type { AgentProcess, AgentRunParams, AgentEvent, AgentId } from "./agents/agent-process.js";
 import { TerminalProcess } from "./terminal.js";
 import { PreviewManager } from "./preview-manager.js";
@@ -139,6 +140,28 @@ export class SessionWorker extends EventEmitter {
     return app;
   }
 
+  /**
+   * Generate an MCP config file for Playwright browser tools.
+   * Only generated for the Claude agent (Codex doesn't support MCP).
+   * Returns the config file path, or undefined if not applicable.
+   */
+  private generateMcpConfig(agentId: AgentId): string | undefined {
+    if (agentId !== "claude") return undefined;
+
+    const configPath = `/tmp/mcp-config-${Date.now()}.json`;
+    const config = {
+      mcpServers: {
+        playwright: {
+          command: "playwright-mcp",
+          args: ["--headless", "--no-sandbox"],
+        },
+      },
+    };
+
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    return configPath;
+  }
+
   // --- Session mode endpoints (agent, terminal, file watcher) ---
 
   private registerSessionEndpoints(app: FastifyInstance): void {
@@ -155,9 +178,20 @@ export class SessionWorker extends EventEmitter {
       }
 
       try {
+        // Generate MCP config for Playwright browser tools
+        const mcpConfigPath = this.generateMcpConfig(agentId);
+
         this.agent = this.agentFactory(agentId);
         this.wireAgentEvents(this.agent);
-        this.agent.run({ ...params, cwd: this.workspaceDir });
+        this.agent.run({ ...params, cwd: this.workspaceDir, mcpConfigPath });
+
+        // Clean up MCP config when agent finishes
+        if (mcpConfigPath) {
+          this.agent.on("done", () => {
+            try { fs.unlinkSync(mcpConfigPath); } catch { /* ignore */ }
+          });
+        }
+
         return { started: true };
       } catch (err) {
         this.agent = null;
