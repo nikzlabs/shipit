@@ -273,23 +273,31 @@ export class SessionWorker extends EventEmitter {
     app.put<{ Body: Record<string, string> }>("/secrets", async (request) => {
       const secrets = request.body ?? {};
 
+      // Detect whether any env vars actually changed before restarting
+      let changed = false;
+
       // Remove keys that were tracked but are absent from the new payload
       for (const key of this._trackedSecretKeys) {
         if (!(key in secrets)) {
           // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- cleaning up env vars by name
           delete process.env[key];
+          changed = true;
         }
       }
 
       // Set new keys and update tracking
+      const oldKeys = new Set(this._trackedSecretKeys);
       this._trackedSecretKeys.clear();
       for (const [key, value] of Object.entries(secrets)) {
+        if (!oldKeys.has(key) || process.env[key] !== value) {
+          changed = true;
+        }
         process.env[key] = value;
         this._trackedSecretKeys.add(key);
       }
 
-      // Restart the dev server if running so it picks up new env vars
-      if (this.preview?.running) {
+      // Restart the dev server only if env vars actually changed
+      if (changed && this.preview?.running) {
         this.preview.restart(this.workspaceDir).catch((err: unknown) => {
           this.broadcastSSE({
             type: "preview_config_error",
