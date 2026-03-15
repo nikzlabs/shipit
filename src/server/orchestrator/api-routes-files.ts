@@ -48,7 +48,11 @@ export async function registerFileRoutes(
         return;
       }
       try {
-        const result = await getFileContent(dir, filePath);
+        // Upload files live in a sibling "uploads" directory, not inside workspace
+        const resolveDir = filePath.startsWith("uploads/")
+          ? path.dirname(dir)
+          : dir;
+        const result = await getFileContent(resolveDir, filePath);
         const response: Record<string, unknown> = {
           path: filePath,
           content: result.content,

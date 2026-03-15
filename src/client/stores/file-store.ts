@@ -90,10 +90,13 @@ export const useFileStore = create<FileState>((set) => ({
       previewActions: opts?.actions ?? [],
     });
 
+    // Normalize path for URL construction (strip leading slash from upload paths)
+    const urlPath = filePath.startsWith("/") ? filePath.slice(1) : filePath;
+
     if (detectedType === "markdown") {
       // Fetch via docs endpoint for markdown
       try {
-        const res = await fetch(`/api/sessions/${sessionId}/docs/${filePath}`);
+        const res = await fetch(`/api/sessions/${sessionId}/docs/${urlPath}`);
         if (!res.ok) throw new Error(`Failed to fetch doc: ${res.status}`);
         const { content } = await res.json() as { content: string };
         set({ previewContent: content, previewLoading: false });
@@ -103,7 +106,7 @@ export const useFileStore = create<FileState>((set) => ({
     } else {
       // Fetch via files endpoint for code/image/binary
       try {
-        const res = await fetch(`/api/sessions/${sessionId}/files/${filePath}`);
+        const res = await fetch(`/api/sessions/${sessionId}/files/${urlPath}`);
         if (!res.ok) throw new Error(`Failed to fetch file: ${res.status}`);
         const data = await res.json() as { content: string | null; isBinary?: boolean; isImage?: boolean };
         if (data.isImage) {

@@ -160,6 +160,16 @@ describe("FileTree", () => {
     expect(screen.queryByText("Uploads")).not.toBeInTheDocument();
   });
 
+  it("calls onFileClick when an upload filename is clicked", () => {
+    const onFileClick = vi.fn();
+    const uploads = [
+      { id: "1", name: "data.csv", status: "ready" as const, path: "/uploads/data.csv", size: 100, progress: 100 },
+    ];
+    render(<FileTree tree={sampleTree} onRefresh={() => {}} uploads={uploads} onFileClick={onFileClick} />);
+    fireEvent.click(screen.getByText("data.csv"));
+    expect(onFileClick).toHaveBeenCalledWith("/uploads/data.csv");
+  });
+
   it("calls onAddToChat with upload path when upload plus button is clicked", () => {
     const onAddToChat = vi.fn();
     const uploads = [
