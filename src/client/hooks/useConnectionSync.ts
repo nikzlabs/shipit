@@ -8,8 +8,9 @@ import { loadBootstrapData, loadSessionHistory } from "../utils/session-data.js"
 export function useConnectionSync(params: {
   status: string;
   send: (msg: WsClientMessage) => void;
+  onSessionConnect?: (sessionId: string) => void | Promise<void>;
 }): void {
-  const { status, send } = params;
+  const { status, send, onSessionConnect } = params;
 
   const historyLoadedRef = useRef(false);
   const bootstrapFetchedRef = useRef(false);
@@ -33,6 +34,7 @@ export function useConnectionSync(params: {
       historyLoadedRef.current = true;
       const sessionId = useSessionStore.getState().sessionId!;
       loadSessionHistory(sessionId).catch((err: unknown) => console.error("[api] Failed to load session history:", err));
+      void onSessionConnect?.(sessionId);
 
       // If there's a pending WS message (e.g. new session from home page, feature start), send it now
       const pending = useSessionStore.getState().pendingWsMessage;

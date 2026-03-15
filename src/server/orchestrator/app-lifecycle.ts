@@ -160,6 +160,9 @@ export function buildRunnerFactory(
 
   return deps.runnerFactory ?? (containerManager ? ((o: Parameters<SessionRunnerFactory>[0]) => {
     const mgr = containerManager;
+    // o.sessionDir is session.workspaceDir (e.g. /workspace/sessions/{uuid}/workspace).
+    // Derive the parent session dir for container config (uploads mount, etc.).
+    const parentSessionDir = path.dirname(o.sessionDir);
 
     // Check for an existing container (runner was disposed but container kept running).
     const existing = mgr.get(o.sessionId);
@@ -210,7 +213,8 @@ export function buildRunnerFactory(
           const sessionConfig = resolveSessionConfig(o.sessionDir);
           const config = mgr.buildConfig({
             sessionId: o.sessionId,
-            sessionDir: o.sessionDir,
+            sessionDir: parentSessionDir,
+            workspaceDir: o.sessionDir,
             credentialsDir,
             depCacheDir: o.depCacheDir,
             memoryLimit: sessionConfig.resources.memory * 1024 * 1024,
@@ -235,7 +239,8 @@ export function buildRunnerFactory(
     const sessionConfig = resolveSessionConfig(o.sessionDir);
     const config = mgr.buildConfig({
       sessionId: o.sessionId,
-      sessionDir: o.sessionDir,
+      sessionDir: parentSessionDir,
+      workspaceDir: o.sessionDir,
       credentialsDir,
       depCacheDir: o.depCacheDir,
       memoryLimit: sessionConfig.resources.memory * 1024 * 1024,
@@ -573,20 +578,21 @@ export interface SessionDirDeps {
  */
 export function createSessionDirFactory(
   dirDeps: SessionDirDeps,
-): (title: string) => Promise<{ appSessionId: string; sessionDir: string }> {
+): (title: string) => Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }> {
   const { sessionsRoot, sessionManager } = dirDeps;
 
   return async (
     title: string,
-  ): Promise<{ appSessionId: string; sessionDir: string }> => {
+  ): Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }> => {
     const appSessionId = crypto.randomUUID();
     const sessionDir = path.join(sessionsRoot, appSessionId);
-    await fs.mkdir(sessionDir, { recursive: true });
+    const workspaceDir = path.join(sessionDir, "workspace");
+    await fs.mkdir(workspaceDir, { recursive: true });
 
-    sessionManager.track(appSessionId, title, sessionDir);
+    sessionManager.track(appSessionId, title, workspaceDir);
     console.log("[server] Created session directory:", sessionDir);
 
-    return { appSessionId, sessionDir };
+    return { appSessionId, sessionDir, workspaceDir };
   };
 }
 
@@ -628,7 +634,7 @@ export interface WarmPoolDeps {
   credentialsDir: string;
   getBareCacheDir: (repoUrl: string) => string;
   getDepCacheDir: (repoUrl: string) => string;
-  createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string }>;
+  createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }>;
   sseBroadcast: (event: string, data: unknown) => void;
 }
 
@@ -673,7 +679,7 @@ export function createWarmPool(
 
         const branchPrefix = generateBranchPrefix();
         const created = await createSessionDir("Warm session");
-        const { appSessionId, sessionDir } = created;
+        const { appSessionId, sessionDir, workspaceDir } = created;
 
         // Mark as warm before doing git work
         sessionManager.setWarm(appSessionId, true);
@@ -689,11 +695,11 @@ export function createWarmPool(
           console.warn("[warm] Cache fetch failed (non-fatal):", String(fetchErr));
         }
 
-        // Remove the empty dir (clone needs it absent or will create a subdirectory)
-        await fs.rm(sessionDir, { recursive: true, force: true });
+        // Remove the workspace subdir (clone needs it absent)
+        await fs.rm(workspaceDir, { recursive: true, force: true });
 
-        // Clone from bare cache into session dir (hardlinked, fast)
-        await cacheGit.cloneFromCache(sessionDir);
+        // Clone from bare cache into workspace subdir (hardlinked, fast)
+        await cacheGit.cloneFromCache(workspaceDir);
 
         // Checkout a new branch from the default branch
         let startPoint: string | undefined;
@@ -709,11 +715,11 @@ export function createWarmPool(
         // Create branch in the session clone
         const branchArgs = ["checkout", "-b", branchPrefix];
         if (startPoint) branchArgs.push(startPoint);
-        await simpleGit(sessionDir).raw(branchArgs);
+        await simpleGit(workspaceDir).raw(branchArgs);
 
         // Configure credentials
         if (githubAuthManager.authenticated) {
-          githubAuthManager.configureGitCredentials(sessionDir);
+          githubAuthManager.configureGitCredentials(workspaceDir);
         }
 
         sessionManager.setBranch(appSessionId, branchPrefix);
@@ -731,6 +737,7 @@ export function createWarmPool(
             const config = containerManager.buildConfig({
               sessionId: appSessionId,
               sessionDir,
+              workspaceDir,
               credentialsDir,
               depCacheDir: getDepCacheDir(repoUrl),
             });

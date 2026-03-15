@@ -79,8 +79,14 @@ export interface ContainerConfig {
   sessionId: string;
   /** Host path: /workspace/sessions/{uuid} */
   sessionDir: string;
+  /** Host path to the git repo directory, mounted as /user in the container.
+   *  New layout: /workspace/sessions/{uuid}/workspace
+   *  Falls back to sessionDir for legacy sessions. */
+  workspaceDir?: string;
   /** Host path: /workspace/dep-cache/{hash} (shared dependency cache) */
   depCacheDir?: string;
+  /** Host path: /workspace/sessions/{uuid}/uploads (uploaded files) */
+  uploadsDir?: string;
   /** Host path: /credentials (Claude CLI auth, GitHub token) */
   credentialsDir: string;
   /** Container image name. */
@@ -503,6 +509,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   buildConfig(opts: {
     sessionId: string;
     sessionDir: string;
+    workspaceDir?: string;
     credentialsDir: string;
     depCacheDir?: string;
     env?: Record<string, string>;

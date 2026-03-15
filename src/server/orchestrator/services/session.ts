@@ -112,35 +112,36 @@ export async function forkSession(
   const crypto = await import("node:crypto");
   const newSessionId = crypto.randomUUID();
   const newSessionDir = path.join(sessionsRoot, newSessionId);
+  const newWorkspaceDir = path.join(newSessionDir, "workspace");
 
   if (activeSession?.remoteUrl) {
     // Clone from bare cache
     const cacheDir = getBareCacheDir(activeSession.remoteUrl);
     const cacheGit = createRepoGit(cacheDir);
     await cacheGit.fetchCache();
-    await cacheGit.cloneFromCache(newSessionDir);
+    await cacheGit.cloneFromCache(newWorkspaceDir);
     // Checkout the branch at the specified start point
     const branchArgs = ["checkout", "-b", trimmed];
     if (startPoint) branchArgs.push(startPoint);
-    await simpleGit(newSessionDir).raw(branchArgs);
+    await simpleGit(newWorkspaceDir).raw(branchArgs);
   } else {
     // Local repo — clone directly from the active session
-    await simpleGit().raw(["clone", "--local", activeSessionDir, newSessionDir]);
+    await simpleGit().raw(["clone", "--local", activeSessionDir, newWorkspaceDir]);
     const branchArgs = ["checkout", "-b", trimmed];
     if (startPoint) branchArgs.push(startPoint);
-    await simpleGit(newSessionDir).raw(branchArgs);
+    await simpleGit(newWorkspaceDir).raw(branchArgs);
     // Disable auto-gc
-    await simpleGit(newSessionDir).raw(["config", "gc.auto", "0"]);
+    await simpleGit(newWorkspaceDir).raw(["config", "gc.auto", "0"]);
   }
 
   // Configure GitHub credentials
   if (githubAuthManager.authenticated) {
-    githubAuthManager.configureGitCredentials(newSessionDir);
+    githubAuthManager.configureGitCredentials(newWorkspaceDir);
   }
 
   // Track in session manager
   const title = `${activeSession?.title ?? "Session"} (${trimmed})`;
-  sessionManager.track(newSessionId, title, newSessionDir);
+  sessionManager.track(newSessionId, title, newWorkspaceDir);
   sessionManager.setBranch(newSessionId, trimmed);
   sessionManager.setBranchRenamed(newSessionId, true);
   if (activeSession?.remoteUrl) {

@@ -14,6 +14,8 @@ export interface FileAutoCompleteProps {
   onDismiss: () => void;
   /** Position hint for the popup (pixels from bottom of viewport). */
   anchorBottom?: number;
+  /** Uploaded file paths (e.g. "/uploads/data.csv") to include in autocomplete. */
+  uploadPaths?: string[];
 }
 
 /** Recursively flatten a FileTreeNode[] into a list of file paths. */
@@ -45,11 +47,12 @@ export function FileAutoComplete({
   fileTree,
   onSelect,
   onDismiss,
+  uploadPaths = [],
 }: FileAutoCompleteProps) {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const allFiles = flattenTree(fileTree);
+  const allFiles = [...flattenTree(fileTree), ...uploadPaths];
   const matches = filterFiles(allFiles, query);
 
   // Reset selected index when query changes (inline state reset during render)

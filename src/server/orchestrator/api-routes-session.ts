@@ -517,9 +517,9 @@ export async function registerSessionRoutes(
           const cacheDir = deps.getSharedRepoDir(url);
           const branchPrefix = generateBranchPrefix();
           const created = await deps.createSessionDirFull("Warm session");
-          const { appSessionId, sessionDir } = created;
+          const { appSessionId, sessionDir, workspaceDir } = created;
 
-          await rm(sessionDir, { recursive: true, force: true });
+          await rm(workspaceDir, { recursive: true, force: true });
 
           const cacheGit = createRepoGit(cacheDir);
 
@@ -531,7 +531,7 @@ export async function registerSessionRoutes(
           }
           const fetchDurationMs = Date.now() - fetchT0;
 
-          await cacheGit.cloneFromCache(sessionDir);
+          await cacheGit.cloneFromCache(workspaceDir);
 
           let startPoint: string | undefined;
           try {
@@ -544,10 +544,10 @@ export async function registerSessionRoutes(
           }
           const branchArgs = ["checkout", "-b", branchPrefix];
           if (startPoint) branchArgs.push(startPoint);
-          await simpleGit(sessionDir).raw(branchArgs);
+          await simpleGit(workspaceDir).raw(branchArgs);
 
           if (deps.githubAuthManager.authenticated) {
-            deps.githubAuthManager.configureGitCredentials(sessionDir);
+            deps.githubAuthManager.configureGitCredentials(workspaceDir);
           }
 
           sessionManager.setRemoteUrl(appSessionId, url);

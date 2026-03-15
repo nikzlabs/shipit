@@ -15,6 +15,7 @@ vi.mock("../shared/strip-ansi.js", () => {
   };
 });
 
+
 import * as pty from "node-pty";
 const mockPtySpawn = vi.mocked(pty.spawn);
 
@@ -367,17 +368,19 @@ describe("ClaudeProcess", () => {
   });
 
   describe("image support", () => {
-    it("writes image payload to PTY stdin", () => {
+    it("passes prompt through unchanged (images handled by orchestrator)", () => {
       const mockProc = createMockPty();
       mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
-      const images = [{ data: "base64data", mediaType: "image/png" }];
-      claude.run("describe this", undefined, undefined, images);
+      // Images param is accepted but ignored — orchestrator saves them to disk
+      // and prepends references to the prompt before calling run().
+      claude.run("describe this", undefined, undefined, [{ data: "base64", mediaType: "image/png" }]);
 
-      expect(mockProc.write).toHaveBeenCalledWith(
-        expect.stringContaining('"type":"image"'),
-      );
+      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const promptIdx = args.indexOf("-p") + 1;
+      expect(args[promptIdx]).toBe("describe this");
+      expect(mockProc.write).not.toHaveBeenCalled();
     });
   });
 

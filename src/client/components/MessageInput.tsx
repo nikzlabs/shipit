@@ -3,9 +3,11 @@ import { PaperclipIcon, StopIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { ModeSelector } from "./ModeSelector.js";
 import { FileAttachmentChips } from "./FileAttachmentChips.js";
+import { FileUploadChips } from "./FileUploadChips.js";
 import { FileAutoComplete } from "./FileAutoComplete.js";
 import { Button } from "./ui/button.js";
 import type { PermissionMode, FileContextRef, FileTreeNode } from "../../server/shared/types.js";
+import type { UploadItem } from "../hooks/useFileUpload.js";
 
 export interface ImagePreview {
   data: string;       // base64-encoded
@@ -29,6 +31,11 @@ export function MessageInput({
   onRemoveFile,
   onAddFile,
   fileTree = [],
+  uploads = [],
+  allUploads,
+  onUploadFiles,
+  onRemoveUpload,
+  onRetryUpload,
 }: {
   onSend: (text: string, images?: { data: string; mediaType: string; filename: string }[]) => void;
   disabled: boolean;
@@ -40,6 +47,12 @@ export function MessageInput({
   onRemoveFile?: (index: number) => void;
   onAddFile?: (filePath: string) => void;
   fileTree?: FileTreeNode[];
+  uploads?: UploadItem[];
+  /** All session uploads — for @-autocomplete (persists across sends). */
+  allUploads?: UploadItem[];
+  onUploadFiles?: (files: File[]) => void;
+  onRemoveUpload?: (index: number) => void;
+  onRetryUpload?: (index: number) => void;
 }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<ImagePreview[]>([]);
@@ -59,43 +72,50 @@ export function MessageInput({
     (files: FileList | File[]) => {
       clearImageError();
       const fileArray = Array.from(files);
+      const nonImageFiles: File[] = [];
 
       for (const file of fileArray) {
-        if (!ALLOWED_TYPES.has(file.type)) {
-          setImageError(`"${file.name}" is not a supported image type. Use PNG, JPEG, GIF, or WebP.`);
-          continue;
-        }
-        if (file.size > MAX_IMAGE_SIZE) {
-          setImageError(`"${file.name}" is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 5 MB.`);
-          continue;
-        }
+        if (ALLOWED_TYPES.has(file.type)) {
+          // Image file — handle as base64 inline image
+          if (file.size > MAX_IMAGE_SIZE) {
+            setImageError(`"${file.name}" is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 5 MB.`);
+            continue;
+          }
 
-        const reader = new FileReader();
-        reader.onload = () => {
-          const base64Full = reader.result as string;
-          // Strip the data:image/...;base64, prefix
-          const base64 = base64Full.split(",")[1] ?? "";
-          const previewUrl = URL.createObjectURL(file);
-          setImages((current) => {
-            if (current.length >= MAX_IMAGES) {
-              setImageError(`Maximum ${MAX_IMAGES} images per message.`);
-              return current;
-            }
-            return [
-              ...current,
-              {
-                data: base64,
-                mediaType: file.type,
-                filename: file.name,
-                previewUrl,
-              },
-            ];
-          });
-        };
-        reader.readAsDataURL(file);
+          const reader = new FileReader();
+          reader.onload = () => {
+            const base64Full = reader.result as string;
+            const base64 = base64Full.split(",")[1] ?? "";
+            const previewUrl = URL.createObjectURL(file);
+            setImages((current) => {
+              if (current.length >= MAX_IMAGES) {
+                setImageError(`Maximum ${MAX_IMAGES} images per message.`);
+                return current;
+              }
+              return [
+                ...current,
+                {
+                  data: base64,
+                  mediaType: file.type,
+                  filename: file.name,
+                  previewUrl,
+                },
+              ];
+            });
+          };
+          reader.readAsDataURL(file);
+        } else {
+          // Non-image file — upload to server
+          nonImageFiles.push(file);
+        }
+      }
+
+      // Upload non-image files
+      if (nonImageFiles.length > 0 && onUploadFiles) {
+        onUploadFiles(nonImageFiles);
       }
     },
-    [clearImageError],
+    [clearImageError, onUploadFiles],
   );
 
   const removeImage = useCallback((index: number) => {
@@ -269,7 +289,7 @@ export function MessageInput({
       {/* Drop zone overlay */}
       {isDragging && (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-(--color-accent)/10 border-2 border-dashed border-(--color-accent) rounded-lg pointer-events-none">
-          <span className="text-(--color-accent) text-sm font-medium">Drop file or image here</span>
+          <span className="text-(--color-accent) text-sm font-medium">Drop files here</span>
         </div>
       )}
 
@@ -285,6 +305,13 @@ export function MessageInput({
       {pendingFiles.length > 0 && onRemoveFile && (
         <div className="mb-2 max-w-3xl mx-auto">
           <FileAttachmentChips files={pendingFiles} onRemove={onRemoveFile} />
+        </div>
+      )}
+
+      {/* Upload chips */}
+      {uploads.length > 0 && onRemoveUpload && onRetryUpload && (
+        <div className="mb-2 max-w-3xl mx-auto">
+          <FileUploadChips uploads={uploads} onRemove={onRemoveUpload} onRetry={onRetryUpload} />
         </div>
       )}
 
@@ -329,6 +356,7 @@ export function MessageInput({
             fileTree={fileTree}
             onSelect={handleAutoCompleteSelect}
             onDismiss={handleAutoCompleteDismiss}
+            uploadPaths={(allUploads ?? uploads).filter((u) => u.status === "ready" && u.path).map((u) => u.path!)}
           />
         )}
 
@@ -336,22 +364,21 @@ export function MessageInput({
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/png,image/jpeg,image/gif,image/webp"
           multiple
           className="hidden"
           onChange={handleFileInputChange}
           data-testid="file-input"
         />
 
-        {/* Attach image button */}
+        {/* Attach file button */}
         <Button
           variant="secondary"
           size="md"
           onClick={handleAttachClick}
-          disabled={disabled || images.length >= MAX_IMAGES}
+          disabled={disabled}
           className="rounded-lg px-3 py-3"
-          title="Attach image"
-          aria-label="Attach image"
+          title="Attach file"
+          aria-label="Attach file"
         >
           <PaperclipIcon size={ICON_SIZE.MD} />
         </Button>

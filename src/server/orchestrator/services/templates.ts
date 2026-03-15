@@ -65,7 +65,7 @@ export async function createRepoWithTemplate(
 export async function applyTemplate(
   sessionManager: SessionManager,
   createGitManager: (dir: string) => GitManager,
-  createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string }>,
+  createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }>,
   templateId: string,
   sessionId?: string,
 ): Promise<{ templateId: string; name: string; session?: SessionInfo; sessionDir: string }> {
@@ -85,7 +85,7 @@ export async function applyTemplate(
   } else {
     const created = await createSessionDir(template.name);
     appSessionId = created.appSessionId;
-    sessionDir = created.sessionDir;
+    sessionDir = created.workspaceDir;
     // New session directory needs git init before we can commit template files
     const newGit = createGitManager(sessionDir);
     await newGit.init();

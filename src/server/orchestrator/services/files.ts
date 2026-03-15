@@ -1,5 +1,5 @@
 /**
- * File and documentation read services — file tree, file content, docs.
+ * File and documentation read services — file tree, file content, docs, uploads.
  */
 
 import path from "node:path";
@@ -7,6 +7,7 @@ import fs from "node:fs/promises";
 import { scanFileTree } from "../../shared/file-tree.js";
 import { findMarkdownFiles } from "../markdown.js";
 import { ServiceError } from "./types.js";
+import type { UploadedFile } from "../../shared/types.js";
 
 /** Get file tree for a directory. */
 export async function getFileTree(dir: string) {
@@ -51,4 +52,169 @@ export async function getDocContent(
     throw new ServiceError(400, "Invalid path");
   }
   return fs.readFile(safePath, "utf-8");
+}
+
+// ---------------------------------------------------------------------------
+// Upload service functions
+// ---------------------------------------------------------------------------
+
+/** Maximum file size per upload: 50 MB. */
+export const MAX_UPLOAD_FILE_SIZE = 50 * 1024 * 1024;
+/** Maximum files per upload request. */
+export const MAX_UPLOAD_FILES_PER_REQUEST = 20;
+/** Maximum total upload storage per session: 500 MB. */
+export const MAX_UPLOAD_SESSION_QUOTA = 500 * 1024 * 1024;
+
+/**
+ * Sanitize a filename for safe storage. Strips path traversal, null bytes,
+ * and control characters. Returns a flat filename (no subdirectories).
+ */
+export function sanitizeFilename(raw: string): string {
+  // Take only the basename (strip any path components)
+  let name = path.basename(raw);
+  // Remove null bytes and control characters (eslint-disable-next-line no-control-regex)
+  // eslint-disable-next-line no-control-regex
+  name = name.replace(/[\0\u0001-\u001f\u007f]/g, "");
+  // Remove leading dots to prevent hidden files from traversal
+  name = name.replace(/^\.+/, "");
+  // Fallback for empty names
+  if (!name) name = "upload";
+  return name;
+}
+
+/**
+ * Generate a collision-free filename by appending a numeric suffix.
+ * e.g. "data.csv" → "data-1.csv" → "data-2.csv"
+ */
+export async function deduplicateFilename(
+  uploadsDir: string,
+  filename: string,
+): Promise<string> {
+  let candidate = filename;
+  let counter = 0;
+  const ext = path.extname(filename);
+  const base = path.basename(filename, ext);
+
+  while (true) {
+    try {
+      await fs.access(path.join(uploadsDir, candidate));
+      // File exists — try next suffix
+      counter++;
+      candidate = `${base}-${counter}${ext}`;
+    } catch {
+      // File doesn't exist — this name is available
+      return candidate;
+    }
+  }
+}
+
+/**
+ * Calculate the total size of existing uploads in a directory.
+ */
+export async function getUploadsDirSize(uploadsDir: string): Promise<number> {
+  try {
+    const entries = await fs.readdir(uploadsDir);
+    let total = 0;
+    for (const entry of entries) {
+      try {
+        const stat = await fs.stat(path.join(uploadsDir, entry));
+        if (stat.isFile()) total += stat.size;
+      } catch {
+        // Skip files we can't stat
+      }
+    }
+    return total;
+  } catch {
+    // Directory doesn't exist yet — 0 usage
+    return 0;
+  }
+}
+
+/**
+ * Save an uploaded file to the session's uploads directory.
+ * Validates per-file size and session quota. Sanitizes filename.
+ */
+export async function saveUploadedFile(
+  uploadsDir: string,
+  rawFilename: string,
+  data: Buffer,
+): Promise<UploadedFile> {
+  if (data.byteLength > MAX_UPLOAD_FILE_SIZE) {
+    throw new ServiceError(413, `File "${rawFilename}" exceeds ${MAX_UPLOAD_FILE_SIZE / 1024 / 1024} MB limit`);
+  }
+
+  // Check session quota
+  const currentUsage = await getUploadsDirSize(uploadsDir);
+  if (currentUsage + data.byteLength > MAX_UPLOAD_SESSION_QUOTA) {
+    throw new ServiceError(413, `Upload would exceed session quota of ${MAX_UPLOAD_SESSION_QUOTA / 1024 / 1024} MB`);
+  }
+
+  // Sanitize and deduplicate
+  const sanitized = sanitizeFilename(rawFilename);
+  const finalName = await deduplicateFilename(uploadsDir, sanitized);
+
+  // Ensure uploads directory exists
+  await fs.mkdir(uploadsDir, { recursive: true });
+
+  // Write the file
+  const filePath = path.join(uploadsDir, finalName);
+  await fs.writeFile(filePath, data);
+
+  return {
+    name: finalName,
+    path: `/uploads/${finalName}`,
+    size: data.byteLength,
+    type: "upload",
+  };
+}
+
+/**
+ * Delete an uploaded file from the session's uploads directory.
+ * Returns true if the file was deleted, false if it didn't exist.
+ * Throws on path traversal attempts.
+ */
+export async function deleteUpload(uploadsDir: string, filename: string): Promise<boolean> {
+  const safePath = path.resolve(uploadsDir, filename);
+  if (!safePath.startsWith(`${path.resolve(uploadsDir)}/`)) {
+    throw new ServiceError(400, "Invalid filename");
+  }
+
+  try {
+    await fs.unlink(safePath);
+    return true;
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw err;
+  }
+}
+
+/**
+ * List all uploaded files in a session's uploads directory.
+ */
+export async function listUploads(uploadsDir: string): Promise<UploadedFile[]> {
+  try {
+    const entries = await fs.readdir(uploadsDir);
+    const files: UploadedFile[] = [];
+    for (const entry of entries) {
+      try {
+        const stat = await fs.stat(path.join(uploadsDir, entry));
+        if (stat.isFile()) {
+          files.push({
+            name: entry,
+            path: `/uploads/${entry}`,
+            size: stat.size,
+            type: "upload",
+          });
+        }
+      } catch {
+        // Skip files we can't stat
+      }
+    }
+    return files;
+  } catch {
+    // Directory doesn't exist — no uploads
+    return [];
+  }
 }
