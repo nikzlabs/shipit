@@ -1,7 +1,7 @@
 import { Button } from "./ui/button.js";
 import { Modal } from "./ui/modal.js";
 import type { SessionInfo } from "../../server/shared/types.js";
-import { formatModelName, formatTokenCount, getContextLevel, type ModelInfo } from "./StatusBar.js";
+import { formatTokenCount, getContextLevel, type ModelInfo } from "./StatusBar.js";
 
 export interface SessionUsage {
   sessionId: string;
@@ -104,7 +104,7 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
                 {modelInfo && (
                   <div className="flex justify-between">
                     <span className="text-(--color-text-secondary)">Model</span>
-                    <span className="text-(--color-text-primary)" data-testid="usage-model-name">{formatModelName(modelInfo.model)}</span>
+                    <span className="text-(--color-text-primary)" data-testid="usage-model-name">{modelInfo.model}</span>
                   </div>
                 )}
                 <div className="flex justify-between">
