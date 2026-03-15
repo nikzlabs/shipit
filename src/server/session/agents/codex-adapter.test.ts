@@ -151,7 +151,7 @@ describe("CodexAdapter", () => {
     adapter = new CodexAdapter();
     let authRequired = false;
     adapter.on("auth_required", () => { authRequired = true; });
-    adapter.run({ prompt: "Hello", cwd: "/user" });
+    adapter.run({ prompt: "Hello", cwd: "/workspace" });
 
     expect(authRequired).toBe(true);
   });
@@ -434,7 +434,7 @@ describe("CodexAdapter", () => {
     let authRequired = false;
     adapter.on("auth_required", () => { authRequired = true; });
 
-    adapter.run({ prompt: "Hello", cwd: "/user" });
+    adapter.run({ prompt: "Hello", cwd: "/workspace" });
 
     await vi.waitFor(() => expect(fakeProc).toBeDefined());
 

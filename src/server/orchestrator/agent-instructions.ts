@@ -26,7 +26,7 @@ If you need to install dependencies (npm install, etc.), run the command in bash
 
 ## Uploaded files
 
-Users can upload files from their browser. Uploaded files are available at /uploads/ inside the container. This directory is outside the git repo (/user/) so files there are never committed. Use /tmp for temporary scratch work (e.g., unpacking archives).
+Users can upload files from their browser. Uploaded files are available at /uploads/ inside the container. This directory is outside the git repo (/workspace/) so files there are never committed. Use /tmp for temporary scratch work (e.g., unpacking archives).
 
 ## Terminal
 

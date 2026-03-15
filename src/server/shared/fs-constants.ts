@@ -7,7 +7,7 @@
  * Mount point for the session workspace inside containers.
  * The session directory is bind-mounted here for both session and preview containers.
  */
-export const CONTAINER_WORKSPACE_DIR = "/user";
+export const CONTAINER_WORKSPACE_DIR = "/workspace";
 
 export const WORKSPACE_SKIP_DIRS = new Set([
   "node_modules",
