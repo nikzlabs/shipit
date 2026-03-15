@@ -35,7 +35,7 @@ The MCP server process starts with the CLI (lightweight Node process, no browser
 
 ### Tool surface
 
-The Playwright MCP server provides these tools (standard `@anthropic-ai/mcp-playwright` surface):
+The Playwright MCP server provides these tools (standard `@playwright/mcp` surface):
 
 | Tool | Purpose |
 |------|---------|
@@ -48,7 +48,7 @@ The Playwright MCP server provides these tools (standard `@anthropic-ai/mcp-play
 | `browser_hover` | Hover over an element |
 | `browser_select_option` | Select a dropdown option |
 
-> **Note**: Verify the exact tool surface against the installed `@anthropic-ai/mcp-playwright` version before implementation. The list above is based on the current published package.
+> **Note**: Verify the exact tool surface against the installed `@playwright/mcp` version before implementation. The list above is based on the current published package.
 
 The snapshot tool is the primary way the agent "reads" the page — it returns a structured accessibility tree, not raw HTML. This is far more useful than DOM scraping for understanding what's on screen.
 
@@ -87,13 +87,13 @@ Here's the full data flow:
 
 ### MCP configuration
 
-The session worker generates an MCP config file at agent start time and passes it to the CLI. The `@anthropic-ai/mcp-playwright` package is **pre-installed in the Docker image** with a pinned version (not fetched via `npx` at runtime):
+The session worker generates an MCP config file at agent start time and passes it to the CLI. The `@playwright/mcp` package is **pre-installed in the Docker image** with a pinned version (not fetched via `npx` at runtime):
 
 ```json
 {
   "mcpServers": {
     "playwright": {
-      "command": "mcp-playwright",
+      "command": "playwright-mcp",
       "env": {
         "PLAYWRIGHT_HEADLESS": "true"
       }
@@ -242,7 +242,7 @@ const CLAUDE_TOOL_MAP: Record<string, CanonicalTool> = {
 | `src/server/orchestrator/agent-instructions.ts` | Add browser access section to system prompt template |
 | `src/server/orchestrator/container-session-runner.ts` | Resolve preview URL from `previewWorkerUrl` + detected port; pass in `AgentRunParams` to `_startAgentViaProxy()` |
 | `src/server/orchestrator/proxy-agent-process.ts` | Forward `previewUrl` through to container |
-| `Dockerfile.session-worker.dev` | Install `@anthropic-ai/mcp-playwright` (pinned) + `npx playwright install --with-deps chromium` |
+| `Dockerfile.session-worker.dev` | Install `@playwright/mcp` (pinned) + `npx playwright install --with-deps chromium` |
 
 ## Considerations
 
@@ -251,7 +251,7 @@ const CLAUDE_TOOL_MAP: Record<string, CanonicalTool> = {
 Chromium adds ~400MB to the session container image. The Dockerfile needs both the browser and its system dependencies:
 
 ```dockerfile
-RUN npm install -g @anthropic-ai/mcp-playwright@<pinned-version> \
+RUN npm install -g @playwright/mcp \
     && npx playwright install --with-deps chromium
 ```
 

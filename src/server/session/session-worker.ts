@@ -152,10 +152,8 @@ export class SessionWorker extends EventEmitter {
     const config = {
       mcpServers: {
         playwright: {
-          command: "mcp-playwright",
-          env: {
-            PLAYWRIGHT_HEADLESS: "true",
-          },
+          command: "playwright-mcp",
+          args: ["--headless", "--no-sandbox"],
         },
       },
     };

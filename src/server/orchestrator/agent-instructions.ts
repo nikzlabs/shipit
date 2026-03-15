@@ -14,30 +14,25 @@ export function buildAgentSystemInstructions(previewUrl?: string): string {
     ? `\
 ## Browser access
 
-You have browser tools available (browser_navigate, browser_snapshot, browser_click, etc.)
-that let you interact with the live preview. The preview is running at:
+You have a built-in browser you can use to see and interact with the live preview. The preview is running at:
 
   ${previewUrl}
 
-This is the primary preview port. If the project serves on multiple ports, adjust
-the port number as needed.
+**Use the browser proactively** to verify your work — especially after UI changes, styling fixes, or building new features. Don't wait for the user to ask you to check. A quick browser_snapshot after a meaningful change catches bugs early.
 
-Use browser_snapshot to see what's on the page. Use browser_click and browser_type
-to interact with UI elements. This is useful for verifying your changes work correctly.
+Available tools:
+- **browser_navigate** — open a URL
+- **browser_snapshot** — read the page content (accessibility tree, preferred over screenshots for understanding layout)
+- **browser_click** / **browser_type** — interact with elements
+- **browser_take_screenshot** — capture a visual screenshot when layout/styling matters
 
-Only use browser tools when you need to verify or debug UI behavior — don't use them
-for every change. File edits with hot reload are usually sufficient.
-
-If the preview is not running or you get a connection error, the dev server may not
-have started yet. Wait a moment and try again, or check with the user.
+If the project serves on multiple ports, adjust the port number as needed.
+If you get a connection error, the dev server may still be starting — wait a moment and retry.
 `
     : `\
 ## Browser access
 
-You have browser tools available (browser_navigate, browser_snapshot, browser_click, etc.)
-that let you interact with web pages. The preview is not running yet. You can use
-browser tools to navigate to external URLs. If the user starts a preview, the URL
-will be provided in a subsequent turn.
+You have a built-in browser you can use to interact with web pages. The preview is not running yet — you can still use browser tools to navigate to external URLs. Once the user starts a preview, the URL will be provided in a subsequent turn.
 `;
 
   return `\
