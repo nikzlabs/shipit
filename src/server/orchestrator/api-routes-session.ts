@@ -1,7 +1,7 @@
 /**
  * Session management API routes.
  * Handles: session CRUD, switching, renaming, status, history, usage,
- * siblings, features, fork, template, repos, claim-session.
+ * siblings, fork, template, repos, claim-session.
  */
 
 import { existsSync, unlinkSync } from "node:fs";
@@ -18,7 +18,6 @@ import {
   getSessionStatus,
   getUsageStats,
   listWorktrees,
-  listFeatures,
   getChatHistory,
   listAllSessions,
   unarchiveSession,
@@ -181,13 +180,6 @@ export async function registerSessionRoutes(
       return;
     }
     return { worktrees: listWorktrees(sessionManager, request.params.id) };
-  });
-
-  // GET /api/sessions/:id/features — feature list (session-scoped)
-  app.get<{ Params: { id: string } }>("/api/sessions/:id/features", async (request, reply) => {
-    const dir = resolveSessionDir(sessionManager, request.params.id, reply);
-    if (!dir) return;
-    return { features: await listFeatures(dir) };
   });
 
   // ---- Session mutations ----

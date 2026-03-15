@@ -99,7 +99,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     createGitManager, createRepoGit, databaseManager, sessionManager,
     repoStore, chatHistoryManager, usageManager, authManager,
     credentialStore, agentRegistry, githubAuthManager,
-    deploymentManager, deploymentStore, secretStore, featureManager, generateText,
+    deploymentManager, deploymentStore, secretStore, generateText,
     isTestMode,
   } = mgrs;
 
@@ -497,7 +497,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         attachToRunner, detachFromRunner,
         sessionManager, chatHistoryManager, createGitManager, createRepoGit,
         githubAuthManager, deploymentManager, deploymentStore,
-        featureManager, usageManager, authManager, agentRegistry, credentialStore,
+        usageManager, authManager, agentRegistry, credentialStore,
         repoStore, warmSessionForRepo, generateText,
         getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
         prStatusPoller,

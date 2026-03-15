@@ -6,7 +6,6 @@ import type { ChatHistoryManager } from "../chat-history.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { DeploymentManager } from "../deployment-manager.js";
 import type { DeploymentStore } from "../deployment-store.js";
-import type { FeatureManager } from "../features.js";
 import type { UsageManager } from "../usage.js";
 import type { AuthManager } from "../auth.js";
 import type { CredentialStore } from "../credential-store.js";
@@ -111,7 +110,6 @@ export interface AppCtx {
   githubAuthManager: GitHubAuthManager;
   deploymentManager: DeploymentManager;
   deploymentStore: DeploymentStore;
-  featureManager: FeatureManager;
   usageManager: UsageManager;
   authManager: AuthManager;
   agentRegistry: AgentRegistry;

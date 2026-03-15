@@ -17,6 +17,7 @@ import {
   createTestDatabaseManager,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
+import type { DocEntry } from "../../shared/types.js";
 
 describe("Integration: Docs", () => {
   let app: FastifyInstance;
@@ -64,10 +65,32 @@ describe("Integration: Docs", () => {
     }
   });
 
-  it("list_docs returns markdown files in session workspace", async () => {
+  it("list_docs returns DocEntry array", async () => {
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/docs` });
     expect(res.statusCode).toBe(200);
-    expect(res.json().files).toContain("README.md");
+    const { docs } = res.json() as { docs: DocEntry[] };
+    expect(docs).toHaveLength(1);
+    expect(docs[0]).toMatchObject({ path: "README.md", title: "README" });
+    expect(docs[0].status).toBeUndefined();
+  });
+
+  it("returns status from frontmatter", async () => {
+    const featureDir = path.join(sessionDir, "docs", "001-my-feature");
+    fs.mkdirSync(featureDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(featureDir, "plan.md"),
+      "---\nstatus: in-progress\n---\n# My Feature\n\nDescription.",
+    );
+
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/docs` });
+    expect(res.statusCode).toBe(200);
+    const { docs } = res.json() as { docs: DocEntry[] };
+    const tracked = docs.find((d) => d.status !== undefined);
+    expect(tracked).toMatchObject({
+      path: "docs/001-my-feature/plan.md",
+      status: "in-progress",
+      title: "Plan",
+    });
   });
 
   it("get_doc returns file content", async () => {

@@ -39,7 +39,6 @@ import { NewRepoDialog } from "./components/NewRepoDialog.js";
 import { UsageModal } from "./components/UsageModal.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { DeployModal } from "./components/DeployModal.js";
-import { FeaturesPanel } from "./components/FeaturesPanel.js";
 import { DocModal } from "./components/DocModal.js";
 
 import type { TurnDiffData } from "./components/DiffPanel.js";
@@ -48,7 +47,7 @@ const DiffPanel = lazy(() => import("./components/DiffPanel.js").then(m => ({ de
 import { PrLifecycleCard } from "./components/PrLifecycleCard.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentPicker, type AgentOption } from "./components/AgentPicker.js";
-import type { AgentId, FeatureInfo } from "../server/shared/types.js";
+import type { AgentId, DocEntry } from "../server/shared/types.js";
 
 import { useSessionStore } from "./stores/session-store.js";
 import { useGitStore } from "./stores/git-store.js";
@@ -150,7 +149,6 @@ export default function App() {
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
   const toast = useUiStore((s) => s.toast);
 
-  const features = useUiStore((s) => s.features);
   const bootstrapLoaded = useUiStore((s) => s.bootstrapLoaded);
 
   const repos = useRepoStore((s) => s.repos);
@@ -192,7 +190,7 @@ export default function App() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [docModalPath, setDocModalPath] = useState<string | null>(null);
   const [docModalContent, setDocModalContent] = useState<string | null>(null);
-  const [docModalFeature, setDocModalFeature] = useState<FeatureInfo | null>(null);
+  const [docModalDoc, setDocModalDoc] = useState<DocEntry | null>(null);
   // Derive the repo URL from the /{slug}/new URL pattern (replaces useState)
   const newSessionRepoUrl = useMemo(() => {
     if (!newSessionRepoSlug) return undefined;
@@ -443,12 +441,11 @@ export default function App() {
   );
 
   const handleTabChange = useCallback(
-    (tab: "preview" | "docs" | "files" | "terminal" | "features" | "changes" | "history") => {
+    (tab: "preview" | "docs" | "files" | "terminal" | "changes" | "history") => {
       useUiStore.getState().setRightTab(tab);
       const sid = useSessionStore.getState().sessionId;
       if (tab === "docs" && useFileStore.getState().docFiles.length === 0 && sid) useFileStore.getState().fetchDocs(sid).catch(() => {});
       if (tab === "files" && sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); }
-      if (tab === "features" && sid) useUiStore.getState().fetchFeatures(sid).catch(() => {});
       if (tab === "history" && sid) useGitStore.getState().fetchLog(sid).catch(() => {});
       if (tab === "changes") {
         const pair = useGitStore.getState().lastCommitPair;
@@ -522,12 +519,12 @@ export default function App() {
   }, []);
 
   const handleOpenDoc = useCallback(
-    async (filePath: string, feature?: FeatureInfo) => {
+    async (filePath: string, doc?: DocEntry) => {
       const sid = useSessionStore.getState().sessionId;
       if (!sid) return;
       setDocModalPath(filePath);
       setDocModalContent(null);
-      setDocModalFeature(feature ?? null);
+      setDocModalDoc(doc ?? null);
       try {
         const res = await fetch(`/api/sessions/${sid}/docs/${filePath}`);
         if (!res.ok) throw new Error(`Failed to fetch doc: ${res.status}`);
@@ -543,17 +540,15 @@ export default function App() {
   const handleDocModalClose = useCallback(() => {
     setDocModalPath(null);
     setDocModalContent(null);
-    setDocModalFeature(null);
+    setDocModalDoc(null);
   }, []);
 
-  const handleFeatureStartSession = useCallback(
-    async (feature: { name: string; planPath: string; checklistPath?: string }) => {
+  const handleDocStartSession = useCallback(
+    async (doc: DocEntry) => {
       handleDocModalClose();
       resetSessionState();
       useUiStore.getState().setShowTemplates(false);
-      let text = `Work on feature: ${feature.name}\n\nPlease read the feature plan at ${feature.planPath}`;
-      if (feature.checklistPath) text += ` and the remaining work checklist at ${feature.checklistPath}`;
-      text += `, then proceed with the implementation.`;
+      const text = `Work on: ${doc.title}\n\nPlease read the plan at ${doc.path}, then proceed with the implementation.`;
       requestPermission();
       useSessionStore.getState().setMessages([{ role: "user", text }]);
       useSessionStore.getState().setIsLoading(true);
@@ -618,14 +613,13 @@ export default function App() {
         {(lastCommitPair ?? historyDiffMode) && (
           <button onClick={() => handleTabChange("changes")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "changes" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Changes</button>
         )}
-        <button onClick={() => handleTabChange("features")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "features" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Features</button>
         <button onClick={() => handleTabChange("history")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "history" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>History</button>
       </div>
       <div className="flex-1 min-h-0">
         {rightTab === "preview" ? (
           <PreviewFrame preview={previewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} configMissing={configMissing} onInitPreviewConfig={() => send({ type: "init_preview_config" })} crashInfo={crashInfo} onRestartPreview={handleRestartPreview} onSendCrashToAgent={handleSendCrashToAgent} />
         ) : rightTab === "docs" ? (
-          <DocsViewer files={docFiles} onFileClick={(f) => handleOpenDoc(f)} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} />
+          <DocsViewer files={docFiles} onFileClick={(f) => { const doc = docFiles.find((d) => d.path === f); void handleOpenDoc(f, doc); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} />
         ) : rightTab === "terminal" ? (
           <TerminalPanel entries={logEntries} onClear={() => { useTerminalStore.getState().clearEntries(); send({ type: "clear_logs" }); }} terminalMode={terminalMode} onTerminalModeChange={(m) => useTerminalStore.getState().setMode(m)} shellContent={
             (shellStarted || terminalMode === "shell") ? (
@@ -638,8 +632,6 @@ export default function App() {
               <DiffPanel diff={turnDiff} onClose={historyDiffMode ? handleHistoryDiffClose : () => useUiStore.getState().setRightTab("preview")} commitMessage={historyDiffMode ? gitCommits.find((c) => c.hash === turnDiff.toCommit)?.message : undefined} />
             </Suspense>
           ) : <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">Loading diff...</div>
-        ) : rightTab === "features" ? (
-          <FeaturesPanel features={features} onFeatureClick={(f) => handleOpenDoc(f.planPath, f)} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useUiStore.getState().fetchFeatures(sid).catch(() => {}); }} />
         ) : rightTab === "history" ? (
           <GitHistory commits={gitCommits} onRollback={(hash) => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().rollback(sid, hash).catch(() => {}); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().fetchLog(sid).catch(() => {}); }} onViewDiff={handleViewDiff} />
         ) : viewingFile ? (
@@ -711,8 +703,8 @@ export default function App() {
         <DocModal
           filePath={docModalPath}
           content={docModalContent}
-          isFeature={!!docModalFeature}
-          onStartSession={docModalFeature ? () => handleFeatureStartSession(docModalFeature) : undefined}
+          isTracked={!!docModalDoc?.status}
+          onStartSession={docModalDoc?.status ? () => handleDocStartSession(docModalDoc) : undefined}
           onClose={handleDocModalClose}
         />
       )}

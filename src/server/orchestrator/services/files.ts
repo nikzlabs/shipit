@@ -6,6 +6,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { scanFileTree } from "../../shared/file-tree.js";
 import { findMarkdownFiles } from "../markdown.js";
+import type { DocEntry } from "../../shared/types.js";
 import { ServiceError } from "./types.js";
 
 /** Get file tree for a directory. */
@@ -36,8 +37,8 @@ export async function getFileContent(
   return { content: buf.toString("utf-8") };
 }
 
-/** List markdown documentation files. */
-export async function listDocs(dir: string) {
+/** List markdown documentation files with optional status metadata. */
+export async function listDocs(dir: string): Promise<DocEntry[]> {
   return findMarkdownFiles(dir);
 }
 

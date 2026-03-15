@@ -61,11 +61,11 @@ export async function registerFileRoutes(
     },
   );
 
-  // GET /api/sessions/:id/docs — doc list
+  // GET /api/sessions/:id/docs — doc list with optional status metadata
   app.get<{ Params: { id: string } }>("/api/sessions/:id/docs", async (request, reply) => {
     const dir = resolveSessionDir(sessionManager, request.params.id, reply);
     if (!dir) return;
-    return { files: await listDocs(dir) };
+    return { docs: await listDocs(dir) };
   });
 
   // GET /api/sessions/:id/docs/* — doc content
