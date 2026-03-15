@@ -523,7 +523,7 @@ export async function registerSessionRoutes(
           }
           const fetchDurationMs = Date.now() - fetchT0;
 
-          await cacheGit.cloneFromCache(workspaceDir);
+          await cacheGit.cloneFromCache(workspaceDir, url);
 
           let startPoint: string | undefined;
           try {

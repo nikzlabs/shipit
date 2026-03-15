@@ -119,7 +119,7 @@ export async function forkSession(
     const cacheDir = getBareCacheDir(activeSession.remoteUrl);
     const cacheGit = createRepoGit(cacheDir);
     await cacheGit.fetchCache();
-    await cacheGit.cloneFromCache(newWorkspaceDir);
+    await cacheGit.cloneFromCache(newWorkspaceDir, activeSession.remoteUrl);
     // Checkout the branch at the specified start point
     const branchArgs = ["checkout", "-b", trimmed];
     if (startPoint) branchArgs.push(startPoint);
@@ -282,7 +282,7 @@ export async function unarchiveSession(
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         await cacheGit.fetchCache();
-        await cacheGit.cloneFromCache(session.workspaceDir);
+        await cacheGit.cloneFromCache(session.workspaceDir, session.remoteUrl);
         break;
       } catch (cloneErr) {
         if (attempt < 2) {

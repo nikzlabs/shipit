@@ -64,12 +64,16 @@ export class RepoGit {
    * for hardlinked objects (fast, disk-efficient on same filesystem).
    * Configures gc.auto=0 to prevent hardlink breakage.
    */
-  async cloneFromCache(sessionDir: string): Promise<void> {
+  async cloneFromCache(sessionDir: string, remoteUrl?: string): Promise<void> {
     // git clone --local creates hardlinks for objects on the same volume
     await simpleGit().raw(["clone", "--local", this.repoDir, sessionDir]);
     // Disable auto-gc in the session clone to prevent hardlink breakage
     const sessionGit = simpleGit(sessionDir);
     await sessionGit.raw(["config", "gc.auto", "0"]);
+    // Reset origin to the real remote URL (clone --local sets it to the bare cache path)
+    if (remoteUrl) {
+      await sessionGit.raw(["remote", "set-url", "origin", remoteUrl]);
+    }
     console.log("[git] Cloned from cache:", this.repoDir, "→", sessionDir);
   }
 

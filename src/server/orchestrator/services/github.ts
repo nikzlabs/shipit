@@ -13,6 +13,38 @@ import { ServiceError } from "./types.js";
 import { getErrorMessage } from "../validation.js";
 import type { GitHubStatus } from "./types.js";
 
+/**
+ * Resolve owner/repo from a known remote URL or by reading git remotes.
+ * Prefers the explicit remoteUrl (from session metadata) over reading from git,
+ * since local clones from the bare cache may have a filesystem path as origin.
+ *
+ * Returns `{ owner, repo }` on success, or `{ error }` explaining the failure.
+ */
+async function resolveGitHubRemote(
+  git: GitManager,
+  remoteUrl?: string,
+): Promise<{ owner: string; repo: string } | { error: string }> {
+  if (remoteUrl) {
+    const parsed = parseGitHubRemote(remoteUrl);
+    if (parsed) {
+      // Fix the git remote if it doesn't match (e.g., points to bare cache path).
+      // This makes subsequent git push/pull operations work correctly.
+      const remotes = await git.getRemotes();
+      const origin = remotes.find((r) => r.name === "origin");
+      if (!origin || origin.url !== remoteUrl) {
+        await git.addRemote("origin", remoteUrl);
+      }
+      return parsed;
+    }
+  }
+  const remotes = await git.getRemotes();
+  const origin = remotes.find((r) => r.name === "origin");
+  if (!origin) return { error: "No 'origin' remote configured" };
+  const parsed = parseGitHubRemote(origin.url);
+  if (!parsed) return { error: "Remote URL is not a GitHub repository" };
+  return parsed;
+}
+
 // Re-export CI-fix logic for backwards compatibility
 export {
   fetchCIFailureLogs,
@@ -51,22 +83,19 @@ export async function searchGitHubRepos(
 export async function getPrStatus(
   githubAuthManager: GitHubAuthManager,
   git: GitManager,
+  remoteUrl?: string,
 ) {
   if (!githubAuthManager.authenticated) return null;
 
-  const remotes = await git.getRemotes();
-  const origin = remotes.find((r) => r.name === "origin");
-  if (!origin) return null;
-
-  const parsed = parseGitHubRemote(origin.url);
-  if (!parsed) return null;
+  const resolved = await resolveGitHubRemote(git, remoteUrl);
+  if ("error" in resolved) return null;
 
   const head = await git.getCurrentBranch();
-  const pr = await githubAuthManager.findPullRequest(parsed.owner, parsed.repo, head);
+  const pr = await githubAuthManager.findPullRequest(resolved.owner, resolved.repo, head);
   if (!pr) return null;
 
   const stats = await git.diffStatVsBranch(pr.base);
-  const checks = await githubAuthManager.getCheckStatus(parsed.owner, parsed.repo, head);
+  const checks = await githubAuthManager.getCheckStatus(resolved.owner, resolved.repo, head);
 
   return {
     url: pr.url,
@@ -92,6 +121,7 @@ export async function createPullRequest(
   body: string,
   base: string,
   draft?: boolean,
+  remoteUrl?: string,
 ): Promise<{ success: boolean; url?: string; number?: number; message?: string }> {
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
   const trimmedTitle = title.trim();
@@ -100,17 +130,13 @@ export async function createPullRequest(
   if (trimmedTitle.length > 256) throw new ServiceError(400, "PR title too long (max 256 characters)");
   if (!trimmedBase) throw new ServiceError(400, "Base branch is required");
 
-  const remotes = await git.getRemotes();
-  const origin = remotes.find((r) => r.name === "origin");
-  if (!origin) throw new ServiceError(400, "No 'origin' remote configured");
-
-  const parsed = parseGitHubRemote(origin.url);
-  if (!parsed) throw new ServiceError(400, "Remote URL is not a GitHub repository");
+  const resolved = await resolveGitHubRemote(git, remoteUrl);
+  if ("error" in resolved) throw new ServiceError(400, resolved.error);
 
   const head = await git.getCurrentBranch();
   const result = await githubAuthManager.createPullRequest({
-    owner: parsed.owner,
-    repo: parsed.repo,
+    owner: resolved.owner,
+    repo: resolved.repo,
     title: trimmedTitle,
     body: body.trim(),
     head,
@@ -125,30 +151,27 @@ export async function mergePullRequest(
   git: GitManager,
   githubAuthManager: GitHubAuthManager,
   method?: string,
+  remoteUrl?: string,
 ): Promise<{ success: boolean; message: string; autoMergeEnabled?: boolean }> {
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
 
-  const remotes = await git.getRemotes();
-  const origin = remotes.find((r) => r.name === "origin");
-  if (!origin) return { success: false, message: "No origin remote configured" };
-
-  const parsed = parseGitHubRemote(origin.url);
-  if (!parsed) return { success: false, message: "Remote URL is not a GitHub repository" };
+  const resolved = await resolveGitHubRemote(git, remoteUrl);
+  if ("error" in resolved) return { success: false, message: resolved.error };
 
   const head = await git.getCurrentBranch();
-  const pr = await githubAuthManager.findPullRequest(parsed.owner, parsed.repo, head);
+  const pr = await githubAuthManager.findPullRequest(resolved.owner, resolved.repo, head);
   if (!pr) return { success: false, message: "No active PR for current branch" };
 
   const mergeMethod = (method || "merge") as "merge" | "squash" | "rebase";
-  const result = await githubAuthManager.mergePullRequest(parsed.owner, parsed.repo, pr.number, mergeMethod);
+  const result = await githubAuthManager.mergePullRequest(resolved.owner, resolved.repo, pr.number, mergeMethod);
 
   if (result.success) return { success: true, message: "Pull request merged" };
 
   // If merge failed because checks are pending, enable auto-merge
-  const checks = await githubAuthManager.getCheckStatus(parsed.owner, parsed.repo, head);
+  const checks = await githubAuthManager.getCheckStatus(resolved.owner, resolved.repo, head);
   if (checks.state === "pending") {
     const graphqlMethod = mergeMethod === "merge" ? "MERGE" as const : mergeMethod === "squash" ? "SQUASH" as const : "REBASE" as const;
-    const autoResult = await githubAuthManager.enableAutoMerge(parsed.owner, parsed.repo, pr.number, graphqlMethod);
+    const autoResult = await githubAuthManager.enableAutoMerge(resolved.owner, resolved.repo, pr.number, graphqlMethod);
     return { success: autoResult.success, message: autoResult.message, autoMergeEnabled: autoResult.success };
   }
 
@@ -196,6 +219,7 @@ export async function quickCreatePr(
   sessionId: string,
   sessionTitle: string,
   sessionDir: string,
+  remoteUrl?: string,
 ): Promise<{
   number: number;
   url: string;
@@ -207,17 +231,13 @@ export async function quickCreatePr(
 }> {
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
 
-  const remotes = await git.getRemotes();
-  const origin = remotes.find((r) => r.name === "origin");
-  if (!origin) throw new ServiceError(400, "No 'origin' remote configured");
-
-  const parsed = parseGitHubRemote(origin.url);
-  if (!parsed) throw new ServiceError(400, "Remote URL is not a GitHub repository");
+  const resolved = await resolveGitHubRemote(git, remoteUrl);
+  if ("error" in resolved) throw new ServiceError(400, resolved.error);
 
   const head = await git.getCurrentBranch();
 
   // Check if there's already a PR for this branch
-  const existingPr = await githubAuthManager.findPullRequest(parsed.owner, parsed.repo, head);
+  const existingPr = await githubAuthManager.findPullRequest(resolved.owner, resolved.repo, head);
   if (existingPr) {
     const stats = await git.diffStatVsBranch(existingPr.base);
     return {
@@ -260,8 +280,8 @@ export async function quickCreatePr(
 
   // Create PR
   const result = await githubAuthManager.createPullRequest({
-    owner: parsed.owner,
-    repo: parsed.repo,
+    owner: resolved.owner,
+    repo: resolved.repo,
     title,
     body: description,
     head,
