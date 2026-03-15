@@ -137,8 +137,8 @@ describe("Integration: Phase 1 GET endpoints", () => {
     const res = await app.inject({ method: "GET", url: "/api/sessions/s1/docs" });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body).toHaveProperty("files");
-    expect(Array.isArray(body.files)).toBe(true);
+    expect(body).toHaveProperty("docs");
+    expect(Array.isArray(body.docs)).toBe(true);
   });
 
   it("GET /api/sessions/:id/docs/* returns doc content", async () => {
@@ -303,29 +303,21 @@ describe("Integration: Phase 1 GET endpoints", () => {
     expect(Array.isArray(body.worktrees)).toBe(true);
   });
 
-  // ---- Features ----
+  // ---- Docs with status ----
 
-  it("GET /api/sessions/:id/features returns feature list", async () => {
-    await createSession("s-feat", "Feature Session");
-    const res = await app.inject({ method: "GET", url: "/api/sessions/s-feat/features" });
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body).toHaveProperty("features");
-    expect(Array.isArray(body.features)).toBe(true);
-  });
-
-  it("GET /api/sessions/:id/features includes features from docs/ directory", async () => {
-    const dir = await createSession("s-feat2", "Feature Session 2");
+  it("GET /api/sessions/:id/docs includes status from frontmatter", async () => {
+    const dir = await createSession("s-feat2", "Doc Session");
     const featureDir = path.join(dir, "docs", "001-test-feature");
     fs.mkdirSync(featureDir, { recursive: true });
     fs.writeFileSync(path.join(featureDir, "plan.md"), "---\nstatus: in-progress\n---\n# Test Feature");
 
-    const res = await app.inject({ method: "GET", url: "/api/sessions/s-feat2/features" });
+    const res = await app.inject({ method: "GET", url: "/api/sessions/s-feat2/docs" });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.features.length).toBeGreaterThan(0);
-    expect(body.features[0]).toHaveProperty("id");
-    expect(body.features[0]).toHaveProperty("name");
+    const tracked = body.docs.find((d: any) => d.status !== undefined);
+    expect(tracked).toBeDefined();
+    expect(tracked.path).toBe("docs/001-test-feature/plan.md");
+    expect(tracked.status).toBe("in-progress");
   });
 
   // ---- GitHub repos search ----

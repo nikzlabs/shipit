@@ -9,12 +9,12 @@ import { Button } from "./ui/button.js";
 export interface DocModalProps {
   filePath: string;
   content: string | null;
-  isFeature?: boolean;
+  isTracked?: boolean;
   onStartSession?: () => void;
   onClose: () => void;
 }
 
-export function DocModal({ filePath, content, isFeature, onStartSession, onClose }: DocModalProps) {
+export function DocModal({ filePath, content, isTracked, onStartSession, onClose }: DocModalProps) {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -34,7 +34,7 @@ export function DocModal({ filePath, content, isFeature, onStartSession, onClose
       <div className="flex items-center justify-between px-6 py-4 border-b border-(--color-border-secondary) shrink-0">
         <h2 className="text-sm font-medium text-(--color-text-primary) truncate">{filePath}</h2>
         <div className="flex items-center gap-2 shrink-0 ml-4">
-          {isFeature && onStartSession && (
+          {isTracked && onStartSession && (
             <Button variant="primary" size="sm" onClick={onStartSession}>
               Start Session
             </Button>

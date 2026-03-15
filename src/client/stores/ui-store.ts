@@ -8,7 +8,7 @@ import type {
 } from "../components/UsageModal.js";
 import type { ModelInfo } from "../components/StatusBar.js";
 import type { ToastData } from "../components/Toast.js";
-import type { FeatureInfo, AgentId } from "../../server/shared/types.js";
+import type { AgentId } from "../../server/shared/types.js";
 import {
   getSavedAgentId,
   saveAgentId,
@@ -21,7 +21,6 @@ type RightTab =
   | "docs"
   | "files"
   | "terminal"
-  | "features"
   | "changes"
   | "history";
 
@@ -55,7 +54,6 @@ interface UiState {
   settingsTab: SettingsTab;
   sidebarCollapsed: boolean;
   toast: ToastData | null;
-  features: FeatureInfo[];
   bootstrapLoaded: boolean;
 
   // Actions
@@ -78,12 +76,10 @@ interface UiState {
   setSettingsTab: (tab: SettingsTab) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setToast: (toast: ToastData | null) => void;
-  setFeatures: (features: FeatureInfo[]) => void;
   setBootstrapLoaded: (loaded: boolean) => void;
   reset: () => void;
 
   // Async actions
-  fetchFeatures: (sessionId: string) => Promise<void>;
   fetchUsageStats: (sessionId: string) => Promise<void>;
 }
 
@@ -104,7 +100,6 @@ const initialState = {
   settingsTab: undefined as SettingsTab,
   sidebarCollapsed: getSavedSidebarCollapsed(),
   toast: null as ToastData | null,
-  features: [] as FeatureInfo[],
   bootstrapLoaded: false,
 };
 
@@ -159,8 +154,6 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   setToast: (toast) => set({ toast }),
 
-  setFeatures: (features) => set({ features }),
-
   setBootstrapLoaded: (bootstrapLoaded) => set({ bootstrapLoaded }),
 
   reset: () =>
@@ -173,15 +166,6 @@ export const useUiStore = create<UiState>((set, get) => ({
       turnTokens: [],
       rightTab: "preview",
     }),
-
-  fetchFeatures: async (sessionId) => {
-    const res = await fetch(`/api/sessions/${sessionId}/features`, {
-      method: "GET",
-      headers: { Accept: "application/json" },
-    });
-    const data = await res.json() as { features: FeatureInfo[] };
-    set({ features: data.features });
-  },
 
   fetchUsageStats: async (sessionId) => {
     const res = await fetch(`/api/sessions/${sessionId}/usage`, {

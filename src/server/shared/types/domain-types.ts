@@ -49,23 +49,17 @@ export interface RepoInfo {
   warmSessionId?: string;
 }
 
-// ---- Feature types ----
+// ---- Doc types ----
 
-export type FeatureStatus = "planned" | "in-progress" | "done" | "paused";
+export type DocStatus = "planned" | "in-progress" | "done" | "paused";
 
-export interface FeatureInfo {
-  /** Directory name, e.g. "001-websocket-protocol". */
-  id: string;
-  /** Numeric prefix extracted from the directory name. */
-  number: number;
-  /** Human-readable name derived from the directory name. */
-  name: string;
-  /** Current status from YAML frontmatter. Defaults to "planned". */
-  status: FeatureStatus;
-  /** Relative path to plan.md from workspace root. */
-  planPath: string;
-  /** Relative path to checklist.md if it exists. */
-  checklistPath?: string;
+export interface DocEntry {
+  /** Relative path from workspace root, e.g. "docs/001-websocket-protocol/plan.md". */
+  path: string;
+  /** Status from YAML frontmatter, if present. Undefined for plain docs. */
+  status?: DocStatus;
+  /** Human-readable title. Derived from frontmatter `title:` field, or from filename. */
+  title: string;
 }
 
 // ---- Template types ----
