@@ -1,13 +1,19 @@
 import { useState, useRef, useCallback } from "react";
 import { Button } from "./ui/button.js";
+import { MessageFileAttachments, MessageImages } from "./message-media.js";
+import type { ChatMessageImage, ChatMessageFile } from "./MessageList.js";
 
 /** Inline editor for a user message being edited. */
 export function MessageEditor({
   initialText,
+  images,
+  files,
   onSave,
   onCancel,
 }: {
   initialText: string;
+  images?: ChatMessageImage[];
+  files?: ChatMessageFile[];
   onSave: (text: string) => void;
   onCancel: () => void;
 }) {
@@ -55,6 +61,12 @@ export function MessageEditor({
         rows={1}
         className="w-full resize-none rounded-lg bg-(--color-accent) border border-(--color-border-focus) px-4 py-3 text-sm text-(--color-accent-text) placeholder-blue-300 focus:outline-none focus:ring-2 focus:ring-(--color-border-focus)"
       />
+      {images && images.length > 0 && (
+        <MessageImages images={images} isUserMessage />
+      )}
+      {files && files.length > 0 && (
+        <MessageFileAttachments files={files} />
+      )}
       <div className="flex justify-end gap-2 mt-1">
         <Button
           variant="secondary"

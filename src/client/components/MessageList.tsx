@@ -270,6 +270,8 @@ export function MessageList({
             {isEditing ? (
               <MessageEditor
                 initialText={msg.text}
+                images={msg.images}
+                files={msg.files}
                 onSave={(newText) => handleEditSave(i, newText)}
                 onCancel={() => setEditingIndex(null)}
               />
