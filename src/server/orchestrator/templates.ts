@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { ProjectTemplate } from "../shared/types.js";
@@ -62,5 +63,35 @@ export async function applyTemplate(
     written.push(relativePath);
   }
 
+  // Generate package-lock.json so the initial commit includes a lock file.
+  // Uses --package-lock-only to avoid installing node_modules.
+  if (written.includes("package.json")) {
+    try {
+      await generatePackageLock(targetDir);
+      written.push("package-lock.json");
+    } catch {
+      // Non-fatal — the project still works without a lock file.
+      // npm install will generate one later when the session starts.
+    }
+  }
+
   return written;
+}
+
+/**
+ * Run `npm install --package-lock-only` to generate a package-lock.json
+ * without installing node_modules. Rejects if the command fails.
+ */
+export function generatePackageLock(dir: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "npm",
+      ["install", "--package-lock-only", "--ignore-scripts"],
+      { cwd: dir, timeout: 30_000, env: { ...process.env, NODE_ENV: "development" } },
+      (err: Error | null) => {
+        if (err) reject(err);
+        else resolve();
+      },
+    );
+  });
 }
