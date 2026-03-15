@@ -7,21 +7,25 @@ import type { DocEntry, DocStatus } from "../shared/types.js";
 /** Valid doc statuses. */
 const VALID_STATUSES = new Set<DocStatus>(["planned", "in-progress", "done", "paused"]);
 
+/** Frontmatter regex — matches `---\n...\n---` at start of file. */
+const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---/;
+
 /**
- * Extract YAML frontmatter `status` field from markdown content.
- * Uses simple regex — no heavy YAML library needed.
- *
- * Supports:
- *   ---
- *   status: in-progress
- *   ---
+ * Extract the YAML frontmatter block from markdown content.
+ * Returns the raw frontmatter string (without delimiters), or undefined.
+ */
+function extractFrontmatter(content: string): string | undefined {
+  return FRONTMATTER_RE.exec(content)?.[1];
+}
+
+/**
+ * Extract `status` from a frontmatter block.
  */
 export function parseStatusFromFrontmatter(content: string): DocStatus | undefined {
-  const match = /^---\s*\n([\s\S]*?)\n---/.exec(content);
-  if (!match) return undefined;
+  const fm = extractFrontmatter(content);
+  if (!fm) return undefined;
 
-  const frontmatter = match[1];
-  const statusMatch = /^status:\s*(.+)$/m.exec(frontmatter);
+  const statusMatch = /^status:\s*(.+)$/m.exec(fm);
   if (!statusMatch) return undefined;
 
   const raw = statusMatch[1].trim().toLowerCase();
@@ -32,30 +36,35 @@ export function parseStatusFromFrontmatter(content: string): DocStatus | undefin
 }
 
 /**
- * Extract YAML frontmatter `title` field from markdown content.
+ * Parse both status and title from frontmatter in a single extraction.
  */
-function parseTitleFromFrontmatter(content: string): string | undefined {
-  const match = /^---\s*\n([\s\S]*?)\n---/.exec(content);
-  if (!match) return undefined;
+function parseFrontmatterFields(content: string): { status?: DocStatus; title?: string } {
+  const fm = extractFrontmatter(content);
+  if (!fm) return {};
 
-  const frontmatter = match[1];
-  const titleMatch = /^title:\s*(.+)$/m.exec(frontmatter);
-  if (!titleMatch) return undefined;
+  let status: DocStatus | undefined;
+  const statusMatch = /^status:\s*(.+)$/m.exec(fm);
+  if (statusMatch) {
+    const raw = statusMatch[1].trim().toLowerCase();
+    if (VALID_STATUSES.has(raw as DocStatus)) {
+      status = raw as DocStatus;
+    }
+  }
 
-  return titleMatch[1].trim();
+  let title: string | undefined;
+  const titleMatch = /^title:\s*(.+)$/m.exec(fm);
+  if (titleMatch) {
+    title = titleMatch[1].trim();
+  }
+
+  return { status, title };
 }
 
 /**
  * Derive a human-readable title from a file path.
- * Uses frontmatter `title:` if available, otherwise converts the filename
- * from kebab-case to title case.
+ * Converts the filename from kebab-case to title case.
  */
-function deriveTitle(relativePath: string, frontmatterContent?: string): string {
-  if (frontmatterContent) {
-    const fmTitle = parseTitleFromFrontmatter(frontmatterContent);
-    if (fmTitle) return fmTitle;
-  }
-
+function titleFromPath(relativePath: string): string {
   const basename = path.basename(relativePath, ".md");
   return basename
     .split("-")
@@ -80,14 +89,18 @@ export async function findMarkdownFiles(dir: string, prefix = ""): Promise<DocEn
     if (entry.isDirectory()) {
       results.push(...await findMarkdownFiles(path.join(dir, entry.name), relativePath));
     } else if (entry.name.endsWith(".md")) {
-      // Read a small portion of the file to check for frontmatter
-      let content: string | undefined;
+      let status: DocStatus | undefined;
+      let title: string | undefined;
+
       try {
         const handle = await fs.open(path.join(dir, entry.name), "r");
         try {
           const buf = Buffer.alloc(512);
           const { bytesRead } = await handle.read(buf, 0, 512, 0);
-          content = buf.toString("utf-8", 0, bytesRead);
+          const content = buf.toString("utf-8", 0, bytesRead);
+          const fields = parseFrontmatterFields(content);
+          status = fields.status;
+          title = fields.title;
         } finally {
           await handle.close();
         }
@@ -95,10 +108,7 @@ export async function findMarkdownFiles(dir: string, prefix = ""): Promise<DocEn
         // Can't read file — skip frontmatter parsing
       }
 
-      const status = content ? parseStatusFromFrontmatter(content) : undefined;
-      const title = deriveTitle(relativePath, content);
-
-      results.push({ path: relativePath, status, title });
+      results.push({ path: relativePath, status, title: title ?? titleFromPath(relativePath) });
     }
   }
 

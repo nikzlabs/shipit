@@ -557,7 +557,7 @@ export default function App() {
       // Claim a new session from the current repo, then navigate
       const repoUrl = sessions.find((s) => s.id === useSessionStore.getState().sessionId)?.remoteUrl;
       if (!repoUrl) {
-        console.warn("[session] No repo URL — cannot create feature session");
+        console.warn("[session] No repo URL — cannot create session");
         useSessionStore.getState().setIsLoading(false);
         useSessionStore.getState().setActivity(undefined);
         return;

@@ -40,8 +40,6 @@ describe("Integration: Docs", () => {
     sessionManager.track(sessionId, "Test session", sessionDir);
 
     const credentialStore = createTestCredentialStore(tmpDir);
-    const git = new GitManager(sessionDir);
-    await git.init();
 
     app = await buildApp({
       credentialStore,
