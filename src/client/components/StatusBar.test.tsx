@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
-import { StatusBar, formatModelName, formatTokenCount, getContextLevel } from "./StatusBar.js";
+import { StatusBar, formatTokenCount, getContextLevel } from "./StatusBar.js";
 
 afterEach(() => {
   cleanup();
@@ -12,17 +12,7 @@ describe("StatusBar", () => {
     expect(screen.queryByTestId("status-bar")).toBeNull();
   });
 
-  it("renders model name from raw model ID", () => {
-    render(
-      <StatusBar
-        modelInfo={{ model: "claude-sonnet-4-20250514", contextWindowTokens: 200000 }}
-        contextTokens={0}
-      />
-    );
-    expect(screen.getByTestId("model-name")).toHaveTextContent("Sonnet 4");
-  });
-
-  it("shows context meter when contextTokens > 0", () => {
+it("shows context meter when contextTokens > 0", () => {
     render(
       <StatusBar
         modelInfo={{ model: "claude-opus-4-20250514", contextWindowTokens: 200000 }}
@@ -40,16 +30,6 @@ describe("StatusBar", () => {
       />
     );
     expect(screen.queryByTestId("context-meter")).toBeNull();
-  });
-});
-
-describe("formatModelName", () => {
-  it("handles various model IDs", () => {
-    expect(formatModelName("claude-opus-4-20250514")).toBe("Opus 4");
-    expect(formatModelName("claude-sonnet-4-20250514")).toBe("Sonnet 4");
-    expect(formatModelName("claude-sonnet-3-20250101")).toBe("Sonnet 3.5");
-    expect(formatModelName("claude-haiku-3-20250101")).toBe("Haiku 3.5");
-    expect(formatModelName("some-unknown-model")).toBe("some-unknown-model");
   });
 });
 

@@ -165,10 +165,10 @@ A thin status bar at the bottom of the chat panel (or integrated into the header
 ```typescript
 /** Convert CLI model ID to display name. */
 function formatModelName(model: string): string {
-  if (model.includes("opus")) return "Opus 4";
-  if (model.includes("sonnet-4")) return "Sonnet 4";
+  if (model.includes("opus")) return "Opus 4.5";
+  if (model.includes("sonnet-4")) return "Sonnet 4.5";
   if (model.includes("sonnet-3")) return "Sonnet 3.5";
-  if (model.includes("haiku")) return "Haiku 3.5";
+  if (model.includes("haiku")) return "Haiku 4.5";
   // Fallback: show raw ID
   return model;
 }

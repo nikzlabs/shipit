@@ -9,14 +9,6 @@ interface StatusBarProps {
   agentName?: string;
 }
 
-/** Convert CLI model ID to a human-readable display name. */
-export function formatModelName(model: string): string {
-  if (model.includes("opus")) return "Opus 4";
-  if (model.includes("sonnet-4")) return "Sonnet 4";
-  if (model.includes("sonnet-3")) return "Sonnet 3.5";
-  if (model.includes("haiku")) return "Haiku 3.5";
-  return model;
-}
 
 /** Format a token count as a compact string (e.g. 42180 -> "42.2K"). */
 export function formatTokenCount(tokens: number): string {
@@ -65,7 +57,7 @@ export function StatusBar({ modelInfo, contextTokens, agentName }: StatusBarProp
         </>
       )}
       <span className="font-medium text-(--color-text-primary)" data-testid="model-name">
-        {formatModelName(modelInfo.model)}
+        {modelInfo.model}
       </span>
       {contextTokens > 0 && (
         <div className="flex items-center gap-2" data-testid="context-meter">
