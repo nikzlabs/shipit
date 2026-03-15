@@ -35,7 +35,7 @@ function baseConfig(overrides?: Partial<ContainerConfig>): ContainerConfig {
 describe("buildMounts", () => {
   it("returns basic session + credentials bind mounts without optional dirs", () => {
     const result = buildMounts(baseConfig(), undefined, undefined);
-    expect(result.binds).toContain("/workspace/sessions/sess-1/workspace:/user:rw");
+    expect(result.binds).toContain("/workspace/sessions/sess-1:/user:rw");
     expect(result.binds).toContain("/credentials:/credentials:rw");
     expect(result.mounts).toHaveLength(0);
   });

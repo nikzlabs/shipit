@@ -32,7 +32,10 @@ interface UploadResponse {
 let uploadIdCounter = 0;
 
 export function useFileUpload(sessionId: string | undefined) {
+  /** Input chips — files being attached to the current message. Cleared on send. */
   const [uploads, setUploads] = useState<UploadItem[]>([]);
+  /** All session uploads — populated from the server, used for file tree and @-autocomplete. */
+  const [sessionUploads, setSessionUploads] = useState<UploadItem[]>([]);
 
   /** Upload files immediately via POST multipart. */
   const uploadFiles = useCallback(
@@ -77,23 +80,26 @@ export function useFileUpload(sessionId: string | undefined) {
 
         const data = (await res.json()) as UploadResponse;
 
-        // Match response files to our items by index
-        setUploads((prev) =>
-          prev.map((u) => {
-            const idx = items.findIndex((it) => it.id === u.id);
-            if (idx === -1) return u;
-            const uploaded = data.files[idx];
-            if (!uploaded) return { ...u, status: "error" as const, error: "Missing response", progress: 0 };
-            return {
-              ...u,
+        // Build a map from placeholder ID to completed upload item
+        const readyMap = new Map<string, UploadItem>();
+        for (let i = 0; i < items.length; i++) {
+          const uploaded = data.files[i];
+          if (uploaded) {
+            readyMap.set(items[i].id, {
+              ...items[i],
               status: "ready" as const,
               name: uploaded.name,
               path: uploaded.path,
               size: uploaded.size,
               progress: 100,
-            };
-          }),
-        );
+            });
+          }
+        }
+
+        // Update input chips
+        setUploads((prev) => prev.map((u) => readyMap.get(u.id) ?? u));
+        // Add to session-level uploads for file tree / @-autocomplete
+        setSessionUploads((prev) => [...prev, ...readyMap.values()]);
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : "Upload failed";
         setUploads((prev) =>
@@ -117,6 +123,8 @@ export function useFileUpload(sessionId: string | undefined) {
         void fetch(`/api/sessions/${sessionId}/files/uploads/${encodeURIComponent(filename)}`, {
           method: "DELETE",
         });
+        // Also remove from session-level uploads
+        setSessionUploads((su) => su.filter((u) => u.path !== item.path));
       }
       return prev.filter((_, i) => i !== index);
     });
@@ -139,25 +147,23 @@ export function useFileUpload(sessionId: string | undefined) {
     setUploads([]);
   }, []);
 
-  /** Hydrate uploads from the list endpoint (for reconnection). */
+  /** Hydrate session uploads from the list endpoint (for file tree and @-autocomplete). */
   const hydrateUploads = useCallback(
     async (sid: string) => {
       try {
         const res = await fetch(`/api/sessions/${sid}/files/uploads`);
         if (!res.ok) return;
         const data = (await res.json()) as UploadResponse;
-        if (data.files.length > 0) {
-          setUploads(
-            data.files.map((f) => ({
-              id: `hydrated-${++uploadIdCounter}`,
-              name: f.name,
-              status: "ready" as const,
-              size: f.size,
-              path: f.path,
-              progress: 100,
-            })),
-          );
-        }
+        setSessionUploads(
+          data.files.map((f) => ({
+            id: `hydrated-${++uploadIdCounter}`,
+            name: f.name,
+            status: "ready" as const,
+            size: f.size,
+            path: f.path,
+            progress: 100,
+          })),
+        );
       } catch {
         // Hydration failure is non-critical
       }
@@ -170,6 +176,7 @@ export function useFileUpload(sessionId: string | undefined) {
 
   return {
     uploads,
+    sessionUploads,
     uploadFiles,
     removeUpload,
     retryUpload,

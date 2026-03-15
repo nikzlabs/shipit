@@ -32,6 +32,7 @@ export function MessageInput({
   onAddFile,
   fileTree = [],
   uploads = [],
+  allUploads,
   onUploadFiles,
   onRemoveUpload,
   onRetryUpload,
@@ -47,6 +48,8 @@ export function MessageInput({
   onAddFile?: (filePath: string) => void;
   fileTree?: FileTreeNode[];
   uploads?: UploadItem[];
+  /** All session uploads — for @-autocomplete (persists across sends). */
+  allUploads?: UploadItem[];
   onUploadFiles?: (files: File[]) => void;
   onRemoveUpload?: (index: number) => void;
   onRetryUpload?: (index: number) => void;
@@ -353,7 +356,7 @@ export function MessageInput({
             fileTree={fileTree}
             onSelect={handleAutoCompleteSelect}
             onDismiss={handleAutoCompleteDismiss}
-            uploadPaths={uploads.filter((u) => u.status === "ready" && u.path).map((u) => u.path!)}
+            uploadPaths={(allUploads ?? uploads).filter((u) => u.status === "ready" && u.path).map((u) => u.path!)}
           />
         )}
 

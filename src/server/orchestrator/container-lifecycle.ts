@@ -74,9 +74,9 @@ export function buildMounts(
   const binds: string[] = [];
   const mounts: MountSpec["mounts"] = [];
   const workspaceDir = CONTAINER_WORKSPACE_DIR;
-  // The git repo lives in a workspace/ subdirectory of the session dir,
-  // keeping it separate from uploads/ and other session-level data.
-  const hostWorkspaceDir = path.join(config.sessionDir, "workspace");
+  // config.workspaceDir is the git repo directory (session.workspaceDir).
+  // It may be the same as sessionDir (legacy) or a subdirectory (new layout).
+  const hostWorkspaceDir = config.workspaceDir ?? config.sessionDir;
 
   if (workspaceVolume) {
     const relPath = hostWorkspaceDir.replace(/^\/workspace\//, "");
@@ -475,7 +475,7 @@ export function buildPreviewMounts(
   const binds: string[] = [];
   const mounts: MountSpec["mounts"] = [];
   const workspaceDir = CONTAINER_WORKSPACE_DIR;
-  const hostWorkspaceDir = path.join(config.sessionDir, "workspace");
+  const hostWorkspaceDir = config.workspaceDir ?? config.sessionDir;
 
   if (workspaceVolume) {
     const relPath = hostWorkspaceDir.replace(/^\/workspace\//, "");
@@ -595,6 +595,7 @@ export function buildContainerConfig(
   opts: {
     sessionId: string;
     sessionDir: string;
+    workspaceDir?: string;
     credentialsDir: string;
     depCacheDir?: string;
     uploadsDir?: string;
@@ -608,6 +609,7 @@ export function buildContainerConfig(
   return {
     sessionId: opts.sessionId,
     sessionDir: opts.sessionDir,
+    workspaceDir: opts.workspaceDir,
     credentialsDir: opts.credentialsDir,
     depCacheDir: opts.depCacheDir,
     uploadsDir: opts.uploadsDir ?? path.join(opts.sessionDir, "uploads"),

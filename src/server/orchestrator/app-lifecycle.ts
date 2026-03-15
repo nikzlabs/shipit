@@ -160,6 +160,9 @@ export function buildRunnerFactory(
 
   return deps.runnerFactory ?? (containerManager ? ((o: Parameters<SessionRunnerFactory>[0]) => {
     const mgr = containerManager;
+    // o.sessionDir is session.workspaceDir (e.g. /workspace/sessions/{uuid}/workspace).
+    // Derive the parent session dir for container config (uploads mount, etc.).
+    const parentSessionDir = path.dirname(o.sessionDir);
 
     // Check for an existing container (runner was disposed but container kept running).
     const existing = mgr.get(o.sessionId);
@@ -210,7 +213,8 @@ export function buildRunnerFactory(
           const sessionConfig = resolveSessionConfig(o.sessionDir);
           const config = mgr.buildConfig({
             sessionId: o.sessionId,
-            sessionDir: o.sessionDir,
+            sessionDir: parentSessionDir,
+            workspaceDir: o.sessionDir,
             credentialsDir,
             depCacheDir: o.depCacheDir,
             memoryLimit: sessionConfig.resources.memory * 1024 * 1024,
@@ -235,7 +239,8 @@ export function buildRunnerFactory(
     const sessionConfig = resolveSessionConfig(o.sessionDir);
     const config = mgr.buildConfig({
       sessionId: o.sessionId,
-      sessionDir: o.sessionDir,
+      sessionDir: parentSessionDir,
+      workspaceDir: o.sessionDir,
       credentialsDir,
       depCacheDir: o.depCacheDir,
       memoryLimit: sessionConfig.resources.memory * 1024 * 1024,
@@ -732,6 +737,7 @@ export function createWarmPool(
             const config = containerManager.buildConfig({
               sessionId: appSessionId,
               sessionDir,
+              workspaceDir,
               credentialsDir,
               depCacheDir: getDepCacheDir(repoUrl),
             });
