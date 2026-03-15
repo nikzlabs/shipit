@@ -6,7 +6,7 @@ import fs from "node:fs/promises";
 import type { SessionManager } from "../sessions.js";
 import type { GitManager } from "../../shared/git.js";
 import type { SessionInfo } from "../../shared/types.js";
-import { getTemplate, applyTemplate as applyTemplateFiles } from "../templates.js";
+import { getTemplate, applyTemplate as applyTemplateFiles, generatePackageLock } from "../templates.js";
 import { ServiceError } from "./types.js";
 
 /** Create a GitHub repo with a template applied, committed, and pushed.
@@ -50,8 +50,11 @@ export async function createRepoWithTemplate(
   await sharedGit.addRemote("origin", repoResult.cloneUrl);
   githubAuthManager.configureGitCredentials(repoDir);
 
-  // 3. Apply template and push to main (establishes repo base)
+  // 3. Apply template, generate lock file, and push to main (establishes repo base)
   await applyTemplateFiles(template, repoDir);
+  if (template.files["package.json"]) {
+    try { await generatePackageLock(repoDir); } catch { /* non-fatal */ }
+  }
   await sharedGit.autoCommit(`Initial setup: ${template.name}`);
   await sharedGit.push("origin", "main");
 
@@ -92,6 +95,9 @@ export async function applyTemplate(
   }
 
   await applyTemplateFiles(template, sessionDir);
+  if (template.files["package.json"]) {
+    try { await generatePackageLock(sessionDir); } catch { /* non-fatal */ }
+  }
   const git = createGitManager(sessionDir);
   await git.autoCommit(`Apply template: ${template.name}`);
 

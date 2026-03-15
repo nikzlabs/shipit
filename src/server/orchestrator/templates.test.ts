@@ -1,19 +1,8 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { listTemplates, getTemplate, applyTemplate } from "./templates.js";
-
-// Mock generatePackageLock to avoid hitting npm registry in unit tests.
-// The function is called internally by applyTemplate when package.json is present.
-vi.mock("node:child_process", () => ({
-  execFile: (_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null) => void) => {
-    // Simulate successful lock file generation by writing a minimal file
-    const cwd = (_opts as { cwd: string }).cwd;
-    fs.writeFileSync(path.join(cwd, "package-lock.json"), "{}", "utf-8");
-    cb(null);
-  },
-}));
 
 describe("listTemplates", () => {
   it("returns all 12 templates", () => {
@@ -88,7 +77,6 @@ describe("applyTemplate", () => {
     const written = await applyTemplate(template, tmpDir);
 
     expect(written).toContain("package.json");
-    expect(written).toContain("package-lock.json");
     expect(written).toContain("src/App.tsx");
     expect(written).toContain("index.html");
 
@@ -117,9 +105,7 @@ describe("applyTemplate", () => {
     const written = await applyTemplate(template, tmpDir);
 
     expect(written).toEqual(expect.arrayContaining(Object.keys(template.files)));
-    // +1 for the generated package-lock.json
-    expect(written.length).toBe(Object.keys(template.files).length + 1);
-    expect(written).toContain("package-lock.json");
+    expect(written.length).toBe(Object.keys(template.files).length);
   });
 
   it("writes correct content for static-html template (no package.json)", async () => {
@@ -146,11 +132,6 @@ describe("applyTemplate", () => {
       // Verify at least one file was created
       for (const filePath of written) {
         expect(fs.existsSync(path.join(tmpDir, filePath))).toBe(true);
-      }
-
-      // Templates with package.json should also generate package-lock.json
-      if (template.files["package.json"]) {
-        expect(written).toContain("package-lock.json");
       }
 
       fs.rmSync(tmpDir, { recursive: true, force: true });

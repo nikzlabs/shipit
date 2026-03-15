@@ -63,18 +63,6 @@ export async function applyTemplate(
     written.push(relativePath);
   }
 
-  // Generate package-lock.json so the initial commit includes a lock file.
-  // Uses --package-lock-only to avoid installing node_modules.
-  if (written.includes("package.json")) {
-    try {
-      await generatePackageLock(targetDir);
-      written.push("package-lock.json");
-    } catch {
-      // Non-fatal — the project still works without a lock file.
-      // npm install will generate one later when the session starts.
-    }
-  }
-
   return written;
 }
 
