@@ -59,7 +59,7 @@ export interface ApiDeps {
   broadcastLog: (source: "stderr" | "stdout" | "server" | "preview" | "deploy" | "install", text: string) => void;
   sseBroadcast: (event: string, data: unknown) => void;
   getSharedRepoDir: (repoUrl: string) => string;
-  createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string }>;
+  createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }>;
   // Phase 3 additions
   generateText: (prompt: string, cwd: string) => Promise<string>;
   sessionsRoot: string;

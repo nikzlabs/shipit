@@ -65,7 +65,7 @@ export async function createRepoWithTemplate(
 export async function applyTemplate(
   sessionManager: SessionManager,
   createGitManager: (dir: string) => GitManager,
-  createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string }>,
+  createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }>,
   templateId: string,
   sessionId?: string,
 ): Promise<{ templateId: string; name: string; session?: SessionInfo; sessionDir: string }> {
