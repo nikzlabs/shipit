@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { ProjectTemplate } from "../shared/types.js";
@@ -63,4 +64,22 @@ export async function applyTemplate(
   }
 
   return written;
+}
+
+/**
+ * Run `npm install --package-lock-only` to generate a package-lock.json
+ * without installing node_modules. Rejects if the command fails.
+ */
+export function generatePackageLock(dir: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "npm",
+      ["install", "--package-lock-only", "--ignore-scripts"],
+      { cwd: dir, timeout: 30_000, env: { ...process.env, NODE_ENV: "development" } },
+      (err: Error | null) => {
+        if (err) reject(err);
+        else resolve();
+      },
+    );
+  });
 }

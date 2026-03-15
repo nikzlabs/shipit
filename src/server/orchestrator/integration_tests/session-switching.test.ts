@@ -1,8 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildApp } from "../index.js";
+
+// Stub generatePackageLock to avoid spawning npm in integration tests.
+vi.mock("../templates.js", async (importOriginal) => {
+  const mod = await importOriginal() as Record<string, unknown>;
+  return { ...mod, generatePackageLock: vi.fn().mockResolvedValue(undefined) };
+});
 import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../auth.js";

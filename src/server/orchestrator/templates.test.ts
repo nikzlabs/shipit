@@ -133,6 +133,7 @@ describe("applyTemplate", () => {
       for (const filePath of written) {
         expect(fs.existsSync(path.join(tmpDir, filePath))).toBe(true);
       }
+
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
