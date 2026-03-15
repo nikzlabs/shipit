@@ -35,7 +35,7 @@ function baseConfig(overrides?: Partial<ContainerConfig>): ContainerConfig {
 describe("buildMounts", () => {
   it("returns basic session + credentials bind mounts without optional dirs", () => {
     const result = buildMounts(baseConfig(), undefined, undefined);
-    expect(result.binds).toContain("/workspace/sessions/sess-1:/user:rw");
+    expect(result.binds).toContain("/workspace/sessions/sess-1:/workspace:rw");
     expect(result.binds).toContain("/credentials:/credentials:rw");
     expect(result.mounts).toHaveLength(0);
   });
@@ -73,14 +73,14 @@ describe("buildMounts", () => {
 describe("buildEnv", () => {
   it("includes package manager cache env vars when depCacheDir is set", () => {
     const config = baseConfig({ depCacheDir: "/workspace/dep-cache/abc123" });
-    const env = buildEnv(config, "/user", 9100, undefined, undefined);
+    const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
     expect(env).toContain("npm_config_cache=/dep-cache/npm");
     expect(env).toContain("YARN_CACHE_FOLDER=/dep-cache/yarn");
     expect(env).toContain("PNPM_STORE_DIR=/dep-cache/pnpm");
   });
 
   it("does not include cache env vars when depCacheDir is undefined", () => {
-    const env = buildEnv(baseConfig(), "/user", 9100, undefined, undefined);
+    const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined);
     const cacheVars = env.filter((e) =>
       e.startsWith("npm_config_cache=") ||
       e.startsWith("YARN_CACHE_FOLDER=") ||
@@ -91,9 +91,9 @@ describe("buildEnv", () => {
 
   it("includes standard env vars alongside cache vars", () => {
     const config = baseConfig({ depCacheDir: "/workspace/dep-cache/abc123" });
-    const env = buildEnv(config, "/user", 9100, undefined, undefined);
+    const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
     expect(env).toContain("SESSION_ID=sess-1");
-    expect(env).toContain("WORKSPACE_DIR=/user");
+    expect(env).toContain("WORKSPACE_DIR=/workspace");
     expect(env).toContain("WORKER_PORT=9100");
     expect(env).toContain("HOME=/root");
   });

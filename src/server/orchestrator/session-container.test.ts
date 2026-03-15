@@ -230,7 +230,7 @@ describe("SessionContainerManager", () => {
           },
           HostConfig: expect.objectContaining({
             Binds: expect.arrayContaining([
-              "/workspace/sessions/test-session-1:/user:rw",
+              "/workspace/sessions/test-session-1:/workspace:rw",
               "/credentials:/credentials:rw",
             ]),
             Memory: 512 * 1024 * 1024,
@@ -258,7 +258,7 @@ describe("SessionContainerManager", () => {
             "GITHUB_TOKEN=ghp_test123",
             "GIT_AUTHOR_NAME=Test",
             "SESSION_ID=test-session-1",
-            "WORKSPACE_DIR=/user",
+            "WORKSPACE_DIR=/workspace",
           ]),
         }),
       );

@@ -79,7 +79,7 @@ export interface ContainerConfig {
   sessionId: string;
   /** Host path: /workspace/sessions/{uuid} */
   sessionDir: string;
-  /** Host path to the git repo directory, mounted as /user in the container.
+  /** Host path to the git repo directory, mounted as /workspace in the container.
    *  New layout: /workspace/sessions/{uuid}/workspace
    *  Falls back to sessionDir for legacy sessions. */
   workspaceDir?: string;

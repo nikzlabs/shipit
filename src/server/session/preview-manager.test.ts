@@ -47,7 +47,7 @@ describe("extractMissingNativeModule", () => {
       "> dev",
       "> vite",
       "",
-      "/user/node_modules/rollup/dist/native.js:115",
+      "/workspace/node_modules/rollup/dist/native.js:115",
       "    throw new Error(",
       "          ^",
       "",

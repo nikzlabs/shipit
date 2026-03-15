@@ -7,8 +7,8 @@ describe("sessionRelativePath", () => {
       .toBe("src/App.tsx");
   });
 
-  it("strips container-mode prefix (/user/)", () => {
-    expect(sessionRelativePath("/user/src/App.tsx"))
+  it("strips container-mode prefix (/workspace/)", () => {
+    expect(sessionRelativePath("/workspace/src/App.tsx"))
       .toBe("src/App.tsx");
   });
 
@@ -18,7 +18,7 @@ describe("sessionRelativePath", () => {
   });
 
   it("handles root-level files in container mode", () => {
-    expect(sessionRelativePath("/user/package.json"))
+    expect(sessionRelativePath("/workspace/package.json"))
       .toBe("package.json");
   });
 
@@ -35,7 +35,7 @@ describe("sessionRelativePath", () => {
   it("handles deeply nested paths", () => {
     expect(sessionRelativePath("/workspace/sessions/test-1/src/components/Header.tsx"))
       .toBe("src/components/Header.tsx");
-    expect(sessionRelativePath("/user/src/components/Header.tsx"))
+    expect(sessionRelativePath("/workspace/src/components/Header.tsx"))
       .toBe("src/components/Header.tsx");
   });
 });
