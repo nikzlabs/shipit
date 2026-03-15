@@ -185,10 +185,14 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToCh
                 className="group flex items-center py-1 px-2 text-sm text-(--color-text-secondary) hover:bg-(--color-bg-hover)"
                 style={{ paddingLeft: 24 }}
               >
-                <span className="flex items-center gap-1.5 flex-1 min-w-0 truncate" title={u.path}>
+                <button
+                  onClick={() => onFileClick?.(u.path!)}
+                  className="flex items-center gap-1.5 flex-1 min-w-0 text-left"
+                  title={u.path}
+                >
                   <FileIcon size={ICON_SIZE.SM} className="shrink-0 text-(--color-text-tertiary)" />
-                  {u.name}
-                </span>
+                  <span className="truncate">{u.name}</span>
+                </button>
                 {onAddToChat && u.path && (
                   <Button
                     variant="ghost"
