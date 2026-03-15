@@ -411,36 +411,82 @@ Comments whose section heading no longer exists appear in a yellow warning block
 
 ## Part 2 — File Comments
 
+### Existing Components
+
+Two viewer components exist today. Comments must work in both.
+
+| Component | File | Rendering | Line numbers | Used for |
+|---|---|---|---|---|
+| `FilePreviewModal` | `src/client/components/FilePreviewModal.tsx` | highlight.js (`<pre><code>`) for code; `marked` for markdown; `<img>` for images | **None** | Clicking file links in chat, file tree, grep results. Opens as a modal overlay. |
+| `DiffPanel` | `src/client/components/DiffPanel.tsx` | Monaco `DiffEditor` (side-by-side, read-only) | Yes (Monaco built-in) | "View Changes" after Claude finishes a turn. Shows per-file diffs with a file list sidebar. |
+
+**Other relevant surfaces** (no comments needed, listed for context):
+- `ToolResult` — inline in chat, shows truncated file content / bash output / grep results. Uses highlight.js. Read-only snippet, not a full viewer.
+- `DiffBlock` — one-liner summary card (`edit src/foo.ts +40 -12`). Not a viewer.
+
+### Strategy: Unified Comment Widget via Monaco
+
+Rather than building two parallel comment UIs (custom React gutter for FilePreviewModal, Monaco widgets for DiffPanel), we **upgrade FilePreviewModal to use Monaco `Editor` (read-only) for code files**. This gives us:
+
+- Line numbers for free
+- A single comment implementation using Monaco's `ViewZone` API (injected DOM elements between lines) and glyph margin decorations
+- Consistent look and feel across both viewers
+- Language detection already shared (`getLanguageFromPath()` in DiffPanel)
+
+**What stays the same**: Markdown rendering (`marked`), image display, and binary placeholder in FilePreviewModal are unchanged — comments only apply to code files.
+
+**Bundle impact**: Monaco is already loaded for DiffPanel, so no new bundle cost. The `@monaco-editor/react` package lazy-loads the Monaco core on first use.
+
 ### UX Flow
 
-1. User opens a file in the file viewer (Files tab, or clicks a filename in chat).
-2. File renders with **line numbers** in the gutter.
-3. Hovering over a line number shows a `+` icon. Clicking it opens an inline comment input below that line.
-4. User types a comment, presses Enter (or Cmd+Enter) to save. The comment appears as a small card pinned to that line.
-5. User repeats across any number of files. A badge shows the total pending comment count.
-6. User clicks "Send N comments". All comments are collected, formatted with file context, and sent as a `send_message` to the current session.
+1. User opens a file via the file tree, a chat link, or a grep result → `FilePreviewModal` opens with Monaco (read-only) for code files.
+2. **Glyph margin `+` icon**: Hovering over the glyph margin (left of line numbers) highlights the row. Clicking opens a comment input widget below that line.
+3. User types a comment, presses Cmd/Ctrl+Enter to save. The comment appears as an inline card (Monaco `ViewZone`) pinned to that line.
+4. User can also add comments in `DiffPanel` on the **modified** (right) side — same glyph margin interaction, same ViewZone rendering.
+5. User repeats across files. A badge shows total pending comment count.
+6. User clicks "Send N comments". All comments are formatted with file context and sent as a `send_message` to the current session.
 7. After sending, all comments are cleared.
 
 ```
-┌─ FileContentViewer ──────────────────────────────────────┐
-│    1  import express from "express";                      │
-│    2  import { authMiddleware } from "./auth.js";         │
-│    3                                                      │
-│  + 4  export function registerRoutes(app) {               │
-│    5    app.get("/api/users", async (req, res) => {       │
-│    6      const users = await db.query("SELECT * FROM     │
-│    7        users WHERE active = true");                   │
-│    ┌─ Comment on line 6 ─────────────────────────────┐    │
-│    │ SQL injection risk — use parameterized query    │    │
-│    │                                          [Del]  │    │
-│    └─────────────────────────────────────────────────┘    │
-│    8      res.json(users);                                │
-│    9    });                                                │
-│   10  }                                                   │
-│                                                           │
-├───────────────────────────────────────────────────────────┤
+┌─ FilePreviewModal (Monaco read-only) ────────────────────┐
+│  src/server/api-routes.ts                        [Close]  │
+│───────────────────────────────────────────────────────────│
+│  ┊  1  import express from "express";                     │
+│  ┊  2  import { authMiddleware } from "./auth.js";        │
+│  ┊  3                                                     │
+│  +  4  export function registerRoutes(app) {              │
+│  ┊  5    app.get("/api/users", async (req, res) => {      │
+│  ┊  6      const users = await db.query("SELECT * FROM    │
+│  ┊  7        users WHERE active = true");                  │
+│  ┊  ┌─ 💬 Line 6 ────────────────────────────────┐       │
+│  ┊  │ SQL injection risk — use parameterized      │       │
+│  ┊  │ query instead.                   [Edit][Del]│       │
+│  ┊  └─────────────────────────────────────────────┘       │
+│  ┊  8      res.json(users);                               │
+│  ┊  9    });                                              │
+│  ┊ 10  }                                                  │
+│───────────────────────────────────────────────────────────│
 │  1 comment on this file          [Send 1 comment ▶]      │
 └───────────────────────────────────────────────────────────┘
+
+(┊ = glyph margin, + = hover affordance on line 4)
+```
+
+In DiffPanel, comments appear on the **modified** (right) editor only:
+
+```
+┌─ DiffPanel ──────────────────────────────────────────────┐
+│  ┌─ Files ─┐  ┌─ Original ──────┬─ Modified ────────┐   │
+│  │ M foo.ts │  │  5  old code    │  5  new code      │   │
+│  │ A bar.ts │  │  6  ...         │  6  ...            │   │
+│  │          │  │                  │  ┌─ 💬 Line 6 ──┐ │   │
+│  │          │  │                  │  │ This broke   │ │   │
+│  │          │  │                  │  │ the API  [Del]│ │   │
+│  │          │  │                  │  └───────────────┘ │   │
+│  │          │  │  7  ...         │  7  ...            │   │
+│  └──────────┘  └────────────────┴────────────────────┘   │
+│  1 comment                       [Send 1 comment ▶]      │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ### Comment Data Model
@@ -454,35 +500,139 @@ interface FileComment {
   line: number;        // 1-based line number
   text: string;        // The comment text
 }
-
-interface FileCommentState {
-  commentsBySession: Record<string, FileComment[]>;
-}
 ```
 
 ### Client-Side — File Comments
 
-#### `FileContentViewer` enhancement
+#### Monaco Comment Widgets (shared between both viewers)
 
-**File**: `src/client/components/FileContentViewer.tsx`
+**File**: `src/client/components/MonacoCommentWidgets.ts`
 
-Current state: renders `<pre><code>` with highlight.js, no line numbers, no interactivity.
-
-Changes:
-1. **Add line numbers**: Split content into lines, render each in a row with a line-number gutter.
-2. **Add `+` button on hover**: Each line number shows a `+` icon on hover. Clicking opens a comment input below that line.
-3. **Show comment cards**: If a comment exists on a line, render it as an inline card below that line.
-4. **Keep syntax highlighting**: Apply highlight.js to each line's content.
+A utility module that adds comment UI to any Monaco editor instance. Used by both `FilePreviewModal` and `DiffPanel`.
 
 ```typescript
-interface FileContentViewerProps {
-  content: string;
-  filePath: string;
-  language?: string;
-  comments: FileComment[];
-  onAddComment: (filePath: string, line: number, text: string) => void;
-  onDeleteComment: (commentId: string) => void;
+interface CommentWidgetManager {
+  /** Render existing comments as ViewZones + decorations */
+  setComments(comments: FileComment[]): void;
+
+  /** Show the "add comment" input below a line */
+  openCommentInput(line: number): void;
+
+  /** Clean up all ViewZones and decorations */
+  dispose(): void;
 }
+
+/**
+ * Attaches comment widgets to a Monaco editor instance.
+ * - Adds glyph margin click handler (opens comment input)
+ * - Renders existing comments as ViewZones (inline DOM below the line)
+ * - Each comment card has Edit and Delete buttons
+ */
+function createCommentWidgetManager(
+  editor: monaco.editor.IStandaloneCodeEditor | monaco.editor.IStandaloneDiffEditor,
+  options: {
+    filePath: string;
+    onAddComment: (line: number, text: string) => void;
+    onEditComment: (commentId: string, text: string) => void;
+    onDeleteComment: (commentId: string) => void;
+    side?: "modified";  // For diff editor — only attach to modified side
+  },
+): CommentWidgetManager;
+```
+
+**Implementation approach**:
+
+1. **Glyph margin decoration**: Add a CSS class to the glyph margin that shows a `+` icon on hover (via `editor.deltaDecorations`). Listen for `onMouseDown` events in the glyph margin area to trigger comment input.
+
+2. **Comment input (ViewZone)**: When the user clicks the glyph margin, insert a `ViewZone` below that line containing a React-rendered `<textarea>` with submit/cancel buttons. `ViewZone.domNode` is a plain DOM element — use `createRoot()` to render React into it.
+
+3. **Comment cards (ViewZone)**: Each saved comment becomes a `ViewZone` with a rendered card showing the comment text, edit button, and delete button. Cards use the same blue accent styling as design doc human comments (`border-l-2 border-blue-400 bg-blue-950`).
+
+4. **Glyph margin icons**: Lines with comments get a comment icon in the glyph margin (using `GlyphMarginClassName` decoration).
+
+5. **Diff editor access**: For `DiffPanel`, use `editor.getModifiedEditor()` to get the right-side editor instance, then attach widgets to that.
+
+#### `FilePreviewModal` changes
+
+**File**: `src/client/components/FilePreviewModal.tsx`
+
+Current state: renders code with highlight.js in `<pre><code>`, no line numbers, no interactivity.
+
+Changes for code files only (markdown/image/binary unchanged):
+1. Replace `<pre><code>` with Monaco `Editor` (read-only, `vs-dark` theme)
+2. On `editorDidMount`, call `createCommentWidgetManager()` to attach comment UI
+3. Pass comments from the comment store, wire up add/edit/delete callbacks
+4. Add a footer bar showing comment count + "Send N comments" button
+
+```typescript
+// Inside FilePreviewModal, for code files:
+<Editor
+  value={content}
+  language={getLanguageFromPath(filePath)}
+  theme="vs-dark"
+  options={{
+    readOnly: true,
+    minimap: { enabled: false },
+    lineNumbers: "on",
+    glyphMargin: true,         // Required for comment affordance
+    folding: false,
+    scrollBeyondLastLine: false,
+    fontSize: 12,
+    renderOverviewRuler: false,
+  }}
+  onMount={(editor) => {
+    commentManagerRef.current = createCommentWidgetManager(editor, {
+      filePath,
+      onAddComment: (line, text) => commentStore.addComment(sessionId, filePath, line, text),
+      onEditComment: (id, text) => commentStore.editComment(sessionId, id, text),
+      onDeleteComment: (id) => commentStore.deleteComment(sessionId, id),
+    });
+    commentManagerRef.current.setComments(comments);
+  }}
+/>
+```
+
+#### `DiffPanel` changes
+
+**File**: `src/client/components/DiffPanel.tsx`
+
+Current state: Monaco `DiffEditor`, read-only, no decorations.
+
+Changes:
+1. Enable `glyphMargin: true` in the diff editor options
+2. On `editorDidMount`, call `createCommentWidgetManager()` with `side: "modified"` to attach comment UI to the right-side editor
+3. When the selected file changes, dispose the old manager and create a new one for the new file
+4. Wire up the comment store callbacks
+5. Add a footer section showing total comment count + "Send N comments" button
+
+```typescript
+<DiffEditor
+  original={selectedFile.oldContent}
+  modified={selectedFile.newContent}
+  language={language}
+  theme="vs-dark"
+  options={{
+    readOnly: true,
+    renderSideBySide: true,
+    minimap: { enabled: false },
+    glyphMargin: true,           // NEW — enables comment affordance
+    scrollBeyondLastLine: false,
+    fontSize: 12,
+    lineNumbers: "on",
+    folding: false,
+    // ... existing options
+  }}
+  onMount={(editor) => {
+    commentManagerRef.current = createCommentWidgetManager(editor, {
+      filePath: selectedFile.path,
+      onAddComment: (line, text) => commentStore.addComment(sessionId, selectedFile.path, line, text),
+      onEditComment: (id, text) => commentStore.editComment(sessionId, id, text),
+      onDeleteComment: (id) => commentStore.deleteComment(sessionId, id),
+      side: "modified",
+    });
+    commentManagerRef.current.setComments(commentsForFile);
+  }}
+/>
 ```
 
 #### Comment store (new)
@@ -498,6 +648,7 @@ import { persist } from "zustand/middleware";
 interface FileCommentStore {
   commentsBySession: Record<string, FileComment[]>;
   addComment: (sessionId: string, filePath: string, line: number, text: string) => void;
+  editComment: (sessionId: string, commentId: string, text: string) => void;
   deleteComment: (sessionId: string, commentId: string) => void;
   clearComments: (sessionId: string) => void;
   getCommentsForFile: (sessionId: string, filePath: string) => FileComment[];
@@ -509,8 +660,9 @@ interface FileCommentStore {
 #### Send UI
 
 The "Send N comments" affordance appears in:
-1. **`FileContentViewer` footer**: Shows count for the current file. Sends all comments across all files.
-2. **Comment badge in the tab bar or header**: A persistent count badge when there are pending comments.
+1. **`FilePreviewModal` footer**: Shows count for the current file. Sends all comments across all files.
+2. **`DiffPanel` footer**: Same affordance, next to the existing close button.
+3. **Comment badge in the header or chat input area**: A persistent count badge when there are pending comments, visible even when no viewer is open.
 
 ### Prompt Construction (File Comments)
 
@@ -658,16 +810,34 @@ function parseMarkdownSections(content: string): MarkdownSection[] {
 10. Drift banner when doc hash differs
 11. Orphaned comments in warning block with "Move to section" dropdown
 
-### Component Tests — `FileContentViewer` (`src/client/components/FileContentViewer.test.tsx`)
+### Unit Tests — `MonacoCommentWidgets` (`src/client/components/MonacoCommentWidgets.test.ts`)
 
-1. Renders line numbers 1..N
-2. Hover shows `+` icon
-3. Add comment flow: click `+` → type → Enter → `onAddComment` called
-4. Cancel comment: Escape closes textarea
-5. Shows existing comments at correct lines
-6. Delete comment calls `onDeleteComment`
-7. Multiple comments on different lines
-8. Binary file: no line numbers or comment UI
+1. `setComments()` creates ViewZones at correct line positions
+2. `openCommentInput()` inserts an input ViewZone below the target line
+3. Submitting input calls `onAddComment` with correct line and text
+4. Cancelling input (Escape) removes the ViewZone without calling `onAddComment`
+5. Delete button calls `onDeleteComment` with correct ID
+6. Edit button replaces card with editable textarea, save calls `onEditComment`
+7. `dispose()` removes all ViewZones and decorations
+8. Glyph margin decorations added for lines with comments
+9. Works with diff editor (modified side only)
+
+### Component Tests — `FilePreviewModal` comment integration (`src/client/components/FilePreviewModal.test.tsx`)
+
+1. Code files render with Monaco Editor (not `<pre><code>`)
+2. Markdown/image files still use existing renderers (no Monaco)
+3. Comment manager created on editor mount
+4. Comments from store displayed via `setComments()`
+5. Footer shows comment count and "Send" button
+6. Send button disabled with 0 comments, enabled with 1+
+
+### Component Tests — `DiffPanel` comment integration (`src/client/components/DiffPanel.test.tsx`)
+
+1. Glyph margin enabled in diff editor options
+2. Comment manager created on mount with `side: "modified"`
+3. Switching files disposes old manager and creates new one
+4. Footer shows total comment count across all files
+5. Comments scoped to selected file path
 
 ### Unit Tests — File Comment Prompt Construction
 
@@ -680,11 +850,12 @@ function parseMarkdownSections(content: string): MarkdownSection[] {
 ### Store Tests — Comment Store
 
 1. Add comment to correct session
-2. Delete comment by ID
-3. Clear comments for session, others unaffected
-4. Get comments filtered by file
-5. Session isolation
-6. Persistence via localStorage
+2. Edit comment text by ID
+3. Delete comment by ID
+4. Clear comments for session, others unaffected
+5. Get comments filtered by file
+6. Session isolation
+7. Persistence via localStorage
 
 ### Prompt Construction Tests — Design Doc
 
@@ -708,8 +879,10 @@ function parseMarkdownSections(content: string): MarkdownSection[] {
 | `src/client/components/DocReviewPanel.tsx` | New — review UI with section parsing, comment management |
 | `src/client/components/DocReviewPanel.test.tsx` | New — component tests |
 | `src/client/components/FeaturesPanel.tsx` | Add "Review" button, `onReviewFeature` prop |
-| `src/client/components/FileContentViewer.tsx` | Add line numbers, comment gutter, inline comment cards |
-| `src/client/components/FileContentViewer.test.tsx` | New/updated — component tests |
+| `src/client/components/MonacoCommentWidgets.ts` | New — shared ViewZone/decoration logic for comments in any Monaco editor |
+| `src/client/components/MonacoCommentWidgets.test.ts` | New — unit tests |
+| `src/client/components/FilePreviewModal.tsx` | Replace highlight.js with Monaco Editor for code files; attach comment widgets |
+| `src/client/components/DiffPanel.tsx` | Enable glyph margin, attach comment widgets to modified editor |
 | `src/client/stores/comment-store.ts` | New — persisted Zustand store for file comments |
 | `src/client/App.tsx` | Wire both comment flows, add review state and send handlers |
 | `src/server/integration_tests/doc-reviews.test.ts` | New — HTTP endpoint integration tests |
@@ -718,12 +891,14 @@ function parseMarkdownSections(content: string): MarkdownSection[] {
 
 **In scope**:
 - Section-anchored comments on `plan.md` files (human and AI), server-persisted
-- Line-anchored comments on any file, client-side persisted
+- Line-anchored comments on any source file (FilePreviewModal + DiffPanel), client-side persisted
+- Editable comments in both viewers (add, edit, delete)
 - HTTP CRUD endpoints for design doc reviews
 - AI review via one-shot Claude CLI invocation
 - Review history for design docs
 - Send → new session (design doc reviews) / send → current session (file comments)
 - Prompt construction for both flows
+- Upgrade FilePreviewModal from highlight.js to Monaco for code files
 
 **Not in scope (future work)**:
 - Comments on `checklist.md` files
@@ -731,10 +906,9 @@ function parseMarkdownSections(content: string): MarkdownSection[] {
 - Collaborative review (multiple users)
 - Comment resolution tracking
 - Streaming AI review
-- Comment editing for file comments (delete and re-add is fine)
 - Cross-session file comments
-- Diff-specific commenting (the existing `diff_comment` flow is separate)
+- Comments on the original (left) side of diffs
 
 ## Complexity
 
-Medium. Server-side work (ReviewStore + HTTP endpoints + service layer) follows established patterns. AI review flow adds moderate complexity. Client-side DocReviewPanel is ~300-400 lines of new UI. FileContentViewer enhancement is ~150-200 lines. Comment store is ~20 lines. Total: ~800-1200 lines of new code.
+Medium. Server-side work (ReviewStore + HTTP endpoints + service layer) follows established patterns. AI review flow adds moderate complexity. The `MonacoCommentWidgets` module (~200-250 lines) is the key shared abstraction — ViewZone management, glyph margin handlers, and React-in-DOM rendering. DocReviewPanel is ~300-400 lines. FilePreviewModal Monaco upgrade is ~50 lines of changes. DiffPanel changes are ~30 lines. Comment store is ~30 lines. Total: ~900-1300 lines of new code.
