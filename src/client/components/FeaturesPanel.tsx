@@ -5,7 +5,7 @@ import type { FeatureInfo, FeatureStatus } from "../../server/shared/types.js";
 
 export interface FeaturesPanelProps {
   features: FeatureInfo[];
-  onStartSession: (feature: FeatureInfo) => void;
+  onFeatureClick: (feature: FeatureInfo) => void;
   onRefresh: () => void;
 }
 
@@ -25,7 +25,7 @@ function StatusBadge({ status }: { status: FeatureStatus }) {
   );
 }
 
-export function FeaturesPanel({ features, onStartSession, onRefresh }: FeaturesPanelProps) {
+export function FeaturesPanel({ features, onFeatureClick, onRefresh }: FeaturesPanelProps) {
   if (features.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
@@ -71,16 +71,16 @@ export function FeaturesPanel({ features, onStartSession, onRefresh }: FeaturesP
       {/* Feature list */}
       <div className="flex-1 overflow-y-auto">
         {inProgress.length > 0 && (
-          <FeatureGroup label="In Progress" features={inProgress} onStartSession={onStartSession} />
+          <FeatureGroup label="In Progress" features={inProgress} onFeatureClick={onFeatureClick} />
         )}
         {planned.length > 0 && (
-          <FeatureGroup label="Planned" features={planned} onStartSession={onStartSession} />
+          <FeatureGroup label="Planned" features={planned} onFeatureClick={onFeatureClick} />
         )}
         {paused.length > 0 && (
-          <FeatureGroup label="Paused" features={paused} onStartSession={onStartSession} />
+          <FeatureGroup label="Paused" features={paused} onFeatureClick={onFeatureClick} />
         )}
         {done.length > 0 && (
-          <FeatureGroup label="Done" features={done} onStartSession={onStartSession} />
+          <FeatureGroup label="Done" features={done} onFeatureClick={onFeatureClick} />
         )}
       </div>
     </div>
@@ -90,11 +90,11 @@ export function FeaturesPanel({ features, onStartSession, onRefresh }: FeaturesP
 function FeatureGroup({
   label,
   features,
-  onStartSession,
+  onFeatureClick,
 }: {
   label: string;
   features: FeatureInfo[];
-  onStartSession: (feature: FeatureInfo) => void;
+  onFeatureClick: (feature: FeatureInfo) => void;
 }) {
   return (
     <div className="py-2">
@@ -102,7 +102,7 @@ function FeatureGroup({
         {label}
       </div>
       {features.map((feature) => (
-        <FeatureRow key={feature.id} feature={feature} onStartSession={onStartSession} />
+        <FeatureRow key={feature.id} feature={feature} onClick={() => onFeatureClick(feature)} />
       ))}
     </div>
   );
@@ -110,13 +110,16 @@ function FeatureGroup({
 
 function FeatureRow({
   feature,
-  onStartSession,
+  onClick,
 }: {
   feature: FeatureInfo;
-  onStartSession: (feature: FeatureInfo) => void;
+  onClick: () => void;
 }) {
   return (
-    <div className="flex items-center justify-between px-3 py-2 hover:bg-(--color-bg-hover) transition-colors group">
+    <button
+      onClick={onClick}
+      className="flex items-center w-full text-left px-3 py-2 hover:bg-(--color-bg-hover) transition-colors cursor-pointer"
+    >
       <div className="flex items-center gap-2 min-w-0">
         <span className="text-xs text-(--color-text-tertiary) font-mono shrink-0">
           {String(feature.number).padStart(3, "0")}
@@ -126,15 +129,6 @@ function FeatureRow({
         </span>
         <StatusBadge status={feature.status} />
       </div>
-      <Button
-        variant="primary"
-        size="sm"
-        onClick={() => onStartSession(feature)}
-        className="shrink-0 ml-2 opacity-0 group-hover:opacity-100 focus:opacity-100"
-        title={`Start a new session to work on ${feature.name}`}
-      >
-        Start Session
-      </Button>
-    </div>
+    </button>
   );
 }
