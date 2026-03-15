@@ -162,4 +162,23 @@ describe("findMarkdownFiles", () => {
     const docs = await findMarkdownFiles(tmpDir);
     expect(docs[0].title).toBe("My Great Doc");
   });
+
+  it("derives title from parent directory for generic filenames like plan.md", async () => {
+    fs.mkdirSync(path.join(tmpDir, "docs", "042-cool-feature"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "docs", "042-cool-feature", "plan.md"),
+      "---\nstatus: done\n---\n# Plan",
+    );
+
+    const docs = await findMarkdownFiles(tmpDir);
+    expect(docs[0].title).toBe("Cool Feature");
+  });
+
+  it("strips leading numeric prefix from directory names in title", async () => {
+    fs.mkdirSync(path.join(tmpDir, "001-auth"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "001-auth", "checklist.md"), "- [ ] task");
+
+    const docs = await findMarkdownFiles(tmpDir);
+    expect(docs[0].title).toBe("Auth");
+  });
 });

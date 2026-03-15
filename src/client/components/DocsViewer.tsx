@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Badge } from "./ui/badge.js";
 import type { BadgeProps } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
@@ -9,11 +10,11 @@ export interface DocsViewerProps {
   onRefresh: () => void;
 }
 
-const STATUS_CONFIG: Record<DocStatus, { label: string; variant: BadgeProps["variant"] }> = {
-  "planned": { label: "Planned", variant: "default" },
-  "in-progress": { label: "In Progress", variant: "warning" },
-  "done": { label: "Done", variant: "success" },
-  "paused": { label: "Paused", variant: "default" },
+const STATUS_CONFIG: Record<DocStatus, { label: string; variant: BadgeProps["variant"]; order: number }> = {
+  "in-progress": { label: "In Progress", variant: "warning", order: 0 },
+  "planned": { label: "Planned", variant: "default", order: 1 },
+  "paused": { label: "Paused", variant: "default", order: 2 },
+  "done": { label: "Done", variant: "success", order: 3 },
 };
 
 function StatusBadge({ status }: { status: DocStatus }) {
@@ -25,7 +26,37 @@ function StatusBadge({ status }: { status: DocStatus }) {
   );
 }
 
+/** Show parent directory as secondary context, e.g. "docs/001-feature/" */
+function pathContext(docPath: string): string | null {
+  const lastSlash = docPath.lastIndexOf("/");
+  if (lastSlash <= 0) return null;
+  return docPath.slice(0, lastSlash + 1);
+}
+
+function sortByStatus(docs: DocEntry[]): DocEntry[] {
+  return [...docs].sort((a, b) => {
+    const orderA = a.status ? STATUS_CONFIG[a.status]?.order ?? 99 : 99;
+    const orderB = b.status ? STATUS_CONFIG[b.status]?.order ?? 99 : 99;
+    if (orderA !== orderB) return orderA - orderB;
+    return a.title.localeCompare(b.title);
+  });
+}
+
+type Tab = "tracked" | "other";
+
 export function DocsViewer({ files, onFileClick, onRefresh }: DocsViewerProps) {
+  const tracked = files.filter((f) => f.status !== undefined);
+  const untracked = files.filter((f) => f.status === undefined);
+  const hasTracked = tracked.length > 0;
+  const hasUntracked = untracked.length > 0;
+
+  const [activeTab, setActiveTab] = useState<Tab>("tracked");
+
+  // Switch to "tracked" once tracked docs arrive (handles async load)
+  useEffect(() => {
+    if (hasTracked) setActiveTab("tracked");
+  }, [hasTracked]);
+
   if (files.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
@@ -48,8 +79,8 @@ export function DocsViewer({ files, onFileClick, onRefresh }: DocsViewerProps) {
     );
   }
 
-  const tracked = files.filter((f) => f.status !== undefined);
-  const untracked = files.filter((f) => f.status === undefined);
+  const sortedTracked = sortByStatus(tracked);
+  const showTabs = hasTracked && hasUntracked;
 
   return (
     <div className="flex flex-col h-full">
@@ -67,32 +98,68 @@ export function DocsViewer({ files, onFileClick, onRefresh }: DocsViewerProps) {
         </Button>
       </div>
 
+      {/* Tabs */}
+      {showTabs && (
+        <div className="flex border-b border-(--color-border-secondary)">
+          <button
+            onClick={() => setActiveTab("tracked")}
+            className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+              activeTab === "tracked"
+                ? "text-(--color-text-primary) border-b-2 border-(--color-accent)"
+                : "text-(--color-text-tertiary) hover:text-(--color-text-secondary)"
+            }`}
+          >
+            Tracked ({tracked.length})
+          </button>
+          <button
+            onClick={() => setActiveTab("other")}
+            className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+              activeTab === "other"
+                ? "text-(--color-text-primary) border-b-2 border-(--color-accent)"
+                : "text-(--color-text-tertiary) hover:text-(--color-text-secondary)"
+            }`}
+          >
+            Other ({untracked.length})
+          </button>
+        </div>
+      )}
+
       {/* File list */}
       <div className="flex-1 overflow-y-auto">
-        {tracked.length > 0 && (
-          <div className="py-2">
-            <div className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-(--color-text-tertiary)">
-              Tracked
-            </div>
-            {tracked.map((doc) => (
-              <button
-                key={doc.path}
-                onClick={() => onFileClick(doc.path)}
-                className="flex items-center w-full text-left px-3 py-2 hover:bg-(--color-bg-hover) transition-colors cursor-pointer"
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-sm text-(--color-text-primary) truncate">
-                    {doc.title}
-                  </span>
+        {(activeTab === "tracked" || !showTabs) && hasTracked && (
+          <div className="py-1">
+            {!showTabs && (
+              <div className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-(--color-text-tertiary)">
+                Tracked
+              </div>
+            )}
+            {sortedTracked.map((doc) => {
+              const ctx = pathContext(doc.path);
+              return (
+                <button
+                  key={doc.path}
+                  onClick={() => onFileClick(doc.path)}
+                  className="flex items-center justify-between w-full text-left px-3 py-2 hover:bg-(--color-bg-hover) transition-colors cursor-pointer gap-2"
+                >
+                  <div className="min-w-0">
+                    <span className="text-sm text-(--color-text-primary) truncate block">
+                      {doc.title}
+                    </span>
+                    {ctx && (
+                      <span className="text-[11px] text-(--color-text-tertiary) truncate block">
+                        {ctx}
+                      </span>
+                    )}
+                  </div>
                   {doc.status && <StatusBadge status={doc.status} />}
-                </div>
-              </button>
-            ))}
+                </button>
+              );
+            })}
           </div>
         )}
-        {untracked.length > 0 && (
-          <div className="py-2">
-            {tracked.length > 0 && (
+        {(activeTab === "other" || !showTabs) && hasUntracked && (
+          <div className="py-1">
+            {!showTabs && (
               <div className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-(--color-text-tertiary)">
                 Other Docs
               </div>
