@@ -149,4 +149,22 @@ describe("scanFileTree", () => {
     const tree = await scanFileTree(path.join(tmpDir, "does-not-exist"));
     expect(tree).toEqual([]);
   });
+
+  it("does not include uploads when workspace is a subdirectory of session dir", async () => {
+    // The session dir layout is: {sessionDir}/workspace/ (git repo) + {sessionDir}/uploads/
+    // scanFileTree only runs on the workspace subdir, so uploads are invisible.
+    const sessionDir = tmpDir;
+    const workspaceDir = path.join(sessionDir, "workspace");
+    const uploadsDir = path.join(sessionDir, "uploads");
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    fs.writeFileSync(path.join(workspaceDir, "index.ts"), "");
+    fs.writeFileSync(path.join(uploadsDir, "photo.png"), Buffer.alloc(10));
+
+    // Scanning the workspace dir should not include uploads (they're a sibling)
+    const tree = await scanFileTree(workspaceDir);
+    expect(tree).toEqual([
+      { name: "index.ts", path: "index.ts", type: "file" },
+    ]);
+  });
 });

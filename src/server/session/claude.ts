@@ -1,8 +1,37 @@
 import * as pty from "node-pty";
 import type { IPty } from "node-pty";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
 import type { ClaudeEvent, ImageAttachment, PermissionMode } from "../shared/types.js";
 import { stripAnsi } from "../shared/strip-ansi.js";
+
+/**
+ * Save images to /uploads/ and return a prompt prefix that references them.
+ * Claude agent can read these files with the Read tool, which natively
+ * supports image viewing. Uses /uploads/ (mounted from the session dir)
+ * to keep images outside the git repo.
+ */
+export function saveImagesToDisk(images: ImageAttachment[]): { promptPrefix: string; filePaths: string[] } {
+  const dir = "/uploads";
+  fs.mkdirSync(dir, { recursive: true });
+
+  const filePaths: string[] = [];
+  for (const img of images) {
+    const ext = img.mediaType.split("/")[1]?.replace("jpeg", "jpg") ?? "png";
+    const name = img.filename
+      ? `${path.parse(img.filename).name}-${crypto.randomUUID().slice(0, 8)}.${ext}`
+      : `image-${crypto.randomUUID().slice(0, 8)}.${ext}`;
+    const filePath = path.join(dir, name);
+    fs.writeFileSync(filePath, Buffer.from(img.data, "base64"));
+    filePaths.push(filePath);
+  }
+
+  const refs = filePaths.map((p) => `- ${p}`).join("\n");
+  const promptPrefix = `<attached_images>\nThe user has attached the following image(s) to this message. Use the Read tool to view each one:\n${refs}\n</attached_images>`;
+  return { promptPrefix, filePaths };
+}
 
 export class ClaudeProcess extends EventEmitter {
   private proc: IPty | null = null;
@@ -16,8 +45,8 @@ export class ClaudeProcess extends EventEmitter {
    * Uses node-pty to allocate a real PTY so the CLI behaves as if invoked
    * from an interactive terminal (avoids hangs caused by piped stdin).
    *
-   * When `images` is provided, the prompt is sent via stdin as a JSON content
-   * array containing image blocks followed by a text block.
+   * When `images` is provided, they are saved to /uploads/ and referenced
+   * in the prompt so the agent can read them with the Read tool.
    */
   run(prompt: string, sessionId?: string, systemPrompt?: string, images?: ImageAttachment[], cwd?: string, permissionMode?: PermissionMode): void {
     const AUTO_TOOLS = "Write,Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch,AskUserQuestion";
@@ -30,8 +59,16 @@ export class ClaudeProcess extends EventEmitter {
         ? NORMAL_TOOLS
         : AUTO_TOOLS;
 
+    // When images are provided, save them to disk and reference in the prompt.
+    // The agent reads them with the Read tool, which natively supports images.
+    let effectivePrompt = prompt;
+    if (images && images.length > 0) {
+      const { promptPrefix } = saveImagesToDisk(images);
+      effectivePrompt = `${promptPrefix}\n\n${prompt}`;
+    }
+
     const args = [
-      "-p", prompt,
+      "-p", effectivePrompt,
       "--output-format", "stream-json",
       "--verbose",
       "--allowedTools", tools,
@@ -75,20 +112,6 @@ export class ClaudeProcess extends EventEmitter {
     }
 
     this.buffer = "";
-
-    // When images are provided, write them to stdin as base64 content blocks.
-    // The CLI will pick up multimodal content from the piped input.
-    if (images && images.length > 0) {
-      const content = [
-        ...images.map((img) => ({
-          type: "image" as const,
-          source: { type: "base64" as const, media_type: img.mediaType, data: img.data },
-        })),
-        { type: "text" as const, text: prompt },
-      ];
-      const payload = JSON.stringify(content);
-      this.proc.write(`${payload  }\n`);
-    }
 
     // Inactivity watchdog: warn if no output within 30 seconds
     this.watchdog = setTimeout(() => {

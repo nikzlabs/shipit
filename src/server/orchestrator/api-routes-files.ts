@@ -15,6 +15,7 @@ import {
   getDocContent,
   saveUploadedFile,
   listUploads,
+  deleteUpload,
   MAX_UPLOAD_FILES_PER_REQUEST,
   ServiceError,
 } from "./services/index.js";
@@ -110,7 +111,7 @@ export async function registerFileRoutes(
         return;
       }
 
-      const uploadsDir = path.join(session.workspaceDir, "uploads");
+      const uploadsDir = path.join(path.dirname(session.workspaceDir), "uploads");
 
       try {
         const parts = request.files();
@@ -144,6 +145,38 @@ export async function registerFileRoutes(
     },
   );
 
+  // DELETE /api/sessions/:id/files/uploads/:filename — delete an uploaded file
+  app.delete<{ Params: { id: string; filename: string } }>(
+    "/api/sessions/:id/files/uploads/:filename",
+    async (request, reply) => {
+      const session = sessionManager.get(request.params.id);
+      if (!session) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      if (!session.workspaceDir) {
+        reply.code(404).send({ error: "Session has no workspace directory" });
+        return;
+      }
+
+      const uploadsDir = path.join(path.dirname(session.workspaceDir), "uploads");
+      try {
+        const deleted = await deleteUpload(uploadsDir, request.params.filename);
+        if (!deleted) {
+          reply.code(404).send({ error: "File not found" });
+          return;
+        }
+        return { deleted: true };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Delete failed: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
   // GET /api/sessions/:id/files/uploads — list uploaded files
   app.get<{ Params: { id: string } }>(
     "/api/sessions/:id/files/uploads",
@@ -158,7 +191,7 @@ export async function registerFileRoutes(
         return;
       }
 
-      const uploadsDir = path.join(session.workspaceDir, "uploads");
+      const uploadsDir = path.join(path.dirname(session.workspaceDir), "uploads");
       const files = await listUploads(uploadsDir);
       return { files };
     },

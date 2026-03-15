@@ -15,6 +15,29 @@ vi.mock("../shared/strip-ansi.js", () => {
   };
 });
 
+// Mock node:fs for image saving — track written files
+const writtenFiles: { path: string; data: Buffer }[] = [];
+vi.mock("node:fs", () => {
+  return {
+    default: {
+      mkdirSync: vi.fn(),
+      writeFileSync: vi.fn((filePath: string, data: Buffer) => {
+        writtenFiles.push({ path: filePath, data });
+      }),
+    },
+  };
+});
+
+// Mock node:crypto for deterministic UUIDs in tests
+let uuidCounter = 0;
+vi.mock("node:crypto", () => {
+  return {
+    default: {
+      randomUUID: () => `00000000-0000-0000-0000-${String(++uuidCounter).padStart(12, "0")}`,
+    },
+  };
+});
+
 import * as pty from "node-pty";
 const mockPtySpawn = vi.mocked(pty.spawn);
 
@@ -54,6 +77,8 @@ describe("ClaudeProcess", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    writtenFiles.length = 0;
+    uuidCounter = 0;
   });
 
   afterEach(() => {
@@ -367,17 +392,47 @@ describe("ClaudeProcess", () => {
   });
 
   describe("image support", () => {
-    it("writes image payload to PTY stdin", () => {
+    it("saves images to /uploads/ and references them in the prompt", () => {
       const mockProc = createMockPty();
       mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
-      const images = [{ data: "base64data", mediaType: "image/png" }];
+      const images = [
+        { data: "iVBORw0KGgoAAAANSUhEUg==", mediaType: "image/png", filename: "design.png" },
+      ];
       claude.run("describe this", undefined, undefined, images);
 
-      expect(mockProc.write).toHaveBeenCalledWith(
-        expect.stringContaining('"type":"image"'),
-      );
+      // The prompt arg should include a reference to /uploads/
+      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const promptIdx = args.indexOf("-p") + 1;
+      const promptArg = args[promptIdx];
+      expect(promptArg).toContain("/uploads/");
+      expect(promptArg).toContain(".png");
+      expect(promptArg).toContain("describe this");
+
+      // Should NOT write any image JSON payload to PTY stdin
+      expect(mockProc.write).not.toHaveBeenCalled();
+    });
+
+    it("saves multiple images with separate file references", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const images = [
+        { data: "iVBORw0KGgoAAAANSUhEUg==", mediaType: "image/png", filename: "a.png" },
+        { data: "iVBORw0KGgoAAAANSUhEUg==", mediaType: "image/jpeg", filename: "b.jpg" },
+      ];
+      claude.run("look at these", undefined, undefined, images);
+
+      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const promptIdx = args.indexOf("-p") + 1;
+      const promptArg = args[promptIdx];
+      // Should reference both image files
+      expect(promptArg).toContain("/uploads/");
+      expect(promptArg).toContain(".png");
+      expect(promptArg).toContain(".jpg");
+      expect(promptArg).toContain("look at these");
     });
   });
 

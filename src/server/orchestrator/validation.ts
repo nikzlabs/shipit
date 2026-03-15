@@ -162,9 +162,11 @@ function isBinaryUpload(filePath: string): boolean {
  */
 export async function resolveUploadRefs(
   uploads: UploadRef[],
-  sessionDir: string,
+  workspaceDir: string,
 ): Promise<{ files: FileAttachment[]; error: string | null }> {
-  const uploadsDir = path.join(sessionDir, "uploads");
+  // Uploads live as a sibling of the workspace dir inside the session dir:
+  // {sessionDir}/workspace/ (workspaceDir) and {sessionDir}/uploads/
+  const uploadsDir = path.join(path.dirname(workspaceDir), "uploads");
   const result: FileAttachment[] = [];
 
   for (const ref of uploads) {

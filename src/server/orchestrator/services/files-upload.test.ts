@@ -8,6 +8,7 @@ import {
   getUploadsDirSize,
   saveUploadedFile,
   listUploads,
+  deleteUpload,
   MAX_UPLOAD_FILE_SIZE,
   MAX_UPLOAD_SESSION_QUOTA,
 } from "./files.js";
@@ -155,6 +156,34 @@ describe("upload service functions", () => {
       expect(files.map((f) => f.name).sort()).toEqual(["a.csv", "b.zip"]);
       expect(files.every((f) => f.type === "upload")).toBe(true);
       expect(files.find((f) => f.name === "a.csv")?.path).toBe("/uploads/a.csv");
+    });
+  });
+
+  describe("deleteUpload", () => {
+    it("deletes an existing file and returns true", async () => {
+      fs.writeFileSync(path.join(tmpDir, "data.csv"), "content");
+      const result = await deleteUpload(tmpDir, "data.csv");
+      expect(result).toBe(true);
+      expect(fs.existsSync(path.join(tmpDir, "data.csv"))).toBe(false);
+    });
+
+    it("returns false for nonexistent file", async () => {
+      const result = await deleteUpload(tmpDir, "nope.txt");
+      expect(result).toBe(false);
+    });
+
+    it("rejects path traversal attempts", async () => {
+      await expect(deleteUpload(tmpDir, "../../etc/passwd")).rejects.toThrow(/Invalid/);
+    });
+
+    it("frees up quota after deletion", async () => {
+      fs.writeFileSync(path.join(tmpDir, "big.bin"), Buffer.alloc(1000));
+      const sizeBefore = await getUploadsDirSize(tmpDir);
+      expect(sizeBefore).toBe(1000);
+
+      await deleteUpload(tmpDir, "big.bin");
+      const sizeAfter = await getUploadsDirSize(tmpDir);
+      expect(sizeAfter).toBe(0);
     });
   });
 });

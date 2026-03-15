@@ -74,9 +74,12 @@ export function buildMounts(
   const binds: string[] = [];
   const mounts: MountSpec["mounts"] = [];
   const workspaceDir = CONTAINER_WORKSPACE_DIR;
+  // The git repo lives in a workspace/ subdirectory of the session dir,
+  // keeping it separate from uploads/ and other session-level data.
+  const hostWorkspaceDir = path.join(config.sessionDir, "workspace");
 
   if (workspaceVolume) {
-    const relPath = config.sessionDir.replace(/^\/workspace\//, "");
+    const relPath = hostWorkspaceDir.replace(/^\/workspace\//, "");
     mounts.push({
       Type: "volume",
       Source: workspaceVolume,
@@ -84,7 +87,7 @@ export function buildMounts(
       VolumeOptions: { Subpath: relPath },
     });
   } else {
-    binds.push(`${config.sessionDir}:${CONTAINER_WORKSPACE_DIR}:rw`);
+    binds.push(`${hostWorkspaceDir}:${CONTAINER_WORKSPACE_DIR}:rw`);
   }
 
   if (credentialsVolume) {
@@ -472,9 +475,10 @@ export function buildPreviewMounts(
   const binds: string[] = [];
   const mounts: MountSpec["mounts"] = [];
   const workspaceDir = CONTAINER_WORKSPACE_DIR;
+  const hostWorkspaceDir = path.join(config.sessionDir, "workspace");
 
   if (workspaceVolume) {
-    const relPath = config.sessionDir.replace(/^\/workspace\//, "");
+    const relPath = hostWorkspaceDir.replace(/^\/workspace\//, "");
     mounts.push({
       Type: "volume",
       Source: workspaceVolume,
@@ -482,7 +486,7 @@ export function buildPreviewMounts(
       VolumeOptions: { Subpath: relPath },
     });
   } else {
-    binds.push(`${config.sessionDir}:${CONTAINER_WORKSPACE_DIR}:rw`);
+    binds.push(`${hostWorkspaceDir}:${CONTAINER_WORKSPACE_DIR}:rw`);
   }
 
   // Dependency cache

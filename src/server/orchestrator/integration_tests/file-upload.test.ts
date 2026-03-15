@@ -53,13 +53,14 @@ describe("Integration: File upload", () => {
 
     sessionId = crypto.randomUUID();
     sessionDir = path.join(tmpDir, "sessions", sessionId);
-    fs.mkdirSync(sessionDir, { recursive: true });
+    const workspaceDir = path.join(sessionDir, "workspace");
+    fs.mkdirSync(workspaceDir, { recursive: true });
 
     const sessionManager = new SessionManager(dbManager);
-    sessionManager.track(sessionId, "Test session", sessionDir);
+    sessionManager.track(sessionId, "Test session", workspaceDir);
 
     const credentialStore = createTestCredentialStore(tmpDir);
-    const git = new GitManager(sessionDir);
+    const git = new GitManager(workspaceDir);
     await git.init();
 
     app = await buildApp({
@@ -187,6 +188,50 @@ describe("Integration: File upload", () => {
     });
 
     expect(res.statusCode).toBe(404);
+  });
+
+  describe("DELETE /files/uploads/:filename — delete upload", () => {
+    it("deletes an uploaded file", async () => {
+      const uploadsDir = path.join(sessionDir, "uploads");
+      fs.mkdirSync(uploadsDir, { recursive: true });
+      fs.writeFileSync(path.join(uploadsDir, "data.csv"), "a,b,c");
+
+      const res = await app.inject({
+        method: "DELETE",
+        url: `/api/sessions/${sessionId}/files/uploads/data.csv`,
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ deleted: true });
+      expect(fs.existsSync(path.join(uploadsDir, "data.csv"))).toBe(false);
+    });
+
+    it("returns 404 for nonexistent file", async () => {
+      const res = await app.inject({
+        method: "DELETE",
+        url: `/api/sessions/${sessionId}/files/uploads/nope.txt`,
+      });
+
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("returns 404 for nonexistent session", async () => {
+      const res = await app.inject({
+        method: "DELETE",
+        url: `/api/sessions/nonexistent/files/uploads/file.txt`,
+      });
+
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects path traversal in filename", async () => {
+      const res = await app.inject({
+        method: "DELETE",
+        url: `/api/sessions/${sessionId}/files/uploads/..%2F..%2Fetc%2Fpasswd`,
+      });
+
+      expect(res.statusCode).toBe(400);
+    });
   });
 
   describe("GET /files/uploads — list uploads", () => {

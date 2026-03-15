@@ -169,6 +169,28 @@ export async function saveUploadedFile(
 }
 
 /**
+ * Delete an uploaded file from the session's uploads directory.
+ * Returns true if the file was deleted, false if it didn't exist.
+ * Throws on path traversal attempts.
+ */
+export async function deleteUpload(uploadsDir: string, filename: string): Promise<boolean> {
+  const safePath = path.resolve(uploadsDir, filename);
+  if (!safePath.startsWith(`${path.resolve(uploadsDir)}/`)) {
+    throw new ServiceError(400, "Invalid filename");
+  }
+
+  try {
+    await fs.unlink(safePath);
+    return true;
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw err;
+  }
+}
+
+/**
  * List all uploaded files in a session's uploads directory.
  */
 export async function listUploads(uploadsDir: string): Promise<UploadedFile[]> {

@@ -108,10 +108,19 @@ export function useFileUpload(sessionId: string | undefined) {
     [sessionId],
   );
 
-  /** Remove an upload item by index. */
+  /** Remove an upload item by index and delete the file from the server. */
   const removeUpload = useCallback((index: number) => {
-    setUploads((prev) => prev.filter((_, i) => i !== index));
-  }, []);
+    setUploads((prev) => {
+      const item = prev[index];
+      if (item?.path && sessionId) {
+        const filename = item.path.replace(/^\/uploads\//, "");
+        void fetch(`/api/sessions/${sessionId}/files/uploads/${encodeURIComponent(filename)}`, {
+          method: "DELETE",
+        });
+      }
+      return prev.filter((_, i) => i !== index);
+    });
+  }, [sessionId]);
 
   /** Retry a failed upload — removes it, user can re-attach. */
   const retryUpload = useCallback((index: number) => {
