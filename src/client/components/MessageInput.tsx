@@ -1,4 +1,5 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
+import { useSessionStore } from "../stores/session-store.js";
 import { PaperclipIcon, StopIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { ModeSelector } from "./ModeSelector.js";
@@ -63,6 +64,23 @@ export function MessageInput({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dragCountRef = useRef(0);
+
+  // Consume prefill text from store (e.g. "Start Session" from docs viewer)
+  useEffect(() => {
+    const prefill = useSessionStore.getState().prefillText;
+    if (prefill) {
+      setText(prefill);
+      useSessionStore.getState().setPrefillText(undefined);
+      // Focus and move cursor to end
+      requestAnimationFrame(() => {
+        const ta = textareaRef.current;
+        if (ta) {
+          ta.focus();
+          ta.setSelectionRange(prefill.length, prefill.length);
+        }
+      });
+    }
+  }, []);
 
   const clearImageError = useCallback(() => {
     setImageError(null);

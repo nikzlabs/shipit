@@ -16,6 +16,8 @@ interface SessionState {
   queuedMessages: { text: string; position: number }[];
   /** WS message to auto-send when the next per-session WS connection opens (e.g. new session from home). */
   pendingWsMessage: Record<string, unknown> | undefined;
+  /** Text to prefill into the message input (consumed and cleared by MessageInput). */
+  prefillText: string | undefined;
 
   // Actions
   setSessionId: (id: string | undefined) => void;
@@ -43,6 +45,7 @@ interface SessionState {
         ) => { text: string; position: number }[]),
   ) => void;
   setPendingWsMessage: (message: Record<string, unknown> | undefined) => void;
+  setPrefillText: (text: string | undefined) => void;
   reset: () => void;
 
   // All sessions dialog
@@ -66,6 +69,7 @@ const initialResettableState = {
   creatingRepo: false,
   queuedMessages: [] as { text: string; position: number }[],
   pendingWsMessage: undefined as Record<string, unknown> | undefined,
+  prefillText: undefined as string | undefined,
 };
 
 export const useSessionStore = create<SessionState>((set) => ({
@@ -126,6 +130,8 @@ export const useSessionStore = create<SessionState>((set) => ({
     })),
 
   setPendingWsMessage: (pendingWsMessage) => set({ pendingWsMessage }),
+
+  setPrefillText: (prefillText) => set({ prefillText }),
 
   reset: () => set(initialResettableState),
 
