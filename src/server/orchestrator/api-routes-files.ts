@@ -51,6 +51,7 @@ export async function registerFileRoutes(
           path: filePath,
           content: result.content,
           isBinary: result.isBinary,
+          isImage: result.isImage,
         };
         if (request.query.tree === "true") {
           response.tree = await getFileTree(dir);

@@ -97,12 +97,24 @@ describe("Integration: File content viewer", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("returns isBinary for binary files", async () => {
-    // Write a file with null bytes (binary indicator)
+  it("returns isImage with base64 data URI for image files", async () => {
+    // Write a file with PNG-like bytes
     const buf = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0d, 0x0a]);
     fs.writeFileSync(path.join(sessionDir, "image.png"), buf);
 
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/files/image.png` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.isImage).toBe(true);
+    expect(body.content).toContain("data:image/png;base64,");
+  });
+
+  it("returns isBinary for non-image binary files", async () => {
+    // Write a file with null bytes (binary indicator) but non-image extension
+    const buf = Buffer.from([0x00, 0x01, 0x02, 0x03]);
+    fs.writeFileSync(path.join(sessionDir, "data.bin"), buf);
+
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/files/data.bin` });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.isBinary).toBe(true);

@@ -15,17 +15,46 @@ export async function getFileTree(dir: string) {
   return scanFileTree(dir);
 }
 
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
+const MAX_IMAGE_SIZE = 10 * 1_048_576; // 10 MB
+const MAX_TEXT_SIZE = 1_048_576; // 1 MB
+
+function getMimeType(ext: string): string {
+  if (ext === "svg") return "image/svg+xml";
+  if (ext === "jpg") return "image/jpeg";
+  return `image/${ext}`;
+}
+
 /** Get file content with safety checks (path traversal, binary, size). */
 export async function getFileContent(
   dir: string,
   filePath: string,
-): Promise<{ content: string; isBinary?: boolean }> {
+): Promise<{ content: string; isBinary?: boolean; isImage?: boolean }> {
   const safePath = path.resolve(dir, filePath);
   if (!safePath.startsWith(`${dir  }/`)) {
     throw new ServiceError(400, "Invalid path");
   }
   const stat = await fs.stat(safePath);
-  if (stat.size > 1_048_576) {
+  const ext = path.extname(filePath).slice(1).toLowerCase();
+
+  // Image files: return base64 data URI
+  if (IMAGE_EXTENSIONS.has(ext)) {
+    if (stat.size > MAX_IMAGE_SIZE) {
+      return {
+        content: `Image is too large to preview (${(stat.size / 1_048_576).toFixed(1)} MB). Maximum supported size is 10 MB.`,
+        isBinary: true,
+      };
+    }
+    const buf = await fs.readFile(safePath);
+    const mime = getMimeType(ext);
+    return {
+      content: `data:${mime};base64,${buf.toString("base64")}`,
+      isImage: true,
+    };
+  }
+
+  // Text files
+  if (stat.size > MAX_TEXT_SIZE) {
     return {
       content: `File is too large to display (${(stat.size / 1_048_576).toFixed(1)} MB). Maximum supported size is 1 MB.`,
       isBinary: true,
