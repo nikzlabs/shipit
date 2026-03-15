@@ -40,6 +40,7 @@ import { UsageModal } from "./components/UsageModal.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { DeployModal } from "./components/DeployModal.js";
 import { FeaturesPanel } from "./components/FeaturesPanel.js";
+import { DocModal } from "./components/DocModal.js";
 
 import type { TurnDiffData } from "./components/DiffPanel.js";
 // eslint-disable-next-line no-restricted-syntax -- lazy() named-export pattern
@@ -47,7 +48,7 @@ const DiffPanel = lazy(() => import("./components/DiffPanel.js").then(m => ({ de
 import { PrLifecycleCard } from "./components/PrLifecycleCard.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentPicker, type AgentOption } from "./components/AgentPicker.js";
-import type { AgentId } from "../server/shared/types.js";
+import type { AgentId, FeatureInfo } from "../server/shared/types.js";
 
 import { useSessionStore } from "./stores/session-store.js";
 import { useGitStore } from "./stores/git-store.js";
@@ -102,8 +103,6 @@ export default function App() {
   const viewingFileContent = useFileStore((s) => s.viewingFileContent);
   const viewingFileBinary = useFileStore((s) => s.viewingFileBinary);
   const docFiles = useFileStore((s) => s.docFiles);
-  const selectedDoc = useFileStore((s) => s.selectedDoc);
-  const docContent = useFileStore((s) => s.docContent);
 
 
   const previewStatus = usePreviewStore((s) => s.status);
@@ -191,6 +190,9 @@ export default function App() {
   const isMobile = useIsMobile();
   const [searchOpen, setSearchOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [docModalPath, setDocModalPath] = useState<string | null>(null);
+  const [docModalContent, setDocModalContent] = useState<string | null>(null);
+  const [docModalFeature, setDocModalFeature] = useState<FeatureInfo | null>(null);
   // Derive the repo URL from the /{slug}/new URL pattern (replaces useState)
   const newSessionRepoUrl = useMemo(() => {
     if (!newSessionRepoSlug) return undefined;
@@ -519,8 +521,34 @@ export default function App() {
     useUiStore.getState().setRightTab("history");
   }, []);
 
+  const handleOpenDoc = useCallback(
+    async (filePath: string, feature?: FeatureInfo) => {
+      const sid = useSessionStore.getState().sessionId;
+      if (!sid) return;
+      setDocModalPath(filePath);
+      setDocModalContent(null);
+      setDocModalFeature(feature ?? null);
+      try {
+        const res = await fetch(`/api/sessions/${sid}/docs/${filePath}`);
+        if (!res.ok) throw new Error(`Failed to fetch doc: ${res.status}`);
+        const { content } = await res.json() as { content: string };
+        setDocModalContent(content);
+      } catch {
+        setDocModalContent("_Failed to load document._");
+      }
+    },
+    [],
+  );
+
+  const handleDocModalClose = useCallback(() => {
+    setDocModalPath(null);
+    setDocModalContent(null);
+    setDocModalFeature(null);
+  }, []);
+
   const handleFeatureStartSession = useCallback(
     async (feature: { name: string; planPath: string; checklistPath?: string }) => {
+      handleDocModalClose();
       resetSessionState();
       useUiStore.getState().setShowTemplates(false);
       let text = `Work on feature: ${feature.name}\n\nPlease read the feature plan at ${feature.planPath}`;
@@ -555,7 +583,7 @@ export default function App() {
         useSessionStore.getState().setActivity(undefined);
       }
     },
-    [requestPermission, navigate, sessions],
+    [handleDocModalClose, requestPermission, navigate, sessions],
   );
 
   const handleUsageBadgeClick = useCallback(() => {
@@ -597,7 +625,7 @@ export default function App() {
         {rightTab === "preview" ? (
           <PreviewFrame preview={previewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} configMissing={configMissing} onInitPreviewConfig={() => send({ type: "init_preview_config" })} crashInfo={crashInfo} onRestartPreview={handleRestartPreview} onSendCrashToAgent={handleSendCrashToAgent} />
         ) : rightTab === "docs" ? (
-          <DocsViewer files={docFiles} selectedFile={selectedDoc} content={docContent} onSelectFile={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDoc(sid, f).catch(() => {}); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} />
+          <DocsViewer files={docFiles} onFileClick={(f) => handleOpenDoc(f)} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} />
         ) : rightTab === "terminal" ? (
           <TerminalPanel entries={logEntries} onClear={() => { useTerminalStore.getState().clearEntries(); send({ type: "clear_logs" }); }} terminalMode={terminalMode} onTerminalModeChange={(m) => useTerminalStore.getState().setMode(m)} shellContent={
             (shellStarted || terminalMode === "shell") ? (
@@ -611,7 +639,7 @@ export default function App() {
             </Suspense>
           ) : <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">Loading diff...</div>
         ) : rightTab === "features" ? (
-          <FeaturesPanel features={features} onStartSession={handleFeatureStartSession} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useUiStore.getState().fetchFeatures(sid).catch(() => {}); }} />
+          <FeaturesPanel features={features} onFeatureClick={(f) => handleOpenDoc(f.planPath, f)} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useUiStore.getState().fetchFeatures(sid).catch(() => {}); }} />
         ) : rightTab === "history" ? (
           <GitHistory commits={gitCommits} onRollback={(hash) => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().rollback(sid, hash).catch(() => {}); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().fetchLog(sid).catch(() => {}); }} onViewDiff={handleViewDiff} />
         ) : viewingFile ? (
@@ -679,6 +707,15 @@ export default function App() {
         onComplete={() => { setOnboardingDismissed(true); if (gitIdentityNeeded) useGitStore.getState().setIdentityNeeded(false); }}
       />
       {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
+      {docModalPath && (
+        <DocModal
+          filePath={docModalPath}
+          content={docModalContent}
+          isFeature={!!docModalFeature}
+          onStartSession={docModalFeature ? () => handleFeatureStartSession(docModalFeature) : undefined}
+          onClose={handleDocModalClose}
+        />
+      )}
       {settingsOpen && (
         <Settings
           initialContent={systemPromptContent} onSaveInstructions={handleInstructionsSave}
