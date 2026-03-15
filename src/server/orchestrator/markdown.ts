@@ -60,16 +60,36 @@ function parseFrontmatterFields(content: string): { status?: DocStatus; title?: 
   return { status, title };
 }
 
+/** Generic filenames where the parent directory name is more meaningful. */
+const GENERIC_FILENAMES = new Set(["plan", "checklist", "readme", "index"]);
+
 /**
- * Derive a human-readable title from a file path.
- * Converts the filename from kebab-case to title case.
+ * Convert a kebab-case string (possibly with leading numbers) to title case.
+ * Strips a leading `NNN-` numeric prefix if present.
  */
-function titleFromPath(relativePath: string): string {
-  const basename = path.basename(relativePath, ".md");
-  return basename
+function kebabToTitle(name: string): string {
+  // Strip leading numeric prefix like "001-" or "42-"
+  const stripped = name.replace(/^\d+-/, "");
+  if (!stripped) return name; // all-numeric, keep original
+  return stripped
     .split("-")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
+}
+
+/**
+ * Derive a human-readable title from a file path.
+ * For generic filenames like `plan.md`, uses the parent directory name instead.
+ */
+function titleFromPath(relativePath: string): string {
+  const basename = path.basename(relativePath, ".md");
+  if (GENERIC_FILENAMES.has(basename.toLowerCase())) {
+    const dir = path.dirname(relativePath);
+    if (dir && dir !== ".") {
+      return kebabToTitle(path.basename(dir));
+    }
+  }
+  return kebabToTitle(basename);
 }
 
 /**

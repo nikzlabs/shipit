@@ -87,15 +87,53 @@ describe("DocsViewer", () => {
       expect(screen.getByText("1 doc")).toBeInTheDocument();
     });
 
-    it("separates tracked and untracked docs", () => {
+    it("shows tabs when both tracked and untracked docs exist", () => {
       const props = defaultProps();
       props.files = [
         makeDoc({ path: "a.md", title: "A", status: "in-progress" }),
         makeDoc({ path: "README.md", title: "README" }),
       ];
       render(<DocsViewer {...props} />);
+      expect(screen.getByText("Tracked (1)")).toBeInTheDocument();
+      expect(screen.getByText("Other (1)")).toBeInTheDocument();
+    });
+
+    it("shows section headers instead of tabs when only one group exists", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({ path: "a.md", title: "A", status: "planned" }),
+        makeDoc({ path: "b.md", title: "B", status: "done" }),
+      ];
+      render(<DocsViewer {...props} />);
       expect(screen.getByText("Tracked")).toBeInTheDocument();
-      expect(screen.getByText("Other Docs")).toBeInTheDocument();
+      expect(screen.queryByText(/Other/)).not.toBeInTheDocument();
+    });
+
+    it("sorts tracked docs by status: in-progress > planned > paused > done", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({ path: "d.md", title: "D-Done", status: "done" }),
+        makeDoc({ path: "a.md", title: "A-Planned", status: "planned" }),
+        makeDoc({ path: "c.md", title: "C-Paused", status: "paused" }),
+        makeDoc({ path: "b.md", title: "B-InProgress", status: "in-progress" }),
+      ];
+      render(<DocsViewer {...props} />);
+      const items = screen.getAllByRole("button").filter(
+        (btn) => !btn.textContent?.includes("Reload") && !btn.textContent?.includes("Tracked") && !btn.textContent?.includes("Other"),
+      );
+      expect(items[0].textContent).toContain("B-InProgress");
+      expect(items[1].textContent).toContain("A-Planned");
+      expect(items[2].textContent).toContain("C-Paused");
+      expect(items[3].textContent).toContain("D-Done");
+    });
+
+    it("shows path context for tracked docs in subdirectories", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({ path: "docs/001-auth/plan.md", title: "Auth", status: "planned" }),
+      ];
+      render(<DocsViewer {...props} />);
+      expect(screen.getByText("docs/001-auth/")).toBeInTheDocument();
     });
   });
 
