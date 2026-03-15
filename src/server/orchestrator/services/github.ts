@@ -31,7 +31,7 @@ async function resolveGitHubRemote(
       // This makes subsequent git push/pull operations work correctly.
       const remotes = await git.getRemotes();
       const origin = remotes.find((r) => r.name === "origin");
-      if (!origin || origin.url !== remoteUrl) {
+      if (origin?.url !== remoteUrl) {
         await git.addRemote("origin", remoteUrl);
       }
       return parsed;
