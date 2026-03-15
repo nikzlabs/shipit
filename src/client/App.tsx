@@ -577,41 +577,13 @@ export default function App() {
   );
 
   const handleDocStartSession = useCallback(
-    async (doc: DocEntry) => {
+    (doc: DocEntry) => {
       useFileStore.getState().closePreview();
-      resetSessionState();
-      useUiStore.getState().setShowTemplates(false);
       const text = `Work on: ${doc.title}\n\nPlease read the plan at ${doc.path}, then proceed with the implementation.`;
-      requestPermission();
-      useSessionStore.getState().setMessages([{ role: "user", text }]);
-      useSessionStore.getState().setIsLoading(true);
-      useSessionStore.getState().setActivity({ label: "Thinking..." });
+      useSessionStore.getState().setPrefillText(text);
       useUiStore.getState().setMobilePanel("chat");
-      // Claim a new session from the current repo, then navigate
-      const repoUrl = sessions.find((s) => s.id === useSessionStore.getState().sessionId)?.remoteUrl;
-      if (!repoUrl) {
-        console.warn("[session] No repo URL — cannot create session");
-        useSessionStore.getState().setIsLoading(false);
-        useSessionStore.getState().setActivity(undefined);
-        return;
-      }
-      try {
-        const result = await useRepoStore.getState().claimSession(repoUrl);
-        if (!result) throw new Error("Failed to claim session");
-        const pm = useSettingsStore.getState().permissionMode;
-        useSessionStore.getState().setPendingWsMessage({
-          type: "send_message",
-          text,
-          permissionMode: pm !== "auto" ? pm : undefined,
-        });
-        void navigate(`/session/${result.sessionId}`);
-      } catch (err) {
-        console.error("[session] Failed to create session for feature:", err);
-        useSessionStore.getState().setIsLoading(false);
-        useSessionStore.getState().setActivity(undefined);
-      }
     },
-    [requestPermission, navigate, sessions],
+    [],
   );
 
   const handleReviewFeature = useCallback(
