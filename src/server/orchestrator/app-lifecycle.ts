@@ -699,7 +699,7 @@ export function createWarmPool(
         await fs.rm(workspaceDir, { recursive: true, force: true });
 
         // Clone from bare cache into workspace subdir (hardlinked, fast)
-        await cacheGit.cloneFromCache(workspaceDir);
+        await cacheGit.cloneFromCache(workspaceDir, repoUrl);
 
         // Checkout a new branch from the default branch
         let startPoint: string | undefined;

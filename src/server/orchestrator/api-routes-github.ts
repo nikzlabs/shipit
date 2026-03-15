@@ -38,7 +38,8 @@ export async function registerGitHubRoutes(
     if (!dir) return;
     try {
       const git = createGitManager(dir);
-      return { pr: await getPrStatus(deps.githubAuthManager, git) };
+      const session = sessionManager.get(request.params.id);
+      return { pr: await getPrStatus(deps.githubAuthManager, git, session?.remoteUrl) };
     } catch (err) {
       reply.code(500).send({ error: `Failed to get PR status: ${getErrorMessage(err)}` });
     }
@@ -73,6 +74,7 @@ export async function registerGitHubRoutes(
           request.params.id,
           session.title,
           dir,
+          session.remoteUrl,
         );
 
         // Track the new PR in the poller
@@ -99,9 +101,11 @@ export async function registerGitHubRoutes(
       if (!dir) return;
       try {
         const git = createGitManager(dir);
+        const session = sessionManager.get(request.params.id);
         return await createPullRequest(
           git, deps.githubAuthManager,
           request.body.title, request.body.body, request.body.base, request.body.draft,
+          session?.remoteUrl,
         );
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -127,7 +131,8 @@ export async function registerGitHubRoutes(
         }
 
         const git = createGitManager(dir);
-        return await mergePullRequest(git, deps.githubAuthManager, request.body?.method);
+        const session = sessionManager.get(request.params.id);
+        return await mergePullRequest(git, deps.githubAuthManager, request.body?.method, session?.remoteUrl);
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
