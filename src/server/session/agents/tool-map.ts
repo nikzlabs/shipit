@@ -15,7 +15,8 @@ export type CanonicalTool =
   | "grep"
   | "web_fetch"
   | "web_search"
-  | "ask_user";
+  | "ask_user"
+  | "browser";
 
 const CLAUDE_TOOL_MAP: Record<string, CanonicalTool> = {
   Read: "file_read",
@@ -27,6 +28,15 @@ const CLAUDE_TOOL_MAP: Record<string, CanonicalTool> = {
   WebFetch: "web_fetch",
   WebSearch: "web_search",
   AskUserQuestion: "ask_user",
+  // MCP browser tools (prefixed by CLI)
+  "mcp__playwright__browser_navigate": "browser",
+  "mcp__playwright__browser_snapshot": "browser",
+  "mcp__playwright__browser_click": "browser",
+  "mcp__playwright__browser_type": "browser",
+  "mcp__playwright__browser_take_screenshot": "browser",
+  "mcp__playwright__browser_scroll": "browser",
+  "mcp__playwright__browser_hover": "browser",
+  "mcp__playwright__browser_select_option": "browser",
 };
 
 const CODEX_TOOL_MAP: Record<string, CanonicalTool> = {

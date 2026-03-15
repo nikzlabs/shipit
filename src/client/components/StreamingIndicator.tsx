@@ -137,11 +137,33 @@ export function activityFromTool(toolName: string, input: Record<string, unknown
         tool: toolName,
       };
     }
-    default:
+    default: {
+      // Generic MCP tool handling — works for any MCP server
+      if (toolName.startsWith("mcp__")) {
+        const BROWSER_LABELS: Record<string, string> = {
+          "mcp__playwright__browser_navigate": "Navigating to page",
+          "mcp__playwright__browser_snapshot": "Reading page content",
+          "mcp__playwright__browser_click": "Clicking element",
+          "mcp__playwright__browser_type": "Typing text",
+          "mcp__playwright__browser_take_screenshot": "Taking screenshot",
+          "mcp__playwright__browser_scroll": "Scrolling page",
+          "mcp__playwright__browser_hover": "Hovering element",
+          "mcp__playwright__browser_select_option": "Selecting option",
+        };
+        const label = BROWSER_LABELS[toolName];
+        if (label) {
+          return { label, tool: toolName };
+        }
+        // Fallback for unknown MCP tools: "mcp__foo__bar_baz" → "Using bar baz..."
+        const parts = toolName.split("__");
+        const toolPart = parts.length >= 3 ? parts.slice(2).join(" ").replace(/_/g, " ") : toolName;
+        return { label: `Using ${toolPart}...`, tool: toolName };
+      }
       return {
         label: `Using ${toolName}...`,
         tool: toolName,
       };
+    }
   }
 }
 
