@@ -101,7 +101,7 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
 
   // Fallback: compact one-liner for non-file tools, with optional tool result
   return (
-    <div>
+    <div className="min-w-0 overflow-hidden">
       <div className={`text-xs text-(--color-text-secondary) px-2 py-1 font-mono flex items-center gap-2${grouped ? "" : " bg-(--color-bg-secondary) rounded"}`}>
         {inProgress && <ToolSpinner />}
         <span className={inProgress ? "text-(--color-accent)" : ""}>
