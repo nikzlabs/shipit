@@ -7,6 +7,7 @@
 
 import type Docker from "dockerode";
 import fs from "node:fs";
+import path from "node:path";
 import type { EventEmitter } from "node:events";
 import type {
   ContainerConfig,
@@ -73,9 +74,12 @@ export function buildMounts(
   const binds: string[] = [];
   const mounts: MountSpec["mounts"] = [];
   const workspaceDir = CONTAINER_WORKSPACE_DIR;
+  // config.workspaceDir is the git repo directory (session.workspaceDir).
+  // It may be the same as sessionDir (legacy) or a subdirectory (new layout).
+  const hostWorkspaceDir = config.workspaceDir ?? config.sessionDir;
 
   if (workspaceVolume) {
-    const relPath = config.sessionDir.replace(/^\/workspace\//, "");
+    const relPath = hostWorkspaceDir.replace(/^\/workspace\//, "");
     mounts.push({
       Type: "volume",
       Source: workspaceVolume,
@@ -83,7 +87,7 @@ export function buildMounts(
       VolumeOptions: { Subpath: relPath },
     });
   } else {
-    binds.push(`${config.sessionDir}:${CONTAINER_WORKSPACE_DIR}:rw`);
+    binds.push(`${hostWorkspaceDir}:${CONTAINER_WORKSPACE_DIR}:rw`);
   }
 
   if (credentialsVolume) {
@@ -94,6 +98,21 @@ export function buildMounts(
     });
   } else {
     binds.push(`${config.credentialsDir}:/credentials:rw`);
+  }
+
+  // Mount the uploads directory for user-uploaded files.
+  if (config.uploadsDir) {
+    if (workspaceVolume) {
+      const uploadsRelPath = config.uploadsDir.replace(/^\/workspace\//, "");
+      mounts.push({
+        Type: "volume",
+        Source: workspaceVolume,
+        Target: "/uploads",
+        VolumeOptions: { Subpath: uploadsRelPath },
+      });
+    } else {
+      binds.push(`${config.uploadsDir}:/uploads:rw`);
+    }
   }
 
   // Mount the per-repo dependency cache so npm/yarn/pnpm share downloaded
@@ -187,6 +206,11 @@ export async function createContainer(
 ): Promise<SessionContainer> {
   if (deps.containers.has(config.sessionId)) {
     throw new Error(`Container already exists for session ${config.sessionId}`);
+  }
+
+  // Ensure the uploads directory exists on the host before mounting.
+  if (config.uploadsDir) {
+    fs.mkdirSync(config.uploadsDir, { recursive: true });
   }
 
   // Ensure the dep cache directory exists on the host before mounting.
@@ -451,9 +475,10 @@ export function buildPreviewMounts(
   const binds: string[] = [];
   const mounts: MountSpec["mounts"] = [];
   const workspaceDir = CONTAINER_WORKSPACE_DIR;
+  const hostWorkspaceDir = config.workspaceDir ?? config.sessionDir;
 
   if (workspaceVolume) {
-    const relPath = config.sessionDir.replace(/^\/workspace\//, "");
+    const relPath = hostWorkspaceDir.replace(/^\/workspace\//, "");
     mounts.push({
       Type: "volume",
       Source: workspaceVolume,
@@ -461,7 +486,7 @@ export function buildPreviewMounts(
       VolumeOptions: { Subpath: relPath },
     });
   } else {
-    binds.push(`${config.sessionDir}:${CONTAINER_WORKSPACE_DIR}:rw`);
+    binds.push(`${hostWorkspaceDir}:${CONTAINER_WORKSPACE_DIR}:rw`);
   }
 
   // Dependency cache
@@ -570,8 +595,10 @@ export function buildContainerConfig(
   opts: {
     sessionId: string;
     sessionDir: string;
+    workspaceDir?: string;
     credentialsDir: string;
     depCacheDir?: string;
+    uploadsDir?: string;
     env?: Record<string, string>;
     memoryLimit?: number;
     cpuQuota?: number;
@@ -582,8 +609,10 @@ export function buildContainerConfig(
   return {
     sessionId: opts.sessionId,
     sessionDir: opts.sessionDir,
+    workspaceDir: opts.workspaceDir,
     credentialsDir: opts.credentialsDir,
     depCacheDir: opts.depCacheDir,
+    uploadsDir: opts.uploadsDir ?? path.join(opts.sessionDir, "uploads"),
     imageName: deps.imageName,
     memoryLimit: opts.memoryLimit ?? deps.defaultMemoryLimit,
     cpuQuota: opts.cpuQuota ?? deps.defaultCpuQuota,

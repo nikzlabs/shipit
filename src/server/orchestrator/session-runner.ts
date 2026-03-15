@@ -8,7 +8,7 @@
 
 import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, AgentEvent, TerminalProcess, AgentRunParams } from "../shared/types.js";
-import type { WsServerMessage, ImageAttachment, FileContextRef, PermissionMode, ClaudeContentBlockToolUse } from "../shared/types.js";
+import type { WsServerMessage, ImageAttachment, FileContextRef, UploadRef, PermissionMode, ClaudeContentBlockToolUse } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -30,6 +30,7 @@ export interface QueuedMessage {
   text: string;
   images?: ImageAttachment[];
   files?: FileContextRef[];
+  uploads?: UploadRef[];
   permissionMode?: PermissionMode;
 }
 

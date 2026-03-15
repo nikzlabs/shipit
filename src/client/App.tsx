@@ -11,6 +11,7 @@ import { useTheme } from "./hooks/useTheme.js";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts.js";
 import { useConnectionSync } from "./hooks/useConnectionSync.js";
 import { useAutoFix } from "./hooks/useAutoFix.js";
+import { useFileUpload } from "./hooks/useFileUpload.js";
 import { DownloadSimpleIcon, CircleNotchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "./design-tokens.js";
 import { useMessageHandler } from "./hooks/useMessageHandler.js";
@@ -90,6 +91,11 @@ export default function App() {
   const sessions = useSessionStore((s) => s.sessions);
   const authUrl = useSessionStore((s) => s.authUrl);
   const queuedMessages = useSessionStore((s) => s.queuedMessages);
+
+  const {
+    uploads, sessionUploads, uploadFiles, removeUpload, retryUpload,
+    getUploadRefs, clearUploads, hydrateUploads,
+  } = useFileUpload(wsSessionId);
 
   const gitCommits = useGitStore((s) => s.commits);
   const gitIdentityNeeded = useGitStore((s) => s.identityNeeded);
@@ -221,7 +227,7 @@ export default function App() {
     handleInterrupt: () => send({ type: "interrupt_claude" }),
   });
 
-  useConnectionSync({ status, send });
+  useConnectionSync({ status, send, onSessionConnect: (sid: string) => void hydrateUploads(sid) });
 
   // Delayed spinner for bootstrap loading gate — only show after 1s
   const [showBootstrapSpinner, setShowBootstrapSpinner] = useState(false);
@@ -293,9 +299,12 @@ export default function App() {
       const settings = useSettingsStore.getState();
       useUiStore.getState().setShowTemplates(false);
       const messageImages = images?.map((img) => ({ data: img.data, mediaType: img.mediaType }));
-      const filesForMessage = settings.pendingFiles.length > 0
-        ? settings.pendingFiles.map((f) => ({ path: f.path, contentPreview: "" }))
-        : undefined;
+      const uploadRefs = getUploadRefs();
+      const allFiles: { path: string; contentPreview: string }[] = [
+        ...settings.pendingFiles.map((f) => ({ path: f.path, contentPreview: "" })),
+        ...uploadRefs.map((u) => ({ path: u.path, contentPreview: "" })),
+      ];
+      const filesForMessage = allFiles.length > 0 ? allFiles : undefined;
       session.setMessages((prev) => [...prev, { role: "user", text, images: messageImages, files: filesForMessage }]);
       session.setIsLoading(true);
       session.setActivity({ label: "Thinking..." });
@@ -306,6 +315,7 @@ export default function App() {
         if (isNewSessionRoute) {
           void navigate(`/session/${currentSessionId}`, { replace: true });
         }
+
         // Send directly over WS
         send({
           type: "send_message",
@@ -313,6 +323,7 @@ export default function App() {
           sessionId: currentSessionId,
           images,
           files: settings.pendingFiles.length > 0 ? settings.pendingFiles : undefined,
+          uploads: uploadRefs.length > 0 ? uploadRefs : undefined,
           permissionMode: settings.permissionMode !== "auto" ? settings.permissionMode : undefined,
         });
       } else {
@@ -322,8 +333,9 @@ export default function App() {
         session.setActivity(undefined);
       }
       settings.clearPendingFiles();
+      clearUploads();
     },
-    [send, requestPermission, disableAutoFix, navigate, isNewSessionRoute],
+    [send, requestPermission, disableAutoFix, navigate, isNewSessionRoute, getUploadRefs, clearUploads],
   );
 
   const handleEditMessage = useCallback(
@@ -645,7 +657,7 @@ export default function App() {
         ) : viewingFile ? (
           <FileContentViewer filePath={viewingFile} content={viewingFileContent} isBinary={viewingFileBinary} onClose={() => useFileStore.getState().closeViewer()} />
         ) : (
-          <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchTree(sid).catch(() => {}); }} onFileClick={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchFile(sid, f).catch(() => {}); }} selectedFile={viewingFile} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} />
+          <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchTree(sid).catch(() => {}); }} onFileClick={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchFile(sid, f).catch(() => {}); }} selectedFile={viewingFile} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} uploads={sessionUploads} />
         )}
       </div>
     </>
@@ -673,7 +685,7 @@ export default function App() {
       )}
       {!showHomeScreen && !showNewSessionView && <StatusBar modelInfo={modelInfo} contextTokens={contextTokens} agentName={agentList.find((a) => a.id === activeAgentId)?.name} />}
       {!showHomeScreen && !showNewSessionView && queuedMessages.length > 0 && <QueueIndicator queue={queuedMessages} onCancel={(pos) => send({ type: "cancel_queued_message", position: pos })} />}
-      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_claude" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} />}
+      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_claude" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} uploads={uploads} allUploads={sessionUploads} onUploadFiles={(files) => void uploadFiles(files)} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} />}
     </>
   );
 

@@ -141,7 +141,6 @@ export async function registerGitHubRoutes(
   // POST /api/sessions/:id/pr/description — generate PR description via LLM
   app.post<{ Params: { id: string } }>(
     "/api/sessions/:id/pr/description",
-    { config: { rawBody: false } },
     async (request, reply) => {
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;

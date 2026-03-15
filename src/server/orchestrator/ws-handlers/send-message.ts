@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
-import type { WsClientMessage, ImageAttachment, FileAttachment, FileContextRef } from "../../shared/types.js";
+import type { WsClientMessage, ImageAttachment, FileAttachment, FileContextRef, UploadRef } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
-import { getErrorMessage, validateImages, resolveFileAttachments } from "../validation.js";
+import { getErrorMessage, validateImages, resolveFileAttachments, resolveUploadRefs } from "../validation.js";
 import { generateSessionName } from "../session-namer.js";
 import { wireAgentListeners } from "./agent-listeners.js";
 import { runClaudeWithMessage } from "./claude-execution.js";
@@ -45,7 +45,7 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
 
   // If Claude is already processing, queue this message and return
   if (ctx.getIsClaudeRunning()) {
-    ctx.getMessageQueue().push({ text: msg.text, images: msg.images, files: msg.files, permissionMode: msg.permissionMode });
+    ctx.getMessageQueue().push({ text: msg.text, images: msg.images, files: msg.files, uploads: msg.uploads, permissionMode: msg.permissionMode });
     ctx.send({
       type: "message_queued",
       position: ctx.getMessageQueue().length,
@@ -71,6 +71,18 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
       return;
     }
     validatedFiles = result.files;
+  }
+
+  // Resolve upload refs if provided
+  const uploadRefs: UploadRef[] | undefined = msg.uploads && msg.uploads.length > 0 ? msg.uploads : undefined;
+  if (uploadRefs) {
+    const dir = ctx.getActiveSessionDir() ?? ctx.workspaceDir;
+    const uploadResult = await resolveUploadRefs(uploadRefs, dir);
+    if (uploadResult.error) {
+      ctx.send({ type: "error", message: uploadResult.error });
+      return;
+    }
+    validatedFiles = [...validatedFiles, ...uploadResult.files];
   }
 
   const userText = msg.text;

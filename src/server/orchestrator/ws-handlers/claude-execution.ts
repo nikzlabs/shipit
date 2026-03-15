@@ -1,10 +1,36 @@
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
 import type { WsServerMessage, ImageAttachment, FileAttachment, PermissionMode } from "../../shared/types.js";
 import type { AgentEvent } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
-import { getErrorMessage, resolveFileAttachments, formatFileContext } from "../validation.js";
+import { getErrorMessage, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
 import { wireAgentListeners } from "./agent-listeners.js";
 import { postTurnCommit } from "./post-turn.js";
 import { AGENT_SYSTEM_INSTRUCTIONS } from "../agent-instructions.js";
+
+/**
+ * Save base64 images to the session's uploads directory on the host.
+ * Returns a prompt prefix referencing the saved files (container paths).
+ * The agent reads them with the Read tool, which natively supports images.
+ */
+function saveImagesToUploadsDir(images: ImageAttachment[], workspaceDir: string): string {
+  const uploadsDir = path.join(path.dirname(workspaceDir), "uploads");
+  fs.mkdirSync(uploadsDir, { recursive: true });
+
+  const containerPaths: string[] = [];
+  for (const img of images) {
+    const ext = img.mediaType.split("/")[1]?.replace("jpeg", "jpg") ?? "png";
+    const name = img.filename
+      ? `${path.parse(img.filename).name}-${crypto.randomUUID().slice(0, 8)}.${ext}`
+      : `image-${crypto.randomUUID().slice(0, 8)}.${ext}`;
+    fs.writeFileSync(path.join(uploadsDir, name), Buffer.from(img.data, "base64"));
+    containerPaths.push(`/uploads/${name}`);
+  }
+
+  const refs = containerPaths.map((p) => `- ${p}`).join("\n");
+  return `<attached_images>\nThe user has attached the following image(s) to this message. Use the Read tool to view each one:\n${refs}\n</attached_images>`;
+}
 
 /** Full handler context — send-message handlers need all three sub-contexts. */
 type FullCtx = ConnectionCtx & RunnerCtx & AppCtx;
@@ -195,6 +221,18 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
         }
         nextValidatedFiles = fileResult.files;
       }
+      // Resolve upload refs for the queued message
+      const nextUploadRefs = next.uploads && next.uploads.length > 0 ? next.uploads : undefined;
+      if (nextUploadRefs) {
+        const dir = capturedSessionDir ?? ctx.workspaceDir;
+        const uploadResult = await resolveUploadRefs(nextUploadRefs, dir);
+        if (uploadResult.error) {
+          emitDone({ type: "error", message: uploadResult.error });
+          ctx.setIsClaudeRunning(false);
+          return;
+        }
+        nextValidatedFiles = [...nextValidatedFiles, ...uploadResult.files];
+      }
       const nextSession = capturedSessionId
         ? ctx.sessionManager.get(capturedSessionId)
         : undefined;
@@ -243,12 +281,19 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
     prompt = `${context}\n\n${prompt}`;
   }
 
+  // Save images to the host uploads directory and reference them in the prompt.
+  // This avoids sending large base64 payloads over HTTP to the session worker.
+  const activeDir = ctx.getActiveDir();
+  if (images && images.length > 0 && activeDir) {
+    const imageContext = saveImagesToUploadsDir(images, activeDir);
+    prompt = `${imageContext}\n\n${prompt}`;
+  }
+
   currentAgent.run({
     prompt,
     sessionId: agentSessionId,
     systemPrompt,
-    images,
-    cwd: ctx.getActiveDir(),
+    cwd: activeDir,
     permissionMode,
   });
   ctx.broadcastLog("server", "Agent process started");

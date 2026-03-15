@@ -22,3 +22,22 @@ export interface FileContextRef {
   /** Relative path within the workspace. */
   path: string;
 }
+
+/** Reference to an uploaded file in /uploads/. */
+export interface UploadRef {
+  /** Absolute container path, e.g. "/uploads/data.csv". */
+  path: string;
+  type: "upload";
+}
+
+/** Metadata for a file that has been uploaded to the session. */
+export interface UploadedFile {
+  /** Original filename. */
+  name: string;
+  /** Absolute container path, e.g. "/uploads/data.csv". */
+  path: string;
+  /** File size in bytes. */
+  size: number;
+  /** Discriminator for upload files vs workspace file refs. */
+  type: "upload";
+}

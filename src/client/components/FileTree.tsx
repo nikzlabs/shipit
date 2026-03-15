@@ -1,8 +1,9 @@
 import { useState, useCallback } from "react";
-import { FolderIcon, FolderOpenIcon, FileIcon, CaretRightIcon, PlusIcon, FolderSimpleIcon, ArrowClockwiseIcon } from "@phosphor-icons/react";
+import { FolderIcon, FolderOpenIcon, FileIcon, CaretRightIcon, PlusIcon, FolderSimpleIcon, ArrowClockwiseIcon, UploadSimpleIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import type { FileTreeNode } from "../../server/shared/types.js";
+import type { UploadItem } from "../hooks/useFileUpload.js";
 
 export type { FileTreeNode };
 
@@ -12,6 +13,7 @@ export interface FileTreeProps {
   onFileClick?: (filePath: string) => void;
   selectedFile?: string | null;
   onAddToChat?: (filePath: string) => void;
+  uploads?: UploadItem[];
 }
 
 function TreeNode({
@@ -107,7 +109,7 @@ function TreeNode({
   );
 }
 
-export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToChat }: FileTreeProps) {
+export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToChat, uploads }: FileTreeProps) {
   if (tree.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
@@ -151,6 +153,40 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToCh
         {tree.map((node) => (
           <TreeNode key={node.path} node={node} depth={0} onFileClick={onFileClick} selectedFile={selectedFile} onAddToChat={onAddToChat} />
         ))}
+
+        {/* Uploads section */}
+        {uploads && uploads.length > 0 && (
+          <div className="mt-2 border-t border-(--color-border-secondary) pt-1">
+            <div className="flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-(--color-text-secondary)">
+              <UploadSimpleIcon size={ICON_SIZE.SM} className="shrink-0" />
+              <span>Uploads</span>
+            </div>
+            {uploads.filter((u) => u.status === "ready" && u.path).map((u) => (
+              <div
+                key={u.id}
+                className="group flex items-center py-1 px-2 text-sm text-(--color-text-secondary) hover:bg-(--color-bg-hover)"
+                style={{ paddingLeft: 24 }}
+              >
+                <span className="flex items-center gap-1.5 flex-1 min-w-0 truncate" title={u.path}>
+                  <FileIcon size={ICON_SIZE.SM} className="shrink-0 text-(--color-text-tertiary)" />
+                  {u.name}
+                </span>
+                {onAddToChat && u.path && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onAddToChat(u.path!)}
+                    className="hidden group-hover:inline-flex w-5 h-5 shrink-0 ml-1 text-(--color-text-secondary) hover:text-(--color-text-link)"
+                    title="Add to chat context"
+                    aria-label={`Add ${u.name} to chat`}
+                  >
+                    <PlusIcon size={12} />
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

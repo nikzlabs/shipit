@@ -12,9 +12,9 @@ describe("MessageInput", () => {
       expect(screen.getByText("Send")).toBeInTheDocument();
     });
 
-    it("renders the attach image button", () => {
+    it("renders the attach file button", () => {
       render(<MessageInput onSend={vi.fn()} disabled={false} />);
-      expect(screen.getByLabelText("Attach image")).toBeInTheDocument();
+      expect(screen.getByLabelText("Attach file")).toBeInTheDocument();
     });
 
     it("sends text message on submit", () => {
@@ -54,43 +54,42 @@ describe("MessageInput", () => {
       render(<MessageInput onSend={vi.fn()} disabled={false} />);
       const container = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)").closest("div.border-t")!;
       fireEvent.dragEnter(container, { dataTransfer: { files: [] } });
-      expect(screen.getByText("Drop file or image here")).toBeInTheDocument();
+      expect(screen.getByText("Drop files here")).toBeInTheDocument();
     });
 
     it("hides drop zone overlay when dragging out", () => {
       render(<MessageInput onSend={vi.fn()} disabled={false} />);
       const container = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)").closest("div.border-t")!;
       fireEvent.dragEnter(container, { dataTransfer: { files: [] } });
-      expect(screen.getByText("Drop file or image here")).toBeInTheDocument();
+      expect(screen.getByText("Drop files here")).toBeInTheDocument();
       fireEvent.dragLeave(container, { dataTransfer: { files: [] } });
-      expect(screen.queryByText("Drop file or image here")).not.toBeInTheDocument();
+      expect(screen.queryByText("Drop files here")).not.toBeInTheDocument();
     });
   });
 
   describe("file picker", () => {
-    it("has a hidden file input with correct accept attribute", () => {
+    it("has a hidden file input that accepts all file types", () => {
       render(<MessageInput onSend={vi.fn()} disabled={false} />);
       const fileInput = screen.getByTestId("file-input") as HTMLInputElement;
       expect(fileInput.type).toBe("file");
-      expect(fileInput.accept).toBe("image/png,image/jpeg,image/gif,image/webp");
+      expect(fileInput.accept).toBe(""); // accepts all file types
       expect(fileInput.multiple).toBe(true);
     });
-  });
 
-  describe("image error handling", () => {
-    it("shows error for unsupported file types", async () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} />);
+    it("routes non-image files to onUploadFiles callback", () => {
+      const onUploadFiles = vi.fn();
+      render(<MessageInput onSend={vi.fn()} disabled={false} onUploadFiles={onUploadFiles} />);
       const fileInput = screen.getByTestId("file-input");
 
       const textFile = new File(["hello"], "doc.txt", { type: "text/plain" });
       fireEvent.change(fileInput, { target: { files: [textFile] } });
 
-      await waitFor(() => {
-        expect(screen.getByText(/not a supported image type/)).toBeInTheDocument();
-      });
+      expect(onUploadFiles).toHaveBeenCalledWith([textFile]);
     });
+  });
 
-    it("shows error for oversized files", async () => {
+  describe("image error handling", () => {
+    it("shows error for oversized image files", async () => {
       render(<MessageInput onSend={vi.fn()} disabled={false} />);
       const fileInput = screen.getByTestId("file-input");
 
@@ -108,15 +107,17 @@ describe("MessageInput", () => {
       render(<MessageInput onSend={vi.fn()} disabled={false} />);
       const fileInput = screen.getByTestId("file-input");
 
-      const textFile = new File(["hello"], "doc.txt", { type: "text/plain" });
-      fireEvent.change(fileInput, { target: { files: [textFile] } });
+      // Create a file that reports as > 5MB (to trigger an error)
+      const bigFile = new File(["x".repeat(100)], "big.png", { type: "image/png" });
+      Object.defineProperty(bigFile, "size", { value: 6 * 1024 * 1024 });
+      fireEvent.change(fileInput, { target: { files: [bigFile] } });
 
       await waitFor(() => {
-        expect(screen.getByText(/not a supported image type/)).toBeInTheDocument();
+        expect(screen.getByText(/too large/)).toBeInTheDocument();
       });
 
       fireEvent.click(screen.getByText("\u00d7")); // × button
-      expect(screen.queryByText(/not a supported image type/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/too large/)).not.toBeInTheDocument();
     });
   });
 

@@ -143,4 +143,30 @@ describe("FileTree", () => {
     const fileButton = screen.getByText("index.ts").closest("button");
     expect(fileButton).not.toBeNull();
   });
+
+  it("renders an Uploads section when uploads are provided", () => {
+    const uploads = [
+      { id: "1", name: "data.csv", status: "ready" as const, path: "/uploads/data.csv", size: 100, progress: 100 },
+      { id: "2", name: "photo.png", status: "ready" as const, path: "/uploads/photo.png", size: 500, progress: 100 },
+    ];
+    render(<FileTree tree={sampleTree} onRefresh={() => {}} uploads={uploads} />);
+    expect(screen.getByText("Uploads")).toBeInTheDocument();
+    expect(screen.getByText("data.csv")).toBeInTheDocument();
+    expect(screen.getByText("photo.png")).toBeInTheDocument();
+  });
+
+  it("does not render Uploads section when no uploads", () => {
+    render(<FileTree tree={sampleTree} onRefresh={() => {}} uploads={[]} />);
+    expect(screen.queryByText("Uploads")).not.toBeInTheDocument();
+  });
+
+  it("calls onAddToChat with upload path when upload plus button is clicked", () => {
+    const onAddToChat = vi.fn();
+    const uploads = [
+      { id: "1", name: "data.csv", status: "ready" as const, path: "/uploads/data.csv", size: 100, progress: 100 },
+    ];
+    render(<FileTree tree={sampleTree} onRefresh={() => {}} uploads={uploads} onAddToChat={onAddToChat} />);
+    fireEvent.click(screen.getByLabelText("Add data.csv to chat"));
+    expect(onAddToChat).toHaveBeenCalledWith("/uploads/data.csv");
+  });
 });

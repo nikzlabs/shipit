@@ -16,10 +16,10 @@ export class ClaudeProcess extends EventEmitter {
    * Uses node-pty to allocate a real PTY so the CLI behaves as if invoked
    * from an interactive terminal (avoids hangs caused by piped stdin).
    *
-   * When `images` is provided, the prompt is sent via stdin as a JSON content
-   * array containing image blocks followed by a text block.
+   * Images are handled by the orchestrator before reaching this method —
+   * they're saved to the host uploads directory and referenced in the prompt.
    */
-  run(prompt: string, sessionId?: string, systemPrompt?: string, images?: ImageAttachment[], cwd?: string, permissionMode?: PermissionMode): void {
+  run(prompt: string, sessionId?: string, systemPrompt?: string, _images?: ImageAttachment[], cwd?: string, permissionMode?: PermissionMode): void {
     const AUTO_TOOLS = "Write,Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch,AskUserQuestion";
     const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch";
     const NORMAL_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion";
@@ -75,20 +75,6 @@ export class ClaudeProcess extends EventEmitter {
     }
 
     this.buffer = "";
-
-    // When images are provided, write them to stdin as base64 content blocks.
-    // The CLI will pick up multimodal content from the piped input.
-    if (images && images.length > 0) {
-      const content = [
-        ...images.map((img) => ({
-          type: "image" as const,
-          source: { type: "base64" as const, media_type: img.mediaType, data: img.data },
-        })),
-        { type: "text" as const, text: prompt },
-      ];
-      const payload = JSON.stringify(content);
-      this.proc.write(`${payload  }\n`);
-    }
 
     // Inactivity watchdog: warn if no output within 30 seconds
     this.watchdog = setTimeout(() => {
