@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 ---
 
 # Consolidate File Preview

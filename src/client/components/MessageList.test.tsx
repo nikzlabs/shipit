@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, beforeAll, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
-import { MessageList, ImageLightbox, parseMessageSegments, type ChatMessage, type ChatMessageImage, type ToolUseBlock, type ToolResultBlock } from "./MessageList.js";
+import { MessageList, parseMessageSegments, type ChatMessage, type ChatMessageImage, type ToolUseBlock, type ToolResultBlock } from "./MessageList.js";
 
 // jsdom doesn't implement scrollIntoView
 beforeAll(() => {
@@ -1000,7 +1000,9 @@ describe("MessageList", () => {
       expect(screen.getByLabelText("View image 1 full size")).toBeInTheDocument();
     });
 
-    it("opens lightbox when image is clicked", () => {
+    it("clicking image opens preview via file store", async () => {
+      const { useFileStore } = await import("../stores/file-store.js");
+      const spy = vi.spyOn(useFileStore.getState(), "openPreviewWithContent");
       const messages: ChatMessage[] = [
         { role: "user", text: "Test", images: [testImage] },
       ];
@@ -1008,65 +1010,12 @@ describe("MessageList", () => {
         <MessageList messages={messages} isLoading={false} />
       );
       fireEvent.click(screen.getByLabelText("View image 1 full size"));
-      // Lightbox should appear
-      expect(screen.getByRole("dialog")).toBeInTheDocument();
-      expect(screen.getByLabelText("Close preview")).toBeInTheDocument();
-    });
-
-    it("closes lightbox when close button is clicked", () => {
-      const messages: ChatMessage[] = [
-        { role: "user", text: "Test", images: [testImage] },
-      ];
-      render(
-        <MessageList messages={messages} isLoading={false} />
+      expect(spy).toHaveBeenCalledWith(
+        "Attached image 1",
+        expect.stringContaining("data:image/png;base64,"),
+        "image",
       );
-      fireEvent.click(screen.getByLabelText("View image 1 full size"));
-      expect(screen.getByRole("dialog")).toBeInTheDocument();
-      fireEvent.click(screen.getByLabelText("Close preview"));
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    });
-
-    it("closes lightbox when Escape key is pressed", () => {
-      const messages: ChatMessage[] = [
-        { role: "user", text: "Test", images: [testImage] },
-      ];
-      render(
-        <MessageList messages={messages} isLoading={false} />
-      );
-      fireEvent.click(screen.getByLabelText("View image 1 full size"));
-      expect(screen.getByRole("dialog")).toBeInTheDocument();
-      fireEvent.keyDown(window, { key: "Escape" });
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    });
-
-    it("closes lightbox when backdrop is clicked", () => {
-      const messages: ChatMessage[] = [
-        { role: "user", text: "Test", images: [testImage] },
-      ];
-      render(
-        <MessageList messages={messages} isLoading={false} />
-      );
-      fireEvent.click(screen.getByLabelText("View image 1 full size"));
-      const dialog = screen.getByRole("dialog");
-      expect(dialog).toBeInTheDocument();
-      fireEvent.click(dialog);
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    });
-
-    it("lightbox shows full-size image", () => {
-      const messages: ChatMessage[] = [
-        { role: "user", text: "Test", images: [testImage] },
-      ];
-      render(
-        <MessageList messages={messages} isLoading={false} />
-      );
-      fireEvent.click(screen.getByLabelText("View image 1 full size"));
-      const dialog = screen.getByRole("dialog");
-      const lightboxImg = dialog.querySelector("img")!;
-      expect(lightboxImg).toBeInTheDocument();
-      expect(lightboxImg.src).toContain("data:image/png;base64,");
-      // The lightbox image should have larger max dimensions
-      expect(lightboxImg.className).toContain("max-w-[90vw]");
+      spy.mockRestore();
     });
   });
 
@@ -1215,72 +1164,6 @@ describe("MessageList", () => {
     });
   });
 
-  describe("ImageLightbox component", () => {
-    it("renders with image and close button", () => {
-      render(
-        <ImageLightbox
-          src="data:image/png;base64,test"
-          alt="Test image"
-          onClose={vi.fn()}
-        />
-      );
-      expect(screen.getByRole("dialog")).toBeInTheDocument();
-      expect(screen.getByAltText("Test image")).toBeInTheDocument();
-      expect(screen.getByLabelText("Close preview")).toBeInTheDocument();
-    });
-
-    it("calls onClose when close button is clicked", () => {
-      const onClose = vi.fn();
-      render(
-        <ImageLightbox
-          src="data:image/png;base64,test"
-          alt="Test image"
-          onClose={onClose}
-        />
-      );
-      fireEvent.click(screen.getByLabelText("Close preview"));
-      expect(onClose).toHaveBeenCalled();
-    });
-
-    it("calls onClose on Escape key", () => {
-      const onClose = vi.fn();
-      render(
-        <ImageLightbox
-          src="data:image/png;base64,test"
-          alt="Test image"
-          onClose={onClose}
-        />
-      );
-      fireEvent.keyDown(window, { key: "Escape" });
-      expect(onClose).toHaveBeenCalled();
-    });
-
-    it("calls onClose when backdrop is clicked", () => {
-      const onClose = vi.fn();
-      render(
-        <ImageLightbox
-          src="data:image/png;base64,test"
-          alt="Test image"
-          onClose={onClose}
-        />
-      );
-      fireEvent.click(screen.getByRole("dialog"));
-      expect(onClose).toHaveBeenCalled();
-    });
-
-    it("does not close when image itself is clicked", () => {
-      const onClose = vi.fn();
-      render(
-        <ImageLightbox
-          src="data:image/png;base64,test"
-          alt="Test image"
-          onClose={onClose}
-        />
-      );
-      fireEvent.click(screen.getByAltText("Test image"));
-      expect(onClose).not.toHaveBeenCalled();
-    });
-  });
 
   describe("TodoWrite rendering", () => {
     const todoTools = (id: string): ToolUseBlock[] => [

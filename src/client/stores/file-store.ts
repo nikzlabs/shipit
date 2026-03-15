@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import type { FileTreeNode } from "../components/FileTree.js";
 import type { DocEntry } from "../../server/shared/types.js";
+import { detectFilePreviewType, type FilePreviewType } from "../utils/file-preview-type.js";
+import type { FilePreviewAction } from "../components/FilePreviewModal.js";
 
 interface FileState {
   tree: FileTreeNode[];
@@ -11,6 +13,13 @@ interface FileState {
   selectedDoc: string | null;
   docContent: string | null;
 
+  // Unified file preview modal state
+  previewFile: string | null;
+  previewContent: string | null;
+  previewType: FilePreviewType | null;
+  previewLoading: boolean;
+  previewActions: FilePreviewAction[];
+
   setTree: (tree: FileTreeNode[]) => void;
   setViewingFile: (path: string | null) => void;
   closeViewer: () => void;
@@ -20,6 +29,11 @@ interface FileState {
   setViewingFileContent: (content: string | null) => void;
   setViewingFileBinary: (binary: boolean) => void;
   reset: () => void;
+
+  // Unified preview actions
+  openPreview: (sessionId: string, filePath: string, opts?: { actions?: FilePreviewAction[] }) => Promise<void>;
+  openPreviewWithContent: (filePath: string, content: string, type: FilePreviewType, actions?: FilePreviewAction[]) => void;
+  closePreview: () => void;
 
   fetchTree: (sessionId: string) => Promise<void>;
   fetchFile: (sessionId: string, filePath: string) => Promise<void>;
@@ -37,6 +51,11 @@ const initialState = {
   docFiles: [] as DocEntry[],
   selectedDoc: null as string | null,
   docContent: null as string | null,
+  previewFile: null as string | null,
+  previewContent: null as string | null,
+  previewType: null as FilePreviewType | null,
+  previewLoading: false,
+  previewActions: [] as FilePreviewAction[],
 };
 
 export const useFileStore = create<FileState>((set) => ({
@@ -60,6 +79,65 @@ export const useFileStore = create<FileState>((set) => ({
   setViewingFileBinary: (binary) => set({ viewingFileBinary: binary }),
 
   reset: () => set(initialState),
+
+  openPreview: async (sessionId, filePath, opts) => {
+    const detectedType = detectFilePreviewType(filePath);
+    set({
+      previewFile: filePath,
+      previewContent: null,
+      previewType: detectedType,
+      previewLoading: true,
+      previewActions: opts?.actions ?? [],
+    });
+
+    if (detectedType === "markdown") {
+      // Fetch via docs endpoint for markdown
+      try {
+        const res = await fetch(`/api/sessions/${sessionId}/docs/${filePath}`);
+        if (!res.ok) throw new Error(`Failed to fetch doc: ${res.status}`);
+        const { content } = await res.json() as { content: string };
+        set({ previewContent: content, previewLoading: false });
+      } catch {
+        set({ previewContent: "_Failed to load document._", previewLoading: false });
+      }
+    } else {
+      // Fetch via files endpoint for code/image/binary
+      try {
+        const res = await fetch(`/api/sessions/${sessionId}/files/${filePath}`);
+        if (!res.ok) throw new Error(`Failed to fetch file: ${res.status}`);
+        const data = await res.json() as { content: string | null; isBinary?: boolean; isImage?: boolean };
+        if (data.isImage) {
+          set({ previewContent: data.content, previewType: "image", previewLoading: false });
+        } else if (data.isBinary) {
+          set({ previewContent: data.content, previewType: "binary", previewLoading: false });
+        } else {
+          set({ previewContent: data.content, previewLoading: false });
+        }
+      } catch {
+        set({ previewContent: null, previewType: "binary", previewLoading: false });
+      }
+    }
+  },
+
+  openPreviewWithContent: (filePath, content, type, actions) => {
+    set({
+      previewFile: filePath,
+      previewContent: content,
+      previewType: type,
+      previewLoading: false,
+      previewActions: actions ?? [],
+    });
+  },
+
+  closePreview: () => {
+    set({
+      previewFile: null,
+      previewContent: null,
+      previewType: null,
+      previewLoading: false,
+      previewActions: [],
+    });
+  },
 
   fetchTree: async (sessionId) => {
     const res = await fetch(`/api/sessions/${sessionId}/files`);

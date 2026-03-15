@@ -1,5 +1,7 @@
 import { FileIcon, CircleNotchIcon, WarningCircleIcon, ArrowClockwiseIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
+import { useFileStore } from "../stores/file-store.js";
+import { useSessionStore } from "../stores/session-store.js";
 import type { UploadItem } from "../hooks/useFileUpload.js";
 
 function formatSize(bytes: number): string {
@@ -40,8 +42,22 @@ export function FileUploadChips({ uploads, onRemove, onRetry }: FileUploadChipsP
             <WarningCircleIcon size={ICON_SIZE.XS} className="shrink-0 text-red-400" />
           )}
 
-          {/* Filename */}
-          <span className="truncate" data-testid="upload-chip-name">{u.name}</span>
+          {/* Filename — clickable to preview for ready uploads */}
+          {u.status === "ready" && u.path ? (
+            <button
+              className="truncate hover:underline cursor-pointer"
+              data-testid="upload-chip-name"
+              onClick={() => {
+                const sid = useSessionStore.getState().sessionId;
+                if (sid && u.path) void useFileStore.getState().openPreview(sid, u.path);
+              }}
+              title={`Preview ${u.name}`}
+            >
+              {u.name}
+            </button>
+          ) : (
+            <span className="truncate" data-testid="upload-chip-name">{u.name}</span>
+          )}
 
           {/* Size (ready state) */}
           {u.status === "ready" && u.size !== undefined && (

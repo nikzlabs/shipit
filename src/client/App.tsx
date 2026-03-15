@@ -28,7 +28,7 @@ import { Settings } from "./components/Settings.js";
 import { AppLayout } from "./AppLayout.js";
 import { DocsViewer } from "./components/DocsViewer.js";
 import { FileTree } from "./components/FileTree.js";
-import { FileContentViewer } from "./components/FileContentViewer.js";
+import { FilePreviewModal } from "./components/FilePreviewModal.js";
 import { TerminalPanel } from "./components/TerminalPanel.js";
 import { InteractiveTerminal, type InteractiveTerminalHandle } from "./components/InteractiveTerminal.js";
 import { SearchBar } from "./components/SearchBar.js";
@@ -40,7 +40,6 @@ import { NewRepoDialog } from "./components/NewRepoDialog.js";
 import { UsageModal } from "./components/UsageModal.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { DeployModal } from "./components/DeployModal.js";
-import { DocModal } from "./components/DocModal.js";
 
 import type { TurnDiffData } from "./components/DiffPanel.js";
 // eslint-disable-next-line no-restricted-syntax -- lazy() named-export pattern
@@ -104,11 +103,11 @@ export default function App() {
   const historyDiffMode = useGitStore((s) => s.historyDiffMode);
 
   const fileTree = useFileStore((s) => s.tree);
-  const viewingFile = useFileStore((s) => s.viewingFile);
-  const viewingFileContent = useFileStore((s) => s.viewingFileContent);
-  const viewingFileBinary = useFileStore((s) => s.viewingFileBinary);
   const docFiles = useFileStore((s) => s.docFiles);
-
+  const previewFile = useFileStore((s) => s.previewFile);
+  const previewContent = useFileStore((s) => s.previewContent);
+  const previewType = useFileStore((s) => s.previewType);
+  const previewActions = useFileStore((s) => s.previewActions);
 
   const previewStatus = usePreviewStore((s) => s.status);
   const selectedPort = usePreviewStore((s) => s.selectedPort);
@@ -194,9 +193,6 @@ export default function App() {
   const isMobile = useIsMobile();
   const [searchOpen, setSearchOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [docModalPath, setDocModalPath] = useState<string | null>(null);
-  const [docModalContent, setDocModalContent] = useState<string | null>(null);
-  const [docModalDoc, setDocModalDoc] = useState<DocEntry | null>(null);
   // Derive the repo URL from the /{slug}/new URL pattern (replaces useState)
   const newSessionRepoUrl = useMemo(() => {
     if (!newSessionRepoSlug) return undefined;
@@ -546,33 +542,28 @@ export default function App() {
   }, []);
 
   const handleOpenDoc = useCallback(
-    async (filePath: string, doc?: DocEntry) => {
+    (filePath: string, doc?: DocEntry) => {
       const sid = useSessionStore.getState().sessionId;
       if (!sid) return;
-      setDocModalPath(filePath);
-      setDocModalContent(null);
-      setDocModalDoc(doc ?? null);
-      try {
-        const res = await fetch(`/api/sessions/${sid}/docs/${filePath}`);
-        if (!res.ok) throw new Error(`Failed to fetch doc: ${res.status}`);
-        const { content } = await res.json() as { content: string };
-        setDocModalContent(content);
-      } catch {
-        setDocModalContent("_Failed to load document._");
-      }
+      const actions = doc?.status
+        ? [{ label: "Start Session", onClick: () => handleDocStartSession(doc), variant: "primary" as const }]
+        : undefined;
+      void useFileStore.getState().openPreview(sid, filePath, { actions });
     },
     [],
   );
 
-  const handleDocModalClose = useCallback(() => {
-    setDocModalPath(null);
-    setDocModalContent(null);
-    setDocModalDoc(null);
-  }, []);
+  const handleOpenFilePreview = useCallback(
+    (filePath: string) => {
+      const sid = useSessionStore.getState().sessionId;
+      if (sid) void useFileStore.getState().openPreview(sid, filePath);
+    },
+    [],
+  );
 
   const handleDocStartSession = useCallback(
     async (doc: DocEntry) => {
-      handleDocModalClose();
+      useFileStore.getState().closePreview();
       resetSessionState();
       useUiStore.getState().setShowTemplates(false);
       const text = `Work on: ${doc.title}\n\nPlease read the plan at ${doc.path}, then proceed with the implementation.`;
@@ -605,7 +596,7 @@ export default function App() {
         useSessionStore.getState().setActivity(undefined);
       }
     },
-    [handleDocModalClose, requestPermission, navigate, sessions],
+    [requestPermission, navigate, sessions],
   );
 
   const handleUsageBadgeClick = useCallback(() => {
@@ -646,7 +637,7 @@ export default function App() {
         {rightTab === "preview" ? (
           <PreviewFrame preview={previewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} configMissing={configMissing} onInitPreviewConfig={() => send({ type: "init_preview_config" })} crashInfo={crashInfo} onRestartPreview={handleRestartPreview} onSendCrashToAgent={handleSendCrashToAgent} />
         ) : rightTab === "docs" ? (
-          <DocsViewer files={docFiles} onFileClick={(f) => { const doc = docFiles.find((d) => d.path === f); void handleOpenDoc(f, doc); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} />
+          <DocsViewer files={docFiles} onFileClick={(f) => { const doc = docFiles.find((d) => d.path === f); handleOpenDoc(f, doc); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} />
         ) : rightTab === "terminal" ? (
           <TerminalPanel entries={logEntries} onClear={() => { useTerminalStore.getState().clearEntries(); send({ type: "clear_logs" }); }} terminalMode={terminalMode} onTerminalModeChange={(m) => useTerminalStore.getState().setMode(m)} shellContent={
             (shellStarted || terminalMode === "shell") ? (
@@ -661,10 +652,8 @@ export default function App() {
           ) : <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">Loading diff...</div>
         ) : rightTab === "history" ? (
           <GitHistory commits={gitCommits} onRollback={(hash) => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().rollback(sid, hash).catch(() => {}); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().fetchLog(sid).catch(() => {}); }} onViewDiff={handleViewDiff} />
-        ) : viewingFile ? (
-          <FileContentViewer filePath={viewingFile} content={viewingFileContent} isBinary={viewingFileBinary} onClose={() => useFileStore.getState().closeViewer()} />
         ) : (
-          <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchTree(sid).catch(() => {}); }} onFileClick={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchFile(sid, f).catch(() => {}); }} selectedFile={viewingFile} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} uploads={sessionUploads} />
+          <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchTree(sid).catch(() => {}); }} onFileClick={handleOpenFilePreview} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} uploads={sessionUploads} />
         )}
       </div>
     </>
@@ -726,13 +715,13 @@ export default function App() {
         onComplete={() => { setOnboardingDismissed(true); if (gitIdentityNeeded) useGitStore.getState().setIdentityNeeded(false); }}
       />
       {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
-      {docModalPath && (
-        <DocModal
-          filePath={docModalPath}
-          content={docModalContent}
-          isTracked={!!docModalDoc?.status}
-          onStartSession={docModalDoc?.status ? () => handleDocStartSession(docModalDoc) : undefined}
-          onClose={handleDocModalClose}
+      {previewFile && previewType && (
+        <FilePreviewModal
+          filePath={previewFile}
+          content={previewContent}
+          fileType={previewType}
+          actions={previewActions}
+          onClose={() => useFileStore.getState().closePreview()}
         />
       )}
       {settingsOpen && (
