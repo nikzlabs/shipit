@@ -104,6 +104,7 @@ Since the docs are baked into the image (small, versioned with the code), no bin
 | `src/server/orchestrator/agent-instructions.ts` | Add ~4-line "ShipIt platform docs" section |
 | `docker/Dockerfile.session-worker.dev` | Add `COPY src/server/shipit-docs/ /shipit-docs/` |
 | `docker/Dockerfile.session-worker.prod` | Add `COPY src/server/shipit-docs/ /shipit-docs/` |
+| `CLAUDE.md` | Add maintenance rule for `src/server/shipit-docs/` |
 
 ## Considerations
 
@@ -118,6 +119,8 @@ Six markdown files total ~15-20KB. Negligible impact on image size.
 ### Keeping docs in sync
 
 Docs live in `src/server/shipit-docs/` and are versioned with the code. When a feature changes (e.g., new `shipit.yaml` field), the corresponding doc should be updated in the same PR. This is similar to how `agent-instructions.ts` is maintained today.
+
+To enforce this, `CLAUDE.md` gets a maintenance rule in the Workflow section: when changing agent-facing platform behavior (preview config, deployment targets, shipit.yaml schema, container environment, GitHub integration), update the corresponding file in `src/server/shipit-docs/`. This ensures both human developers and Claude agents working on ShipIt are prompted to keep the docs current.
 
 ### Alternatives considered
 
