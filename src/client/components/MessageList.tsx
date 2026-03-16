@@ -6,7 +6,6 @@ import {
   type StreamingActivity,
 } from "./StreamingIndicator.js";
 import { TodoPanel, type TodoItem } from "./TodoPanel.js";
-import { Button } from "./ui/button.js";
 import { CircleNotchIcon, PencilSimpleIcon, ArrowsClockwiseIcon } from "@phosphor-icons/react";
 import type { SearchMatch } from "../hooks/useSearch.js";
 import { buildVisualElements } from "./visual-elements.js";
@@ -241,31 +240,6 @@ export function MessageList({
           <div key={i}>
             {!hideBubble && (
             <div className={`group flex ${msg.role === "user" ? "justify-end" : "justify-start"} ${msg.rolledBack ? "opacity-40" : ""}`}>
-            {/* Edit/Retry buttons — shown on hover for user messages */}
-            {showEditActions && (
-              <div className="hidden group-hover:flex items-center gap-1 mr-2 shrink-0">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setEditingIndex(i)}
-                  className="p-1"
-                  title="Edit message"
-                  aria-label="Edit message"
-                >
-                  <PencilSimpleIcon size={14} />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => onEditMessage?.(i, msg.text)}
-                  className="p-1"
-                  title="Retry message"
-                  aria-label="Retry message"
-                >
-                  <ArrowsClockwiseIcon size={14} />
-                </Button>
-              </div>
-            )}
 
             {isEditing ? (
               <MessageEditor
@@ -277,7 +251,7 @@ export function MessageList({
               />
             ) : (
             <div
-              className={`max-w-2xl rounded-lg px-4 py-3 text-sm ${
+              className={`relative max-w-2xl rounded-lg px-4 py-3 text-sm ${
                 !useMarkdown && !hasCodeBlocks ? "whitespace-pre-wrap" : ""
               } ${
                 msg.isError
@@ -289,6 +263,39 @@ export function MessageList({
                   : "bg-(--color-bg-secondary) text-(--color-text-primary)"
               }`}
             >
+              {/* Action buttons — overlaid on the bubble, shown on hover */}
+              {(showEditActions || (msg.role === "assistant" && msg.commitHash && msg.parentCommitHash && !msg.rolledBack && onRollback)) && (
+                <div className="hidden group-hover:flex absolute -top-3 right-1 items-center gap-0.5 bg-(--color-bg-secondary) border border-(--color-border-primary) rounded-md shadow-sm px-0.5 py-0.5 z-10">
+                  {showEditActions && (
+                    <>
+                      <button
+                        onClick={() => setEditingIndex(i)}
+                        className="p-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
+                        title="Edit message"
+                        aria-label="Edit message"
+                      >
+                        <PencilSimpleIcon size={14} />
+                      </button>
+                      <button
+                        onClick={() => onEditMessage?.(i, msg.text)}
+                        className="p-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
+                        title="Retry message"
+                        aria-label="Retry message"
+                      >
+                        <ArrowsClockwiseIcon size={14} />
+                      </button>
+                    </>
+                  )}
+                  {msg.role === "assistant" && msg.commitHash && msg.parentCommitHash && !msg.rolledBack && onRollback && (
+                    <RollbackDropdown
+                      messageIndex={i}
+                      parentCommitHash={msg.parentCommitHash}
+                      disabled={isLoading}
+                      onRollback={onRollback}
+                    />
+                  )}
+                </div>
+              )}
               {msg.queued && (
                 <div className="flex items-center gap-1.5 mb-1.5 text-xs text-(--color-accent-text)/80 font-medium">
                   <CircleNotchIcon size={12} className="animate-spin" />
@@ -371,17 +378,6 @@ export function MessageList({
                 </span>
               )}
             </div>
-            )}
-            {/* Rollback button — shown on hover for assistant messages with a linked commit */}
-            {msg.role === "assistant" && msg.commitHash && msg.parentCommitHash && !msg.rolledBack && onRollback && (
-              <div className="hidden group-hover:flex items-center ml-2 shrink-0">
-                <RollbackDropdown
-                  messageIndex={i}
-                  parentCommitHash={msg.parentCommitHash}
-                  disabled={isLoading}
-                  onRollback={onRollback}
-                />
-              </div>
             )}
             </div>
             )}
