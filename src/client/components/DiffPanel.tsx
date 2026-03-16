@@ -1,8 +1,14 @@
-import { useState, useMemo } from "react";
+// eslint-disable-next-line no-restricted-imports -- useRef: Monaco editor ref, useEffect: comment sync
+import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { DiffEditor } from "@monaco-editor/react";
-import { XIcon } from "@phosphor-icons/react";
+import type { DiffOnMount } from "@monaco-editor/react";
+import { XIcon, PaperPlaneTiltIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
+import { useCommentStore } from "../stores/comment-store.js";
+import { useSessionStore } from "../stores/session-store.js";
+import { createCommentWidgetManager } from "./MonacoCommentWidgets.js";
+import type { CommentWidgetManager } from "./MonacoCommentWidgets.js";
 import type { FileDiff } from "../../server/shared/types.js";
 
 /** Map file extensions to Monaco language IDs. */
@@ -30,7 +36,6 @@ function getLanguageFromPath(filePath: string): string {
     graphql: "graphql", gql: "graphql",
     dockerfile: "dockerfile",
   };
-  // Handle dotfiles like "Dockerfile" or ".gitignore"
   const name = filePath.split("/").pop()?.toLowerCase() ?? "";
   if (name === "dockerfile") return "dockerfile";
   if (name === "makefile") return "makefile";
@@ -66,16 +71,101 @@ interface DiffPanelProps {
   diff: TurnDiffData;
   onClose: () => void;
   commitMessage?: string;
+  onSendComments?: (prompt: string) => void;
 }
 
-export function DiffPanel({ diff, onClose, commitMessage }: DiffPanelProps) {
+export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: DiffPanelProps) {
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
+  const managerRef = useRef<CommentWidgetManager | null>(null);
+
+  const sessionId = useSessionStore((s) => s.sessionId) ?? "";
+  const sessionComments = useCommentStore((s) => s.commentsBySession[sessionId]);
+  const allComments = sessionComments ?? [];
+  const commentCount = allComments.length;
+  const addLineComment = useCommentStore((s) => s.addLineComment);
+  const editComment = useCommentStore((s) => s.editComment);
+  const deleteComment = useCommentStore((s) => s.deleteComment);
+  const clearComments = useCommentStore((s) => s.clearComments);
 
   const selectedFile = diff.files[selectedFileIndex] ?? null;
 
   const language = useMemo(() => {
     return selectedFile ? getLanguageFromPath(selectedFile.path) : "plaintext";
   }, [selectedFile]);
+
+  const commentsForFile = useMemo(() => {
+    if (!selectedFile) return [];
+    return allComments.filter((c) => c.filePath === selectedFile.path);
+  }, [allComments, selectedFile]);
+
+  // Clean up manager on file change or unmount
+  useEffect(() => {
+    return () => {
+      managerRef.current?.dispose();
+      managerRef.current = null;
+    };
+  }, [selectedFileIndex]);
+
+  // Sync comments to manager
+  useEffect(() => {
+    managerRef.current?.setComments(commentsForFile);
+  }, [commentsForFile]);
+
+  const handleEditorMount: DiffOnMount = useCallback((editor) => {
+    managerRef.current?.dispose();
+    if (!selectedFile) return;
+
+    managerRef.current = createCommentWidgetManager(editor, {
+      filePath: selectedFile.path,
+      onAddComment: (line, text) => addLineComment(sessionId, selectedFile.path, line, text),
+      onEditComment: (id, text) => editComment(sessionId, id, text),
+      onDeleteComment: (id) => deleteComment(sessionId, id),
+      side: "modified",
+    });
+    managerRef.current.setComments(
+      useCommentStore.getState().getCommentsForFile(sessionId, selectedFile.path),
+    );
+  }, [selectedFile, sessionId, addLineComment, editComment, deleteComment]);
+
+  const handleSendComments = useCallback(() => {
+    if (commentCount === 0 || !onSendComments) return;
+    const fileContents = new Map<string, string>();
+    for (const file of diff.files) {
+      fileContents.set(file.path, file.newContent);
+    }
+
+    let prompt = "I have the following comments on the code:\n\n";
+    const byFile = new Map<string, typeof allComments>();
+    for (const c of allComments) {
+      if (!byFile.has(c.filePath)) byFile.set(c.filePath, []);
+      byFile.get(c.filePath)!.push(c);
+    }
+
+    for (const [filePath, fileComments] of byFile) {
+      const lines = (fileContents.get(filePath) ?? "").split("\n");
+      const lineComments = fileComments.filter((c) => c.kind === "line").sort((a, b) =>
+        a.kind === "line" && b.kind === "line" ? a.line - b.line : 0,
+      );
+
+      for (const comment of lineComments) {
+        if (comment.kind !== "line") continue;
+        const start = Math.max(0, comment.line - 3);
+        const end = Math.min(lines.length, comment.line + 2);
+        const snippet = lines.slice(start, end)
+          .map((l, i) => {
+            const lineNum = start + i + 1;
+            const marker = lineNum === comment.line ? "\u2192" : " ";
+            return `${marker} ${lineNum} \u2502 ${l}`;
+          })
+          .join("\n");
+        prompt += `**${filePath}:${comment.line}**\n\`\`\`\n${snippet}\n\`\`\`\nComment: ${comment.text}\n\n`;
+      }
+    }
+    prompt += "Please address each comment.";
+
+    onSendComments(prompt);
+    clearComments(sessionId);
+  }, [commentCount, onSendComments, allComments, diff.files, clearComments, sessionId]);
 
   if (diff.files.length === 0) {
     return (
@@ -158,7 +248,7 @@ export function DiffPanel({ diff, onClose, commitMessage }: DiffPanelProps) {
             ) : (
               <div className="h-full">
                 <div className="px-3 py-1 text-xs text-(--color-text-secondary) border-b border-(--color-border-primary) bg-(--color-bg-secondary) truncate">
-                  {selectedFile.oldPath ? `${selectedFile.oldPath} → ${selectedFile.path}` : selectedFile.path}
+                  {selectedFile.oldPath ? `${selectedFile.oldPath} \u2192 ${selectedFile.path}` : selectedFile.path}
                 </div>
                 <div className="h-[calc(100%-1.75rem)]">
                   <DiffEditor
@@ -166,6 +256,7 @@ export function DiffPanel({ diff, onClose, commitMessage }: DiffPanelProps) {
                     modified={selectedFile.newContent}
                     language={language}
                     theme="vs-dark"
+                    onMount={handleEditorMount}
                     options={{
                       readOnly: true,
                       renderSideBySide: true,
@@ -177,6 +268,7 @@ export function DiffPanel({ diff, onClose, commitMessage }: DiffPanelProps) {
                       wordWrap: "off",
                       renderOverviewRuler: false,
                       diffWordWrap: "off",
+                      glyphMargin: true,
                       scrollbar: {
                         verticalScrollbarSize: 8,
                         horizontalScrollbarSize: 8,
@@ -203,6 +295,12 @@ export function DiffPanel({ diff, onClose, commitMessage }: DiffPanelProps) {
         >
           Close
         </Button>
+        {onSendComments && commentCount > 0 && (
+          <Button variant="primary" size="sm" onClick={handleSendComments}>
+            <PaperPlaneTiltIcon size={ICON_SIZE.SM} className="mr-1" />
+            Send {commentCount} comment{commentCount !== 1 ? "s" : ""}
+          </Button>
+        )}
         <span className="ml-auto text-[10px] text-(--color-text-tertiary) font-mono">
           {diff.fromCommit.slice(0, 7)}..{diff.toCommit.slice(0, 7)}
         </span>

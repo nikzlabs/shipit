@@ -27,6 +27,7 @@ import { AuthOverlayContainer } from "./AuthOverlay.js";
 import { Settings } from "./components/Settings.js";
 import { AppLayout } from "./AppLayout.js";
 import { DocsViewer } from "./components/DocsViewer.js";
+import { DocReviewPanel } from "./components/DocReviewPanel.js";
 import { FileTree } from "./components/FileTree.js";
 import { FilePreviewModal } from "./components/FilePreviewModal.js";
 import { TerminalPanel } from "./components/TerminalPanel.js";
@@ -193,6 +194,7 @@ export default function App() {
   const isMobile = useIsMobile();
   const [searchOpen, setSearchOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [reviewingDoc, setReviewingDoc] = useState<{ doc: DocEntry; content: string } | null>(null);
   // Derive the repo URL from the /{slug}/new URL pattern (replaces useState)
   const newSessionRepoUrl = useMemo(() => {
     if (!newSessionRepoSlug) return undefined;
@@ -599,6 +601,39 @@ export default function App() {
     [requestPermission, navigate, sessions],
   );
 
+  const handleReviewFeature = useCallback(
+    async (doc: DocEntry) => {
+      const sid = useSessionStore.getState().sessionId;
+      if (!sid) return;
+      try {
+        const res = await fetch(`/api/sessions/${sid}/files/content?path=${encodeURIComponent(doc.path)}`);
+        if (!res.ok) return;
+        const data = await res.json() as { content: string };
+        setReviewingDoc({ doc, content: data.content });
+      } catch (err) {
+        console.error("[review] Failed to load doc content:", err);
+      }
+    },
+    [],
+  );
+
+  const handleReviewSendComments = useCallback(
+    (feature: DocEntry, prompt: string) => {
+      setReviewingDoc(null);
+      // Send the prompt to the current session
+      send({ type: "send_message", text: prompt });
+    },
+    [send],
+  );
+
+  const handleFileSendComments = useCallback(
+    (prompt: string) => {
+      useFileStore.getState().closePreview();
+      send({ type: "send_message", text: prompt });
+    },
+    [send],
+  );
+
   const handleUsageBadgeClick = useCallback(() => {
     useUiStore.getState().setShowUsageModal(true);
     const sid = useSessionStore.getState().sessionId;
@@ -637,7 +672,11 @@ export default function App() {
         {rightTab === "preview" ? (
           <PreviewFrame preview={previewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} configMissing={configMissing} onInitPreviewConfig={() => send({ type: "init_preview_config" })} crashInfo={crashInfo} onRestartPreview={handleRestartPreview} onSendCrashToAgent={handleSendCrashToAgent} />
         ) : rightTab === "docs" ? (
-          <DocsViewer files={docFiles} onFileClick={(f) => { const doc = docFiles.find((d) => d.path === f); handleOpenDoc(f, doc); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} />
+          reviewingDoc ? (
+            <DocReviewPanel feature={reviewingDoc.doc} content={reviewingDoc.content} onSendComments={handleReviewSendComments} onClose={() => setReviewingDoc(null)} />
+          ) : (
+            <DocsViewer files={docFiles} onFileClick={(f) => { const doc = docFiles.find((d) => d.path === f); handleOpenDoc(f, doc); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} onReviewFeature={handleReviewFeature} />
+          )
         ) : rightTab === "terminal" ? (
           <TerminalPanel entries={logEntries} onClear={() => { useTerminalStore.getState().clearEntries(); send({ type: "clear_logs" }); }} terminalMode={terminalMode} onTerminalModeChange={(m) => useTerminalStore.getState().setMode(m)} shellContent={
             (shellStarted || terminalMode === "shell") ? (
@@ -647,7 +686,7 @@ export default function App() {
         ) : rightTab === "changes" ? (
           turnDiff ? (
             <Suspense fallback={<div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">Loading diff viewer...</div>}>
-              <DiffPanel diff={turnDiff} onClose={historyDiffMode ? handleHistoryDiffClose : () => useUiStore.getState().setRightTab("preview")} commitMessage={historyDiffMode ? gitCommits.find((c) => c.hash === turnDiff.toCommit)?.message : undefined} />
+              <DiffPanel diff={turnDiff} onClose={historyDiffMode ? handleHistoryDiffClose : () => useUiStore.getState().setRightTab("preview")} commitMessage={historyDiffMode ? gitCommits.find((c) => c.hash === turnDiff.toCommit)?.message : undefined} onSendComments={handleFileSendComments} />
             </Suspense>
           ) : <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">Loading diff...</div>
         ) : rightTab === "history" ? (
@@ -722,6 +761,7 @@ export default function App() {
           fileType={previewType}
           actions={previewActions}
           onClose={() => useFileStore.getState().closePreview()}
+          onSendComments={handleFileSendComments}
         />
       )}
       {settingsOpen && (

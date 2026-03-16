@@ -2,6 +2,20 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { FilePreviewModal } from "./FilePreviewModal.js";
 
+// Monaco editor uses dynamic import("monaco-editor") and won't work in jsdom.
+// Mock the module so the CodeEditor sub-component renders a simple div.
+vi.mock("monaco-editor", () => ({
+  editor: {
+    create: () => ({
+      dispose: vi.fn(),
+      onMouseDown: () => ({ dispose: vi.fn() }),
+      updateOptions: vi.fn(),
+      changeViewZones: vi.fn(),
+      createDecorationsCollection: vi.fn(),
+    }),
+  },
+}));
+
 afterEach(cleanup);
 
 describe("FilePreviewModal", () => {
@@ -28,39 +42,17 @@ describe("FilePreviewModal", () => {
     expect(screen.getByText("Loading...")).toBeInTheDocument();
   });
 
-  it("renders code content with syntax highlighting", () => {
+  it("renders code content in an editor container", () => {
     const { container } = render(
       <FilePreviewModal filePath="hello.js" content="const x = 1;" fileType="code" onClose={() => {}} />
     );
-    const codeEl = container.querySelector("code.hljs");
-    expect(codeEl).not.toBeNull();
-    expect(codeEl!.innerHTML).toBeTruthy();
+    // CodeEditor renders a div with h-full w-full for the Monaco editor mount point
+    const editorDiv = container.querySelector(".h-full.w-full");
+    expect(editorDiv).not.toBeNull();
   });
 
-  it("renders code inside a pre element", () => {
-    const { container } = render(
-      <FilePreviewModal filePath="test.txt" content="plain text" fileType="code" onClose={() => {}} />
-    );
-    const preEl = container.querySelector("pre");
-    expect(preEl).not.toBeNull();
-  });
-
-  it("applies syntax highlighting for TypeScript files", () => {
-    const { container } = render(
-      <FilePreviewModal
-        filePath="src/app.ts"
-        content="const greeting: string = 'hello';"
-        fileType="code"
-        onClose={() => {}}
-      />
-    );
-    const codeEl = container.querySelector("code.hljs");
-    const spans = codeEl!.querySelectorAll("span");
-    expect(spans.length).toBeGreaterThan(0);
-  });
-
-  it("renders markdown content with prose styling", () => {
-    const { container } = render(
+  it("renders markdown content via MarkdownSectionComments", () => {
+    render(
       <FilePreviewModal
         filePath="README.md"
         content="# Hello World"
@@ -68,9 +60,8 @@ describe("FilePreviewModal", () => {
         onClose={() => {}}
       />
     );
-    const prose = container.querySelector(".prose");
-    expect(prose).not.toBeNull();
-    expect(prose!.innerHTML).toContain("Hello World");
+    // MarkdownSectionComments renders the heading text
+    expect(screen.getByText("Hello World")).toBeInTheDocument();
   });
 
   it("renders image content", () => {
