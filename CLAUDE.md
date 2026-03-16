@@ -107,6 +107,8 @@ src/
       integration_tests/  Integration tests — one file per feature area
         test-helpers.ts   Shared stubs (TestClient, FakeClaudeProcess, etc.)
 
+    shipit-docs/     Platform docs for the agent inside containers (copied to /shipit-docs/)
+
     shared/          Code used by both session and orchestrator
       types/         All type definitions
         index.ts, ws-client-messages.ts, ws-server-messages.ts, domain-types.ts,
@@ -244,6 +246,7 @@ The browser uses two parallel channels:
 - **Co-locate tests** — place tests next to source files (`foo.ts` → `foo.test.ts`). Follow patterns from neighboring test files.
 - **Lint and typecheck before finishing** — always run `npm run lint` and `npm run typecheck` after code changes and fix any errors before considering work complete.
 - **Update docs when done** — update the relevant `plan.md` with new subsystems, patterns, or key files you added. Mark completed checklist items with `[x]`; if all items are done, delete `checklist.md`.
+- **Update shipit-docs when changing agent-facing behavior** — when changing platform behavior visible to the agent inside session containers (preview config, shipit.yaml schema, deployment targets, container environment, GitHub integration), update the corresponding file in `src/server/shipit-docs/`. These docs are baked into the session worker image at `/shipit-docs/` and are the agent's primary reference for the platform.
 
 ## Code conventions
 
