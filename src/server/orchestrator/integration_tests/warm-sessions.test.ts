@@ -15,6 +15,7 @@ import type { FastifyInstance } from "fastify";
 import { buildApp } from "../index.js";
 import { repoUrlToHash } from "../git-utils.js";
 import { GitManager } from "../../shared/git.js";
+import { isInstallDone, markInstallDone } from "../../session/install-runner.js";
 import { SessionManager } from "../sessions.js";
 import { RepoStore } from "../repo-store.js";
 import type { AuthManager } from "../auth.js";
@@ -240,6 +241,74 @@ describe("Integration: warm session lifecycle", () => {
       expect(newSession).toBeDefined();
       expect(newSession!.warm).toBe(true);
     }, 25000);
+  });
+
+  describe("claim-session skips reinstall when HEAD unchanged", () => {
+    it("preserves install marker when no new commits were fetched", async () => {
+      await waitFor(
+        () => !!repoStore.get(REPO_URL)?.warmSessionId,
+        10000,
+        "warm session",
+      );
+      const warmSessionId = repoStore.get(REPO_URL)!.warmSessionId!;
+      const warmSession = sessionManager.get(warmSessionId)!;
+      const workspaceDir = warmSession.workspaceDir!;
+
+      // Simulate a completed install (marker present)
+      markInstallDone(workspaceDir);
+      expect(isInstallDone(workspaceDir)).toBe(true);
+
+      // Claim the session — refreshCloneToLatestMain fetches but HEAD hasn't changed
+      const encodedUrl = encodeURIComponent(REPO_URL);
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/repos/${encodedUrl}/claim-session`,
+      });
+
+      expect(res.statusCode).toBe(200);
+      // Install marker should still be present (no reinstall needed)
+      expect(isInstallDone(workspaceDir)).toBe(true);
+    }, 15000);
+
+    it("clears install marker when HEAD changed", async () => {
+      await waitFor(
+        () => !!repoStore.get(REPO_URL)?.warmSessionId,
+        10000,
+        "warm session",
+      );
+      const warmSessionId = repoStore.get(REPO_URL)!.warmSessionId!;
+      const warmSession = sessionManager.get(warmSessionId)!;
+      const workspaceDir = warmSession.workspaceDir!;
+
+      // Simulate a completed install
+      markInstallDone(workspaceDir);
+      expect(isInstallDone(workspaceDir)).toBe(true);
+
+      // Point the clone's origin to the local shared repo so fetch works
+      const repoDir = getSharedRepoDirForUrl(tmpDir, REPO_URL);
+      execSync(`git remote set-url origin ${repoDir}`, {
+        cwd: workspaceDir,
+        stdio: "ignore",
+      });
+
+      // Add a new commit to the shared repo (simulating upstream changes)
+      fs.writeFileSync(path.join(repoDir, "new-file.txt"), "new content\n");
+      execSync("git add . && git commit -m 'new commit' --no-gpg-sign", {
+        cwd: repoDir,
+        stdio: "ignore",
+      });
+
+      // Claim the session — refreshCloneToLatestMain detects HEAD changed
+      const encodedUrl = encodeURIComponent(REPO_URL);
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/repos/${encodedUrl}/claim-session`,
+      });
+
+      expect(res.statusCode).toBe(200);
+      // Install marker should be cleared (reinstall needed)
+      expect(isInstallDone(workspaceDir)).toBe(false);
+    }, 15000);
   });
 
   describe("graduation on first message", () => {
