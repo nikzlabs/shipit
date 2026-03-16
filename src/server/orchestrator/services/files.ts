@@ -25,6 +25,18 @@ function getMimeType(ext: string): string {
   return `image/${ext}`;
 }
 
+/** Resolve a file path safely and return the absolute path + filename for downloads. */
+export function getRawFilePath(
+  dir: string,
+  filePath: string,
+): { safePath: string; filename: string } {
+  const safePath = path.resolve(dir, filePath);
+  if (!safePath.startsWith(`${dir}/`)) {
+    throw new ServiceError(400, "Invalid path");
+  }
+  return { safePath, filename: path.basename(safePath) };
+}
+
 /** Get file content with safety checks (path traversal, binary, size). */
 export async function getFileContent(
   dir: string,

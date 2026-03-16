@@ -556,7 +556,20 @@ export default function App() {
   const handleOpenFilePreview = useCallback(
     (filePath: string) => {
       const sid = useSessionStore.getState().sessionId;
-      if (sid) void useFileStore.getState().openPreview(sid, filePath);
+      if (sid) {
+        const actions = [{
+          label: "Download",
+          onClick: () => {
+            const a = document.createElement("a");
+            a.href = `/api/sessions/${sid}/files/download/${filePath}`;
+            a.download = "";
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+          },
+        }];
+        void useFileStore.getState().openPreview(sid, filePath, { actions });
+      }
     },
     [],
   );
@@ -653,7 +666,7 @@ export default function App() {
         ) : rightTab === "history" ? (
           <GitHistory commits={gitCommits} onRollback={(hash) => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().rollback(sid, hash).catch(() => {}); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().fetchLog(sid).catch(() => {}); }} onViewDiff={handleViewDiff} />
         ) : (
-          <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchTree(sid).catch(() => {}); }} onFileClick={handleOpenFilePreview} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} uploads={sessionUploads} />
+          <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchTree(sid).catch(() => {}); }} onFileClick={handleOpenFilePreview} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} onDownload={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) { const a = document.createElement("a"); a.href = `/api/sessions/${sid}/files/download/${f}`; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); } }} uploads={sessionUploads} />
         )}
       </div>
     </>
