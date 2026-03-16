@@ -87,7 +87,7 @@ describe("Integration: Docs", () => {
     expect(tracked).toMatchObject({
       path: "docs/001-my-feature/plan.md",
       status: "in-progress",
-      title: "Plan",
+      title: "My Feature",
     });
   });
 
