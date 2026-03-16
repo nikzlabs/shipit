@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { FileTreeNode } from "../components/FileTree.js";
-import type { DocEntry } from "../../server/shared/types.js";
+import type { DocEntry, UploadedFile, UploadItem } from "../../server/shared/types.js";
 import { detectFilePreviewType, type FilePreviewType } from "../utils/file-preview-type.js";
 import type { FilePreviewAction } from "../components/FilePreviewModal.js";
 
@@ -12,6 +12,9 @@ interface FileState {
   docFiles: DocEntry[];
   selectedDoc: string | null;
   docContent: string | null;
+
+  // Session uploads — persisted in Zustand to survive route transitions
+  sessionUploads: UploadItem[];
 
   // Unified file preview modal state
   previewFile: string | null;
@@ -30,6 +33,11 @@ interface FileState {
   setViewingFileBinary: (binary: boolean) => void;
   reset: () => void;
 
+  // Session upload actions
+  addSessionUploads: (items: UploadItem[]) => void;
+  removeSessionUpload: (path: string) => void;
+  hydrateUploads: (sessionId: string) => Promise<void>;
+
   // Unified preview actions
   openPreview: (sessionId: string, filePath: string, opts?: { actions?: FilePreviewAction[] }) => Promise<void>;
   openPreviewWithContent: (filePath: string, content: string, type: FilePreviewType, actions?: FilePreviewAction[]) => void;
@@ -43,6 +51,8 @@ interface FileState {
   fetchDoc: (sessionId: string, filePath: string) => Promise<void>;
 }
 
+let uploadIdCounter = 0;
+
 const initialState = {
   tree: [] as FileTreeNode[],
   viewingFile: null as string | null,
@@ -51,6 +61,7 @@ const initialState = {
   docFiles: [] as DocEntry[],
   selectedDoc: null as string | null,
   docContent: null as string | null,
+  sessionUploads: [] as UploadItem[],
   previewFile: null as string | null,
   previewContent: null as string | null,
   previewType: null as FilePreviewType | null,
@@ -79,6 +90,32 @@ export const useFileStore = create<FileState>((set) => ({
   setViewingFileBinary: (binary) => set({ viewingFileBinary: binary }),
 
   reset: () => set(initialState),
+
+  addSessionUploads: (items) =>
+    set((state) => ({ sessionUploads: [...state.sessionUploads, ...items] })),
+
+  removeSessionUpload: (path) =>
+    set((state) => ({ sessionUploads: state.sessionUploads.filter((u) => u.path !== path) })),
+
+  hydrateUploads: async (sessionId) => {
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/files/uploads`);
+      if (!res.ok) return;
+      const data = (await res.json()) as { files: UploadedFile[] };
+      set({
+        sessionUploads: data.files.map((f) => ({
+          id: `hydrated-${++uploadIdCounter}`,
+          name: f.name,
+          status: "ready" as const,
+          size: f.size,
+          path: f.path,
+          progress: 100,
+        })),
+      });
+    } catch {
+      // Hydration failure is non-critical
+    }
+  },
 
   openPreview: async (sessionId, filePath, opts) => {
     const detectedType = detectFilePreviewType(filePath);

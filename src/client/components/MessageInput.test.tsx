@@ -1,5 +1,5 @@
-import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { MessageInput } from "./MessageInput.js";
 
 afterEach(cleanup);
@@ -23,7 +23,7 @@ describe("MessageInput", () => {
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
       fireEvent.change(textarea, { target: { value: "Hello Claude" } });
       fireEvent.click(screen.getByText("Send"));
-      expect(onSend).toHaveBeenCalledWith("Hello Claude", undefined);
+      expect(onSend).toHaveBeenCalledWith("Hello Claude");
     });
 
     it("sends text on Enter (without Shift)", () => {
@@ -32,7 +32,7 @@ describe("MessageInput", () => {
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
       fireEvent.change(textarea, { target: { value: "test" } });
       fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
-      expect(onSend).toHaveBeenCalledWith("test", undefined);
+      expect(onSend).toHaveBeenCalledWith("test");
     });
 
     it("does not send empty messages", () => {
@@ -76,166 +76,16 @@ describe("MessageInput", () => {
       expect(fileInput.multiple).toBe(true);
     });
 
-    it("routes non-image files to onUploadFiles callback", () => {
+    it("routes all files (including images) to onUploadFiles callback", () => {
       const onUploadFiles = vi.fn();
       render(<MessageInput onSend={vi.fn()} disabled={false} onUploadFiles={onUploadFiles} />);
       const fileInput = screen.getByTestId("file-input");
 
       const textFile = new File(["hello"], "doc.txt", { type: "text/plain" });
-      fireEvent.change(fileInput, { target: { files: [textFile] } });
+      const pngFile = new File(["img"], "photo.png", { type: "image/png" });
+      fireEvent.change(fileInput, { target: { files: [textFile, pngFile] } });
 
-      expect(onUploadFiles).toHaveBeenCalledWith([textFile]);
-    });
-  });
-
-  describe("image error handling", () => {
-    it("shows error for oversized image files", async () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} />);
-      const fileInput = screen.getByTestId("file-input");
-
-      // Create a file that reports as > 5MB
-      const bigFile = new File(["x".repeat(100)], "big.png", { type: "image/png" });
-      Object.defineProperty(bigFile, "size", { value: 6 * 1024 * 1024 });
-      fireEvent.change(fileInput, { target: { files: [bigFile] } });
-
-      await waitFor(() => {
-        expect(screen.getByText(/too large/)).toBeInTheDocument();
-      });
-    });
-
-    it("dismisses error when close button is clicked", async () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} />);
-      const fileInput = screen.getByTestId("file-input");
-
-      // Create a file that reports as > 5MB (to trigger an error)
-      const bigFile = new File(["x".repeat(100)], "big.png", { type: "image/png" });
-      Object.defineProperty(bigFile, "size", { value: 6 * 1024 * 1024 });
-      fireEvent.change(fileInput, { target: { files: [bigFile] } });
-
-      await waitFor(() => {
-        expect(screen.getByText(/too large/)).toBeInTheDocument();
-      });
-
-      fireEvent.click(screen.getByText("\u00d7")); // × button
-      expect(screen.queryByText(/too large/)).not.toBeInTheDocument();
-    });
-  });
-
-  describe("image thumbnails", () => {
-    let originalFileReader: typeof FileReader;
-
-    beforeEach(() => {
-      originalFileReader = globalThis.FileReader;
-
-      // Create a mock FileReader class
-      class MockFileReader {
-        result = "data:image/png;base64,dGVzdA==";
-        onload: (() => void) | null = null;
-        readAsDataURL() {
-          // Simulate async completion
-          setTimeout(() => this.onload?.(), 0);
-        }
-      }
-      globalThis.FileReader = MockFileReader as unknown as typeof FileReader;
-      globalThis.URL.createObjectURL = vi.fn(() => "blob:http://localhost/test");
-      globalThis.URL.revokeObjectURL = vi.fn();
-    });
-
-    afterEach(() => {
-      globalThis.FileReader = originalFileReader;
-    });
-
-    it("shows image thumbnails after adding valid files", async () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} />);
-      const fileInput = screen.getByTestId("file-input");
-
-      const pngFile = new File(["test"], "screenshot.png", { type: "image/png" });
-      Object.defineProperty(pngFile, "size", { value: 1024 });
-      fireEvent.change(fileInput, { target: { files: [pngFile] } });
-
-      await waitFor(() => {
-        expect(screen.getByTestId("image-thumbnails")).toBeInTheDocument();
-      });
-    });
-
-    it("shows remove button on image thumbnails", async () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} />);
-      const fileInput = screen.getByTestId("file-input");
-
-      const pngFile = new File(["test"], "photo.png", { type: "image/png" });
-      Object.defineProperty(pngFile, "size", { value: 1024 });
-      fireEvent.change(fileInput, { target: { files: [pngFile] } });
-
-      await waitFor(() => {
-        expect(screen.getByLabelText("Remove photo.png")).toBeInTheDocument();
-      });
-    });
-
-    it("removes image when remove button is clicked", async () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} />);
-      const fileInput = screen.getByTestId("file-input");
-
-      const pngFile = new File(["test"], "photo.png", { type: "image/png" });
-      Object.defineProperty(pngFile, "size", { value: 1024 });
-      fireEvent.change(fileInput, { target: { files: [pngFile] } });
-
-      await waitFor(() => {
-        expect(screen.getByLabelText("Remove photo.png")).toBeInTheDocument();
-      });
-
-      fireEvent.click(screen.getByLabelText("Remove photo.png"));
-
-      await waitFor(() => {
-        expect(screen.queryByTestId("image-thumbnails")).not.toBeInTheDocument();
-      });
-    });
-
-    it("sends images along with text when submitting", async () => {
-      const onSend = vi.fn();
-      render(<MessageInput onSend={onSend} disabled={false} />);
-      const fileInput = screen.getByTestId("file-input");
-
-      const pngFile = new File(["test"], "photo.png", { type: "image/png" });
-      Object.defineProperty(pngFile, "size", { value: 1024 });
-      fireEvent.change(fileInput, { target: { files: [pngFile] } });
-
-      await waitFor(() => {
-        expect(screen.getByTestId("image-thumbnails")).toBeInTheDocument();
-      });
-
-      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
-      fireEvent.change(textarea, { target: { value: "Check this" } });
-      fireEvent.click(screen.getByText("Send"));
-
-      expect(onSend).toHaveBeenCalledWith(
-        "Check this",
-        expect.arrayContaining([
-          expect.objectContaining({ mediaType: "image/png", filename: "photo.png" }),
-        ]),
-      );
-    });
-
-    it("clears images after sending", async () => {
-      const onSend = vi.fn();
-      render(<MessageInput onSend={onSend} disabled={false} />);
-      const fileInput = screen.getByTestId("file-input");
-
-      const pngFile = new File(["test"], "photo.png", { type: "image/png" });
-      Object.defineProperty(pngFile, "size", { value: 1024 });
-      fireEvent.change(fileInput, { target: { files: [pngFile] } });
-
-      await waitFor(() => {
-        expect(screen.getByTestId("image-thumbnails")).toBeInTheDocument();
-      });
-
-      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
-      fireEvent.change(textarea, { target: { value: "Send it" } });
-      fireEvent.click(screen.getByText("Send"));
-
-      // After sending, thumbnails should be gone
-      await waitFor(() => {
-        expect(screen.queryByTestId("image-thumbnails")).not.toBeInTheDocument();
-      });
+      expect(onUploadFiles).toHaveBeenCalledWith([textFile, pngFile]);
     });
   });
 

@@ -1,29 +1,14 @@
 /**
- * useFileUpload — manages file upload state, upload API calls,
- * and reconnect hydration from the list endpoint.
+ * useFileUpload — manages file upload state (input chips) and upload API calls.
+ * Session-level uploads (for file tree and @-autocomplete) are stored in the
+ * file store (Zustand) so they survive route transitions.
  */
 
 import { useState, useCallback } from "react";
-import type { UploadedFile, UploadRef } from "../../server/shared/types.js";
+import type { UploadedFile, UploadRef, UploadItem } from "../../server/shared/types.js";
+import { useFileStore } from "../stores/file-store.js";
 
-export type UploadStatus = "uploading" | "ready" | "error";
-
-export interface UploadItem {
-  /** Client-side ID for tracking. */
-  id: string;
-  /** Original filename. */
-  name: string;
-  /** Upload status. */
-  status: UploadStatus;
-  /** File size in bytes (set once upload completes). */
-  size?: number;
-  /** Container path (set once upload completes). */
-  path?: string;
-  /** Error message if upload failed. */
-  error?: string;
-  /** Upload progress 0-100. */
-  progress: number;
-}
+export type { UploadItem, UploadStatus } from "../../server/shared/types.js";
 
 interface UploadResponse {
   files: UploadedFile[];
@@ -34,21 +19,19 @@ let uploadIdCounter = 0;
 export function useFileUpload(sessionId: string | undefined) {
   /** Input chips — files being attached to the current message. Cleared on send. */
   const [uploads, setUploads] = useState<UploadItem[]>([]);
-  /** All session uploads — populated from the server, used for file tree and @-autocomplete. */
-  const [sessionUploads, setSessionUploads] = useState<UploadItem[]>([]);
-
   /** Upload files immediately via POST multipart. */
   const uploadFiles = useCallback(
     async (files: File[]) => {
       if (!sessionId || files.length === 0) return;
 
-      // Create placeholder items
+      // Create placeholder items (with thumbnail preview for images)
       const items: UploadItem[] = files.map((f) => ({
         id: `upload-${++uploadIdCounter}`,
         name: f.name,
         status: "uploading" as const,
         size: f.size,
         progress: 0,
+        previewUrl: f.type.startsWith("image/") ? URL.createObjectURL(f) : undefined,
       }));
 
       setUploads((prev) => [...prev, ...items]);
@@ -98,8 +81,8 @@ export function useFileUpload(sessionId: string | undefined) {
 
         // Update input chips
         setUploads((prev) => prev.map((u) => readyMap.get(u.id) ?? u));
-        // Add to session-level uploads for file tree / @-autocomplete
-        setSessionUploads((prev) => [...prev, ...readyMap.values()]);
+        // Add to session-level uploads (Zustand store) for file tree / @-autocomplete
+        useFileStore.getState().addSessionUploads([...readyMap.values()]);
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : "Upload failed";
         setUploads((prev) =>
@@ -123,8 +106,8 @@ export function useFileUpload(sessionId: string | undefined) {
         void fetch(`/api/sessions/${sessionId}/files/uploads/${encodeURIComponent(filename)}`, {
           method: "DELETE",
         });
-        // Also remove from session-level uploads
-        setSessionUploads((su) => su.filter((u) => u.path !== item.path));
+        // Also remove from session-level uploads (Zustand store)
+        useFileStore.getState().removeSessionUpload(item.path);
       }
       return prev.filter((_, i) => i !== index);
     });
@@ -144,45 +127,24 @@ export function useFileUpload(sessionId: string | undefined) {
 
   /** Clear all uploads (after message send). */
   const clearUploads = useCallback(() => {
-    setUploads([]);
-  }, []);
-
-  /** Hydrate session uploads from the list endpoint (for file tree and @-autocomplete). */
-  const hydrateUploads = useCallback(
-    async (sid: string) => {
-      try {
-        const res = await fetch(`/api/sessions/${sid}/files/uploads`);
-        if (!res.ok) return;
-        const data = (await res.json()) as UploadResponse;
-        setSessionUploads(
-          data.files.map((f) => ({
-            id: `hydrated-${++uploadIdCounter}`,
-            name: f.name,
-            status: "ready" as const,
-            size: f.size,
-            path: f.path,
-            progress: 100,
-          })),
-        );
-      } catch {
-        // Hydration failure is non-critical
+    setUploads((prev) => {
+      for (const u of prev) {
+        if (u.previewUrl) URL.revokeObjectURL(u.previewUrl);
       }
-    },
-    [],
-  );
+      return [];
+    });
+  }, []);
 
   const hasReadyUploads = uploads.some((u) => u.status === "ready");
   const isUploading = uploads.some((u) => u.status === "uploading");
 
   return {
     uploads,
-    sessionUploads,
     uploadFiles,
     removeUpload,
     retryUpload,
     getUploadRefs,
     clearUploads,
-    hydrateUploads,
     hasReadyUploads,
     isUploading,
   };
