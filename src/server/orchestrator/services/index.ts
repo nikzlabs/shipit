@@ -15,3 +15,4 @@ export * from "./settings.js";
 export * from "./templates.js";
 export * from "./misc.js";
 export * from "./repos.js";
+export * from "./reviews.js";

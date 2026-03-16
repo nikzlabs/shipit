@@ -8,6 +8,7 @@ export interface DocsViewerProps {
   files: DocEntry[];
   onFileClick: (path: string) => void;
   onRefresh: () => void;
+  onReviewFeature?: (doc: DocEntry) => void;
 }
 
 const STATUS_CONFIG: Record<DocStatus, { label: string; variant: BadgeProps["variant"]; order: number }> = {
@@ -44,7 +45,7 @@ function sortByStatus(docs: DocEntry[]): DocEntry[] {
 
 type Tab = "tracked" | "other";
 
-export function DocsViewer({ files, onFileClick, onRefresh }: DocsViewerProps) {
+export function DocsViewer({ files, onFileClick, onRefresh, onReviewFeature }: DocsViewerProps) {
   const tracked = files.filter((f) => f.status !== undefined);
   const untracked = files.filter((f) => f.status === undefined);
   const hasTracked = tracked.length > 0;
@@ -135,12 +136,14 @@ export function DocsViewer({ files, onFileClick, onRefresh }: DocsViewerProps) {
             {sortedTracked.map((doc) => {
               const ctx = pathContext(doc.path);
               return (
-                <button
+                <div
                   key={doc.path}
-                  onClick={() => onFileClick(doc.path)}
-                  className="flex items-center justify-between w-full text-left px-3 py-2 hover:bg-(--color-bg-hover) transition-colors cursor-pointer gap-2"
+                  className="flex items-center justify-between w-full text-left px-3 py-2 hover:bg-(--color-bg-hover) transition-colors gap-2 group/row"
                 >
-                  <div className="min-w-0">
+                  <button
+                    onClick={() => onFileClick(doc.path)}
+                    className="flex-1 min-w-0 text-left cursor-pointer"
+                  >
                     <span className="text-sm text-(--color-text-primary) truncate block">
                       {doc.title}
                     </span>
@@ -149,9 +152,24 @@ export function DocsViewer({ files, onFileClick, onRefresh }: DocsViewerProps) {
                         {ctx}
                       </span>
                     )}
+                  </button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {onReviewFeature && doc.status && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onReviewFeature(doc);
+                        }}
+                        className="opacity-0 group-hover/row:opacity-100 transition-opacity text-xs"
+                      >
+                        Review
+                      </Button>
+                    )}
+                    {doc.status && <StatusBadge status={doc.status} />}
                   </div>
-                  {doc.status && <StatusBadge status={doc.status} />}
-                </button>
+                </div>
               );
             })}
           </div>

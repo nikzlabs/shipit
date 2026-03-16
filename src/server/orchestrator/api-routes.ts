@@ -34,7 +34,9 @@ import { registerPreviewRoutes } from "./api-routes-preview.js";
 import { registerGitHubRoutes } from "./api-routes-github.js";
 import { registerDeployRoutes } from "./api-routes-deploy.js";
 import { registerSecretsRoutes } from "./api-routes-secrets.js";
+import { registerReviewRoutes } from "./api-routes-reviews.js";
 import type { SecretStore } from "./secret-store.js";
+import type { ReviewStore } from "./review-store.js";
 
 /**
  * Dependencies needed by API routes. A subset of AppDeps — only the
@@ -77,6 +79,8 @@ export interface ApiDeps {
   databaseManager?: DatabaseManager;
   /** Secret store — per-repo env var secrets for preview containers. */
   secretStore?: SecretStore;
+  /** Review store — design doc review comments persistence. */
+  reviewStore?: ReviewStore;
 }
 
 /**
@@ -124,6 +128,9 @@ export async function registerApiRoutes(
   await registerPreviewRoutes(app, deps);
   await registerGitHubRoutes(app, deps);
   await registerDeployRoutes(app, deps);
+  if (deps.reviewStore) {
+    await registerReviewRoutes(app, deps);
+  }
   if (deps.secretStore) {
     await registerSecretsRoutes(app, {
       secretStore: deps.secretStore,

@@ -102,6 +102,55 @@ export interface FileDiff {
   newContent: string;
 }
 
+// ---- Review comment types ----
+
+export type ReviewCommentSource = "human" | "ai";
+
+export interface ReviewComment {
+  id: string;
+  sectionHeading: string;
+  sectionIndex: number;
+  text: string;
+  source: ReviewCommentSource;
+}
+
+export type ReviewStatus = "draft" | "sent";
+
+export interface DocReview {
+  id: string;
+  featureId: string;
+  planPath: string;
+  status: ReviewStatus;
+  comments: ReviewComment[];
+  docSnapshotHash: string;
+  sectionHeadings: string[];
+  createdAt: string;
+  updatedAt: string;
+  sentAt?: string;
+  sentToSessionId?: string;
+}
+
+// ---- File comment types (client-side) ----
+
+export interface LineComment {
+  id: string;
+  kind: "line";
+  filePath: string;
+  line: number;
+  text: string;
+}
+
+export interface SectionComment {
+  id: string;
+  kind: "section";
+  filePath: string;
+  sectionHeading: string;
+  sectionIndex: number;
+  text: string;
+}
+
+export type FileComment = LineComment | SectionComment;
+
 // ---- Chat history message (shared data type) ----
 
 export interface WsChatHistoryMessage {

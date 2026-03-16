@@ -109,6 +109,36 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_secrets_repo ON secrets(repo_url);
     `);
   },
+  // Migration 3: doc review tables for design doc review comments (049)
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS doc_reviews (
+        id TEXT PRIMARY KEY,
+        feature_id TEXT NOT NULL,
+        plan_path TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'draft',
+        doc_snapshot_hash TEXT NOT NULL,
+        section_headings TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        sent_at TEXT,
+        sent_to_session_id TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_doc_reviews_feature ON doc_reviews(feature_id);
+      CREATE INDEX IF NOT EXISTS idx_doc_reviews_status ON doc_reviews(feature_id, status);
+
+      CREATE TABLE IF NOT EXISTS review_comments (
+        id TEXT PRIMARY KEY,
+        review_id TEXT NOT NULL,
+        section_heading TEXT NOT NULL,
+        section_index INTEGER NOT NULL,
+        text TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'human',
+        FOREIGN KEY (review_id) REFERENCES doc_reviews(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_review_comments_review ON review_comments(review_id);
+    `);
+  },
 ];
 
 export class DatabaseManager {
@@ -149,6 +179,8 @@ export class DatabaseManager {
       this.db.prepare("DELETE FROM deploy_configs").run();
       this.db.prepare("DELETE FROM deploy_history").run();
       this.db.prepare("DELETE FROM secrets").run();
+      this.db.prepare("DELETE FROM review_comments").run();
+      this.db.prepare("DELETE FROM doc_reviews").run();
     })();
   }
 
