@@ -3,6 +3,7 @@ import type { FileTreeNode } from "../components/FileTree.js";
 import type { DocEntry, UploadedFile, UploadItem } from "../../server/shared/types.js";
 import { detectFilePreviewType, type FilePreviewType } from "../utils/file-preview-type.js";
 import type { FilePreviewAction } from "../components/FilePreviewModal.js";
+import { useSessionStore } from "./session-store.js";
 
 interface FileState {
   tree: FileTreeNode[];
@@ -36,6 +37,9 @@ interface FileState {
   // Session upload actions
   addSessionUploads: (items: UploadItem[]) => void;
   removeSessionUpload: (path: string) => void;
+  removeSessionUploadById: (id: string) => void;
+  updateSessionUpload: (id: string, patch: Partial<UploadItem>) => void;
+  markUploadsSent: () => void;
   hydrateUploads: (sessionId: string) => Promise<void>;
 
   // Unified preview actions
@@ -97,20 +101,60 @@ export const useFileStore = create<FileState>((set) => ({
   removeSessionUpload: (path) =>
     set((state) => ({ sessionUploads: state.sessionUploads.filter((u) => u.path !== path) })),
 
+  removeSessionUploadById: (id) =>
+    set((state) => ({ sessionUploads: state.sessionUploads.filter((u) => u.id !== id) })),
+
+  updateSessionUpload: (id, patch) =>
+    set((state) => ({
+      sessionUploads: state.sessionUploads.map((u) => (u.id === id ? { ...u, ...patch } : u)),
+    })),
+
+  markUploadsSent: () =>
+    set((state) => {
+      for (const u of state.sessionUploads) {
+        if (u.pending && u.previewUrl) URL.revokeObjectURL(u.previewUrl);
+      }
+      return {
+        sessionUploads: state.sessionUploads.map((u) =>
+          u.pending ? { ...u, pending: false, previewUrl: undefined } : u,
+        ),
+      };
+    }),
+
   hydrateUploads: async (sessionId) => {
     try {
       const res = await fetch(`/api/sessions/${sessionId}/files/uploads`);
       if (!res.ok) return;
       const data = (await res.json()) as { files: UploadedFile[] };
+      // Determine which uploads were already sent by checking chat history.
+      // Uploads whose paths appear in a user message's files array are "sent".
+      // Unreferenced uploads remain pending (attached for the next message).
+      const messages = useSessionStore.getState().messages;
+      const sentPaths = new Set<string>();
+      for (const msg of messages) {
+        if (msg.role === "user" && msg.files) {
+          for (const f of msg.files) {
+            if (f.path.startsWith("/uploads/")) sentPaths.add(f.path);
+          }
+        }
+      }
+      const IMAGE_EXTS = /\.(png|jpe?g|gif|webp|svg)$/i;
       set({
-        sessionUploads: data.files.map((f) => ({
-          id: `hydrated-${++uploadIdCounter}`,
-          name: f.name,
-          status: "ready" as const,
-          size: f.size,
-          path: f.path,
-          progress: 100,
-        })),
+        sessionUploads: data.files.map((f) => {
+          // For image uploads, construct a URL the browser can use as <img src>
+          const isImage = IMAGE_EXTS.test(f.name);
+          const urlPath = f.path.startsWith("/") ? f.path.slice(1) : f.path;
+          return {
+            id: `hydrated-${++uploadIdCounter}`,
+            name: f.name,
+            status: "ready" as const,
+            size: f.size,
+            path: f.path,
+            progress: 100,
+            pending: !sentPaths.has(f.path),
+            previewUrl: isImage ? `/api/sessions/${sessionId}/files/${urlPath}?raw=true` : undefined,
+          };
+        }),
       });
     } catch {
       // Hydration failure is non-critical

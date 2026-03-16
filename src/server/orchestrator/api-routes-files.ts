@@ -3,6 +3,7 @@
  * Handles: file tree, file content, write/edit, docs, uploads.
  */
 
+import fs from "node:fs/promises";
 import path from "node:path";
 import { createReadStream } from "node:fs";
 import type { FastifyInstance } from "fastify";
@@ -37,7 +38,7 @@ export async function registerFileRoutes(
   });
 
   // GET /api/sessions/:id/files/* — file content
-  app.get<{ Params: { id: string; "*": string }; Querystring: { tree?: string } }>(
+  app.get<{ Params: { id: string; "*": string }; Querystring: { tree?: string; raw?: string } }>(
     "/api/sessions/:id/files/*",
     async (request, reply) => {
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
@@ -52,6 +53,29 @@ export async function registerFileRoutes(
         const resolveDir = filePath.startsWith("uploads/")
           ? path.dirname(dir)
           : dir;
+
+        // raw=true: serve image bytes directly (for <img src> usage)
+        if (request.query.raw === "true") {
+          const safePath = path.resolve(resolveDir, filePath);
+          if (!safePath.startsWith(`${resolveDir}/`)) {
+            reply.code(400).send({ error: "Invalid path" });
+            return;
+          }
+          const ext = path.extname(filePath).slice(1).toLowerCase();
+          const mimeMap: Record<string, string> = {
+            png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+            gif: "image/gif", webp: "image/webp", svg: "image/svg+xml",
+          };
+          const mime = mimeMap[ext];
+          if (!mime) {
+            reply.code(400).send({ error: "Raw mode only supports images" });
+            return;
+          }
+          const data = await fs.readFile(safePath);
+          reply.type(mime).send(data);
+          return;
+        }
+
         const result = await getFileContent(resolveDir, filePath);
         const response: Record<string, unknown> = {
           path: filePath,

@@ -33,8 +33,14 @@ export function useConnectionSync(params: {
     if (status === "open" && !historyLoadedRef.current && useSessionStore.getState().sessionId) {
       historyLoadedRef.current = true;
       const sessionId = useSessionStore.getState().sessionId!;
-      loadSessionHistory(sessionId).catch((err: unknown) => console.error("[api] Failed to load session history:", err));
-      void onSessionConnect?.(sessionId);
+      void (async () => {
+        try {
+          await loadSessionHistory(sessionId);
+          await onSessionConnect?.(sessionId);
+        } catch (err) {
+          console.error("[api] Failed to load session history:", err);
+        }
+      })();
 
       // If there's a pending WS message (e.g. new session from home page, feature start), send it now
       const pending = useSessionStore.getState().pendingWsMessage;
