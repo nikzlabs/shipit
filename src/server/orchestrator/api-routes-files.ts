@@ -4,6 +4,7 @@
  */
 
 import path from "node:path";
+import { createReadStream } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import { resolveSessionDir } from "./api-routes.js";
@@ -11,6 +12,7 @@ import { resolveSessionDir } from "./api-routes.js";
 import {
   getFileTree,
   getFileContent,
+  getRawFilePath,
   listDocs,
   getDocContent,
   saveUploadedFile,
@@ -57,6 +59,32 @@ export async function registerFileRoutes(
           response.tree = await getFileTree(dir);
         }
         return response;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(404).send({ error: `File not found: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // GET /api/sessions/:id/files/download/* — download raw file
+  app.get<{ Params: { id: string; "*": string } }>(
+    "/api/sessions/:id/files/download/*",
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      const filePath = request.params["*"];
+      if (!filePath) {
+        reply.code(400).send({ error: "File path is required" });
+        return;
+      }
+      try {
+        const { safePath, filename } = getRawFilePath(dir, filePath);
+        reply.header("Content-Disposition", `attachment; filename="${filename}"`);
+        const stream = createReadStream(safePath);
+        return await reply.send(stream);
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
