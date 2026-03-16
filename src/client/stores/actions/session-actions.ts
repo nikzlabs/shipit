@@ -28,6 +28,7 @@ export function resetSessionState() {
 export function resumeSessionInternal(sessionId: string) {
   const session = useSessionStore.getState();
   session.setSessionId(sessionId);
+  session.clearUnseen(sessionId);
   session.setMessages([]);
   session.setIsLoading(false);
   session.setActivity(undefined);

@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 ---
 
 # Session Status Indicators
