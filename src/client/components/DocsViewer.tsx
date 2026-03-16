@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { Badge } from "./ui/badge.js";
 import type { BadgeProps } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
@@ -50,12 +50,11 @@ export function DocsViewer({ files, onFileClick, onRefresh }: DocsViewerProps) {
   const hasTracked = tracked.length > 0;
   const hasUntracked = untracked.length > 0;
 
-  const [activeTab, setActiveTab] = useState<Tab>("tracked");
-
-  // Switch to "tracked" once tracked docs arrive (handles async load)
-  useEffect(() => {
-    if (hasTracked) setActiveTab("tracked");
-  }, [hasTracked]);
+  const [userTab, setUserTab] = useState<Tab | null>(null);
+  const activeTab = useMemo<Tab>(() => {
+    if (userTab !== null) return userTab;
+    return hasTracked ? "tracked" : "other";
+  }, [userTab, hasTracked]);
 
   if (files.length === 0) {
     return (
@@ -102,7 +101,7 @@ export function DocsViewer({ files, onFileClick, onRefresh }: DocsViewerProps) {
       {showTabs && (
         <div className="flex border-b border-(--color-border-secondary)">
           <button
-            onClick={() => setActiveTab("tracked")}
+            onClick={() => setUserTab("tracked")}
             className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
               activeTab === "tracked"
                 ? "text-(--color-text-primary) border-b-2 border-(--color-accent)"
@@ -112,7 +111,7 @@ export function DocsViewer({ files, onFileClick, onRefresh }: DocsViewerProps) {
             Tracked ({tracked.length})
           </button>
           <button
-            onClick={() => setActiveTab("other")}
+            onClick={() => setUserTab("other")}
             className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
               activeTab === "other"
                 ? "text-(--color-text-primary) border-b-2 border-(--color-accent)"
