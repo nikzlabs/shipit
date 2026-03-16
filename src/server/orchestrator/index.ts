@@ -100,7 +100,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     createGitManager, createRepoGit, databaseManager, sessionManager,
     repoStore, chatHistoryManager, usageManager, authManager,
     credentialStore, agentRegistry, githubAuthManager,
-    deploymentManager, deploymentStore, secretStore, generateText,
+    deploymentManager, deploymentStore, secretStore, reviewStore, generateText,
     isTestMode,
   } = mgrs;
 
@@ -270,6 +270,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     prStatusPoller,
     databaseManager,
     secretStore,
+    reviewStore,
   });
 
   // ---- Preview reverse proxy (container mode) ----
