@@ -1,0 +1,42 @@
+# GitHub Action: auto-deploy ShipIt to Hetzner VPS on push to main.
+#
+# Required GitHub secrets:
+#   DEPLOY_HOST     — server IP or hostname (e.g. shipit.example.com)
+#   DEPLOY_SSH_KEY  — private SSH key with access to the server
+#   DEPLOY_USER     — SSH user (default: root)
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER || 'root' }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            cd /opt/shipit
+
+            # Pull latest code
+            git fetch origin main
+            git reset --hard origin/main
+
+            # Rebuild and restart
+            docker compose -f deployment/hetzner/docker-compose.yml build session-worker shipit
+            docker compose -f deployment/hetzner/docker-compose.yml up -d --no-build shipit
+
+            # Clean up old images
+            docker image prune -f
