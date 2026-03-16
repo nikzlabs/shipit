@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-restricted-imports -- useEffect: consume prefill text from external store on mount
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useSessionStore } from "../stores/session-store.js";
 import { PaperclipIcon, StopIcon } from "@phosphor-icons/react";
