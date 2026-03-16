@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: document.body style during drag, input focus on editing start (DOM sync)
 import { useState, useRef, useEffect, useCallback } from "react";
-import { PencilSimpleIcon, ArchiveIcon as PhArchiveIcon, GearSixIcon, GithubLogoIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon } from "@phosphor-icons/react";
+import { PencilSimpleIcon, ArchiveIcon as PhArchiveIcon, GearSixIcon, GithubLogoIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, WrenchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
 import { Button } from "./ui/button.js";
@@ -92,22 +92,85 @@ export interface SessionItemProps {
   disabled?: boolean;
 }
 
-function AgentDot({ sessionId }: { sessionId: string }) {
-  const isActive = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
-  if (!isActive) return null;
-  return <span className="w-2 h-2 rounded-full bg-(--color-success) animate-pulse shrink-0" title="Agent running" />;
+/** Returns the highest-priority attention reason for a session, or null if no attention needed. */
+function useAttentionInfo(sessionId: string): string | null {
+  const card = usePrStore((s) => s.cardBySession[sessionId]);
+  const status = usePrStore((s) => s.statusBySession[sessionId]);
+  const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
+  const hasUnseen = useSessionStore((s) => s.unseenResults.has(sessionId));
+
+  const checks = card?.checks;
+  const autoFix = card?.autoFix;
+  const autoMerge = card?.autoMerge;
+  const prState = status?.prState;
+  const mergeable = status?.mergeable;
+
+  // Priority 1: CI failed, agent idle, auto-fix not running
+  if (checks?.state === "failure" && !isAgentRunning && autoFix?.status !== "running") {
+    if (autoFix?.status === "exhausted") {
+      // Priority 2: Auto-fix exhausted
+      return "CI fix failed after 3 attempts";
+    }
+    return "CI checks failed";
+  }
+
+  // Priority 3: Merge conflicts (mergeable can be boolean | undefined, so === false is intentional)
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare
+  if (prState === "open" && mergeable === false) {
+    return "PR has merge conflicts";
+  }
+
+  // Priority 4: Auto-merge error
+  if (autoMerge?.error) {
+    return "Auto-merge needs repo configuration";
+  }
+
+  // Priority 5: Agent finished in background
+  if (hasUnseen) {
+    return "Agent finished — review results";
+  }
+
+  return null;
 }
 
-function CiDot({ sessionId }: { sessionId: string }) {
-  const checks = usePrStore((s) => s.cardBySession[sessionId]?.checks);
-  if (!checks || checks.state === "none") return null;
-  if (checks.state === "success") {
-    return <span className="shrink-0 text-(--color-success) flex" title={`CI passed ${checks.total}/${checks.total}`}><CheckCircleIcon size={12} /></span>;
+/** Consolidated status dot replacing separate AgentDot + CiDot. */
+function SessionStatusDot({ sessionId }: { sessionId: string }) {
+  const card = usePrStore((s) => s.cardBySession[sessionId]);
+  const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
+
+  const checks = card?.checks;
+  const autoFix = card?.autoFix;
+
+  // Priority 1: CI failed + needs manual fix (auto-fix not running)
+  if (checks?.state === "failure" && autoFix?.status !== "running") {
+    return <span className="shrink-0 text-(--color-error) flex" title={`CI failed ${checks.failed} of ${checks.total}`}><XCircleIcon size={ICON_SIZE.XS} /></span>;
   }
-  if (checks.state === "failure") {
-    return <span className="shrink-0 text-(--color-error) flex" title={`CI failed ${checks.failed} of ${checks.total}`}><XCircleIcon size={12} /></span>;
+
+  // Priority 2: Merge conflict / merge error — handled by attention border, but show warning icon
+  // (we reuse the attention condition check inline)
+
+  // Priority 3: Auto-fix running
+  if (autoFix?.status === "running") {
+    return <span className="shrink-0 text-(--color-autofix) flex" title="Auto-fix running"><WrenchIcon size={ICON_SIZE.XS} className="animate-spin" /></span>;
   }
-  return <span className="shrink-0 text-(--color-warning) flex" title={`CI running ${checks.passed}/${checks.total}`}><CircleNotchIcon size={12} className="animate-spin" /></span>;
+
+  // Priority 4: Agent running
+  if (isAgentRunning) {
+    return <span className="w-2 h-2 rounded-full bg-(--color-success) animate-pulse shrink-0" title="Agent running" />;
+  }
+
+  // Priority 5: CI pending
+  if (checks?.state === "pending") {
+    return <span className="shrink-0 text-(--color-warning) flex" title={`CI running ${checks.passed}/${checks.total}`}><CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" /></span>;
+  }
+
+  // Priority 6: CI passed
+  if (checks?.state === "success") {
+    return <span className="shrink-0 text-(--color-success) flex" title={`CI passed ${checks.total}/${checks.total}`}><CheckCircleIcon size={ICON_SIZE.XS} /></span>;
+  }
+
+  // Priority 7: idle / no data
+  return null;
 }
 
 export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore, onRename, repoLabel, disabled }: SessionItemProps) {
@@ -146,15 +209,21 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
     setEditingTitle("");
   };
 
+  const attentionReason = useAttentionInfo(session.id);
+  const needsAttention = attentionReason !== null;
+
   return (
     <div
       className={`group flex items-start gap-1.5 px-2 py-1.5 text-xs transition-colors rounded mx-1 ${
+        needsAttention ? "border-l-2 border-l-(--color-attention)" : "border-l-2 border-l-transparent"
+      } ${
         isCurrent
           ? "bg-(--color-bg-secondary) text-(--color-text-primary)"
           : isArchived
             ? "text-(--color-text-tertiary) hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary)"
             : "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
       }`}
+      title={attentionReason ?? undefined}
     >
       <PrStateBadge sessionId={session.id} />
 
@@ -182,8 +251,7 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
         >
           <p className="truncate leading-snug">{session.title}</p>
           <div className="flex items-center gap-1.5 mt-0.5">
-            <AgentDot sessionId={session.id} />
-            <CiDot sessionId={session.id} />
+            <SessionStatusDot sessionId={session.id} />
             {repoLabel && (
               <span className="text-[10px] text-(--color-text-tertiary) truncate">{repoLabel}</span>
             )}
