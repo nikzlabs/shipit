@@ -46,6 +46,10 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
     setStatus("connecting");
 
     ws.onopen = () => {
+      if (intentionalClose) {
+        ws.close();
+        return;
+      }
       setStatus("open");
       reconnectAttemptRef.current = 0;
       setReconnectAttempt(0);
@@ -73,7 +77,12 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
       }
-      ws.close();
+      // Only close if already open — if still CONNECTING, the onopen handler
+      // will see intentionalClose and close it, avoiding the
+      // "WebSocket is closed before the connection is established" warning.
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
     };
   }, [url, connectAttempt]);
 
