@@ -20,7 +20,7 @@ FROM node:24-slim
 
 # Runtime tools: git + curl for user projects, python3/make/g++ for native npm addons
 # in user sessions (npm install inside /workspace may compile C/C++ addons).
-RUN apt-get update && apt-get install -y git curl python3 make g++ && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y git curl python3 make g++ zip unzip && rm -rf /var/lib/apt/lists/*
 
 RUN --mount=type=cache,target=/root/.npm npm install -g @anthropic-ai/claude-code @openai/codex @playwright/mcp
 
