@@ -48,6 +48,18 @@ function formatDuration(ms: number): string {
   return `${minutes}m ${seconds}s`;
 }
 
+/** Convert a raw model ID like "claude-sonnet-4-20250514" to a display name like "Sonnet 4". */
+function formatModelName(modelId: string): string {
+  // Match patterns like claude-{family}-{version}-{date} or claude-{version}-{family}-{date}
+  const match = /claude-(\w+)-(\d[\w.]*)/.exec(modelId);
+  if (match) {
+    const family = match[1].charAt(0).toUpperCase() + match[1].slice(1);
+    const version = match[2].replace(/-\d{8}$/, "");
+    return `${family} ${version}`;
+  }
+  return modelId;
+}
+
 const levelBarColors: Record<string, string> = {
   green: "bg-(--color-success)",
   yellow: "bg-(--color-warning)",
@@ -104,7 +116,7 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
                 {modelInfo && (
                   <div className="flex justify-between">
                     <span className="text-(--color-text-secondary)">Model</span>
-                    <span className="text-(--color-text-primary)" data-testid="usage-model-name">{modelInfo.model}</span>
+                    <span className="text-(--color-text-primary)" data-testid="usage-model-name">{formatModelName(modelInfo.model)}</span>
                   </div>
                 )}
                 <div className="flex justify-between">
