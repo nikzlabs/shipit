@@ -59,6 +59,10 @@ If you need to install dependencies (npm install, etc.), run the command in bash
 Users can upload files from their browser. Uploaded files are available at /uploads/ inside the container. This directory is outside the git repo (/workspace/) so files there are never committed. Use /tmp for temporary scratch work (e.g., unpacking archives).
 
 ${browserSection}
+## ShipIt platform docs
+
+Reference documentation about the ShipIt platform is at /shipit-docs/. Consult these docs when you need to configure shipit.yaml, troubleshoot previews, or answer questions about platform capabilities (deployment, GitHub integration, environment details).
+
 ## Terminal
 
 The user has access to an interactive terminal in the UI. You can run shell commands via your Bash tool. For long-running processes, prefer letting the preview system handle dev servers rather than starting them in bash.

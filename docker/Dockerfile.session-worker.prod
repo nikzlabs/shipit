@@ -35,6 +35,9 @@ COPY --from=build /app/package.json ./
 COPY --from=build /app/tsconfig.json ./
 COPY --from=build /app/src ./src
 
+# Platform docs for the agent (accessible at /shipit-docs inside the container)
+COPY src/server/shipit-docs/ /shipit-docs/
+
 # Credential symlinks (same as dev/prod images)
 RUN mkdir -p /workspace /credentials && ln -s /credentials/.claude /root/.claude && ln -sf /credentials/.claude.json /root/.claude.json
 
