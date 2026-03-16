@@ -149,6 +149,9 @@ const BINARY_EXTENSIONS = new Set([
   ".sqlite", ".db",
 ]);
 
+/** Image extensions that can be viewed natively via the Read tool. */
+const IMAGE_UPLOAD_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"]);
+
 /** Check if a file path refers to a likely binary file based on its extension. */
 function isBinaryUpload(filePath: string): boolean {
   const ext = path.extname(filePath).toLowerCase();
@@ -183,10 +186,15 @@ export async function resolveUploadRefs(
     }
 
     if (isBinaryUpload(ref.path)) {
-      // For binary files, include a reference the agent can use
+      // For binary files, include a reference the agent can use.
+      // Images can be viewed natively via the Read tool; other binaries need Bash.
+      const isImage = IMAGE_UPLOAD_EXTENSIONS.has(path.extname(ref.path).toLowerCase());
+      const hint = isImage
+        ? `use the Read tool to view this image`
+        : `use Bash tool to read/process this file inside the container`;
       result.push({
         path: ref.path,
-        content: `[Binary file uploaded at ${ref.path} — use Bash tool to read/process this file inside the container]`,
+        content: `[Binary file uploaded at ${ref.path} — ${hint}]`,
       });
     } else {
       // For text files, read and include content

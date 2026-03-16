@@ -10,17 +10,6 @@ import { Button } from "./ui/button.js";
 import type { PermissionMode, FileContextRef, FileTreeNode } from "../../server/shared/types.js";
 import type { UploadItem } from "../hooks/useFileUpload.js";
 
-export interface ImagePreview {
-  data: string;       // base64-encoded
-  mediaType: string;  // "image/png", etc.
-  filename: string;
-  previewUrl: string; // object URL for thumbnail display
-}
-
-const ALLOWED_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5 MB
-const MAX_IMAGES = 5;
-
 export function MessageInput({
   onSend,
   disabled,
@@ -38,7 +27,7 @@ export function MessageInput({
   onRemoveUpload,
   onRetryUpload,
 }: {
-  onSend: (text: string, images?: { data: string; mediaType: string; filename: string }[]) => void;
+  onSend: (text: string) => void;
   disabled: boolean;
   isLoading?: boolean;
   onInterrupt?: () => void;
@@ -56,9 +45,7 @@ export function MessageInput({
   onRetryUpload?: (index: number) => void;
 }) {
   const [text, setText] = useState("");
-  const [images, setImages] = useState<ImagePreview[]>([]);
   const [isDragging, setIsDragging] = useState(false);
-  const [imageError, setImageError] = useState<string | null>(null);
   const [showAutoComplete, setShowAutoComplete] = useState(false);
   const [autoCompleteQuery, setAutoCompleteQuery] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -82,84 +69,21 @@ export function MessageInput({
     }
   }, []);
 
-  const clearImageError = useCallback(() => {
-    setImageError(null);
-  }, []);
-
   const addFiles = useCallback(
     (files: FileList | File[]) => {
-      clearImageError();
       const fileArray = Array.from(files);
-      const nonImageFiles: File[] = [];
-
-      for (const file of fileArray) {
-        if (ALLOWED_TYPES.has(file.type)) {
-          // Image file — handle as base64 inline image
-          if (file.size > MAX_IMAGE_SIZE) {
-            setImageError(`"${file.name}" is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 5 MB.`);
-            continue;
-          }
-
-          const reader = new FileReader();
-          reader.onload = () => {
-            const base64Full = reader.result as string;
-            const base64 = base64Full.split(",")[1] ?? "";
-            const previewUrl = URL.createObjectURL(file);
-            setImages((current) => {
-              if (current.length >= MAX_IMAGES) {
-                setImageError(`Maximum ${MAX_IMAGES} images per message.`);
-                return current;
-              }
-              return [
-                ...current,
-                {
-                  data: base64,
-                  mediaType: file.type,
-                  filename: file.name,
-                  previewUrl,
-                },
-              ];
-            });
-          };
-          reader.readAsDataURL(file);
-        } else {
-          // Non-image file — upload to server
-          nonImageFiles.push(file);
-        }
-      }
-
-      // Upload non-image files
-      if (nonImageFiles.length > 0 && onUploadFiles) {
-        onUploadFiles(nonImageFiles);
+      if (fileArray.length > 0 && onUploadFiles) {
+        onUploadFiles(fileArray);
       }
     },
-    [clearImageError, onUploadFiles],
+    [onUploadFiles],
   );
-
-  const removeImage = useCallback((index: number) => {
-    setImages((prev) => {
-      const removed = prev[index];
-      if (removed) {
-        URL.revokeObjectURL(removed.previewUrl);
-      }
-      return prev.filter((_, i) => i !== index);
-    });
-  }, []);
 
   const handleSubmit = () => {
     const trimmed = text.trim();
-    if ((!trimmed && images.length === 0) || disabled) return;
-    const imagePayload = images.length > 0
-      ? images.map((img) => ({ data: img.data, mediaType: img.mediaType, filename: img.filename }))
-      : undefined;
-    onSend(trimmed, imagePayload);
-    // Revoke all object URLs
-    for (const img of images) {
-      URL.revokeObjectURL(img.previewUrl);
-    }
+    if (!trimmed || disabled) return;
+    onSend(trimmed);
     setText("");
-    setImages([]);
-    setImageError(null);
     setShowAutoComplete(false);
   };
 
@@ -311,14 +235,6 @@ export function MessageInput({
         </div>
       )}
 
-      {/* Image error toast */}
-      {imageError && (
-        <div className="flex items-center gap-2 mb-2 text-xs text-(--color-error) max-w-3xl mx-auto">
-          <span>{imageError}</span>
-          <Button variant="ghost" size="sm" onClick={clearImageError} className="text-(--color-error) ml-auto">&times;</Button>
-        </div>
-      )}
-
       {/* File attachment chips */}
       {pendingFiles.length > 0 && onRemoveFile && (
         <div className="mb-2 max-w-3xl mx-auto">
@@ -330,29 +246,6 @@ export function MessageInput({
       {uploads.length > 0 && onRemoveUpload && onRetryUpload && (
         <div className="mb-2 max-w-3xl mx-auto">
           <FileUploadChips uploads={uploads} onRemove={onRemoveUpload} onRetry={onRetryUpload} />
-        </div>
-      )}
-
-      {/* Image thumbnails */}
-      {images.length > 0 && (
-        <div className="flex gap-2 mb-2 max-w-3xl mx-auto flex-wrap" data-testid="image-thumbnails">
-          {images.map((img, i) => (
-            <div key={i} className="relative group">
-              <img
-                src={img.previewUrl}
-                alt={img.filename}
-                className="w-16 h-16 object-cover rounded-md border border-(--color-border-secondary)"
-              />
-              <button
-                onClick={() => removeImage(i)}
-                className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-(--color-error) text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                aria-label={`Remove ${img.filename}`}
-                title={`Remove ${img.filename}`}
-              >
-                &times;
-              </button>
-            </div>
-          ))}
         </div>
       )}
 
@@ -429,7 +322,7 @@ export function MessageInput({
             variant="primary"
             size="md"
             onClick={handleSubmit}
-            disabled={disabled || (!text.trim() && images.length === 0)}
+            disabled={disabled || !text.trim()}
             className="rounded-lg px-4 py-3"
           >
             Send

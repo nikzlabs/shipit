@@ -41,3 +41,25 @@ export interface UploadedFile {
   /** Discriminator for upload files vs workspace file refs. */
   type: "upload";
 }
+
+/** Client-side upload tracking item — used for input chips and the Uploads file tree section. */
+export type UploadStatus = "uploading" | "ready" | "error";
+
+export interface UploadItem {
+  /** Client-side ID for tracking. */
+  id: string;
+  /** Original filename. */
+  name: string;
+  /** Upload status. */
+  status: UploadStatus;
+  /** File size in bytes (set once upload completes). */
+  size?: number;
+  /** Container path (set once upload completes). */
+  path?: string;
+  /** Error message if upload failed. */
+  error?: string;
+  /** Upload progress 0-100. */
+  progress: number;
+  /** Object URL for image thumbnail preview (set for image files). */
+  previewUrl?: string;
+}

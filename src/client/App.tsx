@@ -92,9 +92,10 @@ export default function App() {
   const queuedMessages = useSessionStore((s) => s.queuedMessages);
 
   const {
-    uploads, sessionUploads, uploadFiles, removeUpload, retryUpload,
-    getUploadRefs, clearUploads, hydrateUploads,
+    uploads, uploadFiles, removeUpload, retryUpload,
+    getUploadRefs, clearUploads,
   } = useFileUpload(wsSessionId);
+  const sessionUploads = useFileStore((s) => s.sessionUploads);
 
   const gitCommits = useGitStore((s) => s.commits);
   const gitIdentityNeeded = useGitStore((s) => s.identityNeeded);
@@ -223,7 +224,7 @@ export default function App() {
     handleInterrupt: () => send({ type: "interrupt_claude" }),
   });
 
-  useConnectionSync({ status, send, onSessionConnect: (sid: string) => void hydrateUploads(sid) });
+  useConnectionSync({ status, send, onSessionConnect: (sid: string) => { void useFileStore.getState().hydrateUploads(sid); } });
 
   // Delayed spinner for bootstrap loading gate — only show after 1s
   const [showBootstrapSpinner, setShowBootstrapSpinner] = useState(false);
@@ -288,20 +289,19 @@ export default function App() {
 
   // ── Callback helpers ──
   const handleSend = useCallback(
-    async (text: string, images?: { data: string; mediaType: string; filename: string }[]) => {
+    async (text: string) => {
       requestPermission();
       disableAutoFix();
       const session = useSessionStore.getState();
       const settings = useSettingsStore.getState();
       useUiStore.getState().setShowTemplates(false);
-      const messageImages = images?.map((img) => ({ data: img.data, mediaType: img.mediaType }));
       const uploadRefs = getUploadRefs();
       const allFiles: { path: string; contentPreview: string }[] = [
         ...settings.pendingFiles.map((f) => ({ path: f.path, contentPreview: "" })),
         ...uploadRefs.map((u) => ({ path: u.path, contentPreview: "" })),
       ];
       const filesForMessage = allFiles.length > 0 ? allFiles : undefined;
-      session.setMessages((prev) => [...prev, { role: "user", text, images: messageImages, files: filesForMessage }]);
+      session.setMessages((prev) => [...prev, { role: "user", text, files: filesForMessage }]);
       session.setIsLoading(true);
       session.setActivity({ label: "Thinking..." });
 
@@ -317,7 +317,6 @@ export default function App() {
           type: "send_message",
           text,
           sessionId: currentSessionId,
-          images,
           files: settings.pendingFiles.length > 0 ? settings.pendingFiles : undefined,
           uploads: uploadRefs.length > 0 ? uploadRefs : undefined,
           permissionMode: settings.permissionMode !== "auto" ? settings.permissionMode : undefined,
@@ -677,7 +676,7 @@ export default function App() {
         ) : rightTab === "history" ? (
           <GitHistory commits={gitCommits} onRollback={(hash) => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().rollback(sid, hash).catch(() => {}); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().fetchLog(sid).catch(() => {}); }} onViewDiff={handleViewDiff} />
         ) : (
-          <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchTree(sid).catch(() => {}); }} onFileClick={handleOpenFilePreview} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} onDownload={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) { const a = document.createElement("a"); a.href = `/api/sessions/${sid}/files/download/${f}`; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); } }} uploads={sessionUploads} />
+          <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); void useFileStore.getState().hydrateUploads(sid); } }} onFileClick={handleOpenFilePreview} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} onDownload={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) { const a = document.createElement("a"); a.href = `/api/sessions/${sid}/files/download/${f}`; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); } }} uploads={sessionUploads} />
         )}
       </div>
     </>
