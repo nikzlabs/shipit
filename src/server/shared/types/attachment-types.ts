@@ -62,4 +62,6 @@ export interface UploadItem {
   progress: number;
   /** Object URL for image thumbnail preview (set for image files). */
   previewUrl?: string;
+  /** Whether this upload is pending (not yet sent in a message). */
+  pending?: boolean;
 }
