@@ -26,6 +26,8 @@ Available tools:
 - **browser_click** / **browser_type** — interact with elements
 - **browser_take_screenshot** — capture a visual screenshot when layout/styling matters
 
+**Save screenshots to /tmp/**, not the workspace directory. Screenshots saved to /workspace end up in git commits and pollute the repo.
+
 If the project serves on multiple ports, adjust the port number as needed.
 If you get a connection error, the dev server may still be starting — wait a moment and retry.
 `
