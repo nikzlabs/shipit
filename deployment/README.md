@@ -34,7 +34,7 @@ Copy the public key to the server (Hetzner asks for a root password during serve
 ssh-copy-id -i ~/.ssh/shipit-deploy.pub root@<server-ip>
 ```
 
-You'll use the private key (`~/.ssh/shipit-deploy`) as a GitHub secret in Step 6.
+You'll use the private key (`~/.ssh/shipit-deploy`) as a GitHub secret in Step 5.
 
 ## Step 3: Configure DNS
 
@@ -47,22 +47,16 @@ Add these records (example uses Cloudflare):
 
 The wildcard record enables preview subdomains for dev servers.
 
-## Step 4: Provision the server
-
-```bash
-ssh -i ~/.ssh/shipit-deploy root@<server-ip>
-curl -fsSL https://raw.githubusercontent.com/<org>/shipit/main/deployment/hetzner/setup.sh | bash
-```
-
-Or copy and run `deployment/hetzner/setup.sh` manually.
-
-## Step 5: Clone and start
+## Step 4: Clone and provision the server
 
 ```bash
 ssh -i ~/.ssh/shipit-deploy root@<server-ip>
 
 git clone https://github.com/<org>/shipit.git /opt/shipit
 cd /opt/shipit
+
+# Run the provisioning script (installs Docker, Caddy, firewall)
+bash deployment/hetzner/setup.sh
 
 # Configure Caddy
 cp deployment/hetzner/Caddyfile /etc/caddy/Caddyfile
