@@ -1,0 +1,55 @@
+# Production deployment for Hetzner (or any VPS with Docker).
+# Binds to localhost only — Caddy reverse proxy handles public traffic + TLS.
+#
+# Usage:
+#   docker compose build
+#   docker compose up -d
+
+name: shipit
+
+services:
+  shipit:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile.prod
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4123:4123"   # Orchestrator API — only via Caddy
+      - "127.0.0.1:5173:5173"   # Vite client assets
+    volumes:
+      - workspace:/workspace
+      - credentials:/credentials
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - NODE_ENV=production
+      - PORT=4123
+      - USE_CONTAINERS=true
+      - WORKSPACE_VOLUME=shipit_workspace
+      - CREDENTIALS_VOLUME=shipit_credentials
+      - DOCKER_NETWORK=shipit
+      - SESSION_WORKER_IMAGE=shipit-session-worker:prod
+      - DOCKER_STACK=shipit
+    networks:
+      - shipit
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  session-worker:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile.session-worker.prod
+    image: shipit-session-worker:prod
+    profiles:
+      - build-only
+
+networks:
+  shipit:
+    name: shipit
+    driver: bridge
+
+volumes:
+  workspace:
+  credentials:
