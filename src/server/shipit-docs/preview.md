@@ -55,7 +55,8 @@ verify your work:
 - **browser_snapshot** — read page content as an accessibility tree (preferred
   for understanding layout)
 - **browser_click** / **browser_type** — interact with elements
-- **browser_take_screenshot** — capture a visual screenshot for layout/styling
+- **browser_take_screenshot** — capture a visual screenshot for layout/styling.
+  Save screenshots to `/tmp/`, not `/workspace/`, to keep them out of git.
 
 Use browser tools proactively after UI changes to catch issues early.
 
