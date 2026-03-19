@@ -1,7 +1,24 @@
 #!/bin/bash
 # One-time server provisioning for ShipIt on a fresh Ubuntu VPS.
-# Run as root: bash setup.sh
+# Run as root: bash setup.sh <repo-clone-url>
+#
+# Example:
+#   bash setup.sh https://x-access-token:TOKEN@github.com/you/shipit.git
 set -euo pipefail
+
+REPO_URL="${1:?Usage: bash setup.sh <repo-clone-url>}"
+
+echo "==> Cloning repo..."
+apt-get update
+apt-get install -y git
+git clone "$REPO_URL" /opt/shipit
+DEPLOY_DIR=/opt/shipit/deployment/hetzner
+
+read -rp "Enter your domain (e.g. shipit.example.com): " DOMAIN
+if [ -z "$DOMAIN" ]; then
+  echo "Error: domain is required" >&2
+  exit 1
+fi
 
 echo "==> Installing Docker..."
 apt-get update
@@ -25,13 +42,9 @@ echo "==> Setting up Caddy directories, config, and systemd service..."
 mkdir -p /etc/caddy
 mkdir -p /var/lib/caddy/.local/share/caddy
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-if [ -f "$SCRIPT_DIR/Caddyfile" ]; then
-  cp "$SCRIPT_DIR/Caddyfile" /etc/caddy/Caddyfile
-  echo "    Copied Caddyfile to /etc/caddy/Caddyfile"
-else
-  echo "    WARNING: Caddyfile not found next to setup.sh — copy it manually later"
-fi
+cp "$DEPLOY_DIR/Caddyfile" /etc/caddy/Caddyfile
+sed -i "s/shipit\.example\.com/$DOMAIN/g" /etc/caddy/Caddyfile
+echo "    Installed Caddyfile for $DOMAIN"
 useradd --system --home /var/lib/caddy --shell /usr/sbin/nologin caddy 2>/dev/null || true
 cat > /etc/systemd/system/caddy.service <<'EOF'
 [Unit]
@@ -61,8 +74,7 @@ ufw allow 443/tcp
 ufw --force enable
 
 echo "==> Done! Next steps:"
-echo "  1. Edit /etc/caddy/Caddyfile — replace shipit.example.com with your domain"
-echo "  2. Set env vars:      See deployment/README.md Step 4 (CF token, auth user/hash)"
-echo "  3. Start Caddy:       systemctl enable --now caddy"
-echo "  4. Build & start:     docker compose -f deployment/hetzner/docker-compose.yml build && docker compose -f deployment/hetzner/docker-compose.yml up -d"
-echo "  5. Authenticate:      Visit https://your-domain and complete Claude CLI OAuth"
+echo "  1. Set env vars:      See deployment/README.md Step 4 (CF token, auth user/hash)"
+echo "  2. Start Caddy:       systemctl enable --now caddy"
+echo "  3. Build & start:     cd /opt/shipit && docker compose -f deployment/hetzner/docker-compose.yml build && docker compose -f deployment/hetzner/docker-compose.yml up -d"
+echo "  4. Authenticate:      Visit https://$DOMAIN and complete Claude CLI OAuth"
