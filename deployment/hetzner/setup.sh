@@ -21,9 +21,17 @@ apt-get install -y golang-go
 go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 ~/go/bin/xcaddy build --with github.com/caddy-dns/cloudflare --output /usr/bin/caddy
 
-echo "==> Setting up Caddy directories and systemd service..."
+echo "==> Setting up Caddy directories, config, and systemd service..."
 mkdir -p /etc/caddy
 mkdir -p /var/lib/caddy/.local/share/caddy
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$SCRIPT_DIR/Caddyfile" ]; then
+  cp "$SCRIPT_DIR/Caddyfile" /etc/caddy/Caddyfile
+  echo "    Copied Caddyfile to /etc/caddy/Caddyfile"
+else
+  echo "    WARNING: Caddyfile not found next to setup.sh — copy it manually later"
+fi
 useradd --system --home /var/lib/caddy --shell /usr/sbin/nologin caddy 2>/dev/null || true
 cat > /etc/systemd/system/caddy.service <<'EOF'
 [Unit]
@@ -52,14 +60,9 @@ ufw allow 80/tcp
 ufw allow 443/tcp
 ufw --force enable
 
-echo "==> Creating app directory..."
-mkdir -p /opt/shipit
-cd /opt/shipit
-
 echo "==> Done! Next steps:"
-echo "  1. Clone repo:        git clone <your-repo-url> /opt/shipit"
-echo "  2. Copy Caddyfile:    cp deployment/hetzner/Caddyfile /etc/caddy/Caddyfile"
-echo "  3. Set env vars:      See deployment/README.md Step 4 (CF token, auth user/hash)"
-echo "  4. Start Caddy:       systemctl enable --now caddy"
-echo "  5. Build & start:     cd /opt/shipit && docker compose -f deployment/hetzner/docker-compose.yml build && docker compose -f deployment/hetzner/docker-compose.yml up -d"
-echo "  6. Authenticate:      Visit https://shipit.example.com and complete Claude CLI OAuth"
+echo "  1. Edit /etc/caddy/Caddyfile — replace shipit.example.com with your domain"
+echo "  2. Set env vars:      See deployment/README.md Step 4 (CF token, auth user/hash)"
+echo "  3. Start Caddy:       systemctl enable --now caddy"
+echo "  4. Build & start:     docker compose -f deployment/hetzner/docker-compose.yml build && docker compose -f deployment/hetzner/docker-compose.yml up -d"
+echo "  5. Authenticate:      Visit https://your-domain and complete Claude CLI OAuth"
