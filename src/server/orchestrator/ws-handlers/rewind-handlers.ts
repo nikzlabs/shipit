@@ -1,7 +1,10 @@
+import path from "node:path";
+import fs from "node:fs/promises";
 import type { WsClientMessage } from "../../shared/types.js";
 import type { ConnectionCtx, AppCtx } from "./types.js";
 import { getErrorMessage } from "../validation.js";
 import { buildConversationReplay } from "../services/replay.js";
+import type { PersistedMessage } from "../chat-history.js";
 
 type WsRewindToMessage = Extract<WsClientMessage, { type: "rewind_to_message" }>;
 
@@ -21,6 +24,29 @@ function findCommitBeforeMessage(
     }
   }
   return null;
+}
+
+/**
+ * Delete uploaded files referenced by the given messages.
+ * Silently ignores files that no longer exist.
+ */
+async function deleteUploadsFromMessages(messages: PersistedMessage[], uploadsDir: string): Promise<void> {
+  const uploadPaths = new Set<string>();
+  for (const msg of messages) {
+    if (msg.files) {
+      for (const f of msg.files) {
+        if (f.path.startsWith("/uploads/")) {
+          uploadPaths.add(f.path);
+        }
+      }
+    }
+  }
+  await Promise.all(
+    [...uploadPaths].map((p) => {
+      const filename = path.basename(p);
+      return fs.unlink(path.join(uploadsDir, filename)).catch(() => {});
+    }),
+  );
 }
 
 /**
@@ -71,6 +97,9 @@ export async function handleRewindToMessage(ctx: ConnectionCtx & AppCtx, msg: Ws
       case "fork_chat": {
         // Truncate chat + reset agent, no git changes
         const truncated = allMessages.slice(0, messageIndex);
+        const removed = allMessages.slice(messageIndex);
+        const uploadsDir = path.join(path.dirname(ctx.getActiveDir()), "uploads");
+        await deleteUploadsFromMessages(removed, uploadsDir);
         ctx.chatHistoryManager.saveMessages(sessionId, truncated);
         const replay = buildConversationReplay(truncated);
         if (replay) {
@@ -100,6 +129,9 @@ export async function handleRewindToMessage(ctx: ConnectionCtx & AppCtx, msg: Ws
           await git.rollback(rollbackHash);
         }
         const truncated = allMessages.slice(0, messageIndex);
+        const removed = allMessages.slice(messageIndex);
+        const uploadsDir = path.join(path.dirname(ctx.getActiveDir()), "uploads");
+        await deleteUploadsFromMessages(removed, uploadsDir);
         ctx.chatHistoryManager.saveMessages(sessionId, truncated);
         const replay = buildConversationReplay(truncated);
         if (replay) {
