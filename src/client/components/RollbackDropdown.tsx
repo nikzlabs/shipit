@@ -36,7 +36,7 @@ export function RollbackDropdown({ messageIndex, parentCommitHash, disabled, onR
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, [open]); // eslint-disable-line
+  }, [open]);
 
   const handleClick = (mode: RollbackMode) => {
     updateOpen(false);
