@@ -35,7 +35,7 @@ export function RewindDropdown({ messageIndex, disabled, onRewind, onOpenChange 
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, [open]); // eslint-disable-line
+  }, [open]);
 
   const handleClick = (mode: RewindMode) => {
     updateOpen(false);
