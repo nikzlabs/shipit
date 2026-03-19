@@ -2,22 +2,21 @@
 import { useState, useRef, useEffect } from "react";
 import { ArrowCounterClockwiseIcon } from "@phosphor-icons/react";
 
-export type RollbackMode = "code" | "code_and_chat" | "fork";
+export type RewindMode = "fork_chat" | "rewind_code" | "rewind_all";
 
-interface RollbackDropdownProps {
+interface RewindDropdownProps {
   messageIndex: number;
-  parentCommitHash: string;
   disabled?: boolean;
-  onRollback: (messageIndex: number, mode: RollbackMode, parentCommitHash: string) => void;
+  onRewind: (messageIndex: number, mode: RewindMode) => void;
   /** Called when the dropdown opens/closes so the parent can keep the toolbar visible. */
   onOpenChange?: (open: boolean) => void;
 }
 
 /**
- * Dropdown button that appears on assistant messages with a linked git commit.
- * Offers three rollback options: code only, code+chat, or fork as new session.
+ * Dropdown button that appears on user messages.
+ * Offers three rewind options: fork conversation, rewind code, or both.
  */
-export function RollbackDropdown({ messageIndex, parentCommitHash, disabled, onRollback, onOpenChange }: RollbackDropdownProps) {
+export function RewindDropdown({ messageIndex, disabled, onRewind, onOpenChange }: RewindDropdownProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -38,9 +37,9 @@ export function RollbackDropdown({ messageIndex, parentCommitHash, disabled, onR
     return () => document.removeEventListener("mousedown", handler);
   }, [open]); // eslint-disable-line
 
-  const handleClick = (mode: RollbackMode) => {
+  const handleClick = (mode: RewindMode) => {
     updateOpen(false);
-    onRollback(messageIndex, mode, parentCommitHash);
+    onRewind(messageIndex, mode);
   };
 
   return (
@@ -49,36 +48,34 @@ export function RollbackDropdown({ messageIndex, parentCommitHash, disabled, onR
         onClick={() => updateOpen(!open)}
         disabled={disabled}
         className="p-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-        title="Rollback options"
-        aria-label="Rollback options"
+        title="Rewind options"
+        aria-label="Rewind options"
       >
-        {/* Undo/rewind icon */}
         <ArrowCounterClockwiseIcon size={14} />
       </button>
 
       {open && (
-        <div className="absolute right-0 bottom-full mb-1 w-52 bg-(--color-bg-elevated) border border-(--color-border-primary) rounded-lg shadow-lg z-50 py-1">
+        <div className="absolute right-0 bottom-full mb-1 w-60 bg-(--color-bg-elevated) border border-(--color-border-primary) rounded-lg shadow-lg z-50 py-1">
           <button
-            onClick={() => handleClick("code")}
+            onClick={() => handleClick("fork_chat")}
             className="w-full text-left px-3 py-2 text-xs hover:bg-(--color-bg-hover) text-(--color-text-primary)"
           >
-            <div className="font-medium">Rollback code</div>
-            <div className="text-(--color-text-secondary) mt-0.5">Revert files, keep chat history</div>
+            <div className="font-medium">Fork conversation from here</div>
+            <div className="text-(--color-text-secondary) mt-0.5">New conversation branch, keep code as-is</div>
           </button>
           <button
-            onClick={() => handleClick("code_and_chat")}
+            onClick={() => handleClick("rewind_code")}
             className="w-full text-left px-3 py-2 text-xs hover:bg-(--color-bg-hover) text-(--color-text-primary)"
           >
-            <div className="font-medium">Rollback code + chat</div>
-            <div className="text-(--color-text-secondary) mt-0.5">Revert files, dim later messages</div>
+            <div className="font-medium">Rewind code to here</div>
+            <div className="text-(--color-text-secondary) mt-0.5">Revert files, keep conversation</div>
           </button>
-          <div className="border-t border-(--color-border-primary) my-1" />
           <button
-            onClick={() => handleClick("fork")}
+            onClick={() => handleClick("rewind_all")}
             className="w-full text-left px-3 py-2 text-xs hover:bg-(--color-bg-hover) text-(--color-text-primary)"
           >
-            <div className="font-medium">Fork as new session</div>
-            <div className="text-(--color-text-secondary) mt-0.5">New branch from this point</div>
+            <div className="font-medium">Fork conversation and rewind code</div>
+            <div className="text-(--color-text-secondary) mt-0.5">Revert files, new conversation branch</div>
           </button>
         </div>
       )}

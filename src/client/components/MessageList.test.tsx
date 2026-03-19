@@ -564,202 +564,52 @@ describe("MessageList", () => {
     });
   });
 
-  describe("message editing/retry", () => {
-    it("shows edit and retry buttons on hover for user messages", () => {
-      const onEdit = vi.fn();
+  describe("rewind button", () => {
+    it("shows rewind button on user messages when handler provided", () => {
+      const onRewind = vi.fn();
       render(
         <MessageList
           messages={[msg("user", "Hello")]}
           isLoading={false}
-          onEditMessage={onEdit}
+          onRewind={onRewind}
         />
       );
-      expect(screen.getByLabelText("Edit message")).toBeInTheDocument();
-      expect(screen.getByLabelText("Retry message")).toBeInTheDocument();
+      expect(screen.getByLabelText("Rewind options")).toBeInTheDocument();
     });
 
-    it("does not show edit/retry buttons for assistant messages", () => {
-      const onEdit = vi.fn();
+    it("does not show rewind button for assistant messages", () => {
+      const onRewind = vi.fn();
       render(
         <MessageList
           messages={[msg("assistant", "Response")]}
           isLoading={false}
-          onEditMessage={onEdit}
+          onRewind={onRewind}
         />
       );
-      expect(screen.queryByLabelText("Edit message")).not.toBeInTheDocument();
-      expect(screen.queryByLabelText("Retry message")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("Rewind options")).not.toBeInTheDocument();
     });
 
-    it("does not show edit/retry buttons when loading", () => {
-      const onEdit = vi.fn();
-      render(
-        <MessageList
-          messages={[msg("user", "Hello")]}
-          isLoading={true}
-          onEditMessage={onEdit}
-        />
-      );
-      expect(screen.queryByLabelText("Edit message")).not.toBeInTheDocument();
-      expect(screen.queryByLabelText("Retry message")).not.toBeInTheDocument();
-    });
-
-    it("does not show edit/retry buttons when no handler provided", () => {
+    it("does not show rewind button when no handler provided", () => {
       render(
         <MessageList
           messages={[msg("user", "Hello")]}
           isLoading={false}
         />
       );
-      expect(screen.queryByLabelText("Edit message")).not.toBeInTheDocument();
-      expect(screen.queryByLabelText("Retry message")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("Rewind options")).not.toBeInTheDocument();
     });
 
-    it("does not show edit/retry buttons for error messages", () => {
-      const onEdit = vi.fn();
+    it("does not show rewind button for error messages", () => {
+      const onRewind = vi.fn();
       const errorMsg: ChatMessage = { role: "user", text: "bad", isError: true, streaming: false };
       render(
         <MessageList
           messages={[errorMsg]}
           isLoading={false}
-          onEditMessage={onEdit}
+          onRewind={onRewind}
         />
       );
-      expect(screen.queryByLabelText("Edit message")).not.toBeInTheDocument();
-    });
-
-    it("calls onEditMessage with same text when retry is clicked", () => {
-      const onEdit = vi.fn();
-      render(
-        <MessageList
-          messages={[msg("user", "Original prompt")]}
-          isLoading={false}
-          onEditMessage={onEdit}
-        />
-      );
-      fireEvent.click(screen.getByLabelText("Retry message"));
-      expect(onEdit).toHaveBeenCalledWith(0, "Original prompt");
-    });
-
-    it("shows inline editor when edit button is clicked", () => {
-      const onEdit = vi.fn();
-      render(
-        <MessageList
-          messages={[msg("user", "Edit me")]}
-          isLoading={false}
-          onEditMessage={onEdit}
-        />
-      );
-      fireEvent.click(screen.getByLabelText("Edit message"));
-      // Editor should appear with textarea pre-filled
-      const textarea = screen.getByRole("textbox");
-      expect(textarea).toBeInTheDocument();
-      expect((textarea as HTMLTextAreaElement).value).toBe("Edit me");
-      // Save & Cancel buttons should be visible
-      expect(screen.getByText("Save & Send")).toBeInTheDocument();
-      expect(screen.getByText("Cancel")).toBeInTheDocument();
-    });
-
-    it("cancels editing when Cancel is clicked", () => {
-      const onEdit = vi.fn();
-      render(
-        <MessageList
-          messages={[msg("user", "Edit me")]}
-          isLoading={false}
-          onEditMessage={onEdit}
-        />
-      );
-      fireEvent.click(screen.getByLabelText("Edit message"));
-      expect(screen.getByRole("textbox")).toBeInTheDocument();
-
-      fireEvent.click(screen.getByText("Cancel"));
-      // Editor should disappear, original message should be visible
-      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
-      expect(screen.getByText("Edit me")).toBeInTheDocument();
-    });
-
-    it("cancels editing when Escape is pressed", () => {
-      const onEdit = vi.fn();
-      render(
-        <MessageList
-          messages={[msg("user", "Edit me")]}
-          isLoading={false}
-          onEditMessage={onEdit}
-        />
-      );
-      fireEvent.click(screen.getByLabelText("Edit message"));
-      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Escape" });
-      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
-      expect(screen.getByText("Edit me")).toBeInTheDocument();
-    });
-
-    it("submits edited message when Save & Send is clicked", () => {
-      const onEdit = vi.fn();
-      render(
-        <MessageList
-          messages={[msg("user", "Old text")]}
-          isLoading={false}
-          onEditMessage={onEdit}
-        />
-      );
-      fireEvent.click(screen.getByLabelText("Edit message"));
-      const textarea = screen.getByRole("textbox");
-      fireEvent.change(textarea, { target: { value: "New text" } });
-      fireEvent.click(screen.getByText("Save & Send"));
-      expect(onEdit).toHaveBeenCalledWith(0, "New text");
-    });
-
-    it("submits edited message on Enter (without Shift)", () => {
-      const onEdit = vi.fn();
-      render(
-        <MessageList
-          messages={[msg("user", "Old text")]}
-          isLoading={false}
-          onEditMessage={onEdit}
-        />
-      );
-      fireEvent.click(screen.getByLabelText("Edit message"));
-      const textarea = screen.getByRole("textbox");
-      fireEvent.change(textarea, { target: { value: "Enter submit" } });
-      fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
-      expect(onEdit).toHaveBeenCalledWith(0, "Enter submit");
-    });
-
-    it("does not submit on Enter when text is empty/whitespace", () => {
-      const onEdit = vi.fn();
-      render(
-        <MessageList
-          messages={[msg("user", "Old text")]}
-          isLoading={false}
-          onEditMessage={onEdit}
-        />
-      );
-      fireEvent.click(screen.getByLabelText("Edit message"));
-      const textarea = screen.getByRole("textbox");
-      fireEvent.change(textarea, { target: { value: "   " } });
-      fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
-      expect(onEdit).not.toHaveBeenCalled();
-    });
-
-    it("replaces message bubble with editor when editing", () => {
-      const onEdit = vi.fn();
-      const { container } = render(
-        <MessageList
-          messages={[msg("user", "First"), msg("assistant", "Reply"), msg("user", "Second")]}
-          isLoading={false}
-          onEditMessage={onEdit}
-        />
-      );
-      // Click edit on the first user message
-      const editButtons = screen.getAllByLabelText("Edit message");
-      fireEvent.click(editButtons[0]);
-      // The first message should now be in edit mode (textarea visible)
-      expect(screen.getByRole("textbox")).toBeInTheDocument();
-      // The message bubble (bg-(--color-accent)) for "First" should be gone — replaced by the editor
-      const blueBubbles = container.querySelectorAll("div[class*='bg-(--color-accent)']");
-      // Only the second user message ("Second") should still have a blue bubble
-      expect(blueBubbles).toHaveLength(1);
-      expect(blueBubbles[0].textContent).toContain("Second");
+      expect(screen.queryByLabelText("Rewind options")).not.toBeInTheDocument();
     });
   });
 

@@ -256,6 +256,17 @@ export function useMessageHandler(params: {
       }
     }
 
+    if (data.type === "rewind_complete") {
+      const { messageIndex } = data as { messageIndex: number };
+      // Remove the target user message and everything after it
+      session.setMessages((prev) => prev.slice(0, messageIndex));
+      // Refresh file tree
+      const currentSessionId = useSessionStore.getState().sessionId;
+      if (currentSessionId) {
+        useFileStore.getState().fetchTree(currentSessionId).catch((err: unknown) => console.warn("[file-refresh]", err));
+      }
+    }
+
     if (data.type === "session_forked") {
       const { sessionName } = data as { sessionId: string; sessionName: string };
       // Add a notification-style message in current chat

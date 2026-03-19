@@ -333,33 +333,11 @@ export default function App() {
     [send, requestPermission, disableAutoFix, navigate, isNewSessionRoute, getUploadRefs, clearUploads],
   );
 
-  const handleEditMessage = useCallback(
-    (messageIndex: number, newText: string) => {
-      requestPermission();
-      const sid = useSessionStore.getState().sessionId;
-      const session = useSessionStore.getState();
-      // Preserve the original message's attachments
-      const original = session.messages[messageIndex];
-      const images = original?.images;
-      const files = original?.files;
-      session.setMessages((prev) => [...prev.slice(0, messageIndex), { role: "user" as const, text: newText, images, files }]);
-      session.setIsLoading(true);
-      session.setActivity({ label: "Thinking..." });
-      const pm = useSettingsStore.getState().permissionMode;
-      // Split stored files back into workspace file refs and upload refs
-      const wsFiles = files?.filter((f) => !f.path.startsWith("/uploads/")).map((f) => ({ path: f.path }));
-      const wsUploads = files?.filter((f) => f.path.startsWith("/uploads/")).map((f) => ({ path: f.path, type: "upload" as const }));
-      send({
-        type: "send_message",
-        text: newText,
-        sessionId: sid,
-        images,
-        files: wsFiles && wsFiles.length > 0 ? wsFiles : undefined,
-        uploads: wsUploads && wsUploads.length > 0 ? wsUploads : undefined,
-        permissionMode: pm !== "auto" ? pm : undefined,
-      });
+  const handleRewind = useCallback(
+    (messageIndex: number, mode: "fork_chat" | "rewind_code" | "rewind_all") => {
+      send({ type: "rewind_to_message", messageIndex, mode });
     },
-    [send, requestPermission],
+    [send],
   );
 
   const handleSendErrors = useCallback(
@@ -690,7 +668,7 @@ export default function App() {
         <HomeScreen onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)} hasRepos={repos.length > 0} />
       ) : (
         <>
-          <MessageList messages={messages} isLoading={isLoading} activity={activity} searchMatches={search.matches} currentMatch={search.currentMatch} onEditMessage={handleEditMessage} onAnswerQuestion={handleAnswerQuestion} onSendFollowUp={handleSendFollowUp} onRollback={handleRollback} />
+          <MessageList messages={messages} isLoading={isLoading} activity={activity} searchMatches={search.matches} currentMatch={search.currentMatch} onAnswerQuestion={handleAnswerQuestion} onSendFollowUp={handleSendFollowUp} onRollback={handleRollback} onRewind={handleRewind} />
           {wsSessionId && <PrLifecycleCard sessionId={wsSessionId} />}
         </>
       )}

@@ -17,6 +17,7 @@ import * as terminalHandlers from "./ws-handlers/terminal-handlers.js";
 import * as miscHandlers from "./ws-handlers/misc-handlers.js";
 import * as deployHandlers from "./ws-handlers/deploy-handlers.js";
 import * as rollbackHandlers from "./ws-handlers/rollback-handlers.js";
+import * as rewindHandlers from "./ws-handlers/rewind-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
 import { registerApiRoutes } from "./api-routes.js";
 import type { GitManager } from "../shared/git.js";
@@ -597,6 +598,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           case "rollback_code": return rollbackHandlers.handleRollbackCode(ctx, msg);
           case "rollback_code_and_chat": return rollbackHandlers.handleRollbackCodeAndChat(ctx, msg);
           case "fork_session_from_message": return rollbackHandlers.handleForkSessionFromMessage(ctx, msg);
+          case "rewind_to_message": return rewindHandlers.handleRewindToMessage(ctx, msg);
           case "cancel_queued_message": { miscHandlers.handleCancelQueuedMessage(ctx, msg); return; }
           case "interrupt_claude": { miscHandlers.handleInterruptClaude(ctx); return; }
           case "init_preview_config": {

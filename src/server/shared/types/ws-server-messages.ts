@@ -340,6 +340,12 @@ export interface WsRollbackComplete {
   parentCommitHash: string;
 }
 
+/** Server → Client: rewind completed — remove messages after the rewind point. */
+export interface WsRewindComplete {
+  type: "rewind_complete";
+  messageIndex: number;
+}
+
 /** Server → Client: a new session was forked from a rollback point. */
 export interface WsSessionForked {
   type: "session_forked";
@@ -408,5 +414,6 @@ export type WsServerMessage =
   | WsSystemUserMessage
   | WsCommitLinked
   | WsRollbackComplete
+  | WsRewindComplete
   | WsSessionForked
   | WsStartupStep;
