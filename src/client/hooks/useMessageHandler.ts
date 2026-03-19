@@ -410,7 +410,24 @@ export function useMessageHandler(params: {
     if (data.type === "message_queued") {
       const queued = data;
       session.setQueuedMessages((prev) => [...prev, { text: queued.text, position: queued.position }]);
-      session.setMessages((prev) => [...prev, { role: "user" as const, text: queued.text, queued: true, queuePosition: queued.position }]);
+      // Mark the last user message with matching text as queued (it was already added optimistically)
+      session.setMessages((prev) => {
+        // Find the last user message with matching text (added optimistically before sending)
+        let targetIdx = -1;
+        for (let i = prev.length - 1; i >= 0; i--) {
+          if (prev[i]?.role === "user" && prev[i]?.text === queued.text) {
+            targetIdx = i;
+            break;
+          }
+        }
+        if (targetIdx !== -1) {
+          return prev.map((m, i) =>
+            i === targetIdx ? { ...m, queued: true, queuePosition: queued.position } : m,
+          );
+        }
+        // Fallback: add if not found (shouldn't happen in normal flow)
+        return [...prev, { role: "user" as const, text: queued.text, queued: true, queuePosition: queued.position }];
+      });
     }
 
     if (data.type === "queue_updated") {
