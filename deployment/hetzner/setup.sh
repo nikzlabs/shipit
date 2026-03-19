@@ -15,11 +15,33 @@ apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 
 echo "==> Installing Caddy with Cloudflare DNS plugin..."
 apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
-curl -1sLf 'https://dl.cloudflare.com/caddyserver/debian/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null || true
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null || true
 # Install xcaddy to build Caddy with plugins
 apt-get install -y golang-go
 go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 ~/go/bin/xcaddy build --with github.com/caddy-dns/cloudflare --output /usr/bin/caddy
+
+echo "==> Setting up Caddy directories and systemd service..."
+mkdir -p /etc/caddy
+mkdir -p /var/lib/caddy/.local/share/caddy
+useradd --system --home /var/lib/caddy --shell /usr/sbin/nologin caddy 2>/dev/null || true
+cat > /etc/systemd/system/caddy.service <<'EOF'
+[Unit]
+Description=Caddy web server
+After=network.target
+
+[Service]
+User=caddy
+Group=caddy
+ExecStart=/usr/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+Restart=on-failure
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
 
 echo "==> Configuring firewall..."
 apt-get install -y ufw
