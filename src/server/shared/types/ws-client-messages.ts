@@ -76,6 +76,19 @@ export interface WsForkSessionFromMessage {
   parentCommitHash: string;
 }
 
+// ---- Rewind messages (client → server) ----
+
+/** Client → Server: rewind conversation/code to a user message.
+ *  - fork_chat: new conversation branch from this point, code unchanged
+ *  - rewind_code: git reset to before this message, keep conversation
+ *  - rewind_all: git reset + new conversation branch
+ */
+export interface WsRewindToMessage {
+  type: "rewind_to_message";
+  messageIndex: number;
+  mode: "fork_chat" | "rewind_code" | "rewind_all";
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsClearLogs
@@ -91,4 +104,5 @@ export type WsClientMessage =
   | WsInitPreviewConfig
   | WsRollbackCode
   | WsRollbackCodeAndChat
-  | WsForkSessionFromMessage;
+  | WsForkSessionFromMessage
+  | WsRewindToMessage;

@@ -1,21 +1,21 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: DOM scroll sync (scrollIntoView), window keydown listener, xterm auto-scroll
-import { useMemo, useEffect, useRef, useState, useCallback } from "react";
+import { useMemo, useEffect, useRef, useState } from "react";
 import {
   ThinkingIndicator,
   TypingDots,
   type StreamingActivity,
 } from "./StreamingIndicator.js";
 import { TodoPanel, type TodoItem } from "./TodoPanel.js";
-import { CircleNotchIcon, PencilSimpleIcon, ArrowsClockwiseIcon } from "@phosphor-icons/react";
+import { CircleNotchIcon } from "@phosphor-icons/react";
 import type { SearchMatch } from "../hooks/useSearch.js";
 import { buildVisualElements } from "./visual-elements.js";
 import { RollbackDropdown, type RollbackMode } from "./RollbackDropdown.js";
+import { RewindDropdown, type RewindMode } from "./RewindDropdown.js";
 
 // Sub-component imports
 import { ToolCallGroup, ToolUseItem } from "./message-tools.js";
 import { parseMessageSegments, MarkdownContent, MarkdownTooltip, CodeBlock } from "./message-markdown.js";
 import { getSegmentMatches, HighlightedText } from "./message-highlighting.js";
-import { MessageEditor } from "./message-editor.js";
 import { MessageFileAttachments, MessageImages } from "./message-media.js";
 
 // ── Type exports (kept here as the canonical location for backward compat) ──
@@ -98,24 +98,25 @@ export function MessageList({
   activity,
   searchMatches,
   currentMatch,
-  onEditMessage,
   onAnswerQuestion,
   onSendFollowUp,
   onRollback,
+  onRewind,
 }: {
   messages: ChatMessage[];
   isLoading: boolean;
   activity?: StreamingActivity;
   searchMatches?: SearchMatch[];
   currentMatch?: SearchMatch;
-  onEditMessage?: (messageIndex: number, newText: string) => void;
   onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void;
   onSendFollowUp?: (text: string) => void;
   onRollback?: (messageIndex: number, mode: RollbackMode, parentCommitHash: string) => void;
+  onRewind?: (messageIndex: number, mode: RewindMode) => void;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const currentMatchRef = useRef<HTMLElement | null>(null);
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  // Track which message has an open dropdown so the toolbar stays visible
+  const [openDropdownIndex, setOpenDropdownIndex] = useState<number | null>(null);
 
   const lastTodoWriteId = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -129,20 +130,6 @@ export function MessageList({
     return null;
   }, [messages]);
 
-  const handleEditSave = useCallback(
-    (index: number, newText: string) => {
-      setEditingIndex(null);
-      onEditMessage?.(index, newText);
-    },
-    [onEditMessage]
-  );
-
-  // Cancel editing when loading starts (inline state reset during render)
-  const prevIsLoadingRef = useRef(isLoading);
-  if (isLoading && !prevIsLoadingRef.current) {
-    setEditingIndex(null);
-  }
-  prevIsLoadingRef.current = isLoading;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "instant" });
@@ -164,9 +151,6 @@ export function MessageList({
       matchesByMessage.set(m.messageIndex, arr);
     }
   }
-
-  // Whether edit/retry actions are available (not loading, handler provided)
-  const canEdit = !isLoading && !!onEditMessage;
 
   return (
     <div className="flex-1 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-4">
@@ -228,8 +212,7 @@ export function MessageList({
         const segments = parseMessageSegments(msg.text);
         const hasCodeBlocks = segments.some((s) => s.type === "code");
         const useMarkdown = msg.role === "assistant" && !msg.isError;
-        const isEditing = editingIndex === i;
-        const showEditActions = canEdit && msg.role === "user" && !msg.isError && !isEditing && !msg.queued;
+        const showRewind = msg.role === "user" && !msg.isError && !msg.queued && !msg.rolledBack && !!onRewind;
         const latestTodoTool = msg.toolUse?.find((t) => t.name === "TodoWrite" && t.id === lastTodoWriteId);
         // Hide the bubble when it would be empty (no text/images/files
         // and every tool is a TodoWrite, which renders as null inside the bubble)
@@ -241,15 +224,6 @@ export function MessageList({
             {!hideBubble && (
             <div className={`group flex ${msg.role === "user" ? "justify-end" : "justify-start"} ${msg.rolledBack ? "opacity-40" : ""}`}>
 
-            {isEditing ? (
-              <MessageEditor
-                initialText={msg.text}
-                images={msg.images}
-                files={msg.files}
-                onSave={(newText) => handleEditSave(i, newText)}
-                onCancel={() => setEditingIndex(null)}
-              />
-            ) : (
             <div
               className={`relative max-w-2xl rounded-lg px-4 py-3 text-sm ${
                 !useMarkdown && !hasCodeBlocks ? "whitespace-pre-wrap" : ""
@@ -263,37 +237,27 @@ export function MessageList({
                   : "bg-(--color-bg-secondary) text-(--color-text-primary)"
               }`}
             >
-              {/* Action buttons — overlaid on the bubble, shown on hover */}
-              {(showEditActions || (msg.role === "assistant" && msg.commitHash && msg.parentCommitHash && !msg.rolledBack && onRollback)) && (
-                <div className="hidden group-hover:flex absolute -top-3 right-1 items-center gap-0.5 bg-(--color-bg-secondary) border border-(--color-border-primary) rounded-md shadow-sm px-0.5 py-0.5 z-10">
-                  {showEditActions && (
-                    <>
-                      <button
-                        onClick={() => setEditingIndex(i)}
-                        className="p-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
-                        title="Edit message"
-                        aria-label="Edit message"
-                      >
-                        <PencilSimpleIcon size={14} />
-                      </button>
-                      <button
-                        onClick={() => onEditMessage?.(i, msg.text)}
-                        className="p-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
-                        title="Retry message"
-                        aria-label="Retry message"
-                      >
-                        <ArrowsClockwiseIcon size={14} />
-                      </button>
-                    </>
-                  )}
-                  {msg.role === "assistant" && msg.commitHash && msg.parentCommitHash && !msg.rolledBack && onRollback && (
-                    <RollbackDropdown
-                      messageIndex={i}
-                      parentCommitHash={msg.parentCommitHash}
-                      disabled={isLoading}
-                      onRollback={onRollback}
-                    />
-                  )}
+              {/* Rewind dropdown — shown on hover for user messages */}
+              {showRewind && (
+                <div className={`${openDropdownIndex === i ? "flex" : "hidden group-hover:flex"} absolute -top-3 right-1 items-center bg-(--color-bg-secondary) border border-(--color-border-primary) rounded-md shadow-sm px-0.5 py-0.5 z-10`}>
+                  <RewindDropdown
+                    messageIndex={i}
+                    disabled={isLoading}
+                    onRewind={onRewind}
+                    onOpenChange={(open) => setOpenDropdownIndex(open ? i : null)}
+                  />
+                </div>
+              )}
+              {/* Rollback dropdown — shown on hover for assistant messages with a linked commit */}
+              {msg.role === "assistant" && msg.commitHash && msg.parentCommitHash && !msg.rolledBack && onRollback && (
+                <div className={`${openDropdownIndex === i ? "flex" : "hidden group-hover:flex"} absolute -top-3 right-1 items-center bg-(--color-bg-secondary) border border-(--color-border-primary) rounded-md shadow-sm px-0.5 py-0.5 z-10`}>
+                  <RollbackDropdown
+                    messageIndex={i}
+                    parentCommitHash={msg.parentCommitHash}
+                    disabled={isLoading}
+                    onRollback={onRollback}
+                    onOpenChange={(open) => setOpenDropdownIndex(open ? i : null)}
+                  />
                 </div>
               )}
               {msg.queued && (
@@ -378,7 +342,6 @@ export function MessageList({
                 </span>
               )}
             </div>
-            )}
             </div>
             )}
             {latestTodoTool && Array.isArray(latestTodoTool.input.todos) && (
