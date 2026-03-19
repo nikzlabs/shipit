@@ -1,0 +1,39 @@
+# ShipIt reverse proxy with automatic HTTPS + basic auth.
+#
+# Prerequisites:
+#   1. DNS A record: shipit.example.com → <server-ip>
+#   2. DNS A record: *.shipit.example.com → <server-ip>  (for preview subdomains)
+#
+# Wildcard TLS requires DNS challenge. This example uses Cloudflare DNS.
+# For other providers, see: https://caddyserver.com/docs/modules/
+#
+# Install Caddy with Cloudflare plugin:
+#   xcaddy build --with github.com/caddy-dns/cloudflare
+#
+# Set these environment variables (e.g. in /etc/caddy/environment):
+#   CLOUDFLARE_API_TOKEN  — for wildcard TLS via DNS challenge
+#   SHIPIT_AUTH_HASH      — bcrypt hash of your password
+#
+# Generate password hash:
+#   caddy hash-password --plaintext 'your-password'
+
+(auth) {
+	basic_auth {
+		{env.SHIPIT_AUTH_USER} {env.SHIPIT_AUTH_HASH}
+	}
+}
+
+# Main app
+shipit.example.com {
+	import auth
+	reverse_proxy localhost:4123
+}
+
+# Preview subdomains ({sessionId}--{port}.shipit.example.com)
+*.shipit.example.com {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+	import auth
+	reverse_proxy localhost:4123
+}
