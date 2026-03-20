@@ -4,7 +4,7 @@ Self-host ShipIt on a Hetzner VPS with automatic deploys on push.
 
 ## What you get
 
-- ShipIt at `https://shipit.example.com` with auto-TLS
+- ShipIt at `https://shipit.example.com` with SSL via Cloudflare
 - Password-protected access (HTTP basic auth via Caddy)
 - Preview subdomains (`{sessionId}--{port}.shipit.example.com`)
 - Auto-deploy on push to `main` via GitHub Actions
@@ -36,16 +36,22 @@ ssh-copy-id -i ~/.ssh/shipit-deploy.pub root@<server-ip>
 
 You'll use the private key (`~/.ssh/shipit-deploy`) as a GitHub secret in Step 5.
 
-## Step 3: Configure DNS
+## Step 3: Configure Cloudflare DNS and SSL
 
-Add these records (example uses Cloudflare):
+In your Cloudflare dashboard for the domain:
 
-| Type | Name               | Value          |
-|------|--------------------|----------------|
-| A    | `shipit.example.com`   | `<server-ip>`  |
-| A    | `*.shipit.example.com`  | `<server-ip>`  |
+1. **Add DNS records** (DNS → Records):
 
-The wildcard record enables preview subdomains for dev servers.
+   | Type | Name               | Value          | Proxy |
+   |------|--------------------|----------------|-------|
+   | A    | `shipit`           | `<server-ip>`  | Proxied (orange cloud) |
+   | A    | `*.shipit`         | `<server-ip>`  | Proxied (orange cloud) |
+
+   The wildcard record enables preview subdomains for dev servers.
+
+2. **Set SSL mode** (SSL/TLS → Overview): Select **Full**. This tells Cloudflare to connect to your server over HTTPS (Caddy serves a self-signed cert internally).
+
+3. **Enable wildcard subdomains** (SSL/TLS → Edge Certificates): Verify that your Cloudflare plan covers wildcard subdomains (all paid plans do; free plans cover `*.example.com` but not `*.shipit.example.com` — you may need to use a direct subdomain like `*.shipit.com` or upgrade).
 
 ## Step 4: Provision the server
 
@@ -60,7 +66,6 @@ bash setup.sh
 caddy hash-password --plaintext 'your-secure-password'
 # Copy the output hash, then:
 cat > /etc/caddy/environment <<EOL
-CLOUDFLARE_API_TOKEN=your-token-here
 SHIPIT_AUTH_USER=admin
 SHIPIT_AUTH_HASH=JDJhJDE0JC...your-bcrypt-hash-here
 EOL
@@ -75,7 +80,7 @@ docker compose -f deployment/hetzner/docker-compose.yml up -d
 
 Visit `https://shipit.example.com` — log in with the username/password you chose, then complete Claude CLI OAuth.
 
-## Step 6: Set up auto-deploy
+## Step 5: Set up auto-deploy
 
 Add these secrets to your GitHub repo (Settings → Secrets → Actions):
 

@@ -27,13 +27,12 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.
 apt-get update
 apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 
-echo "==> Installing Caddy with Cloudflare DNS plugin..."
+echo "==> Installing Caddy..."
 apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null || true
-# Install xcaddy to build Caddy with plugins
-apt-get install -y golang-go
-go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
-~/go/bin/xcaddy build --with github.com/caddy-dns/cloudflare --output /usr/bin/caddy
+echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" > /etc/apt/sources.list.d/caddy-stable.list
+apt-get update
+apt-get install -y caddy
 
 echo "==> Setting up Caddy directories, config, and systemd service..."
 mkdir -p /etc/caddy
@@ -71,7 +70,7 @@ ufw allow 443/tcp
 ufw --force enable
 
 echo "==> Done! Next steps:"
-echo "  1. Set env vars:      See deployment/README.md Step 4 (CF token, auth user/hash)"
+echo "  1. Set env vars:      See deployment/README.md Step 4 (auth user/hash)"
 echo "  2. Start Caddy:       systemctl enable --now caddy"
 echo "  3. Build & start:     cd /opt/shipit && docker compose -f deployment/hetzner/docker-compose.yml build && docker compose -f deployment/hetzner/docker-compose.yml up -d"
 echo "  4. Authenticate:      Visit https://$DOMAIN and complete Claude CLI OAuth"
