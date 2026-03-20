@@ -13,7 +13,7 @@ Self-host ShipIt on a Hetzner VPS with a Cloudflare Tunnel (no ports exposed).
 ## Prerequisites
 
 - Hetzner Cloud account — CX32 (4 vCPU, 8GB RAM, ~€7/mo) recommended
-- Domain on Cloudflare (free plan works)
+- Domain on Cloudflare with **Advanced Certificate Manager** ($10/mo) — required for wildcard certs on nested subdomains (`*.shipit.example.com`). Alternatively, use a dedicated domain (e.g. `shipit.dev`) where the free plan's `*.shipit.dev` wildcard is sufficient.
 - GitHub repo with Actions enabled
 
 ## Step 1: Create server
