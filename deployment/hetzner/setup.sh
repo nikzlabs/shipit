@@ -206,15 +206,35 @@ if [ -n "${CF_API_TOKEN:-}" ]; then
     }" || echo "")
 
   APP_ID=$(echo "$APP_RESPONSE" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+
+  # If app already exists, look up its ID so we can still create the policy
   if [ -z "$APP_ID" ]; then
-    echo "    Note: could not create Access application (may already exist)."
+    if echo "$APP_RESPONSE" | grep -q "application_already_exists"; then
+      echo "    Access application already exists, looking up its ID..."
+      APPS_LIST=$(curl -s --max-time 30 "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/access/apps" \
+        -H "Authorization: Bearer $CF_API_TOKEN" || echo "")
+      APP_ID=$(echo "$APPS_LIST" | grep -o '"id":"[^"]*","created_at":"[^"]*","updated_at":"[^"]*","aud":"[^"]*","name":"ShipIt"' | head -1 | grep -o '"id":"[^"]*"' | cut -d'"' -f4 || true)
+      if [ -n "$APP_ID" ]; then
+        echo "    Found existing application: $APP_ID"
+      else
+        # Fallback: grab the first self_hosted app matching our domain
+        APP_ID=$(echo "$APPS_LIST" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+        if [ -n "$APP_ID" ]; then
+          echo "    Found application (first match): $APP_ID"
+        fi
+      fi
+    fi
+  else
+    echo "    Created application: $APP_ID"
+  fi
+
+  if [ -z "$APP_ID" ]; then
+    echo "    Error: could not find or create Access application."
     if [ -n "$APP_RESPONSE" ]; then
       echo "    API response: $APP_RESPONSE"
     fi
     echo "    Manage it at: https://one.dash.cloudflare.com → Access → Applications"
   else
-    echo "    Created application: $APP_ID"
-
     # Determine if input is a domain (contains no @) or a specific email
     if echo "$CF_ALLOWED_EMAIL" | grep -q "@"; then
       INCLUDE_RULE="{\"email\": {\"email\": \"$CF_ALLOWED_EMAIL\"}}"
@@ -234,7 +254,7 @@ if [ -n "${CF_API_TOKEN:-}" ]; then
 
     POLICY_ID=$(echo "$POLICY_RESPONSE" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
     if [ -z "$POLICY_ID" ]; then
-      echo "    Note: could not create Access policy (may already exist)."
+      echo "    Note: could not create Access policy."
       if [ -n "$POLICY_RESPONSE" ]; then
         echo "    API response: $POLICY_RESPONSE"
       fi
