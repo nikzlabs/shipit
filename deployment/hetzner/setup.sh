@@ -5,10 +5,16 @@ set -euo pipefail
 
 REPO_URL="https://github.com/nicolasalt/shipit.git"
 
-echo "==> Cloning repo..."
-apt-get update
-apt-get install -y git
-git clone "$REPO_URL" /opt/shipit
+echo "==========================================="
+echo "  ShipIt — Server Provisioning"
+echo "==========================================="
+echo ""
+echo "Prerequisites (make sure these are done before continuing):"
+echo "  1. Your domain (e.g. shipit.example.com) is on Cloudflare"
+echo "  2. For preview subdomains (*.shipit.example.com), you need either:"
+echo "     - A dedicated domain (e.g. shipit.dev) where free-plan wildcards work"
+echo "     - OR Advanced Certificate Manager (\$10/mo) for nested wildcards"
+echo ""
 
 read -rp "Enter your domain (e.g. shipit.example.com): " DOMAIN
 if [ -z "$DOMAIN" ]; then
@@ -17,25 +23,37 @@ if [ -z "$DOMAIN" ]; then
 fi
 
 echo ""
-echo "    To set up Zero Trust access control, you need a Cloudflare API token."
-echo "    Create one at: https://dash.cloudflare.com/profile/api-tokens"
-echo "    Required permissions: Account > Access: Apps and Policies > Edit"
+echo "--- Zero Trust Access Control (optional) ---"
 echo ""
-read -rp "Cloudflare API token (leave blank to skip — you can configure access later in the dashboard): " CF_API_TOKEN
+echo "This protects your ShipIt instance so only authorized users can access it."
+echo "To set it up now, you need a Cloudflare API token:"
+echo ""
+echo "  1. Go to: https://dash.cloudflare.com/profile/api-tokens"
+echo "  2. Click 'Create Token'"
+echo "  3. Use 'Custom token' with permission: Account > Access: Apps and Policies > Edit"
+echo "  4. Find your Account ID at: https://dash.cloudflare.com → pick your domain → the ID is in the right sidebar under 'API'"
+echo ""
+read -rp "Cloudflare API token (leave blank to skip — you can set this up later): " CF_API_TOKEN
 if [ -n "$CF_API_TOKEN" ]; then
-  read -rp "Cloudflare Account ID (found on the dashboard overview page): " CF_ACCOUNT_ID
+  read -rp "Cloudflare Account ID: " CF_ACCOUNT_ID
   if [ -z "$CF_ACCOUNT_ID" ]; then
     echo "Error: account ID is required when using API token" >&2
     exit 1
   fi
-  read -rp "Allowed email domain (e.g. example.com) or specific email: " CF_ALLOWED_EMAIL
+  echo ""
+  echo "Who should have access? Enter either:"
+  echo "  - An email domain (e.g. example.com) to allow anyone with that domain"
+  echo "  - A specific email (e.g. you@example.com)"
+  read -rp "Allowed email domain or email: " CF_ALLOWED_EMAIL
   if [ -z "$CF_ALLOWED_EMAIL" ]; then
     echo "Error: at least one email or domain is required" >&2
     exit 1
   fi
 fi
 
+echo ""
 echo "==> Installing Docker..."
+apt-get update
 apt-get install -y ca-certificates curl gnupg
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
@@ -49,8 +67,11 @@ curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cl
 dpkg -i /tmp/cloudflared.deb
 rm /tmp/cloudflared.deb
 
+echo ""
 echo "==> Authenticating with Cloudflare..."
-echo "    A URL will appear below — open it in your browser to authorize cloudflared."
+echo "    A URL will appear below. Open it in your browser to authorize this server."
+echo "    (On a headless server, copy-paste the URL to any browser where you're logged into Cloudflare.)"
+echo ""
 cloudflared tunnel login
 
 TUNNEL_NAME="shipit"
@@ -105,7 +126,7 @@ if [ -n "$CF_API_TOKEN" ]; then
   if [ -z "$APP_ID" ]; then
     echo "    Warning: failed to create Access application. Response:"
     echo "    $APP_RESPONSE"
-    echo "    You can configure access manually in the Zero Trust dashboard."
+    echo "    You can configure access manually — see instructions at the end."
   else
     echo "    Created application: $APP_ID"
 
@@ -130,7 +151,7 @@ if [ -n "$CF_API_TOKEN" ]; then
     if [ -z "$POLICY_ID" ]; then
       echo "    Warning: failed to create Access policy. Response:"
       echo "    $POLICY_RESPONSE"
-      echo "    You can add policies manually in the Zero Trust dashboard."
+      echo "    You can add policies manually — see instructions at the end."
     else
       echo "    Created policy: $POLICY_ID"
     fi
@@ -143,12 +164,47 @@ docker compose -f deployment/hetzner/docker-compose.yml build
 docker compose -f deployment/hetzner/docker-compose.yml up -d
 
 echo ""
-echo "==> Done! ShipIt is running at https://$DOMAIN"
-if [ -n "$CF_API_TOKEN" ] && [ -n "$APP_ID" ]; then
-  echo "    Zero Trust access control is configured."
-  echo "    Manage policies at: https://one.dash.cloudflare.com → Access → Applications"
+echo "==========================================="
+echo "  Setup complete!"
+echo "==========================================="
+echo ""
+echo "  ShipIt is running at: https://$DOMAIN"
+echo ""
+
+if [ -n "${CF_API_TOKEN:-}" ] && [ -n "${APP_ID:-}" ] && [ -n "${POLICY_ID:-}" ]; then
+  echo "  Zero Trust access control is configured."
+  echo "  To manage policies later: https://one.dash.cloudflare.com → Access → Applications"
+elif [ -n "${CF_API_TOKEN:-}" ]; then
+  echo "  ⚠ Zero Trust setup had issues — configure manually:"
+  echo "    1. Go to: https://one.dash.cloudflare.com"
+  echo "    2. Navigate to: Access → Applications → Add an application"
+  echo "    3. Choose 'Self-hosted', set domain to: $DOMAIN"
+  echo "    4. Add a second domain: *.$DOMAIN"
+  echo "    5. Create an Allow policy for your team's emails"
 else
-  echo "    Configure access policies in Cloudflare Zero Trust dashboard:"
-  echo "    https://one.dash.cloudflare.com → Access → Applications"
+  echo "  ⚠ No access control configured — your instance is publicly accessible!"
+  echo "  Set up Zero Trust access control:"
+  echo "    1. Go to: https://one.dash.cloudflare.com"
+  echo "    2. Navigate to: Access → Applications → Add an application"
+  echo "    3. Choose 'Self-hosted', set domain to: $DOMAIN"
+  echo "    4. Add a second domain: *.$DOMAIN (for preview subdomains)"
+  echo "    5. Create an Allow policy for your team's emails"
+  echo "    6. Save — users will authenticate through Cloudflare before reaching ShipIt"
 fi
-echo "    Then visit https://$DOMAIN and complete Claude CLI OAuth."
+
+echo ""
+echo "  Next steps:"
+echo "    1. Open https://$DOMAIN in your browser"
+if [ -z "${CF_API_TOKEN:-}" ] || [ -z "${APP_ID:-}" ]; then
+  echo "    2. If you set up Zero Trust, you'll authenticate through Cloudflare first"
+else
+  echo "    2. Authenticate through Cloudflare Zero Trust"
+fi
+echo "    3. ShipIt will prompt you to sign in with your Claude account (OAuth)"
+echo "    4. Start coding!"
+echo ""
+echo "  Useful commands:"
+echo "    View logs:      docker compose -f /opt/shipit/deployment/hetzner/docker-compose.yml logs -f shipit"
+echo "    Tunnel logs:    journalctl -u cloudflared -f"
+echo "    Restart:        docker compose -f /opt/shipit/deployment/hetzner/docker-compose.yml restart"
+echo ""
