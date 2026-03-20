@@ -4,11 +4,11 @@ ShipIt has a built-in feature tracking system that reads markdown files from the
 
 ## How it works
 
-ShipIt scans `docs/` recursively for any `.md` file (skipping `node_modules` and `.git`). Every markdown file found is shown in the feature list. If a file has YAML frontmatter with a `status` field, ShipIt displays a status badge next to it.
+ShipIt scans the entire workspace recursively for `.md` files (skipping `node_modules` and `.git`). Every markdown file found is shown in the feature list. If a file has YAML frontmatter with a `status` field, ShipIt displays a status badge next to it.
 
 ## Creating a design doc
 
-Any `.md` file under `docs/` will be picked up. The conventional structure is numbered directories:
+Any `.md` file in the workspace will be picked up. The conventional structure is numbered directories under `docs/`:
 
 ```
 docs/
@@ -98,4 +98,4 @@ How the feature works — architecture, data flow, key decisions.
 - **Missing frontmatter delimiters**: The `---` lines are required. Don't use ````yaml` fences.
 - **Wrong status value**: Must be exactly one of `planned`, `in-progress`, `done`, or `paused` (lowercase).
 - **Frontmatter not at file start**: The `---` block must be the very first thing in the file — no blank lines or content before it.
-- **File not in `docs/`**: Only `.md` files under the `docs/` directory are scanned. Files elsewhere won't appear in the feature list.
+- **Not a `.md` file**: Only files ending in `.md` are scanned. Other formats (`.txt`, `.rst`) won't appear in the feature list.
