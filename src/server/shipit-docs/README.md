@@ -11,3 +11,4 @@ platform capabilities.
 | [preview.md](preview.md) | Preview system — port detection, HMR, browser tools |
 | [deployment.md](deployment.md) | Deploy targets (Vercel, Cloudflare) |
 | [github.md](github.md) | Branches, PRs, auto-push, CI |
+| [design-docs.md](design-docs.md) | Feature docs — frontmatter format, status values, structure |
