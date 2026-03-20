@@ -1,12 +1,9 @@
 #!/bin/bash
 # One-time server provisioning for ShipIt on a fresh Ubuntu VPS.
-# Run as root: bash setup.sh <repo-clone-url>
-#
-# Example:
-#   bash setup.sh https://x-access-token:TOKEN@github.com/you/shipit.git
+# Run as root: bash setup.sh
 set -euo pipefail
 
-REPO_URL="${1:?Usage: bash setup.sh <repo-clone-url>}"
+REPO_URL="https://github.com/nicolasalt/shipit.git"
 
 echo "==> Cloning repo..."
 apt-get update
