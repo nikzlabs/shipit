@@ -53,8 +53,8 @@ The wildcard record enables preview subdomains for dev servers.
 ssh -i ~/.ssh/shipit-deploy root@<server-ip>
 
 # Download and run the provisioning script (clones the repo, installs Docker, Caddy, firewall)
-curl -fsSL https://raw.githubusercontent.com/<org>/shipit/main/deployment/hetzner/setup.sh -o setup.sh
-bash setup.sh https://github.com/<org>/shipit.git
+curl -fsSL https://raw.githubusercontent.com/nicolasalt/shipit/main/deployment/hetzner/setup.sh -o setup.sh
+bash setup.sh https://github.com/nicolasalt/shipit.git
 
 # Generate a password hash for the web UI login
 caddy hash-password --plaintext 'your-secure-password'
