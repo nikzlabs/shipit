@@ -40,7 +40,11 @@ export function useNotification() {
 
     // Browser notification
     if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-      new Notification("ShipIt", { body });
+      const n = new Notification("ShipIt", { body });
+      n.onclick = () => {
+        window.focus();
+        n.close();
+      };
     }
   }, []);
 
