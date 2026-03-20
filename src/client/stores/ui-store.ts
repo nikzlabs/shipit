@@ -8,7 +8,7 @@ import type {
 } from "../components/UsageModal.js";
 import type { ModelInfo } from "../components/StatusBar.js";
 import type { ToastData } from "../components/Toast.js";
-import type { AgentId } from "../../server/shared/types.js";
+import type { AgentId, DockerMemoryStats } from "../../server/shared/types.js";
 import {
   getSavedAgentId,
   saveAgentId,
@@ -55,6 +55,7 @@ interface UiState {
   sidebarCollapsed: boolean;
   toast: ToastData | null;
   bootstrapLoaded: boolean;
+  dockerMemory: DockerMemoryStats | null;
 
   // Actions
   setRightTab: (tab: RightTab) => void;
@@ -76,6 +77,7 @@ interface UiState {
   setSettingsTab: (tab: SettingsTab) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setToast: (toast: ToastData | null) => void;
+  setDockerMemory: (stats: DockerMemoryStats | null) => void;
   setBootstrapLoaded: (loaded: boolean) => void;
   reset: () => void;
 
@@ -101,6 +103,7 @@ const initialState = {
   sidebarCollapsed: getSavedSidebarCollapsed(),
   toast: null as ToastData | null,
   bootstrapLoaded: false,
+  dockerMemory: null as DockerMemoryStats | null,
 };
 
 export const useUiStore = create<UiState>((set, get) => ({
@@ -153,6 +156,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
 
   setToast: (toast) => set({ toast }),
+
+  setDockerMemory: (dockerMemory) => set({ dockerMemory }),
 
   setBootstrapLoaded: (bootstrapLoaded) => set({ bootstrapLoaded }),
 
