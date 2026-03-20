@@ -211,17 +211,19 @@ if [ -n "${CF_API_TOKEN:-}" ]; then
   if [ -z "$APP_ID" ]; then
     if echo "$APP_RESPONSE" | grep -q "application_already_exists"; then
       echo "    Access application already exists, looking up its ID..."
-      APPS_LIST=$(curl -s --max-time 30 "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/access/apps" \
+      APPS_LIST=$(curl -s --max-time 30 \
+        "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/access/apps" \
         -H "Authorization: Bearer $CF_API_TOKEN" || echo "")
-      APP_ID=$(echo "$APPS_LIST" | grep -o '"id":"[^"]*","created_at":"[^"]*","updated_at":"[^"]*","aud":"[^"]*","name":"ShipIt"' | head -1 | grep -o '"id":"[^"]*"' | cut -d'"' -f4 || true)
+      # Extract the app ID for the entry whose domain matches ours.
+      # The API returns JSON objects with "domain":"<domain>" and "id":"<uuid>" fields.
+      # We use tr to put each field on its own line, then find our domain and grab the
+      # preceding id field.
+      APP_ID=$(echo "$APPS_LIST" | tr ',' '\n' | grep -B20 "\"domain\":\"$DOMAIN\"" | grep -o '"id":"[^"]*"' | tail -1 | cut -d'"' -f4 || true)
       if [ -n "$APP_ID" ]; then
         echo "    Found existing application: $APP_ID"
       else
-        # Fallback: grab the first self_hosted app matching our domain
-        APP_ID=$(echo "$APPS_LIST" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
-        if [ -n "$APP_ID" ]; then
-          echo "    Found application (first match): $APP_ID"
-        fi
+        echo "    Could not find app by domain, listing all apps for debugging..."
+        echo "    Apps response (truncated): $(echo "$APPS_LIST" | head -c 500)"
       fi
     fi
   else
@@ -230,9 +232,7 @@ if [ -n "${CF_API_TOKEN:-}" ]; then
 
   if [ -z "$APP_ID" ]; then
     echo "    Error: could not find or create Access application."
-    if [ -n "$APP_RESPONSE" ]; then
-      echo "    API response: $APP_RESPONSE"
-    fi
+    echo "    Set up Zero Trust manually at: https://one.dash.cloudflare.com → Access → Applications"
     echo "    Manage it at: https://one.dash.cloudflare.com → Access → Applications"
   else
     # Determine if input is a domain (contains no @) or a specific email
