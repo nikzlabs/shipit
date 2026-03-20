@@ -44,6 +44,7 @@
   --color-pr-border: rgba(187, 154, 247, 0.3);
   --color-folder: #e0af68;
   --color-autofix: #ff9e64;
+  --color-attention: #f59e0b;
 
   /* Context meter */
   --color-context-ok: #34d399;
