@@ -141,7 +141,12 @@ else
   echo "==> Creating tunnel '$TUNNEL_NAME'..."
   cloudflared tunnel create "$TUNNEL_NAME"
 fi
-TUNNEL_ID=$(cloudflared tunnel info "$TUNNEL_NAME" --output json 2>/dev/null | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+TUNNEL_ID=$(cloudflared tunnel info "$TUNNEL_NAME" 2>&1 | grep -oP '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
+if [ -z "$TUNNEL_ID" ]; then
+  echo "Error: could not determine tunnel ID for '$TUNNEL_NAME'" >&2
+  echo "Try: cloudflared tunnel list" >&2
+  exit 1
+fi
 
 # --- Configure tunnel (always overwrite to pick up domain changes) ---
 echo "==> Configuring tunnel..."
