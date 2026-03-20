@@ -12,9 +12,9 @@ Self-host ShipIt on a Hetzner VPS with a Cloudflare Tunnel (no ports exposed).
 
 ## Prerequisites
 
+- A fork of this repo on GitHub
 - Hetzner Cloud account — CX32 (4 vCPU, 8GB RAM, ~€7/mo) recommended
 - Domain on Cloudflare with **Advanced Certificate Manager** ($10/mo) — required for wildcard certs on nested subdomains (`*.shipit.example.com`). Alternatively, use a dedicated domain (e.g. `shipit.dev`) where the free plan's `*.shipit.dev` wildcard is sufficient.
-- GitHub repo with Actions enabled
 
 ## Step 1: Create server and SSH key
 
@@ -32,16 +32,16 @@ ssh-copy-id -i ~/.ssh/shipit-deploy.pub root@<server-ip>
 
 ## Step 2: Provision the server
 
+Clone your fork on the server and run the setup script:
+
 ```bash
 ssh -i ~/.ssh/shipit-deploy root@<server-ip>
 
-# Download and run the provisioning script
-curl -fsSL https://raw.githubusercontent.com/<you>/shipit/main/deployment/hetzner/setup.sh -o setup.sh
-bash setup.sh
+git clone https://github.com/<you>/shipit.git /opt/shipit
+bash /opt/shipit/deployment/hetzner/setup.sh
 ```
 
-The script will prompt for your repo URL and domain, then automatically:
-- Clone the repo to `/opt/shipit`
+The script will prompt for your domain, then automatically:
 - Install Docker and `cloudflared`
 - Authenticate with Cloudflare (prints a URL — open it in your browser)
 - Create a tunnel and configure DNS routes
