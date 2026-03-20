@@ -47,19 +47,14 @@ Add these records (example uses Cloudflare):
 
 The wildcard record enables preview subdomains for dev servers.
 
-## Step 4: Clone and provision the server
+## Step 4: Provision the server
 
 ```bash
 ssh -i ~/.ssh/shipit-deploy root@<server-ip>
 
-git clone https://github.com/<org>/shipit.git /opt/shipit
-cd /opt/shipit
-
-# Run the provisioning script (installs Docker, Caddy, firewall)
-bash deployment/hetzner/setup.sh
-
-# Configure Caddy
-cp deployment/hetzner/Caddyfile /etc/caddy/Caddyfile
+# Download and run the provisioning script (clones the repo, installs Docker, Caddy, firewall)
+curl -fsSL https://raw.githubusercontent.com/<org>/shipit/main/deployment/hetzner/setup.sh -o setup.sh
+bash setup.sh https://github.com/<org>/shipit.git
 
 # Generate a password hash for the web UI login
 caddy hash-password --plaintext 'your-secure-password'
@@ -73,6 +68,7 @@ EOL
 systemctl enable --now caddy
 
 # Build and start ShipIt
+cd /opt/shipit
 docker compose -f deployment/hetzner/docker-compose.yml build
 docker compose -f deployment/hetzner/docker-compose.yml up -d
 ```
