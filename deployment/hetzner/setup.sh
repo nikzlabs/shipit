@@ -17,6 +17,19 @@ if [ -z "$DOMAIN" ]; then
   exit 1
 fi
 
+read -rp "Enter a username for the web UI (e.g. admin): " AUTH_USER
+if [ -z "$AUTH_USER" ]; then
+  echo "Error: username is required" >&2
+  exit 1
+fi
+
+read -rsp "Enter a password for the web UI: " AUTH_PASS
+echo
+if [ -z "$AUTH_PASS" ]; then
+  echo "Error: password is required" >&2
+  exit 1
+fi
+
 echo "==> Installing Docker..."
 apt-get update
 apt-get install -y ca-certificates curl gnupg
@@ -69,8 +82,21 @@ ufw allow 80/tcp
 ufw allow 443/tcp
 ufw --force enable
 
-echo "==> Done! Next steps:"
-echo "  1. Set env vars:      See deployment/README.md Step 4 (auth user/hash)"
-echo "  2. Start Caddy:       systemctl enable --now caddy"
-echo "  3. Build & start:     cd /opt/shipit && docker compose -f deployment/hetzner/docker-compose.yml build && docker compose -f deployment/hetzner/docker-compose.yml up -d"
-echo "  4. Authenticate:      Visit https://$DOMAIN and complete Claude CLI OAuth"
+echo "==> Configuring basic auth..."
+AUTH_HASH=$(caddy hash-password --plaintext "$AUTH_PASS")
+cat > /etc/caddy/environment <<EOL
+SHIPIT_AUTH_USER=$AUTH_USER
+SHIPIT_AUTH_HASH=$AUTH_HASH
+EOL
+
+echo "==> Starting Caddy..."
+systemctl enable --now caddy
+
+echo "==> Building and starting ShipIt..."
+cd /opt/shipit
+docker compose -f deployment/hetzner/docker-compose.yml build
+docker compose -f deployment/hetzner/docker-compose.yml up -d
+
+echo ""
+echo "==> Done! ShipIt is running at https://$DOMAIN"
+echo "    Log in with username '$AUTH_USER' and your chosen password, then complete Claude CLI OAuth."

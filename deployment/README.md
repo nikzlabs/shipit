@@ -58,27 +58,19 @@ In your Cloudflare dashboard for the domain:
 ```bash
 ssh -i ~/.ssh/shipit-deploy root@<server-ip>
 
-# Download and run the provisioning script (clones the repo, installs Docker, Caddy, firewall)
+# Download and run the provisioning script
 curl -fsSL https://raw.githubusercontent.com/nicolasalt/shipit/main/deployment/hetzner/setup.sh -o setup.sh
 bash setup.sh
-
-# Generate a password hash for the web UI login
-caddy hash-password --plaintext 'your-secure-password'
-# Copy the output hash, then:
-cat > /etc/caddy/environment <<EOL
-SHIPIT_AUTH_USER=admin
-SHIPIT_AUTH_HASH=JDJhJDE0JC...your-bcrypt-hash-here
-EOL
-
-systemctl enable --now caddy
-
-# Build and start ShipIt
-cd /opt/shipit
-docker compose -f deployment/hetzner/docker-compose.yml build
-docker compose -f deployment/hetzner/docker-compose.yml up -d
 ```
 
-Visit `https://shipit.example.com` — log in with the username/password you chose, then complete Claude CLI OAuth.
+The script will prompt for your domain and web UI credentials, then automatically:
+- Clone the repo to `/opt/shipit`
+- Install Docker and Caddy
+- Configure the firewall
+- Set up basic auth
+- Build and start ShipIt
+
+Once complete, visit `https://shipit.example.com` — log in with the credentials you chose, then complete Claude CLI OAuth.
 
 ## Step 5: Set up auto-deploy
 
