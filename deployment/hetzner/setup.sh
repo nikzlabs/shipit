@@ -9,9 +9,7 @@ CONFIG_FILE="/etc/shipit/setup.conf"
 
 # --- Load saved config from previous run, if any ---
 DOMAIN=""
-CF_API_TOKEN=""
-CF_ACCOUNT_ID=""
-CF_ALLOWED_EMAIL=""
+ZERO_TRUST_DONE=""
 if [ -f "$CONFIG_FILE" ]; then
   # shellcheck source=/dev/null
   source "$CONFIG_FILE"
@@ -42,7 +40,13 @@ else
   fi
 fi
 
-if [ -z "$CF_API_TOKEN" ]; then
+CF_API_TOKEN=""
+CF_ACCOUNT_ID=""
+CF_ALLOWED_EMAIL=""
+if [ "$ZERO_TRUST_DONE" = "true" ]; then
+  echo ""
+  echo "  Zero Trust access control already configured, skipping."
+else
   echo ""
   echo "--- Zero Trust Access Control (optional) ---"
   echo ""
@@ -71,18 +75,13 @@ if [ -z "$CF_API_TOKEN" ]; then
       exit 1
     fi
   fi
-else
-  echo ""
-  echo "  Using saved Cloudflare credentials from previous run."
 fi
 
-# --- Save config for future re-runs ---
+# --- Save config for future re-runs (no secrets stored) ---
 mkdir -p "$(dirname "$CONFIG_FILE")"
 cat > "$CONFIG_FILE" <<EOC
 DOMAIN="$DOMAIN"
-CF_API_TOKEN="$CF_API_TOKEN"
-CF_ACCOUNT_ID="$CF_ACCOUNT_ID"
-CF_ALLOWED_EMAIL="$CF_ALLOWED_EMAIL"
+ZERO_TRUST_DONE="${ZERO_TRUST_DONE:-}"
 EOC
 chmod 600 "$CONFIG_FILE"
 
@@ -231,6 +230,13 @@ if [ -n "${CF_API_TOKEN:-}" ]; then
       echo "    Manage policies at: https://one.dash.cloudflare.com → Access → Applications"
     else
       echo "    Created policy: $POLICY_ID"
+      ZERO_TRUST_DONE="true"
+      # Update config so we skip Zero Trust prompts on re-run
+      cat > "$CONFIG_FILE" <<EOC
+DOMAIN="$DOMAIN"
+ZERO_TRUST_DONE="true"
+EOC
+      chmod 600 "$CONFIG_FILE"
     fi
   fi
 fi
@@ -249,16 +255,9 @@ echo ""
 echo "  ShipIt is running at: https://$DOMAIN"
 echo ""
 
-if [ -n "${CF_API_TOKEN:-}" ] && [ -n "${APP_ID:-}" ] && [ -n "${POLICY_ID:-}" ]; then
+if [ "$ZERO_TRUST_DONE" = "true" ]; then
   echo "  Zero Trust access control is configured."
   echo "  To manage policies later: https://one.dash.cloudflare.com → Access → Applications"
-elif [ -n "${CF_API_TOKEN:-}" ]; then
-  echo "  Zero Trust: check the dashboard for existing config or configure manually:"
-  echo "    1. Go to: https://one.dash.cloudflare.com"
-  echo "    2. Navigate to: Access → Applications → Add an application"
-  echo "    3. Choose 'Self-hosted', set domain to: $DOMAIN"
-  echo "    4. Add a second domain: *.$DOMAIN"
-  echo "    5. Create an Allow policy for your team's emails"
 else
   echo "  No access control configured — your instance is publicly accessible!"
   echo "  Set up Zero Trust access control:"
@@ -268,15 +267,16 @@ else
   echo "    4. Add a second domain: *.$DOMAIN (for preview subdomains)"
   echo "    5. Create an Allow policy for your team's emails"
   echo "    6. Save — users will authenticate through Cloudflare before reaching ShipIt"
+  echo "  Or re-run this script and provide a Cloudflare API token when prompted."
 fi
 
 echo ""
 echo "  Next steps:"
 echo "    1. Open https://$DOMAIN in your browser"
-if [ -z "${CF_API_TOKEN:-}" ] || [ -z "${APP_ID:-}" ]; then
-  echo "    2. If you set up Zero Trust, you'll authenticate through Cloudflare first"
-else
+if [ "$ZERO_TRUST_DONE" = "true" ]; then
   echo "    2. Authenticate through Cloudflare Zero Trust"
+else
+  echo "    2. If you set up Zero Trust, you'll authenticate through Cloudflare first"
 fi
 echo "    3. ShipIt will prompt you to sign in with your Claude account (OAuth)"
 echo "    4. Start coding!"
