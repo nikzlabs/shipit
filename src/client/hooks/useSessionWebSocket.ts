@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useWebSocket, type UseWebSocketReturn } from "./useWebSocket.js";
-import { getSavedAgentId } from "../utils/local-storage.js";
+import { getSavedAgentId, getSavedModelId } from "../utils/local-storage.js";
 
 /**
  * Per-session WebSocket hook.
@@ -14,7 +14,10 @@ export function useSessionWebSocket(sessionId: string | undefined): UseWebSocket
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = (import.meta.env.VITE_API_HOST as string | undefined) || window.location.host;
     const agent = getSavedAgentId();
-    return `${proto}//${host}/ws/sessions/${sessionId}?agent=${agent}`;
+    const model = getSavedModelId();
+    const params = new URLSearchParams({ agent });
+    if (model) params.set("model", model);
+    return `${proto}//${host}/ws/sessions/${sessionId}?${params.toString()}`;
   }, [sessionId]);
 
   return useWebSocket(url);

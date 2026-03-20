@@ -84,7 +84,7 @@ export class CodexAdapter
     supportsPermissionModes: false,
     supportedPermissionModes: [],
     toolNames: ["shell", "file_write", "file_read", "file_edit"],
-    models: ["codex-mini-latest", "o4-mini", "o3", "gpt-4.1"],
+    models: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
   };
 
   private proc: ChildProcess | null = null;
@@ -481,7 +481,7 @@ export class CodexAdapter
       type: "agent_init",
       agentId: "codex",
       sessionId: this.threadId ?? `codex-${Date.now()}`,
-      model: "codex-mini-latest",
+      model: params.model ?? "gpt-5.4",
       tools: this.capabilities.toolNames,
     } as AgentEvent);
 
@@ -493,6 +493,10 @@ export class CodexAdapter
 
     if (params.cwd) {
       turnParams.cwd = params.cwd;
+    }
+
+    if (params.model) {
+      turnParams.model = params.model;
     }
 
     // Step 4: Start the turn (this triggers streaming notifications)

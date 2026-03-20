@@ -34,7 +34,7 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
       supportsPermissionModes: true,
       supportedPermissionModes: ["auto", "plan", "normal"],
       toolNames: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
-      models: ["claude-sonnet-4-20250514", "claude-opus-4-20250514"],
+      models: ["sonnet", "opus", "haiku"],
     },
   },
   {
@@ -48,7 +48,7 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
       supportsPermissionModes: false,
       supportedPermissionModes: [],
       toolNames: ["shell", "file_write", "file_read", "file_edit"],
-      models: ["codex-mini-latest", "o4-mini", "o3", "gpt-4.1"],
+      models: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
     },
   },
 ];

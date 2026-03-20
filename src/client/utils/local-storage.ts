@@ -3,12 +3,14 @@ import type { PermissionMode, AgentId } from "../../server/shared/types.js";
 const PERMISSION_MODE_KEY = "vibe-permission-mode";
 const SIDEBAR_COLLAPSED_KEY = "vibe-sidebar-collapsed";
 const AGENT_PREFERENCE_KEY = "vibe-agent-id";
+const MODEL_PREFERENCE_KEY = "vibe-model-id";
 const ACTIVE_REPO_KEY = "vibe-active-repo";
 
 export function getSavedPermissionMode(): PermissionMode {
   try {
     const saved = localStorage.getItem(PERMISSION_MODE_KEY);
-    if (saved === "plan" || saved === "normal" || saved === "auto") return saved;
+    if (saved === "plan") return "plan";
+    if (saved === "auto" || saved === "normal") return "auto";
   } catch {
     // localStorage may be unavailable
   }
@@ -57,6 +59,26 @@ export function saveAgentId(agentId: AgentId): void {
   }
 }
 
+export function getSavedModelId(): string | undefined {
+  try {
+    return localStorage.getItem(MODEL_PREFERENCE_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function saveModelId(modelId: string | undefined): void {
+  try {
+    if (modelId) {
+      localStorage.setItem(MODEL_PREFERENCE_KEY, modelId);
+    } else {
+      localStorage.removeItem(MODEL_PREFERENCE_KEY);
+    }
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
 export function getSavedActiveRepo(): string | undefined {
   try {
     return localStorage.getItem(ACTIVE_REPO_KEY) ?? undefined;
@@ -77,4 +99,4 @@ export function saveActiveRepo(url: string | undefined): void {
   }
 }
 
-export { PERMISSION_MODE_KEY, SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY, ACTIVE_REPO_KEY };
+export { PERMISSION_MODE_KEY, SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY };

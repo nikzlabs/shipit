@@ -13,6 +13,8 @@ export interface ClaudeRunOptions {
   permissionMode?: PermissionMode;
   /** Path to an MCP config JSON file passed via --mcp-config. */
   mcpConfigPath?: string;
+  /** Model alias or ID to use (e.g., "sonnet", "opus"). */
+  model?: string;
 }
 
 export class ClaudeProcess extends EventEmitter {
@@ -31,7 +33,7 @@ export class ClaudeProcess extends EventEmitter {
    * they're saved to the host uploads directory and referenced in the prompt.
    */
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, model } = opts;
 
     const AUTO_TOOLS = "Write,Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,mcp__playwright__*";
     const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot";
@@ -60,6 +62,10 @@ export class ClaudeProcess extends EventEmitter {
 
     if (mcpConfigPath) {
       args.push("--mcp-config", mcpConfigPath);
+    }
+
+    if (model) {
+      args.push("--model", model);
     }
 
     // Build effective system prompt, injecting normal-mode instructions if needed

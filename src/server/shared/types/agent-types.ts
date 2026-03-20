@@ -89,6 +89,8 @@ export interface AgentRunParams {
   mcpConfigPath?: string;
   /** Internal preview URL the agent can navigate to (e.g., http://preview-host:5173). */
   previewUrl?: string;
+  /** Model alias or ID to use (e.g., "sonnet", "opus", "gpt-5.4"). */
+  model?: string;
 }
 
 // ---- AgentProcess interface ----

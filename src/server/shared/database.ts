@@ -139,6 +139,10 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_review_comments_review ON review_comments(review_id);
     `);
   },
+  // Migration 4: add model column to sessions for persisting model selection
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN model TEXT");
+  },
 ];
 
 export class DatabaseManager {

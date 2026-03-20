@@ -16,6 +16,7 @@ interface SessionRow {
   session_type: string | null;
   branch_renamed: number;
   merged_at: string | null;
+  model: string | null;
 }
 
 export class SessionManager {
@@ -41,6 +42,7 @@ export class SessionManager {
     if (row.branch) info.branch = row.branch;
     if (row.branch_renamed) info.branchRenamed = true;
     if (row.merged_at) info.mergedAt = row.merged_at;
+    if (row.model) info.model = row.model;
     return info;
   }
 
@@ -221,5 +223,10 @@ export class SessionManager {
     this.db.prepare(
       "UPDATE sessions SET branch = ? WHERE id = ?",
     ).run(branch, id);
+  }
+
+  /** Store the selected model for a session. */
+  setModel(id: string, model: string): void {
+    this.db.prepare("UPDATE sessions SET model = ? WHERE id = ?").run(model, id);
   }
 }

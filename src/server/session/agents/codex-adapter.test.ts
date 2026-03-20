@@ -142,7 +142,7 @@ describe("CodexAdapter", () => {
     expect(adapter.capabilities.supportsPermissionModes).toBe(false);
     expect(adapter.capabilities.toolNames).toContain("shell");
     expect(adapter.capabilities.toolNames).toContain("file_write");
-    expect(adapter.capabilities.models).toContain("codex-mini-latest");
+    expect(adapter.capabilities.models).toContain("gpt-5.4");
   });
 
   it("emits auth_required when OPENAI_API_KEY is not set", () => {
@@ -211,7 +211,7 @@ describe("CodexAdapter", () => {
       type: "agent_init",
       agentId: "codex",
       sessionId: "thread-abc-123",
-      model: "codex-mini-latest",
+      model: "gpt-5.4",
       tools: ["shell", "file_write", "file_read", "file_edit"],
     });
   });

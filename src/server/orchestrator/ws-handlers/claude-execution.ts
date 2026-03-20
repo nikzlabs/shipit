@@ -303,6 +303,7 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
     cwd: activeDir,
     permissionMode,
     previewUrl,
+    model: ctx.getSelectedModel(),
   });
   ctx.broadcastLog("server", "Agent process started");
 }

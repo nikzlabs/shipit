@@ -32,6 +32,8 @@ export interface SessionInfo {
   conversationReplay?: string;
   /** When the session's PR was merged. Sessions with mergedAt are kept alive until pruned. */
   mergedAt?: string;
+  /** Model alias or ID selected for this session (e.g., "sonnet", "opus", "gpt-5.4"). */
+  model?: string;
 }
 
 // ---- Repo types ----
