@@ -1,5 +1,6 @@
 #!/bin/bash
 # One-time server provisioning for ShipIt on a fresh Ubuntu VPS.
+# Safe to re-run — skips steps that are already done.
 # Run as root: bash setup.sh
 set -euo pipefail
 
@@ -51,34 +52,65 @@ if [ -n "$CF_API_TOKEN" ]; then
   fi
 fi
 
-echo ""
-echo "==> Installing Docker..."
-apt-get update
-apt-get install -y ca-certificates curl gnupg
-install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-chmod a+r /etc/apt/keyrings/docker.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
-apt-get update
-apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+# --- Clone or update repo ---
+if [ -d /opt/shipit/.git ]; then
+  echo "==> Repo already cloned, pulling latest..."
+  git -C /opt/shipit pull
+else
+  echo "==> Cloning repo..."
+  apt-get update -qq
+  apt-get install -y -qq git
+  git clone "$REPO_URL" /opt/shipit
+fi
 
-echo "==> Installing cloudflared..."
-curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cloudflared.deb
-dpkg -i /tmp/cloudflared.deb
-rm /tmp/cloudflared.deb
+# --- Install Docker ---
+if command -v docker &>/dev/null; then
+  echo "==> Docker already installed, skipping."
+else
+  echo "==> Installing Docker..."
+  apt-get update -qq
+  apt-get install -y -qq ca-certificates curl gnupg
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  chmod a+r /etc/apt/keyrings/docker.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+  apt-get update -qq
+  apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin
+fi
 
-echo ""
-echo "==> Authenticating with Cloudflare..."
-echo "    A URL will appear below. Open it in your browser to authorize this server."
-echo "    (On a headless server, copy-paste the URL to any browser where you're logged into Cloudflare.)"
-echo ""
-cloudflared tunnel login
+# --- Install cloudflared ---
+if command -v cloudflared &>/dev/null; then
+  echo "==> cloudflared already installed, skipping."
+else
+  echo "==> Installing cloudflared..."
+  curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cloudflared.deb
+  dpkg -i /tmp/cloudflared.deb
+  rm /tmp/cloudflared.deb
+fi
 
+# --- Authenticate with Cloudflare ---
+if [ -f /root/.cloudflared/cert.pem ]; then
+  echo "==> Already authenticated with Cloudflare, skipping."
+else
+  echo ""
+  echo "==> Authenticating with Cloudflare..."
+  echo "    A URL will appear below. Open it in your browser to authorize this server."
+  echo "    (On a headless server, copy-paste the URL to any browser where you're logged into Cloudflare.)"
+  echo ""
+  cloudflared tunnel login
+fi
+
+# --- Create tunnel ---
 TUNNEL_NAME="shipit"
-echo "==> Creating tunnel '$TUNNEL_NAME'..."
-cloudflared tunnel create "$TUNNEL_NAME"
+if cloudflared tunnel info "$TUNNEL_NAME" &>/dev/null; then
+  echo "==> Tunnel '$TUNNEL_NAME' already exists, skipping creation."
+else
+  echo "==> Creating tunnel '$TUNNEL_NAME'..."
+  cloudflared tunnel create "$TUNNEL_NAME"
+fi
 TUNNEL_ID=$(cloudflared tunnel info "$TUNNEL_NAME" --output json 2>/dev/null | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
 
+# --- Configure tunnel (always overwrite to pick up domain changes) ---
 echo "==> Configuring tunnel..."
 mkdir -p /etc/cloudflared
 cat > /etc/cloudflared/config.yml <<EOL
@@ -93,22 +125,35 @@ ingress:
   - service: http_status:404
 EOL
 
+# --- DNS routes (idempotent — Cloudflare ignores duplicates) ---
 echo "==> Setting up DNS routes..."
-cloudflared tunnel route dns "$TUNNEL_NAME" "$DOMAIN"
-cloudflared tunnel route dns "$TUNNEL_NAME" "*.$DOMAIN"
+cloudflared tunnel route dns "$TUNNEL_NAME" "$DOMAIN" || true
+cloudflared tunnel route dns "$TUNNEL_NAME" "*.$DOMAIN" || true
 
-echo "==> Configuring firewall (SSH only — all HTTP traffic goes through the tunnel)..."
-apt-get install -y ufw
-ufw default deny incoming
-ufw default allow outgoing
-ufw allow OpenSSH
-ufw --force enable
+# --- Firewall ---
+if ufw status 2>/dev/null | grep -q "Status: active"; then
+  echo "==> Firewall already configured, skipping."
+else
+  echo "==> Configuring firewall (SSH only — all HTTP traffic goes through the tunnel)..."
+  apt-get install -y -qq ufw
+  ufw default deny incoming
+  ufw default allow outgoing
+  ufw allow OpenSSH
+  ufw --force enable
+fi
 
-echo "==> Installing cloudflared as a system service..."
-cloudflared service install
-systemctl enable --now cloudflared
+# --- cloudflared system service ---
+if systemctl is-enabled cloudflared &>/dev/null; then
+  echo "==> cloudflared service already installed, restarting to pick up config changes..."
+  systemctl restart cloudflared
+else
+  echo "==> Installing cloudflared as a system service..."
+  cloudflared service install
+  systemctl enable --now cloudflared
+fi
 
-if [ -n "$CF_API_TOKEN" ]; then
+# --- Zero Trust Access (optional) ---
+if [ -n "${CF_API_TOKEN:-}" ]; then
   echo "==> Creating Zero Trust Access application..."
   APP_RESPONSE=$(curl -sf "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/access/apps" \
     -H "Content-Type: application/json" \
@@ -120,13 +165,12 @@ if [ -n "$CF_API_TOKEN" ]; then
       \"session_duration\": \"24h\",
       \"app_launcher_visible\": true,
       \"self_hosted_domains\": [\"$DOMAIN\", \"*.$DOMAIN\"]
-    }")
+    }" || true)
 
   APP_ID=$(echo "$APP_RESPONSE" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
   if [ -z "$APP_ID" ]; then
-    echo "    Warning: failed to create Access application. Response:"
-    echo "    $APP_RESPONSE"
-    echo "    You can configure access manually — see instructions at the end."
+    echo "    Note: could not create Access application (may already exist)."
+    echo "    Manage it at: https://one.dash.cloudflare.com → Access → Applications"
   else
     echo "    Created application: $APP_ID"
 
@@ -145,19 +189,19 @@ if [ -n "$CF_API_TOKEN" ]; then
         \"name\": \"Allow team\",
         \"decision\": \"allow\",
         \"include\": [$INCLUDE_RULE]
-      }")
+      }" || true)
 
     POLICY_ID=$(echo "$POLICY_RESPONSE" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
     if [ -z "$POLICY_ID" ]; then
-      echo "    Warning: failed to create Access policy. Response:"
-      echo "    $POLICY_RESPONSE"
-      echo "    You can add policies manually — see instructions at the end."
+      echo "    Note: could not create Access policy (may already exist)."
+      echo "    Manage policies at: https://one.dash.cloudflare.com → Access → Applications"
     else
       echo "    Created policy: $POLICY_ID"
     fi
   fi
 fi
 
+# --- Build and start ShipIt (always run — this is the deploy step) ---
 echo "==> Building and starting ShipIt..."
 cd /opt/shipit
 docker compose -f deployment/hetzner/docker-compose.yml build
@@ -175,14 +219,14 @@ if [ -n "${CF_API_TOKEN:-}" ] && [ -n "${APP_ID:-}" ] && [ -n "${POLICY_ID:-}" ]
   echo "  Zero Trust access control is configured."
   echo "  To manage policies later: https://one.dash.cloudflare.com → Access → Applications"
 elif [ -n "${CF_API_TOKEN:-}" ]; then
-  echo "  ⚠ Zero Trust setup had issues — configure manually:"
+  echo "  Zero Trust: check the dashboard for existing config or configure manually:"
   echo "    1. Go to: https://one.dash.cloudflare.com"
   echo "    2. Navigate to: Access → Applications → Add an application"
   echo "    3. Choose 'Self-hosted', set domain to: $DOMAIN"
   echo "    4. Add a second domain: *.$DOMAIN"
   echo "    5. Create an Allow policy for your team's emails"
 else
-  echo "  ⚠ No access control configured — your instance is publicly accessible!"
+  echo "  No access control configured — your instance is publicly accessible!"
   echo "  Set up Zero Trust access control:"
   echo "    1. Go to: https://one.dash.cloudflare.com"
   echo "    2. Navigate to: Access → Applications → Add an application"
