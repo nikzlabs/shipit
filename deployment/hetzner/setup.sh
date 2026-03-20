@@ -214,11 +214,9 @@ if [ -n "${CF_API_TOKEN:-}" ]; then
       APPS_LIST=$(curl -s --max-time 30 \
         "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/access/apps" \
         -H "Authorization: Bearer $CF_API_TOKEN" || echo "")
-      # Extract the app ID for the entry whose domain matches ours.
-      # The API returns JSON objects with "domain":"<domain>" and "id":"<uuid>" fields.
-      # We use tr to put each field on its own line, then find our domain and grab the
-      # preceding id field.
-      APP_ID=$(echo "$APPS_LIST" | tr ',' '\n' | grep -B20 "\"domain\":\"$DOMAIN\"" | grep -o '"id":"[^"]*"' | tail -1 | cut -d'"' -f4 || true)
+      # The API returns pretty-printed JSON. Find the "id" line closest before
+      # a line containing our domain name. Works with both compact and pretty JSON.
+      APP_ID=$(echo "$APPS_LIST" | grep -B5 "\"$DOMAIN\"" | grep -o '"id": *"[^"]*"' | head -1 | grep -o '[0-9a-f-]\{36\}' || true)
       if [ -n "$APP_ID" ]; then
         echo "    Found existing application: $APP_ID"
       else
