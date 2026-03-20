@@ -39,7 +39,6 @@ import { AddRepoDialog } from "./components/AddRepoDialog.js";
 import { AllSessionsDialog } from "./components/AllSessionsDialog.js";
 import { NewRepoDialog } from "./components/NewRepoDialog.js";
 import { UsageModal } from "./components/UsageModal.js";
-import { StatusBar } from "./components/StatusBar.js";
 import { DeployModal } from "./components/DeployModal.js";
 
 import type { TurnDiffData } from "./components/DiffPanel.js";
@@ -47,7 +46,7 @@ import type { TurnDiffData } from "./components/DiffPanel.js";
 const DiffPanel = lazy(() => import("./components/DiffPanel.js").then(m => ({ default: m.DiffPanel })));
 import { PrLifecycleCard } from "./components/PrLifecycleCard.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
-import { AgentPicker, type AgentOption } from "./components/AgentPicker.js";
+import type { AgentOption } from "./components/AgentPicker.js";
 import type { AgentId, DocEntry } from "../server/shared/types.js";
 
 import { useSessionStore } from "./stores/session-store.js";
@@ -62,6 +61,7 @@ import { useUiStore } from "./stores/ui-store.js";
 import { useRepoStore } from "./stores/repo-store.js";
 import { resumeSessionInternal, handleSessionResume, resetSessionState } from "./stores/actions/session-actions.js";
 import { parseRepoLabel, parseRepoName, repoLabelToNewPath, parseNewSessionSlug } from "./utils/repo-label.js";
+import { saveModelId } from "./utils/local-storage.js";
 
 export default function App() {
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
@@ -607,6 +607,11 @@ export default function App() {
     send({ type: "set_agent", agentId });
   }, [send]);
 
+  const handleModelChange = useCallback((model: string) => {
+    saveModelId(model);
+    send({ type: "set_model", model });
+  }, [send]);
+
   const handleInstructionsSave = useCallback(async (content: string) => {
     await useSettingsStore.getState().saveInstructions(content).catch(() => {});
     useUiStore.getState().setSettingsOpen(false);
@@ -673,16 +678,14 @@ export default function App() {
         </>
       )}
       {!showHomeScreen && !showNewSessionView && (
-        <div className="border-t border-(--color-border-primary) px-4 py-1.5 flex items-center gap-2">
-          <AgentPicker agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} disabled={isLoading || status !== "open"} />
-          <Button variant="ghost" size="sm" onClick={handleDownloadChat} className="ml-auto" title="Download chat history" aria-label="Download chat history">
+        <div className="border-t border-(--color-border-primary) px-4 py-1.5 flex items-center justify-end">
+          <Button variant="ghost" size="sm" onClick={handleDownloadChat} title="Download chat history" aria-label="Download chat history">
             <DownloadSimpleIcon size={ICON_SIZE.SM} />
           </Button>
         </div>
       )}
-      {!showHomeScreen && !showNewSessionView && <StatusBar modelInfo={modelInfo} contextTokens={contextTokens} agentName={agentList.find((a) => a.id === activeAgentId)?.name} />}
       {!showHomeScreen && !showNewSessionView && queuedMessages.length > 0 && <QueueIndicator queue={queuedMessages} onCancel={(pos) => send({ type: "cancel_queued_message", position: pos })} />}
-      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_claude" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} uploads={uploads} allUploads={sessionUploads} onUploadFiles={(files) => void uploadFiles(files)} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} />}
+      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_claude" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} uploads={uploads} allUploads={sessionUploads} onUploadFiles={(files) => void uploadFiles(files)} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} onModelChange={handleModelChange} modelInfo={modelInfo} contextTokens={contextTokens} hasActiveSession={!showNewSessionView && !!sessionId} />}
     </>
   );
 

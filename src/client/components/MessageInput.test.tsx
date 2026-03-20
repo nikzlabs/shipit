@@ -9,12 +9,12 @@ describe("MessageInput", () => {
     it("renders the input textarea and send button", () => {
       render(<MessageInput onSend={vi.fn()} disabled={false} />);
       expect(screen.getByPlaceholderText("Describe what to build... (type @ to attach files)")).toBeInTheDocument();
-      expect(screen.getByText("Send")).toBeInTheDocument();
+      expect(screen.getByLabelText("Send message")).toBeInTheDocument();
     });
 
-    it("renders the attach file button", () => {
+    it("renders the add files button", () => {
       render(<MessageInput onSend={vi.fn()} disabled={false} />);
-      expect(screen.getByLabelText("Attach file")).toBeInTheDocument();
+      expect(screen.getByLabelText("Add files")).toBeInTheDocument();
     });
 
     it("sends text message on submit", () => {
@@ -22,7 +22,7 @@ describe("MessageInput", () => {
       render(<MessageInput onSend={onSend} disabled={false} />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
       fireEvent.change(textarea, { target: { value: "Hello Claude" } });
-      fireEvent.click(screen.getByText("Send"));
+      fireEvent.click(screen.getByLabelText("Send message"));
       expect(onSend).toHaveBeenCalledWith("Hello Claude");
     });
 
@@ -38,7 +38,7 @@ describe("MessageInput", () => {
     it("does not send empty messages", () => {
       const onSend = vi.fn();
       render(<MessageInput onSend={onSend} disabled={false} />);
-      fireEvent.click(screen.getByText("Send"));
+      fireEvent.click(screen.getByLabelText("Send message"));
       expect(onSend).not.toHaveBeenCalled();
     });
 
@@ -46,6 +46,34 @@ describe("MessageInput", () => {
       render(<MessageInput onSend={vi.fn()} disabled={true} />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
       expect(textarea).toBeDisabled();
+    });
+  });
+
+  describe("plan mode toggle", () => {
+    it("renders plan mode toggle when onPermissionModeChange is provided", () => {
+      render(<MessageInput onSend={vi.fn()} disabled={false} onPermissionModeChange={vi.fn()} />);
+      expect(screen.getByTestId("plan-mode-toggle")).toBeInTheDocument();
+    });
+
+    it("does not render plan mode toggle when onPermissionModeChange is not provided", () => {
+      render(<MessageInput onSend={vi.fn()} disabled={false} />);
+      expect(screen.queryByTestId("plan-mode-toggle")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("model agent selector", () => {
+    it("renders model selector when onAgentChange is provided", () => {
+      render(
+        <MessageInput
+          onSend={vi.fn()}
+          disabled={false}
+          onAgentChange={vi.fn()}
+          agents={[{ id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-sonnet-4"] }]}
+          modelInfo={{ model: "Opus 4.6", contextWindowTokens: 200000 }}
+        />,
+      );
+      expect(screen.getByTestId("model-agent-selector")).toBeInTheDocument();
+      expect(screen.getByText("Opus 4.6")).toBeInTheDocument();
     });
   });
 

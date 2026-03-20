@@ -320,7 +320,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // ---- Per-session WebSocket route ----
   // Session-scoped WS: auto-activates the session on connect, no activate_session needed.
   // The session ID is in the URL path. Agent preference via ?agent= query param.
-  app.get<{ Params: { sessionId: string }; Querystring: { agent?: string } }>(
+  app.get<{ Params: { sessionId: string }; Querystring: { agent?: string; model?: string } }>(
     "/ws/sessions/:sessionId",
     { websocket: true },
     (socket, request) => {
@@ -336,7 +336,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       let activeAppSessionId: string | undefined = sessionId;
       let activeSessionDir: string | null = session.workspaceDir ?? null;
       const requestedAgent = request.query.agent as AgentId | undefined;
+      const requestedModel = request.query.model;
       let perConnectionAgentId: AgentId = requestedAgent ?? defaultAgentId;
+      let selectedModel: string | undefined = session.model ?? requestedModel;
       let attachedRunner: SessionRunnerInterface | null = null;
       let runnerMessageListener: ((msg: WsServerMessage) => void) | null = null;
       let previewRetryListener: ((msg: WsServerMessage) => void) | null = null;
@@ -482,6 +484,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         setAgent: (a) => { if (attachedRunner) attachedRunner.setAgent(a); },
         getActiveAgentId: () => attachedRunner?.agentId ?? perConnectionAgentId,
         setActiveAgentId: (id) => { perConnectionAgentId = id; if (attachedRunner) attachedRunner.agentId = id; },
+        getSelectedModel: () => selectedModel,
+        setSelectedModel: (m) => { selectedModel = m; },
         getIsClaudeRunning: () => attachedRunner?.running ?? false,
         setIsClaudeRunning: (v) => { if (attachedRunner) attachedRunner.running = v; },
         getWasInterrupted: () => attachedRunner?.wasInterrupted ?? false,
@@ -590,6 +594,19 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
               return;
             }
             ctx.setActiveAgentId(agentId);
+            return;
+          }
+          case "set_model": {
+            const activeAgent = agentRegistry.get(ctx.getActiveAgentId());
+            if (activeAgent && !activeAgent.capabilities.models.includes(msg.model)) {
+              send({ type: "error", message: `Model "${msg.model}" is not available for ${activeAgent.name}` });
+              return;
+            }
+            ctx.setSelectedModel(msg.model);
+            // Persist to session metadata so it survives reconnects and warm pool
+            if (activeAppSessionId) {
+              sessionManager.setModel(activeAppSessionId, msg.model);
+            }
             return;
           }
           // new_session and activate_session are NOT handled — session is implicit from URL

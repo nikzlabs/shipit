@@ -1,15 +1,18 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: consume prefill text from external store on mount
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useSessionStore } from "../stores/session-store.js";
-import { PaperclipIcon, StopIcon } from "@phosphor-icons/react";
+import { PlusIcon, StopIcon, ArrowUpIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
-import { ModeSelector } from "./ModeSelector.js";
+import { PlanModeToggle } from "./PlanModeToggle.js";
+import { ModelAgentSelector } from "./ModelAgentSelector.js";
+import { ContextMeterIcon } from "./ContextMeterIcon.js";
 import { FileAttachmentChips } from "./FileAttachmentChips.js";
 import { FileUploadChips } from "./FileUploadChips.js";
 import { FileAutoComplete } from "./FileAutoComplete.js";
-import { Button } from "./ui/button.js";
-import type { PermissionMode, FileContextRef, FileTreeNode } from "../../server/shared/types.js";
+import type { PermissionMode, FileContextRef, FileTreeNode, AgentId } from "../../server/shared/types.js";
 import type { UploadItem } from "../hooks/useFileUpload.js";
+import type { AgentOption } from "./AgentPicker.js";
+import type { ModelInfo } from "./StatusBar.js";
 
 export function MessageInput({
   onSend,
@@ -27,6 +30,13 @@ export function MessageInput({
   onUploadFiles,
   onRemoveUpload,
   onRetryUpload,
+  agents = [],
+  activeAgentId = "claude",
+  onAgentChange,
+  onModelChange,
+  modelInfo,
+  contextTokens = 0,
+  hasActiveSession = false,
 }: {
   onSend: (text: string) => void;
   disabled: boolean;
@@ -44,6 +54,13 @@ export function MessageInput({
   onUploadFiles?: (files: File[]) => void;
   onRemoveUpload?: (index: number) => void;
   onRetryUpload?: (index: number) => void;
+  agents?: AgentOption[];
+  activeAgentId?: AgentId;
+  onAgentChange?: (agentId: AgentId) => void;
+  onModelChange?: (model: string) => void;
+  modelInfo?: ModelInfo | null;
+  contextTokens?: number;
+  hasActiveSession?: boolean;
 }) {
   const [text, setText] = useState("");
   const [isDragging, setIsDragging] = useState(false);
@@ -250,17 +267,7 @@ export function MessageInput({
         </div>
       )}
 
-      {onPermissionModeChange && (
-        <div className="flex items-center mb-2 max-w-3xl mx-auto">
-          <ModeSelector
-            mode={permissionMode}
-            onChange={onPermissionModeChange}
-            disabled={disabled}
-          />
-        </div>
-      )}
-
-      <div className="flex items-end gap-2 sm:gap-3 max-w-3xl mx-auto relative">
+      <div className="max-w-3xl mx-auto relative">
         {/* @ autocomplete popup */}
         {showAutoComplete && (
           <FileAutoComplete
@@ -282,53 +289,89 @@ export function MessageInput({
           data-testid="file-input"
         />
 
-        {/* Attach file button */}
-        <Button
-          variant="secondary"
-          size="md"
-          onClick={handleAttachClick}
-          disabled={disabled}
-          className="rounded-lg px-3 py-3"
-          title="Attach file"
-          aria-label="Attach file"
-        >
-          <PaperclipIcon size={ICON_SIZE.MD} />
-        </Button>
+        {/* Unified input box */}
+        <div className="flex flex-col rounded-xl bg-(--color-bg-secondary) border border-(--color-border-secondary) focus-within:ring-1 focus-within:ring-(--color-accent)/80">
+          {/* Textarea — full width on top */}
+          <textarea
+            ref={textareaRef}
+            value={text}
+            onChange={handleTextChange}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            placeholder="Describe what to build... (type @ to attach files)"
+            disabled={disabled}
+            rows={1}
+            className="w-full resize-none bg-transparent px-4 pt-3 pb-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none disabled:opacity-50 field-sizing-content"
+          />
 
-        <textarea
-          ref={textareaRef}
-          value={text}
-          onChange={handleTextChange}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          placeholder="Describe what to build... (type @ to attach files)"
-          disabled={disabled}
-          rows={1}
-          className="flex-1 resize-none rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-3 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:ring-2 focus:ring-(--color-accent) disabled:opacity-50 field-sizing-content"
-        />
-        {isLoading && onInterrupt ? (
-          <Button
-            variant="destructive"
-            size="md"
-            onClick={onInterrupt}
-            className="rounded-lg px-4 py-3"
-            title="Stop (Esc)"
-            aria-label="Stop Claude"
-            data-testid="stop-button"
-          >
-            <StopIcon size={ICON_SIZE.SM} weight="fill" />
-          </Button>
-        ) : (
-          <Button
-            variant="primary"
-            size="md"
-            onClick={handleSubmit}
-            disabled={disabled || !text.trim()}
-            className="rounded-lg px-4 py-3"
-          >
-            Send
-          </Button>
-        )}
+          {/* Toolbar row — below textarea */}
+          <div className="flex items-center gap-1 px-2 pb-2">
+            {/* Add files button */}
+            <button
+              onClick={handleAttachClick}
+              disabled={disabled}
+              className="flex items-center justify-center shrink-0 rounded-lg p-1.5 text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Add files"
+              aria-label="Add files"
+            >
+              <PlusIcon size={ICON_SIZE.SM} />
+            </button>
+
+            {/* Plan mode toggle */}
+            {onPermissionModeChange && (
+              <PlanModeToggle
+                mode={permissionMode}
+                onChange={onPermissionModeChange}
+                disabled={disabled}
+              />
+            )}
+
+            {/* Spacer */}
+            <div className="flex-1" />
+
+            {/* Context meter */}
+            {modelInfo && contextTokens > 0 && (
+              <ContextMeterIcon modelInfo={modelInfo} contextTokens={contextTokens} />
+            )}
+
+            {/* Model / agent selector */}
+            {onAgentChange && (
+              <ModelAgentSelector
+                agents={agents}
+                activeAgentId={activeAgentId}
+                onAgentChange={onAgentChange}
+                onModelChange={onModelChange}
+                modelInfo={modelInfo ?? null}
+                hasActiveSession={hasActiveSession}
+                disabled={disabled || isLoading}
+              />
+            )}
+
+            {/* Send / Stop button — extra gap from model selector */}
+            <div className="w-1" />
+            {isLoading && onInterrupt ? (
+              <button
+                onClick={onInterrupt}
+                className="flex items-center justify-center shrink-0 rounded-lg p-2 bg-(--color-danger) text-white hover:bg-(--color-danger-hover) transition-colors"
+                title="Stop (Esc)"
+                aria-label="Stop Claude"
+                data-testid="stop-button"
+              >
+                <StopIcon size={ICON_SIZE.SM} weight="fill" />
+              </button>
+            ) : (
+              <button
+                onClick={handleSubmit}
+                disabled={disabled || !text.trim()}
+                className="flex items-center justify-center shrink-0 rounded-lg p-2 bg-(--color-accent) text-white hover:bg-(--color-accent-hover) transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                aria-label="Send message"
+                data-testid="send-button"
+              >
+                <ArrowUpIcon size={ICON_SIZE.SM} weight="bold" />
+              </button>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

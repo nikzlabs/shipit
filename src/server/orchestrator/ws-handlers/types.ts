@@ -59,6 +59,8 @@ export interface RunnerCtx {
   setAgent: (a: AgentProcess | null) => void;
   getActiveAgentId: () => AgentId;
   setActiveAgentId: (id: AgentId) => void;
+  getSelectedModel: () => string | undefined;
+  setSelectedModel: (model: string | undefined) => void;
   getIsClaudeRunning: () => boolean;
   setIsClaudeRunning: (v: boolean) => void;
   getWasInterrupted: () => boolean;

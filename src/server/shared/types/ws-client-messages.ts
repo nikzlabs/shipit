@@ -30,6 +30,12 @@ export interface WsSetAgentMessage {
   agentId: AgentId;
 }
 
+/** Client → Server: set the model for the next turn. */
+export interface WsSetModelMessage {
+  type: "set_model";
+  model: string;
+}
+
 // ---- Interrupt messages ----
 
 /** Client → Server: interrupt the currently running Claude process. */
@@ -94,6 +100,7 @@ export type WsClientMessage =
   | WsClearLogs
   | WsAnswerQuestion
   | WsSetAgentMessage
+  | WsSetModelMessage
   | WsInitiateDeploy
   | WsCancelDeploy
   | WsTerminalStart

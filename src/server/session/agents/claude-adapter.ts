@@ -35,7 +35,7 @@ export class ClaudeAdapter
       "Write", "Read", "Edit", "Bash", "Glob", "Grep",
       "WebFetch", "WebSearch", "AskUserQuestion",
     ],
-    models: ["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-3-20250401"],
+    models: ["sonnet", "opus", "haiku"],
   };
 
   private inner: ClaudeProcess;
@@ -130,6 +130,7 @@ export class ClaudeAdapter
       cwd: params.cwd,
       permissionMode: params.permissionMode,
       mcpConfigPath: params.mcpConfigPath,
+      model: params.model,
     });
   }
 
