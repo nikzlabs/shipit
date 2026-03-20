@@ -5,6 +5,17 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/nicolasalt/shipit.git"
+CONFIG_FILE="/etc/shipit/setup.conf"
+
+# --- Load saved config from previous run, if any ---
+DOMAIN=""
+CF_API_TOKEN=""
+CF_ACCOUNT_ID=""
+CF_ALLOWED_EMAIL=""
+if [ -f "$CONFIG_FILE" ]; then
+  # shellcheck source=/dev/null
+  source "$CONFIG_FILE"
+fi
 
 echo "==========================================="
 echo "  ShipIt — Server Provisioning"
@@ -17,40 +28,63 @@ echo "     - A dedicated domain (e.g. shipit.dev) where free-plan wildcards work
 echo "     - OR Advanced Certificate Manager (\$10/mo) for nested wildcards"
 echo ""
 
-read -rp "Enter your domain (e.g. shipit.example.com): " DOMAIN
-if [ -z "$DOMAIN" ]; then
-  echo "Error: domain is required" >&2
-  exit 1
+if [ -n "$DOMAIN" ]; then
+  echo "  Using saved domain: $DOMAIN"
+  read -rp "  Press Enter to keep, or type a new domain: " NEW_DOMAIN
+  if [ -n "$NEW_DOMAIN" ]; then
+    DOMAIN="$NEW_DOMAIN"
+  fi
+else
+  read -rp "Enter your domain (e.g. shipit.example.com): " DOMAIN
+  if [ -z "$DOMAIN" ]; then
+    echo "Error: domain is required" >&2
+    exit 1
+  fi
 fi
 
-echo ""
-echo "--- Zero Trust Access Control (optional) ---"
-echo ""
-echo "This protects your ShipIt instance so only authorized users can access it."
-echo "To set it up now, you need a Cloudflare API token:"
-echo ""
-echo "  1. Go to: https://dash.cloudflare.com/profile/api-tokens"
-echo "  2. Click 'Create Token'"
-echo "  3. Use 'Custom token' with permission: Account > Access: Apps and Policies > Edit"
-echo "  4. Find your Account ID at: https://dash.cloudflare.com → pick your domain → the ID is in the right sidebar under 'API'"
-echo ""
-read -rp "Cloudflare API token (leave blank to skip — you can set this up later): " CF_API_TOKEN
-if [ -n "$CF_API_TOKEN" ]; then
-  read -rp "Cloudflare Account ID: " CF_ACCOUNT_ID
-  if [ -z "$CF_ACCOUNT_ID" ]; then
-    echo "Error: account ID is required when using API token" >&2
-    exit 1
-  fi
+if [ -z "$CF_API_TOKEN" ]; then
   echo ""
-  echo "Who should have access? Enter either:"
-  echo "  - An email domain (e.g. example.com) to allow anyone with that domain"
-  echo "  - A specific email (e.g. you@example.com)"
-  read -rp "Allowed email domain or email: " CF_ALLOWED_EMAIL
-  if [ -z "$CF_ALLOWED_EMAIL" ]; then
-    echo "Error: at least one email or domain is required" >&2
-    exit 1
+  echo "--- Zero Trust Access Control (optional) ---"
+  echo ""
+  echo "This protects your ShipIt instance so only authorized users can access it."
+  echo "To set it up now, you need a Cloudflare API token:"
+  echo ""
+  echo "  1. Go to: https://dash.cloudflare.com/profile/api-tokens"
+  echo "  2. Click 'Create Token'"
+  echo "  3. Use 'Custom token' with permission: Account > Access: Apps and Policies > Edit"
+  echo "  4. Find your Account ID at: https://dash.cloudflare.com → pick your domain → the ID is in the right sidebar under 'API'"
+  echo ""
+  read -rp "Cloudflare API token (leave blank to skip — you can set this up later): " CF_API_TOKEN
+  if [ -n "$CF_API_TOKEN" ]; then
+    read -rp "Cloudflare Account ID: " CF_ACCOUNT_ID
+    if [ -z "$CF_ACCOUNT_ID" ]; then
+      echo "Error: account ID is required when using API token" >&2
+      exit 1
+    fi
+    echo ""
+    echo "Who should have access? Enter either:"
+    echo "  - An email domain (e.g. example.com) to allow anyone with that domain"
+    echo "  - A specific email (e.g. you@example.com)"
+    read -rp "Allowed email domain or email: " CF_ALLOWED_EMAIL
+    if [ -z "$CF_ALLOWED_EMAIL" ]; then
+      echo "Error: at least one email or domain is required" >&2
+      exit 1
+    fi
   fi
+else
+  echo ""
+  echo "  Using saved Cloudflare credentials from previous run."
 fi
+
+# --- Save config for future re-runs ---
+mkdir -p "$(dirname "$CONFIG_FILE")"
+cat > "$CONFIG_FILE" <<EOC
+DOMAIN="$DOMAIN"
+CF_API_TOKEN="$CF_API_TOKEN"
+CF_ACCOUNT_ID="$CF_ACCOUNT_ID"
+CF_ALLOWED_EMAIL="$CF_ALLOWED_EMAIL"
+EOC
+chmod 600 "$CONFIG_FILE"
 
 # --- Clone or update repo ---
 if [ -d /opt/shipit/.git ]; then
