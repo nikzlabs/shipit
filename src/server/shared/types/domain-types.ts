@@ -151,6 +151,15 @@ export interface SectionComment {
 
 export type FileComment = LineComment | SectionComment;
 
+// ---- Docker memory stats ----
+
+export interface DockerMemoryStats {
+  /** Memory currently in use (bytes). */
+  usedBytes: number;
+  /** Memory limit (bytes). 0 means unlimited. */
+  totalBytes: number;
+}
+
 // ---- Chat history message (shared data type) ----
 
 export interface WsChatHistoryMessage {

@@ -25,6 +25,7 @@ import type { GitManager } from "../shared/git.js";
 // ---- Sub-module imports ----
 import type { AppDeps } from "./app-di.js";
 import { initializeManagers } from "./app-di.js";
+import { readDockerMemoryStats } from "./docker-memory.js";
 import {
   setupContainerManager,
   buildRunnerFactory,
@@ -235,11 +236,27 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       client.write(`event: pr_status\ndata: ${JSON.stringify({ updates: prStatuses })}\n\n`);
     }
 
+    // Send current Docker memory stats on connect
+    void (async () => {
+      const stats = await readDockerMemoryStats();
+      if (stats && !client.closed) {
+        client.write(`event: docker_memory\ndata: ${JSON.stringify(stats)}\n\n`);
+      }
+    })();
+
     request.raw.on("close", () => {
       client.closed = true;
       sseClients.delete(client);
     });
   });
+
+  // ---- Docker memory stats broadcast (every 10s) ----
+  const memoryStatsInterval = setInterval(() => {
+    void (async () => {
+      const stats = await readDockerMemoryStats();
+      if (stats) sseBroadcast("docker_memory", stats);
+    })();
+  }, 10_000);
 
   // ---- HTTP API routes ----
   await registerApiRoutes(app, {
@@ -643,6 +660,9 @@ to determine the correct install command, preview mode, command, and ports.`,
   }
 
   // Graceful shutdown
+  app.addHook("onClose", async () => {
+    clearInterval(memoryStatsInterval);
+  });
   registerShutdownHook(app, {
     startupTimer, authManager, runnerRegistry,
     dockerProxyServer, containerManager, databaseManager,

@@ -5,7 +5,7 @@ import { useRepoStore } from "../stores/repo-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { SessionInfo, RepoInfo, PrStatusSummary } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats } from "../../server/shared/types.js";
 
 /**
  * SSE hook for global push events — session list, repo updates, auth, activity dots.
@@ -107,6 +107,11 @@ export function useServerEvents(): void {
     es.addEventListener("pr_status", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as { updates: PrStatusSummary[] };
       usePrStore.getState().applyPrStatusUpdates(data.updates);
+    });
+
+    es.addEventListener("docker_memory", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as DockerMemoryStats;
+      useUiStore.getState().setDockerMemory(data);
     });
 
     es.addEventListener("full_reset_complete", () => {
