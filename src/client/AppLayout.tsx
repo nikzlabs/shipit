@@ -10,7 +10,8 @@ import { MobileTabBar } from "./components/MobileTabBar.js";
 import { Toast } from "./components/Toast.js";
 import type { WsStatus } from "./hooks/useWebSocket.js";
 import { LIGHT_THEMES, type Theme } from "./hooks/useTheme.js";
-import type { SessionInfo, RepoInfo } from "../server/shared/types.js";
+import type { SessionInfo, RepoInfo, DockerMemoryStats } from "../server/shared/types.js";
+import { DockerMemoryBadge } from "./components/DockerMemoryBadge.js";
 
 interface AppLayoutProps {
   // Header
@@ -21,6 +22,7 @@ interface AppLayoutProps {
   hasSystemPrompt: boolean;
   githubAuthenticated: boolean;
   currentSessionUsage: { totalCostUsd: number } | null;
+  dockerMemory: DockerMemoryStats | null;
   onUsageBadgeClick: () => void;
   onNavigateHome: () => void;
 
@@ -81,6 +83,7 @@ export function AppLayout({
   hasSystemPrompt,
   githubAuthenticated,
   currentSessionUsage,
+  dockerMemory,
   onUsageBadgeClick,
   onNavigateHome,
   showConnectionBanner,
@@ -130,6 +133,7 @@ export function AppLayout({
           </h1>
         </div>
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          {dockerMemory && <DockerMemoryBadge stats={dockerMemory} />}
           <button onClick={onDeployOpen} className="hidden sm:inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-(--color-accent-subtle) text-(--color-accent) hover:bg-(--color-accent) hover:text-(--color-accent-text) transition-colors font-medium" title="Deploy to production" aria-label="Deploy">
             <RocketIcon size={ICON_SIZE.SM} />
             Deploy

@@ -155,6 +155,7 @@ export default function App() {
   const settingsOpen = useUiStore((s) => s.settingsOpen);
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
   const toast = useUiStore((s) => s.toast);
+  const dockerMemory = useUiStore((s) => s.dockerMemory);
 
   const bootstrapLoaded = useUiStore((s) => s.bootstrapLoaded);
 
@@ -779,6 +780,7 @@ export default function App() {
         hasSystemPrompt={hasSystemPrompt}
         githubAuthenticated={githubStatus.authenticated}
         currentSessionUsage={currentSessionUsage}
+        dockerMemory={dockerMemory}
         onUsageBadgeClick={handleUsageBadgeClick}
         onNavigateHome={() => navigate("/")}
         showConnectionBanner={!showNewSessionView && !!wsSessionId}
