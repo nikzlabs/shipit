@@ -284,6 +284,13 @@ EOC
   fi
 fi
 
+# --- Self-updater systemd units ---
+echo "==> Installing self-updater service..."
+cp /opt/shipit/deployment/hetzner/shipit-updater.service /etc/systemd/system/
+cp /opt/shipit/deployment/hetzner/shipit-updater.path /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now shipit-updater.path
+
 # --- Build and start ShipIt (always run — this is the deploy step) ---
 echo "==> Building and starting ShipIt..."
 cd /opt/shipit
@@ -327,28 +334,8 @@ echo ""
 echo "  Useful commands:"
 echo "    View logs:      docker compose -f /opt/shipit/deployment/hetzner/docker-compose.yml logs -f shipit"
 echo "    Tunnel logs:    journalctl -u cloudflared -f"
+echo "    Updater logs:   journalctl -u shipit-updater -f"
 echo "    Restart:        docker compose -f /opt/shipit/deployment/hetzner/docker-compose.yml restart"
 echo ""
-echo "==========================================="
-echo "  Auto-deploy setup (optional)"
-echo "==========================================="
-echo ""
-# Extract GitHub path (e.g. "you/shipit") from repo URL for display
-GITHUB_PATH=$(echo "$REPO_URL" | sed 's|.*github\.com[:/]\(.*\)\.git$|\1|; s|.*github\.com[:/]\(.*\)$|\1|')
-echo "  Push to main → auto-deploys to this server via GitHub Actions."
-echo "  Add these secrets to your GitHub repo:"
-echo "    Go to: github.com/$GITHUB_PATH/settings/secrets/actions"
-echo ""
-echo "    DEPLOY_HOST     = $DOMAIN"
-echo "    DEPLOY_SSH_KEY  = contents of ~/.ssh/shipit-deploy (the private key)"
-echo "    DEPLOY_USER     = root"
-echo ""
-echo "  The workflow is already at .github/workflows/deploy.yml."
-echo "  Every push to main will SSH in, rebuild, and restart automatically."
-echo ""
-echo "  To deploy manually instead:"
-echo "     ssh root@$DOMAIN"
-echo "     cd /opt/shipit && git pull"
-echo "     docker compose -f deployment/hetzner/docker-compose.yml build session-worker shipit"
-echo "     docker compose -f deployment/hetzner/docker-compose.yml up -d --no-build shipit"
+echo "  Updates: Settings → Advanced → Software Updates (in the ShipIt UI)"
 echo ""

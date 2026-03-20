@@ -7,37 +7,27 @@ Self-host ShipIt on a Hetzner VPS with a Cloudflare Tunnel (no ports exposed).
 - ShipIt at `https://shipit.example.com` with SSL via Cloudflare
 - Access control via Cloudflare Zero Trust (SSO, email allowlist, etc.)
 - Preview subdomains (`{sessionId}--{port}.shipit.example.com`)
-- Auto-deploy on push to `main` via GitHub Actions
+- One-click updates from the ShipIt UI
 - No open HTTP/HTTPS ports — all traffic routes through the tunnel
 
 ## Prerequisites
 
-- A fork of this repo on GitHub
 - Hetzner Cloud account — CX32 (4 vCPU, 8GB RAM, ~€7/mo) recommended
 - Domain on Cloudflare with **Advanced Certificate Manager** ($10/mo) — required for wildcard certs on nested subdomains (`*.shipit.example.com`). Alternatively, use a dedicated domain (e.g. `shipit.dev`) where the free plan's `*.shipit.dev` wildcard is sufficient.
 
-## Step 1: Create server and SSH key
+## Step 1: Create server
 
-Generate a deploy key on your local machine. This key is used to SSH into the server now and by GitHub Actions for auto-deploy later:
-
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/shipit-deploy -C "shipit-deploy" -N ""
-```
-
-Create a Hetzner CX32 server with Ubuntu 24.04. You can add the public key (`~/.ssh/shipit-deploy.pub`) during server creation, or copy it after:
-
-```bash
-ssh-copy-id -i ~/.ssh/shipit-deploy.pub root@<server-ip>
-```
+1. Create a Hetzner CX32 server with Ubuntu 24.04
+2. Note the server IP
+3. SSH in with the root password Hetzner provides (or add your SSH key during creation)
 
 ## Step 2: Provision the server
 
-Clone your fork on the server and run the setup script:
-
 ```bash
-ssh -i ~/.ssh/shipit-deploy root@<server-ip>
+ssh root@<server-ip>
 
-git clone https://github.com/<you>/shipit.git /opt/shipit
+apt-get update -qq && apt-get install -y -qq git
+git clone https://github.com/nicholasalt/shipit.git /opt/shipit
 bash /opt/shipit/deployment/hetzner/setup.sh
 ```
 
@@ -65,28 +55,16 @@ Users authenticate through Cloudflare before reaching ShipIt. You can use any id
 
 Once complete, visit `https://shipit.example.com` — authenticate through Zero Trust, then complete Claude CLI OAuth.
 
-## Step 3: Set up auto-deploy
-
-Add these secrets to your GitHub repo (Settings → Secrets → Actions):
-
-| Secret           | Value                                                    |
-|------------------|----------------------------------------------------------|
-| `DEPLOY_HOST`    | Server IP                                                |
-| `DEPLOY_SSH_KEY` | Contents of `~/.ssh/shipit-deploy` (the **private** key) |
-| `DEPLOY_USER`    | `root`                                                   |
-
-The deploy workflow is already at `.github/workflows/deploy.yml`. Every push to `main` will SSH into the server, pull, rebuild, and restart.
-
-After this, you no longer need to SSH into the server yourself — all deploys go through GitHub Actions.
-
 ## Updating
 
-Pushes to `main` auto-deploy. To deploy manually:
+ShipIt updates itself from the UI. Go to **Settings → Advanced → Software Updates** and click **Check for Updates**. If an update is available, click **Update Now** — ShipIt will pull the latest code, rebuild, and restart automatically.
+
+To update manually via SSH:
 
 ```bash
 ssh root@<server-ip>
 cd /opt/shipit
-git pull
+git pull origin main
 docker compose -f deployment/hetzner/docker-compose.yml build session-worker shipit
 docker compose -f deployment/hetzner/docker-compose.yml up -d --no-build shipit
 ```
@@ -101,6 +79,11 @@ docker compose -f deployment/hetzner/docker-compose.yml logs -f shipit
 **Check tunnel logs:**
 ```bash
 journalctl -u cloudflared -f
+```
+
+**Check updater logs:**
+```bash
+journalctl -u shipit-updater -f
 ```
 
 **Restart everything:**
