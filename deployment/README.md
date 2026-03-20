@@ -53,30 +53,26 @@ The script will prompt for your domain, then automatically:
 - Authenticate with Cloudflare (prints a URL — open it in your browser)
 - Create a tunnel and configure DNS routes
 - Lock down the firewall (SSH only — no HTTP ports open)
+- Optionally create a Zero Trust Access application + policy via the Cloudflare API
 - Build and start ShipIt
 
-## Step 4: Configure access control in Cloudflare Zero Trust
+### Zero Trust access control
 
-Protect your ShipIt instance so only authorized users can access it:
+The setup script can configure Zero Trust automatically if you provide a Cloudflare API token. To create one:
 
-1. Go to [Cloudflare Zero Trust dashboard](https://one.dash.cloudflare.com)
-2. Navigate to **Access → Applications → Add an application**
-3. Select **Self-hosted** and configure:
-   - **Application name**: ShipIt
-   - **Session duration**: 24 hours (or your preference)
-   - **Application domain**: `shipit.example.com`
-   - Add a second domain: `*.shipit.example.com` (for preview subdomains)
-4. Create an **Access Policy**:
-   - **Policy name**: Allow team
-   - **Action**: Allow
-   - **Include rule**: Emails ending in `@yourdomain.com` (or specific email addresses)
-5. Save the application
+1. Go to [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens)
+2. Create a token with **Account > Access: Apps and Policies > Edit** permission
+3. Note your **Account ID** from the Cloudflare dashboard overview page
 
-Users will now authenticate through Cloudflare before reaching ShipIt. You can use any identity provider Cloudflare supports (Google, GitHub, one-time PIN, etc.).
+The script will ask for these values and create a self-hosted Access application covering `shipit.example.com` and `*.shipit.example.com`, with an allow policy for your email or email domain.
+
+If you skip this during setup, you can configure it later in the [Zero Trust dashboard](https://one.dash.cloudflare.com) under **Access → Applications**.
+
+Users authenticate through Cloudflare before reaching ShipIt. You can use any identity provider Cloudflare supports (Google, GitHub, one-time PIN, etc.).
 
 Once complete, visit `https://shipit.example.com` — authenticate through Zero Trust, then complete Claude CLI OAuth.
 
-## Step 5: Set up auto-deploy
+## Step 4: Set up auto-deploy
 
 Add these secrets to your GitHub repo (Settings → Secrets → Actions):
 
