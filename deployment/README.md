@@ -36,11 +36,11 @@ ssh-copy-id -i ~/.ssh/shipit-deploy.pub root@<server-ip>
 ssh -i ~/.ssh/shipit-deploy root@<server-ip>
 
 # Download and run the provisioning script
-curl -fsSL https://raw.githubusercontent.com/nicolasalt/shipit/main/deployment/hetzner/setup.sh -o setup.sh
+curl -fsSL https://raw.githubusercontent.com/<you>/shipit/main/deployment/hetzner/setup.sh -o setup.sh
 bash setup.sh
 ```
 
-The script will prompt for your domain, then automatically:
+The script will prompt for your repo URL and domain, then automatically:
 - Clone the repo to `/opt/shipit`
 - Install Docker and `cloudflared`
 - Authenticate with Cloudflare (prints a URL — open it in your browser)

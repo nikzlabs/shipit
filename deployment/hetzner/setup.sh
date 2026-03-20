@@ -4,15 +4,27 @@
 # Run as root: bash setup.sh
 set -euo pipefail
 
-REPO_URL="https://github.com/nicolasalt/shipit.git"
 CONFIG_FILE="/etc/shipit/setup.conf"
 
 # --- Load saved config from previous run, if any ---
 DOMAIN=""
+REPO_URL=""
 ZERO_TRUST_DONE=""
 if [ -f "$CONFIG_FILE" ]; then
   # shellcheck source=/dev/null
   source "$CONFIG_FILE"
+fi
+
+# --- Detect repo URL from existing clone, or ask ---
+if [ -z "$REPO_URL" ] && [ -d /opt/shipit/.git ]; then
+  REPO_URL=$(git -C /opt/shipit remote get-url origin 2>/dev/null || true)
+fi
+if [ -z "$REPO_URL" ]; then
+  read -rp "GitHub repo URL (e.g. https://github.com/you/shipit.git): " REPO_URL
+  if [ -z "$REPO_URL" ]; then
+    echo "Error: repo URL is required" >&2
+    exit 1
+  fi
 fi
 
 echo "==========================================="
@@ -81,6 +93,7 @@ fi
 mkdir -p "$(dirname "$CONFIG_FILE")"
 cat > "$CONFIG_FILE" <<EOC
 DOMAIN="$DOMAIN"
+REPO_URL="$REPO_URL"
 ZERO_TRUST_DONE="${ZERO_TRUST_DONE:-}"
 EOC
 chmod 600 "$CONFIG_FILE"
@@ -263,6 +276,7 @@ if [ -n "${CF_API_TOKEN:-}" ]; then
       # Update config so we skip Zero Trust prompts on re-run
       cat > "$CONFIG_FILE" <<EOC
 DOMAIN="$DOMAIN"
+REPO_URL="$REPO_URL"
 ZERO_TRUST_DONE="true"
 EOC
       chmod 600 "$CONFIG_FILE"
@@ -319,9 +333,11 @@ echo "==========================================="
 echo "  Auto-deploy setup (optional)"
 echo "==========================================="
 echo ""
+# Extract GitHub path (e.g. "you/shipit") from repo URL for display
+GITHUB_PATH=$(echo "$REPO_URL" | sed 's|.*github\.com[:/]\(.*\)\.git$|\1|; s|.*github\.com[:/]\(.*\)$|\1|')
 echo "  Push to main → auto-deploys to this server via GitHub Actions."
 echo "  Add these secrets to your GitHub repo:"
-echo "    Go to: github.com/<your-repo> → Settings → Secrets and variables → Actions"
+echo "    Go to: github.com/$GITHUB_PATH/settings/secrets/actions"
 echo ""
 echo "    DEPLOY_HOST     = $DOMAIN"
 echo "    DEPLOY_SSH_KEY  = contents of ~/.ssh/shipit-deploy (the private key)"
