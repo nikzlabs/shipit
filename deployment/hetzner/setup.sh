@@ -141,7 +141,7 @@ else
   echo "==> Creating tunnel '$TUNNEL_NAME'..."
   cloudflared tunnel create "$TUNNEL_NAME"
 fi
-TUNNEL_ID=$(cloudflared tunnel info "$TUNNEL_NAME" 2>&1 | grep -oP '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
+TUNNEL_ID=$(cloudflared tunnel info "$TUNNEL_NAME" 2>&1 | grep -oP '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1 || true)
 if [ -z "$TUNNEL_ID" ]; then
   echo "Error: could not determine tunnel ID for '$TUNNEL_NAME'" >&2
   echo "Try: cloudflared tunnel list" >&2
@@ -193,7 +193,7 @@ fi
 # --- Zero Trust Access (optional) ---
 if [ -n "${CF_API_TOKEN:-}" ]; then
   echo "==> Creating Zero Trust Access application..."
-  APP_RESPONSE=$(curl -sf "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/access/apps" \
+  APP_RESPONSE=$(curl -s --max-time 30 "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/access/apps" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $CF_API_TOKEN" \
     -d "{
@@ -203,11 +203,14 @@ if [ -n "${CF_API_TOKEN:-}" ]; then
       \"session_duration\": \"24h\",
       \"app_launcher_visible\": true,
       \"self_hosted_domains\": [\"$DOMAIN\", \"*.$DOMAIN\"]
-    }" || true)
+    }" || echo "")
 
-  APP_ID=$(echo "$APP_RESPONSE" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+  APP_ID=$(echo "$APP_RESPONSE" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
   if [ -z "$APP_ID" ]; then
     echo "    Note: could not create Access application (may already exist)."
+    if [ -n "$APP_RESPONSE" ]; then
+      echo "    API response: $APP_RESPONSE"
+    fi
     echo "    Manage it at: https://one.dash.cloudflare.com → Access → Applications"
   else
     echo "    Created application: $APP_ID"
@@ -220,18 +223,21 @@ if [ -n "${CF_API_TOKEN:-}" ]; then
     fi
 
     echo "==> Creating Access policy..."
-    POLICY_RESPONSE=$(curl -sf "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/access/apps/$APP_ID/policies" \
+    POLICY_RESPONSE=$(curl -s --max-time 30 "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/access/apps/$APP_ID/policies" \
       -H "Content-Type: application/json" \
       -H "Authorization: Bearer $CF_API_TOKEN" \
       -d "{
         \"name\": \"Allow team\",
         \"decision\": \"allow\",
         \"include\": [$INCLUDE_RULE]
-      }" || true)
+      }" || echo "")
 
-    POLICY_ID=$(echo "$POLICY_RESPONSE" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+    POLICY_ID=$(echo "$POLICY_RESPONSE" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
     if [ -z "$POLICY_ID" ]; then
       echo "    Note: could not create Access policy (may already exist)."
+      if [ -n "$POLICY_RESPONSE" ]; then
+        echo "    API response: $POLICY_RESPONSE"
+      fi
       echo "    Manage policies at: https://one.dash.cloudflare.com → Access → Applications"
     else
       echo "    Created policy: $POLICY_ID"
