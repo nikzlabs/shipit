@@ -16,28 +16,21 @@ Self-host ShipIt on a Hetzner VPS with a Cloudflare Tunnel (no ports exposed).
 - Domain on Cloudflare with **Advanced Certificate Manager** ($10/mo) — required for wildcard certs on nested subdomains (`*.shipit.example.com`). Alternatively, use a dedicated domain (e.g. `shipit.dev`) where the free plan's `*.shipit.dev` wildcard is sufficient.
 - GitHub repo with Actions enabled
 
-## Step 1: Create server
+## Step 1: Create server and SSH key
 
-1. Create a Hetzner CX32 server with Ubuntu 24.04
-2. Note the server IP
-
-## Step 2: Generate a deploy SSH key
-
-This key lets the GitHub Action SSH into your server to deploy. Generate it on your local machine:
+Generate a deploy key on your local machine. This key is used to SSH into the server now and by GitHub Actions for auto-deploy later:
 
 ```bash
 ssh-keygen -t ed25519 -f ~/.ssh/shipit-deploy -C "shipit-deploy" -N ""
 ```
 
-Copy the public key to the server (Hetzner asks for a root password during server creation):
+Create a Hetzner CX32 server with Ubuntu 24.04. You can add the public key (`~/.ssh/shipit-deploy.pub`) during server creation, or copy it after:
 
 ```bash
 ssh-copy-id -i ~/.ssh/shipit-deploy.pub root@<server-ip>
 ```
 
-You'll use the private key (`~/.ssh/shipit-deploy`) as a GitHub secret in Step 5.
-
-## Step 3: Provision the server
+## Step 2: Provision the server
 
 ```bash
 ssh -i ~/.ssh/shipit-deploy root@<server-ip>
@@ -72,7 +65,7 @@ Users authenticate through Cloudflare before reaching ShipIt. You can use any id
 
 Once complete, visit `https://shipit.example.com` — authenticate through Zero Trust, then complete Claude CLI OAuth.
 
-## Step 4: Set up auto-deploy
+## Step 3: Set up auto-deploy
 
 Add these secrets to your GitHub repo (Settings → Secrets → Actions):
 
