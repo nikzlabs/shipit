@@ -2,22 +2,26 @@
 
 ShipIt has a built-in feature tracking system that reads markdown files from the `docs/` directory in your workspace. The UI displays these as a feature list with status badges, and users can kick off sessions to work on them.
 
+## How it works
+
+ShipIt scans `docs/` recursively for any `.md` file (skipping `node_modules` and `.git`). Every markdown file found is shown in the feature list. If a file has YAML frontmatter with a `status` field, ShipIt displays a status badge next to it.
+
 ## Creating a design doc
 
-Design docs live in numbered directories under `docs/`:
+Any `.md` file under `docs/` will be picked up. The conventional structure is numbered directories:
 
 ```
 docs/
   NNN-feature-name/
-    plan.md          # Required — feature design and description
+    plan.md          # Feature design and description
     checklist.md     # Optional — remaining work items
 ```
 
-Pick the next available number for `NNN` (e.g., if the highest existing doc is `042-...`, use `043-...`).
+But simpler layouts work too — `docs/my-feature.md` is equally valid.
 
-## Required frontmatter
+## Frontmatter
 
-Every `plan.md` **must** start with YAML frontmatter containing a `status` field. Without this, the feature won't appear correctly in the ShipIt UI.
+Every design doc **should** start with YAML frontmatter containing a `status` field. Without this, the feature still appears in the UI but has no status badge.
 
 ```markdown
 ---
@@ -49,7 +53,7 @@ title: Custom Feature Title
 ---
 ```
 
-If no `title` is provided, ShipIt derives one from the directory name (e.g., `042-user-auth` becomes "User Auth").
+If no `title` is provided, ShipIt derives one from the path. For files with generic names like `plan.md`, it uses the parent directory name (e.g., `042-user-auth/plan.md` becomes "User Auth"). Otherwise it uses the filename (e.g., `my-feature.md` becomes "My Feature").
 
 ## Updating status
 
@@ -94,4 +98,4 @@ How the feature works — architecture, data flow, key decisions.
 - **Missing frontmatter delimiters**: The `---` lines are required. Don't use ````yaml` fences.
 - **Wrong status value**: Must be exactly one of `planned`, `in-progress`, `done`, or `paused` (lowercase).
 - **Frontmatter not at file start**: The `---` block must be the very first thing in the file — no blank lines or content before it.
-- **Missing plan.md**: The feature directory must contain a file named `plan.md`. Other filenames won't be picked up by the feature system.
+- **File not in `docs/`**: Only `.md` files under the `docs/` directory are scanned. Files elsewhere won't appear in the feature list.
