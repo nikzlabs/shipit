@@ -190,12 +190,18 @@ else
   systemctl enable --now cloudflared
 fi
 
+# --- Install jq (needed for Cloudflare API responses) ---
+if ! command -v jq &>/dev/null; then
+  apt-get install -y -qq jq
+fi
+
 # --- Zero Trust Access (optional) ---
 if [ -n "${CF_API_TOKEN:-}" ]; then
+  CF_API="https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/access/apps"
+  CF_AUTH=(-H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json")
+
   echo "==> Creating Zero Trust Access application..."
-  APP_RESPONSE=$(curl -s --max-time 30 "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/access/apps" \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $CF_API_TOKEN" \
+  APP_RESPONSE=$(curl -s --max-time 30 "$CF_API" "${CF_AUTH[@]}" \
     -d "{
       \"name\": \"ShipIt\",
       \"domain\": \"$DOMAIN\",
@@ -203,34 +209,33 @@ if [ -n "${CF_API_TOKEN:-}" ]; then
       \"session_duration\": \"24h\",
       \"app_launcher_visible\": true,
       \"self_hosted_domains\": [\"$DOMAIN\", \"*.$DOMAIN\"]
-    }" || echo "")
+    }" || echo "{}")
 
-  APP_ID=$(echo "$APP_RESPONSE" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+  APP_ID=$(echo "$APP_RESPONSE" | jq -r '.result.id // empty' || true)
 
   # If app already exists, look up its ID so we can still create the policy
   if [ -z "$APP_ID" ]; then
-    if echo "$APP_RESPONSE" | grep -q "application_already_exists"; then
+    ERROR_CODE=$(echo "$APP_RESPONSE" | jq -r '.errors[0].code // empty' || true)
+    if [ "$ERROR_CODE" = "11010" ]; then
       echo "    Access application already exists, looking up its ID..."
-      APPS_LIST=$(curl -s --max-time 30 \
-        "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/access/apps" \
-        -H "Authorization: Bearer $CF_API_TOKEN" || echo "")
-      # Grab the first "id" UUID from the results — sufficient when there's one app
-      APP_ID=$(echo "$APPS_LIST" | grep '"id"' | head -1 | grep -o '[0-9a-f-]\{36\}' || true)
+      APPS_LIST=$(curl -s --max-time 30 "$CF_API" "${CF_AUTH[@]}" || echo "{}")
+      APP_ID=$(echo "$APPS_LIST" | jq -r '.result[] | select(.domain == "'"$DOMAIN"'") | .id' || true)
       if [ -n "$APP_ID" ]; then
         echo "    Found existing application: $APP_ID"
       else
-        echo "    Could not find app by domain, listing all apps for debugging..."
-        echo "    Apps response (truncated): $(echo "$APPS_LIST" | head -c 500)"
+        echo "    Error: could not find existing app for $DOMAIN"
+        echo "    API response: $(echo "$APPS_LIST" | jq -c '.result[]? | {id, name, domain}' || echo "$APPS_LIST")"
       fi
+    else
+      echo "    Error creating Access application:"
+      echo "    $(echo "$APP_RESPONSE" | jq -r '.errors[0].message // "unknown error"' || echo "$APP_RESPONSE")"
     fi
   else
     echo "    Created application: $APP_ID"
   fi
 
   if [ -z "$APP_ID" ]; then
-    echo "    Error: could not find or create Access application."
     echo "    Set up Zero Trust manually at: https://one.dash.cloudflare.com → Access → Applications"
-    echo "    Manage it at: https://one.dash.cloudflare.com → Access → Applications"
   else
     # Determine if input is a domain (contains no @) or a specific email
     if echo "$CF_ALLOWED_EMAIL" | grep -q "@"; then
@@ -240,21 +245,17 @@ if [ -n "${CF_API_TOKEN:-}" ]; then
     fi
 
     echo "==> Creating Access policy..."
-    POLICY_RESPONSE=$(curl -s --max-time 30 "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/access/apps/$APP_ID/policies" \
-      -H "Content-Type: application/json" \
-      -H "Authorization: Bearer $CF_API_TOKEN" \
+    POLICY_RESPONSE=$(curl -s --max-time 30 "$CF_API/$APP_ID/policies" "${CF_AUTH[@]}" \
       -d "{
         \"name\": \"Allow team\",
         \"decision\": \"allow\",
         \"include\": [$INCLUDE_RULE]
-      }" || echo "")
+      }" || echo "{}")
 
-    POLICY_ID=$(echo "$POLICY_RESPONSE" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+    POLICY_ID=$(echo "$POLICY_RESPONSE" | jq -r '.result.id // empty' || true)
     if [ -z "$POLICY_ID" ]; then
-      echo "    Note: could not create Access policy."
-      if [ -n "$POLICY_RESPONSE" ]; then
-        echo "    API response: $POLICY_RESPONSE"
-      fi
+      echo "    Error creating Access policy:"
+      echo "    $(echo "$POLICY_RESPONSE" | jq -r '.errors[0].message // "unknown error"' || echo "$POLICY_RESPONSE")"
       echo "    Manage policies at: https://one.dash.cloudflare.com → Access → Applications"
     else
       echo "    Created policy: $POLICY_ID"
