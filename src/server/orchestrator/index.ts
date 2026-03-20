@@ -4,6 +4,7 @@ import fastifyMultipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import path from "node:path";
 import fs from "node:fs/promises";
+import Docker from "dockerode";
 import type { AgentId } from "../shared/types.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry } from "../shared/types.js";
 import { getErrorMessage } from "./validation.js";
@@ -121,6 +122,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     deps, isTestMode, credentialsDir, sessionManager,
   });
 
+  // ---- Docker instance for memory stats ----
+  const dockerForStats = containerManager ? new Docker() : null;
+
   // ---- Bare repo cache directory ----
   const getBareCacheDir = createBareCacheDirHelper(workspaceDir);
   const getDepCacheDir = createDepCacheDirHelper(workspaceDir);
@@ -237,12 +241,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
 
     // Send current Docker memory stats on connect
-    void (async () => {
-      const stats = await readDockerMemoryStats();
-      if (stats && !client.closed) {
-        client.write(`event: docker_memory\ndata: ${JSON.stringify(stats)}\n\n`);
-      }
-    })();
+    if (dockerForStats) {
+      void (async () => {
+        const stats = await readDockerMemoryStats(dockerForStats);
+        if (stats && !client.closed) {
+          client.write(`event: docker_memory\ndata: ${JSON.stringify(stats)}\n\n`);
+        }
+      })();
+    }
 
     request.raw.on("close", () => {
       client.closed = true;
@@ -251,12 +257,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   });
 
   // ---- Docker memory stats broadcast (every 10s) ----
-  const memoryStatsInterval = setInterval(() => {
+  const memoryStatsInterval = dockerForStats ? setInterval(() => {
     void (async () => {
-      const stats = await readDockerMemoryStats();
+      const stats = await readDockerMemoryStats(dockerForStats);
       if (stats) sseBroadcast("docker_memory", stats);
     })();
-  }, 10_000);
+  }, 10_000) : null;
 
   // ---- HTTP API routes ----
   await registerApiRoutes(app, {
@@ -678,7 +684,7 @@ to determine the correct install command, preview mode, command, and ports.`,
 
   // Graceful shutdown
   app.addHook("onClose", async () => {
-    clearInterval(memoryStatsInterval);
+    if (memoryStatsInterval) clearInterval(memoryStatsInterval);
   });
   registerShutdownHook(app, {
     startupTimer, authManager, runnerRegistry,
