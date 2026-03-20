@@ -104,9 +104,7 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
     <div className="min-w-0 overflow-hidden">
       <div className={`text-xs text-(--color-text-secondary) px-2 py-1 font-mono flex items-center gap-2${grouped ? "" : " bg-(--color-bg-secondary) rounded"}`}>
         {inProgress && <ToolSpinner />}
-        <span className={inProgress ? "text-(--color-accent)" : ""}>
-          {tool.name}
-        </span>
+        <FormattedToolName name={tool.name} highlight={inProgress} />
         {"command" in tool.input && tool.input.command ? (
           <span className="ml-1 text-(--color-text-secondary) truncate max-w-xs">
             {(tool.input.command as string).slice(0, 80)}
@@ -139,6 +137,28 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
         <ToolResult tool={tool.name} result={result} />
       )}
     </div>
+  );
+}
+
+/** Parses an MCP tool name like "mcp__playwright__browser_take_screenshot" into { server, tool } parts. */
+function parseMcpToolName(name: string): { server: string; tool: string } | null {
+  if (!name.startsWith("mcp__")) return null;
+  const parts = name.split("__");
+  if (parts.length < 3) return null;
+  return { server: parts[1], tool: parts.slice(2).join("__") };
+}
+
+/** Renders a tool name with an MCP server chip when applicable. */
+function FormattedToolName({ name, highlight }: { name: string; highlight: boolean }) {
+  const parsed = parseMcpToolName(name);
+  if (!parsed) {
+    return <span className={highlight ? "text-(--color-accent)" : ""}>{name}</span>;
+  }
+  return (
+    <span className={`inline-flex items-center gap-1.5${highlight ? " text-(--color-accent)" : ""}`}>
+      <span className="border border-current rounded px-1 py-px text-[10px] leading-tight opacity-70">{parsed.server}</span>
+      <span>{parsed.tool}</span>
+    </span>
   );
 }
 
