@@ -1,50 +1,48 @@
 /**
- * Reads Docker container memory stats from cgroup filesystem.
- * Works for both cgroup v2 (modern) and cgroup v1 (legacy).
+ * Reads aggregate memory stats for all running Docker containers via the Docker API.
+ * Returns the sum of memory used by all containers and the total memory
+ * available to Docker (host memory).
  */
 
-import fs from "node:fs/promises";
+import Docker from "dockerode";
 import type { DockerMemoryStats } from "../shared/types.js";
 
-// cgroup v2 paths
-const CGROUP_V2_CURRENT = "/sys/fs/cgroup/memory.current";
-const CGROUP_V2_MAX = "/sys/fs/cgroup/memory.max";
+interface ContainerStats { memory_stats?: { usage?: number } }
 
-// cgroup v1 paths
-const CGROUP_V1_USAGE = "/sys/fs/cgroup/memory/memory.usage_in_bytes";
-const CGROUP_V1_LIMIT = "/sys/fs/cgroup/memory/memory.limit_in_bytes";
-
-async function readFileAsNumber(path: string): Promise<number | null> {
+/**
+ * Read aggregate memory stats for all running Docker containers.
+ * Returns null if Docker is not available or stats can't be read.
+ */
+export async function readDockerMemoryStats(
+  docker: Docker,
+): Promise<DockerMemoryStats | null> {
   try {
-    const content = (await fs.readFile(path, "utf-8")).trim();
-    if (content === "max") return 0; // unlimited
-    const n = parseInt(content, 10);
-    return Number.isNaN(n) ? null : n;
+    // Get Docker host total memory
+    const info: { MemTotal?: number } = await docker.info() as { MemTotal?: number };
+    const totalBytes = info.MemTotal ?? 0;
+
+    // List ALL running containers
+    const containers = await docker.listContainers({
+      filters: { status: ["running"] },
+    });
+
+    // Sum memory usage across all containers
+    let usedBytes = 0;
+    const statPromises = containers.map(async (ci) => {
+      try {
+        const container = docker.getContainer(ci.Id);
+        // stream: false returns a single stats snapshot instead of a stream
+        const stats: ContainerStats = await container.stats({ stream: false }) as ContainerStats;
+        return stats.memory_stats?.usage ?? 0;
+      } catch {
+        return 0;
+      }
+    });
+    const usages = await Promise.all(statPromises);
+    for (const u of usages) usedBytes += u;
+
+    return { usedBytes, totalBytes };
   } catch {
     return null;
   }
-}
-
-/**
- * Read Docker memory stats from cgroup filesystem.
- * Returns null if not running inside a container or cgroup info is unavailable.
- */
-export async function readDockerMemoryStats(): Promise<DockerMemoryStats | null> {
-  // Try cgroup v2 first
-  let used = await readFileAsNumber(CGROUP_V2_CURRENT);
-  let total = await readFileAsNumber(CGROUP_V2_MAX);
-
-  if (used !== null && total !== null) {
-    return { usedBytes: used, totalBytes: total };
-  }
-
-  // Fall back to cgroup v1
-  used = await readFileAsNumber(CGROUP_V1_USAGE);
-  total = await readFileAsNumber(CGROUP_V1_LIMIT);
-
-  if (used !== null && total !== null) {
-    return { usedBytes: used, totalBytes: total };
-  }
-
-  return null;
 }
