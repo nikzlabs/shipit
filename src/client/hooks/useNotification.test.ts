@@ -94,6 +94,30 @@ describe("useNotification", () => {
     vi.unstubAllGlobals();
   });
 
+  it("focuses window and closes notification on click", () => {
+    const instances: any[] = [];
+    const mockNotification = vi.fn().mockImplementation(function (this: any) {
+      instances.push(this);
+    });
+    vi.stubGlobal("Notification", Object.assign(mockNotification, { permission: "granted", requestPermission: vi.fn() }));
+
+    const focusSpy = vi.spyOn(window, "focus").mockImplementation(() => {});
+    const { result } = renderHook(() => useNotification());
+    act(() => setHidden(true));
+    act(() => result.current.notify("done"));
+
+    expect(instances).toHaveLength(1);
+    const notif = instances[0]!;
+    notif.close = vi.fn();
+    notif.onclick();
+
+    expect(focusSpy).toHaveBeenCalled();
+    expect(notif.close).toHaveBeenCalled();
+
+    focusSpy.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
   it("does not send browser notification when permission is not granted", () => {
     const mockNotification = vi.fn();
     vi.stubGlobal("Notification", Object.assign(mockNotification, { permission: "denied", requestPermission: vi.fn() }));
