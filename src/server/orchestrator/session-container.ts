@@ -91,12 +91,18 @@ export interface ContainerConfig {
   credentialsDir: string;
   /** Container image name. */
   imageName: string;
-  /** Memory limit in bytes. */
+  /** Agent container memory limit in bytes. */
   memoryLimit: number;
-  /** CPU quota in microseconds per 100ms period. */
+  /** Agent CPU quota in microseconds per 100ms period. */
   cpuQuota: number;
-  /** Maximum number of PIDs. */
+  /** Agent maximum number of PIDs. */
   pidsLimit: number;
+  /** Preview container memory limit in bytes. Falls back to DEFAULT_PREVIEW_MEMORY_LIMIT. */
+  previewMemoryLimit?: number;
+  /** Preview CPU quota in microseconds per 100ms period. Falls back to agent cpuQuota. */
+  previewCpuQuota?: number;
+  /** Preview maximum number of PIDs. Falls back to DEFAULT_PREVIEW_PIDS_LIMIT. */
+  previewPidsLimit?: number;
   /** Environment variables to pass to the container. */
   env?: Record<string, string>;
   /** Additional Docker labels to apply to the container. */
@@ -150,7 +156,7 @@ export interface SessionContainerManagerOpts {
   imageName?: string;
   /** Docker bridge network name. Defaults to "shipit". */
   networkName?: string;
-  /** Default memory limit in bytes. Defaults to 512MB. */
+  /** Default agent container memory limit in bytes. Defaults to 1GB. */
   memoryLimit?: number;
   /** Default CPU quota (microseconds per 100ms period). Defaults to 50000 (0.5 CPU). */
   cpuQuota?: number;
@@ -185,7 +191,7 @@ export interface SessionContainerManagerOpts {
 
 const DEFAULT_IMAGE = process.env.SESSION_WORKER_IMAGE;
 const DEFAULT_NETWORK = process.env.DOCKER_NETWORK;
-const DEFAULT_MEMORY_LIMIT = 256 * 1024 * 1024; // 256 MB (session container)
+const DEFAULT_MEMORY_LIMIT = 1024 * 1024 * 1024; // 1 GB (agent container)
 const DEFAULT_PREVIEW_MEMORY_LIMIT = 512 * 1024 * 1024; // 512 MB (preview container)
 const DEFAULT_PREVIEW_PIDS_LIMIT = 1024; // preview runs npm + vite + esbuild — needs more PIDs
 const DEFAULT_CPU_QUOTA = 50_000; // 0.5 CPU (50000 µs per 100ms period)
@@ -356,8 +362,9 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       const preview = await createPreviewContainer(
         this.lifecycleDeps(),
         config,
-        DEFAULT_PREVIEW_MEMORY_LIMIT,
-        DEFAULT_PREVIEW_PIDS_LIMIT,
+        config.previewMemoryLimit ?? DEFAULT_PREVIEW_MEMORY_LIMIT,
+        config.previewPidsLimit ?? DEFAULT_PREVIEW_PIDS_LIMIT,
+        config.previewCpuQuota,
       );
       sc.previewContainerId = preview.id;
       sc.previewContainerIp = preview.ip;
@@ -516,6 +523,9 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     memoryLimit?: number;
     cpuQuota?: number;
     pidsLimit?: number;
+    previewMemoryLimit?: number;
+    previewCpuQuota?: number;
+    previewPidsLimit?: number;
     dockerAccess?: boolean;
   }): ContainerConfig {
     return buildContainerConfig({

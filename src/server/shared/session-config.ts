@@ -15,13 +15,20 @@ import { parse as parseYaml } from "yaml";
 // Types
 // ---------------------------------------------------------------------------
 
-export interface SessionResourceConfig {
-  /** Memory limit in MB. Default: 512 */
+export interface ContainerResourceConfig {
+  /** Memory limit in MB. */
   memory: number;
-  /** CPU cores. Default: 0.5 */
+  /** CPU cores as float. */
   cpu: number;
-  /** Max PIDs. Default: 256 */
+  /** Max PIDs. */
   pids: number;
+}
+
+export interface SessionResourceConfig {
+  /** Agent container resources. */
+  agent: ContainerResourceConfig;
+  /** Preview container resources. */
+  preview: ContainerResourceConfig;
 }
 
 export interface SessionCapabilities {
@@ -39,9 +46,8 @@ export interface SessionConfig {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_RESOURCES: SessionResourceConfig = {
-  memory: 512,
-  cpu: 0.5,
-  pids: 256,
+  agent: { memory: 1024, cpu: 0.5, pids: 256 },
+  preview: { memory: 512, cpu: 0.5, pids: 1024 },
 };
 
 const DEFAULT_CAPABILITIES: SessionCapabilities = {
@@ -54,9 +60,16 @@ const DEFAULT_CAPABILITIES: SessionCapabilities = {
 
 export function getResourceCaps(): SessionResourceConfig {
   return {
-    memory: parseEnvInt("MAX_SESSION_MEMORY_MB", 4096),
-    cpu: parseEnvFloat("MAX_SESSION_CPU", 4),
-    pids: parseEnvInt("MAX_SESSION_PIDS", 2048),
+    agent: {
+      memory: parseEnvInt("MAX_SESSION_MEMORY_MB", 4096),
+      cpu: parseEnvFloat("MAX_SESSION_CPU", 4),
+      pids: parseEnvInt("MAX_SESSION_PIDS", 2048),
+    },
+    preview: {
+      memory: parseEnvInt("MAX_SESSION_PREVIEW_MEMORY_MB", 4096),
+      cpu: parseEnvFloat("MAX_SESSION_PREVIEW_CPU", 4),
+      pids: parseEnvInt("MAX_SESSION_PREVIEW_PIDS", 2048),
+    },
   };
 }
 
@@ -107,12 +120,44 @@ export function resolveSessionConfig(sessionDir: string): SessionConfig {
 
   return {
     resources: {
-      memory: Math.min(resources.memory, caps.memory),
-      cpu: Math.min(resources.cpu, caps.cpu),
-      pids: Math.min(resources.pids, caps.pids),
+      agent: clampResources(resources.agent, caps.agent),
+      preview: clampResources(resources.preview, caps.preview),
     },
     capabilities,
   };
+}
+
+function clampResources(
+  resources: ContainerResourceConfig,
+  caps: ContainerResourceConfig,
+): ContainerResourceConfig {
+  return {
+    memory: Math.min(resources.memory, caps.memory),
+    cpu: Math.min(resources.cpu, caps.cpu),
+    pids: Math.min(resources.pids, caps.pids),
+  };
+}
+
+function parseContainerResources(
+  obj: unknown,
+  defaults: ContainerResourceConfig,
+): ContainerResourceConfig {
+  if (typeof obj !== "object" || obj === null) return { ...defaults };
+  const rec = obj as Record<string, unknown>;
+
+  const memory = typeof rec.memory === "number" && Number.isFinite(rec.memory) && rec.memory > 0
+    ? Math.floor(rec.memory)
+    : defaults.memory;
+
+  const cpu = typeof rec.cpu === "number" && Number.isFinite(rec.cpu) && rec.cpu > 0
+    ? rec.cpu
+    : defaults.cpu;
+
+  const pids = typeof rec.pids === "number" && Number.isFinite(rec.pids) && rec.pids > 0
+    ? Math.floor(rec.pids)
+    : defaults.pids;
+
+  return { memory, cpu, pids };
 }
 
 function parseResources(doc: Record<string, unknown> | undefined): SessionResourceConfig {
@@ -122,19 +167,10 @@ function parseResources(doc: Record<string, unknown> | undefined): SessionResour
 
   const res = doc.resources as Record<string, unknown>;
 
-  const memory = typeof res.memory === "number" && Number.isFinite(res.memory) && res.memory > 0
-    ? Math.floor(res.memory)
-    : DEFAULT_RESOURCES.memory;
+  const agent = parseContainerResources(res.agent, DEFAULT_RESOURCES.agent);
+  const preview = parseContainerResources(res.preview, DEFAULT_RESOURCES.preview);
 
-  const cpu = typeof res.cpu === "number" && Number.isFinite(res.cpu) && res.cpu > 0
-    ? res.cpu
-    : DEFAULT_RESOURCES.cpu;
-
-  const pids = typeof res.pids === "number" && Number.isFinite(res.pids) && res.pids > 0
-    ? Math.floor(res.pids)
-    : DEFAULT_RESOURCES.pids;
-
-  return { memory, cpu, pids };
+  return { agent, preview };
 }
 
 function parseCapabilities(doc: Record<string, unknown> | undefined): SessionCapabilities {

@@ -538,6 +538,7 @@ export async function createPreviewContainer(
   config: ContainerConfig,
   previewMemoryLimit: number,
   previewPidsLimit?: number,
+  previewCpuQuota?: number,
 ): Promise<{ id: string; ip: string; workerUrl: string }> {
   // Ensure the dep cache directory exists on the host before mounting.
   if (config.depCacheDir) {
@@ -576,7 +577,7 @@ export async function createPreviewContainer(
       Binds: binds.length > 0 ? binds : undefined,
       Mounts: mounts.length > 0 ? mounts as Parameters<typeof deps.docker.createContainer>[0]["HostConfig"] extends { Mounts?: infer M } ? M : never : undefined,
       Memory: previewMemoryLimit,
-      CpuQuota: config.cpuQuota,
+      CpuQuota: previewCpuQuota ?? config.cpuQuota,
       CpuPeriod: DEFAULT_CPU_PERIOD,
       PidsLimit: previewPidsLimit ?? config.pidsLimit,
       NetworkMode: deps.networkName,
@@ -627,6 +628,9 @@ export function buildContainerConfig(
     memoryLimit?: number;
     cpuQuota?: number;
     pidsLimit?: number;
+    previewMemoryLimit?: number;
+    previewCpuQuota?: number;
+    previewPidsLimit?: number;
     dockerAccess?: boolean;
   },
 ): ContainerConfig {
@@ -641,6 +645,9 @@ export function buildContainerConfig(
     memoryLimit: opts.memoryLimit ?? deps.defaultMemoryLimit,
     cpuQuota: opts.cpuQuota ?? deps.defaultCpuQuota,
     pidsLimit: opts.pidsLimit ?? deps.defaultPidsLimit,
+    previewMemoryLimit: opts.previewMemoryLimit,
+    previewCpuQuota: opts.previewCpuQuota,
+    previewPidsLimit: opts.previewPidsLimit,
     env: opts.env,
     dockerAccess: opts.dockerAccess,
   };

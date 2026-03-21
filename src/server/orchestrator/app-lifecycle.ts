@@ -82,9 +82,9 @@ export async function setupContainerManager(
           workspaceDir: session.workspaceDir,
           dockerAccess: cfg.capabilities.docker,
           resourceLimits: cfg.capabilities.docker ? {
-            memory: cfg.resources.memory * 1024 * 1024,
-            cpuQuota: cfg.resources.cpu * 100_000,
-            pidsLimit: cfg.resources.pids,
+            memory: cfg.resources.agent.memory * 1024 * 1024,
+            cpuQuota: cfg.resources.agent.cpu * 100_000,
+            pidsLimit: cfg.resources.agent.pids,
           } : undefined,
         };
       });
@@ -217,9 +217,12 @@ export function buildRunnerFactory(
             workspaceDir: o.sessionDir,
             credentialsDir,
             depCacheDir: o.depCacheDir,
-            memoryLimit: sessionConfig.resources.memory * 1024 * 1024,
-            cpuQuota: Math.round(sessionConfig.resources.cpu * 100_000),
-            pidsLimit: sessionConfig.resources.pids,
+            memoryLimit: sessionConfig.resources.agent.memory * 1024 * 1024,
+            cpuQuota: Math.round(sessionConfig.resources.agent.cpu * 100_000),
+            pidsLimit: sessionConfig.resources.agent.pids,
+            previewMemoryLimit: sessionConfig.resources.preview.memory * 1024 * 1024,
+            previewCpuQuota: Math.round(sessionConfig.resources.preview.cpu * 100_000),
+            previewPidsLimit: sessionConfig.resources.preview.pids,
             dockerAccess: sessionConfig.capabilities.docker,
           });
           const sc = await mgr.create(config);
@@ -243,9 +246,12 @@ export function buildRunnerFactory(
       workspaceDir: o.sessionDir,
       credentialsDir,
       depCacheDir: o.depCacheDir,
-      memoryLimit: sessionConfig.resources.memory * 1024 * 1024,
-      cpuQuota: Math.round(sessionConfig.resources.cpu * 100_000),
-      pidsLimit: sessionConfig.resources.pids,
+      memoryLimit: sessionConfig.resources.agent.memory * 1024 * 1024,
+      cpuQuota: Math.round(sessionConfig.resources.agent.cpu * 100_000),
+      pidsLimit: sessionConfig.resources.agent.pids,
+      previewMemoryLimit: sessionConfig.resources.preview.memory * 1024 * 1024,
+      previewCpuQuota: Math.round(sessionConfig.resources.preview.cpu * 100_000),
+      previewPidsLimit: sessionConfig.resources.preview.pids,
       dockerAccess: sessionConfig.capabilities.docker,
     });
     const runner = new ContainerSessionRunner({
