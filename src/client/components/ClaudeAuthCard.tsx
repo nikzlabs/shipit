@@ -24,6 +24,7 @@ export function ClaudeAuthCard({
   const [apiKeyError, setApiKeyError] = useState("");
   const [apiKeyLoading, setApiKeyLoading] = useState(false);
   const [authCode, setAuthCode] = useState("");
+  const [authCodeSubmitted, setAuthCodeSubmitted] = useState(false);
   const [authPendingLocal, setAuthPendingLocal] = useState(false);
 
   // Derive effective authPending: auto-clears when authUrl arrives or agent becomes authenticated
@@ -67,6 +68,7 @@ export function ClaudeAuthCard({
 
   const handlePasteAuthCode = () => {
     if (authCode.trim()) {
+      setAuthCodeSubmitted(true);
       onPasteAuthCode(authCode.trim());
     }
   };
@@ -138,16 +140,17 @@ export function ClaudeAuthCard({
                 value={authCode}
                 onChange={(e) => setAuthCode(e.target.value)}
                 placeholder="Paste code here..."
-                className="flex-1 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-2.5 text-sm text-(--color-text-primary) placeholder-gray-500 focus:outline-none focus:border-(--color-border-focus) font-mono"
+                disabled={authCodeSubmitted}
+                className="flex-1 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-2.5 text-sm text-(--color-text-primary) placeholder-gray-500 focus:outline-none focus:border-(--color-border-focus) font-mono disabled:opacity-50"
                 data-testid="claude-auth-code-input"
               />
               <button
                 onClick={handlePasteAuthCode}
-                disabled={!authCode.trim()}
+                disabled={!authCode.trim() || authCodeSubmitted}
                 className="rounded-lg bg-(--color-accent) px-4 py-2.5 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
                 data-testid="claude-auth-code-submit"
               >
-                Submit
+                {authCodeSubmitted ? "Submitted" : "Submit"}
               </button>
             </div>
           </div>
