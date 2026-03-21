@@ -22,34 +22,20 @@ Think of it as a hosted Claude Code session with a web UI: chat panel on the lef
 
 ## Architecture
 
+Three-layer system: browser → orchestrator → session containers.
+
 ```
-┌─────────────────────────────────────────────────────┐
-│                 Docker Container                     │
-│                                                      │
-│  ┌─────────────────────────────────────────────┐    │
-│  │      Node.js Backend (Fastify + WebSocket)   │    │
-│  │  - Spawns claude -p per message              │    │
-│  │  - Streams NDJSON events → WebSocket         │    │
-│  │  - Manages Vite dev server (child process)   │    │
-│  │  - Auto-commits after each Claude turn       │    │
-│  └──────────┬──────────────────────────────┬────┘    │
-│             │                              │         │
-│  ┌──────────▼──────────┐  ┌───────────────▼──────┐  │
-│  │  Claude Code CLI     │  │  Vite Dev Server     │  │
-│  │  (uses subscription) │  │  (:5173)             │  │
-│  │  reads/writes files  │  │  HMR, live preview   │  │
-│  └──────────┬──────────┘  └───────────────┬──────┘  │
-│             │                              │         │
-│  ┌──────────▼──────────────────────────────▼──────┐  │
-│  │              /workspace (project files)         │  │
-│  │              Git repo, source code, assets      │  │
-│  └────────────────────────────────────────────────┘  │
-│                                                      │
-│  Exposed ports: 3000 (app UI), 5173 (preview)       │
-└─────────────────────────────────────────────────────┘
+┌──────────────┐     ┌──────────────────────────────┐     ┌─────────────────────────┐
+│   Browser    │     │     Orchestrator Container    │     │  Session Container(s)   │
+│  (React SPA) │◄───►│  Fastify + WebSocket + SSE   │◄───►│  Claude CLI, terminal,  │
+│              │     │  Routes, services, managers   │     │  preview server, files  │
+└──────────────┘     └──────────────────────────────┘     └─────────────────────────┘
+     WS + SSE              HTTP proxy to containers            HTTP + SSE back
 ```
 
-The server is intentionally thin — it's a bridge between the browser and the Claude CLI. No database, no REST API. All client-server communication happens over a single WebSocket connection at `/ws`.
+- **Browser** — React 19 SPA with Zustand stores, dual-channel communication (per-session WebSocket + global SSE)
+- **Orchestrator** — Fastify server handling auth, session management, git repos, and proxying to containers
+- **Session containers** — isolated Docker containers running Claude Code CLI, terminal PTY, preview dev server, and file watcher
 
 ## Prerequisites
 
@@ -66,7 +52,7 @@ For local development without Docker:
 ## Quick Start (Docker)
 
 ```bash
-git clone https://github.com/anthropics/shipit.git
+git clone https://github.com/nicolasalt/shipit.git
 cd shipit
 
 # Development (hot-reload, source mounted)
@@ -129,25 +115,17 @@ Session continuity is maintained via Claude Code's `--resume` flag. Subsequent m
 
 ```
 src/
-├── server/                 # Fastify backend
-│   ├── index.ts            # Entry point — buildApp() with dependency injection
-│   ├── claude.ts           # Spawns Claude CLI, parses NDJSON stream
-│   ├── git.ts              # Git operations — init, auto-commit, log, rollback
-│   ├── sessions.ts         # Session CRUD, JSON file persistence
-│   ├── chat-history.ts     # Per-session message persistence
-│   ├── auth.ts             # Claude CLI OAuth flow detection
-│   ├── vite-manager.ts     # Vite dev server lifecycle
-│   ├── file-tree.ts        # Workspace directory scanner
-│   ├── markdown.ts         # Markdown file discovery
-│   ├── port-scanner.ts     # Dev server port auto-detection
-│   ├── templates.ts        # Project scaffolding templates
-│   └── types.ts            # Shared TypeScript types
+├── server/
+│   ├── orchestrator/       # Main process — HTTP routes, services, DI, WebSocket handlers
+│   ├── session/            # Session container worker — Claude CLI, terminal, preview, file watcher
+│   ├── shared/             # Code shared between orchestrator and session (types, git, utils)
+│   └── shipit-docs/        # Platform docs served to the agent inside containers
 │
 └── client/                 # React 19 SPA
-    ├── App.tsx             # Root component — state, layout, WebSocket dispatch
-    ├── index.css           # Tailwind CSS imports + animations
-    ├── hooks/              # useWebSocket, useSearch, useResizablePanel, etc.
-    └── components/         # MessageList, PreviewFrame, FileTree, GitHistory, etc.
+    ├── components/         # UI components (MessageList, FileTree, PreviewFrame, etc.)
+    ├── hooks/              # Custom hooks (useWebSocket, useSearch, useResizablePanel, etc.)
+    ├── stores/             # Zustand state stores
+    └── themes/             # Theme CSS files
 ```
 
 ## Tech Stack
@@ -278,4 +256,4 @@ npm run test:watch                    # Watch mode
 
 ## License
 
-MIT
+Apache 2.0 — see [LICENSE](LICENSE) for details.
