@@ -21,7 +21,6 @@ import {
   XCircleIcon,
   CircleNotchIcon,
   CaretDownIcon,
-  ArrowLeftIcon,
   WarningIcon,
   InfoIcon,
 } from "@phosphor-icons/react";
@@ -31,6 +30,11 @@ import { ICON_SIZE } from "../design-tokens.js";
 
 const linkClass = "text-xs text-(--color-text-tertiary) hover:text-(--color-text-secondary) transition-colors";
 const MAX_VISIBLE_FAILURES = 5;
+
+const DEFAULT_BRANCHES = new Set(["main", "master"]);
+function isDefaultBranch(branch: string): boolean {
+  return DEFAULT_BRANCHES.has(branch);
+}
 
 function Spinner() {
   return (
@@ -45,6 +49,38 @@ function DiffStats({ ins, del }: { ins: number; del: number }) {
       {" "}
       <span className="text-(--color-error)">-{del}</span>
     </span>
+  );
+}
+
+/** Displays branch info: just head branch if base is default, otherwise "base ← head". */
+function BranchLabel({ baseBranch, headBranch }: { baseBranch?: string; headBranch?: string }) {
+  if (!headBranch) return null;
+  return (
+    <span className="text-xs text-(--color-text-secondary) truncate flex items-center gap-1">
+      {baseBranch && !isDefaultBranch(baseBranch) ? (
+        <>{baseBranch} <span className="text-(--color-text-tertiary)">←</span> {headBranch}</>
+      ) : headBranch}
+    </span>
+  );
+}
+
+function ViewPrLink({ url }: { url: string }) {
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer" className={linkClass}>
+      View PR
+    </a>
+  );
+}
+
+/** Reusable toggle switch for auto-fix / auto-merge. */
+function ToggleSwitch({ label, enabled, onToggle, title }: { label: string; enabled: boolean; onToggle: () => void; title: string }) {
+  return (
+    <Button variant="ghost" size="sm" onClick={onToggle} title={title}>
+      {label}
+      <span className={`inline-block w-6 h-3.5 rounded-full transition-colors ${enabled ? "bg-(--color-success)" : "bg-(--color-text-tertiary)"}`}>
+        <span className={`block w-2.5 h-2.5 mt-0.5 rounded-full bg-(--color-text-inverse) transition-transform ${enabled ? "translate-x-3" : "translate-x-0.5"}`} />
+      </span>
+    </Button>
   );
 }
 
@@ -103,17 +139,12 @@ function AutoFixToggle({ sessionId, autoFix }: { sessionId: string; autoFix?: Pr
   const enabled = autoFix?.enabled ?? false;
 
   return (
-    <Button
-      variant="ghost"
-      size="sm"
-      onClick={() => toggleAutoFix(sessionId, !enabled)}
+    <ToggleSwitch
+      label="Auto-fix"
+      enabled={enabled}
+      onToggle={() => toggleAutoFix(sessionId, !enabled)}
       title={enabled ? "Disable auto-fix" : "Enable auto-fix"}
-    >
-      Auto-fix
-      <span className={`inline-block w-6 h-3.5 rounded-full transition-colors ${enabled ? "bg-(--color-success)" : "bg-(--color-text-tertiary)"}`}>
-        <span className={`block w-2.5 h-2.5 mt-0.5 rounded-full bg-(--color-text-inverse) transition-transform ${enabled ? "translate-x-3" : "translate-x-0.5"}`} />
-      </span>
-    </Button>
+    />
   );
 }
 
@@ -146,17 +177,12 @@ function AutoMergeToggle({ sessionId, autoMerge }: { sessionId: string; autoMerg
 
   return (
     <span className="flex items-center gap-1">
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => toggleAutoMerge(sessionId, !enabled)}
+      <ToggleSwitch
+        label="Auto-merge"
+        enabled={enabled}
+        onToggle={() => toggleAutoMerge(sessionId, !enabled)}
         title={enabled ? "Disable auto-merge" : "Enable auto-merge"}
-      >
-        Auto-merge
-        <span className={`inline-block w-6 h-3.5 rounded-full transition-colors ${enabled ? "bg-(--color-success)" : "bg-(--color-text-tertiary)"}`}>
-          <span className={`block w-2.5 h-2.5 mt-0.5 rounded-full bg-(--color-text-inverse) transition-transform ${enabled ? "translate-x-3" : "translate-x-0.5"}`} />
-        </span>
-      </Button>
+      />
       {autoMerge?.managed && <ManagedMergeInfo settingsUrl={autoMerge.settingsUrl} />}
     </span>
   );
@@ -243,11 +269,7 @@ function ReadyPhase({ card, sessionId, creating: externalCreating }: { card: PrC
   return (
     <div className="flex items-center gap-3">
       <PrStateBadge sessionId={sessionId} />
-      {card.headBranch && (
-        <span className="text-xs text-(--color-text-secondary) truncate flex items-center gap-1">
-          main <ArrowLeftIcon size={12} /> {card.headBranch}
-        </span>
-      )}
+      <BranchLabel headBranch={card.headBranch} />
       {hasDiffStats && <DiffStats ins={ins} del={del} />}
       {hasDiffStats && (
         <Button
@@ -296,9 +318,7 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
     <div>
       <div className="flex items-center gap-3 flex-wrap">
         <PrStateBadge sessionId={sessionId} />
-        <span className="text-xs text-(--color-text-secondary) truncate flex items-center gap-1">
-          {pr.baseBranch} <ArrowLeftIcon size={12} /> {pr.headBranch}
-        </span>
+        <BranchLabel baseBranch={pr.baseBranch} headBranch={pr.headBranch} />
         <DiffStats ins={pr.insertions} del={pr.deletions} />
         <CiIndicator checks={card.checks} />
         {isCiFailed && (
@@ -320,14 +340,7 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
             {fixingCI ? "Fixing..." : "Fix CI Issues"}
           </Button>
         )}
-        <a
-          href={pr.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={linkClass}
-        >
-          View PR
-        </a>
+        <ViewPrLink url={pr.url} />
       </div>
       {autoMerge?.enabled && !isCiPassed && !isCiNone && (
         <div className="mt-1 text-xs text-(--color-text-secondary) pl-5">
@@ -370,48 +383,13 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
   );
 }
 
-function MergedPhase({ card, sessionId }: { card: PrCardState; sessionId: string }) {
+function TerminalPhase({ card, sessionId, text }: { card: PrCardState; sessionId: string; text: string }) {
   const pr = card.pr;
-
   return (
     <div className="flex items-center gap-3">
       <PrStateBadge sessionId={sessionId} />
-      <span className="text-xs text-(--color-text-secondary)">
-        PR #{pr?.number} merged into {pr?.baseBranch}
-      </span>
-      {pr && (
-        <a
-          href={pr.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={linkClass}
-        >
-          View PR
-        </a>
-      )}
-    </div>
-  );
-}
-
-function ClosedPhase({ card, sessionId }: { card: PrCardState; sessionId: string }) {
-  const pr = card.pr;
-
-  return (
-    <div className="flex items-center gap-3">
-      <PrStateBadge sessionId={sessionId} />
-      <span className="text-xs text-(--color-text-secondary)">
-        PR #{pr?.number} closed
-      </span>
-      {pr && (
-        <a
-          href={pr.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={linkClass}
-        >
-          View PR
-        </a>
-      )}
+      <span className="text-xs text-(--color-text-secondary)">{text}</span>
+      {pr && <ViewPrLink url={pr.url} />}
     </div>
   );
 }
@@ -476,8 +454,14 @@ export function PrLifecycleCard({ sessionId }: { sessionId: string }) {
     <div className="mx-4 my-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-secondary)/60 px-4 py-2">
       {(card.phase === "ready" || card.phase === "creating") && <ReadyPhase card={card} sessionId={sessionId} creating={card.phase === "creating"} />}
       {card.phase === "open" && <OpenPhase card={card} sessionId={sessionId} />}
-      {card.phase === "merged" && <MergedPhase card={card} sessionId={sessionId} />}
-      {card.phase === "closed" && <ClosedPhase card={card} sessionId={sessionId} />}
+      {card.phase === "merged" && (
+        <TerminalPhase card={card} sessionId={sessionId}
+          text={`PR #${card.pr?.number} merged${card.pr?.baseBranch && !isDefaultBranch(card.pr.baseBranch) ? ` into ${card.pr.baseBranch}` : ""}`}
+        />
+      )}
+      {card.phase === "closed" && (
+        <TerminalPhase card={card} sessionId={sessionId} text={`PR #${card.pr?.number} closed`} />
+      )}
       {card.phase === "error" && <ErrorPhase card={card} sessionId={sessionId} />}
     </div>
   );
