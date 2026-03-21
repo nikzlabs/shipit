@@ -13,11 +13,9 @@ function makeCommit(overrides?: Partial<GitCommit>): GitCommit {
 }
 
 describe("GitHistory", () => {
-  let onRollback: (hash: string) => void;
   let onRefresh: () => void;
 
   beforeEach(() => {
-    onRollback = vi.fn();
     onRefresh = vi.fn();
   });
 
@@ -26,23 +24,17 @@ describe("GitHistory", () => {
   describe("commit count", () => {
     it("shows commit count in the header", () => {
       const commits = [makeCommit(), makeCommit({ hash: "def456" })];
-      render(
-        <GitHistory commits={commits} onRollback={onRollback} onRefresh={onRefresh} />
-      );
+      render(<GitHistory commits={commits} onRefresh={onRefresh} />);
       expect(screen.getByText("2 commits")).toBeInTheDocument();
     });
 
     it("shows singular for one commit", () => {
-      render(
-        <GitHistory commits={[makeCommit()]} onRollback={onRollback} onRefresh={onRefresh} />
-      );
+      render(<GitHistory commits={[makeCommit()]} onRefresh={onRefresh} />);
       expect(screen.getByText("1 commit")).toBeInTheDocument();
     });
 
     it("shows empty state message when no commits", () => {
-      render(
-        <GitHistory commits={[]} onRollback={onRollback} onRefresh={onRefresh} />
-      );
+      render(<GitHistory commits={[]} onRefresh={onRefresh} />);
       expect(screen.getByText("No commits yet.")).toBeInTheDocument();
     });
   });
@@ -52,7 +44,6 @@ describe("GitHistory", () => {
       render(
         <GitHistory
           commits={[makeCommit({ message: "visible commit" })]}
-          onRollback={onRollback}
           onRefresh={onRefresh}
         />
       );
@@ -63,7 +54,6 @@ describe("GitHistory", () => {
       render(
         <GitHistory
           commits={[makeCommit({ hash: "abcdef1234567890" })]}
-          onRollback={onRollback}
           onRefresh={onRefresh}
         />
       );
@@ -71,11 +61,10 @@ describe("GitHistory", () => {
     });
 
     it("shows relative date for recent commits", () => {
-      const recentDate = new Date(Date.now() - 5 * 60000).toISOString(); // 5 min ago
+      const recentDate = new Date(Date.now() - 5 * 60000).toISOString();
       render(
         <GitHistory
           commits={[makeCommit({ date: recentDate })]}
-          onRollback={onRollback}
           onRefresh={onRefresh}
         />
       );
@@ -87,7 +76,6 @@ describe("GitHistory", () => {
       render(
         <GitHistory
           commits={[makeCommit({ date: justNow })]}
-          onRollback={onRollback}
           onRefresh={onRefresh}
         />
       );
@@ -97,136 +85,54 @@ describe("GitHistory", () => {
 
   describe("refresh", () => {
     it("calls onRefresh when refresh button is clicked", () => {
-      render(
-        <GitHistory commits={[]} onRollback={onRollback} onRefresh={onRefresh} />
-      );
+      render(<GitHistory commits={[]} onRefresh={onRefresh} />);
       fireEvent.click(screen.getByLabelText("Refresh"));
       expect(onRefresh).toHaveBeenCalledOnce();
     });
   });
 
-  describe("rollback", () => {
-    it("does not show rollback button on the first (latest) commit", () => {
-      render(
-        <GitHistory
-          commits={[makeCommit()]}
-          onRollback={onRollback}
-          onRefresh={onRefresh}
-        />
-      );
-      expect(screen.queryByText("rollback")).not.toBeInTheDocument();
-    });
-
-    it("shows rollback button on older commits", () => {
-      render(
-        <GitHistory
-          commits={[makeCommit({ hash: "latest" }), makeCommit({ hash: "older" })]}
-          onRollback={onRollback}
-          onRefresh={onRefresh}
-        />
-      );
-      expect(screen.getByText("rollback")).toBeInTheDocument();
-    });
-
-    it("requires confirmation before rollback", () => {
-      render(
-        <GitHistory
-          commits={[
-            makeCommit({ hash: "latest" }),
-            makeCommit({ hash: "older123", message: "old commit" }),
-          ]}
-          onRollback={onRollback}
-          onRefresh={onRefresh}
-        />
-      );
-
-      // First click shows "confirm?"
-      fireEvent.click(screen.getByText("rollback"));
-      expect(screen.getByText("confirm?")).toBeInTheDocument();
-      expect(onRollback).not.toHaveBeenCalled();
-
-      // Second click triggers actual rollback
-      fireEvent.click(screen.getByText("confirm?"));
-      expect(onRollback).toHaveBeenCalledWith("older123");
-    });
-
-    it("resets confirmation state on blur", () => {
-      render(
-        <GitHistory
-          commits={[
-            makeCommit({ hash: "latest" }),
-            makeCommit({ hash: "older" }),
-          ]}
-          onRollback={onRollback}
-          onRefresh={onRefresh}
-        />
-      );
-
-      fireEvent.click(screen.getByText("rollback"));
-      expect(screen.getByText("confirm?")).toBeInTheDocument();
-
-      fireEvent.blur(screen.getByText("confirm?"));
-      expect(screen.getByText("rollback")).toBeInTheDocument();
-    });
-  });
-
-  describe("diff button", () => {
-    it("shows diff button on every commit when onViewDiff is provided", () => {
-      const onViewDiff = vi.fn();
-      render(
-        <GitHistory
-          commits={[makeCommit({ hash: "latest" }), makeCommit({ hash: "older" })]}
-          onRollback={onRollback}
-          onRefresh={onRefresh}
-          onViewDiff={onViewDiff}
-        />
-      );
-      expect(screen.getAllByText("diff")).toHaveLength(2);
-    });
-
-    it("does not show diff button when onViewDiff is not provided", () => {
-      render(
-        <GitHistory
-          commits={[makeCommit({ hash: "latest" }), makeCommit({ hash: "older" })]}
-          onRollback={onRollback}
-          onRefresh={onRefresh}
-        />
-      );
-      expect(screen.queryByText("diff")).not.toBeInTheDocument();
-    });
-
-    it("calls onViewDiff with commit hash and parent hash", () => {
+  describe("clicking a commit opens diff", () => {
+    it("calls onViewDiff with commit hash and parent hash when clicked", () => {
       const onViewDiff = vi.fn();
       render(
         <GitHistory
           commits={[
-            makeCommit({ hash: "commit2" }),
-            makeCommit({ hash: "commit1" }),
+            makeCommit({ hash: "commit2", message: "second" }),
+            makeCommit({ hash: "commit1", message: "first" }),
           ]}
-          onRollback={onRollback}
           onRefresh={onRefresh}
           onViewDiff={onViewDiff}
         />
       );
 
-      // Click diff on the first (latest) commit — parent is commit1
-      fireEvent.click(screen.getAllByText("diff")[0]);
+      fireEvent.click(screen.getByText("second"));
       expect(onViewDiff).toHaveBeenCalledWith("commit2", "commit1");
     });
 
-    it("passes null as parent hash for the last commit (no parent)", () => {
+    it("passes null as parent hash for the last commit", () => {
       const onViewDiff = vi.fn();
       render(
         <GitHistory
-          commits={[makeCommit({ hash: "only-commit" })]}
-          onRollback={onRollback}
+          commits={[makeCommit({ hash: "only-commit", message: "only" })]}
           onRefresh={onRefresh}
           onViewDiff={onViewDiff}
         />
       );
 
-      fireEvent.click(screen.getByText("diff"));
+      fireEvent.click(screen.getByText("only"));
       expect(onViewDiff).toHaveBeenCalledWith("only-commit", null);
+    });
+
+    it("does not crash when onViewDiff is not provided", () => {
+      render(
+        <GitHistory
+          commits={[makeCommit({ message: "click me" })]}
+          onRefresh={onRefresh}
+        />
+      );
+
+      // Should not throw
+      fireEvent.click(screen.getByText("click me"));
     });
   });
 });

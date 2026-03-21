@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { ArrowsClockwiseIcon } from "@phosphor-icons/react";
 import { Button } from "./ui/button.js";
 
@@ -11,26 +10,13 @@ export interface GitCommit {
 
 export function GitHistory({
   commits,
-  onRollback,
   onRefresh,
   onViewDiff,
 }: {
   commits: GitCommit[];
-  onRollback: (hash: string) => void;
   onRefresh: () => void;
   onViewDiff?: (commitHash: string, parentHash: string | null) => void;
 }) {
-  const [confirming, setConfirming] = useState<string | null>(null);
-
-  const handleRollback = (hash: string) => {
-    if (confirming === hash) {
-      onRollback(hash);
-      setConfirming(null);
-    } else {
-      setConfirming(hash);
-    }
-  };
-
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between px-4 py-2 border-b border-(--color-border-primary)">
@@ -55,7 +41,8 @@ export function GitHistory({
             {commits.map((commit, i) => (
               <div
                 key={commit.hash}
-                className="flex items-start justify-between gap-2 rounded px-2 py-1.5 text-xs hover:bg-(--color-bg-hover) group"
+                className={`flex items-start gap-2 rounded px-2 py-1.5 text-xs hover:bg-(--color-bg-hover) ${onViewDiff ? "cursor-pointer" : ""}`}
+                onClick={() => onViewDiff?.(commit.hash, commits[i + 1]?.hash ?? null)}
               >
                 <div className="min-w-0 flex-1">
                   <p className="text-(--color-text-primary) truncate">{commit.message}</p>
@@ -65,31 +52,6 @@ export function GitHistory({
                       {formatRelativeDate(commit.date)}
                     </span>
                   </p>
-                </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  {onViewDiff && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => onViewDiff(commit.hash, commits[i + 1]?.hash ?? null)}
-                      className="shrink-0 opacity-0 group-hover:opacity-100 bg-(--color-bg-secondary)"
-                    >
-                      diff
-                    </Button>
-                  )}
-                  {i > 0 && (
-                    <button
-                      onClick={() => handleRollback(commit.hash)}
-                      onBlur={() => setConfirming(null)}
-                      className={`shrink-0 px-2 py-0.5 rounded text-xs transition-colors ${
-                        confirming === commit.hash
-                          ? "bg-(--color-error-subtle) text-(--color-error)"
-                          : "bg-(--color-bg-secondary) text-(--color-text-secondary) opacity-0 group-hover:opacity-100 hover:text-(--color-text-primary)"
-                      }`}
-                    >
-                      {confirming === commit.hash ? "confirm?" : "rollback"}
-                    </button>
-                  )}
                 </div>
               </div>
             ))}
