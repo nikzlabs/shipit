@@ -78,9 +78,10 @@ describe("MessageList", () => {
         />
       );
       const userEl = screen.getByText("user-msg-content").closest("div[class*='bg-']");
-      const assistantEl = screen.getByText("assistant-msg-content").closest("div[class*='bg-']");
+      const assistantEl = screen.getByText("assistant-msg-content").closest("div.w-full");
       expect(userEl?.className).toContain("bg-(--color-accent)");
-      expect(assistantEl?.className).toContain("bg-(--color-bg-secondary)");
+      expect(assistantEl?.className).toContain("w-full");
+      expect(assistantEl?.className).not.toContain("bg-");
     });
   });
 
@@ -307,7 +308,7 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      const el = screen.getByText("Normal message").closest("div[class*='bg-']");
+      const el = screen.getByText("Normal message").closest("div");
       expect(el?.className).not.toContain("bg-(--color-error-subtle)");
     });
 
@@ -614,7 +615,7 @@ describe("MessageList", () => {
   });
 
   describe("inline tool results", () => {
-    it("shows 'Show output' toggle when tool has a result", () => {
+    it("has 'Show output' button when tool has a result", () => {
       const tools: ToolUseBlock[] = [
         { type: "tool_use", id: "t1", name: "Bash", input: { command: "npm test" } },
       ];
@@ -627,10 +628,10 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      expect(screen.getByText(/Show output/)).toBeInTheDocument();
+      expect(screen.getByLabelText("Show output")).toBeInTheDocument();
     });
 
-    it("does not show toggle when tool has no result", () => {
+    it("does not show button when tool has no result", () => {
       const tools: ToolUseBlock[] = [
         { type: "tool_use", id: "t1", name: "Bash", input: { command: "npm test" } },
       ];
@@ -640,10 +641,10 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      expect(screen.queryByText(/Show output/)).toBeNull();
+      expect(screen.queryByLabelText("Show output")).toBeNull();
     });
 
-    it("shows tool result when toggle is clicked", () => {
+    it("opens modal with tool output when clicked", () => {
       const tools: ToolUseBlock[] = [
         { type: "tool_use", id: "t1", name: "Bash", input: { command: "echo hello" } },
       ];
@@ -656,15 +657,15 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      // Initially collapsed — result not visible
+      // Initially no modal — result not visible
       expect(screen.queryByText("hello")).toBeNull();
 
-      // Click to expand
-      fireEvent.click(screen.getByText(/Show output/));
+      // Click to open modal
+      fireEvent.click(screen.getByLabelText("Show output"));
       expect(screen.getByText("hello")).toBeInTheDocument();
     });
 
-    it("hides tool result when toggle is clicked again", () => {
+    it("closes modal when close button is clicked", () => {
       const tools: ToolUseBlock[] = [
         { type: "tool_use", id: "t1", name: "Bash", input: { command: "echo hello" } },
       ];
@@ -677,12 +678,12 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      // Expand
-      fireEvent.click(screen.getByText(/Show output/));
+      // Open modal
+      fireEvent.click(screen.getByLabelText("Show output"));
       expect(screen.getByText("hello world output")).toBeInTheDocument();
 
-      // Collapse
-      fireEvent.click(screen.getByText(/Hide output/));
+      // Close modal
+      fireEvent.click(screen.getByLabelText("Close"));
       expect(screen.queryByText("hello world output")).toBeNull();
     });
 
@@ -701,12 +702,12 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      // Both tools should have toggle buttons
-      const toggles = screen.getAllByText(/Show output/);
-      expect(toggles).toHaveLength(2);
+      // Both tools should have show output buttons
+      const buttons = screen.getAllByLabelText("Show output");
+      expect(buttons).toHaveLength(2);
     });
 
-    it("does not show toggle for Edit tools (they render as diffs)", () => {
+    it("does not show button for Edit tools (they render as diffs)", () => {
       const tools: ToolUseBlock[] = [
         { type: "tool_use", id: "t1", name: "Edit", input: { file_path: "f.ts", old_string: "a", new_string: "b" } },
       ];
@@ -719,11 +720,11 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      // Edit tools are rendered as DiffBlock, not with the toggle
-      expect(screen.queryByText(/Show output/)).toBeNull();
+      // Edit tools are rendered as DiffBlock, not with the button
+      expect(screen.queryByLabelText("Show output")).toBeNull();
     });
 
-    it("does not show toggle for Write tools (they render as diffs)", () => {
+    it("does not show button for Write tools (they render as diffs)", () => {
       const tools: ToolUseBlock[] = [
         { type: "tool_use", id: "t1", name: "Write", input: { file_path: "f.ts", content: "code" } },
       ];
@@ -736,7 +737,7 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      expect(screen.queryByText(/Show output/)).toBeNull();
+      expect(screen.queryByLabelText("Show output")).toBeNull();
     });
 
     it("handles missing tool_use_id match gracefully", () => {
@@ -752,28 +753,8 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      // No match — no toggle should appear
-      expect(screen.queryByText(/Show output/)).toBeNull();
-    });
-
-    it("has accessible aria-expanded attribute on toggle", () => {
-      const tools: ToolUseBlock[] = [
-        { type: "tool_use", id: "t1", name: "Bash", input: { command: "test" } },
-      ];
-      const results: ToolResultBlock[] = [
-        { toolUseId: "t1", content: "output" },
-      ];
-      render(
-        <MessageList
-          messages={[{ role: "assistant", text: "Running", toolUse: tools, toolResults: results }]}
-          isLoading={false}
-        />
-      );
-      const toggle = screen.getByLabelText("Show output");
-      expect(toggle.getAttribute("aria-expanded")).toBe("false");
-
-      fireEvent.click(toggle);
-      expect(screen.getByLabelText("Hide output").getAttribute("aria-expanded")).toBe("true");
+      // No match — no button should appear
+      expect(screen.queryByLabelText("Show output")).toBeNull();
     });
   });
 
@@ -996,7 +977,7 @@ describe("MessageList", () => {
       );
       const mdContent = container.querySelector('[data-testid="markdown-content"]');
       expect(mdContent).toBeInTheDocument();
-      const bubble = mdContent!.closest("div[class*='bg-']");
+      const bubble = mdContent!.closest("div");
       expect(bubble?.className).not.toContain("whitespace-pre-wrap");
     });
 

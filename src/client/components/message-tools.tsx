@@ -1,11 +1,12 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: xterm auto-scroll for tool group
 import { useEffect, useRef, useState } from "react";
+import { EyeIcon, XIcon } from "@phosphor-icons/react";
 import { DiffBlock } from "./DiffBlock.js";
 import { ToolSpinner } from "./StreamingIndicator.js";
 import { AskUserQuestion, type AskQuestionItem } from "./AskUserQuestion.js";
 import { PlanApproval } from "./PlanApproval.js";
 import { ToolResult } from "./ToolResult.js";
-import { Button } from "./ui/button.js";
+import { Modal } from "./ui/modal.js";
 import { sessionRelativePath } from "../path-utils.js";
 import type { ToolUseBlock, ToolResultBlock } from "./MessageList.js";
 
@@ -26,7 +27,7 @@ export function ToolCallGroup({ items, isStreaming }: {
   return (
     <div
       ref={scrollRef}
-      className="bg-(--color-bg-secondary) rounded max-h-30 overflow-y-auto"
+      className="max-h-30 overflow-y-hidden hover:overflow-y-auto"
       data-testid="tool-call-group"
     >
       {items.map(({ tool, result, isLast }) => (
@@ -44,10 +45,9 @@ export function ToolCallGroup({ items, isStreaming }: {
   );
 }
 
-export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, onSendFollowUp, isQuestionDisabled, grouped }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void; onSendFollowUp?: (text: string) => void; isQuestionDisabled: boolean; grouped?: boolean }) {
+export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, onSendFollowUp, isQuestionDisabled, grouped: _grouped }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void; onSendFollowUp?: (text: string) => void; isQuestionDisabled: boolean; grouped?: boolean }) {
   // Show a spinner on the last tool when the message is still streaming
   const inProgress = isLast && isStreaming && !result;
-  const [collapsed, setCollapsed] = useState(true);
   const hasResult = !!result;
 
   // Render file-modifying tools as diff blocks
@@ -100,41 +100,62 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
   }
 
   // Fallback: compact one-liner for non-file tools, with optional tool result
+  const [showModal, setShowModal] = useState(false);
+
+  // Build a summary of the command/input for the tool line
+  const commandText = "command" in tool.input && tool.input.command
+    ? (tool.input.command as string).slice(0, 80)
+    : null;
+  const filePathText = "file_path" in tool.input && tool.input.file_path
+    ? sessionRelativePath(tool.input.file_path)
+    : null;
+  const patternText = "pattern" in tool.input && tool.input.pattern
+    ? (tool.input.pattern as string)
+    : null;
+
+  // Full command text for the modal header
+  const fullCommandText = "command" in tool.input && tool.input.command
+    ? (tool.input.command as string)
+    : filePathText ?? patternText ?? "";
+
   return (
     <div className="min-w-0 overflow-hidden">
-      <div className={`text-xs text-(--color-text-secondary) px-2 py-1 font-mono flex items-center gap-2${grouped ? "" : " bg-(--color-bg-secondary) rounded"}`}>
+      <div className="group/tool text-xs text-(--color-text-secondary) pl-[1em] py-1 font-mono flex items-center gap-2 opacity-80 border-l-2 border-(--color-text-tertiary)/40">
         {inProgress && <ToolSpinner />}
         <FormattedToolName name={tool.name} highlight={inProgress} />
-        {"command" in tool.input && tool.input.command ? (
+        {commandText ? (
           <span className="ml-1 text-(--color-text-secondary) truncate max-w-xs">
-            {(tool.input.command as string).slice(0, 80)}
+            {commandText}
           </span>
         ) : null}
-        {"file_path" in tool.input && tool.input.file_path ? (
+        {filePathText ? (
           <span className="ml-1 text-(--color-text-secondary) truncate max-w-xs">
-            {sessionRelativePath(tool.input.file_path)}
+            {filePathText}
           </span>
         ) : null}
-        {"pattern" in tool.input && tool.input.pattern ? (
+        {patternText ? (
           <span className="ml-1 text-(--color-text-secondary) truncate max-w-xs">
-            {tool.input.pattern as string}
+            {patternText}
           </span>
         ) : null}
         {hasResult && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setCollapsed(!collapsed)}
-            className="ml-auto shrink-0 py-0"
-            aria-label={collapsed ? "Show output" : "Hide output"}
-            aria-expanded={!collapsed}
+          <button
+            onClick={() => setShowModal(true)}
+            className="hidden group-hover/tool:inline-flex items-center gap-1 ml-1 text-(--color-text-tertiary) hover:text-(--color-text-primary) transition-colors cursor-pointer"
+            aria-label="Show output"
           >
-            {collapsed ? "▶ Show output" : "▼ Hide output"}
-          </Button>
+            <EyeIcon size={12} />
+            <span>Show output</span>
+          </button>
         )}
       </div>
-      {hasResult && !collapsed && (
-        <ToolResult tool={tool.name} result={result} />
+      {showModal && result && (
+        <ToolOutputModal
+          toolName={tool.name}
+          command={fullCommandText}
+          result={result}
+          onClose={() => setShowModal(false)}
+        />
       )}
     </div>
   );
@@ -156,9 +177,40 @@ function FormattedToolName({ name, highlight }: { name: string; highlight: boole
   }
   return (
     <span className={`inline-flex items-center gap-1.5${highlight ? " text-(--color-accent)" : ""}`}>
-      <span className="border border-current rounded px-1 py-px text-[10px] leading-tight opacity-70">{parsed.server}</span>
+      <span className="border border-current rounded px-1 py-px text-[10px] leading-tight opacity-80">{parsed.server}</span>
       <span>{parsed.tool}</span>
     </span>
+  );
+}
+
+/** Full-screen modal showing tool command and output. */
+function ToolOutputModal({ toolName, command, result, onClose }: {
+  toolName: string;
+  command: string;
+  result: ToolResultBlock;
+  onClose: () => void;
+}) {
+  return (
+    <Modal onClose={onClose} className="w-[min(90vw,56rem)] max-h-[80vh] flex flex-col">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-(--color-border-primary)">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-xs font-semibold text-(--color-text-primary) shrink-0">{toolName}</span>
+          {command && (
+            <code className="text-xs text-(--color-text-secondary) font-mono truncate">{command}</code>
+          )}
+        </div>
+        <button
+          onClick={onClose}
+          className="p-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors shrink-0 cursor-pointer"
+          aria-label="Close"
+        >
+          <XIcon size={16} />
+        </button>
+      </div>
+      <div className="flex-1 overflow-auto p-4">
+        <ToolResult tool={toolName} result={result} />
+      </div>
+    </Modal>
   );
 }
 
