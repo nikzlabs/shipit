@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { buildApp } from "../index.js";
 import { GitManager } from "../../shared/git.js";
+import { RepoGit } from "../repo-git.js";
 import { SessionManager } from "../sessions.js";
 import type { AuthManager } from "../auth.js";
 import type { GitHubAuthManager } from "../github-auth.js";
@@ -42,6 +43,12 @@ describe("Integration: home_create_repo_with_template (HTTP)", () => {
         // Stub push so it doesn't attempt a real remote push
         gm.push = async () => "pushed (stub)";
         return gm;
+      },
+      createRepoGit: (dir: string) => {
+        const rg = new RepoGit(dir);
+        // Stub fetchCache to avoid network calls to fake GitHub URLs
+        rg.fetchCache = async () => {};
+        return rg;
       },
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,

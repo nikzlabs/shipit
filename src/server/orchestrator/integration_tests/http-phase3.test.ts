@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { buildApp } from "../index.js";
 import { GitManager } from "../../shared/git.js";
+import { RepoGit } from "../repo-git.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../auth.js";
@@ -51,6 +52,12 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
         // Stub push so it doesn't attempt a real remote push
         gm.push = async () => "pushed (stub)";
         return gm;
+      },
+      createRepoGit: (dir: string) => {
+        const rg = new RepoGit(dir);
+        // Stub fetchCache to avoid network calls to fake GitHub URLs
+        rg.fetchCache = async () => {};
+        return rg;
       },
       sessionManager,
       authManager: stubAuthManager as unknown as AuthManager,
