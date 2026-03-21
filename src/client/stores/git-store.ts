@@ -23,7 +23,6 @@ interface GitState {
   fetchLog: (sessionId: string) => Promise<void>;
   fetchDiff: (sessionId: string, from: string, to: string) => Promise<void>;
   fetchDiffVsBranch: (sessionId: string, baseBranch?: string) => Promise<void>;
-  rollback: (sessionId: string, hash: string) => Promise<void>;
   submitGitIdentity: (name: string, email: string) => Promise<void>;
 }
 
@@ -37,7 +36,7 @@ const initialState = {
   diffDialogTitle: undefined as string | undefined,
 };
 
-export const useGitStore = create<GitState>((set, get) => ({
+export const useGitStore = create<GitState>((set) => ({
   ...initialState,
 
   setCommits: (commits) => set({ commits }),
@@ -84,18 +83,6 @@ export const useGitStore = create<GitState>((set, get) => ({
     }
     const data = await res.json() as TurnDiffData;
     set({ turnDiff: data });
-  },
-
-  rollback: async (sessionId, hash) => {
-    const res = await fetch(`/api/sessions/${sessionId}/git/rollback`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ commitHash: hash }),
-    });
-    if (!res.ok) {
-      throw new Error(`Failed to rollback: ${res.status}`);
-    }
-    await get().fetchLog(sessionId);
   },
 
   submitGitIdentity: async (name, email) => {
