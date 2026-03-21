@@ -92,6 +92,10 @@ export function useMessageHandler(params: {
         if (toolUseBlocks.length > 0) {
           const lastTool = toolUseBlocks[toolUseBlocks.length - 1];
           session.setActivity(activityFromTool(lastTool.name, lastTool.input));
+
+          if (toolUseBlocks.some((b) => b.name === "ExitPlanMode")) {
+            notify("The agent has a plan ready for review.");
+          }
         } else if (textBlocks) {
           session.setActivity({ label: "Thinking..." });
         }
