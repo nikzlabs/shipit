@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: poll external preview server URL until ready with cancellation (external system sync)
 import { useState, useEffect, useRef } from "react";
-import { WarningIcon, GearSixIcon, CircleNotchIcon, ArrowClockwiseIcon } from "@phosphor-icons/react";
+import { WarningIcon, GearSixIcon, CircleNotchIcon, ArrowClockwiseIcon, ArrowSquareOutIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import type { PreviewError } from "../hooks/usePreviewErrors.js";
@@ -353,6 +353,18 @@ export function PreviewFrame({
             title="Refresh preview"
           >
             <ArrowClockwiseIcon size={ICON_SIZE.SM} />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              const url = displayedUrl ?? candidateUrl;
+              if (url) window.open(url, "_blank", "noopener,noreferrer");
+            }}
+            title="Open preview in new tab"
+            disabled={!displayedUrl && !candidateUrl}
+          >
+            <ArrowSquareOutIcon size={ICON_SIZE.SM} />
           </Button>
         </div>
       </div>
