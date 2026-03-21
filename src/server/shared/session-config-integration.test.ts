@@ -22,8 +22,11 @@ describe("session config → container resource flow", () => {
   afterEach(() => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
     delete process.env.MAX_SESSION_MEMORY_MB;
+    delete process.env.MAX_SESSION_PREVIEW_MEMORY_MB;
     delete process.env.MAX_SESSION_CPU;
+    delete process.env.MAX_SESSION_PREVIEW_CPU;
     delete process.env.MAX_SESSION_PIDS;
+    delete process.env.MAX_SESSION_PREVIEW_PIDS;
   });
 
   it("transforms session config into container resource parameters", () => {
@@ -34,30 +37,41 @@ describe("session config → container resource flow", () => {
         "capabilities:",
         "  docker: true",
         "resources:",
-        "  memory: 2048",
-        "  cpu: 2.0",
-        "  pids: 1024",
+        "  agent:",
+        "    memory: 2048",
+        "    cpu: 2.0",
+        "    pids: 512",
+        "  preview:",
+        "    memory: 1024",
+        "    cpu: 1.0",
+        "    pids: 2048",
         "preview:",
         "  command: npm run dev",
       ].join("\n"),
     );
 
     const config = resolveSessionConfig(dir);
+    const { agent, preview } = config.resources;
 
     // Simulate what the orchestrator runner factory does:
-    const memoryLimitBytes = config.resources.memory * 1024 * 1024;
-    const cpuQuotaMicros = Math.round(config.resources.cpu * 100_000);
-    const pidsLimit = config.resources.pids;
+    const agentMemoryBytes = agent.memory * 1024 * 1024;
+    const agentCpuQuotaMicros = Math.round(agent.cpu * 100_000);
+    const previewMemoryBytes = preview.memory * 1024 * 1024;
+    const previewCpuQuotaMicros = Math.round(preview.cpu * 100_000);
 
-    expect(memoryLimitBytes).toBe(2048 * 1024 * 1024);
-    expect(cpuQuotaMicros).toBe(200_000);
-    expect(pidsLimit).toBe(1024);
+    expect(agentMemoryBytes).toBe(2048 * 1024 * 1024);
+    expect(agentCpuQuotaMicros).toBe(200_000);
+    expect(agent.pids).toBe(512);
+    expect(previewMemoryBytes).toBe(1024 * 1024 * 1024);
+    expect(previewCpuQuotaMicros).toBe(100_000);
+    expect(preview.pids).toBe(2048);
     expect(config.capabilities.docker).toBe(true);
   });
 
   it("applies deployment caps to container resources", () => {
     const dir = setup();
     process.env.MAX_SESSION_MEMORY_MB = "1024";
+    process.env.MAX_SESSION_PREVIEW_MEMORY_MB = "256";
     process.env.MAX_SESSION_CPU = "1";
     process.env.MAX_SESSION_PIDS = "512";
 
@@ -65,24 +79,26 @@ describe("session config → container resource flow", () => {
       path.join(dir, "shipit.yaml"),
       [
         "resources:",
-        "  memory: 4096",
-        "  cpu: 4.0",
-        "  pids: 2048",
+        "  agent:",
+        "    memory: 4096",
+        "    cpu: 4.0",
+        "    pids: 2048",
+        "  preview:",
+        "    memory: 2048",
         "preview:",
         "  command: npm run dev",
       ].join("\n"),
     );
 
     const config = resolveSessionConfig(dir);
+    const { agent, preview } = config.resources;
 
-    const memoryLimitBytes = config.resources.memory * 1024 * 1024;
-    const cpuQuotaMicros = Math.round(config.resources.cpu * 100_000);
-    const pidsLimit = config.resources.pids;
-
-    // Should be capped at deployment limits
-    expect(memoryLimitBytes).toBe(1024 * 1024 * 1024);
-    expect(cpuQuotaMicros).toBe(100_000);
-    expect(pidsLimit).toBe(512);
+    // Agent should be capped at deployment limits
+    expect(agent.memory * 1024 * 1024).toBe(1024 * 1024 * 1024);
+    expect(Math.round(agent.cpu * 100_000)).toBe(100_000);
+    expect(agent.pids).toBe(512);
+    // Preview memory capped at 256
+    expect(preview.memory * 1024 * 1024).toBe(256 * 1024 * 1024);
   });
 
   it("uses defaults when shipit.yaml has no resources", () => {
@@ -90,13 +106,13 @@ describe("session config → container resource flow", () => {
     // No shipit.yaml at all
 
     const config = resolveSessionConfig(dir);
+    const { agent, preview } = config.resources;
 
-    const memoryLimitBytes = config.resources.memory * 1024 * 1024;
-    const cpuQuotaMicros = Math.round(config.resources.cpu * 100_000);
-
-    expect(memoryLimitBytes).toBe(512 * 1024 * 1024);
-    expect(cpuQuotaMicros).toBe(50_000);
-    expect(config.resources.pids).toBe(256);
+    expect(agent.memory * 1024 * 1024).toBe(1024 * 1024 * 1024);
+    expect(Math.round(agent.cpu * 100_000)).toBe(50_000);
+    expect(agent.pids).toBe(256);
+    expect(preview.memory * 1024 * 1024).toBe(512 * 1024 * 1024);
+    expect(preview.pids).toBe(1024);
     expect(config.capabilities.docker).toBe(false);
   });
 });
