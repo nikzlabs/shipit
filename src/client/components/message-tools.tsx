@@ -1,6 +1,8 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: xterm auto-scroll for tool group
 import { useEffect, useRef, useState } from "react";
+import { useMemo } from "react";
 import { EyeIcon, XIcon } from "@phosphor-icons/react";
+import hljs from "highlight.js";
 import { DiffBlock } from "./DiffBlock.js";
 import { ToolSpinner } from "./StreamingIndicator.js";
 import { AskUserQuestion, type AskQuestionItem } from "./AskUserQuestion.js";
@@ -120,21 +122,21 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
 
   return (
     <div className="min-w-0 overflow-hidden">
-      <div className="group/tool text-xs text-(--color-text-secondary) pl-[1em] py-1 font-mono flex items-center gap-2 opacity-80 border-l-2 border-(--color-text-tertiary)/40">
+      <div className="group/tool text-xs text-(--color-text-secondary) pl-[1em] py-1 font-mono flex items-center gap-2 opacity-70 border-l-2 border-(--color-text-tertiary)/40">
         {inProgress && <ToolSpinner />}
         <FormattedToolName name={tool.name} highlight={inProgress} />
         {commandText ? (
-          <span className="ml-1 text-(--color-text-secondary) truncate max-w-xs">
+          <span className="ml-1 text-(--color-text-secondary) truncate">
             {commandText}
           </span>
         ) : null}
         {filePathText ? (
-          <span className="ml-1 text-(--color-text-secondary) truncate max-w-xs">
+          <span className="ml-1 text-(--color-text-secondary) truncate">
             {filePathText}
           </span>
         ) : null}
         {patternText ? (
-          <span className="ml-1 text-(--color-text-secondary) truncate max-w-xs">
+          <span className="ml-1 text-(--color-text-secondary) truncate">
             {patternText}
           </span>
         ) : null}
@@ -177,7 +179,7 @@ function FormattedToolName({ name, highlight }: { name: string; highlight: boole
   }
   return (
     <span className={`inline-flex items-center gap-1.5${highlight ? " text-(--color-accent)" : ""}`}>
-      <span className="border border-current rounded px-1 py-px text-[10px] leading-tight opacity-80">{parsed.server}</span>
+      <span className="border border-current rounded px-1 py-px text-[10px] leading-tight opacity-70">{parsed.server}</span>
       <span>{parsed.tool}</span>
     </span>
   );
@@ -190,15 +192,20 @@ function ToolOutputModal({ toolName, command, result, onClose }: {
   result: ToolResultBlock;
   onClose: () => void;
 }) {
+  const isBash = toolName === "Bash";
+  const highlighted = useMemo(() => {
+    if (!isBash || !command) return null;
+    try {
+      return hljs.highlight(command, { language: "bash" }).value;
+    } catch {
+      return null;
+    }
+  }, [isBash, command]);
+
   return (
     <Modal onClose={onClose} className="w-[min(90vw,56rem)] max-h-[80vh] flex flex-col">
       <div className="flex items-center justify-between px-4 py-3 border-b border-(--color-border-primary)">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-xs font-semibold text-(--color-text-primary) shrink-0">{toolName}</span>
-          {command && (
-            <code className="text-xs text-(--color-text-secondary) font-mono truncate">{command}</code>
-          )}
-        </div>
+        <span className="text-xs font-semibold text-(--color-text-primary) shrink-0">Tool Call</span>
         <button
           onClick={onClose}
           className="p-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors shrink-0 cursor-pointer"
@@ -208,6 +215,20 @@ function ToolOutputModal({ toolName, command, result, onClose }: {
         </button>
       </div>
       <div className="flex-1 overflow-auto p-4">
+        {isBash && command ? (
+          <div className="mb-4 pb-4 border-b border-(--color-border-secondary)">
+            <div className="text-xs text-(--color-text-secondary) font-mono mb-1">Bash</div>
+            <pre className="text-xs font-mono whitespace-pre-wrap wrap-break-word rounded bg-(--color-bg-secondary) p-3 leading-relaxed">
+              {highlighted ? (
+              <code className="hljs bg-transparent!" dangerouslySetInnerHTML={{ __html: highlighted }} />
+            ) : (
+              <code className="text-(--color-text-primary)">{command}</code>
+            )}
+            </pre>
+          </div>
+        ) : (
+          <pre className="text-xs text-(--color-text-secondary) font-mono whitespace-pre-wrap break-all mb-4 pb-4 border-b border-(--color-border-secondary)">{toolName}{command ? ` ${command}` : ""}</pre>
+        )}
         <ToolResult tool={toolName} result={result} />
       </div>
     </Modal>

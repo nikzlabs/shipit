@@ -65,7 +65,7 @@ function BashResult({ content, isError }: { content: string; isError?: boolean }
       }`}
     >
       <pre
-        className={`p-2 text-xs font-mono overflow-x-auto leading-relaxed ${
+        className={`p-2 text-xs font-mono whitespace-pre-wrap break-all leading-relaxed ${
           isError ? "text-(--color-error)" : "text-(--color-text-primary)"
         } ${!expanded && truncated ? "max-h-[20rem]" : ""}`}
       >
@@ -109,7 +109,7 @@ function ReadResult({ content }: { content: string }) {
 
   return (
     <div className="mt-1 rounded overflow-hidden border border-(--color-border-secondary)/50 bg-(--color-bg-primary)">
-      <pre className={`p-2 text-xs font-mono overflow-x-auto leading-relaxed ${!expanded && truncated ? "max-h-[16rem]" : ""}`}>
+      <pre className={`p-2 text-xs font-mono whitespace-pre-wrap break-all leading-relaxed ${!expanded && truncated ? "max-h-[16rem]" : ""}`}>
         {highlighted ? (
           <code className="hljs" dangerouslySetInnerHTML={{ __html: highlighted }} />
         ) : (
@@ -145,7 +145,7 @@ function GrepResult({ content }: { content: string }) {
 
   return (
     <div className="mt-1 rounded overflow-hidden border border-(--color-border-secondary)/50 bg-(--color-bg-primary)">
-      <pre className={`p-2 text-xs font-mono overflow-x-auto leading-relaxed ${!expanded && truncated ? "max-h-[16rem]" : ""}`}>
+      <pre className={`p-2 text-xs font-mono whitespace-pre-wrap break-all leading-relaxed ${!expanded && truncated ? "max-h-[16rem]" : ""}`}>
         {lines.map((line, i) => {
           // Match ripgrep-style output: file:line:content or file:line-content
           const match = /^([^:]+):(\d+)[:-](.*)/.exec(line);
@@ -208,7 +208,7 @@ function GenericResult({ content, isError }: { content: string; isError?: boolea
       }`}
     >
       <pre
-        className={`p-2 text-xs font-mono overflow-x-auto leading-relaxed ${
+        className={`p-2 text-xs font-mono whitespace-pre-wrap break-all leading-relaxed ${
           isError ? "text-(--color-error)" : "text-(--color-text-primary)"
         } ${!expanded && truncated ? "max-h-[12rem]" : ""}`}
       >
