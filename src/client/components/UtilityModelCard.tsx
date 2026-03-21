@@ -38,7 +38,7 @@ export function UtilityModelCard() {
     try {
       const result = await api.put<UtilityModelStatus>("/api/settings/utility-model", {
         provider,
-        apiKey,
+        ...(apiKey.trim() ? { apiKey } : {}),
         model: model || DEFAULT_MODELS[provider],
         ...(provider === "openai-compatible" ? { baseUrl } : {}),
       });
@@ -161,11 +161,14 @@ export function UtilityModelCard() {
           type="password"
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
-          placeholder="sk-..."
+          placeholder={status.configured ? "Leave blank to keep existing key" : "sk-..."}
           className="w-full px-3 py-2 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) text-(--color-text-primary) text-sm focus:outline-none focus:border-(--color-border-focus)"
           autoComplete="off"
           data-testid="utility-model-api-key"
         />
+        {status.configured && !apiKey.trim() && (
+          <p className="text-[10px] text-(--color-text-tertiary) mt-1">Existing API key will be kept.</p>
+        )}
       </div>
 
       <div>
@@ -185,7 +188,7 @@ export function UtilityModelCard() {
       <div className="flex gap-2">
         <button
           onClick={handleSave}
-          disabled={!apiKey.trim() || saving}
+          disabled={(!apiKey.trim() && !status.configured) || saving}
           className="flex-1 px-3 py-2 text-sm rounded-lg bg-(--color-accent) text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
           data-testid="utility-model-save"
         >
