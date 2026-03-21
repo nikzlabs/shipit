@@ -59,14 +59,12 @@ Once complete, visit `https://shipit.example.com` — authenticate through Zero 
 
 ShipIt updates itself from the UI. Go to **Settings → Advanced → Software Updates** and click **Check for Updates**. If an update is available, click **Update Now** — ShipIt will pull the latest code, rebuild, and restart automatically.
 
-To update manually via SSH:
+To update or restart manually via SSH:
 
 ```bash
 ssh root@<server-ip>
-cd /opt/shipit
-git pull origin main
-docker compose -f deployment/hetzner/docker-compose.yml build session-worker shipit
-docker compose -f deployment/hetzner/docker-compose.yml up -d --no-build shipit
+cd /opt/shipit && git pull origin main
+bash deployment/hetzner/deploy.sh
 ```
 
 ## Troubleshooting
@@ -86,9 +84,9 @@ journalctl -u cloudflared -f
 journalctl -u shipit-updater -f
 ```
 
-**Restart everything:**
+**Rebuild and restart:**
 ```bash
-docker compose -f deployment/hetzner/docker-compose.yml restart
+bash /opt/shipit/deployment/hetzner/deploy.sh
 systemctl restart cloudflared
 ```
 

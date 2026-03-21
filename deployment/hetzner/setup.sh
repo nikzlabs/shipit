@@ -293,9 +293,7 @@ systemctl enable --now shipit-updater.path
 
 # --- Build and start ShipIt (always run — this is the deploy step) ---
 echo "==> Building and starting ShipIt..."
-cd /opt/shipit
-docker compose -f deployment/hetzner/docker-compose.yml build session-worker shipit
-docker compose -f deployment/hetzner/docker-compose.yml up -d
+bash /opt/shipit/deployment/hetzner/deploy.sh
 
 echo ""
 echo "==========================================="

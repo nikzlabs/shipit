@@ -5,7 +5,6 @@ set -euo pipefail
 
 SHIPIT_DIR="/opt/shipit"
 TRIGGER_FILE="$SHIPIT_DIR/.update-requested"
-COMPOSE_FILE="$SHIPIT_DIR/deployment/hetzner/docker-compose.yml"
 
 # Remove trigger file immediately so we don't re-run
 rm -f "$TRIGGER_FILE"
@@ -18,11 +17,7 @@ cd "$SHIPIT_DIR"
 git fetch origin main
 git reset --hard origin/main
 
-# Rebuild and restart
-docker compose -f "$COMPOSE_FILE" build session-worker shipit
-docker compose -f "$COMPOSE_FILE" up -d --no-build shipit
-
-# Clean up old images
-docker image prune -f
+# Build and restart
+bash "$SHIPIT_DIR/deployment/hetzner/deploy.sh"
 
 echo "$(date -Iseconds) ShipIt update complete."
