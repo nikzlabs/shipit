@@ -283,6 +283,9 @@ export async function createContainer(
   const shortId = config.sessionId.slice(0, 12);
 
   try {
+    // Remove any leftover container with the same name (e.g. from a crash)
+    await removeStaleContainer(deps.docker, `agent-${shortId}`);
+
     const container = await deps.docker.createContainer({
       name: `agent-${shortId}`,
       Image: imageName,
@@ -343,6 +346,24 @@ export async function createContainer(
       }
     }
     throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Remove stale container by name (handles 409 conflicts on create)
+// ---------------------------------------------------------------------------
+
+async function removeStaleContainer(
+  docker: Docker,
+  name: string,
+): Promise<void> {
+  try {
+    const existing = docker.getContainer(name);
+    await existing.inspect(); // throws if not found
+    try { await existing.stop({ t: 2 }); } catch { /* may not be running */ }
+    await existing.remove({ force: true });
+  } catch {
+    // Container doesn't exist — nothing to clean up
   }
 }
 
@@ -538,6 +559,9 @@ export async function createPreviewContainer(
   );
 
   const shortId = config.sessionId.slice(0, 12);
+
+  // Remove any leftover container with the same name (e.g. from a crash)
+  await removeStaleContainer(deps.docker, `preview-${shortId}`);
 
   const container = await deps.docker.createContainer({
     name: `preview-${shortId}`,
