@@ -6,6 +6,7 @@ export interface GitCommit {
   message: string;
   date: string;
   author: string;
+  refs?: string[];
 }
 
 export function GitHistory({
@@ -45,7 +46,12 @@ export function GitHistory({
                 onClick={() => onViewDiff?.(commit.hash, commits[i + 1]?.hash ?? null)}
               >
                 <div className="min-w-0 flex-1">
-                  <p className="text-(--color-text-primary) truncate">{commit.message}</p>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <p className="text-(--color-text-primary) truncate">{commit.message}</p>
+                    {commit.refs?.map((ref) => (
+                      <RefBadge key={ref} label={ref} />
+                    ))}
+                  </div>
                   <p className="text-(--color-text-tertiary) font-mono">
                     {commit.hash.slice(0, 7)}{" "}
                     <span className="text-(--color-text-tertiary)">
@@ -59,6 +65,27 @@ export function GitHistory({
         )}
       </div>
     </div>
+  );
+}
+
+function RefBadge({ label }: { label: string }) {
+  const isHead = label === "HEAD" || label.startsWith("HEAD -> ");
+  const isTag = label.startsWith("tag: ");
+  const displayLabel = isTag ? label.slice(5) : label;
+
+  const style: React.CSSProperties = isHead
+    ? { backgroundColor: "var(--color-pr-subtle)", color: "var(--color-pr)" }
+    : isTag
+      ? { backgroundColor: "var(--color-warning-subtle)", color: "var(--color-warning)" }
+      : { backgroundColor: "var(--color-info-subtle)", color: "var(--color-info)" };
+
+  return (
+    <span
+      className="inline-flex items-center shrink-0 rounded px-1 py-0.5 text-[10px] font-medium leading-none"
+      style={style}
+    >
+      {displayLabel}
+    </span>
   );
 }
 
