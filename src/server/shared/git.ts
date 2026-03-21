@@ -7,6 +7,7 @@ export interface GitCommitInfo {
   message: string;
   date: string;
   author: string;
+  refs: string[];
 }
 
 export interface GitRemote {
@@ -86,6 +87,7 @@ export class GitManager {
       message: entry.message,
       date: entry.date,
       author: entry.author_name,
+      refs: entry.refs ? entry.refs.split(", ").map((r) => r.trim()).filter(Boolean) : [],
     }));
   }
 

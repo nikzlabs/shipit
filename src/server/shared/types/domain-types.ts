@@ -5,6 +5,7 @@ export interface GitCommitInfo {
   message: string;
   date: string;
   author: string;
+  refs: string[];
 }
 
 // ---- Session types ----

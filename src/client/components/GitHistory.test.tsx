@@ -135,4 +135,57 @@ describe("GitHistory", () => {
       fireEvent.click(screen.getByText("click me"));
     });
   });
+
+  describe("ref badges", () => {
+    it("renders HEAD badge", () => {
+      render(
+        <GitHistory
+          commits={[makeCommit({ refs: ["HEAD"] })]}
+          onRefresh={onRefresh}
+        />
+      );
+      expect(screen.getByText("HEAD")).toBeInTheDocument();
+    });
+
+    it("renders tag badge without 'tag: ' prefix", () => {
+      render(
+        <GitHistory
+          commits={[makeCommit({ refs: ["tag: v1.0.0"] })]}
+          onRefresh={onRefresh}
+        />
+      );
+      expect(screen.getByText("v1.0.0")).toBeInTheDocument();
+    });
+
+    it("renders branch ref badge", () => {
+      render(
+        <GitHistory
+          commits={[makeCommit({ refs: ["HEAD -> main"] })]}
+          onRefresh={onRefresh}
+        />
+      );
+      expect(screen.getByText("HEAD -> main")).toBeInTheDocument();
+    });
+
+    it("renders multiple ref badges", () => {
+      render(
+        <GitHistory
+          commits={[makeCommit({ refs: ["HEAD", "tag: v2.0"] })]}
+          onRefresh={onRefresh}
+        />
+      );
+      expect(screen.getByText("HEAD")).toBeInTheDocument();
+      expect(screen.getByText("v2.0")).toBeInTheDocument();
+    });
+
+    it("renders no badges when refs is empty", () => {
+      const { container } = render(
+        <GitHistory
+          commits={[makeCommit({ refs: [] })]}
+          onRefresh={onRefresh}
+        />
+      );
+      expect(container.querySelectorAll("[class*='rounded px-1']")).toHaveLength(0);
+    });
+  });
 });
