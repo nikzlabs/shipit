@@ -2,7 +2,7 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { DiffEditor } from "@monaco-editor/react";
 import type { DiffOnMount } from "@monaco-editor/react";
-import { XIcon, PaperPlaneTiltIcon } from "@phosphor-icons/react";
+import { XIcon, PaperPlaneTiltIcon, CaretRightIcon, CaretDownIcon, FolderIcon, FolderOpenIcon, FileIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { useCommentStore } from "../stores/comment-store.js";
@@ -60,6 +60,171 @@ function statusColor(status: FileDiff["status"]): string {
   }
 }
 
+/** Tree node for the file tree sidebar. */
+interface FileTreeNode {
+  name: string;
+  /** Full path for leaf (file) nodes. */
+  path?: string;
+  /** Index into diff.files for leaf nodes. */
+  fileIndex?: number;
+  /** Child nodes for directory nodes. */
+  children?: FileTreeNode[];
+  /** Aggregated stats for directories. */
+  insertions: number;
+  deletions: number;
+  /** File status for leaf nodes. */
+  status?: FileDiff["status"];
+}
+
+/** Build a nested tree from a flat list of FileDiff entries. */
+function buildFileTree(files: FileDiff[]): FileTreeNode[] {
+  const root: FileTreeNode = { name: "", children: [], insertions: 0, deletions: 0 };
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    const parts = file.path.split("/");
+    let current = root;
+
+    for (let j = 0; j < parts.length; j++) {
+      const part = parts[j];
+      const isFile = j === parts.length - 1;
+
+      if (isFile) {
+        current.children!.push({
+          name: part,
+          path: file.path,
+          fileIndex: i,
+          insertions: file.insertions,
+          deletions: file.deletions,
+          status: file.status,
+        });
+      } else {
+        let dir = current.children!.find((c) => c.children && c.name === part);
+        if (!dir) {
+          dir = { name: part, children: [], insertions: 0, deletions: 0 };
+          current.children!.push(dir);
+        }
+        current = dir;
+      }
+    }
+  }
+
+  // Propagate stats up
+  function sumStats(node: FileTreeNode): void {
+    if (!node.children) return;
+    node.insertions = 0;
+    node.deletions = 0;
+    for (const child of node.children) {
+      sumStats(child);
+      node.insertions += child.insertions;
+      node.deletions += child.deletions;
+    }
+  }
+  sumStats(root);
+
+  // Collapse single-child directories (src/client → src/client)
+  function collapse(nodes: FileTreeNode[]): FileTreeNode[] {
+    return nodes.map((node) => {
+      if (node.children) {
+        node.children = collapse(node.children);
+        if (node.children.length === 1 && node.children[0].children) {
+          const child = node.children[0];
+          return { ...child, name: `${node.name}/${child.name}` };
+        }
+      }
+      return node;
+    });
+  }
+
+  return collapse(root.children!);
+}
+
+/** Renders a single node in the diff file tree. */
+function DiffTreeNode({
+  node,
+  depth,
+  selectedFileIndex,
+  onSelect,
+  expandedDirs,
+  onToggleDir,
+}: {
+  node: FileTreeNode;
+  depth: number;
+  selectedFileIndex: number;
+  onSelect: (idx: number) => void;
+  expandedDirs: Set<string>;
+  onToggleDir: (path: string) => void;
+}) {
+  const isDir = !!node.children;
+
+  if (isDir) {
+    // Build a stable key from the dir name path
+    const fullDirKey = `dir:${depth}:${node.name}`;
+    const expanded = expandedDirs.has(fullDirKey);
+
+    return (
+      <>
+        <div
+          className="flex items-center gap-1 px-2 py-0.5 text-xs cursor-pointer text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+          style={{ paddingLeft: `${depth * 12 + 8}px` }}
+          onClick={() => onToggleDir(fullDirKey)}
+        >
+          {expanded
+            ? <CaretDownIcon size={10} className="shrink-0" />
+            : <CaretRightIcon size={10} className="shrink-0" />
+          }
+          {expanded
+            ? <FolderOpenIcon size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-tertiary)" />
+            : <FolderIcon size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-tertiary)" />
+          }
+          <span className="truncate">{node.name}</span>
+          <span className="ml-auto shrink-0 flex gap-1 text-[10px]">
+            {node.insertions > 0 && <span className="text-(--color-success)">+{node.insertions}</span>}
+            {node.deletions > 0 && <span className="text-(--color-error)">-{node.deletions}</span>}
+          </span>
+        </div>
+        {expanded && node.children!.map((child, i) => (
+          <DiffTreeNode
+            key={child.path ?? `${child.name}-${i}`}
+            node={child}
+            depth={depth + 1}
+            selectedFileIndex={selectedFileIndex}
+            onSelect={onSelect}
+            expandedDirs={expandedDirs}
+            onToggleDir={onToggleDir}
+          />
+        ))}
+      </>
+    );
+  }
+
+  // File leaf
+  const isSelected = node.fileIndex === selectedFileIndex;
+  return (
+    <div
+      className={`flex items-center gap-1.5 px-2 py-0.5 text-xs cursor-pointer transition-colors ${
+        isSelected
+          ? "bg-(--color-accent-subtle) text-(--color-text-primary)"
+          : "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+      }`}
+      style={{ paddingLeft: `${depth * 12 + 8}px` }}
+      onClick={() => onSelect(node.fileIndex!)}
+    >
+      <span className={`shrink-0 font-mono text-[10px] font-bold ${statusColor(node.status!)}`}>
+        {statusIcon(node.status!)}
+      </span>
+      <FileIcon size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-tertiary)" />
+      <span className="truncate" title={node.path}>
+        {node.name}
+      </span>
+      <span className="ml-auto shrink-0 flex gap-1 text-[10px]">
+        {node.insertions > 0 && <span className="text-(--color-success)">+{node.insertions}</span>}
+        {node.deletions > 0 && <span className="text-(--color-error)">-{node.deletions}</span>}
+      </span>
+    </div>
+  );
+}
+
 export interface TurnDiffData {
   fromCommit: string;
   toCommit: string;
@@ -86,6 +251,32 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
   const editComment = useCommentStore((s) => s.editComment);
   const deleteComment = useCommentStore((s) => s.deleteComment);
   const clearComments = useCommentStore((s) => s.clearComments);
+
+  const fileTree = useMemo(() => buildFileTree(diff.files), [diff.files]);
+
+  // Start with all directories expanded
+  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => {
+    const dirs = new Set<string>();
+    function collectDirKeys(nodes: FileTreeNode[], depth: number) {
+      for (const node of nodes) {
+        if (node.children) {
+          dirs.add(`dir:${depth}:${node.name}`);
+          collectDirKeys(node.children, depth + 1);
+        }
+      }
+    }
+    collectDirKeys(fileTree, 0);
+    return dirs;
+  });
+
+  const toggleDir = useCallback((key: string) => {
+    setExpandedDirs((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
 
   const selectedFile = diff.files[selectedFileIndex] ?? null;
 
@@ -212,29 +403,18 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
 
       {/* Main area: file list + diff */}
       <div className="flex flex-1 min-h-0">
-        {/* File list sidebar */}
-        <div className="w-56 shrink-0 border-r border-(--color-border-primary) overflow-y-auto bg-(--color-bg-secondary)">
-          {diff.files.map((file, idx) => (
-            <div
-              key={file.path}
-              className={`flex items-center gap-1.5 px-2 py-1 text-xs cursor-pointer transition-colors ${
-                idx === selectedFileIndex
-                  ? "bg-(--color-accent-subtle) text-(--color-text-primary)"
-                  : "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
-              }`}
-              onClick={() => setSelectedFileIndex(idx)}
-            >
-              <span className={`shrink-0 font-mono text-[10px] font-bold ${statusColor(file.status)}`}>
-                {statusIcon(file.status)}
-              </span>
-              <span className="truncate" title={file.path}>
-                {file.path.split("/").pop()}
-              </span>
-              <span className="ml-auto shrink-0 flex gap-1 text-[10px]">
-                {file.insertions > 0 && <span className="text-(--color-success)">+{file.insertions}</span>}
-                {file.deletions > 0 && <span className="text-(--color-error)">-{file.deletions}</span>}
-              </span>
-            </div>
+        {/* File tree sidebar */}
+        <div className="w-56 shrink-0 border-r border-(--color-border-primary) overflow-y-auto bg-(--color-bg-secondary) py-1">
+          {fileTree.map((node, i) => (
+            <DiffTreeNode
+              key={node.path ?? `${node.name}-${i}`}
+              node={node}
+              depth={0}
+              selectedFileIndex={selectedFileIndex}
+              onSelect={setSelectedFileIndex}
+              expandedDirs={expandedDirs}
+              onToggleDir={toggleDir}
+            />
           ))}
         </div>
 
