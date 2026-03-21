@@ -15,12 +15,12 @@ describe("DiffBlock", () => {
       render(
         <DiffBlock filePath="src/app.ts" oldString="old" newString="replaced" />
       );
-      expect(screen.getByText("edit")).toBeInTheDocument();
+      expect(screen.getByText("Edit")).toBeInTheDocument();
     });
 
     it("shows 'write' label for write mode", () => {
       render(<DiffBlock filePath="src/app.ts" newString="content" isWrite />);
-      expect(screen.getByText("write")).toBeInTheDocument();
+      expect(screen.getByText("Write")).toBeInTheDocument();
     });
   });
 

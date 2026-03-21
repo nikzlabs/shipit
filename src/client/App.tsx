@@ -1,5 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: bootstrap timer (setTimeout cleanup), URL/route sync (browser navigation is external), session claim (AbortController cleanup)
 import { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from "react";
+import { Modal } from "./components/ui/modal.js";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useSessionWebSocket } from "./hooks/useSessionWebSocket.js";
 import { useServerEvents } from "./hooks/useServerEvents.js";
@@ -100,9 +101,9 @@ export default function App() {
   const gitCommits = useGitStore((s) => s.commits);
   const gitIdentityNeeded = useGitStore((s) => s.identityNeeded);
   const gitIdentity = useGitStore((s) => s.identity);
-  const lastCommitPair = useGitStore((s) => s.lastCommitPair);
   const turnDiff = useGitStore((s) => s.turnDiff);
-  const historyDiffMode = useGitStore((s) => s.historyDiffMode);
+  const diffDialogOpen = useGitStore((s) => s.diffDialogOpen);
+  const diffDialogTitle = useGitStore((s) => s.diffDialogTitle);
 
   const fileTree = useFileStore((s) => s.tree);
   const docFiles = useFileStore((s) => s.docFiles);
@@ -444,19 +445,12 @@ export default function App() {
   );
 
   const handleTabChange = useCallback(
-    (tab: "preview" | "docs" | "files" | "terminal" | "changes" | "history") => {
+    (tab: "preview" | "docs" | "files" | "terminal" | "history") => {
       useUiStore.getState().setRightTab(tab);
       const sid = useSessionStore.getState().sessionId;
       if (tab === "docs" && useFileStore.getState().docFiles.length === 0 && sid) useFileStore.getState().fetchDocs(sid).catch(() => {});
       if (tab === "files" && sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); }
       if (tab === "history" && sid) useGitStore.getState().fetchLog(sid).catch(() => {});
-      if (tab === "changes") {
-        const pair = useGitStore.getState().lastCommitPair;
-        const diff = useGitStore.getState().turnDiff;
-        if (pair && !diff && sid) {
-          useGitStore.getState().fetchDiff(sid, pair.from, pair.to).catch(() => {});
-        }
-      }
     },
     [],
   );
@@ -497,9 +491,9 @@ export default function App() {
       const res = await fetch(`/api/sessions/${sid}/git/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(commitHash)}`);
       if (!res.ok) return;
       const data = await res.json() as TurnDiffData;
+      const commitMsg = useGitStore.getState().commits.find((c) => c.hash === commitHash)?.message;
       useGitStore.getState().setTurnDiff(data);
-      useGitStore.getState().setHistoryDiffMode(true);
-      useUiStore.getState().setRightTab("changes");
+      useGitStore.getState().openDiffDialog(commitMsg);
     } catch { /* ignore */ }
   }, []);
 
@@ -513,12 +507,6 @@ export default function App() {
     a.download = `chat-${useSessionStore.getState().sessionId ?? "unknown"}-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.json`;
     a.click();
     URL.revokeObjectURL(url);
-  }, []);
-
-  const handleHistoryDiffClose = useCallback(() => {
-    useGitStore.getState().setTurnDiff(null);
-    useGitStore.getState().setHistoryDiffMode(false);
-    useUiStore.getState().setRightTab("history");
   }, []);
 
   const handleOpenDoc = useCallback(
@@ -631,9 +619,6 @@ export default function App() {
         <button onClick={() => handleTabChange("docs")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "docs" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Docs</button>
         <button onClick={() => handleTabChange("files")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "files" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Files</button>
         <button onClick={() => handleTabChange("terminal")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "terminal" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Terminal</button>
-        {(lastCommitPair ?? historyDiffMode) && (
-          <button onClick={() => handleTabChange("changes")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "changes" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Changes</button>
-        )}
         <button onClick={() => handleTabChange("history")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "history" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>History</button>
       </div>
       <div className="flex-1 min-h-0">
@@ -651,12 +636,6 @@ export default function App() {
               <InteractiveTerminal ref={terminalRef} onInput={(d) => send({ type: "terminal_input", data: d })} onResize={(cols, rows) => send({ type: "terminal_resize", cols, rows })} onStart={(cols, rows) => { send({ type: "terminal_start", cols, rows }); useTerminalStore.getState().setShellStarted(true); }} />
             ) : null
           } />
-        ) : rightTab === "changes" ? (
-          turnDiff ? (
-            <Suspense fallback={<div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">Loading diff viewer...</div>}>
-              <DiffPanel diff={turnDiff} onClose={historyDiffMode ? handleHistoryDiffClose : () => useUiStore.getState().setRightTab("preview")} commitMessage={historyDiffMode ? gitCommits.find((c) => c.hash === turnDiff.toCommit)?.message : undefined} onSendComments={handleFileSendComments} />
-            </Suspense>
-          ) : <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">Loading diff...</div>
         ) : rightTab === "history" ? (
           <GitHistory commits={gitCommits} onRollback={(hash) => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().rollback(sid, hash).catch(() => {}); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().fetchLog(sid).catch(() => {}); }} onViewDiff={handleViewDiff} />
         ) : (
@@ -771,6 +750,13 @@ export default function App() {
         />
       )}
       {showUsageModal && <UsageModal currentSessionUsage={currentSessionUsage} allUsage={allUsageStats} sessions={sessions} onClose={() => useUiStore.getState().setShowUsageModal(false)} modelInfo={modelInfo} contextTokens={contextTokens} turnTokens={turnTokens} />}
+      {diffDialogOpen && turnDiff && (
+        <Modal onClose={() => useGitStore.getState().closeDiffDialog()} className="w-[90vw] h-[85vh] max-h-[85vh]! overflow-hidden! flex flex-col">
+          <Suspense fallback={<div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">Loading diff viewer...</div>}>
+            <DiffPanel diff={turnDiff} onClose={() => useGitStore.getState().closeDiffDialog()} commitMessage={diffDialogTitle} onSendComments={handleFileSendComments} />
+          </Suspense>
+        </Modal>
+      )}
 
       <AppLayout
         theme={theme}

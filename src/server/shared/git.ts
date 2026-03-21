@@ -189,9 +189,9 @@ export class GitManager {
    * Get per-file diff summary (files changed with insertions/deletions).
    * Returns an empty array if there are no commits or no changes.
    */
-  async diffSummary(): Promise<{ file: string; insertions: number; deletions: number }[]> {
+  async diffSummary(range?: string): Promise<{ file: string; insertions: number; deletions: number }[]> {
     try {
-      const result = await this.git.diffSummary(["HEAD~1...HEAD"]);
+      const result = await this.git.diffSummary([range ?? "HEAD~1...HEAD"]);
       return result.files.map((f) => ({
         file: f.file,
         insertions: (f as { insertions: number }).insertions ?? 0,
@@ -200,6 +200,40 @@ export class GitManager {
     } catch {
       return [];
     }
+  }
+
+  /**
+   * Find the merge-base between two refs.
+   * Returns the common ancestor commit hash, or null if none found.
+   */
+  async mergeBase(ref1: string, ref2: string): Promise<string | null> {
+    try {
+      const result = await this.git.raw(["merge-base", ref1, ref2]);
+      return result.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Resolve a base branch to a valid ref, trying origin/<branch>, then local <branch>,
+   * then common fallbacks. Returns null if no valid ref found.
+   */
+  async resolveBaseBranchRef(baseBranch: string): Promise<string | null> {
+    const refs = [
+      `origin/${baseBranch}`,
+      baseBranch,
+      ...(baseBranch !== "master" ? ["origin/master", "master"] : []),
+    ];
+    for (const ref of refs) {
+      try {
+        await this.git.revparse(["--verify", ref]);
+        return ref;
+      } catch {
+        // try next ref
+      }
+    }
+    return null;
   }
 
   /** Merge a branch into the current branch. Returns the merge commit hash on success. */

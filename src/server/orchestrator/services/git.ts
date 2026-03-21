@@ -126,6 +126,89 @@ export async function getTurnDiff(
   };
 }
 
+/** Get full diff between current HEAD and a base branch (for PR diffs). */
+export async function getDiffVsBranch(
+  git: GitManager,
+  baseBranch: string,
+): Promise<{
+  fromCommit: string;
+  toCommit: string;
+  files: FileDiff[];
+  stats: { totalInsertions: number; totalDeletions: number; filesChanged: number };
+}> {
+  const baseRef = await git.resolveBaseBranchRef(baseBranch);
+  if (!baseRef) throw new ServiceError(400, `Cannot resolve base branch: ${baseBranch}`);
+
+  const mergeBaseHash = await git.mergeBase(baseRef, "HEAD");
+  if (!mergeBaseHash) throw new ServiceError(400, `Cannot find merge-base between ${baseRef} and HEAD`);
+
+  const headHash = await git.getHeadHash();
+  if (!headHash) throw new ServiceError(400, "No commits in repository");
+
+  const changedFiles = await git.diffNameStatus(mergeBaseHash, "HEAD");
+  const diffSummary = await git.diffSummary(`${mergeBaseHash}...HEAD`);
+
+  const statsMap = new Map<string, { insertions: number; deletions: number }>();
+  for (const f of diffSummary) {
+    statsMap.set(f.file, { insertions: f.insertions, deletions: f.deletions });
+  }
+
+  const files: FileDiff[] = [];
+  let totalInsertions = 0;
+  let totalDeletions = 0;
+
+  for (const entry of changedFiles) {
+    const stats = statsMap.get(entry.path) ?? { insertions: 0, deletions: 0 };
+    const isBinary = stats.insertions === 0 && stats.deletions === 0 && entry.status !== "D";
+
+    let status: FileDiff["status"];
+    switch (entry.status) {
+      case "A": status = "added"; break;
+      case "D": status = "deleted"; break;
+      case "R": status = "renamed"; break;
+      default: status = "modified"; break;
+    }
+
+    let oldContent = "";
+    let newContent = "";
+
+    if (!isBinary) {
+      if (status === "deleted") {
+        oldContent = await git.getFileAtCommit(mergeBaseHash, entry.path);
+      } else if (status === "added") {
+        newContent = await git.getFileAtCommit(headHash, entry.path);
+      } else if (status === "renamed") {
+        oldContent = await git.getFileAtCommit(mergeBaseHash, entry.oldPath ?? entry.path);
+        newContent = await git.getFileAtCommit(headHash, entry.path);
+      } else {
+        oldContent = await git.getFileAtCommit(mergeBaseHash, entry.path);
+        newContent = await git.getFileAtCommit(headHash, entry.path);
+      }
+    }
+
+    totalInsertions += stats.insertions;
+    totalDeletions += stats.deletions;
+
+    files.push({
+      path: entry.path,
+      oldPath: entry.oldPath,
+      status,
+      insertions: stats.insertions,
+      deletions: stats.deletions,
+      binary: isBinary,
+      oldContent,
+      newContent,
+    });
+  }
+
+  return {
+    fromCommit: mergeBaseHash,
+    toCommit: headHash,
+    files,
+    stats: { totalInsertions, totalDeletions, filesChanged: files.length },
+  };
+}
+
 // ---- Mutation operations ----
 
 /** Rollback to a specific commit. */

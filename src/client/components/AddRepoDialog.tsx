@@ -129,7 +129,6 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
               onChange={(e) => handleInputChange(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") void handleSubmitUrl();
-                if (e.key === "Escape") onClose();
               }}
               placeholder="Search GitHub repos or paste a URL..."
               className="w-full rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-3 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:border-(--color-border-focus) focus:outline-none"

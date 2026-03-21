@@ -12,6 +12,7 @@ import {
   getGitRemotes,
   getGitBranches,
   getTurnDiff,
+  getDiffVsBranch,
   getWorkspaceState,
   gitRollback,
   setGitRemote,
@@ -55,6 +56,26 @@ export async function registerGitRoutes(
         const git = createGitManager(dir);
         return await getTurnDiff(git, from, to);
       } catch (err) {
+        reply.code(500).send({ error: `Failed to get diff: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // GET /api/sessions/:id/git/diff-vs-branch — diff HEAD vs a base branch (for PR diffs)
+  app.get<{ Params: { id: string }; Querystring: { base?: string } }>(
+    "/api/sessions/:id/git/diff-vs-branch",
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      const baseBranch = request.query.base || "main";
+      try {
+        const git = createGitManager(dir);
+        return await getDiffVsBranch(git, baseBranch);
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
         reply.code(500).send({ error: `Failed to get diff: ${getErrorMessage(err)}` });
       }
     },

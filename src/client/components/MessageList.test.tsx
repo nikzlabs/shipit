@@ -116,7 +116,7 @@ describe("MessageList", () => {
         />
       );
       expect(screen.getByText("src/app.ts")).toBeInTheDocument();
-      expect(screen.getByText("edit")).toBeInTheDocument();
+      expect(screen.getByText("Edit")).toBeInTheDocument();
     });
 
     it("renders Write tool as a DiffBlock with write label", () => {
@@ -135,7 +135,7 @@ describe("MessageList", () => {
         />
       );
       expect(screen.getByText("new-file.ts")).toBeInTheDocument();
-      expect(screen.getByText("write")).toBeInTheDocument();
+      expect(screen.getByText("Write")).toBeInTheDocument();
     });
 
     it("shows file_path for tools that have it", () => {
@@ -203,8 +203,8 @@ describe("MessageList", () => {
       const groups = screen.getAllByTestId("tool-call-group");
       expect(groups).toHaveLength(1);
       // DiffBlock labels are inside the group
-      expect(screen.getByText("edit")).toBeInTheDocument();
-      expect(screen.getByText("write")).toBeInTheDocument();
+      expect(screen.getByText("Edit")).toBeInTheDocument();
+      expect(screen.getByText("Write")).toBeInTheDocument();
     });
 
     it("renders consecutive tool-only messages in a single container", () => {
@@ -646,10 +646,10 @@ describe("MessageList", () => {
 
     it("opens modal with tool output when clicked", () => {
       const tools: ToolUseBlock[] = [
-        { type: "tool_use", id: "t1", name: "Bash", input: { command: "echo hello" } },
+        { type: "tool_use", id: "t1", name: "Bash", input: { command: "echo greet" } },
       ];
       const results: ToolResultBlock[] = [
-        { toolUseId: "t1", content: "hello" },
+        { toolUseId: "t1", content: "greet output" },
       ];
       render(
         <MessageList
@@ -658,11 +658,11 @@ describe("MessageList", () => {
         />
       );
       // Initially no modal — result not visible
-      expect(screen.queryByText("hello")).toBeNull();
+      expect(screen.queryByText("greet output")).toBeNull();
 
       // Click to open modal
       fireEvent.click(screen.getByLabelText("Show output"));
-      expect(screen.getByText("hello")).toBeInTheDocument();
+      expect(screen.getByText("greet output")).toBeInTheDocument();
     });
 
     it("closes modal when close button is clicked", () => {
