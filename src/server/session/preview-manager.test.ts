@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { extractMissingNativeModule, isNativeBinarySignalCrash } from "./preview-manager.js";
+import {
+  extractMissingNativeModule,
+  extractCorruptedDependency,
+  isNativeBinarySignalCrash,
+} from "./preview-manager.js";
 
 describe("extractMissingNativeModule", () => {
   it("extracts rollup native module name", () => {
@@ -55,6 +59,62 @@ describe("extractMissingNativeModule", () => {
       "npm has a bug related to optional dependencies.",
     ].join("\n");
     expect(extractMissingNativeModule(output)).toBe("@rollup/rollup-linux-arm64-gnu");
+  });
+});
+
+describe("extractCorruptedDependency", () => {
+  it("extracts caniuse-lite from browserslist require stack", () => {
+    const output = [
+      "[plugin:vite:react-babel] Cannot find module 'caniuse-lite/dist/unpacker/agents'",
+      "Require stack:",
+      "- /workspace/node_modules/browserslist/index.js",
+      "- /workspace/node_modules/@babel/helper-compilation-targets/lib/index.js",
+    ].join("\n");
+    expect(extractCorruptedDependency(output)).toBe("caniuse-lite");
+  });
+
+  it("extracts scoped package names", () => {
+    const output = [
+      "Cannot find module '@babel/helper-string-parser/lib/index.js'",
+      "Require stack:",
+      "- /workspace/node_modules/@babel/parser/lib/index.js",
+    ].join("\n");
+    expect(extractCorruptedDependency(output)).toBe("@babel/helper-string-parser");
+  });
+
+  it("returns null for user code errors (no node_modules in require stack)", () => {
+    const output = [
+      "Cannot find module './missing-file'",
+      "Require stack:",
+      "- /workspace/src/index.js",
+    ].join("\n");
+    expect(extractCorruptedDependency(output)).toBeNull();
+  });
+
+  it("returns null for relative path modules", () => {
+    const output = [
+      "Cannot find module './foo'",
+      "Require stack:",
+      "- /workspace/node_modules/some-pkg/index.js",
+    ].join("\n");
+    expect(extractCorruptedDependency(output)).toBeNull();
+  });
+
+  it("returns null for native modules (handled separately)", () => {
+    const output = [
+      "Cannot find module '@rollup/rollup-linux-arm64-gnu'",
+      "Require stack:",
+      "- /workspace/node_modules/rollup/dist/native.js",
+    ].join("\n");
+    expect(extractCorruptedDependency(output)).toBeNull();
+  });
+
+  it("returns null for errors without require stack", () => {
+    expect(extractCorruptedDependency("Cannot find module 'caniuse-lite'")).toBeNull();
+  });
+
+  it("returns null for empty output", () => {
+    expect(extractCorruptedDependency("")).toBeNull();
   });
 });
 

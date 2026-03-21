@@ -38,6 +38,34 @@ export function extractMissingNativeModule(output: string): string | null {
 }
 
 /**
+ * Detect a corrupted/incomplete dependency inside node_modules.
+ * Pattern: "Cannot find module 'X'" where the Require stack shows the caller
+ * is inside node_modules (i.e. a package's internal require failed, not user
+ * code importing a missing package).
+ *
+ * Returns the base package name (e.g. "caniuse-lite" from
+ * "caniuse-lite/dist/unpacker/agents") or null if no match.
+ */
+export function extractCorruptedDependency(output: string): string | null {
+  // Must have a require stack through node_modules to distinguish from user code errors
+  const moduleMatch = /Cannot find module ['"]([^'"]+)['"]\s*\n\s*Require stack:\s*\n\s*-\s*\S*node_modules\//m.exec(
+    output,
+  );
+  if (!moduleMatch) return null;
+
+  const modulePath = moduleMatch[1];
+  // Skip relative paths (user code) and native modules (handled separately)
+  if (modulePath.startsWith(".") || modulePath.startsWith("/")) return null;
+  if (/^@(?:rollup|esbuild|swc|parcel)\//.test(modulePath)) return null;
+
+  // Extract base package name: "caniuse-lite/dist/foo" → "caniuse-lite",
+  // "@scope/pkg/sub" → "@scope/pkg"
+  const parts = modulePath.split("/");
+  if (modulePath.startsWith("@") && parts.length >= 2) return `${parts[0]}/${parts[1]}`;
+  return parts[0];
+}
+
+/**
  * Check if an exit code indicates a signal-killed process whose native binary
  * is likely corrupted or built for the wrong platform (e.g. musl binary on
  * glibc, wrong arch).  Exit code = 128 + signal number on Linux:
@@ -133,8 +161,10 @@ export class PreviewManager extends EventEmitter {
   private _processStartTime = 0;
   /** Buffered process output for native module crash detection. */
   private _processLogs: string[] = [];
-  /** Whether we've already retried once for a native module crash (prevents infinite loop). */
+  /** Whether we've already retried once for a native/corrupted module issue (prevents infinite loop). */
   private _nativeModuleRetried = false;
+  /** Whether we're currently performing a live dependency recovery (stop+reinstall+restart). */
+  private _liveRecoveryInProgress = false;
   /** Rolling log buffer for startup_step messages (last N lines). */
   private _startupLogBuffer: string[] = [];
   /** Timestamp when the install step started. */
@@ -171,6 +201,52 @@ export class PreviewManager extends EventEmitter {
       }
     }
     return [...this._startupLogBuffer];
+  }
+
+  /**
+   * Check stderr output for corrupted dependency errors (e.g. caniuse-lite).
+   * Unlike native module crashes where the process exits, Vite stays running
+   * but fails every transform — so we detect the pattern live and restart.
+   */
+  private checkStderrForCorruptedDep(): void {
+    if (this._liveRecoveryInProgress || this._nativeModuleRetried || !this._workspaceDir) return;
+
+    const output = this._processLogs.join("\n");
+    const dep = extractCorruptedDependency(output);
+    if (!dep) return;
+
+    this._liveRecoveryInProgress = true;
+    this._nativeModuleRetried = true;
+    console.log(`[preview-manager] Detected corrupted dependency in live server: ${dep}, stopping and reinstalling`);
+    this.emit("install_status", {
+      status: "running",
+      message: `Reinstalling corrupted dependency: ${dep}`,
+    });
+
+    const workspaceDir = this._workspaceDir;
+    void (async () => {
+      try {
+        this.stop();
+        const exitCode = await runInstallCommand({
+          command: `npm install --no-save ${dep}`,
+          cwd: workspaceDir,
+          onOutput: (t) => this.emit("log", { source: "install", text: t }),
+        });
+        if (exitCode !== 0) {
+          console.error(`[preview-manager] Failed to reinstall ${dep} (exit ${exitCode})`);
+          this.emit("install_status", { status: "error", message: `Failed to reinstall ${dep}` });
+          this._liveRecoveryInProgress = false;
+          return;
+        }
+        console.log(`[preview-manager] Reinstalled ${dep}, restarting preview`);
+        await this.start(workspaceDir);
+      } catch (err) {
+        console.error("[preview-manager] Live dependency recovery failed:", err);
+        this.emit("install_status", { status: "error", message: `Recovery failed: ${getErrorMessage(err)}` });
+      } finally {
+        this._liveRecoveryInProgress = false;
+      }
+    })();
   }
 
   /**
@@ -335,6 +411,7 @@ export class PreviewManager extends EventEmitter {
         this._processLogs.push(text);
         console.error("[vite stderr]", text);
         this.emit("log", { source: "preview", text });
+        this.checkStderrForCorruptedDep();
       }
     });
 
@@ -399,6 +476,7 @@ export class PreviewManager extends EventEmitter {
         this._processLogs.push(text);
         console.error("[preview stderr]", text);
         this.emit("log", { source: "preview", text });
+        this.checkStderrForCorruptedDep();
       }
     });
 
@@ -460,18 +538,19 @@ export class PreviewManager extends EventEmitter {
       if (this.proc !== proc) return; // stale event from a previous process
       console.log(`[preview-manager] ${label} exited with code`, code);
 
-      // Detect native binary issues on quick crashes and auto-recover once.
-      // Two patterns:
-      //   1. "Cannot find module @rollup/..." — package missing, install it directly
-      //   2. SIGBUS/SIGILL/SIGSEGV — binary installed but corrupted or wrong
-      //      platform (e.g. musl on glibc), clean reinstall needed
+      // Detect dependency issues on quick crashes and auto-recover once.
+      // Three patterns:
+      //   1. "Cannot find module @rollup/..." — native package missing, install it
+      //   2. SIGBUS/SIGILL/SIGSEGV — binary corrupted or wrong platform
+      //   3. Corrupted dependency (e.g. caniuse-lite) — reinstall the package
       const isQuickCrash = code !== 0 && Date.now() - this._processStartTime < QUICK_CRASH_THRESHOLD_MS;
       if (isQuickCrash && !this._nativeModuleRetried && this._workspaceDir) {
         const output = this._processLogs.join("\n");
         const missingModule = extractMissingNativeModule(output);
         const signalCrash = code !== null && isNativeBinarySignalCrash(code);
+        const corruptedDep = missingModule === null && !signalCrash ? extractCorruptedDependency(output) : null;
 
-        if (missingModule !== null || signalCrash) {
+        if (missingModule !== null || signalCrash || corruptedDep !== null) {
           this._nativeModuleRetried = true;
           this._running = false;
           this._ports = [];
@@ -500,6 +579,32 @@ export class PreviewManager extends EventEmitter {
                 await this.start(this._workspaceDir!);
               } catch (err) {
                 console.error("[preview-manager] Native module recovery failed:", err);
+                this.emit("stopped", code);
+              }
+            })();
+          } else if (corruptedDep) {
+            // Corrupted/incomplete dependency (e.g. caniuse-lite) — reinstall it
+            console.log(`[preview-manager] Reinstalling corrupted dependency: ${corruptedDep}`);
+            this.emit("install_status", {
+              status: "running",
+              message: `Reinstalling corrupted dependency: ${corruptedDep}`,
+            });
+            void (async () => {
+              try {
+                const exitCode = await runInstallCommand({
+                  command: `npm install --no-save ${corruptedDep}`,
+                  cwd: this._workspaceDir!,
+                  onOutput: (text) => this.emit("log", { source: "install", text }),
+                });
+                if (exitCode !== 0) {
+                  console.error(`[preview-manager] Failed to reinstall ${corruptedDep} (exit ${exitCode})`);
+                  this.emit("stopped", code);
+                  return;
+                }
+                console.log(`[preview-manager] Reinstalled ${corruptedDep}, retrying preview`);
+                await this.start(this._workspaceDir!);
+              } catch (err) {
+                console.error("[preview-manager] Corrupted dependency recovery failed:", err);
                 this.emit("stopped", code);
               }
             })();

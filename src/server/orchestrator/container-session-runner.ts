@@ -755,12 +755,25 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           this.emitMessage(this.buildPreviewStatus());
           break;
 
-        case "preview_stopped":
+        case "preview_stopped": {
+          // If this is the first state we receive (SSE replay on reconnect),
+          // the preview was already crashed before we connected — try to restart it.
+          const isReplay = !this._previewStateReceived;
           this._previewStateReceived = true;
           this._workerPreviewPorts = [];
           this._lastPreviewExitCode = (data.code as number) ?? null;
           this.emitMessage(this.buildPreviewStatus());
+          if (isReplay && this._lastPreviewExitCode !== null && this._lastPreviewExitCode !== 0) {
+            console.log(`[container-runner:${this.sessionId}] Preview was crashed on reconnect (exit ${this._lastPreviewExitCode}), restarting`);
+            this._lastPreviewExitCode = null;
+            this._previewLogBuffer = [];
+            // eslint-disable-next-line no-restricted-syntax -- fire-and-forget preview restart
+            workerPost(this.getPreviewUrl(), "/preview/stop")
+              .then(() => workerPost(this.getPreviewUrl(), "/preview/start"))
+              .catch(() => {});
+          }
           break;
+        }
 
         case "preview_config_missing":
           this._previewStateReceived = true;
@@ -891,13 +904,24 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           this.emitMessage(this.buildPreviewStatus());
           break;
 
-        case "preview_stopped":
+        case "preview_stopped": {
           if (this.previewWorkerUrl) break;
+          const isMainReplay = !this._previewStateReceived;
           this._previewStateReceived = true;
           this._workerPreviewPorts = [];
           this._lastPreviewExitCode = (data.code as number) ?? null;
           this.emitMessage(this.buildPreviewStatus());
+          if (isMainReplay && this._lastPreviewExitCode !== null && this._lastPreviewExitCode !== 0) {
+            console.log(`[container-runner:${this.sessionId}] Preview was crashed on reconnect (exit ${this._lastPreviewExitCode}), restarting`);
+            this._lastPreviewExitCode = null;
+            this._previewLogBuffer = [];
+            // eslint-disable-next-line no-restricted-syntax -- fire-and-forget preview restart
+            workerPost(this.workerUrl, "/preview/stop")
+              .then(() => workerPost(this.workerUrl, "/preview/start"))
+              .catch(() => {});
+          }
           break;
+        }
 
         case "preview_config_missing":
           if (this.previewWorkerUrl) break;
