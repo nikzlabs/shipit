@@ -144,55 +144,8 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
       emitDone({ type: "error", message: reason });
     }
 
-    // Auto-commit after agent turn using the session dir captured at turn start.
-    // Do NOT use ctx.getActiveGitManager() — the user may have switched sessions.
-    let commitHash: string | null = null;
-    try {
-      if (capturedSessionDir) {
-        commitHash = await postTurnCommit(ctx, {
-          sessionDir: capturedSessionDir,
-          sessionId: capturedSessionId,
-          emit: emitDone,
-        });
-      }
-    } catch (err) {
-      console.error("[git] auto-commit failed:", getErrorMessage(err));
-    }
-
-    // Emit PR lifecycle card after commit if the session has a remote
-    if (commitHash && capturedSessionId && capturedSessionDir) {
-      try {
-        const session = ctx.sessionManager.get(capturedSessionId);
-        if (session?.remoteUrl && session.branchRenamed !== false) {
-          const git = ctx.createGitManager(capturedSessionDir);
-
-          // Check if a PR already exists for this branch
-          const prStatus = ctx.prStatusPoller.getStatus(capturedSessionId);
-          if (prStatus) {
-            // PR already exists — the poller handles updates via SSE
-          } else {
-            // No PR yet — send a "ready" card with diff stats vs base branch
-            const headBranch = session.branch || await git.getCurrentBranch();
-            const { insertions: totalInsertions, deletions: totalDeletions } = await git.diffStatVsBranch("main");
-
-            emitDone({
-              type: "pr_lifecycle_update",
-              sessionId: capturedSessionId,
-              cardId: `pr-card-${capturedSessionId}`,
-              phase: "ready",
-              headBranch,
-              totalInsertions,
-              totalDeletions,
-            });
-          }
-        }
-      } catch (err) {
-        console.error("[pr-lifecycle] Failed to compute diff stats:", getErrorMessage(err));
-      }
-    }
-
-    // Mark Claude as no longer running, then process the next queued message
-    // If interrupted, clear the queue instead of dequeuing.
+    // Process the message queue FIRST so the client clears queued visual state
+    // immediately, before the (potentially slow) post-turn git commit work.
     // Use runner directly (not ctx) so this works even after WS disconnect.
     if (runner) runner.running = false;
     const messageQueue = runner?.messageQueue ?? [];
@@ -249,6 +202,53 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
       } catch (err) {
         console.error("[queue] Error processing queued message:", getErrorMessage(err));
         if (runner) runner.running = false;
+      }
+    }
+
+    // Auto-commit after agent turn using the session dir captured at turn start.
+    // Do NOT use ctx.getActiveGitManager() — the user may have switched sessions.
+    let commitHash: string | null = null;
+    try {
+      if (capturedSessionDir) {
+        commitHash = await postTurnCommit(ctx, {
+          sessionDir: capturedSessionDir,
+          sessionId: capturedSessionId,
+          emit: emitDone,
+        });
+      }
+    } catch (err) {
+      console.error("[git] auto-commit failed:", getErrorMessage(err));
+    }
+
+    // Emit PR lifecycle card after commit if the session has a remote
+    if (commitHash && capturedSessionId && capturedSessionDir) {
+      try {
+        const session = ctx.sessionManager.get(capturedSessionId);
+        if (session?.remoteUrl && session.branchRenamed !== false) {
+          const git = ctx.createGitManager(capturedSessionDir);
+
+          // Check if a PR already exists for this branch
+          const prStatus = ctx.prStatusPoller.getStatus(capturedSessionId);
+          if (prStatus) {
+            // PR already exists — the poller handles updates via SSE
+          } else {
+            // No PR yet — send a "ready" card with diff stats vs base branch
+            const headBranch = session.branch || await git.getCurrentBranch();
+            const { insertions: totalInsertions, deletions: totalDeletions } = await git.diffStatVsBranch("main");
+
+            emitDone({
+              type: "pr_lifecycle_update",
+              sessionId: capturedSessionId,
+              cardId: `pr-card-${capturedSessionId}`,
+              phase: "ready",
+              headBranch,
+              totalInsertions,
+              totalDeletions,
+            });
+          }
+        }
+      } catch (err) {
+        console.error("[pr-lifecycle] Failed to compute diff stats:", getErrorMessage(err));
       }
     }
 
