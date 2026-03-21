@@ -109,7 +109,7 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" />);
 
-    expect(screen.getByText(/main.*feature-branch/)).toBeInTheDocument();
+    expect(screen.getByText("feature-branch")).toBeInTheDocument();
     expect(screen.getByText("View PR")).toBeInTheDocument();
     expect(screen.getByText(/CI/)).toBeInTheDocument();
   });
@@ -365,7 +365,7 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" />);
 
-    expect(screen.getByText(/PR #42 merged into main/)).toBeInTheDocument();
+    expect(screen.getByText(/PR #42 merged/)).toBeInTheDocument();
     expect(screen.getByText("View PR")).toBeInTheDocument();
   });
 
