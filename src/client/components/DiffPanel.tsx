@@ -289,13 +289,13 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
     return allComments.filter((c) => c.filePath === selectedFile.path);
   }, [allComments, selectedFile]);
 
-  // Clean up manager on file change or unmount
+  // Clean up manager on unmount
   useEffect(() => {
     return () => {
       managerRef.current?.dispose();
       managerRef.current = null;
     };
-  }, [selectedFileIndex]);
+  }, []);
 
   // Sync comments to manager
   useEffect(() => {
@@ -432,6 +432,7 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
                 </div>
                 <div className="h-[calc(100%-1.75rem)]">
                   <DiffEditor
+                    key={selectedFile.path}
                     original={selectedFile.oldContent}
                     modified={selectedFile.newContent}
                     language={language}
