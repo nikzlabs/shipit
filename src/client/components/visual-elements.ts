@@ -9,7 +9,8 @@ export const SUBAGENT_TOOLS = new Set(["Task", "Skill"]);
 export type VisualElement =
   | { kind: "message"; index: number; hideTools: boolean }
   | { kind: "tool-group"; items: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean }[]; streaming: boolean; messageIndices: number[] }
-  | { kind: "subagent"; tool: ToolUseBlock; streaming: boolean };
+  | { kind: "subagent"; tool: ToolUseBlock; streaming: boolean }
+  | { kind: "standalone-tool"; tool: ToolUseBlock; result?: ToolResultBlock; streaming: boolean; messageIndex: number };
 
 /**
  * Build a flat list of visual elements from messages.
@@ -62,9 +63,28 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
       lastToolMsgStreaming = !!msg.streaming;
     } else if (nonSubagentTools.length > 0 || msg.text.trim() || msg.images?.length || msg.files?.length || msg.role === "user") {
       flushTools();
-      // Hide tools in the bubble when the only tools are subagent tools (rendered separately)
-      const hideSubagentOnly = subagentTools.length > 0 && nonSubagentTools.length === 0;
-      elements.push({ kind: "message", index: i, hideTools: hideSubagentOnly });
+      const hasVisibleContent = !!msg.text.trim() || !!msg.images?.length || !!msg.files?.length;
+      // When a message has ONLY standalone tools (ExitPlanMode, AskUserQuestion)
+      // and no visible text content, extract them as standalone elements instead
+      // of rendering an empty bubble. This handles history-loaded messages where
+      // ExitPlanMode was persisted in a separate message group from the plan text.
+      // Exclude TodoWrite-only messages — those render via lastTodoWriteId in the bubble.
+      const extractableStandalone = nonSubagentTools.filter(
+        (t) => STANDALONE_TOOLS.has(t.name) && t.name !== "TodoWrite",
+      );
+      const standaloneOnly = msg.role === "assistant" && !hasVisibleContent
+        && extractableStandalone.length > 0
+        && nonSubagentTools.every((t) => STANDALONE_TOOLS.has(t.name));
+      if (standaloneOnly) {
+        for (const tool of extractableStandalone) {
+          const result = msg.toolResults?.find((r) => r.toolUseId === tool.id);
+          elements.push({ kind: "standalone-tool", tool, result, streaming: !!msg.streaming, messageIndex: i });
+        }
+      } else {
+        // Hide tools in the bubble when the only tools are subagent tools (rendered separately)
+        const hideSubagentOnly = subagentTools.length > 0 && nonSubagentTools.length === 0;
+        elements.push({ kind: "message", index: i, hideTools: hideSubagentOnly });
+      }
     } else {
       // Message has only subagent tools and no other content — no bubble needed
       flushTools();

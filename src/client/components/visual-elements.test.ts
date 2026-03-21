@@ -99,10 +99,10 @@ describe("buildVisualElements", () => {
         toolMsg([tool("t2", "AskUserQuestion", { questions: [] })]),
         toolMsg([tool("t3", "Grep")]),
       ]);
-      // tool-group(t1), standalone message(AskUserQuestion), tool-group(t3)
+      // tool-group(t1), standalone-tool(AskUserQuestion), tool-group(t3)
       expect(elements).toHaveLength(3);
       expect(elements[0].kind).toBe("tool-group");
-      expect(elements[1]).toMatchObject({ kind: "message", index: 1, hideTools: false });
+      expect(elements[1]).toMatchObject({ kind: "standalone-tool", messageIndex: 1 });
       expect(elements[2].kind).toBe("tool-group");
     });
 

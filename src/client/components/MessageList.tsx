@@ -204,6 +204,25 @@ export function MessageList({
           );
         }
 
+        // ── Standalone tool: ExitPlanMode or AskUserQuestion extracted from an empty-text message ──
+        if (el.kind === "standalone-tool") {
+          const isLastMessage = el.messageIndex === messages.length - 1;
+          const questionDisabled = !isLastMessage || isLoading || el.streaming;
+          return (
+            <div key={`st-${el.tool.id}`}>
+              <ToolUseItem
+                tool={el.tool}
+                result={el.result}
+                isLast
+                isStreaming={el.streaming}
+                onAnswerQuestion={onAnswerQuestion}
+                onSendFollowUp={onSendFollowUp}
+                isQuestionDisabled={questionDisabled}
+              />
+            </div>
+          );
+        }
+
         // ── Message bubble ──
         const i = el.index;
         const hideTools = el.hideTools;

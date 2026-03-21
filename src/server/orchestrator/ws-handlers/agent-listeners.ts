@@ -110,7 +110,20 @@ export function wireAgentListeners(
       // Track message groups for chat history (split at tool-result boundaries)
       if ((text || toolBlocks.length > 0) && runner) {
         const groups = runner.chatMessageGroups;
-        if (runner.needsNewMessageGroup || groups.length === 0) {
+        // Standalone tools (ExitPlanMode, AskUserQuestion) should merge with the
+        // preceding group to keep plan text together with the PlanApproval card.
+        // Without this, ExitPlanMode ends up in a separate message group with
+        // empty text when the agent does research between writing the plan and
+        // calling ExitPlanMode.
+        const STANDALONE_MERGE = new Set(["ExitPlanMode", "AskUserQuestion"]);
+        const isStandaloneOnly = !text && toolBlocks.length > 0
+          && toolBlocks.every((t) => STANDALONE_MERGE.has(t.name));
+        if (runner.needsNewMessageGroup && isStandaloneOnly && groups.length > 0) {
+          // Merge standalone tools with previous group; leave needsNewMessageGroup
+          // true so the next non-standalone event starts a fresh group.
+          const last = groups[groups.length - 1];
+          last.toolUse.push(...toolBlocks);
+        } else if (runner.needsNewMessageGroup || groups.length === 0) {
           groups.push({ text, toolUse: [...toolBlocks] });
           runner.needsNewMessageGroup = false;
         } else {
