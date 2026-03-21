@@ -117,7 +117,7 @@ export async function registerBootstrapRoutes(
   });
 
   // PUT /api/settings/utility-model — set utility model config
-  app.put<{ Body: { provider: string; apiKey: string; model: string; baseUrl?: string } }>(
+  app.put<{ Body: { provider: string; apiKey?: string; model: string; baseUrl?: string } }>(
     "/api/settings/utility-model",
     async (request, reply) => {
       try {
