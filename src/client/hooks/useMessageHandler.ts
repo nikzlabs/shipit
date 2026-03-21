@@ -105,7 +105,17 @@ export function useMessageHandler(params: {
             const last = prev[prev.length - 1];
             const canMerge = last?.role === "assistant" && last.streaming
               && !(last.toolResults && last.toolResults.length > 0);
-            if (canMerge) {
+            // Standalone tools like ExitPlanMode and AskUserQuestion should stay
+            // with the preceding assistant text even after tool results arrive.
+            // Without this, the PlanApproval card renders in an empty bubble
+            // disconnected from the plan text when the agent does research
+            // (Read, Grep, etc.) between writing the plan and calling ExitPlanMode.
+            const STANDALONE_MERGE = new Set(["ExitPlanMode", "AskUserQuestion"]);
+            const isStandaloneOnly = !textBlocks && toolUseBlocks.length > 0
+              && toolUseBlocks.every((t) => STANDALONE_MERGE.has(t.name));
+            const forceMerge = isStandaloneOnly
+              && last?.role === "assistant" && last.streaming;
+            if (canMerge || forceMerge) {
               return [
                 ...prev.slice(0, -1),
                 {

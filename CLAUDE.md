@@ -12,6 +12,8 @@ ShipIt always runs inside Docker containers — there is no local/bare-metal mod
 npm install
 ```
 
+**Important:** If any npm command fails with missing `node_modules` (e.g., `Cannot find package`), run `npm install` first.
+
 ## Commands
 
 - **`npm run test:dev`** — **preferred for development.** Runs only tests affected by your uncommitted changes + a small set of smoke tests. Much faster than the full suite. Use this while iterating.
