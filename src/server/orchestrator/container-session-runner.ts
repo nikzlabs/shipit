@@ -765,8 +765,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           this.emitMessage(this.buildPreviewStatus());
           if (isReplay && this._lastPreviewExitCode !== null && this._lastPreviewExitCode !== 0) {
             console.log(`[container-runner:${this.sessionId}] Preview was crashed on reconnect (exit ${this._lastPreviewExitCode}), restarting`);
-            this._lastPreviewExitCode = null;
-            this._previewLogBuffer = [];
+            // Keep crash state (_lastPreviewExitCode, _previewLogBuffer) visible
+            // to the UI while the restart attempt is in progress.  preview_ready
+            // will clear them if the restart succeeds.
             // eslint-disable-next-line no-restricted-syntax -- fire-and-forget preview restart
             workerPost(this.getPreviewUrl(), "/preview/stop")
               .then(() => workerPost(this.getPreviewUrl(), "/preview/start"))
@@ -913,8 +914,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           this.emitMessage(this.buildPreviewStatus());
           if (isMainReplay && this._lastPreviewExitCode !== null && this._lastPreviewExitCode !== 0) {
             console.log(`[container-runner:${this.sessionId}] Preview was crashed on reconnect (exit ${this._lastPreviewExitCode}), restarting`);
-            this._lastPreviewExitCode = null;
-            this._previewLogBuffer = [];
+            // Keep crash state (_lastPreviewExitCode, _previewLogBuffer) visible
+            // to the UI while the restart attempt is in progress.  preview_ready
+            // will clear them if the restart succeeds.
             // eslint-disable-next-line no-restricted-syntax -- fire-and-forget preview restart
             workerPost(this.workerUrl, "/preview/stop")
               .then(() => workerPost(this.workerUrl, "/preview/start"))
