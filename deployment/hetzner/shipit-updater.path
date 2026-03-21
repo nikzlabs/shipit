@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for ShipIt update requests
+
+[Path]
+PathExists=/opt/shipit/.update-requested
+Unit=shipit-updater.service
+
+[Install]
+WantedBy=multi-user.target

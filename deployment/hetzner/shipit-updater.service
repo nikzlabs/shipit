@@ -1,0 +1,9 @@
+[Unit]
+Description=ShipIt self-updater
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/shipit/deployment/hetzner/update.sh
+StandardOutput=journal
+StandardError=journal
