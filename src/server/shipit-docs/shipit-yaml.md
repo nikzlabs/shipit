@@ -18,9 +18,14 @@ preview:
   directory: packages/frontend
 
 resources:
-  memory: 2048
-  cpu: 1.0
-  pids: 512
+  agent:
+    memory: 2048
+    cpu: 1.0
+    pids: 512
+  preview:
+    memory: 1024
+    cpu: 1.0
+    pids: 2048
 
 capabilities:
   docker: true
@@ -84,19 +89,26 @@ Good for simple HTML/CSS/JS projects without a build step.
 
 ### `resources` (optional)
 
-Request compute resources for the session container. Values are capped at
-deployment-level maximums.
+Request compute resources for session containers. Resources are configured
+separately for the agent container (runs Claude CLI) and the preview
+container (runs dev server). Values are capped at deployment-level maximums.
 
 ```yaml
 resources:
-  memory: 2048    # Memory in MB (default: 512, max: 4096)
-  cpu: 1.0        # CPU cores as float (default: 0.5, max: 4)
-  pids: 512       # Max processes (default: 256, max: 2048)
+  agent:
+    memory: 2048    # Memory in MB (default: 1024, max: 4096)
+    cpu: 1.0        # CPU cores as float (default: 0.5, max: 4)
+    pids: 512       # Max processes (default: 256, max: 2048)
+  preview:
+    memory: 1024    # Memory in MB (default: 512, max: 4096)
+    cpu: 1.0        # CPU cores as float (default: 0.5, max: 4)
+    pids: 2048      # Max processes (default: 1024, max: 2048)
 ```
 
-Increase `memory` for projects with heavy build steps (e.g., TypeScript
-compilation, Webpack). Increase `pids` for projects that spawn many child
-processes.
+Increase `agent.memory` for projects where the agent needs more headroom
+(e.g., large codebases). Increase `preview.memory` and `preview.cpu` for
+projects with heavy build steps (e.g., TypeScript compilation, Webpack).
+Increase `preview.pids` for projects that spawn many child processes.
 
 ### `capabilities` (optional)
 
