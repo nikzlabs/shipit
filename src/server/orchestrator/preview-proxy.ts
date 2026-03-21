@@ -63,7 +63,12 @@ const HMR_WS_PATCH = `<script>(function(){` +
     `return new O(u,p)};` +
   `window.WebSocket.prototype=O.prototype;` +
   `window.WebSocket.CONNECTING=0;window.WebSocket.OPEN=1;` +
-  `window.WebSocket.CLOSING=2;window.WebSocket.CLOSED=3` +
+  `window.WebSocket.CLOSING=2;window.WebSocket.CLOSED=3;` +
+  // Notify parent that the preview loaded successfully (used to detect
+  // auth-blocked iframes when behind a reverse proxy like Cloudflare Zero Trust)
+  `if(window.parent!==window){` +
+    `window.parent.postMessage({source:"shipit-preview",type:"loaded"},"*")` +
+  `}` +
   `})()</script>`;
 
 // ---------------------------------------------------------------------------
