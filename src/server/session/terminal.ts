@@ -22,7 +22,7 @@ export class TerminalProcess extends EventEmitter {
       cols,
       rows,
       cwd,
-      env: { ...process.env, HOME: "/root", TERM: "xterm-256color" } as Record<string, string>,
+      env: { ...process.env, HOME: "/root", TERM: "xterm-256color", NODE_ENV: "development" } as Record<string, string>,
     });
 
     this.proc.onData((data: string) => {
