@@ -102,6 +102,12 @@ export function Settings({
   const [secretsLoaded, setSecretsLoaded] = useState(false);
   const [secretsSaving, setSecretsSaving] = useState(false);
   const [secretsSaved, setSecretsSaved] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<{
+    available: boolean; behindBy: number; commitMessages: string[]; currentCommit: string;
+  } | null>(null);
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateApplying, setUpdateApplying] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
   const savedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -517,6 +523,92 @@ export function Settings({
                     {idleContainersSaved ? "Saved" : "Save"}
                   </Button>
                 </div>
+              </div>
+
+              <div className="border-t border-(--color-border-secondary)" />
+
+              <div className="space-y-3">
+                <h3 className="text-sm font-medium text-(--color-text-primary)">Software Updates</h3>
+                <p className="text-sm text-(--color-text-secondary)">
+                  Check for new versions and update ShipIt in place.
+                </p>
+                <div className="flex items-center gap-3">
+                  <Button
+                    variant="primary"
+                    size="md"
+                    disabled={updateChecking || updateApplying}
+                    onClick={async () => {
+                      setUpdateChecking(true);
+                      setUpdateError(null);
+                      try {
+                        const res = await fetch("/api/updates/check", { method: "POST" });
+                        if (!res.ok) {
+                          const body = await res.json().catch(() => ({})) as { error?: string };
+                          throw new Error(body.error ?? `HTTP ${res.status}`);
+                        }
+                        const data = await res.json() as { available: boolean; behindBy: number; commitMessages: string[]; currentCommit: string };
+                        setUpdateStatus(data);
+                      } catch (err) {
+                        setUpdateError((err as Error).message);
+                      } finally {
+                        setUpdateChecking(false);
+                      }
+                    }}
+                    className="rounded-md"
+                    data-testid="settings-check-updates"
+                  >
+                    {updateChecking ? "Checking..." : "Check for Updates"}
+                  </Button>
+                  {updateStatus?.available && !updateApplying && (
+                    <Button
+                      variant="primary"
+                      size="md"
+                      onClick={async () => {
+                        setUpdateApplying(true);
+                        setUpdateError(null);
+                        try {
+                          const res = await fetch("/api/updates/apply", { method: "POST" });
+                          if (!res.ok) {
+                            const body = await res.json().catch(() => ({})) as { error?: string };
+                            throw new Error(body.error ?? `HTTP ${res.status}`);
+                          }
+                        } catch (err) {
+                          setUpdateApplying(false);
+                          setUpdateError((err as Error).message);
+                        }
+                      }}
+                      className="rounded-md"
+                      data-testid="settings-apply-update"
+                    >
+                      Update Now
+                    </Button>
+                  )}
+                </div>
+                {updateApplying && (
+                  <p className="text-sm text-(--color-text-secondary)">
+                    Updating... ShipIt will restart momentarily. Refresh the page in a few seconds.
+                  </p>
+                )}
+                {updateError && (
+                  <p className="text-sm text-(--color-error)">{updateError}</p>
+                )}
+                {updateStatus && !updateApplying && (
+                  <div className="text-sm text-(--color-text-secondary)">
+                    {updateStatus.available ? (
+                      <>
+                        <p>{updateStatus.behindBy} update{updateStatus.behindBy === 1 ? "" : "s"} available</p>
+                        <ul className="mt-1 ml-4 list-disc space-y-0.5 text-xs font-mono text-(--color-text-tertiary)">
+                          {updateStatus.commitMessages.slice(0, 10).map((msg, i) => (
+                            <li key={i}>{msg}</li>
+                          ))}
+                          {updateStatus.behindBy > 10 && <li>...and {updateStatus.behindBy - 10} more</li>}
+                        </ul>
+                      </>
+                    ) : (
+                      <p>ShipIt is up to date ({updateStatus.currentCommit.slice(0, 7)})</p>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="border-t border-(--color-border-secondary)" />

@@ -2,7 +2,7 @@
 # Binds to localhost only — Caddy reverse proxy handles public traffic + TLS.
 #
 # Usage:
-#   docker compose build
+#   docker compose build session-worker shipit
 #   docker compose up -d
 
 name: shipit
@@ -20,6 +20,7 @@ services:
       - workspace:/workspace
       - credentials:/credentials
       - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/shipit:/opt/shipit        # Host repo — for update checks and trigger file
     environment:
       - NODE_ENV=production
       - PORT=4123

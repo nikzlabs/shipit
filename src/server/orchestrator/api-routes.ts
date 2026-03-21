@@ -35,6 +35,7 @@ import { registerGitHubRoutes } from "./api-routes-github.js";
 import { registerDeployRoutes } from "./api-routes-deploy.js";
 import { registerSecretsRoutes } from "./api-routes-secrets.js";
 import { registerReviewRoutes } from "./api-routes-reviews.js";
+import { registerUpdateRoutes } from "./api-routes-updates.js";
 import type { SecretStore } from "./secret-store.js";
 import type { ReviewStore } from "./review-store.js";
 
@@ -138,4 +139,5 @@ export async function registerApiRoutes(
       sessionManager: deps.sessionManager,
     });
   }
+  await registerUpdateRoutes(app);
 }
