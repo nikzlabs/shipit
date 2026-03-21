@@ -10,6 +10,9 @@ export default defineConfig({
     outDir: path.resolve(__dirname, "dist/client"),
     emptyOutDir: true,
   },
+  optimizeDeps: {
+    exclude: ["html.worker"],
+  },
   server: {
     proxy: {
       "/ws": {
