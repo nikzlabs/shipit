@@ -391,7 +391,12 @@ export async function cleanupSessionDockerResources(
         }
         await container.remove({ force: true });
       } catch (err) {
-        console.warn(`[containers] Failed to clean up child container ${ci.Id.slice(0, 12)} for session ${sessionId}:`, err);
+        // 409 = removal already in progress — safe to ignore
+        if (err && typeof err === "object" && "statusCode" in err && (err as { statusCode: number }).statusCode === 409) {
+          // Already being removed by another concurrent cleanup
+        } else {
+          console.warn(`[containers] Failed to clean up child container ${ci.Id.slice(0, 12)} for session ${sessionId}:`, err);
+        }
       }
     }
   } catch {
