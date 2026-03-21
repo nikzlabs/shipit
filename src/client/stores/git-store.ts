@@ -7,7 +7,8 @@ interface GitState {
   identity: { name: string; email: string };
   lastCommitPair: { from: string; to: string } | null;
   turnDiff: TurnDiffData | null;
-  historyDiffMode: boolean;
+  diffDialogOpen: boolean;
+  diffDialogTitle: string | undefined;
 
   setCommits: (commits: GitCommit[]) => void;
   prependCommit: (commit: GitCommit) => void;
@@ -15,11 +16,13 @@ interface GitState {
   setIdentity: (identity: { name: string; email: string }) => void;
   setLastCommitPair: (pair: { from: string; to: string } | null) => void;
   setTurnDiff: (diff: TurnDiffData | null) => void;
-  setHistoryDiffMode: (mode: boolean) => void;
+  openDiffDialog: (title?: string) => void;
+  closeDiffDialog: () => void;
   reset: () => void;
 
   fetchLog: (sessionId: string) => Promise<void>;
   fetchDiff: (sessionId: string, from: string, to: string) => Promise<void>;
+  fetchDiffVsBranch: (sessionId: string, baseBranch?: string) => Promise<void>;
   rollback: (sessionId: string, hash: string) => Promise<void>;
   submitGitIdentity: (name: string, email: string) => Promise<void>;
 }
@@ -30,7 +33,8 @@ const initialState = {
   identity: { name: "", email: "" },
   lastCommitPair: null as { from: string; to: string } | null,
   turnDiff: null as TurnDiffData | null,
-  historyDiffMode: false,
+  diffDialogOpen: false,
+  diffDialogTitle: undefined as string | undefined,
 };
 
 export const useGitStore = create<GitState>((set, get) => ({
@@ -49,7 +53,9 @@ export const useGitStore = create<GitState>((set, get) => ({
 
   setTurnDiff: (diff) => set({ turnDiff: diff }),
 
-  setHistoryDiffMode: (mode) => set({ historyDiffMode: mode }),
+  openDiffDialog: (title) => set({ diffDialogOpen: true, diffDialogTitle: title }),
+
+  closeDiffDialog: () => set({ diffDialogOpen: false, turnDiff: null, diffDialogTitle: undefined }),
 
   reset: () => set(initialState),
 
@@ -64,6 +70,15 @@ export const useGitStore = create<GitState>((set, get) => ({
 
   fetchDiff: async (sessionId, from, to) => {
     const res = await fetch(`/api/sessions/${sessionId}/git/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch diff: ${res.status}`);
+    }
+    const data = await res.json() as TurnDiffData;
+    set({ turnDiff: data });
+  },
+
+  fetchDiffVsBranch: async (sessionId, baseBranch = "main") => {
+    const res = await fetch(`/api/sessions/${sessionId}/git/diff-vs-branch?base=${encodeURIComponent(baseBranch)}`);
     if (!res.ok) {
       throw new Error(`Failed to fetch diff: ${res.status}`);
     }

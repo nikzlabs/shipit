@@ -8,10 +8,12 @@
  * Phase 3 additions: merge split button, auto-merge toggle, error messages.
  */
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { useGitStore } from "../stores/git-store.js";
+import { useSessionStore } from "../stores/session-store.js";
 import { Button } from "./ui/button.js";
 import {
   GitBranchIcon,
@@ -42,14 +44,43 @@ function Spinner() {
   );
 }
 
-function DiffStats({ ins, del }: { ins: number; del: number }) {
+function DiffStats({ ins, del, onClick }: { ins: number; del: number; onClick?: () => void }) {
+  const base = "text-xs tabular-nums whitespace-nowrap";
+  if (!onClick) {
+    return (
+      <span className={base}>
+        <span className="text-(--color-success)">+{ins}</span>
+        {" "}
+        <span className="text-(--color-error)">-{del}</span>
+      </span>
+    );
+  }
   return (
-    <span className="text-xs tabular-nums whitespace-nowrap">
+    <button
+      onClick={onClick}
+      className={`${base} cursor-pointer hover:opacity-80 transition-opacity`}
+      title="View full diff"
+    >
       <span className="text-(--color-success)">+{ins}</span>
       {" "}
       <span className="text-(--color-error)">-{del}</span>
-    </span>
+    </button>
   );
+}
+
+/** Fetch diff of HEAD vs a base branch and open it in the diff dialog. */
+function useOpenPrDiff(baseBranch?: string) {
+  const sessionId = useSessionStore((s) => s.sessionId);
+  return useCallback(async () => {
+    if (!sessionId) return;
+    const base = baseBranch || "main";
+    try {
+      await useGitStore.getState().fetchDiffVsBranch(sessionId, base);
+      useGitStore.getState().openDiffDialog(`Changes vs ${base}`);
+    } catch {
+      // Silently fail
+    }
+  }, [sessionId, baseBranch]);
 }
 
 /** Displays branch info: just head branch if base is default, otherwise "base ← head". */
@@ -259,6 +290,7 @@ function ReadyPhase({ card, sessionId, creating: externalCreating }: { card: PrC
   const ins = card.totalInsertions ?? 0;
   const del = card.totalDeletions ?? 0;
   const hasDiffStats = ins > 0 || del > 0;
+  const openDiff = useOpenPrDiff();
 
   const handleCreate = async () => {
     setLocalCreating(true);
@@ -270,7 +302,7 @@ function ReadyPhase({ card, sessionId, creating: externalCreating }: { card: PrC
     <div className="flex items-center gap-3">
       <PrStateBadge sessionId={sessionId} />
       <BranchLabel headBranch={card.headBranch} />
-      {hasDiffStats && <DiffStats ins={ins} del={del} />}
+      {hasDiffStats && <DiffStats ins={ins} del={del} onClick={openDiff} />}
       {hasDiffStats && (
         <Button
           size="sm"
@@ -291,6 +323,7 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
   const fixCI = usePrStore((s) => s.fixCI);
   const setToast = useUiStore((s) => s.setToast);
   const [fixingCI, setFixingCI] = useState(false);
+  const openDiff = useOpenPrDiff(pr?.baseBranch);
   if (!pr) return null;
 
   const autoFix = card.autoFix;
@@ -319,7 +352,7 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
       <div className="flex items-center gap-3 flex-wrap">
         <PrStateBadge sessionId={sessionId} />
         <BranchLabel baseBranch={pr.baseBranch} headBranch={pr.headBranch} />
-        <DiffStats ins={pr.insertions} del={pr.deletions} />
+        <DiffStats ins={pr.insertions} del={pr.deletions} onClick={openDiff} />
         <CiIndicator checks={card.checks} />
         {isCiFailed && (
           <AutoFixToggle sessionId={sessionId} autoFix={autoFix} />
