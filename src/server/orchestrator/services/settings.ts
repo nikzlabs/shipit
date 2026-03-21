@@ -199,11 +199,11 @@ export function clearApiKey(): void {
 
 const VALID_PROVIDERS: UtilityModelProvider[] = ["openai-compatible", "anthropic"];
 
-/** Set the utility model configuration. */
+/** Set the utility model configuration. apiKey is optional when updating — if omitted, the existing key is reused. */
 export function setUtilityModel(
   credentialStore: CredentialStore,
   provider: string,
-  apiKey: string,
+  apiKey: string | undefined,
   model: string,
   baseUrl?: string,
 ): { provider: UtilityModelProvider; model: string; baseUrl?: string } {
@@ -211,7 +211,9 @@ export function setUtilityModel(
     throw new ServiceError(400, `Invalid provider: ${provider}. Must be one of: ${VALID_PROVIDERS.join(", ")}`);
   }
   const trimmedKey = typeof apiKey === "string" ? apiKey.trim() : "";
-  if (!trimmedKey) throw new ServiceError(400, "API key cannot be empty");
+  const existingConfig = credentialStore.getUtilityModel();
+  const resolvedKey = trimmedKey || existingConfig?.apiKey?.trim() || "";
+  if (!resolvedKey) throw new ServiceError(400, "API key cannot be empty");
   const trimmedModel = typeof model === "string" ? model.trim() : "";
   if (!trimmedModel) throw new ServiceError(400, "Model cannot be empty");
 
@@ -228,7 +230,7 @@ export function setUtilityModel(
 
   const config: UtilityModelConfig = {
     provider: provider as UtilityModelProvider,
-    apiKey: trimmedKey,
+    apiKey: resolvedKey,
     model: trimmedModel,
     ...(trimmedBaseUrl ? { baseUrl: trimmedBaseUrl } : {}),
   };
