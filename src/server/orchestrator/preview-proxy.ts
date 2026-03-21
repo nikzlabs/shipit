@@ -14,6 +14,7 @@
  * Registered when a SessionContainerManager is available (production mode).
  */
 
+import crypto from "node:crypto";
 import http from "node:http";
 import type { Duplex } from "node:stream";
 import type { FastifyInstance } from "fastify";
@@ -65,6 +66,72 @@ const HMR_WS_PATCH = `<script>(function(){` +
   `window.WebSocket.CONNECTING=0;window.WebSocket.OPEN=1;` +
   `window.WebSocket.CLOSING=2;window.WebSocket.CLOSED=3` +
   `})()</script>`;
+
+// ---------------------------------------------------------------------------
+// Preview auth cookie
+// ---------------------------------------------------------------------------
+
+/**
+ * When running behind a reverse proxy with its own auth (e.g. Cloudflare Zero
+ * Trust), preview subdomains need separate authentication. But the auth flow
+ * can't complete inside an iframe (Cloudflare's login page sets
+ * `frame-ancestors 'none'`).
+ *
+ * Fix: ShipIt sets its own auth cookie on the parent domain when the user
+ * accesses the main app. The browser automatically sends this cookie to all
+ * subdomains. The preview proxy checks for it — replacing the need for the
+ * reverse proxy to authenticate preview subdomains separately.
+ *
+ * The token is regenerated on each server start. A page refresh on the main
+ * domain picks up the new token automatically.
+ */
+const PREVIEW_AUTH_COOKIE = "shipit_pa";
+const previewAuthToken = crypto.randomBytes(32).toString("hex");
+
+/** Parse cookies from a Cookie header string. */
+function parseCookieHeader(cookie: string | undefined): Record<string, string> {
+  if (!cookie) return {};
+  const result: Record<string, string> = {};
+  for (const pair of cookie.split(";")) {
+    const eqIdx = pair.indexOf("=");
+    if (eqIdx === -1) continue;
+    const key = pair.slice(0, eqIdx).trim();
+    const value = pair.slice(eqIdx + 1).trim();
+    result[key] = value;
+  }
+  return result;
+}
+
+/** Check if the preview auth cookie is valid (constant-time comparison). */
+function hasValidPreviewAuth(cookieHeader: string | undefined): boolean {
+  const submitted = parseCookieHeader(cookieHeader)[PREVIEW_AUTH_COOKIE] ?? "";
+  if (submitted.length !== previewAuthToken.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(submitted), Buffer.from(previewAuthToken));
+}
+
+/** Build the Set-Cookie header value for the preview auth cookie. */
+function buildPreviewAuthCookie(domain: string): string {
+  return `${PREVIEW_AUTH_COOKIE}=${previewAuthToken}; Domain=${domain}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=86400`;
+}
+
+/** Whether the host is a local/private address where preview auth is unnecessary. */
+function isLocalHost(host: string | undefined): boolean {
+  if (!host) return false;
+  const hostname = host.split(":")[0];
+  // Strip preview subdomain prefix (e.g. "uuid--port.localhost" → "localhost")
+  const dot = hostname.indexOf(".");
+  const base = dot !== -1 ? hostname.slice(dot + 1) : hostname;
+  if (base === "localhost" || base === "::1") return true;
+  // Parse IPv4 octets — reject anything that isn't a clean dotted-quad
+  const parts = base.split(".");
+  if (parts.length !== 4) return false;
+  if (parts.some((p) => !/^\d{1,3}$/.test(p))) return false;
+  const octets = parts.map(Number);
+  if (octets.some((n) => n > 255)) return false;
+  const [a, b] = octets;
+  // 127.x.x.x (loopback), 10.x.x.x, 192.168.x.x, 172.16-31.x.x
+  return a === 127 || a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31);
+}
 
 // ---------------------------------------------------------------------------
 // Shared proxy helpers
@@ -192,6 +259,25 @@ export function registerPreviewProxy(
 ): void {
   const { containerManager } = opts;
 
+  // --- Preview auth cookie: set on main domain responses ------------------
+  //
+  // Every response from the main domain (non-preview-subdomain) sets the
+  // preview auth cookie on the parent domain. The browser then sends it
+  // automatically on preview subdomain requests (same eTLD+1).
+
+  app.addHook("onSend", (request, reply, _payload, done) => {
+    if (isLocalHost(request.headers.host)) { done(); return; }
+    const parsed = parsePreviewSubdomain(request.headers.host);
+    if (!parsed) {
+      // Main domain request — set the preview auth cookie
+      const domain = (request.headers.host || "").split(":")[0];
+      if (domain) {
+        void reply.header("Set-Cookie", buildPreviewAuthCookie(domain));
+      }
+    }
+    done();
+  });
+
   // --- Subdomain-based proxy (intercepts before Fastify routing) ----------
   //
   // When Host matches {uuid}--{port}.*, proxy the entire request to the
@@ -202,6 +288,13 @@ export function registerPreviewProxy(
     const parsed = parsePreviewSubdomain(request.headers.host);
     if (!parsed) {
       done(); // Not a preview subdomain — continue normal routing
+      return;
+    }
+
+    // Check preview auth cookie (skip for localhost/local IPs)
+    if (!isLocalHost(request.headers.host) && !hasValidPreviewAuth(request.headers.cookie)) {
+      reply.code(403).send({ error: "Preview authentication required. Refresh the main ShipIt page." });
+      done();
       return;
     }
 
@@ -278,6 +371,11 @@ export function registerPreviewProxy(
   // --- Path-based HTTP proxy (fallback) -----------------------------------
 
   app.all("/preview/:sessionId/:port/*", async (request, reply) => {
+    // Check preview auth cookie (skip for localhost/private IPs)
+    if (!isLocalHost(request.headers.host) && !hasValidPreviewAuth(request.headers.cookie)) {
+      return reply.code(403).send({ error: "Preview authentication required. Refresh the main ShipIt page." });
+    }
+
     const params = request.params as {
       sessionId: string;
       port: string;
@@ -340,6 +438,10 @@ export function registerPreviewProxy(
       // Try subdomain-based first
       const subdomainParsed = parsePreviewSubdomain(req.headers.host);
       if (subdomainParsed) {
+        if (!isLocalHost(req.headers.host) && !hasValidPreviewAuth(req.headers.cookie)) {
+          socket.destroy();
+          return;
+        }
         const { sessionId, port: targetPort } = subdomainParsed;
         const sc = containerManager.get(sessionId);
         if (!sc) {
@@ -359,6 +461,10 @@ export function registerPreviewProxy(
       // Try path-based
       const match = req.url?.match(/^\/preview\/([^/]+)\/(\d+)\/(.*)/);
       if (match) {
+        if (!isLocalHost(req.headers.host) && !hasValidPreviewAuth(req.headers.cookie)) {
+          socket.destroy();
+          return;
+        }
         const [, sessionId, portStr, restPath] = match;
         const targetPort = Number(portStr);
         const sc = containerManager.get(sessionId);

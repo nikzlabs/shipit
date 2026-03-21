@@ -221,7 +221,7 @@ if [ -n "${CF_API_TOKEN:-}" ]; then
       \"type\": \"self_hosted\",
       \"session_duration\": \"24h\",
       \"app_launcher_visible\": true,
-      \"self_hosted_domains\": [\"$DOMAIN\", \"*.$DOMAIN\"]
+      \"self_hosted_domains\": [\"$DOMAIN\"]
     }" || echo "{}")
 
   APP_ID=$(echo "$APP_RESPONSE" | jq -r '.result.id // empty' || true)
@@ -312,9 +312,9 @@ else
   echo "    1. Go to: https://one.dash.cloudflare.com"
   echo "    2. Navigate to: Access → Applications → Add an application"
   echo "    3. Choose 'Self-hosted', set domain to: $DOMAIN"
-  echo "    4. Add a second domain: *.$DOMAIN (for preview subdomains)"
-  echo "    5. Create an Allow policy for your team's emails"
-  echo "    6. Save — users will authenticate through Cloudflare before reaching ShipIt"
+  echo "       (Do NOT add *.$DOMAIN — ShipIt handles preview subdomain auth itself)"
+  echo "    4. Create an Allow policy for your team's emails"
+  echo "    5. Save — users will authenticate through Cloudflare before reaching ShipIt"
   echo "  Or re-run this script and provide a Cloudflare API token when prompted."
 fi
 
