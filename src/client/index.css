@@ -86,6 +86,11 @@
   color: #111;
 }
 
+/* ── Prose list markers — match text color ── */
+.prose :where(ul, ol) > li::marker {
+  color: currentColor;
+}
+
 /* ── Scrollbar styling (uses theme tokens) ── */
 
 ::-webkit-scrollbar {

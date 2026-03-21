@@ -225,8 +225,12 @@ export function MessageList({
             <div className={`group flex ${msg.role === "user" ? "justify-end" : "justify-start"} ${msg.rolledBack ? "opacity-40" : ""}`}>
 
             <div
-              className={`relative max-w-2xl rounded-lg px-4 py-3 text-sm ${
+              className={`relative text-sm ${
                 !useMarkdown && !hasCodeBlocks ? "whitespace-pre-wrap" : ""
+              } ${
+                msg.role === "user"
+                  ? "max-w-2xl rounded-lg px-4 py-3"
+                  : "w-full"
               } ${
                 msg.isError
                   ? "bg-(--color-error-subtle) text-(--color-error) border border-(--color-error)/50"
@@ -234,12 +238,12 @@ export function MessageList({
                   ? "bg-(--color-accent)/40 text-(--color-accent-text)/70 border border-(--color-accent)/30"
                   : msg.role === "user"
                   ? "bg-(--color-accent) text-(--color-accent-text)"
-                  : "bg-(--color-bg-secondary) text-(--color-text-primary)"
+                  : "text-(--color-text-primary)"
               }`}
             >
               {/* Rewind dropdown — shown on hover for user messages */}
               {showRewind && (
-                <div className={`${openDropdownIndex === i ? "flex" : "hidden group-hover:flex"} absolute -top-3 right-1 items-center bg-(--color-bg-secondary) border border-(--color-border-primary) rounded-md shadow-sm px-0.5 py-0.5 z-10`}>
+                <div className={`${openDropdownIndex === i ? "flex" : "hidden group-hover:flex"} absolute -top-3 -right-3 items-center bg-(--color-bg-secondary) border border-(--color-border-primary) rounded-md shadow-sm px-0.5 py-0.5 z-10`}>
                   <RewindDropdown
                     messageIndex={i}
                     disabled={isLoading}
@@ -250,7 +254,7 @@ export function MessageList({
               )}
               {/* Rollback dropdown — shown on hover for assistant messages with a linked commit */}
               {msg.role === "assistant" && msg.commitHash && msg.parentCommitHash && !msg.rolledBack && onRollback && (
-                <div className={`${openDropdownIndex === i ? "flex" : "hidden group-hover:flex"} absolute -top-3 right-1 items-center bg-(--color-bg-secondary) border border-(--color-border-primary) rounded-md shadow-sm px-0.5 py-0.5 z-10`}>
+                <div className={`${openDropdownIndex === i ? "flex" : "hidden group-hover:flex"} absolute -top-3 -right-3 items-center bg-(--color-bg-secondary) border border-(--color-border-primary) rounded-md shadow-sm px-0.5 py-0.5 z-10`}>
                   <RollbackDropdown
                     messageIndex={i}
                     parentCommitHash={msg.parentCommitHash}
