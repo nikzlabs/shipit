@@ -60,32 +60,47 @@ export async function generateSessionName(
 
 async function callOpenAICompatible(config: UtilityModelConfig, prompt: string): Promise<string | null> {
   const baseUrl = (config.baseUrl ?? "https://api.openai.com/v1").replace(/\/+$/, "");
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15_000);
 
-  const res = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${config.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: config.model,
-      max_tokens: 128,
-      messages: [{ role: "user", content: prompt }],
-    }),
-    signal: controller.signal,
-  });
+  for (const tokenParam of ["max_completion_tokens", "max_tokens"] as const) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
 
-  clearTimeout(timeout);
+    const res = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${config.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: config.model,
+        [tokenParam]: 128,
+        messages: [{ role: "user", content: prompt }],
+      }),
+      signal: controller.signal,
+    });
 
-  if (!res.ok) {
-    console.warn("[session-namer] OpenAI-compatible API error:", res.status, await res.text().catch(() => ""));
-    return null;
+    clearTimeout(timeout);
+
+    if (res.status === 400) {
+      const body = await res.text().catch(() => "");
+      if (body.includes("max_tokens") || body.includes("max_completion_tokens")) {
+        continue; // try the other parameter
+      }
+      console.warn("[session-namer] OpenAI-compatible API error:", 400, body);
+      return null;
+    }
+
+    if (!res.ok) {
+      console.warn("[session-namer] OpenAI-compatible API error:", res.status, await res.text().catch(() => ""));
+      return null;
+    }
+
+    const body = await res.json() as { choices?: { message?: { content?: string } }[] };
+    return body.choices?.[0]?.message?.content ?? null;
   }
 
-  const body = await res.json() as { choices?: { message?: { content?: string } }[] };
-  return body.choices?.[0]?.message?.content ?? null;
+  console.warn("[session-namer] Both max_completion_tokens and max_tokens rejected by model:", config.model);
+  return null;
 }
 
 async function callAnthropic(config: UtilityModelConfig, prompt: string): Promise<string | null> {
