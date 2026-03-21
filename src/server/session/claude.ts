@@ -89,7 +89,7 @@ export class ClaudeProcess extends EventEmitter {
         cols: 200,
         rows: 24,
         cwd,
-        env: { ...process.env, HOME: "/root" } as Record<string, string>,
+        env: { ...process.env, HOME: "/root", NODE_ENV: "development" } as Record<string, string>,
       });
     } catch (err) {
       this.emit("error", err instanceof Error ? err : new Error(String(err)));
