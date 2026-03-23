@@ -48,8 +48,10 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
   agentSessionId?: string;
   permissionMode?: PermissionMode;
   isNewSession: boolean;
+  /** Original upload paths consumed by this message (for sent-state tracking on reload). */
+  uploadPaths?: string[];
 }): Promise<void> {
-  const { userText, images, validatedFiles, permissionMode, isNewSession } = opts;
+  const { userText, images, validatedFiles, permissionMode, isNewSession, uploadPaths } = opts;
   let { agentSessionId } = opts;
 
   const runner = ctx.getRunner();
@@ -99,6 +101,7 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
       text: userText,
       images: historyImages,
       files: historyFiles,
+      uploadPaths: uploadPaths && uploadPaths.length > 0 ? uploadPaths : undefined,
     });
   };
 
@@ -189,6 +192,9 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
         nextValidatedFiles = [...nextValidatedFiles, ...uploadResult.files];
         if (uploadResult.images.length > 0) {
           allNextImages = [...(allNextImages ?? []), ...uploadResult.images];
+          for (const p of uploadResult.imageHostPaths) {
+            fs.promises.unlink(p).catch(() => {});
+          }
         }
       }
       const nextSession = capturedSessionId
@@ -202,6 +208,7 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
           agentSessionId: nextSession?.agentSessionId,
           permissionMode: next.permissionMode,
           isNewSession: false,
+          uploadPaths: nextUploadRefs?.map((u) => u.path),
         });
       } catch (err) {
         console.error("[queue] Error processing queued message:", getErrorMessage(err));

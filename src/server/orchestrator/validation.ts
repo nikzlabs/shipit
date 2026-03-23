@@ -176,24 +176,25 @@ const IMAGE_EXT_TO_MIME: Record<string, string> = {
 export async function resolveUploadRefs(
   uploads: UploadRef[],
   workspaceDir: string,
-): Promise<{ files: FileAttachment[]; images: ImageAttachment[]; error: string | null }> {
+): Promise<{ files: FileAttachment[]; images: ImageAttachment[]; imageHostPaths: string[]; error: string | null }> {
   // Uploads live as a sibling of the workspace dir inside the session dir:
   // {sessionDir}/workspace/ (workspaceDir) and {sessionDir}/uploads/
   const uploadsDir = path.join(path.dirname(workspaceDir), "uploads");
   const fileResult: FileAttachment[] = [];
   const imageResult: ImageAttachment[] = [];
+  const imageHostPaths: string[] = [];
 
   for (const ref of uploads) {
     // Validate path format
     if (!ref.path.startsWith("/uploads/")) {
-      return { files: [], images: [], error: `Invalid upload path: ${ref.path}` };
+      return { files: [], images: [], imageHostPaths: [], error: `Invalid upload path: ${ref.path}` };
     }
     const filename = path.basename(ref.path);
     const hostPath = path.join(uploadsDir, filename);
 
     // Path traversal check
     if (!hostPath.startsWith(`${uploadsDir}/`)) {
-      return { files: [], images: [], error: `Invalid upload path: ${ref.path}` };
+      return { files: [], images: [], imageHostPaths: [], error: `Invalid upload path: ${ref.path}` };
     }
 
     const ext = path.extname(ref.path).toLowerCase();
@@ -208,8 +209,9 @@ export async function resolveUploadRefs(
           mediaType: imageMime,
           filename,
         });
+        imageHostPaths.push(hostPath);
       } catch {
-        return { files: [], images: [], error: `Upload not found: ${ref.path}` };
+        return { files: [], images: [], imageHostPaths: [], error: `Upload not found: ${ref.path}` };
       }
     } else if (isBinaryUpload(ref.path)) {
       // Non-image binary files — include a reference the agent can use
@@ -231,10 +233,10 @@ export async function resolveUploadRefs(
           fileResult.push({ path: ref.path, content });
         }
       } catch {
-        return { files: [], images: [], error: `Upload not found: ${ref.path}` };
+        return { files: [], images: [], imageHostPaths: [], error: `Upload not found: ${ref.path}` };
       }
     }
   }
 
-  return { files: fileResult, images: imageResult, error: null };
+  return { files: fileResult, images: imageResult, imageHostPaths, error: null };
 }

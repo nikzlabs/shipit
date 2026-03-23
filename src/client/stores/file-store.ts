@@ -5,6 +5,22 @@ import { detectFilePreviewType, type FilePreviewType } from "../utils/file-previ
 import type { FilePreviewAction } from "../components/FilePreviewModal.js";
 import { useSessionStore } from "./session-store.js";
 
+// localStorage-backed set of upload paths the user has explicitly deleted.
+// Prevents hydrateUploads from resurrecting them if the server DELETE fails.
+const DELETED_UPLOADS_KEY = "shipit:deletedUploads";
+function getDeletedUploads(): Set<string> {
+  try { return new Set(JSON.parse(localStorage.getItem(DELETED_UPLOADS_KEY) ?? "[]") as string[]); }
+  catch { return new Set(); }
+}
+export function markUploadDeleted(path: string) {
+  const set = getDeletedUploads();
+  set.add(path);
+  localStorage.setItem(DELETED_UPLOADS_KEY, JSON.stringify([...set]));
+}
+function clearDeletedUploads() {
+  localStorage.removeItem(DELETED_UPLOADS_KEY);
+}
+
 interface FileState {
   tree: FileTreeNode[];
   viewingFile: string | null;
@@ -127,20 +143,36 @@ export const useFileStore = create<FileState>((set) => ({
       if (!res.ok) return;
       const data = (await res.json()) as { files: UploadedFile[] };
       // Determine which uploads were already sent by checking chat history.
-      // Uploads whose paths appear in a user message's files array are "sent".
+      // Uploads whose paths appear in a user message's files or uploadPaths array are "sent".
       // Unreferenced uploads remain pending (attached for the next message).
       const messages = useSessionStore.getState().messages;
       const sentPaths = new Set<string>();
       for (const msg of messages) {
-        if (msg.role === "user" && msg.files) {
-          for (const f of msg.files) {
-            if (f.path.startsWith("/uploads/")) sentPaths.add(f.path);
+        if (msg.role === "user") {
+          if (msg.files) {
+            for (const f of msg.files) {
+              if (f.path.startsWith("/uploads/")) sentPaths.add(f.path);
+            }
+          }
+          if (msg.uploadPaths) {
+            for (const p of msg.uploadPaths) sentPaths.add(p);
           }
         }
       }
       const IMAGE_EXTS = /\.(png|jpe?g|gif|webp|svg)$/i;
+      const deletedPaths = getDeletedUploads();
+      // Clean up the deleted set — remove entries for files that no longer exist on the server
+      const serverPaths = new Set(data.files.map((f) => f.path));
+      let deletedChanged = false;
+      for (const dp of deletedPaths) {
+        if (!serverPaths.has(dp)) { deletedPaths.delete(dp); deletedChanged = true; }
+      }
+      if (deletedChanged) {
+        if (deletedPaths.size > 0) localStorage.setItem(DELETED_UPLOADS_KEY, JSON.stringify([...deletedPaths]));
+        else clearDeletedUploads();
+      }
       set({
-        sessionUploads: data.files.map((f) => {
+        sessionUploads: data.files.filter((f) => !deletedPaths.has(f.path)).map((f) => {
           // For image uploads, construct a URL the browser can use as <img src>
           const isImage = IMAGE_EXTS.test(f.name);
           const urlPath = f.path.startsWith("/") ? f.path.slice(1) : f.path;

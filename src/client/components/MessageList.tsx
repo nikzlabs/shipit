@@ -65,6 +65,8 @@ export interface ChatMessage {
   commitHash?: string;
   /** Parent commit hash (HEAD before the auto-commit). Used for rollback. */
   parentCommitHash?: string;
+  /** Upload paths consumed by this message (for hydration of pending vs sent state). */
+  uploadPaths?: string[];
   /** When true, this message was rolled back and should appear dimmed. */
   rolledBack?: boolean;
 }

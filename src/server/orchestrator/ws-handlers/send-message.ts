@@ -86,6 +86,10 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
     validatedFiles = [...validatedFiles, ...uploadResult.files];
     if (uploadResult.images.length > 0) {
       allImages = [...(allImages ?? []), ...uploadResult.images];
+      // Delete originals — data is in memory, saveImagesToUploadsDir will create agent-readable copies
+      for (const p of uploadResult.imageHostPaths) {
+        fs.unlink(p).catch(() => {});
+      }
     }
   }
 
@@ -226,6 +230,9 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
     ctx.attachToRunner(runner);
   }
 
+  // Collect all upload paths for chat history (so hydrateUploads can detect sent uploads)
+  const uploadPaths = uploadRefs?.map((u) => u.path);
+
   ctx.setIsClaudeRunning(true);
   await runClaudeWithMessage(ctx, {
     userText,
@@ -234,6 +241,7 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
     agentSessionId,
     permissionMode: msg.permissionMode,
     isNewSession: !msg.sessionId,
+    uploadPaths,
   });
 }
 

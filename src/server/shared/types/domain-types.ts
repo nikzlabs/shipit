@@ -196,4 +196,6 @@ export interface WsChatHistoryMessage {
   commitHash?: string;
   /** Parent commit hash (HEAD before the auto-commit). Used for rollback. */
   parentCommitHash?: string;
+  /** Upload paths consumed by this message (for hydration of pending vs sent state). */
+  uploadPaths?: string[];
 }
