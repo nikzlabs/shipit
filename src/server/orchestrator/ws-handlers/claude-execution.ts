@@ -175,7 +175,8 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
         }
         nextValidatedFiles = fileResult.files;
       }
-      // Resolve upload refs for the queued message
+      // Resolve upload refs for the queued message — image uploads become ImageAttachments
+      let allNextImages = nextImages;
       const nextUploadRefs = next.uploads && next.uploads.length > 0 ? next.uploads : undefined;
       if (nextUploadRefs) {
         const dir = capturedSessionDir ?? ctx.workspaceDir;
@@ -186,6 +187,9 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
           return;
         }
         nextValidatedFiles = [...nextValidatedFiles, ...uploadResult.files];
+        if (uploadResult.images.length > 0) {
+          allNextImages = [...(allNextImages ?? []), ...uploadResult.images];
+        }
       }
       const nextSession = capturedSessionId
         ? ctx.sessionManager.get(capturedSessionId)
@@ -193,7 +197,7 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
       try {
         await runClaudeWithMessage(ctx, {
           userText: next.text,
-          images: nextImages,
+          images: allNextImages,
           validatedFiles: nextValidatedFiles,
           agentSessionId: nextSession?.agentSessionId,
           permissionMode: next.permissionMode,

@@ -73,8 +73,9 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
     validatedFiles = result.files;
   }
 
-  // Resolve upload refs if provided
+  // Resolve upload refs if provided — image uploads become ImageAttachments
   const uploadRefs: UploadRef[] | undefined = msg.uploads && msg.uploads.length > 0 ? msg.uploads : undefined;
+  let allImages = images;
   if (uploadRefs) {
     const dir = ctx.getActiveSessionDir() ?? ctx.workspaceDir;
     const uploadResult = await resolveUploadRefs(uploadRefs, dir);
@@ -83,6 +84,9 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
       return;
     }
     validatedFiles = [...validatedFiles, ...uploadResult.files];
+    if (uploadResult.images.length > 0) {
+      allImages = [...(allImages ?? []), ...uploadResult.images];
+    }
   }
 
   const userText = msg.text;
@@ -225,7 +229,7 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
   ctx.setIsClaudeRunning(true);
   await runClaudeWithMessage(ctx, {
     userText,
-    images,
+    images: allImages,
     validatedFiles,
     agentSessionId,
     permissionMode: msg.permissionMode,

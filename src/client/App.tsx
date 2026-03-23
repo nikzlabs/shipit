@@ -298,12 +298,21 @@ export default function App() {
       const settings = useSettingsStore.getState();
       useUiStore.getState().setShowTemplates(false);
       const uploadRefs = getUploadRefs();
+      // Separate image uploads (have previewUrl) from non-image uploads for display
+      const readyUploads = uploads.filter((u) => u.status === "ready" && u.path);
+      const imageUploads = readyUploads.filter((u) => u.previewUrl);
+      const nonImageUploadRefs = uploadRefs.filter(
+        (ref) => !imageUploads.some((u) => u.path === ref.path),
+      );
       const allFiles: { path: string; contentPreview: string }[] = [
         ...settings.pendingFiles.map((f) => ({ path: f.path, contentPreview: "" })),
-        ...uploadRefs.map((u) => ({ path: u.path, contentPreview: "" })),
+        ...nonImageUploadRefs.map((u) => ({ path: u.path, contentPreview: "" })),
       ];
       const filesForMessage = allFiles.length > 0 ? allFiles : undefined;
-      session.setMessages((prev) => [...prev, { role: "user", text, files: filesForMessage }]);
+      const imagesForMessage = imageUploads.length > 0
+        ? imageUploads.map((u) => ({ data: "", mediaType: u.mimeType ?? "image/png", src: u.dataUrl ?? u.previewUrl! }))
+        : undefined;
+      session.setMessages((prev) => [...prev, { role: "user", text, files: filesForMessage, images: imagesForMessage }]);
       session.setIsLoading(true);
       session.setActivity({ label: "Thinking..." });
 
@@ -332,7 +341,7 @@ export default function App() {
       settings.clearPendingFiles();
       clearUploads();
     },
-    [send, requestPermission, disableAutoFix, navigate, isNewSessionRoute, getUploadRefs, clearUploads],
+    [send, requestPermission, disableAutoFix, navigate, isNewSessionRoute, getUploadRefs, clearUploads, uploads],
   );
 
   const handleRewind = useCallback(

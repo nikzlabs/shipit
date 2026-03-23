@@ -36,6 +36,8 @@ export interface ToolResultBlock {
 export interface ChatMessageImage {
   data: string;      // base64-encoded image data
   mediaType: string; // "image/png", etc.
+  /** Optional pre-built src URL (e.g. blob: URL for optimistic messages). When set, used directly instead of building a data: URI from data+mediaType. */
+  src?: string;
 }
 
 export interface ChatMessageFile {
