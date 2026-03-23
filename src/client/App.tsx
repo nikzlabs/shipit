@@ -13,12 +13,12 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts.js";
 import { useConnectionSync } from "./hooks/useConnectionSync.js";
 import { useAutoFix } from "./hooks/useAutoFix.js";
 import { useFileUpload } from "./hooks/useFileUpload.js";
-import { DownloadSimpleIcon, CircleNotchIcon } from "@phosphor-icons/react";
+import { CircleNotchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "./design-tokens.js";
 import { useMessageHandler } from "./hooks/useMessageHandler.js";
 import { useApi } from "./hooks/useApi.js";
 import { formatErrorForMessage } from "./components/PreviewFrame.js";
-import { Button } from "./components/ui/button.js";
+import { SessionTopBar } from "./components/SessionTopBar.js";
 import { MessageInput } from "./components/MessageInput.js";
 import { MessageList } from "./components/MessageList.js";
 import { PreviewFrame } from "./components/PreviewFrame.js";
@@ -171,10 +171,11 @@ export default function App() {
   const creatingRepo = useSessionStore((s) => s.creatingRepo);
   const allSessionsDialogOpen = useSessionStore((s) => s.allSessionsDialogOpen);
   const allSessions = useSessionStore((s) => s.allSessions);
-  const currentRepoUrl = useMemo(
-    () => sessions.find((s) => s.id === sessionId)?.remoteUrl,
+  const currentSession = useMemo(
+    () => sessions.find((s) => s.id === sessionId),
     [sessions, sessionId],
   );
+  const currentRepoUrl = currentSession?.remoteUrl;
 
   const noAgentReady = agentList.length > 0 && !agentList.some(a => a.installed && a.authConfigured);
   const needsOnboarding = gitIdentityNeeded || noAgentReady;
@@ -658,6 +659,14 @@ export default function App() {
   const chatPanel = (
     <>
       {searchOpen && <SearchBar query={search.query} onQueryChange={search.setQuery} matches={search.matches} currentMatchIndex={search.currentMatchIndex} onNext={search.goToNext} onPrev={search.goToPrev} onClose={() => { setSearchOpen(false); search.clear(); }} />}
+      {!showHomeScreen && !showNewSessionView && currentSession && (
+        <SessionTopBar
+          title={currentSession.title}
+          onRename={(title) => useSessionStore.getState().renameSession(currentSession.id, title)}
+          onDownloadChat={handleDownloadChat}
+          onArchive={() => { void useSessionStore.getState().archiveSession(currentSession.id); if (activeRepoUrl) void handleNewSessionForRepo(activeRepoUrl); }}
+        />
+      )}
       {showHomeScreen ? (
         <HomeScreen onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)} hasRepos={repos.length > 0} />
       ) : (
@@ -665,13 +674,6 @@ export default function App() {
           <MessageList messages={messages} isLoading={isLoading} activity={activity} searchMatches={search.matches} currentMatch={search.currentMatch} onAnswerQuestion={handleAnswerQuestion} onSendFollowUp={handleSendFollowUp} onRollback={handleRollback} onRewind={handleRewind} />
           {wsSessionId && <PrLifecycleCard sessionId={wsSessionId} />}
         </>
-      )}
-      {!showHomeScreen && !showNewSessionView && (
-        <div className="border-t border-(--color-border-primary) px-4 py-1.5 flex items-center justify-end">
-          <Button variant="ghost" size="sm" onClick={handleDownloadChat} title="Download chat history" aria-label="Download chat history">
-            <DownloadSimpleIcon size={ICON_SIZE.SM} />
-          </Button>
-        </div>
       )}
       {!showHomeScreen && !showNewSessionView && queuedMessages.length > 0 && <QueueIndicator queue={queuedMessages} onCancel={(pos) => send({ type: "cancel_queued_message", position: pos })} />}
       {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_claude" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} uploads={uploads} allUploads={sessionUploads} onUploadFiles={(files) => void uploadFiles(files)} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} onModelChange={handleModelChange} modelInfo={modelInfo} contextTokens={contextTokens} hasActiveSession={!showNewSessionView && !!sessionId} />}
