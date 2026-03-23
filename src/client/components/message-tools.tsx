@@ -147,7 +147,7 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
             aria-label="Show output"
           >
             <EyeIcon size={12} />
-            <span>Show output</span>
+            <span className="whitespace-nowrap">Show output</span>
           </button>
         )}
       </div>
