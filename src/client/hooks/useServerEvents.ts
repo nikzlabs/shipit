@@ -58,10 +58,6 @@ export function useServerEvents(): void {
         next.delete(data.sessionId);
         return next;
       });
-      // Track unseen results for sessions the user isn't currently viewing
-      if (data.sessionId !== store.sessionId) {
-        store.markUnseen(data.sessionId);
-      }
       // Clear loading state for system-initiated turns. For user-initiated turns
       // this is already cleared by agent_result/claude_interrupted WS events.
       if (data.sessionId === store.sessionId) {

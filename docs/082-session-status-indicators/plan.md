@@ -91,17 +91,6 @@ All icons are 12px (`ICON_SIZE.XS`), consistent with the current `CiDot`.
 
 ### "Agent finished" tracking
 
-To know whether a session's agent finished while the user was looking at a different session, we need a lightweight "unseen result" flag.
-
-**Client-side only** — no server changes needed:
-
-1. In `session-store`, add `unseenResults: Set<string>` (set of session IDs).
-2. When an `agent_result` event arrives for a session that is *not* the currently viewed session, add its ID to `unseenResults`.
-3. When the user switches to that session (via `onResume`), remove it from `unseenResults`.
-4. The attention border checks `unseenResults.has(sessionId)` as condition #5.
-
-This resets naturally on session switch — no persistence needed.
-
 ## Data flow
 
 All data needed for the attention border is already available client-side:
@@ -110,11 +99,9 @@ All data needed for the attention border is already available client-side:
 PrStore.cardBySession[id]         → checks, autoFix, autoMerge, phase
 PrStore.statusBySession[id]       → mergeable, prState
 SessionStore.activeRunnerSessions → agent running
-SessionStore.unseenResults (new)  → agent finished in background
-SessionStore.sessionId            → currently active session
 ```
 
-The `needsAttention(sessionId)` derivation is a pure function of these stores — no new server messages or API calls required.
+The `needsAttention(sessionId)` derivation is a pure function of these stores — no new server messages or API calls required. No separate "seen/unseen" tracking is needed.
 
 ## Key files
 
@@ -123,8 +110,6 @@ The `needsAttention(sessionId)` derivation is a pure function of these stores �
 | `src/client/themes/dark.css` | Add `--color-attention` and `--color-attention-subtle` tokens |
 | `src/client/themes/light.css` | Add `--color-attention` and `--color-attention-subtle` tokens |
 | `src/client/components/SessionSidebar.tsx` | Replace `AgentDot` + `CiDot` with `SessionStatusDot`; add attention border to `SessionItem`; add attention tooltip |
-| `src/client/stores/session-store.ts` | Add `unseenResults` set + `markUnseen` / `clearUnseen` actions |
-| `src/client/hooks/useMessageHandler.ts` (or equivalent) | On `agent_result` for non-active session, call `markUnseen` |
 
 ## Non-goals
 
