@@ -97,7 +97,6 @@ function useAttentionInfo(sessionId: string): string | null {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
   const status = usePrStore((s) => s.statusBySession[sessionId]);
   const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
-  const hasUnseen = useSessionStore((s) => s.unseenResults.has(sessionId));
 
   const checks = card?.checks;
   const autoFix = card?.autoFix;
@@ -105,32 +104,33 @@ function useAttentionInfo(sessionId: string): string | null {
   const prState = status?.prState;
   const mergeable = status?.mergeable;
 
-  // Priority 1: CI failed, agent idle, auto-fix not running
-  if (checks?.state === "failure" && !isAgentRunning && autoFix?.status !== "running") {
+  // No attention needed while the agent is working
+  if (isAgentRunning) return null;
+
+  // Priority 1: CI failed, auto-fix not running
+  if (checks?.state === "failure" && autoFix?.status !== "running") {
     if (autoFix?.status === "exhausted") {
-      // Priority 2: Auto-fix exhausted
       return "CI fix failed after 3 attempts";
     }
     return "CI checks failed";
   }
 
-  // Priority 3: Merge conflicts (mergeable can be boolean | undefined, so === false is intentional)
+  // Priority 2: Merge conflicts (mergeable can be boolean | undefined, so === false is intentional)
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare
   if (prState === "open" && mergeable === false) {
     return "PR has merge conflicts";
   }
 
-  // Priority 4: Auto-merge error
+  // Priority 3: Auto-merge error
   if (autoMerge?.error) {
     return "Auto-merge needs repo configuration";
   }
 
-  // Priority 5: Agent finished in background
-  if (hasUnseen) {
-    return "Agent finished — review results";
-  }
+  // Priority 4: PR merged/closed — no action needed
+  if (prState === "merged" || prState === "closed") return null;
 
-  return null;
+  // Agent is idle and session is not resolved — user needs to act
+  return "Waiting for your input";
 }
 
 /** Consolidated status dot replacing separate AgentDot + CiDot. */
@@ -215,7 +215,7 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
   return (
     <div
       className={`group flex items-start gap-1.5 px-2 py-1.5 text-xs transition-colors rounded mx-1 ${
-        needsAttention ? "border-l-2 border-l-(--color-attention)" : "border-l-2 border-l-transparent"
+        needsAttention ? "border border-(--color-attention)" : "border border-transparent"
       } ${
         isCurrent
           ? "bg-(--color-bg-secondary) text-(--color-text-primary)"
@@ -396,7 +396,7 @@ export function SessionSidebar({
       </div>
 
       {/* Scrollable sessions area */}
-      <div className="flex-1 overflow-y-auto min-h-0">
+      <div className="flex-1 overflow-y-auto min-h-0 flex flex-col gap-0.5">
         {/* Sessions header */}
         <div className="flex items-center justify-between px-3 py-2 sticky top-0 bg-(--color-bg-primary) z-10">
           <span className="text-xs font-semibold text-(--color-text-secondary) tracking-wide">Sessions</span>
