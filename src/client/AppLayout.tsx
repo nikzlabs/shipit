@@ -183,7 +183,7 @@ export function AppLayout({
               onCreateNew={onCreateNewRepo}
             />
           </div>
-          <div ref={containerRef} className="flex flex-1 min-h-0">
+          <div ref={containerRef} className="flex flex-1 min-h-0 overflow-hidden">
             <div className={`flex flex-col min-w-0 ${showHomeScreen ? "" : "border-r border-(--color-border-primary)"}`} style={{ width: showHomeScreen ? "100%" : `${fraction * 100}%` }}>
               {chatPanel}
             </div>
