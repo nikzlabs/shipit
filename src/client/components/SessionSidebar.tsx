@@ -175,12 +175,14 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
   const isArchived = session.archived === true;
 
   const attentionReason = useAttentionInfo(session.id);
-  const needsAttention = attentionReason !== null;
+  const needsAttention = attentionReason !== null && !isArchived;
 
   return (
     <div
       className={`group flex items-start gap-1.5 px-2 py-1.5 text-xs transition-colors rounded mx-1 ${
         needsAttention ? "border border-(--color-attention)" : "border border-transparent"
+      } ${
+        isArchived ? "opacity-60" : ""
       } ${
         isCurrent
           ? "bg-(--color-bg-secondary) text-(--color-text-primary)"
@@ -203,6 +205,7 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
           {repoLabel && (
             <span className="text-[10px] text-(--color-text-tertiary) truncate">{repoLabel}</span>
           )}
+          {isArchived && <PhArchiveIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary) shrink-0" />}
           <span className="text-(--color-text-tertiary) text-[10px]">{formatRelativeDate(session.lastUsedAt)}</span>
         </div>
       </button>
