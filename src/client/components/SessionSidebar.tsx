@@ -1,6 +1,6 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: document.body style during drag, input focus on editing start (DOM sync)
+// eslint-disable-next-line no-restricted-imports -- useEffect: document.body style during drag (DOM sync)
 import { useState, useRef, useEffect, useCallback } from "react";
-import { PencilSimpleIcon, ArchiveIcon as PhArchiveIcon, GearSixIcon, GithubLogoIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, WrenchIcon } from "@phosphor-icons/react";
+import { ArchiveIcon as PhArchiveIcon, GearSixIcon, GithubLogoIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, WrenchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
 import { Button } from "./ui/button.js";
@@ -74,7 +74,6 @@ interface SessionSidebarProps {
   currentSessionId: string | undefined;
   onResume: (sessionId: string) => void;
   onArchive: (sessionId: string) => void;
-  onRename: (sessionId: string, title: string) => void;
   onOpenRepoSwitcher: () => void;
   onNewSession: () => void;
   collapsed: boolean;
@@ -87,7 +86,6 @@ export interface SessionItemProps {
   onResume: (id: string) => void;
   onArchive?: (id: string) => void;
   onRestore?: (id: string) => void;
-  onRename?: (id: string, title: string) => void;
   repoLabel?: string;
   disabled?: boolean;
 }
@@ -173,41 +171,8 @@ function SessionStatusDot({ sessionId }: { sessionId: string }) {
   return null;
 }
 
-export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore, onRename, repoLabel, disabled }: SessionItemProps) {
+export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore, repoLabel, disabled }: SessionItemProps) {
   const isArchived = session.archived === true;
-  const [editingTitle, setEditingTitle] = useState("");
-  const [isEditing, setIsEditing] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const editResolvedRef = useRef(false);
-
-  useEffect(() => {
-    if (isEditing && inputRef.current) {
-      editResolvedRef.current = false;
-      inputRef.current.focus();
-      inputRef.current.select();
-    }
-  }, [isEditing]);
-
-  const startEditing = () => {
-    setEditingTitle(session.title);
-    setIsEditing(true);
-  };
-
-  const submitRename = () => {
-    if (editResolvedRef.current) return;
-    editResolvedRef.current = true;
-    if (editingTitle.trim()) {
-      onRename?.(session.id, editingTitle.trim());
-    }
-    setIsEditing(false);
-    setEditingTitle("");
-  };
-
-  const cancelEditing = () => {
-    editResolvedRef.current = true;
-    setIsEditing(false);
-    setEditingTitle("");
-  };
 
   const attentionReason = useAttentionInfo(session.id);
   const needsAttention = attentionReason !== null;
@@ -227,52 +192,23 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
     >
       <PrStateBadge sessionId={session.id} />
 
-      {isEditing ? (
-        <form
-          className="flex-1 min-w-0"
-          onSubmit={(e) => { e.preventDefault(); submitRename(); }}
-        >
-          <input
-            ref={inputRef}
-            type="text"
-            value={editingTitle}
-            onChange={(e) => setEditingTitle(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Escape") cancelEditing(); }}
-            onBlur={submitRename}
-            className="w-full bg-(--color-bg-tertiary) text-(--color-text-primary) text-xs px-1.5 py-0.5 rounded border border-(--color-border-secondary) focus:border-(--color-border-focus) focus:outline-none"
-            maxLength={120}
-          />
-        </form>
-      ) : (
-        <button
-          onClick={() => { if (!isCurrent) onResume(session.id); }}
-          disabled={disabled}
-          className="flex-1 min-w-0 text-left"
-        >
-          <p className="truncate leading-snug">{session.title}</p>
-          <div className="flex items-center gap-1.5 mt-0.5">
-            <SessionStatusDot sessionId={session.id} />
-            {repoLabel && (
-              <span className="text-[10px] text-(--color-text-tertiary) truncate">{repoLabel}</span>
-            )}
-            <span className="text-(--color-text-tertiary) text-[10px]">{formatRelativeDate(session.lastUsedAt)}</span>
-          </div>
-        </button>
-      )}
-
-      {!isEditing && (
-        <div className="shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-          {onRename && (
-            <Button
-              variant="ghost"
-              onClick={(e) => { e.stopPropagation(); startEditing(); }}
-              className="p-1! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-link)"
-              title="Rename session"
-            >
-              <PencilSimpleIcon size={ICON_SIZE.SM} />
-            </Button>
+      <button
+        onClick={() => { if (!isCurrent) onResume(session.id); }}
+        disabled={disabled}
+        className="flex-1 min-w-0 text-left"
+      >
+        <p className="truncate leading-snug">{session.title}</p>
+        <div className="flex items-center gap-1.5 mt-0.5">
+          <SessionStatusDot sessionId={session.id} />
+          {repoLabel && (
+            <span className="text-[10px] text-(--color-text-tertiary) truncate">{repoLabel}</span>
           )}
-          {isArchived && onRestore && (
+          <span className="text-(--color-text-tertiary) text-[10px]">{formatRelativeDate(session.lastUsedAt)}</span>
+        </div>
+      </button>
+
+      <div className="shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+        {isArchived && onRestore && (
             <Button
               variant="ghost"
               onClick={(e) => { e.stopPropagation(); onRestore(session.id); }}
@@ -295,7 +231,6 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
             </Button>
           )}
         </div>
-      )}
     </div>
   );
 }
@@ -308,7 +243,6 @@ export function SessionSidebar({
   currentSessionId,
   onResume,
   onArchive,
-  onRename,
   onOpenRepoSwitcher,
   onNewSession,
   collapsed,
@@ -420,7 +354,6 @@ export function SessionSidebar({
               isCurrent={s.id === currentSessionId}
               onResume={onResume}
               onArchive={onArchive}
-              onRename={onRename}
             />
           ))
         )}
