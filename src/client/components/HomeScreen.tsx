@@ -37,7 +37,7 @@ export function HomeScreen({ onAddRepo, hasRepos }: HomeScreenProps) {
         <div className="space-y-3 text-sm text-(--color-text-secondary)">
           <div className="flex items-start gap-3">
             <span className="flex items-center justify-center w-5 h-5 rounded-full bg-(--color-success-subtle) text-(--color-success) text-xs font-medium shrink-0 mt-0.5">1</span>
-            <p>Click <strong className="text-(--color-text-primary)">+ New Session</strong> next to a repository in the sidebar to start coding.</p>
+            <p>Click <strong className="text-(--color-text-primary)">+ New Session</strong> in the sidebar to start coding.</p>
           </div>
           <div className="flex items-start gap-3">
             <span className="flex items-center justify-center w-5 h-5 rounded-full bg-(--color-success-subtle) text-(--color-success) text-xs font-medium shrink-0 mt-0.5">2</span>

@@ -626,11 +626,11 @@ export default function App() {
   const rightPanel = (
     <>
       <div className="flex border-b border-(--color-border-primary) bg-(--color-bg-secondary)">
-        <button onClick={() => handleTabChange("preview")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "preview" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Preview</button>
-        <button onClick={() => handleTabChange("docs")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "docs" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Docs</button>
-        <button onClick={() => handleTabChange("files")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "files" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Files</button>
-        <button onClick={() => handleTabChange("terminal")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "terminal" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Terminal</button>
-        <button onClick={() => handleTabChange("history")} className={`px-4 py-2 text-sm font-medium transition-colors ${rightTab === "history" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>History</button>
+        <button onClick={() => handleTabChange("preview")} className={`px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-medium transition-colors ${rightTab === "preview" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Preview</button>
+        <button onClick={() => handleTabChange("docs")} className={`px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-medium transition-colors ${rightTab === "docs" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Docs</button>
+        <button onClick={() => handleTabChange("files")} className={`px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-medium transition-colors ${rightTab === "files" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Files</button>
+        <button onClick={() => handleTabChange("terminal")} className={`px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-medium transition-colors ${rightTab === "terminal" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Terminal</button>
+        <button onClick={() => handleTabChange("history")} className={`px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-medium transition-colors ${rightTab === "history" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>History</button>
       </div>
       <div className="flex-1 min-h-0">
         {rightTab === "preview" ? (
@@ -666,6 +666,8 @@ export default function App() {
           onRename={(title) => useSessionStore.getState().renameSession(currentSession.id, title)}
           onDownloadChat={handleDownloadChat}
           onArchive={() => { void useSessionStore.getState().archiveSession(currentSession.id); if (activeRepoUrl) void handleNewSessionForRepo(activeRepoUrl); }}
+          onDeploy={handleDeployOpen}
+          isMobile={isMobile}
         />
       )}
       {showHomeScreen ? (
@@ -781,6 +783,7 @@ export default function App() {
         dockerMemory={dockerMemory}
         onUsageBadgeClick={handleUsageBadgeClick}
         onNavigateHome={() => navigate("/")}
+        onOpenSessions={() => useSessionStore.getState().setAllSessionsDialogOpen(true)}
         showConnectionBanner={!showNewSessionView && !!wsSessionId}
         connectionStatus={status}
         reconnectAttempt={reconnectAttempt}

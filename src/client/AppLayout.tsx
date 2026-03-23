@@ -1,5 +1,5 @@
 import type { ReactNode, RefObject } from "react";
-import { GearSixIcon, RocketIcon } from "@phosphor-icons/react";
+import { GearSixIcon, ListIcon, RocketIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "./design-tokens.js";
 import { ThemePicker } from "./components/ThemePicker.js";
 import { SessionSidebar } from "./components/SessionSidebar.js";
@@ -25,6 +25,7 @@ interface AppLayoutProps {
   dockerMemory: DockerMemoryStats | null;
   onUsageBadgeClick: () => void;
   onNavigateHome: () => void;
+  onOpenSessions: () => void;
 
   // Connection
   showConnectionBanner: boolean;
@@ -85,6 +86,7 @@ export function AppLayout({
   dockerMemory,
   onUsageBadgeClick,
   onNavigateHome,
+  onOpenSessions,
   showConnectionBanner,
   connectionStatus,
   reconnectAttempt,
@@ -123,9 +125,14 @@ export function AppLayout({
 }: AppLayoutProps) {
   return (
     <>
-      <header className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-(--color-border-primary)">
-        <div className="flex items-center gap-3 sm:gap-4 min-w-0">
-          <h1 className="text-lg font-semibold tracking-tight shrink-0 flex items-center gap-1.5 cursor-pointer hover:opacity-80 transition-opacity" onClick={onNavigateHome} role="link">
+      <header className="flex items-center justify-between px-3 sm:px-6 py-2 sm:py-3 border-b border-(--color-border-primary)">
+        <div className="flex items-center gap-2 sm:gap-4 min-w-0">
+          {isMobile && (
+            <button onClick={onOpenSessions} className="inline-flex items-center justify-center w-7 h-7 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)" title="Sessions" aria-label="Sessions">
+              <ListIcon size={ICON_SIZE.MD} />
+            </button>
+          )}
+          <h1 className="text-base sm:text-lg font-semibold tracking-tight shrink-0 flex items-center gap-1.5 cursor-pointer hover:opacity-80 transition-opacity" onClick={onNavigateHome} role="link">
             <img src={LIGHT_THEMES.has(theme) ? "/favicon-light.svg" : "/favicon.svg"} alt="" className="w-5 h-5" />
             ShipIt
           </h1>
@@ -136,7 +143,7 @@ export function AppLayout({
             <RocketIcon size={ICON_SIZE.SM} />
             Deploy
           </button>
-          <button onClick={onSettingsOpen} className={`hidden sm:inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${hasSystemPrompt || githubAuthenticated ? "text-(--color-accent) hover:text-(--color-accent-hover) hover:bg-(--color-bg-hover)" : "text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"}`} title="Settings" aria-label="Settings">
+          <button onClick={onSettingsOpen} className={`inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${hasSystemPrompt || githubAuthenticated ? "text-(--color-accent) hover:text-(--color-accent-hover) hover:bg-(--color-bg-hover)" : "text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"}`} title="Settings" aria-label="Settings">
             <GearSixIcon size={ICON_SIZE.SM} />
           </button>
           {currentSessionUsage && currentSessionUsage.totalCostUsd > 0 && (

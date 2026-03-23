@@ -27,7 +27,7 @@ export const Modal = forwardRef<HTMLDivElement, ModalProps>(
         {/* Content */}
         <div
           ref={ref}
-          className={`relative z-10 bg-(--color-bg-elevated) border border-(--color-border-primary) rounded-xl shadow-xl max-h-[90vh] overflow-auto ${className ?? ""}`}
+          className={`relative z-10 bg-(--color-bg-elevated) border border-(--color-border-primary) shadow-xl overflow-auto max-md:fixed max-md:inset-0 max-md:w-full max-md:h-full max-md:max-w-full! max-md:max-h-full! max-md:m-0! max-md:rounded-none max-md:border-0 md:rounded-xl md:max-h-[90vh] ${className ?? ""}`}
           {...props}
         >
           {children}

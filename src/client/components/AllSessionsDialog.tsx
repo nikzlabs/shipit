@@ -110,7 +110,7 @@ export function AllSessionsDialog({
   return (
     <Modal
       onClose={onClose}
-      className="w-full max-w-lg rounded-lg border-(--color-border-secondary)"
+      className="w-full max-md:flex max-md:flex-col md:max-w-lg rounded-lg border-(--color-border-secondary)"
     >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-(--color-border-secondary) px-4 py-3">
@@ -155,8 +155,8 @@ export function AllSessionsDialog({
         </div>
 
         {/* Session list */}
-        <div className="px-4 pb-3">
-          <div className="max-h-80 overflow-y-auto rounded-md border border-(--color-border-secondary)">
+        <div className="px-4 pb-3 max-md:flex-1 max-md:min-h-0">
+          <div className="max-h-80 max-md:max-h-full overflow-y-auto rounded-md border border-(--color-border-secondary)">
             {filtered.length === 0 ? (
               <p className="px-3 py-6 text-center text-xs text-(--color-text-secondary)">
                 {sessions.length === 0
