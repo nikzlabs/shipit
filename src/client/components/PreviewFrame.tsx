@@ -185,6 +185,44 @@ export function PreviewFrame({
     }
   }, [iframeReady, candidateUrl]);
 
+  // --- Auth-blocked detection ---
+  // When behind a reverse proxy with auth (e.g. Cloudflare Zero Trust), the
+  // preview subdomain may require separate authentication. The auth redirect
+  // can't render inside an iframe (frame-ancestors 'none'). Detect this by
+  // waiting for a "loaded" postMessage from the preview proxy's injected
+  // script. If it doesn't arrive, the iframe is likely auth-blocked.
+  const [authBlocked, setAuthBlocked] = useState(false);
+  const previewLoadedRef = useRef(false);
+
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      const data = event.data as { source?: string; type?: string } | undefined;
+      if (data?.source === "shipit-preview" && data?.type === "loaded") {
+        previewLoadedRef.current = true;
+        setAuthBlocked(false);
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, []);
+
+  // Skip auth detection for localhost — no reverse proxy auth locally.
+  // previewSubdomainUrl looks like "http://uuid--port.localhost:3001/",
+  // so check the apiHost directly rather than parsing the subdomain URL.
+  const isLocalPreview = /^(localhost|127\.\d+\.\d+\.\d+|::1)(:|$)/i.test(apiHost);
+  useEffect(() => {
+    if (!displayedUrl || !previewSubdomainUrl || isLocalPreview) return;
+    previewLoadedRef.current = false;
+    setAuthBlocked(false);
+    const timer = setTimeout(() => {
+      if (!previewLoadedRef.current) {
+        setAuthBlocked(true);
+      }
+    }, 5000);
+    return () => clearTimeout(timer);
+    // refreshKey: re-run detection after user clicks Retry
+  }, [displayedUrl, previewSubdomainUrl, isLocalPreview, refreshKey]);
+
   // Force-reload the iframe on refresh click by re-assigning the same src.
   // This avoids changing displayedUrl (which wouldn't trigger a navigation
   // for the same value) and instead uses the DOM API directly.
@@ -192,6 +230,8 @@ export function PreviewFrame({
   useEffect(() => {
     if (refreshKey !== lastRefreshKey.current) {
       lastRefreshKey.current = refreshKey;
+      previewLoadedRef.current = false;
+      setAuthBlocked(false);
       if (iframeRef.current && displayedUrl) {
         iframeRef.current.src = displayedUrl;
       }
@@ -274,6 +314,38 @@ export function PreviewFrame({
       <div className="text-center space-y-3">
         <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
         <p>Starting dev server...</p>
+      </div>
+    );
+  } else if (authBlocked && displayedUrl) {
+    overlayContent = (
+      <div className="text-center space-y-3 max-w-sm px-4">
+        <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-warning)" />
+        <p className="font-medium">Preview authentication required</p>
+        <p className="text-xs text-(--color-text-secondary)">
+          Your reverse proxy requires separate authentication for preview subdomains.
+          Open the preview in a new tab to authenticate — this is needed once per session.
+        </p>
+        <div className="flex items-center justify-center gap-2">
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => window.open(displayedUrl, "_blank")}
+          >
+            <ArrowSquareOutIcon size={ICON_SIZE.SM} />
+            Open in new tab
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              setAuthBlocked(false);
+              setRefreshKey((k) => k + 1);
+            }}
+          >
+            <ArrowClockwiseIcon size={ICON_SIZE.SM} />
+            Retry
+          </Button>
+        </div>
       </div>
     );
   } else if (showConfigMissing) {
