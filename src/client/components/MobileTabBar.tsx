@@ -31,7 +31,7 @@ export function MobileTabBar({
     >
       <button
         onClick={() => onChangePanel("chat")}
-        className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 text-xs font-medium transition-colors ${
+        className={`flex-1 flex flex-col items-center gap-0.5 py-2 text-xs font-medium transition-colors ${
           activePanel === "chat"
             ? "text-(--color-text-link)"
             : "text-(--color-text-secondary) active:text-(--color-text-primary)"
@@ -45,7 +45,7 @@ export function MobileTabBar({
 
       <button
         onClick={() => onChangePanel("preview")}
-        className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 text-xs font-medium transition-colors ${
+        className={`flex-1 flex flex-col items-center gap-0.5 py-2 text-xs font-medium transition-colors ${
           activePanel === "preview"
             ? "text-(--color-text-link)"
             : "text-(--color-text-secondary) active:text-(--color-text-primary)"
