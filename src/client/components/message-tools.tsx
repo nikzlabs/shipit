@@ -47,7 +47,7 @@ export function ToolCallGroup({ items, isStreaming }: {
   );
 }
 
-export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, onSendFollowUp, isQuestionDisabled, grouped: _grouped }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void; onSendFollowUp?: (text: string) => void; isQuestionDisabled: boolean; grouped?: boolean }) {
+export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, onSendFollowUp, isQuestionDisabled, grouped: _grouped, planContent }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void; onSendFollowUp?: (text: string) => void; isQuestionDisabled: boolean; grouped?: boolean; planContent?: string }) {
   // Show a spinner on the last tool when the message is still streaming
   const inProgress = isLast && isStreaming && !result;
   const hasResult = !!result;
@@ -93,6 +93,7 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
       <PlanApproval
         onSend={onSendFollowUp ?? (() => {})}
         disabled={isQuestionDisabled || isStreaming}
+        planContent={planContent}
       />
     );
   }
