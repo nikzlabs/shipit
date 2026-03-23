@@ -162,6 +162,7 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
       emitDone({
         type: "queue_updated",
         queue: messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 })),
+        dequeued: next.text,
       });
       if (runner) runner.running = true;
       // Resolve file attachments for the queued message
