@@ -7,7 +7,7 @@
 import { useCallback } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { UploadedFile, UploadRef, UploadItem } from "../../server/shared/types.js";
-import { useFileStore } from "../stores/file-store.js";
+import { useFileStore, markUploadDeleted } from "../stores/file-store.js";
 
 export type { UploadItem, UploadStatus } from "../../server/shared/types.js";
 
@@ -107,9 +107,15 @@ export function useFileUpload(sessionId: string | undefined) {
     if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
     if (item.path && sessionId) {
       const filename = item.path.replace(/^\/uploads\//, "");
-      void fetch(`/api/sessions/${sessionId}/files/uploads/${encodeURIComponent(filename)}`, {
-        method: "DELETE",
-      });
+      markUploadDeleted(item.path);
+      void (async () => {
+        try {
+          const res = await fetch(`/api/sessions/${sessionId}/files/uploads/${encodeURIComponent(filename)}`, { method: "DELETE" });
+          if (!res.ok) console.warn(`[upload] DELETE ${item.path} failed: ${res.status} ${res.statusText}`);
+        } catch (err: unknown) {
+          console.warn("[upload] DELETE failed:", err);
+        }
+      })();
       useFileStore.getState().removeSessionUpload(item.path);
     } else {
       useFileStore.getState().removeSessionUploadById(item.id);

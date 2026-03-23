@@ -52,7 +52,7 @@ import type { AgentId, DocEntry } from "../server/shared/types.js";
 
 import { useSessionStore } from "./stores/session-store.js";
 import { useGitStore } from "./stores/git-store.js";
-import { useFileStore } from "./stores/file-store.js";
+import { useFileStore, markUploadDeleted } from "./stores/file-store.js";
 import { usePreviewStore } from "./stores/preview-store.js";
 import { useTerminalStore } from "./stores/terminal-store.js";
 import { useDeployStore } from "./stores/deploy-store.js";
@@ -313,7 +313,8 @@ export default function App() {
       const imagesForMessage = imageUploads.length > 0
         ? imageUploads.map((u) => ({ data: "", mediaType: u.mimeType ?? "image/png", src: u.dataUrl ?? u.previewUrl! }))
         : undefined;
-      session.setMessages((prev) => [...prev, { role: "user", text, files: filesForMessage, images: imagesForMessage }]);
+      const uploadPathsForMessage = uploadRefs.length > 0 ? uploadRefs.map((u) => u.path) : undefined;
+      session.setMessages((prev) => [...prev, { role: "user", text, files: filesForMessage, images: imagesForMessage, uploadPaths: uploadPathsForMessage }]);
       session.setIsLoading(true);
       session.setActivity({ label: "Thinking..." });
 
@@ -649,7 +650,7 @@ export default function App() {
         ) : rightTab === "history" ? (
           <GitHistory commits={gitCommits} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().fetchLog(sid).catch(() => {}); }} onViewDiff={handleViewDiff} />
         ) : (
-          <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); void useFileStore.getState().hydrateUploads(sid); } }} onFileClick={handleOpenFilePreview} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} onDownload={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) { const a = document.createElement("a"); a.href = `/api/sessions/${sid}/files/download/${f}`; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); } }} uploads={sessionUploads} />
+          <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); void useFileStore.getState().hydrateUploads(sid); } }} onFileClick={handleOpenFilePreview} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} onDownload={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) { const a = document.createElement("a"); a.href = `/api/sessions/${sid}/files/download/${f}`; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); } }} uploads={sessionUploads} onDeleteUpload={(u) => { const sid = useSessionStore.getState().sessionId; if (u.path) markUploadDeleted(u.path); if (sid && u.path) { const filename = u.path.replace(/^\/uploads\//, ""); void fetch(`/api/sessions/${sid}/files/uploads/${encodeURIComponent(filename)}`, { method: "DELETE" }); } if (u.previewUrl) URL.revokeObjectURL(u.previewUrl); if (u.path) useFileStore.getState().removeSessionUpload(u.path); else useFileStore.getState().removeSessionUploadById(u.id); }} />
         )}
       </div>
     </>

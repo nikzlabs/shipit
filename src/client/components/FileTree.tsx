@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import { FolderIcon, FolderOpenIcon, FileIcon, CaretRightIcon, PlusIcon, FolderSimpleIcon, ArrowClockwiseIcon, UploadSimpleIcon, DownloadSimpleIcon } from "@phosphor-icons/react";
+import { FolderIcon, FolderOpenIcon, FileIcon, CaretRightIcon, PlusIcon, FolderSimpleIcon, ArrowClockwiseIcon, UploadSimpleIcon, DownloadSimpleIcon, TrashIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import type { FileTreeNode } from "../../server/shared/types.js";
@@ -15,6 +15,7 @@ export interface FileTreeProps {
   onAddToChat?: (filePath: string) => void;
   onDownload?: (filePath: string) => void;
   uploads?: UploadItem[];
+  onDeleteUpload?: (upload: UploadItem) => void;
 }
 
 function TreeNode({
@@ -127,7 +128,7 @@ function TreeNode({
   );
 }
 
-export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToChat, onDownload, uploads }: FileTreeProps) {
+export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToChat, onDownload, uploads, onDeleteUpload }: FileTreeProps) {
   if (tree.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
@@ -203,6 +204,18 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToCh
                     aria-label={`Add ${u.name} to chat`}
                   >
                     <PlusIcon size={12} />
+                  </Button>
+                )}
+                {onDeleteUpload && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onDeleteUpload(u)}
+                    className="hidden group-hover:inline-flex w-5 h-5 shrink-0 ml-1 text-(--color-text-secondary) hover:text-(--color-error)"
+                    title="Delete upload"
+                    aria-label={`Delete ${u.name}`}
+                  >
+                    <TrashIcon size={12} />
                   </Button>
                 )}
               </div>
