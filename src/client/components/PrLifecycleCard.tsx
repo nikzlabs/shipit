@@ -25,7 +25,9 @@ import {
   CaretDownIcon,
   WarningIcon,
   InfoIcon,
+  GlobeIcon,
 } from "@phosphor-icons/react";
+import type { GitHubDeploymentStatus } from "../../server/shared/types.js";
 import { ICON_SIZE } from "../design-tokens.js";
 
 // ---- Shared ----
@@ -281,6 +283,37 @@ function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: 
   );
 }
 
+// ---- Deployment status ----
+
+function DeploymentStatusRow({ deployments }: { deployments: GitHubDeploymentStatus[] }) {
+  if (deployments.length === 0) return null;
+
+  return (
+    <div className="mt-1.5 pl-5 flex flex-col gap-1">
+      {deployments.map((d, i) => {
+        const isActive = d.state === "success";
+        const isPending = d.state === "pending" || d.state === "in_progress" || d.state === "queued";
+        const isFailed = d.state === "failure" || d.state === "error";
+        return (
+          <div key={`${d.environment}-${i}`} className="flex items-center gap-1.5 text-xs">
+            {isPending && <CircleNotchIcon size={12} className="text-(--color-warning) animate-spin shrink-0" />}
+            {isActive && <GlobeIcon size={12} className="text-(--color-success) shrink-0" />}
+            {isFailed && <XCircleIcon size={12} className="text-(--color-error) shrink-0" />}
+            {!isPending && !isActive && !isFailed && <GlobeIcon size={12} className="text-(--color-text-tertiary) shrink-0" />}
+            <span className="text-(--color-text-secondary)">{d.environment}</span>
+            {d.environmentUrl && (
+              <a href={d.environmentUrl} target="_blank" rel="noopener noreferrer" className="text-(--color-text-link) hover:text-(--color-accent) truncate max-w-50">
+                {new URL(d.environmentUrl).hostname}
+              </a>
+            )}
+            {d.creator && <span className="text-(--color-text-tertiary)">via {d.creator}</span>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ---- Phase renderers ----
 
 function ReadyPhase({ card, sessionId, creating: externalCreating }: { card: PrCardState; sessionId: string; creating?: boolean }) {
@@ -322,6 +355,7 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
   const pr = card.pr;
   const fixCI = usePrStore((s) => s.fixCI);
   const setToast = useUiStore((s) => s.setToast);
+  const deployments = usePrStore((s) => s.statusBySession[sessionId]?.deployments);
   const [fixingCI, setFixingCI] = useState(false);
   const openDiff = useOpenPrDiff(pr?.baseBranch);
   if (!pr) return null;
@@ -412,6 +446,7 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
         </div>
       )}
       {isCiFailed && !isAutoFixRunning && <FailedChecksList checks={card.checks} />}
+      {deployments && deployments.length > 0 && <DeploymentStatusRow deployments={deployments} />}
     </div>
   );
 }

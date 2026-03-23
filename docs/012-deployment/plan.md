@@ -1,6 +1,11 @@
 ---
 status: done
 ---
+
+> **Superseded by [084-auto-deploy-on-push](../084-auto-deploy-on-push/plan.md).**
+> The manual deploy system described here has been removed. Deployments now happen
+> automatically via platform Git integration (Vercel, Cloudflare Pages, etc.).
+
 # Deployment Integration
 
 Users can deploy to Vercel or Cloudflare Pages from the UI. Pluggable `DeployTarget` interface supports adding new platforms.

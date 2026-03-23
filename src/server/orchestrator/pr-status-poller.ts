@@ -16,6 +16,7 @@ import type { GitHubAuthManager } from "./github-auth.js";
 import type { SessionManager } from "./sessions.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { PrStatusSummary, AutoFixState, AutoMergeState, PrAutoMergeError } from "../shared/types/github-types.js";
+import type { GitHubDeploymentStatus } from "../shared/types/deployment-types.js";
 import { parseGitHubRemote } from "./git-utils.js";
 
 const POLL_INTERVAL_MS = 3_000;
@@ -60,6 +61,17 @@ query($owner: String!, $name: String!) {
                   }
                 }
               }
+              deployments(last: 5) {
+                nodes {
+                  environment
+                  latestStatus {
+                    state
+                    environmentUrl
+                  }
+                  createdAt
+                  creator { login }
+                }
+              }
             }
           }
         }
@@ -92,6 +104,14 @@ interface GraphQLPrNode {
               | { context: string; state: string })[];
           };
         } | null;
+        deployments?: {
+          nodes: {
+            environment: string;
+            latestStatus: { state: string; environmentUrl: string | null } | null;
+            createdAt: string;
+            creator: { login: string } | null;
+          }[];
+        } | null;
       };
     }[];
   };
@@ -106,6 +126,19 @@ interface GraphQLResponse {
     };
   };
   errors?: { message: string }[];
+}
+
+/** Map GitHub GraphQL deployment state string to our typed state. */
+function mapDeploymentState(state: string | undefined): GitHubDeploymentStatus["state"] {
+  switch (state?.toUpperCase()) {
+    case "SUCCESS": case "ACTIVE": return "success";
+    case "FAILURE": return "failure";
+    case "ERROR": return "error";
+    case "INACTIVE": case "DESTROYED": case "ABANDONED": return "inactive";
+    case "IN_PROGRESS": return "in_progress";
+    case "QUEUED": case "WAITING": return "queued";
+    case "PENDING": default: return "pending";
+  }
 }
 
 /** Parse a GraphQL PR node into a PrStatusSummary. */
@@ -152,6 +185,19 @@ export function parsePrNode(
     pending > 0 ? "pending" :
     "success";
 
+  // Parse deployments from commit
+  const deploymentNodes = commit?.deployments?.nodes;
+  let deployments: GitHubDeploymentStatus[] | undefined;
+  if (deploymentNodes && deploymentNodes.length > 0) {
+    deployments = deploymentNodes.map((d) => ({
+      environment: d.environment,
+      state: mapDeploymentState(d.latestStatus?.state),
+      environmentUrl: d.latestStatus?.environmentUrl ?? null,
+      createdAt: d.createdAt,
+      creator: d.creator?.login ?? null,
+    }));
+  }
+
   return {
     sessionId,
     prNumber: node.number,
@@ -172,6 +218,7 @@ export function parsePrNode(
     },
     mergeable: node.mergeable === "MERGEABLE",
     autoMergeEnabled: node.autoMergeRequest !== null,
+    deployments,
   };
 }
 
@@ -769,6 +816,21 @@ function prStatusEqual(a: PrStatusSummary, b: PrStatusSummary): boolean {
     a.mergeable === b.mergeable &&
     a.autoMergeEnabled === b.autoMergeEnabled &&
     a.insertions === b.insertions &&
-    a.deletions === b.deletions
+    a.deletions === b.deletions &&
+    deploymentsEqual(a.deployments, b.deployments)
+  );
+}
+
+/** Compare deployment arrays for equality. */
+function deploymentsEqual(
+  a: GitHubDeploymentStatus[] | undefined,
+  b: GitHubDeploymentStatus[] | undefined,
+): boolean {
+  if (!a && !b) return true;
+  if (a?.length !== b?.length) return false;
+  return a!.every((d, i) =>
+    d.state === b![i].state &&
+    d.environment === b![i].environment &&
+    d.environmentUrl === b![i].environmentUrl,
   );
 }

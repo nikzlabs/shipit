@@ -1,10 +1,6 @@
 import type { ImageAttachment, FileContextRef, PermissionMode, UploadRef } from "./attachment-types.js";
 import type { AgentId } from "../../session/agents/agent-process.js";
 import type { WsTerminalStart, WsTerminalInput, WsTerminalResize, WsClearLogs } from "./terminal-types.js";
-import type {
-  WsInitiateDeploy,
-  WsCancelDeploy,
-} from "./deployment-types.js";
 
 export interface WsSendMessage {
   type: "send_message";
@@ -101,8 +97,6 @@ export type WsClientMessage =
   | WsAnswerQuestion
   | WsSetAgentMessage
   | WsSetModelMessage
-  | WsInitiateDeploy
-  | WsCancelDeploy
   | WsTerminalStart
   | WsTerminalInput
   | WsTerminalResize

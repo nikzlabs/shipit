@@ -7,8 +7,6 @@ import { GitManager } from "../../shared/git.js";
 import {
   StubAuthManager,
   StubGitHubAuthManager,
-  StubDeploymentManager,
-  StubDeploymentStore,
   FakeClaudeProcess,
   createTestCredentialStore,
   createTestDatabaseManager,
@@ -55,8 +53,6 @@ beforeEach(async () => {
     chatHistoryManager: new ChatHistoryManager(dbManager),
     usageManager: new UsageManager(dbManager),
     serveStatic: false,
-    deploymentManager: new StubDeploymentManager() as any,
-    deploymentStore: new StubDeploymentStore() as any,
   });
 });
 

@@ -4,7 +4,6 @@ import { useFileStore } from "../file-store.js";
 import { useTerminalStore } from "../terminal-store.js";
 import { useUiStore } from "../ui-store.js";
 import { usePreviewStore } from "../preview-store.js";
-import { useDeployStore } from "../deploy-store.js";
 import { usePrStore } from "../pr-store.js";
 import { useSettingsStore } from "../settings-store.js";
 import { useRepoStore } from "../repo-store.js";
@@ -67,7 +66,6 @@ export function fullResetAllStores() {
   useTerminalStore.getState().reset();
   useUiStore.getState().reset();
   usePreviewStore.getState().reset();
-  useDeployStore.getState().reset();
   usePrStore.getState().reset();
   useSettingsStore.getState().reset();
   useRepoStore.getState().reset();

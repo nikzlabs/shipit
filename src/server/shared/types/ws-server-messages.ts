@@ -11,14 +11,6 @@ import type {
   WsPrLifecycleUpdate,
 } from "./github-types.js";
 import type { WsTerminalOutput, WsTerminalExit, WsTerminalReconnecting, WsLogEntry, WsClearLogs } from "./terminal-types.js";
-import type {
-  WsDeployTargets,
-  WsProjectSettings,
-  WsDeployStatus,
-  WsDeployComplete,
-  WsDeployError,
-  WsDeployHistory,
-} from "./deployment-types.js";
 import type { WsUsageStats, WsUsageUpdate } from "./usage-types.js";
 
 export interface WsClaudeEvent {
@@ -382,12 +374,6 @@ export type WsServerMessage =
   | WsGitHubBranches
   | WsGitIdentityRequired
   | WsGitIdentitySet
-  | WsDeployTargets
-  | WsProjectSettings
-  | WsDeployStatus
-  | WsDeployComplete
-  | WsDeployError
-  | WsDeployHistory
   | WsGitHubSearchResults
   | WsPrStatus
   | WsModelInfo

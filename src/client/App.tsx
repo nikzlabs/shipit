@@ -40,8 +40,6 @@ import { AddRepoDialog } from "./components/AddRepoDialog.js";
 import { AllSessionsDialog } from "./components/AllSessionsDialog.js";
 import { NewRepoDialog } from "./components/NewRepoDialog.js";
 import { UsageModal } from "./components/UsageModal.js";
-import { DeployModal } from "./components/DeployModal.js";
-
 import type { TurnDiffData } from "./components/DiffPanel.js";
 // eslint-disable-next-line no-restricted-syntax -- lazy() named-export pattern
 const DiffPanel = lazy(() => import("./components/DiffPanel.js").then(m => ({ default: m.DiffPanel })));
@@ -55,7 +53,6 @@ import { useGitStore } from "./stores/git-store.js";
 import { useFileStore, markUploadDeleted } from "./stores/file-store.js";
 import { usePreviewStore } from "./stores/preview-store.js";
 import { useTerminalStore } from "./stores/terminal-store.js";
-import { useDeployStore } from "./stores/deploy-store.js";
 import { usePrStore } from "./stores/pr-store.js";
 import { useSettingsStore } from "./stores/settings-store.js";
 import { useUiStore } from "./stores/ui-store.js";
@@ -121,14 +118,6 @@ export default function App() {
 
   const terminalMode = useTerminalStore((s) => s.mode);
   const shellStarted = useTerminalStore((s) => s.shellStarted);
-
-  const showDeployModal = useDeployStore((s) => s.showModal);
-  const deployTargets = useDeployStore((s) => s.targets);
-  const deployConfigStatus = useDeployStore((s) => s.configStatus);
-  const deployStatus = useDeployStore((s) => s.status);
-  const lastDeployUrl = useDeployStore((s) => s.lastUrl);
-  const lastDeployError = useDeployStore((s) => s.lastError);
-  const deployHistory = useDeployStore((s) => s.history);
 
   const importSearchResults = usePrStore((s) => s.importSearchResults);
 
@@ -466,7 +455,7 @@ export default function App() {
     [],
   );
 
-  const handleSettingsOpen = useCallback(async (tab?: "agent" | "github" | "git" | "instructions" | "advanced" | "deploy") => {
+  const handleSettingsOpen = useCallback(async (tab?: "agent" | "github" | "git" | "instructions" | "advanced") => {
     useUiStore.getState().setSettingsTab(tab);
     useUiStore.getState().setSettingsOpen(true);
     try {
@@ -480,17 +469,6 @@ export default function App() {
       useUiStore.getState().setAgentList(data.settings.agents);
     } catch { /* ignore */ }
   }, [apiGet]);
-
-  const handleDeployOpen = useCallback(() => {
-    useDeployStore.getState().openModal();
-    const sid = useSessionStore.getState().sessionId;
-    if (sid) useDeployStore.getState().fetchSetup(sid).catch(() => {});
-  }, []);
-
-  const handleDeploySendError = useCallback((errorMessage: string) => {
-    useDeployStore.getState().closeModal();
-    void handleSend(`The deployment failed with this error:\n\n${errorMessage}\n\nPlease fix the issue and explain what went wrong.`);
-  }, [handleSend]);
 
   const GIT_EMPTY_TREE = "4b825dc642cb6404f32168ace2c04d9f6e8f59b6";
 
@@ -666,8 +644,6 @@ export default function App() {
           onRename={(title) => useSessionStore.getState().renameSession(currentSession.id, title)}
           onDownloadChat={handleDownloadChat}
           onArchive={() => { void useSessionStore.getState().archiveSession(currentSession.id); if (activeRepoUrl) void handleNewSessionForRepo(activeRepoUrl); }}
-          onDeploy={handleDeployOpen}
-          isMobile={isMobile}
         />
       )}
       {showHomeScreen ? (
@@ -744,23 +720,11 @@ export default function App() {
           agentSystemInstructionsEnabled={agentSystemInstructionsEnabled}
           agentSystemInstructions={agentSystemInstructions}
           onToggleAgentSystemInstructions={async (enabled) => { try { const raw = await apiPut("/api/settings", { agentSystemInstructionsEnabled: enabled }); const res = raw as Record<string, unknown>; if (res.agentSystemInstructionsEnabled !== undefined) useSettingsStore.getState().setAgentSystemInstructionsEnabled(!!res.agentSystemInstructionsEnabled); } catch (err) { console.error("[settings] Failed to toggle agent system instructions:", err); } }}
-          deployTargets={deployTargets} deployConfigStatus={deployConfigStatus}
-          onDeployConfigure={(targetId, creds, projectName) => { const sid = useSessionStore.getState().sessionId; if (sid) useDeployStore.getState().configure(sid, targetId, creds, projectName).catch(() => {}); }}
-          onDeployDeleteConfig={(targetId) => { const sid = useSessionStore.getState().sessionId; if (sid) useDeployStore.getState().deleteConfig(sid, targetId).catch(() => {}); }}
           hasActiveSession={!!sessionId}
-          onDeployTabSelected={() => { const sid = useSessionStore.getState().sessionId; if (sid) useDeployStore.getState().fetchSetup(sid).catch(() => {}); }}
           repoUrl={currentRepoUrl}
           onSecretsLoad={async (repoUrl) => { const data = await apiGet<{ secrets: Record<string, string> }>(`/api/secrets?repoUrl=${encodeURIComponent(repoUrl)}`); return data.secrets; }}
           onSecretsSave={(repoUrl, secrets) => { apiPut("/api/secrets", { repoUrl, secrets }).catch(() => {}); }}
           onClose={() => { useUiStore.getState().setSettingsOpen(false); useUiStore.getState().setSettingsTab(undefined); }}
-        />
-      )}
-      {showDeployModal && (
-        <DeployModal targets={deployTargets} configStatus={deployConfigStatus} deployStatus={deployStatus} lastDeployUrl={lastDeployUrl} lastDeployError={lastDeployError} deployHistory={deployHistory}
-          onDeploy={(targetId, env) => send({ type: "initiate_deploy", targetId, environment: env })} onCancel={() => send({ type: "cancel_deploy" })}
-          onGetHistory={() => { const sid = useSessionStore.getState().sessionId; if (sid) useDeployStore.getState().fetchHistory(sid).catch(() => {}); }}
-          onSendErrorToChat={handleDeploySendError} onOpenDeploySettings={() => handleSettingsOpen("deploy")}
-          onClose={() => useDeployStore.getState().closeModal()}
         />
       )}
       {showUsageModal && <UsageModal currentSessionUsage={currentSessionUsage} allUsage={allUsageStats} sessions={sessions} onClose={() => useUiStore.getState().setShowUsageModal(false)} modelInfo={modelInfo} contextTokens={contextTokens} turnTokens={turnTokens} />}
@@ -775,7 +739,6 @@ export default function App() {
       <AppLayout
         theme={theme}
         onSelectTheme={setTheme}
-        onDeployOpen={handleDeployOpen}
         onSettingsOpen={() => handleSettingsOpen()}
         hasSystemPrompt={hasSystemPrompt}
         githubAuthenticated={githubStatus.authenticated}

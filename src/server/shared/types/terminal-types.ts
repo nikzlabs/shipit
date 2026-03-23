@@ -75,7 +75,7 @@ export interface WsTerminalReconnecting {
 export interface WsLogEntry {
   type: "log_entry";
   /** Where the log line originated. */
-  source: "stderr" | "stdout" | "server" | "preview" | "deploy" | "install";
+  source: "stderr" | "stdout" | "server" | "preview" | "install";
   text: string;
   timestamp: string;
 }
