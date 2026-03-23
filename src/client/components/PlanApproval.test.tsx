@@ -17,6 +17,18 @@ describe("PlanApproval", () => {
       expect(screen.getByTestId("suggest-changes")).toBeInTheDocument();
       expect(screen.getByText("Plan Ready")).toBeInTheDocument();
     });
+
+    it("renders plan content when planContent prop is provided", () => {
+      render(<PlanApproval onSend={vi.fn()} disabled={false} planContent="# My Plan\n\nStep 1: Do something" />);
+      const planEl = screen.getByTestId("plan-content");
+      expect(planEl).toBeInTheDocument();
+      expect(planEl.textContent).toContain("My Plan");
+    });
+
+    it("does not render plan content when planContent is not provided", () => {
+      render(<PlanApproval onSend={vi.fn()} disabled={false} />);
+      expect(screen.queryByTestId("plan-content")).not.toBeInTheDocument();
+    });
   });
 
   describe("accept flow", () => {

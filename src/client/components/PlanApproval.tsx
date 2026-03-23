@@ -4,13 +4,15 @@ import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { MarkdownContent } from "./message-markdown.js";
 
 interface PlanApprovalProps {
   onSend: (text: string) => void;
   disabled: boolean;
+  planContent?: string;
 }
 
-export function PlanApproval({ onSend, disabled }: PlanApprovalProps) {
+export function PlanApproval({ onSend, disabled, planContent }: PlanApprovalProps) {
   const [submitted, setSubmitted] = useState<"accepted" | "feedback" | null>(null);
   const [showFeedback, setShowFeedback] = useState(false);
   const [feedbackText, setFeedbackText] = useState("");
@@ -51,11 +53,16 @@ export function PlanApproval({ onSend, disabled }: PlanApprovalProps) {
 
   return (
     <div className="mt-2 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary)/80 overflow-hidden p-3" data-testid="plan-approval">
+      {planContent && (
+        <div className="mb-3 max-h-80 overflow-y-auto text-sm" data-testid="plan-content">
+          <MarkdownContent text={planContent} />
+        </div>
+      )}
       <Badge variant="info" className="text-[10px] uppercase tracking-wider mb-1.5">
         Plan Ready
       </Badge>
       <p className="text-sm text-(--color-text-secondary) mb-3">
-        Review the plan above, then accept or suggest changes.
+        Review the plan{planContent ? "" : " above"}, then accept or suggest changes.
       </p>
 
       <div className="flex items-center gap-2">
