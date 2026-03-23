@@ -13,8 +13,6 @@ interface SessionState {
   sessions: SessionInfo[];
   authUrl: string | null;
   activeRunnerSessions: Set<string>;
-  /** Session IDs where the agent finished while the user was viewing a different session. */
-  unseenResults: Set<string>;
   queuedMessages: { text: string; position: number }[];
   /** WS message to auto-send when the next per-session WS connection opens (e.g. new session from home). */
   pendingWsMessage: Record<string, unknown> | undefined;
@@ -39,8 +37,6 @@ interface SessionState {
   setActiveRunnerSessions: (
     updater: (prev: Set<string>) => Set<string>,
   ) => void;
-  markUnseen: (sessionId: string) => void;
-  clearUnseen: (sessionId: string) => void;
   setQueuedMessages: (
     messages:
       | { text: string; position: number }[]
@@ -82,7 +78,6 @@ export const useSessionStore = create<SessionState>((set) => ({
   sessions: [] as SessionInfo[],
   authUrl: null,
   activeRunnerSessions: new Set<string>(),
-  unseenResults: new Set<string>(),
   allSessions: [] as SessionInfo[],
   allSessionsDialogOpen: false,
 
@@ -125,21 +120,6 @@ export const useSessionStore = create<SessionState>((set) => ({
     set((state) => ({
       activeRunnerSessions: updater(state.activeRunnerSessions),
     })),
-
-  markUnseen: (sessionId) =>
-    set((state) => {
-      const next = new Set(state.unseenResults);
-      next.add(sessionId);
-      return { unseenResults: next };
-    }),
-
-  clearUnseen: (sessionId) =>
-    set((state) => {
-      if (!state.unseenResults.has(sessionId)) return state;
-      const next = new Set(state.unseenResults);
-      next.delete(sessionId);
-      return { unseenResults: next };
-    }),
 
   setQueuedMessages: (messages) =>
     set((state) => ({
