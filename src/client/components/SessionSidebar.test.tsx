@@ -22,7 +22,6 @@ const defaultProps = {
   currentSessionId: undefined,
   onResume: vi.fn(),
   onArchive: vi.fn(),
-  onRename: vi.fn(),
   onOpenRepoSwitcher: vi.fn(),
   onNewSession: vi.fn(),
   collapsed: false,
@@ -91,32 +90,6 @@ describe("SessionSidebar", () => {
     render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" onResume={onResume} />);
     fireEvent.click(screen.getByText("Current"));
     expect(onResume).not.toHaveBeenCalled();
-  });
-
-  it("inline rename: form submit calls onRename, escape cancels", () => {
-    const onRename = vi.fn();
-    const sessions = [baseSession({ id: "s1", title: "Old name", remoteUrl: "https://github.com/owner/repo.git" })];
-    render(<SessionSidebar {...defaultProps} sessions={sessions} onRename={onRename} />);
-
-    // Click pencil button
-    const pencilBtn = screen.getByTitle("Rename session");
-    fireEvent.click(pencilBtn);
-
-    // Input should now appear
-    const input = screen.getByDisplayValue("Old name");
-    expect(input).toBeTruthy();
-
-    // Escape cancels
-    fireEvent.keyDown(input, { key: "Escape" });
-    expect(onRename).not.toHaveBeenCalled();
-    expect(screen.getByText("Old name")).toBeTruthy();
-
-    // Re-open and submit via form submit event
-    fireEvent.click(screen.getByTitle("Rename session"));
-    const input2 = screen.getByDisplayValue("Old name");
-    fireEvent.change(input2, { target: { value: "New name" } });
-    fireEvent.submit(input2.closest("form")!);
-    expect(onRename).toHaveBeenCalledWith("s1", "New name");
   });
 
   it("shows archive button on non-current sessions", () => {

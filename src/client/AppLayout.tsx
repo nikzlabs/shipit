@@ -57,7 +57,6 @@ interface AppLayoutProps {
   sidebarCollapsed: boolean;
   onResumeSession: (sid: string) => void;
   onArchiveSession: (sid: string) => Promise<void>;
-  onRenameSession: (sid: string, title: string) => void;
   onOpenRepoSwitcher: () => void;
   onNewSession: () => void;
   onToggleSidebarCollapse: () => void;
@@ -110,7 +109,6 @@ export function AppLayout({
   sidebarCollapsed,
   onResumeSession,
   onArchiveSession,
-  onRenameSession,
   onOpenRepoSwitcher,
   onNewSession,
   onToggleSidebarCollapse,
@@ -170,7 +168,6 @@ export function AppLayout({
               currentSessionId={currentSessionId}
               onResume={onResumeSession}
               onArchive={onArchiveSession}
-              onRename={onRenameSession}
               onOpenRepoSwitcher={onOpenRepoSwitcher}
               onNewSession={onNewSession}
               collapsed={sidebarCollapsed}
