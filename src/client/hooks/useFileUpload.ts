@@ -35,10 +35,23 @@ export function useFileUpload(sessionId: string | undefined) {
         size: f.size,
         progress: 0,
         previewUrl: f.type.startsWith("image/") ? URL.createObjectURL(f) : undefined,
+        mimeType: f.type.startsWith("image/") ? f.type : undefined,
         pending: true,
       }));
 
       store.addSessionUploads(items);
+
+      // Read image files as data URLs for stable display in chat messages
+      for (let i = 0; i < files.length; i++) {
+        if (files[i].type.startsWith("image/")) {
+          const reader = new FileReader();
+          const itemId = items[i].id;
+          reader.onload = () => {
+            useFileStore.getState().updateSessionUpload(itemId, { dataUrl: reader.result as string });
+          };
+          reader.readAsDataURL(files[i]);
+        }
+      }
 
       // Build FormData
       const formData = new FormData();

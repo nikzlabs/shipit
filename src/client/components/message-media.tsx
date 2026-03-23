@@ -38,7 +38,7 @@ export function MessageImages({ images, isUserMessage }: { images: ChatMessageIm
   return (
     <div className={`flex gap-2 flex-wrap ${images.length > 0 && isUserMessage ? "mt-2" : "mb-2"}`} data-testid="message-images">
       {images.map((img, i) => {
-        const src = `data:${img.mediaType};base64,${img.data}`;
+        const src = img.src ?? `data:${img.mediaType};base64,${img.data}`;
         const alt = `Attached image ${i + 1}`;
         return (
           <button

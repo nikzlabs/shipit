@@ -150,7 +150,7 @@ const BINARY_EXTENSIONS = new Set([
 ]);
 
 /** Image extensions that can be viewed natively via the Read tool. */
-const IMAGE_UPLOAD_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"]);
+export const IMAGE_UPLOAD_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"]);
 
 /** Check if a file path refers to a likely binary file based on its extension. */
 function isBinaryUpload(filePath: string): boolean {
@@ -158,43 +158,64 @@ function isBinaryUpload(filePath: string): boolean {
   return BINARY_EXTENSIONS.has(ext);
 }
 
+/** Extension → MIME type mapping for image uploads. */
+const IMAGE_EXT_TO_MIME: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
+
 /**
  * Resolve upload refs into FileAttachment entries (for text files) or
- * reference-only entries (for binary files). Reads from the host uploads
- * directory which is bind-mounted as /uploads/ in the container.
+ * reference-only entries (for binary files). Image uploads (PNG, JPEG, GIF,
+ * WebP) are returned separately as ImageAttachment objects with base64 data
+ * so they can be shown as inline thumbnails in chat history.
  */
 export async function resolveUploadRefs(
   uploads: UploadRef[],
   workspaceDir: string,
-): Promise<{ files: FileAttachment[]; error: string | null }> {
+): Promise<{ files: FileAttachment[]; images: ImageAttachment[]; error: string | null }> {
   // Uploads live as a sibling of the workspace dir inside the session dir:
   // {sessionDir}/workspace/ (workspaceDir) and {sessionDir}/uploads/
   const uploadsDir = path.join(path.dirname(workspaceDir), "uploads");
-  const result: FileAttachment[] = [];
+  const fileResult: FileAttachment[] = [];
+  const imageResult: ImageAttachment[] = [];
 
   for (const ref of uploads) {
     // Validate path format
     if (!ref.path.startsWith("/uploads/")) {
-      return { files: [], error: `Invalid upload path: ${ref.path}` };
+      return { files: [], images: [], error: `Invalid upload path: ${ref.path}` };
     }
     const filename = path.basename(ref.path);
     const hostPath = path.join(uploadsDir, filename);
 
     // Path traversal check
     if (!hostPath.startsWith(`${uploadsDir}/`)) {
-      return { files: [], error: `Invalid upload path: ${ref.path}` };
+      return { files: [], images: [], error: `Invalid upload path: ${ref.path}` };
     }
 
-    if (isBinaryUpload(ref.path)) {
-      // For binary files, include a reference the agent can use.
-      // Images can be viewed natively via the Read tool; other binaries need Bash.
-      const isImage = IMAGE_UPLOAD_EXTENSIONS.has(path.extname(ref.path).toLowerCase());
-      const hint = isImage
-        ? `use the Read tool to view this image`
-        : `use Bash tool to read/process this file inside the container`;
-      result.push({
+    const ext = path.extname(ref.path).toLowerCase();
+    const imageMime = IMAGE_EXT_TO_MIME[ext];
+
+    if (imageMime) {
+      // Image upload — read binary data and return as ImageAttachment
+      try {
+        const buf = await fs.readFile(hostPath);
+        imageResult.push({
+          data: buf.toString("base64"),
+          mediaType: imageMime,
+          filename,
+        });
+      } catch {
+        return { files: [], images: [], error: `Upload not found: ${ref.path}` };
+      }
+    } else if (isBinaryUpload(ref.path)) {
+      // Non-image binary files — include a reference the agent can use
+      fileResult.push({
         path: ref.path,
-        content: `[Binary file uploaded at ${ref.path} — ${hint}]`,
+        content: `[Binary file uploaded at ${ref.path} — use Bash tool to read/process this file inside the container]`,
       });
     } else {
       // For text files, read and include content
@@ -202,18 +223,18 @@ export async function resolveUploadRefs(
         const content = await fs.readFile(hostPath, "utf-8");
         // Cap at 100KB per file (same as workspace file refs)
         if (Buffer.byteLength(content, "utf-8") > MAX_FILE_SIZE_BYTES) {
-          result.push({
+          fileResult.push({
             path: ref.path,
             content: `[File ${ref.path} is too large to include inline (>100KB). Use Bash tool to read it at ${ref.path}]`,
           });
         } else {
-          result.push({ path: ref.path, content });
+          fileResult.push({ path: ref.path, content });
         }
       } catch {
-        return { files: [], error: `Upload not found: ${ref.path}` };
+        return { files: [], images: [], error: `Upload not found: ${ref.path}` };
       }
     }
   }
 
-  return { files: result, error: null };
+  return { files: fileResult, images: imageResult, error: null };
 }

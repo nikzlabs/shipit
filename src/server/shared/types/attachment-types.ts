@@ -62,6 +62,10 @@ export interface UploadItem {
   progress: number;
   /** Object URL for image thumbnail preview (set for image files). */
   previewUrl?: string;
+  /** Stable data: URL for image uploads (survives blob URL revocation). */
+  dataUrl?: string;
+  /** MIME type of the uploaded file (set for image files). */
+  mimeType?: string;
   /** Whether this upload is pending (not yet sent in a message). */
   pending?: boolean;
 }
