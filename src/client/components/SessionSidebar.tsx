@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: document.body style during drag (DOM sync)
 import { useState, useRef, useEffect, useCallback } from "react";
-import { ArchiveIcon as PhArchiveIcon, GearSixIcon, GithubLogoIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, WrenchIcon } from "@phosphor-icons/react";
+import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, GearSixIcon, GithubLogoIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, WrenchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
 import { Button } from "./ui/button.js";
@@ -219,7 +219,7 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
               className="p-1! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-success)"
               title="Restore session"
             >
-              <PhArchiveIcon size={ICON_SIZE.SM} />
+              <ArrowCounterClockwiseIcon size={ICON_SIZE.SM} />
             </Button>
           )}
           {!isArchived && onArchive && (
