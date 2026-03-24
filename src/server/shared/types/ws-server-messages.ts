@@ -176,11 +176,13 @@ export interface WsMessageQueued {
   text: string;
 }
 
-/** Server → Client: the queue changed (after a cancel or session switch). */
+/** Server → Client: the queue changed (after a cancel, dequeue, or session switch). */
 export interface WsQueueUpdated {
   type: "queue_updated";
   /** Current queue contents after the change. */
   queue: { text: string; position: number }[];
+  /** Text of the message that was just dequeued for execution (absent on cancel/clear). */
+  dequeued?: string;
 }
 
 // ---- Diff review messages (server → client) ----

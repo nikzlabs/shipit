@@ -134,6 +134,23 @@ export function MessageList({
     return null;
   }, [messages]);
 
+  // Find plan content for ExitPlanMode tools by searching backward for a Write
+  // tool that wrote to a .claude/plans/ path and extracting the file content.
+  const findPlanContent = useMemo(() => {
+    return (exitPlanMsgIndex: number): string | undefined => {
+      for (let i = exitPlanMsgIndex; i >= 0; i--) {
+        const tools = messages[i].toolUse;
+        if (!tools) continue;
+        for (let j = tools.length - 1; j >= 0; j--) {
+          const t = tools[j];
+          if (t.name === "Write" && typeof t.input.file_path === "string" && t.input.file_path.includes(".claude/plans/")) {
+            return t.input.content as string | undefined;
+          }
+        }
+      }
+      return undefined;
+    };
+  }, [messages]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "instant" });
@@ -212,6 +229,7 @@ export function MessageList({
         if (el.kind === "standalone-tool") {
           const isLastMessage = el.messageIndex === messages.length - 1;
           const questionDisabled = !isLastMessage || isLoading || el.streaming;
+          const resolvedPlanContent = el.tool.name === "ExitPlanMode" ? findPlanContent(el.messageIndex) : undefined;
           return (
             <div key={`st-${el.tool.id}`}>
               <ToolUseItem
@@ -222,6 +240,7 @@ export function MessageList({
                 onAnswerQuestion={onAnswerQuestion}
                 onSendFollowUp={onSendFollowUp}
                 isQuestionDisabled={questionDisabled}
+                planContent={resolvedPlanContent}
               />
             </div>
           );
@@ -346,6 +365,7 @@ export function MessageList({
                   <div className="mt-2 space-y-1">
                     {msg.toolUse.map((tool, toolIdx) => {
                       const toolResult = msg.toolResults?.find((r) => r.toolUseId === tool.id);
+                      const resolvedPlanContent = tool.name === "ExitPlanMode" ? findPlanContent(i) : undefined;
                       return (
                         <ToolUseItem
                           key={tool.id}
@@ -356,6 +376,7 @@ export function MessageList({
                           onAnswerQuestion={onAnswerQuestion}
                           onSendFollowUp={onSendFollowUp}
                           isQuestionDisabled={questionDisabled}
+                          planContent={resolvedPlanContent}
                         />
                       );
                     })}

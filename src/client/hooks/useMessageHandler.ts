@@ -18,6 +18,13 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 
+/**
+ * Stash for queued messages removed from the conversation.
+ * When a message is queued, it's removed from the messages array and stored here.
+ * When dequeued for execution, it's retrieved and appended at the correct position.
+ */
+const queuedMessageStash = new Map<string, ChatMessage>();
+
 export function useMessageHandler(params: {
   lastMessage: MessageEvent | null;
   send: (msg: WsClientMessage) => void;
@@ -405,9 +412,10 @@ export function useMessageHandler(params: {
     if (data.type === "message_queued") {
       const queued = data;
       session.setQueuedMessages((prev) => [...prev, { text: queued.text, position: queued.position }]);
-      // Mark the last user message with matching text as queued (it was already added optimistically)
+      // Remove the optimistically-added message from the conversation and stash it.
+      // The message will be re-inserted at the correct position (after the completed
+      // assistant turn) when it is dequeued for execution via queue_updated.
       session.setMessages((prev) => {
-        // Find the last user message with matching text (added optimistically before sending)
         let targetIdx = -1;
         for (let i = prev.length - 1; i >= 0; i--) {
           if (prev[i]?.role === "user" && prev[i]?.text === queued.text) {
@@ -416,32 +424,33 @@ export function useMessageHandler(params: {
           }
         }
         if (targetIdx !== -1) {
-          return prev.map((m, i) =>
-            i === targetIdx ? { ...m, queued: true, queuePosition: queued.position } : m,
-          );
+          queuedMessageStash.set(queued.text, prev[targetIdx]);
+          return [...prev.slice(0, targetIdx), ...prev.slice(targetIdx + 1)];
         }
-        // Fallback: add if not found (shouldn't happen in normal flow)
-        return [...prev, { role: "user" as const, text: queued.text, queued: true, queuePosition: queued.position }];
+        return prev;
       });
     }
 
     if (data.type === "queue_updated") {
       const update = data;
       session.setQueuedMessages(update.queue);
-      if (update.queue.length === 0) {
-        session.setMessages((prev) =>
-          prev.map((m) => (m.queued ? { ...m, queued: false, queuePosition: undefined } : m))
-        );
-      } else {
-        const queueTexts = new Set(update.queue.map((q) => q.text));
-        session.setMessages((prev) =>
-          prev.map((m) => {
-            if (!m.queued) return m;
-            if (!queueTexts.has(m.text)) return { ...m, queued: false, queuePosition: undefined };
-            const queueItem = update.queue.find((q) => q.text === m.text);
-            return queueItem ? { ...m, queuePosition: queueItem.position } : m;
-          })
-        );
+      if (update.dequeued) {
+        // A message was dequeued for execution — re-insert it at the end of
+        // the conversation (after the just-completed assistant turn).
+        const stashed = queuedMessageStash.get(update.dequeued);
+        queuedMessageStash.delete(update.dequeued);
+        const restoredMsg: ChatMessage = stashed
+          ? { ...stashed, queued: false, queuePosition: undefined }
+          : { role: "user" as const, text: update.dequeued };
+        session.setMessages((prev) => [...prev, restoredMsg]);
+      }
+      // For cancels / clears (no dequeued field), just clean up stashed messages
+      // that are no longer in the queue.
+      const remainingTexts = new Set(update.queue.map((q) => q.text));
+      for (const key of queuedMessageStash.keys()) {
+        if (!remainingTexts.has(key)) {
+          queuedMessageStash.delete(key);
+        }
       }
     }
 
