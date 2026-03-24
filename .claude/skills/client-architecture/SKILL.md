@@ -28,7 +28,6 @@ The client is a React 19 SPA built with Vite and Tailwind CSS v4. State manageme
 | Preview | `preview-store.ts` | `status`, `selectedPort`, `installStatus`, `crashInfo` |
 | Terminal | `terminal-store.ts` | `entries[]`, `mode`, `shellStarted` |
 | Thread | `thread-store.ts` | `threads[]`, `activeThreadId` |
-| Deploy | `deploy-store.ts` | `targets[]`, `configStatus`, `deployStatus`, `lastUrl` |
 | PR | `pr-store.ts` | `result`, `status`, `descGenerating` |
 | Settings | `settings-store.ts` | `permissionMode`, `systemPromptContent`, `githubStatus`, `pendingFiles[]` |
 | UI | `ui-store.ts` | `rightTab`, `templates[]`, `agentList`, `modelInfo`, `toast`, `features[]` |
@@ -93,7 +92,7 @@ The client is a React 19 SPA built with Vite and Tailwind CSS v4. State manageme
 
 - Listens to `lastMessage` from `useSessionWebSocket`
 - Parses `WsServerMessage` and routes to appropriate store updates
-- Handles 20+ message types: `agent_event`, `preview_status`, `file_tree`, `git_log`, `chat_history`, `thread_list`, `deploy_status`, `terminal_output`, etc.
+- Handles 20+ message types: `agent_event`, `preview_status`, `file_tree`, `git_log`, `chat_history`, `terminal_output`, etc.
 - Discards stale messages (e.g., `preview_status` from a previous session)
 
 ### `useConnectionSync`
@@ -152,7 +151,7 @@ The client is a React 19 SPA built with Vite and Tailwind CSS v4. State manageme
 
 ### Modals & Overlays
 - **`AuthOverlay`** — Claude/GitHub authentication flows
-- **`DeployModal`** — deployment target configuration
+- **`DeploymentStatusRow`** (in `PrLifecycleCard.tsx`) — shows deploy status from GitHub Deployments API
 - **`PullRequestModal`** — create/merge PR
 - **`Settings`** — git identity, system prompt, agent config
 - **`UsageModal`** — cost/token breakdown

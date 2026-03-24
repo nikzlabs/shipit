@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 ---
 
 # Auto-Deploy on Push

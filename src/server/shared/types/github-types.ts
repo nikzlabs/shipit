@@ -1,3 +1,5 @@
+import type { GitHubDeploymentStatus } from "./deployment-types.js";
+
 // ---- GitHub auth client messages ----
 
 export interface WsGitHubSetToken {
@@ -199,6 +201,8 @@ export interface PrStatusSummary {
     attemptCount: number;
     maxAttempts: number;       // always 3
   };
+  /** GitHub Deployment statuses from platforms like Vercel/Cloudflare (fetched via GitHub Deployments API). */
+  deployments?: GitHubDeploymentStatus[];
   /** Auto-merge state — present when auto-merge has been interacted with. */
   autoMerge?: {
     enabled: boolean;

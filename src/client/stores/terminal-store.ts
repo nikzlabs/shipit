@@ -20,7 +20,7 @@ export interface TerminalState {
   reset: () => void;
 }
 
-const ALL_SOURCES_COUNT = 6; // stderr, stdout, server, preview, deploy, install
+const ALL_SOURCES_COUNT = 5; // stderr, stdout, server, preview, install
 
 const initialState = {
   entries: [] as LogEntry[],

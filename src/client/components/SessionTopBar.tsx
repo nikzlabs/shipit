@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: focus input on edit start + click-outside listener for dropdown
 import { useState, useRef, useEffect, useCallback } from "react";
-import { DotsThreeVerticalIcon, DownloadSimpleIcon, PencilSimpleIcon, ArchiveIcon, RocketIcon } from "@phosphor-icons/react";
+import { DotsThreeVerticalIcon, DownloadSimpleIcon, PencilSimpleIcon, ArchiveIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 
 interface SessionTopBarProps {
@@ -8,11 +8,9 @@ interface SessionTopBarProps {
   onRename: (title: string) => void;
   onDownloadChat: () => void;
   onArchive: () => void;
-  onDeploy?: () => void;
-  isMobile?: boolean;
 }
 
-export function SessionTopBar({ title, onRename, onDownloadChat, onArchive, onDeploy, isMobile }: SessionTopBarProps) {
+export function SessionTopBar({ title, onRename, onDownloadChat, onArchive }: SessionTopBarProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editingTitle, setEditingTitle] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
@@ -118,15 +116,6 @@ export function SessionTopBar({ title, onRename, onDownloadChat, onArchive, onDe
               <DownloadSimpleIcon size={ICON_SIZE.SM} />
               Download chat
             </button>
-            {isMobile && onDeploy && (
-              <button
-                onClick={() => { setMenuOpen(false); onDeploy(); }}
-                className="w-full text-left px-3 py-2 text-xs text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) transition-colors flex items-center gap-2"
-              >
-                <RocketIcon size={ICON_SIZE.SM} />
-                Deploy
-              </button>
-            )}
             <button
               onClick={() => { setMenuOpen(false); onArchive(); }}
               className="w-full text-left px-3 py-2 text-xs text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) transition-colors flex items-center gap-2"

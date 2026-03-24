@@ -1,73 +1,59 @@
 ---
-description: "ShipIt deployment architecture: DeployTarget interface, DeploymentManager, framework detection, deploy flow (build -> deploy -> stream events), Vercel and Cloudflare targets. Load when working on deployment features or deploy targets."
+description: "ShipIt deployment architecture: auto-deploy on push via platform Git integration, GitHub Deployments API for status tracking, deployment status in PR lifecycle card. Load when working on deployment features."
 user-invocable: true
 ---
 
 # Deployment Architecture
 
-ShipIt supports deploying user projects to external hosting platforms. The system uses a plugin-based architecture where deploy targets implement a common interface, and the UI is automatically generated from target metadata.
+ShipIt uses **automatic deployments via platform Git integration** — no manual deploy button or
+ShipIt-managed build. Users connect their repo to Vercel, Cloudflare Pages, or Netlify once, and
+every push triggers the platform's native deploy pipeline. Since ShipIt auto-pushes after every
+Claude turn, deploys happen automatically.
+
+## How It Works
+
+1. User imports their GitHub repo on a hosting platform (Vercel, Cloudflare Pages, Netlify)
+2. ShipIt's auto-push after Claude turns triggers the platform's deploy pipeline
+3. The platform creates GitHub Deployments on each deploy
+4. ShipIt's `PrStatusPoller` fetches deployment status via the GitHub GraphQL API
+5. Deployment status (URLs, state) appears in the PR lifecycle card
 
 ## Components
 
 | Component | Location | Role |
 |-----------|----------|------|
-| `DeploymentManager` | `orchestrator/deployment-manager.ts` | Target registry, framework detection, build execution, deploy dispatch |
-| `DeploymentStore` | `orchestrator/deployment-store.ts` | Credentials and deploy history persistence |
-| `DeployTarget` | `orchestrator/deploy-targets/deploy-target.ts` | Interface that each target implements |
-| `VercelTarget` | `orchestrator/deploy-targets/vercel.ts` | Vercel deployment via CLI |
-| `CloudflareTarget` | `orchestrator/deploy-targets/cloudflare.ts` | Cloudflare Pages deployment |
+| `PrStatusPoller` | `orchestrator/pr-status-poller.ts` | Polls GitHub for PR + deployment status |
+| `GitHubDeploymentStatus` | `shared/types/deployment-types.ts` | Type for deployment status data |
+| `PrStatusSummary.deployments` | `shared/types/github-types.ts` | Deployment data on PR status |
+| `DeploymentStatusRow` | `client/components/PrLifecycleCard.tsx` | UI row showing deploy status |
+| Settings "Deployments" tab | `client/components/Settings.tsx` | Setup guide with platform links |
 
-## DeployTarget Interface
+## Deployment Status Tracking
 
-```typescript
-interface DeployTarget {
-  info: DeployTargetInfo;                          // Metadata + config fields
-  prepare?(ctx: DeployContext): Promise<void>;     // Optional pre-deploy setup
-  deploy(ctx: DeployContext): Promise<DeployResult>; // Execute deployment
-}
-```
+The `PrStatusPoller` GraphQL query includes `commit.deployments(last:5)` to fetch the latest
+deployments for each PR's head commit. Each deployment includes:
 
-`DeployTargetInfo` includes an `id`, `name`, and `configFields` array. Each config field describes a UI input (text, password, select) that the client renders automatically — no client changes needed when adding a new target.
+- **environment** — e.g. "Production", "Preview"
+- **state** — pending, success, failure, error, in_progress, etc.
+- **environmentUrl** — the deployed URL (preview or production)
+- **creator** — the platform that created the deployment (e.g. "vercel[bot]")
 
-`DeployContext` provides:
-- `workspaceDir` — project root
-- `outputDir` — build output directory
-- `credentials` — config values from the UI form
-- `environment` — `"production"` or `"preview"`
-- `projectName` — project identifier
-- `log(text)` — emit a log line (streamed to client)
-- `signal` — `AbortSignal` for cancellation
+This data is broadcast via SSE `pr_status` events and displayed in the PR lifecycle card's
+`DeploymentStatusRow` component.
 
-## Deploy Flow
+## Setup Guide
 
-1. **Client** sends `initiate_deploy` WS message with target ID and credentials
-2. **Handler** (`deploy-handlers.ts`) looks up the target and saves credentials
-3. **Framework detection**: `DeploymentManager.detectFramework()` reads `package.json` to identify Next.js, Vite, CRA, or static
-4. **Build**: `DeploymentManager.build()` runs the build command (e.g., `npm run build`)
-5. **Deploy**: `target.deploy(ctx)` executes target-specific logic (e.g., `vercel deploy`)
-6. **Events streamed to client**: `deploy_status` (phase changes), `deploy_log` (output lines), `deploy_complete` (success URL), `deploy_error` (failure)
-7. **History**: deploy result saved to `DeploymentStore`
+The Settings dialog has a "Deployments" tab under the "Project" section that shows:
+- Links to import repos on Vercel, Cloudflare Pages, and Netlify
+- A brief explanation of how auto-deploy works with ShipIt
 
-Deployments can be cancelled mid-flight via `cancel_deploy` WS message, which triggers the `AbortController`.
+No credentials are stored — the platform's own Git integration handles auth.
 
-## Framework Detection
+## Key Design Decisions
 
-`DeploymentManager.detectFramework(workspaceDir)` checks `package.json` dependencies:
-
-| Framework | Detection | Build Command | Output Dir |
-|-----------|-----------|---------------|------------|
-| Next.js | `next` in deps | `npm run build` | `.next` |
-| Vite | `vite` in deps | `npm run build` | `dist` |
-| CRA | `react-scripts` in deps | `npm run build` | `build` |
-| Unknown | has `build` script | `npm run build` | `dist` |
-| Static | no build script | (none) | `.` |
-
-## Adding a New Deploy Target
-
-1. Create `src/server/orchestrator/deploy-targets/my-target.ts` implementing `DeployTarget`
-2. Define `info` with metadata and `configFields` (the UI renders these automatically)
-3. Implement `deploy(ctx)` — use `ctx.log()` for streaming output, check `ctx.signal` for cancellation
-4. Optionally implement `prepare(ctx)` for pre-deploy setup
-5. Register in `buildApp()`: `deploymentManager.register(new MyTarget())`
-
-The client automatically renders config fields from `info.configFields` — no frontend changes needed.
+- **No manual deploy button** — deploys happen on push, not on click
+- **No ShipIt-managed builds** — the platform runs its own build with its own env vars
+- **GitHub Deployments API** — platform-agnostic status tracking (works with any platform that
+  creates GitHub Deployments)
+- **No new credentials** — uses the existing GitHub token from PR polling
+- **PR card only** — no toasts or notifications (deploys are frequent due to auto-push)

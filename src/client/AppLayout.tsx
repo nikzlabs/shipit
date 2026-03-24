@@ -1,5 +1,5 @@
 import type { ReactNode, RefObject } from "react";
-import { GearSixIcon, ListIcon, RocketIcon } from "@phosphor-icons/react";
+import { GearSixIcon, ListIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "./design-tokens.js";
 import { ThemePicker } from "./components/ThemePicker.js";
 import { SessionSidebar } from "./components/SessionSidebar.js";
@@ -17,7 +17,6 @@ interface AppLayoutProps {
   // Header
   theme: Theme;
   onSelectTheme: (theme: Theme) => void;
-  onDeployOpen: () => void;
   onSettingsOpen: () => void;
   hasSystemPrompt: boolean;
   githubAuthenticated: boolean;
@@ -78,7 +77,6 @@ interface AppLayoutProps {
 export function AppLayout({
   theme,
   onSelectTheme,
-  onDeployOpen,
   onSettingsOpen,
   hasSystemPrompt,
   githubAuthenticated,
@@ -139,10 +137,6 @@ export function AppLayout({
         </div>
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
           {dockerMemory && <DockerMemoryBadge stats={dockerMemory} />}
-          <button onClick={onDeployOpen} className="hidden sm:inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-(--color-accent-subtle) text-(--color-accent) hover:bg-(--color-accent) hover:text-(--color-accent-text) transition-colors font-medium" title="Deploy to production" aria-label="Deploy">
-            <RocketIcon size={ICON_SIZE.SM} />
-            Deploy
-          </button>
           <button onClick={onSettingsOpen} className={`inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${hasSystemPrompt || githubAuthenticated ? "text-(--color-accent) hover:text-(--color-accent-hover) hover:bg-(--color-bg-hover)" : "text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"}`} title="Settings" aria-label="Settings">
             <GearSixIcon size={ICON_SIZE.SM} />
           </button>

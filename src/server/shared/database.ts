@@ -68,29 +68,6 @@ const MIGRATIONS: Migration[] = [
         warm_session_id TEXT
       );
 
-      CREATE TABLE IF NOT EXISTS deploy_configs (
-        session_id TEXT NOT NULL,
-        target_id TEXT NOT NULL,
-        credentials TEXT NOT NULL,
-        project_name TEXT,
-        PRIMARY KEY (session_id, target_id)
-      );
-
-      CREATE TABLE IF NOT EXISTS deploy_history (
-        id TEXT NOT NULL,
-        session_id TEXT NOT NULL,
-        target_id TEXT NOT NULL,
-        environment TEXT NOT NULL,
-        url TEXT NOT NULL,
-        commit_hash TEXT,
-        commit_message TEXT,
-        timestamp TEXT NOT NULL,
-        duration_ms INTEGER NOT NULL,
-        status TEXT NOT NULL,
-        error TEXT,
-        PRIMARY KEY (session_id, id)
-      );
-      CREATE INDEX IF NOT EXISTS idx_deploy_history_session ON deploy_history(session_id);
     `);
   },
   // Migration 1: add merged_at timestamp for deferred post-merge archiving
@@ -143,6 +120,11 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN model TEXT");
   },
+  // Migration 5: drop legacy deploy tables (manual deploy removed in favor of auto-deploy on push)
+  (db) => {
+    db.exec("DROP TABLE IF EXISTS deploy_history");
+    db.exec("DROP TABLE IF EXISTS deploy_configs");
+  },
 ];
 
 export class DatabaseManager {
@@ -180,8 +162,6 @@ export class DatabaseManager {
       this.db.prepare("DELETE FROM usage_turns").run();
       this.db.prepare("DELETE FROM sessions").run();
       this.db.prepare("DELETE FROM repos").run();
-      this.db.prepare("DELETE FROM deploy_configs").run();
-      this.db.prepare("DELETE FROM deploy_history").run();
       this.db.prepare("DELETE FROM secrets").run();
       this.db.prepare("DELETE FROM review_comments").run();
       this.db.prepare("DELETE FROM doc_reviews").run();

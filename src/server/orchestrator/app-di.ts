@@ -9,14 +9,10 @@ import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
 import { ChatHistoryManager } from "./chat-history.js";
 import { UsageManager } from "./usage.js";
-import { DeploymentManager } from "./deployment-manager.js";
-import { DeploymentStore } from "./deployment-store.js";
 import { SecretStore } from "./secret-store.js";
 import { ReviewStore } from "./review-store.js";
 import { CredentialStore } from "./credential-store.js";
 import { initGlobalGitConfig } from "./git-config.js";
-import { VercelTarget } from "./deploy-targets/vercel.js";
-import { CloudflareTarget } from "./deploy-targets/cloudflare.js";
 import { SessionContainerManager } from "./session-container.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
@@ -63,15 +59,6 @@ export interface AppDeps {
   credentialsDir?: string;
   /** Whether to serve static files from dist/client. Defaults to true. */
   serveStatic?: boolean;
-  /**
-   * Deployment manager instance. Defaults to a new manager with Vercel and
-   * Cloudflare targets registered.
-   */
-  deploymentManager?: DeploymentManager;
-  /**
-   * Deployment store instance. Defaults to `new DeploymentStore(workspaceDir)`.
-   */
-  deploymentStore?: DeploymentStore;
   /**
    * Text generation function for AI-powered features (e.g., PR description).
    * Spawns a short-lived Claude process, collects text output, and returns it.
@@ -135,8 +122,6 @@ export interface ManagerSet {
   credentialStore: CredentialStore;
   agentRegistry: AgentRegistry;
   githubAuthManager: GitHubAuthManager;
-  deploymentManager: DeploymentManager;
-  deploymentStore: DeploymentStore;
   generateText: (prompt: string, cwd: string) => Promise<string>;
   isTestMode: boolean;
   secretStore: SecretStore;
@@ -230,17 +215,6 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
     });
   }
 
-  // ---- Deployment manager ----
-  const deploymentManager = deps.deploymentManager ?? (() => {
-    const mgr = new DeploymentManager();
-    mgr.register(new VercelTarget());
-    mgr.register(new CloudflareTarget());
-    return mgr;
-  })();
-
-  // ---- Deployment store ----
-  const deploymentStore = deps.deploymentStore ?? new DeploymentStore(databaseManager);
-
   // ---- Secret store ----
   const secretStore = new SecretStore(databaseManager);
 
@@ -299,8 +273,6 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
     credentialStore,
     agentRegistry,
     githubAuthManager,
-    deploymentManager,
-    deploymentStore,
     secretStore,
     reviewStore,
     generateText,
