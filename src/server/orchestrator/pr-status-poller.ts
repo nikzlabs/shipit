@@ -832,6 +832,7 @@ function deploymentsEqual(
     d.state === b![i].state &&
     d.environment === b![i].environment &&
     d.environmentUrl === b![i].environmentUrl &&
-    d.creator === b![i].creator,
+    d.creator === b![i].creator &&
+    d.createdAt === b![i].createdAt,
   );
 }
