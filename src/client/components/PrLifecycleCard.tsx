@@ -32,7 +32,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 
 // ---- Shared ----
 
-const linkClass = "text-xs text-(--color-text-tertiary) hover:text-(--color-text-secondary) transition-colors";
+const linkClass = "h-5 inline-flex items-center gap-1 text-xs text-(--color-text-tertiary) hover:text-(--color-text-secondary) transition-colors border border-(--color-border-secondary) rounded px-1.5";
 const MAX_VISIBLE_FAILURES = 5;
 
 const DEFAULT_BRANCHES = new Set(["main", "master"]);
@@ -47,25 +47,18 @@ function Spinner() {
 }
 
 function DiffStats({ ins, del, onClick }: { ins: number; del: number; onClick?: () => void }) {
-  const base = "text-xs tabular-nums whitespace-nowrap";
+  const content = (
+    <>
+      <span className="text-(--color-success)">+{ins}</span>
+      <span className="text-(--color-error)">-{del}</span>
+    </>
+  );
   if (!onClick) {
-    return (
-      <span className={base}>
-        <span className="text-(--color-success)">+{ins}</span>
-        {" "}
-        <span className="text-(--color-error)">-{del}</span>
-      </span>
-    );
+    return <span className={linkClass}>{content}</span>;
   }
   return (
-    <button
-      onClick={onClick}
-      className={`${base} cursor-pointer hover:opacity-80 transition-opacity`}
-      title="View full diff"
-    >
-      <span className="text-(--color-success)">+{ins}</span>
-      {" "}
-      <span className="text-(--color-error)">-{del}</span>
+    <button onClick={onClick} className={`${linkClass} cursor-pointer hover:text-(--color-text-secondary)`} title="View full diff">
+      {content}
     </button>
   );
 }
@@ -89,7 +82,7 @@ function useOpenPrDiff(baseBranch?: string) {
 function BranchLabel({ baseBranch, headBranch }: { baseBranch?: string; headBranch?: string }) {
   if (!headBranch) return null;
   return (
-    <span className="text-xs text-(--color-text-secondary) truncate flex items-center gap-1">
+    <span className="h-5 text-xs text-(--color-text-secondary) truncate flex items-center gap-1">
       {baseBranch && !isDefaultBranch(baseBranch) ? (
         <>{baseBranch} <span className="text-(--color-text-tertiary)">←</span> {headBranch}</>
       ) : headBranch}
@@ -122,14 +115,14 @@ function CiIndicator({ checks }: { checks: PrCardState["checks"] }) {
 
   if (checks.state === "success") {
     return (
-      <span className="text-(--color-success) text-xs flex items-center gap-1" title={`CI passed  ${checks.total}/${checks.total} checks`}>
+      <span className="h-5 text-(--color-success) text-xs flex items-center gap-1" title={`CI passed  ${checks.total}/${checks.total} checks`}>
         <CheckCircleIcon size={ICON_SIZE.SM} /> CI {checks.total}/{checks.total}
       </span>
     );
   }
   if (checks.state === "failure") {
     return (
-      <span className="text-(--color-error) text-xs flex items-center gap-1" title={`CI failed  ${checks.failed} of ${checks.total}`}>
+      <span className="h-5 text-(--color-error) text-xs flex items-center gap-1" title={`CI failed  ${checks.failed} of ${checks.total}`}>
         <XCircleIcon size={ICON_SIZE.SM} /> CI {checks.passed}/{checks.total}
       </span>
     );
@@ -138,7 +131,7 @@ function CiIndicator({ checks }: { checks: PrCardState["checks"] }) {
   const pendingLabel = checks.total === 0 ? "CI" : `CI ${checks.passed}/${checks.total}`;
   const pendingTitle = checks.total === 0 ? "Waiting for CI checks to start" : `CI running  ${checks.passed}/${checks.total}`;
   return (
-    <span className="text-(--color-warning) text-xs flex items-center gap-1 animate-pulse" title={pendingTitle}>
+    <span className="h-5 text-(--color-warning) text-xs flex items-center gap-1 animate-pulse" title={pendingTitle}>
       <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin" /> {pendingLabel}
     </span>
   );
@@ -253,14 +246,14 @@ function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: 
       <button
         onClick={handleMerge}
         disabled={merging}
-        className="px-2 py-0.5 text-xs font-medium whitespace-nowrap bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-l transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        className="h-5 px-2 text-xs font-medium whitespace-nowrap bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-l transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {merging ? "Merging..." : label}
       </button>
       <button
         onClick={() => setDropdownOpen(!dropdownOpen)}
         disabled={merging}
-        className="px-1 py-0.5 text-xs font-medium bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-r border-l border-black/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        className="h-5 px-1 text-xs font-medium bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-r border-l border-black/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         aria-label="Select merge method"
       >
         <CaretDownIcon size={12} />
@@ -456,7 +449,7 @@ function TerminalPhase({ card, sessionId, text }: { card: PrCardState; sessionId
   return (
     <div className="flex items-center gap-3">
       <PrStateBadge sessionId={sessionId} />
-      <span className="text-xs text-(--color-text-secondary)">{text}</span>
+      <span className="h-5 flex items-center text-xs text-(--color-text-secondary)">{text}</span>
       {pr && <ViewPrLink url={pr.url} />}
     </div>
   );
