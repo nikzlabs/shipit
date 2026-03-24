@@ -12,7 +12,7 @@ const buttonVariants = cva(
         ghost: "hover:bg-(--color-bg-hover) text-(--color-text-secondary) hover:text-(--color-text-primary)",
       },
       size: {
-        sm: "text-xs px-2 py-1 gap-1",
+        sm: "h-5 text-xs px-2 gap-1",
         md: "text-sm px-3 py-1.5 gap-1.5",
         lg: "text-sm px-4 py-2 gap-2",
       },
