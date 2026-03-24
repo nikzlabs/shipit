@@ -302,8 +302,8 @@ function DeploymentStatusRow({ deployments }: { deployments: GitHubDeploymentSta
             {!isPending && !isActive && !isFailed && <GlobeIcon size={12} className="text-(--color-text-tertiary) shrink-0" />}
             <span className="text-(--color-text-secondary)">{d.environment}</span>
             {d.environmentUrl && (
-              <a href={d.environmentUrl} target="_blank" rel="noopener noreferrer" className="text-(--color-text-link) hover:text-(--color-accent) truncate max-w-50">
-                {new URL(d.environmentUrl).hostname}
+              <a href={d.environmentUrl} target="_blank" rel="noopener noreferrer" className="text-(--color-text-link) hover:text-(--color-accent) truncate max-w-xs">
+                {(() => { try { return new URL(d.environmentUrl).hostname; } catch { return d.environmentUrl; } })()}
               </a>
             )}
             {d.creator && <span className="text-(--color-text-tertiary)">via {d.creator}</span>}

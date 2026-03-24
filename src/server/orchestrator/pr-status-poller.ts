@@ -831,6 +831,7 @@ function deploymentsEqual(
   return a!.every((d, i) =>
     d.state === b![i].state &&
     d.environment === b![i].environment &&
-    d.environmentUrl === b![i].environmentUrl,
+    d.environmentUrl === b![i].environmentUrl &&
+    d.creator === b![i].creator,
   );
 }

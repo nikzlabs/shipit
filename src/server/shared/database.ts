@@ -120,6 +120,11 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN model TEXT");
   },
+  // Migration 5: drop legacy deploy tables (manual deploy removed in favor of auto-deploy on push)
+  (db) => {
+    db.exec("DROP TABLE IF EXISTS deploy_history");
+    db.exec("DROP TABLE IF EXISTS deploy_configs");
+  },
 ];
 
 export class DatabaseManager {

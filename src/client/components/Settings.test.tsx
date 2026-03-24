@@ -446,6 +446,35 @@ describe("Settings - Sidebar groups", () => {
     render(<Settings {...defaultProps} />);
     expect(screen.getByText("Project")).toBeInTheDocument();
   });
+
+  it("renders Deployments tab in sidebar", () => {
+    render(<Settings {...defaultProps} />);
+    expect(screen.getByTestId("settings-tab-deployments")).toBeInTheDocument();
+  });
+});
+
+describe("Settings - Deployments tab", () => {
+  it("shows setup guide when clicked", () => {
+    render(<Settings {...defaultProps} />);
+    fireEvent.click(screen.getByTestId("settings-tab-deployments"));
+    expect(screen.getByTestId("deployments-tab")).toBeInTheDocument();
+    expect(screen.getByText("Automatic Deployments")).toBeInTheDocument();
+  });
+
+  it("shows platform links", () => {
+    render(<Settings {...defaultProps} />);
+    fireEvent.click(screen.getByTestId("settings-tab-deployments"));
+    expect(screen.getByText("Vercel")).toBeInTheDocument();
+    expect(screen.getByText("Cloudflare Pages")).toBeInTheDocument();
+    expect(screen.getByText("Netlify")).toBeInTheDocument();
+  });
+
+  it("shows how-it-works steps", () => {
+    render(<Settings {...defaultProps} />);
+    fireEvent.click(screen.getByTestId("settings-tab-deployments"));
+    expect(screen.getByText("How it works")).toBeInTheDocument();
+    expect(screen.getByText(/Deploy status appears/)).toBeInTheDocument();
+  });
 });
 
 describe("Settings - Tab switching", () => {

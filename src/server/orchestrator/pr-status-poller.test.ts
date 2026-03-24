@@ -174,6 +174,115 @@ describe("parsePrNode", () => {
     const result = parsePrNode(node as never, "session-1");
     expect(result.checks).toMatchObject({ state: "failure", total: 2, passed: 1, failed: 1, pending: 0 });
   });
+
+  it("parses deployments from commit", () => {
+    const node = makeGraphQLPrNode({
+      commits: {
+        nodes: [{
+          commit: {
+            statusCheckRollup: { state: "SUCCESS", contexts: { nodes: [] } },
+            deployments: {
+              nodes: [
+                {
+                  environment: "Production",
+                  latestStatus: { state: "SUCCESS", environmentUrl: "https://example.com" },
+                  createdAt: "2026-03-24T00:00:00Z",
+                  creator: { login: "vercel[bot]" },
+                },
+                {
+                  environment: "Preview",
+                  latestStatus: { state: "PENDING", environmentUrl: null },
+                  createdAt: "2026-03-24T00:00:00Z",
+                  creator: null,
+                },
+              ],
+            },
+          },
+        }],
+      },
+    });
+
+    const result = parsePrNode(node as never, "session-1");
+    expect(result.deployments).toHaveLength(2);
+    expect(result.deployments![0]).toEqual({
+      environment: "Production",
+      state: "success",
+      environmentUrl: "https://example.com",
+      createdAt: "2026-03-24T00:00:00Z",
+      creator: "vercel[bot]",
+    });
+    expect(result.deployments![1]).toEqual({
+      environment: "Preview",
+      state: "pending",
+      environmentUrl: null,
+      createdAt: "2026-03-24T00:00:00Z",
+      creator: null,
+    });
+  });
+
+  it("returns undefined deployments when commit has no deployments", () => {
+    const node = makeGraphQLPrNode();
+    const result = parsePrNode(node as never, "session-1");
+    expect(result.deployments).toBeUndefined();
+  });
+
+  it("maps deployment states correctly", () => {
+    const makeWithState = (state: string) => makeGraphQLPrNode({
+      commits: {
+        nodes: [{
+          commit: {
+            statusCheckRollup: null,
+            deployments: {
+              nodes: [{
+                environment: "Test",
+                latestStatus: { state, environmentUrl: null },
+                createdAt: "2026-03-24T00:00:00Z",
+                creator: null,
+              }],
+            },
+          },
+        }],
+      },
+    });
+
+    expect(parsePrNode(makeWithState("SUCCESS") as never, "s1").deployments![0].state).toBe("success");
+    expect(parsePrNode(makeWithState("ACTIVE") as never, "s1").deployments![0].state).toBe("success");
+    expect(parsePrNode(makeWithState("FAILURE") as never, "s1").deployments![0].state).toBe("failure");
+    expect(parsePrNode(makeWithState("ERROR") as never, "s1").deployments![0].state).toBe("error");
+    expect(parsePrNode(makeWithState("INACTIVE") as never, "s1").deployments![0].state).toBe("inactive");
+    expect(parsePrNode(makeWithState("IN_PROGRESS") as never, "s1").deployments![0].state).toBe("in_progress");
+    expect(parsePrNode(makeWithState("QUEUED") as never, "s1").deployments![0].state).toBe("queued");
+    expect(parsePrNode(makeWithState("PENDING") as never, "s1").deployments![0].state).toBe("pending");
+  });
+
+  it("handles null latestStatus on deployment", () => {
+    const node = makeGraphQLPrNode({
+      commits: {
+        nodes: [{
+          commit: {
+            statusCheckRollup: null,
+            deployments: {
+              nodes: [{
+                environment: "Production",
+                latestStatus: null,
+                createdAt: "2026-03-24T00:00:00Z",
+                creator: { login: "netlify[bot]" },
+              }],
+            },
+          },
+        }],
+      },
+    });
+
+    const result = parsePrNode(node as never, "session-1");
+    expect(result.deployments![0]).toEqual({
+      environment: "Production",
+      state: "pending",
+      environmentUrl: null,
+      createdAt: "2026-03-24T00:00:00Z",
+      creator: "netlify[bot]",
+    });
+  });
 });
 
 describe("PrStatusPoller", () => {

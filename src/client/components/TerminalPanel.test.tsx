@@ -189,7 +189,7 @@ describe("TerminalPanel", () => {
       const filterGroup = screen.getByRole("group", { name: /filter log sources/i });
       expect(filterGroup).toBeInTheDocument();
       const buttons = filterGroup.querySelectorAll("button");
-      expect(buttons).toHaveLength(6);
+      expect(buttons).toHaveLength(5);
     });
 
     it("filter buttons have aria-pressed=true by default", () => {
@@ -245,7 +245,6 @@ describe("TerminalPanel", () => {
         entry("stdout", "output line"),
         entry("server", "server line"),
         entry("preview", "preview line"),
-        entry("deploy", "deploy line"),
         entry("install", "install line"),
       ];
       render(<TerminalPanel entries={entries} {...defaultProps} />);
@@ -257,9 +256,8 @@ describe("TerminalPanel", () => {
       fireEvent.click(buttons[1]);
       fireEvent.click(buttons[2]);
       fireEvent.click(buttons[3]);
-      fireEvent.click(buttons[4]);
 
-      fireEvent.click(buttons[5]);
+      fireEvent.click(buttons[4]);
 
       expect(screen.getByText("install line")).toBeInTheDocument();
     });

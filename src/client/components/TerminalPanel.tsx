@@ -3,7 +3,7 @@ import { useEffect, useRef, useMemo } from "react";
 import { Button } from "./ui/button.js";
 import { useTerminalStore } from "../stores/terminal-store.js";
 
-export type LogSource = "stderr" | "stdout" | "server" | "preview" | "deploy" | "install";
+export type LogSource = "stderr" | "stdout" | "server" | "preview" | "install";
 
 export interface LogEntry {
   id: number;
@@ -30,7 +30,6 @@ const SOURCE_COLORS: Record<LogEntry["source"], string> = {
   stdout: "text-(--color-text-primary)",
   server: "text-(--color-text-link)",
   preview: "text-(--color-autofix)",
-  deploy: "text-(--color-info)",
   install: "text-(--color-success)",
 };
 
@@ -39,7 +38,6 @@ const SOURCE_LABELS: Record<LogEntry["source"], string> = {
   stdout: "out",
   server: "srv",
   preview: "pre",
-  deploy: "dpl",
   install: "ins",
 };
 
@@ -52,14 +50,13 @@ function formatTime(iso: string): string {
   }
 }
 
-const ALL_SOURCES: LogSource[] = ["stderr", "stdout", "server", "preview", "deploy", "install"];
+const ALL_SOURCES: LogSource[] = ["stderr", "stdout", "server", "preview", "install"];
 
 const FILTER_COLORS: Record<LogSource, { active: string; inactive: string }> = {
   stderr: { active: "bg-(--color-error-subtle) text-(--color-error)", inactive: "text-(--color-text-secondary) hover:text-(--color-error)" },
   stdout: { active: "bg-(--color-bg-tertiary) text-(--color-text-primary)", inactive: "text-(--color-text-secondary) hover:text-(--color-text-primary)" },
   server: { active: "bg-(--color-accent-subtle) text-(--color-text-link)", inactive: "text-(--color-text-secondary) hover:text-(--color-text-link)" },
   preview: { active: "bg-(--color-autofix)/15 text-(--color-autofix)", inactive: "text-(--color-text-secondary) hover:text-(--color-autofix)" },
-  deploy: { active: "bg-(--color-info-subtle) text-(--color-info)", inactive: "text-(--color-text-secondary) hover:text-(--color-info)" },
   install: { active: "bg-(--color-success-subtle) text-(--color-success)", inactive: "text-(--color-text-secondary) hover:text-(--color-success)" },
 };
 
