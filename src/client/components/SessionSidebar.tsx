@@ -180,7 +180,7 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
   return (
     <div
       className={`group flex items-start gap-1.5 px-2 py-1.5 text-xs transition-colors rounded mx-1 ${
-        needsAttention ? "border border-(--color-attention)" : "border border-transparent"
+        needsAttention ? "border border-(--color-attention)/40" : "border border-transparent"
       } ${
         isArchived ? "opacity-60" : ""
       } ${
