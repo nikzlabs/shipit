@@ -57,7 +57,7 @@ src/
       app-di.ts      Dependency injection setup
       app-lifecycle.ts  Server startup/shutdown hooks
       api-routes.ts  Route registration dispatcher
-      api-routes-*.ts  Domain-specific HTTP routes (bootstrap, deploy, files,
+      api-routes-*.ts  Domain-specific HTTP routes (bootstrap, files,
                        git, github, preview, secrets, session)
       validation.ts  Input validation, error formatting
       repo-git.ts    RepoGit — clone, fetch, worktree lifecycle, branch deletion
@@ -78,9 +78,6 @@ src/
       github-auth-checks.ts, github-auth-prs.ts, github-auth-repos.ts
       credential-store.ts  CredentialStore — unified credentials
       secret-store.ts      SecretStore — user secrets
-      deployment-manager.ts  DeploymentManager — target registry, build, deploy dispatch
-      deployment-store.ts    DeploymentStore — credentials and deploy history
-      deploy-targets/        DeployTarget implementations (Vercel, Cloudflare)
       features.ts    FeatureManager — scans docs/ for feature status
       session-namer.ts  AI-powered session naming
       chat-history.ts  ChatHistoryManager — per-session message persistence
@@ -101,9 +98,9 @@ src/
         agent-listeners.ts   Agent event stream listeners
         post-turn.ts         Post-turn actions (auto-commit, auto-push)
         rollback-handlers.ts Git rollback via WS
-        terminal-handlers.ts, misc-handlers.ts, deploy-handlers.ts
+        terminal-handlers.ts, misc-handlers.ts
       services/      Business logic layer — pure functions consumed by routes and WS handlers
-        session.ts, git.ts, github.ts, github-ci-fix.ts, deploy.ts,
+        session.ts, git.ts, github.ts, github-ci-fix.ts,
         settings.ts, templates.ts, files.ts, misc.ts, repos.ts,
         replay.ts, types.ts, index.ts
       integration_tests/  Integration tests — one file per feature area
@@ -135,7 +132,7 @@ src/
     stores/        Zustand state stores
       session-store.ts, ui-store.ts, git-store.ts, pr-store.ts,
       preview-store.ts, file-store.ts, terminal-store.ts,
-      settings-store.ts, deploy-store.ts, repo-store.ts
+      settings-store.ts, repo-store.ts
       actions/     Store action creators (session-actions.ts)
     themes/        Theme CSS files (dark.css, light.css)
     utils/         Client utilities (dates, local-storage, repo-label, session-data)
@@ -158,8 +155,8 @@ Three-layer system: browser (React SPA) → orchestrator (Fastify) → session w
 | `session-containers` | Docker containers, runners, idle cleanup, reconnection |
 | `session-processes` | Claude CLI, preview manager, file watcher, terminal, agents |
 | `git-architecture` | GitManager, RepoGit, worktrees, credentials, auto-commit |
-| `deployment-architecture` | Deploy targets, framework detection, deploy flow |
-| `add-endpoint` | How to add HTTP endpoints, WS messages, deploy targets, activity labels |
+| `deployment-architecture` | Auto-deploy on push, GitHub Deployments API, deploy status tracking |
+| `add-endpoint` | How to add HTTP endpoints, WS messages, activity labels |
 | `testing-and-quality` | Test patterns, integration tests, quality checklist |
 | `docs-navigator` | Feature docs index — find the right `docs/NNN-*` for a task |
 
@@ -248,7 +245,7 @@ The browser uses two parallel channels:
 - **Co-locate tests** — place tests next to source files (`foo.ts` → `foo.test.ts`). Follow patterns from neighboring test files.
 - **Lint and typecheck before finishing** — always run `npm run lint` and `npm run typecheck` after code changes and fix any errors before considering work complete.
 - **Update docs when done** — update the relevant `plan.md` with new subsystems, patterns, or key files you added. Mark completed checklist items with `[x]`; if all items are done, delete `checklist.md`.
-- **Update shipit-docs when changing agent-facing behavior** — when changing platform behavior visible to the agent inside session containers (preview config, shipit.yaml schema, deployment targets, container environment, GitHub integration), update the corresponding file in `src/server/shipit-docs/`. These docs are baked into the session worker image at `/shipit-docs/` and are the agent's primary reference for the platform.
+- **Update shipit-docs when changing agent-facing behavior** — when changing platform behavior visible to the agent inside session containers (preview config, shipit.yaml schema, container environment, GitHub integration), update the corresponding file in `src/server/shipit-docs/`. These docs are baked into the session worker image at `/shipit-docs/` and are the agent's primary reference for the platform.
 
 ## Code conventions
 

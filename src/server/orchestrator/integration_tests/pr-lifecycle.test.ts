@@ -13,8 +13,6 @@ import { GitManager } from "../../shared/git.js";
 import {
   StubAuthManager,
   StubGitHubAuthManager,
-  StubDeploymentManager,
-  StubDeploymentStore,
   FakeClaudeProcess,
   createTestCredentialStore,
   createTestDatabaseManager,
@@ -69,8 +67,6 @@ beforeEach(async () => {
     chatHistoryManager: new ChatHistoryManager(dbManager),
     usageManager: new UsageManager(dbManager),
     serveStatic: false,
-    deploymentManager: new StubDeploymentManager() as any,
-    deploymentStore: new StubDeploymentStore() as any,
     generateText: async () => "## Summary\nTest changes.\n\n## Changes\n- Added feature",
   });
 });
@@ -177,8 +173,6 @@ describe("POST /api/sessions/:id/pr/quick", () => {
       chatHistoryManager: new ChatHistoryManager(dbManager),
       usageManager: new UsageManager(dbManager),
       serveStatic: false,
-      deploymentManager: new StubDeploymentManager() as any,
-      deploymentStore: new StubDeploymentStore() as any,
       generateText: async () => "## Summary\nTest changes.\n\n## Changes\n- Added feature",
     });
 

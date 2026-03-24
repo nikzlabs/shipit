@@ -14,8 +14,6 @@ import type { GitHubAuthManager } from "./github-auth.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { AgentId } from "../shared/types.js";
-import type { DeploymentManager } from "./deployment-manager.js";
-import type { DeploymentStore } from "./deployment-store.js";
 import type { UsageManager } from "./usage.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionContainerManager } from "./session-container.js";
@@ -32,7 +30,6 @@ import { registerGitRoutes } from "./api-routes-git.js";
 import { registerSessionRoutes } from "./api-routes-session.js";
 import { registerPreviewRoutes } from "./api-routes-preview.js";
 import { registerGitHubRoutes } from "./api-routes-github.js";
-import { registerDeployRoutes } from "./api-routes-deploy.js";
 import { registerSecretsRoutes } from "./api-routes-secrets.js";
 import { registerReviewRoutes } from "./api-routes-reviews.js";
 import { registerUpdateRoutes } from "./api-routes-updates.js";
@@ -53,13 +50,11 @@ export interface ApiDeps {
   credentialStore: CredentialStore;
   defaultAgentId: AgentId;
   workspaceDir: string;
-  deploymentManager: DeploymentManager;
-  deploymentStore: DeploymentStore;
   usageManager: UsageManager;
   runnerRegistry: SessionRunnerRegistry;
   chatHistoryManager: ChatHistoryManager;
   authManager: AuthManager;
-  broadcastLog: (source: "stderr" | "stdout" | "server" | "preview" | "deploy" | "install", text: string) => void;
+  broadcastLog: (source: "stderr" | "stdout" | "server" | "preview" | "install", text: string) => void;
   sseBroadcast: (event: string, data: unknown) => void;
   getSharedRepoDir: (repoUrl: string) => string;
   createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }>;
@@ -128,7 +123,6 @@ export async function registerApiRoutes(
   await registerSessionRoutes(app, deps);
   await registerPreviewRoutes(app, deps);
   await registerGitHubRoutes(app, deps);
-  await registerDeployRoutes(app, deps);
   if (deps.reviewStore) {
     await registerReviewRoutes(app, deps);
   }

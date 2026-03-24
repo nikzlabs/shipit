@@ -14,7 +14,6 @@ import { useGitStore } from "../stores/git-store.js";
 import { useFileStore } from "../stores/file-store.js";
 import { usePreviewStore } from "../stores/preview-store.js";
 import { useTerminalStore } from "../stores/terminal-store.js";
-import { useDeployStore } from "../stores/deploy-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { usePrStore } from "../stores/pr-store.js";
@@ -49,7 +48,6 @@ export function useMessageHandler(params: {
     const file = useFileStore.getState();
     const preview = usePreviewStore.getState();
     const terminal = useTerminalStore.getState();
-    const deploy = useDeployStore.getState();
     const settings = useSettingsStore.getState();
     const ui = useUiStore.getState();
 
@@ -401,23 +399,6 @@ export function useMessageHandler(params: {
           },
         ]);
       }
-    }
-
-    if (data.type === "deploy_status") {
-      deploy.setStatus(data.phase);
-      deploy.setLastUrl(null);
-      deploy.setLastError(null);
-    }
-
-    if (data.type === "deploy_complete") {
-      deploy.setStatus("complete");
-      deploy.setLastUrl(data.url);
-      deploy.setLastError(null);
-    }
-
-    if (data.type === "deploy_error") {
-      deploy.setStatus("error");
-      deploy.setLastError(data.message);
     }
 
     if (data.type === "system_user_message") {

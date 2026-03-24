@@ -16,7 +16,6 @@ import { registerPreviewProxy } from "./preview-proxy.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./ws-handlers/types.js";
 import * as terminalHandlers from "./ws-handlers/terminal-handlers.js";
 import * as miscHandlers from "./ws-handlers/misc-handlers.js";
-import * as deployHandlers from "./ws-handlers/deploy-handlers.js";
 import * as rollbackHandlers from "./ws-handlers/rollback-handlers.js";
 import * as rewindHandlers from "./ws-handlers/rewind-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
@@ -103,7 +102,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     createGitManager, createRepoGit, databaseManager, sessionManager,
     repoStore, chatHistoryManager, usageManager, authManager,
     credentialStore, agentRegistry, githubAuthManager,
-    deploymentManager, deploymentStore, secretStore, reviewStore, generateText,
+    secretStore, reviewStore, generateText,
     isTestMode,
   } = mgrs;
 
@@ -164,7 +163,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Event wiring (deployment + auth) ----
   wireEventHandlers({
-    deploymentManager, authManager, agentRegistry,
+    authManager, agentRegistry,
     defaultAgentId, broadcastLog, sseBroadcast,
   });
 
@@ -275,8 +274,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     credentialStore,
     defaultAgentId,
     workspaceDir,
-    deploymentManager,
-    deploymentStore,
     usageManager,
     runnerRegistry,
     chatHistoryManager,
@@ -532,7 +529,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         getRunnerRegistry: () => runnerRegistry,
         attachToRunner, detachFromRunner,
         sessionManager, chatHistoryManager, createGitManager, createRepoGit,
-        githubAuthManager, deploymentManager, deploymentStore,
+        githubAuthManager,
         usageManager, authManager, agentRegistry, credentialStore,
         repoStore, warmSessionForRepo, generateText,
         getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
@@ -633,8 +630,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             return;
           }
           // new_session and activate_session are NOT handled — session is implicit from URL
-          case "initiate_deploy": return deployHandlers.handleInitiateDeploy(ctx, msg);
-          case "cancel_deploy": { deployHandlers.handleCancelDeploy(ctx); return; }
           case "rollback_code": return rollbackHandlers.handleRollbackCode(ctx, msg);
           case "rollback_code_and_chat": return rollbackHandlers.handleRollbackCodeAndChat(ctx, msg);
           case "fork_session_from_message": return rollbackHandlers.handleForkSessionFromMessage(ctx, msg);

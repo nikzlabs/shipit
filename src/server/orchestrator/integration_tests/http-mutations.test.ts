@@ -20,16 +20,12 @@ import {
   StubAuthManager,
   StubGitHubAuthManager,
   FakeClaudeProcess,
-  StubDeploymentManager,
-  StubDeploymentStore,
   createTestDatabaseManager,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { GitHubAuthManager } from "../github-auth.js";
 import { CredentialStore } from "../credential-store.js";
 import { initGlobalGitConfig, getGitIdentity, setGitIdentity } from "../git-config.js";
-import { DeploymentManager } from "../deployment-manager.js";
-import { DeploymentStore } from "../deployment-store.js";
 import { AgentRegistry } from "../../shared/agent-registry.js";
 
 describe("Integration: Phase 2 HTTP mutation endpoints", () => {
@@ -596,20 +592,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
   });
 
-  // ---- Deploy mutations ----
-
-  describe("POST /api/sessions/:id/deploy/config", () => {
-    it("returns 400 for unknown deploy target", async () => {
-      await createSession("s1", "Session 1");
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/sessions/s1/deploy/config",
-        payload: { targetId: "nonexistent", credentials: {} },
-      });
-      expect(res.statusCode).toBe(400);
-    });
-  });
-
   // ---- Preview error ----
 
   describe("POST /api/sessions/:id/preview-errors", () => {
@@ -812,113 +794,6 @@ describe("Integration: Phase 2 HTTP agent mutations", () => {
         payload: { key: "OPENAI_API_KEY", value: "   " },
       });
       expect(res.statusCode).toBe(400);
-    });
-  });
-});
-
-// ---- Separate describe for deploy config tests (needs deployment manager) ----
-
-describe("Integration: Phase 2 HTTP deploy config mutations", () => {
-  let app: FastifyInstance;
-  let tmpDir: string;
-  let sessionManager: SessionManager;
-  let stubDeployMgr: StubDeploymentManager;
-  let stubDeployStore: StubDeploymentStore;
-  let dbManager: DatabaseManager;
-
-  beforeEach(async () => {
-    dbManager = createTestDatabaseManager();
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-http-deploy-"));
-    initGlobalGitConfig(tmpDir);
-    setGitIdentity("Test User", "test@test.com");
-
-    sessionManager = new SessionManager(dbManager);
-    stubDeployMgr = new StubDeploymentManager();
-    stubDeployMgr.register({
-      info: {
-        id: "test-target",
-        name: "Test Deploy",
-        description: "Test target",
-        configFields: [{ key: "token", label: "Token", required: true, sensitive: true }],
-        supportsPreview: true,
-      },
-    });
-    stubDeployStore = new StubDeploymentStore();
-
-    app = await buildApp({
-      createGitManager: (dir: string) => new GitManager(dir),
-      databaseManager: dbManager,
-      sessionManager,
-      authManager: new StubAuthManager() as unknown as AuthManager,
-      agentFactory: () => new FakeClaudeProcess() as any,
-      deploymentManager: stubDeployMgr as unknown as DeploymentManager,
-      deploymentStore: stubDeployStore as unknown as DeploymentStore,
-      workspaceDir: tmpDir,
-      serveStatic: false,
-    });
-  });
-
-  afterEach(async () => {
-    await app.close();
-    dbManager.close();
-    await new Promise((r) => setTimeout(r, 50));
-    try {
-      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-    } catch {
-      // Ignore cleanup errors
-    }
-  });
-
-  async function createSession(id: string, title: string): Promise<string> {
-    const sessionDir = path.join(tmpDir, "sessions", id);
-    fs.mkdirSync(sessionDir, { recursive: true });
-    sessionManager.track(id, title, sessionDir);
-    const git = new GitManager(sessionDir);
-    await git.init();
-    fs.writeFileSync(path.join(sessionDir, "init.txt"), "init");
-    await git.autoCommit("initial commit");
-    return sessionDir;
-  }
-
-  describe("POST /api/sessions/:id/deploy/config", () => {
-    it("saves deploy config", async () => {
-      await createSession("s1", "Session 1");
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/sessions/s1/deploy/config",
-        payload: { targetId: "test-target", credentials: { token: "my-token" }, projectName: "test-proj" },
-      });
-      expect(res.statusCode).toBe(200);
-      expect(res.json().targetId).toBe("test-target");
-    });
-
-    it("returns 400 for empty required field", async () => {
-      await createSession("s1", "Session 1");
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/sessions/s1/deploy/config",
-        payload: { targetId: "test-target", credentials: { token: "" } },
-      });
-      expect(res.statusCode).toBe(400);
-      expect(res.json().error).toContain("Token is required");
-    });
-  });
-
-  describe("DELETE /api/sessions/:id/deploy/config/:targetId", () => {
-    it("deletes deploy config", async () => {
-      await createSession("s1", "Session 1");
-      // Save config first
-      await app.inject({
-        method: "POST",
-        url: "/api/sessions/s1/deploy/config",
-        payload: { targetId: "test-target", credentials: { token: "tok" } },
-      });
-      const res = await app.inject({
-        method: "DELETE",
-        url: "/api/sessions/s1/deploy/config/test-target",
-      });
-      expect(res.statusCode).toBe(200);
-      expect(res.json().targetId).toBe("test-target");
     });
   });
 });

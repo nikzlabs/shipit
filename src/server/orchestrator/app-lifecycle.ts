@@ -28,7 +28,6 @@ import type { AuthManager } from "./auth.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { DatabaseManager } from "../shared/database.js";
-import type { DeploymentManager } from "./deployment-manager.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { AgentId, AgentProcess, WsLogEntry } from "../shared/types.js";
 import type { AppDeps } from "./app-di.js";
@@ -525,7 +524,6 @@ export function createLogBuffer(): {
 
 /** Dependencies for event handler wiring. */
 export interface EventWiringDeps {
-  deploymentManager: DeploymentManager;
   authManager: AuthManager;
   agentRegistry: AgentRegistry;
   defaultAgentId: AgentId;
@@ -533,22 +531,9 @@ export interface EventWiringDeps {
   sseBroadcast: (event: string, data: unknown) => void;
 }
 
-/** Wire deployment and auth event handlers. */
+/** Wire auth event handlers. */
 export function wireEventHandlers(eventDeps: EventWiringDeps): void {
-  const { deploymentManager, authManager, agentRegistry, defaultAgentId, broadcastLog, sseBroadcast } = eventDeps;
-
-  // ---- Deployment event handlers ----
-  deploymentManager.on("log", ({ text }: { text: string }) => {
-    broadcastLog("deploy", text);
-  });
-
-  deploymentManager.on("status", (status: { phase: string }) => {
-    sseBroadcast("deploy_status", { phase: status.phase });
-  });
-
-  deploymentManager.on("error", (err: { message: string; phase: string }) => {
-    sseBroadcast("deploy_error", { message: err.message, phase: err.phase });
-  });
+  const { authManager, agentRegistry, defaultAgentId, sseBroadcast } = eventDeps;
 
   // ---- Auth event handlers ----
   authManager.on("auth_url", (url: string) => {

@@ -10,7 +10,6 @@ export * from "./files.js";
 export * from "./session.js";
 export * from "./git.js";
 export * from "./github.js";
-export * from "./deploy.js";
 export * from "./settings.js";
 export * from "./templates.js";
 export * from "./misc.js";

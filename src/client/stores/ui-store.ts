@@ -31,7 +31,7 @@ type SettingsTab =
   | "git"
   | "instructions"
   | "advanced"
-  | "deploy"
+  | "deployments"
   | "secrets"
   | undefined;
 

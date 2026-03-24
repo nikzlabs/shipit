@@ -7,8 +7,6 @@ import {
   TestClient,
   StubAuthManager,
   StubGitHubAuthManager,
-  StubDeploymentManager,
-  StubDeploymentStore,
   FakeClaudeProcess,
   waitForClaude,
   createTestCredentialStore,
@@ -48,8 +46,6 @@ beforeEach(async () => {
     chatHistoryManager: new ChatHistoryManager(dbManager),
     usageManager: new UsageManager(dbManager),
     serveStatic: false,
-    deploymentManager: new StubDeploymentManager() as any,
-    deploymentStore: new StubDeploymentStore() as any,
     autoPushDebounceMs: 100,
   });
 
