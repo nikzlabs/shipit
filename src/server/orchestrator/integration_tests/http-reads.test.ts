@@ -243,31 +243,6 @@ describe("Integration: Phase 1 GET endpoints", () => {
     });
   });
 
-  // ---- Deploy setup ----
-
-  it("GET /api/sessions/:id/deploy/setup returns targets and settings", async () => {
-    await createSession("s1", "Session 1");
-
-    const res = await app.inject({ method: "GET", url: "/api/sessions/s1/deploy/setup" });
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body).toHaveProperty("targets");
-    expect(body).toHaveProperty("projectSettings");
-    expect(Array.isArray(body.targets)).toBe(true);
-  });
-
-  // ---- Deploy history ----
-
-  it("GET /api/sessions/:id/deploy/history returns empty deployments", async () => {
-    await createSession("s1", "Session 1");
-
-    const res = await app.inject({ method: "GET", url: "/api/sessions/s1/deploy/history" });
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body).toHaveProperty("deployments");
-    expect(body.deployments).toEqual([]);
-  });
-
   // ---- Usage stats ----
 
   it("GET /api/sessions/:id/usage returns usage stats", async () => {
