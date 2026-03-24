@@ -33,7 +33,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 
 // ---- Shared ----
 
-const linkClass = "h-5 inline-flex items-center gap-1 text-xs text-(--color-text-tertiary) hover:text-(--color-text-secondary) transition-colors border border-(--color-border-secondary) rounded px-1.5";
+const linkClass = "h-6 inline-flex items-center gap-1 text-xs text-(--color-text-tertiary) hover:text-(--color-text-secondary) transition-colors border border-(--color-border-secondary) rounded px-1.5";
 const MAX_VISIBLE_FAILURES = 5;
 
 const DEFAULT_BRANCHES = new Set(["main", "master"]);
@@ -94,7 +94,7 @@ function BranchLabel({ baseBranch, headBranch }: { baseBranch?: string; headBran
     <button
       onClick={handleCopy}
       title="Copy branch name"
-      className="h-5 text-xs flex items-center gap-1 min-w-0 overflow-hidden text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors cursor-pointer"
+      className="h-6 text-xs flex items-center gap-1 min-w-0 overflow-hidden text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors cursor-pointer"
     >
       <span className="truncate">{content}</span>
     </button>
@@ -109,7 +109,7 @@ function OverflowMenu({ children }: { children: React.ReactNode }) {
     <span className="relative shrink-0">
       <button
         onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
-        className="h-5 w-5 flex items-center justify-center rounded text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors"
+        className="h-6 w-6 flex items-center justify-center rounded text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors"
         aria-label="More options"
       >
         <DotsThreeVerticalIcon size={ICON_SIZE.SM} weight="bold" />
@@ -144,14 +144,14 @@ function CiIndicator({ checks }: { checks: PrCardState["checks"] }) {
 
   if (checks.state === "success") {
     return (
-      <span className="h-5 text-(--color-success) text-xs flex items-center gap-1 shrink-0" title={`CI passed  ${checks.total}/${checks.total} checks`}>
+      <span className="h-6 text-(--color-success) text-xs flex items-center gap-1 shrink-0" title={`CI passed  ${checks.total}/${checks.total} checks`}>
         <CheckCircleIcon size={ICON_SIZE.SM} /> CI {checks.total}/{checks.total}
       </span>
     );
   }
   if (checks.state === "failure") {
     return (
-      <span className="h-5 text-(--color-error) text-xs flex items-center gap-1 shrink-0" title={`CI failed  ${checks.failed} of ${checks.total}`}>
+      <span className="h-6 text-(--color-error) text-xs flex items-center gap-1 shrink-0" title={`CI failed  ${checks.failed} of ${checks.total}`}>
         <XCircleIcon size={ICON_SIZE.SM} /> CI {checks.passed}/{checks.total}
       </span>
     );
@@ -160,7 +160,7 @@ function CiIndicator({ checks }: { checks: PrCardState["checks"] }) {
   const pendingLabel = checks.total === 0 ? "CI" : `CI ${checks.passed}/${checks.total}`;
   const pendingTitle = checks.total === 0 ? "Waiting for CI checks to start" : `CI running  ${checks.passed}/${checks.total}`;
   return (
-    <span className="h-5 text-(--color-warning) text-xs flex items-center gap-1 shrink-0 animate-pulse" title={pendingTitle}>
+    <span className="h-6 text-(--color-warning) text-xs flex items-center gap-1 shrink-0 animate-pulse" title={pendingTitle}>
       <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin" /> {pendingLabel}
     </span>
   );
@@ -275,14 +275,14 @@ function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: 
       <button
         onClick={handleMerge}
         disabled={merging}
-        className="h-5 px-2 text-xs font-medium whitespace-nowrap bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-l transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        className="h-6 px-2 text-xs font-medium whitespace-nowrap bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-l transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {merging ? "Merging..." : label}
       </button>
       <button
         onClick={() => setDropdownOpen(!dropdownOpen)}
         disabled={merging}
-        className="h-5 px-1 text-xs font-medium bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-r border-l border-black/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        className="h-6 px-1 text-xs font-medium bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-r border-l border-black/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         aria-label="Select merge method"
       >
         <CaretDownIcon size={12} />
@@ -491,7 +491,7 @@ function TerminalPhase({ card, sessionId, text }: { card: PrCardState; sessionId
   return (
     <div className="flex items-center gap-3 flex-nowrap">
       <PrStateBadge sessionId={sessionId} url={pr?.url} prNumber={pr?.number} />
-      <span className="h-5 flex items-center text-xs text-(--color-text-secondary) truncate min-w-0">{text}</span>
+      <span className="h-6 flex items-center text-xs text-(--color-text-secondary) truncate min-w-0">{text}</span>
     </div>
   );
 }
