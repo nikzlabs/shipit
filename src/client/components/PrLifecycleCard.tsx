@@ -94,9 +94,9 @@ function BranchLabel({ baseBranch, headBranch }: { baseBranch?: string; headBran
     <button
       onClick={handleCopy}
       title="Copy branch name"
-      className="h-5 text-xs truncate flex items-center gap-1 min-w-0 text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors cursor-pointer"
+      className="h-5 text-xs flex items-center gap-1 min-w-0 overflow-hidden text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors cursor-pointer"
     >
-      {content}
+      <span className="truncate">{content}</span>
     </button>
   );
 }
@@ -106,7 +106,7 @@ function OverflowMenu({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
 
   return (
-    <span className="relative shrink-0 ml-auto">
+    <span className="relative shrink-0">
       <button
         onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
         className="h-5 w-5 flex items-center justify-center rounded text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors"
@@ -360,17 +360,19 @@ function ReadyPhase({ card, sessionId, creating: externalCreating }: { card: PrC
     <div className="flex items-center gap-3 flex-nowrap">
       <PrStateBadge sessionId={sessionId} />
       <BranchLabel headBranch={card.headBranch} />
-      {hasDiffStats && <DiffStats ins={ins} del={del} onClick={openDiff} />}
       {hasDiffStats && (
-        <Button
-          size="sm"
-          onClick={handleCreate}
-          disabled={creating}
-          className="shrink-0 bg-(--color-success) hover:bg-(--color-success) hover:opacity-90 text-(--color-text-inverse)"
-        >
-          {creating && <CircleNotchIcon size={14} className="animate-spin" />}
-          {creating ? "Creating PR..." : "Create PR"}
-        </Button>
+        <span className="ml-auto shrink-0 flex items-center gap-3">
+          <DiffStats ins={ins} del={del} onClick={openDiff} />
+          <Button
+            size="sm"
+            onClick={handleCreate}
+            disabled={creating}
+            className="shrink-0 bg-(--color-success) hover:bg-(--color-success) hover:opacity-90 text-(--color-text-inverse)"
+          >
+            {creating && <CircleNotchIcon size={14} className="animate-spin" />}
+            {creating ? "Creating PR..." : "Create PR"}
+          </Button>
+        </span>
       )}
     </div>
   );
@@ -411,23 +413,24 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
       <div className="flex items-center gap-3 flex-nowrap">
         <PrStateBadge sessionId={sessionId} url={pr.url} prNumber={pr.number} />
         <BranchLabel baseBranch={pr.baseBranch} headBranch={pr.headBranch} />
-        <DiffStats ins={pr.insertions} del={pr.deletions} onClick={openDiff} />
-        <CiIndicator checks={card.checks} />
-        {showMergeButton && (
-          <MergeButton sessionId={sessionId} autoMerge={autoMerge} />
-        )}
-        {showFixButton && (
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={handleFixCI}
-            disabled={fixingCI}
-            className="shrink-0"
-          >
-            {fixingCI ? "Fixing..." : "Fix CI"}
-          </Button>
-        )}
-        <OverflowMenu>
+        <span className="ml-auto shrink-0 flex items-center gap-3">
+          <DiffStats ins={pr.insertions} del={pr.deletions} onClick={openDiff} />
+          <CiIndicator checks={card.checks} />
+          {showMergeButton && (
+            <MergeButton sessionId={sessionId} autoMerge={autoMerge} />
+          )}
+          {showFixButton && (
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={handleFixCI}
+              disabled={fixingCI}
+              className="shrink-0"
+            >
+              {fixingCI ? "Fixing..." : "Fix CI"}
+            </Button>
+          )}
+          <OverflowMenu>
           {showAutoMergeToggle && (
             <div className="px-2 py-1">
               <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />
@@ -439,6 +442,7 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
             </div>
           )}
         </OverflowMenu>
+        </span>
       </div>
       {autoMerge?.enabled && !isCiPassed && !isCiNone && (
         <div className="mt-1 text-xs text-(--color-text-secondary) pl-5">
