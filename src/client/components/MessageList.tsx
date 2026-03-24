@@ -211,6 +211,25 @@ export function MessageList({
               </div>
             );
           }
+          if (tool.name === "Agent") {
+            const description = (tool.input.description as string) ?? "Running agent...";
+            const subagentType = typeof tool.input.subagent_type === "string" ? tool.input.subagent_type : "";
+            const prompt = typeof tool.input.prompt === "string" ? tool.input.prompt : "";
+            const label = subagentType ? `Agent (${subagentType}):` : "Agent:";
+            return (
+              <div key={tool.id} data-testid="subagent-agent" className="border-l-2 border-(--color-success)/40 pl-3 space-y-1">
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="font-semibold text-(--color-success)">{label}</span>
+                  <span className="text-(--color-text-primary)">{description}</span>
+                </div>
+                {prompt && (
+                  <MarkdownTooltip content={prompt}>
+                    <div className="text-xs text-(--color-text-secondary) font-mono whitespace-pre-wrap overflow-hidden max-h-15 leading-5">{prompt}</div>
+                  </MarkdownTooltip>
+                )}
+              </div>
+            );
+          }
           // Skill
           const skillName = (tool.input.skill as string) ?? "unknown";
           const args = tool.input.args ? (tool.input.args as string) : "";

@@ -120,8 +120,8 @@ describe("buildVisualElements", () => {
       expect(STANDALONE_TOOLS).toEqual(new Set(["AskUserQuestion", "TodoWrite", "ExitPlanMode"]));
     });
 
-    it("SUBAGENT_TOOLS contains exactly Task and Skill", () => {
-      expect(SUBAGENT_TOOLS).toEqual(new Set(["Task", "Skill"]));
+    it("SUBAGENT_TOOLS contains exactly Task, Skill, and Agent", () => {
+      expect(SUBAGENT_TOOLS).toEqual(new Set(["Task", "Skill", "Agent"]));
     });
 
     it("extracts Task tool into its own subagent element", () => {
@@ -153,6 +153,30 @@ describe("buildVisualElements", () => {
         expect(elements[1].tool.name).toBe("Skill");
       }
       expect(elements[2].kind).toBe("tool-group");
+    });
+
+    it("extracts Agent tool into its own subagent element", () => {
+      const elements = buildVisualElements([
+        toolMsg([tool("t1", "Bash")]),
+        toolMsg([tool("t2", "Agent", { subagent_type: "Explore", description: "Explore codebase", prompt: "Explore this codebase..." })]),
+        toolMsg([tool("t3", "Grep")]),
+      ]);
+      expect(elements).toHaveLength(3);
+      expect(elements[0].kind).toBe("tool-group");
+      expect(elements[1]).toMatchObject({ kind: "subagent" });
+      if (elements[1].kind === "subagent") {
+        expect(elements[1].tool.name).toBe("Agent");
+        expect(elements[1].tool.input.description).toBe("Explore codebase");
+      }
+      expect(elements[2].kind).toBe("tool-group");
+    });
+
+    it("does not emit a message bubble for a message with only Agent tool", () => {
+      const elements = buildVisualElements([
+        toolMsg([tool("t1", "Agent", { description: "explore" })]),
+      ]);
+      expect(elements).toHaveLength(1);
+      expect(elements[0].kind).toBe("subagent");
     });
 
     it("does not emit a message bubble for a message with only subagent tools", () => {

@@ -4,7 +4,7 @@ import type { ChatMessage, ToolUseBlock, ToolResultBlock } from "./MessageList.j
 export const STANDALONE_TOOLS = new Set(["AskUserQuestion", "TodoWrite", "ExitPlanMode"]);
 
 // Tools extracted into their own top-level visual elements (not grouped, not inside message bubbles)
-export const SUBAGENT_TOOLS = new Set(["Task", "Skill"]);
+export const SUBAGENT_TOOLS = new Set(["Task", "Skill", "Agent"]);
 
 export type VisualElement =
   | { kind: "message"; index: number; hideTools: boolean }
