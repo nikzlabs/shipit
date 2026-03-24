@@ -26,6 +26,7 @@ import {
   WarningIcon,
   InfoIcon,
   GlobeIcon,
+  DotsThreeVerticalIcon,
 } from "@phosphor-icons/react";
 import type { GitHubDeploymentStatus } from "../../server/shared/types.js";
 import { ICON_SIZE } from "../design-tokens.js";
@@ -54,10 +55,10 @@ function DiffStats({ ins, del, onClick }: { ins: number; del: number; onClick?: 
     </>
   );
   if (!onClick) {
-    return <span className={linkClass}>{content}</span>;
+    return <span className={`${linkClass} shrink-0`}>{content}</span>;
   }
   return (
-    <button onClick={onClick} className={`${linkClass} cursor-pointer hover:text-(--color-text-secondary)`} title="View full diff">
+    <button onClick={onClick} className={`${linkClass} shrink-0 cursor-pointer hover:text-(--color-text-secondary)`} title="View full diff">
       {content}
     </button>
   );
@@ -78,23 +79,51 @@ function useOpenPrDiff(baseBranch?: string) {
   }, [sessionId, baseBranch]);
 }
 
-/** Displays branch info: just head branch if base is default, otherwise "base ← head". */
+/** Displays branch info: just head branch if base is default, otherwise "base ← head". Copies branch name on click. */
 function BranchLabel({ baseBranch, headBranch }: { baseBranch?: string; headBranch?: string }) {
+  const setToast = useUiStore((s) => s.setToast);
   if (!headBranch) return null;
+  const content = baseBranch && !isDefaultBranch(baseBranch) ? (
+    <>{baseBranch} <span className="text-(--color-text-tertiary)">←</span> {headBranch}</>
+  ) : headBranch;
+  const handleCopy = () => {
+    void navigator.clipboard.writeText(headBranch);
+    setToast({ message: "Branch name copied" });
+  };
   return (
-    <span className="h-5 text-xs text-(--color-text-secondary) truncate flex items-center gap-1">
-      {baseBranch && !isDefaultBranch(baseBranch) ? (
-        <>{baseBranch} <span className="text-(--color-text-tertiary)">←</span> {headBranch}</>
-      ) : headBranch}
-    </span>
+    <button
+      onClick={handleCopy}
+      title="Copy branch name"
+      className="h-5 text-xs truncate flex items-center gap-1 min-w-0 text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors cursor-pointer"
+    >
+      {content}
+    </button>
   );
 }
 
-function ViewPrLink({ url }: { url: string }) {
+/** Three-dot overflow menu for secondary actions (auto-merge, auto-fix, etc.). */
+function OverflowMenu({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+
   return (
-    <a href={url} target="_blank" rel="noopener noreferrer" className={linkClass}>
-      View PR
-    </a>
+    <span className="relative shrink-0 ml-auto">
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
+        className="h-5 w-5 flex items-center justify-center rounded text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors"
+        aria-label="More options"
+      >
+        <DotsThreeVerticalIcon size={ICON_SIZE.SM} weight="bold" />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setOpen(false); }} />
+          <div className="absolute right-0 top-full mt-1 z-50 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-lg shadow-xl py-1 min-w-48"
+            onClick={(e) => e.stopPropagation()}>
+            {children}
+          </div>
+        </>
+      )}
+    </span>
   );
 }
 
@@ -102,10 +131,10 @@ function ViewPrLink({ url }: { url: string }) {
 function ToggleSwitch({ label, enabled, onToggle, title }: { label: string; enabled: boolean; onToggle: () => void; title: string }) {
   return (
     <Button variant="ghost" size="sm" onClick={onToggle} title={title}>
-      {label}
       <span className={`inline-block w-6 h-3.5 rounded-full transition-colors ${enabled ? "bg-(--color-success)" : "bg-(--color-text-tertiary)"}`}>
         <span className={`block w-2.5 h-2.5 mt-0.5 rounded-full bg-(--color-text-inverse) transition-transform ${enabled ? "translate-x-3" : "translate-x-0.5"}`} />
       </span>
+      {label}
     </Button>
   );
 }
@@ -115,14 +144,14 @@ function CiIndicator({ checks }: { checks: PrCardState["checks"] }) {
 
   if (checks.state === "success") {
     return (
-      <span className="h-5 text-(--color-success) text-xs flex items-center gap-1" title={`CI passed  ${checks.total}/${checks.total} checks`}>
+      <span className="h-5 text-(--color-success) text-xs flex items-center gap-1 shrink-0" title={`CI passed  ${checks.total}/${checks.total} checks`}>
         <CheckCircleIcon size={ICON_SIZE.SM} /> CI {checks.total}/{checks.total}
       </span>
     );
   }
   if (checks.state === "failure") {
     return (
-      <span className="h-5 text-(--color-error) text-xs flex items-center gap-1" title={`CI failed  ${checks.failed} of ${checks.total}`}>
+      <span className="h-5 text-(--color-error) text-xs flex items-center gap-1 shrink-0" title={`CI failed  ${checks.failed} of ${checks.total}`}>
         <XCircleIcon size={ICON_SIZE.SM} /> CI {checks.passed}/{checks.total}
       </span>
     );
@@ -131,7 +160,7 @@ function CiIndicator({ checks }: { checks: PrCardState["checks"] }) {
   const pendingLabel = checks.total === 0 ? "CI" : `CI ${checks.passed}/${checks.total}`;
   const pendingTitle = checks.total === 0 ? "Waiting for CI checks to start" : `CI running  ${checks.passed}/${checks.total}`;
   return (
-    <span className="h-5 text-(--color-warning) text-xs flex items-center gap-1 animate-pulse" title={pendingTitle}>
+    <span className="h-5 text-(--color-warning) text-xs flex items-center gap-1 shrink-0 animate-pulse" title={pendingTitle}>
       <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin" /> {pendingLabel}
     </span>
   );
@@ -259,18 +288,21 @@ function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: 
         <CaretDownIcon size={12} />
       </button>
       {dropdownOpen && (
-        <div className="absolute top-full right-0 mt-1 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-md shadow-lg z-10 min-w-45">
-          {(["squash", "merge", "rebase"] as const).map((m) => (
-            <button
-              key={m}
-              onClick={() => { void setMergeMethod(sessionId, m); setDropdownOpen(false); }}
-              className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors text-left"
-            >
-              <span className="w-3 text-(--color-success)">{m === method ? <CheckCircleIcon size={12} /> : ""}</span>
-              {MERGE_METHOD_LABELS[m]}
-            </button>
-          ))}
-        </div>
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setDropdownOpen(false)} />
+          <div className="absolute top-full right-0 mt-1 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-md shadow-lg z-50 min-w-45">
+            {(["squash", "merge", "rebase"] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => { void setMergeMethod(sessionId, m); setDropdownOpen(false); }}
+                className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors text-left"
+              >
+                <span className="w-3 text-(--color-success)">{m === method ? <CheckCircleIcon size={12} /> : ""}</span>
+                {MERGE_METHOD_LABELS[m]}
+              </button>
+            ))}
+          </div>
+        </>
       )}
     </div>
   );
@@ -325,7 +357,7 @@ function ReadyPhase({ card, sessionId, creating: externalCreating }: { card: PrC
   };
 
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex items-center gap-3 flex-nowrap">
       <PrStateBadge sessionId={sessionId} />
       <BranchLabel headBranch={card.headBranch} />
       {hasDiffStats && <DiffStats ins={ins} del={del} onClick={openDiff} />}
@@ -334,7 +366,7 @@ function ReadyPhase({ card, sessionId, creating: externalCreating }: { card: PrC
           size="sm"
           onClick={handleCreate}
           disabled={creating}
-          className="bg-(--color-success) hover:bg-(--color-success) hover:opacity-90 text-(--color-text-inverse)"
+          className="shrink-0 bg-(--color-success) hover:bg-(--color-success) hover:opacity-90 text-(--color-text-inverse)"
         >
           {creating && <CircleNotchIcon size={14} className="animate-spin" />}
           {creating ? "Creating PR..." : "Create PR"}
@@ -376,17 +408,11 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
 
   return (
     <div>
-      <div className="flex items-center gap-3 flex-wrap">
-        <PrStateBadge sessionId={sessionId} />
+      <div className="flex items-center gap-3 flex-nowrap">
+        <PrStateBadge sessionId={sessionId} url={pr.url} prNumber={pr.number} />
         <BranchLabel baseBranch={pr.baseBranch} headBranch={pr.headBranch} />
         <DiffStats ins={pr.insertions} del={pr.deletions} onClick={openDiff} />
         <CiIndicator checks={card.checks} />
-        {isCiFailed && (
-          <AutoFixToggle sessionId={sessionId} autoFix={autoFix} />
-        )}
-        {showAutoMergeToggle && (
-          <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />
-        )}
         {showMergeButton && (
           <MergeButton sessionId={sessionId} autoMerge={autoMerge} />
         )}
@@ -396,11 +422,23 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
             size="sm"
             onClick={handleFixCI}
             disabled={fixingCI}
+            className="shrink-0"
           >
-            {fixingCI ? "Fixing..." : "Fix CI Issues"}
+            {fixingCI ? "Fixing..." : "Fix CI"}
           </Button>
         )}
-        <ViewPrLink url={pr.url} />
+        <OverflowMenu>
+          {showAutoMergeToggle && (
+            <div className="px-2 py-1">
+              <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />
+            </div>
+          )}
+          {isCiFailed && (
+            <div className="px-2 py-1">
+              <AutoFixToggle sessionId={sessionId} autoFix={autoFix} />
+            </div>
+          )}
+        </OverflowMenu>
       </div>
       {autoMerge?.enabled && !isCiPassed && !isCiNone && (
         <div className="mt-1 text-xs text-(--color-text-secondary) pl-5">
@@ -447,10 +485,9 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
 function TerminalPhase({ card, sessionId, text }: { card: PrCardState; sessionId: string; text: string }) {
   const pr = card.pr;
   return (
-    <div className="flex items-center gap-3">
-      <PrStateBadge sessionId={sessionId} />
-      <span className="h-5 flex items-center text-xs text-(--color-text-secondary)">{text}</span>
-      {pr && <ViewPrLink url={pr.url} />}
+    <div className="flex items-center gap-3 flex-nowrap">
+      <PrStateBadge sessionId={sessionId} url={pr?.url} prNumber={pr?.number} />
+      <span className="h-5 flex items-center text-xs text-(--color-text-secondary) truncate min-w-0">{text}</span>
     </div>
   );
 }
@@ -530,7 +567,7 @@ export function PrLifecycleCard({ sessionId }: { sessionId: string }) {
 
 // ---- PR state badge (reused in sidebar + card phases) ----
 
-export function PrStateBadge({ sessionId }: { sessionId: string }) {
+export function PrStateBadge({ sessionId, url, prNumber }: { sessionId: string; url?: string; prNumber?: number }) {
   const status = usePrStore((s) => s.statusBySession[sessionId]);
   const card = usePrStore((s) => s.cardBySession[sessionId]);
 
@@ -538,25 +575,30 @@ export function PrStateBadge({ sessionId }: { sessionId: string }) {
 
   const base = "w-5 h-5 rounded-md flex items-center justify-center shrink-0 border";
 
+  let className: string;
+  let title: string;
+  let icon: React.ReactNode;
+
   if (prState === "merged") {
-    return (
-      <span className={`${base} bg-(--color-pr-subtle) text-(--color-pr) border-(--color-pr-border)`} title="PR merged">
-        <GitMergeIcon size={ICON_SIZE.SM} />
-      </span>
-    );
-  }
-  if (prState === "open") {
-    return (
-      <span className={`${base} bg-(--color-success-subtle) text-(--color-success) border-(--color-success-border)`} title="PR open">
-        <GitPullRequestIcon size={ICON_SIZE.SM} />
-      </span>
-    );
+    className = `${base} bg-(--color-pr-subtle) text-(--color-pr) border-(--color-pr-border)`;
+    title = prNumber ? `PR #${prNumber} merged` : "PR merged";
+    icon = <GitMergeIcon size={ICON_SIZE.SM} />;
+  } else if (prState === "open") {
+    className = `${base} bg-(--color-success-subtle) text-(--color-success) border-(--color-success-border)`;
+    title = prNumber ? `PR #${prNumber}` : "PR open";
+    icon = <GitPullRequestIcon size={ICON_SIZE.SM} />;
+  } else {
+    className = `${base} bg-(--color-bg-tertiary) text-(--color-text-tertiary) border-(--color-border-secondary)`;
+    title = prState === "closed" ? (prNumber ? `PR #${prNumber} closed` : "PR closed") : "Branch";
+    icon = <GitBranchIcon size={ICON_SIZE.SM} />;
   }
 
-  // Default: no PR (branch only), or closed PR
-  return (
-    <span className={`${base} bg-(--color-bg-tertiary) text-(--color-text-tertiary) border-(--color-border-secondary)`} title={prState === "closed" ? "PR closed" : "Branch"}>
-      <GitBranchIcon size={ICON_SIZE.SM} />
-    </span>
-  );
+  if (url) {
+    return (
+      <a href={url} target="_blank" rel="noopener noreferrer" className={`${className} hover:opacity-80 transition-opacity`} title={title}>
+        {icon}
+      </a>
+    );
+  }
+  return <span className={className} title={title}>{icon}</span>;
 }
