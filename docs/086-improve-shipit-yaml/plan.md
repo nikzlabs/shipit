@@ -216,20 +216,20 @@ project and creates both docker-compose.yml and shipit.yaml. See "Onboarding flo
 ```typescript
 interface ShipitConfig {
   version?: number;
-  agent: AgentConfig;
-  compose?: ComposeConfig;
+  agent?: AgentConfig;                  // optional, all fields have defaults
+  compose?: ComposeConfig;              // optional, auto-detected if absent
 }
 
 interface AgentConfig {
-  memory: number;
-  cpu: number;
-  pids: number;
-  install: string[];                    // normalized to array
+  memory?: number;                      // default: 1024
+  cpu?: number;                         // default: 0.5
+  pids?: number;                        // default: 256
+  install?: string[];                   // default: [] (no install steps)
 }
 
 interface ComposeConfig {
   file: string;                         // path to compose file
-  dockerSocket: boolean;                // grant socket access (default: false)
+  dockerSocket?: boolean;               // default: false
 }
 ```
 
