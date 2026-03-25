@@ -240,7 +240,7 @@ export function MessageInput({
 
   return (
     <div
-      className="border-t border-(--color-border-primary) px-3 sm:px-6 py-3 sm:py-4 relative"
+      className="px-4 pb-3 relative"
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
@@ -255,19 +255,19 @@ export function MessageInput({
 
       {/* File attachment chips */}
       {pendingFiles.length > 0 && onRemoveFile && (
-        <div className="mb-2 max-w-3xl mx-auto">
+        <div className="mb-2">
           <FileAttachmentChips files={pendingFiles} onRemove={onRemoveFile} />
         </div>
       )}
 
       {/* Upload chips */}
       {uploads.length > 0 && onRemoveUpload && onRetryUpload && (
-        <div className="mb-2 max-w-3xl mx-auto">
+        <div className="mb-2">
           <FileUploadChips uploads={uploads} onRemove={onRemoveUpload} onRetry={onRetryUpload} />
         </div>
       )}
 
-      <div className="max-w-3xl mx-auto relative">
+      <div className="relative">
         {/* @ autocomplete popup */}
         {showAutoComplete && (
           <FileAutoComplete
@@ -290,7 +290,7 @@ export function MessageInput({
         />
 
         {/* Unified input box */}
-        <div className="flex flex-col rounded-xl bg-(--color-bg-secondary) border border-(--color-border-secondary) focus-within:ring-1 focus-within:ring-(--color-accent)/80">
+        <div className="flex flex-col rounded-b-xl bg-(--color-bg-secondary) border border-(--color-border-secondary) focus-within:border-(--color-accent)/80 focus-within:ring-1 focus-within:ring-(--color-accent)/80">
           {/* Textarea — full width on top */}
           <textarea
             ref={textareaRef}
