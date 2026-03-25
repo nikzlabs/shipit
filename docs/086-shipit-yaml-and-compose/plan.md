@@ -60,10 +60,11 @@ Today ShipIt has two disconnected ways to run services:
 - [061-self-hosting](../061-self-hosting/plan.md) — **partially superseded.** Docker
   API proxy and security policy remain useful for compose container sanitization.
   `capabilities.docker` is replaced by `compose.docker-socket` (scoped to compose
-  services, not the agent).
+  services, not the agent). Update that doc to cross-reference this one.
 - [074-preview-container-isolation](../074-preview-container-isolation/plan.md) —
   **superseded.** The dual-container topology (agent + preview) is replaced by agent
   container + compose stack. Secrets isolation model changes (see open questions).
+  Update that doc to cross-reference this one.
 
 ## Design
 
@@ -253,6 +254,9 @@ parser only handles agent config and the compose file path.
 - Unknown keys inside `agent` → warning
 - Type mismatches → `ShipitConfigError` with clear message and field path
 - All sections optional — an empty `shipit.yaml` is valid (everything defaults)
+- Old-format keys (`preview`, `resources`, `capabilities`, `services`) → warning with
+  migration hint (e.g., "The `preview` block has been removed. Define services in
+  docker-compose.yml instead. See /shipit-docs/shipit-yaml.md.")
 
 ### What's gone
 
@@ -303,7 +307,9 @@ services:
 | `manual` | Service does not start until user clicks "Start" in UI. Default for services without `ports`. |
 
 When omitted, services with `ports` default to `auto`, services without default to
-`manual`. The `x-` prefix means `docker compose` ignores it locally.
+`manual`. The `x-` prefix means `docker compose` ignores it locally. If a service has
+user-defined `profiles` in the compose file, ShipIt preserves them and adds the
+`shipit-manual` profile alongside (it doesn't replace the user's profiles).
 
 ### Architecture overview
 
@@ -365,10 +371,12 @@ networks:
 Compose natively merges override files. The user's file defines services; the override
 adds ShipIt's labels, network, and volume rewrites.
 
-**Volume rewriting:** Bind mounts in the user's compose file (e.g., `.:/workspace`)
-are rewritten in the override to use the workspace named volume with the correct
-subpath. The orchestrator detects bind mounts referencing the workspace root and
-replaces them.
+**Volume rewriting:** Bind mounts in the user's compose file are rewritten in the
+override to use the workspace named volume with the correct subpath. The orchestrator
+rewrites any bind mount whose source is `.` or `./` (the workspace root). Subdirectory
+mounts (e.g., `./src:/code`) are rewritten to use the corresponding subpath within
+the workspace volume. Mounts with absolute source paths or paths outside the workspace
+(e.g., `../`) are rejected with a validation error.
 
 **Manual services via profiles:** Services with `x-shipit-preview: manual` (or
 defaulting to manual) are assigned to the `shipit-manual` profile in the override.
@@ -409,6 +417,8 @@ orchestrator directly. It has the workspace mounted at `/workspace` and watches:
 - Workspace tree → notify browser for file explorer updates
 
 No sidecar container needed. `fs.watch` on Linux uses inotify — kernel-level, cheap.
+Today this watching runs in the services container's session worker — it moves to the
+orchestrator since the services container is being eliminated.
 
 ### Agent container integration
 
@@ -435,6 +445,11 @@ interface ManagedService {
   logs(): AsyncIterable<string>;
 }
 ```
+
+`logs()` streams output from `docker compose logs -f <service>`, including startup
+errors. Multiple consumers (browser tabs) can attach simultaneously — the
+ServiceManager broadcasts to all via the same multi-viewer pattern used by the current
+session runner.
 
 ### Docker socket access (`compose.docker-socket`)
 
@@ -507,6 +522,10 @@ The agent learns how to write compose files for ShipIt via `/shipit-docs/compose
   the default behavior (auto if has ports, manual otherwise) is correct.
 - **What not to do** — don't add `docker-socket` volumes (ShipIt manages that via
   shipit.yaml). Don't use `network_mode: host`. Don't set `privileged: true`.
+  Don't use `build:` — use pre-built public images.
+
+This is a concise quick-start guide (not a comprehensive reference). The agent can
+read the full Docker Compose documentation if it needs advanced features.
 
 ### Preview panel states
 
@@ -521,10 +540,9 @@ The agent learns how to write compose files for ShipIt via `/shipit-docs/compose
 ## Decided
 
 ### Install execution
-Install runs in the agent container before the compose stack starts. The orchestrator
-creates the agent container, runs install steps sequentially, then starts the compose
-stack. This serializes startup but is acceptable — install typically runs once (tracked
-by `.shipit/.install-done` marker) and is skipped on resume.
+Install runs in the agent container before the compose stack starts (see `agent.install`
+in the schema section for full behavior). This serializes startup but is acceptable —
+install typically runs once and is skipped on resume.
 
 ### Resource management
 Each service is a separate container. For self-hosted, don't cap user-defined compose
@@ -542,8 +560,18 @@ the current services container (Fastify wrapper, SSE, HTTP API) is arguably heav
 The orchestrator runs compose directly against the Docker socket, bypassing the proxy.
 The likely approach is policy-by-construction (orchestrator generates the override,
 controls its contents — inject `cap_drop: [NET_RAW]`, no `privileged`, restrict
-volumes) plus validation of user compose files before merging. But the exact rules and
-enforcement model need more thought, especially for managed deployments.
+volumes) plus validation of user compose files before merging.
+
+Validation runs when the orchestrator reads the compose file (on startup and on config
+change). Invalid files produce a `ShipitConfigError` surfaced in the preview panel.
+Likely validation rules:
+- Reject `privileged: true`
+- Reject `network_mode: host`
+- Reject Docker socket mounts unless `compose.docker-socket: true`
+- Reject absolute-path or `../` bind mounts (must stay within workspace)
+- Inject `cap_drop: [NET_RAW]` via override
+
+The exact enforcement model for managed deployments needs more thought.
 
 ### Secrets injection
 Today the orchestrator injects secrets into the services container via HTTP (held in
