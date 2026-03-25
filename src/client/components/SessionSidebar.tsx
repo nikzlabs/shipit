@@ -302,7 +302,7 @@ export function SessionSidebar({
     <div className="flex h-full shrink-0 min-h-0">
     <div className="flex flex-col h-full bg-(--color-bg-primary) border-r border-(--color-border-primary) min-h-0" style={{ width }}>
       {/* Active repo header */}
-      <div className="flex items-center gap-2 px-3 py-2.5 border-b border-(--color-border-primary) shrink-0">
+      <div className="flex items-center gap-2 px-3 h-10 border-b border-(--color-border-primary) shrink-0">
         <Button
           variant="ghost"
           size="sm"
