@@ -147,6 +147,61 @@ services:
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("Path traversal");
   });
 
+  it("handles long-syntax port definitions", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    ports:
+      - published: 8080
+        target: 80
+`);
+    const services = parseComposeFile(p, { dockerSocket: false });
+    expect(services[0].ports).toEqual(["8080:80"]);
+  });
+
+  it("rejects unsupported port entry types", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    ports:
+      - published: 8080
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("unsupported ports");
+  });
+
+  it("rejects object-form volume with path traversal", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    volumes:
+      - type: bind
+        source: ../secret
+        target: /data
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("Path traversal");
+  });
+
+  it("allows named volume in object form", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    volumes:
+      - type: volume
+        source: mydata
+        target: /data
+`);
+    const services = parseComposeFile(p, { dockerSocket: false });
+    expect(services).toHaveLength(1);
+  });
+
   it("throws for missing compose file", () => {
     expect(() => parseComposeFile("/nonexistent/file.yml", { dockerSocket: false }))
       .toThrow("Cannot read compose file");
@@ -162,8 +217,6 @@ services:
 describe("generateComposeOverride", () => {
   const baseOpts = {
     sessionId: "test-session-123",
-    workspaceVolume: "shipit-workspace-abc",
-    workspaceSubpath: "sessions/test-session-123/workspace",
     composeConfig: { file: "docker-compose.yml", dockerSocket: false },
   };
 

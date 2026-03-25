@@ -243,14 +243,28 @@ export function resolveShipitConfig(dir: string): ShipitConfig {
 
   let config: ShipitConfig;
 
+  // Try to read the file — only fall back to defaults on missing/unreadable file
+  let content: string | undefined;
   try {
-    const content = fs.readFileSync(yamlPath, "utf-8");
-    const parsed: unknown = parseYaml(content);
-    config = parseShipitConfig(parsed);
-  } catch (err) {
-    if (err instanceof ShipitConfigError) throw err;
+    content = fs.readFileSync(yamlPath, "utf-8");
+  } catch {
     // File doesn't exist or can't be read — use defaults
     config = { agent: { ...AGENT_DEFAULTS, install: [] }, warnings: [] };
+  }
+
+  if (content !== undefined) {
+    try {
+      const parsed: unknown = parseYaml(content);
+      config = parseShipitConfig(parsed);
+    } catch (err) {
+      if (err instanceof ShipitConfigError) throw err;
+      // YAML syntax error — surface it instead of silently defaulting
+      const message = err instanceof Error ? err.message : String(err);
+      throw new ShipitConfigError(`Failed to parse shipit.yaml: ${message}`);
+    }
+  } else {
+    // Already set above in the catch block, but TypeScript needs this
+    config ??= { agent: { ...AGENT_DEFAULTS, install: [] }, warnings: [] };
   }
 
   // Auto-detect compose file if not explicitly specified

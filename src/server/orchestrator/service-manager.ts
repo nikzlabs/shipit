@@ -46,10 +46,6 @@ export interface ServiceManagerOptions {
   workspaceDir: string;
   /** Compose config from shipit.yaml. */
   composeConfig: ComposeConfig;
-  /** Workspace volume name for volume rewrites. */
-  workspaceVolume?: string;
-  /** Workspace subpath within the volume. */
-  workspaceSubpath?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,8 +67,6 @@ export class ServiceManager extends EventEmitter {
   private readonly sessionId: string;
   private readonly workspaceDir: string;
   private readonly composeConfig: ComposeConfig;
-  private readonly workspaceVolume: string;
-  private readonly workspaceSubpath: string;
 
   private services = new Map<string, ManagedService>();
   private logProcesses = new Map<string, ChildProcess>();
@@ -83,8 +77,6 @@ export class ServiceManager extends EventEmitter {
     this.sessionId = opts.sessionId;
     this.workspaceDir = opts.workspaceDir;
     this.composeConfig = opts.composeConfig;
-    this.workspaceVolume = opts.workspaceVolume ?? "shipit-workspace";
-    this.workspaceSubpath = opts.workspaceSubpath ?? `sessions/${opts.sessionId}/workspace`;
   }
 
   /** Whether the compose stack has been started. */
@@ -131,8 +123,6 @@ export class ServiceManager extends EventEmitter {
     // Generate override
     const overrideOpts: ComposeOverrideOptions = {
       sessionId: this.sessionId,
-      workspaceVolume: this.workspaceVolume,
-      workspaceSubpath: this.workspaceSubpath,
       composeConfig: this.composeConfig,
     };
     const overrideContent = generateComposeOverride(parsedServices, overrideOpts);
@@ -336,11 +326,40 @@ export class ServiceManager extends EventEmitter {
 
 /**
  * Extract the host port from a port mapping string.
- * E.g., "5173:5173" → 5173, "8080:80" → 8080, "5173" → 5173
+ * Supports common Docker Compose forms:
+ * - "5173" → 5173
+ * - "5173:5173" → 5173
+ * - "8080:80" → 8080
+ * - "5173:5173/tcp" → 5173
+ * - "127.0.0.1:5173:5173" → 5173
  */
 function extractHostPort(portMapping: string): number | undefined {
-  const parts = portMapping.split(":");
-  const portStr = parts[0];
+  if (!portMapping) return undefined;
+
+  // Strip optional protocol suffix ("/tcp", "/udp")
+  const withoutProtocol = portMapping.split("/")[0].trim();
+  if (!withoutProtocol) return undefined;
+
+  const parts = withoutProtocol.split(":");
+  let portStr: string | undefined;
+
+  switch (parts.length) {
+    case 1:
+      // "HOST_PORT"
+      portStr = parts[0];
+      break;
+    case 2:
+      // "HOST_PORT:CONTAINER_PORT"
+      portStr = parts[0];
+      break;
+    case 3:
+      // "HOST_IP:HOST_PORT:CONTAINER_PORT"
+      portStr = parts[1];
+      break;
+    default:
+      return undefined;
+  }
+
   const port = parseInt(portStr, 10);
   return Number.isFinite(port) && port > 0 ? port : undefined;
 }

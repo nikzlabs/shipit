@@ -99,6 +99,34 @@ services:
     expect(web?.port).toBe(8080);
   });
 
+  it("extracts host port from IP:port:container format", async () => {
+    const dir = setup();
+    writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    ports: ["127.0.0.1:5173:5173"]
+`);
+    const mgr = createManager(dir);
+    try { await mgr.start(); } catch { /* expected */ }
+    const web = mgr.getService("web");
+    expect(web?.port).toBe(5173);
+  });
+
+  it("extracts host port from port/protocol format", async () => {
+    const dir = setup();
+    writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    ports: ["3000:3000/tcp"]
+`);
+    const mgr = createManager(dir);
+    try { await mgr.start(); } catch { /* expected */ }
+    const web = mgr.getService("web");
+    expect(web?.port).toBe(3000);
+  });
+
   it("emits service_status events", async () => {
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");

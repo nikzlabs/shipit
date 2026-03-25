@@ -31,10 +31,6 @@ export interface ComposeService {
 export interface ComposeOverrideOptions {
   /** Session ID for labels and network naming. */
   sessionId: string;
-  /** Workspace volume name (e.g. "shipit-workspace-abc123"). */
-  workspaceVolume: string;
-  /** Path to workspace within the volume (e.g. "sessions/abc123/workspace"). */
-  workspaceSubpath: string;
   /** Compose config from shipit.yaml. */
   composeConfig: ComposeConfig;
 }
@@ -83,9 +79,26 @@ export function parseComposeFile(
     // Security validation
     validateServiceSecurity(name, svc, opts.dockerSocket);
 
-    // Extract ports
-    const ports = Array.isArray(svc.ports)
-      ? svc.ports.map((p: unknown) => String(p))
+    // Extract ports (supports short syntax "8080:80" and long syntax { published, target })
+    const rawPorts = Array.isArray(svc.ports) ? svc.ports : undefined;
+    const ports = rawPorts
+      ? rawPorts.map((p: unknown, index: number) => {
+          if (typeof p === "string" || typeof p === "number") return String(p);
+          if (p && typeof p === "object") {
+            const obj = p as Record<string, unknown>;
+            const published = obj.published;
+            const target = obj.target;
+            if (
+              (typeof published === "string" || typeof published === "number") &&
+              (typeof target === "string" || typeof target === "number")
+            ) {
+              return `${String(published)}:${String(target)}`;
+            }
+          }
+          throw new ComposeValidationError(
+            `Service \`${name}\`: unsupported ports[${index}] entry; expected string/number or long syntax with \`published\` and \`target\` fields.`,
+          );
+        })
       : undefined;
 
     // Extract x-shipit-preview
@@ -133,11 +146,21 @@ function validateServiceSecurity(
   // Check volumes for Docker socket and path traversal
   if (Array.isArray(svc.volumes)) {
     for (const vol of svc.volumes) {
-      const volStr = typeof vol === "string" ? vol : (vol as Record<string, unknown>)?.source as string;
-      if (!volStr) continue;
+      // Extract source path from both string and object forms
+      let source: string | undefined;
+      if (typeof vol === "string") {
+        source = vol.split(":")[0];
+      } else if (vol && typeof vol === "object") {
+        const obj = vol as Record<string, unknown>;
+        // Object form: { type: "bind", source: "./src", target: "/app" }
+        // Skip named volumes (type: "volume") — they don't have host paths
+        if (obj.type === "volume") continue;
+        if (typeof obj.source === "string") source = obj.source;
+      }
+      if (!source) continue;
 
       // Docker socket check
-      if (volStr.includes("/var/run/docker.sock") && !dockerSocket) {
+      if (source.includes("/var/run/docker.sock") && !dockerSocket) {
         throw new ComposeValidationError(
           `Service \`${name}\`: Docker socket mount is not allowed. ` +
           `Set \`compose.docker-socket: true\` in shipit.yaml to enable it.`,
@@ -145,20 +168,17 @@ function validateServiceSecurity(
       }
 
       // Path traversal check — reject absolute paths and ../
-      if (typeof vol === "string") {
-        const source = vol.split(":")[0];
-        if (source.startsWith("/") && !source.startsWith("/var/run/docker.sock")) {
-          throw new ComposeValidationError(
-            `Service \`${name}\`: Absolute bind mount path \`${source}\` is not allowed. ` +
-            `Use relative paths within the workspace.`,
-          );
-        }
-        if (source.includes("..")) {
-          throw new ComposeValidationError(
-            `Service \`${name}\`: Path traversal \`${source}\` is not allowed. ` +
-            `Bind mounts must stay within the workspace.`,
-          );
-        }
+      if (source.startsWith("/") && !source.startsWith("/var/run/docker.sock")) {
+        throw new ComposeValidationError(
+          `Service \`${name}\`: Absolute bind mount path \`${source}\` is not allowed. ` +
+          `Use relative paths within the workspace.`,
+        );
+      }
+      if (source.includes("..")) {
+        throw new ComposeValidationError(
+          `Service \`${name}\`: Path traversal \`${source}\` is not allowed. ` +
+          `Bind mounts must stay within the workspace.`,
+        );
       }
     }
   }

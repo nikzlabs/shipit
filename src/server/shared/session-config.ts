@@ -121,15 +121,15 @@ export function resolveSessionConfig(sessionDir: string): SessionConfig {
     // File doesn't exist or can't be read — use defaults
   }
 
-  // Detect format: new format has `agent` or `compose` or `version` keys,
-  // or no old-format keys at all.
+  // Detect format: new format has `agent` or `compose` or `version` keys.
+  // When new keys are present, prefer the new parser even if old keys also exist
+  // (common during migration).
   const hasNewKeys = doc && ("agent" in doc || "compose" in doc || "version" in doc);
-  const hasOldKeys = doc && ("resources" in doc || "capabilities" in doc);
 
   let resources: SessionResourceConfig;
   let capabilities: SessionCapabilities;
 
-  if (hasNewKeys && !hasOldKeys) {
+  if (hasNewKeys) {
     // New format — delegate to unified parser
     let shipitConfig: ShipitConfig;
     try {
