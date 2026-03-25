@@ -42,10 +42,9 @@ describe("MessageInput", () => {
       expect(onSend).not.toHaveBeenCalled();
     });
 
-    it("disables input when disabled prop is true", () => {
+    it("disables send button when disabled prop is true", () => {
       render(<MessageInput onSend={vi.fn()} disabled={true} />);
-      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
-      expect(textarea).toBeDisabled();
+      expect(screen.getByLabelText("Send message")).toBeDisabled();
     });
   });
 
@@ -80,14 +79,14 @@ describe("MessageInput", () => {
   describe("drag and drop", () => {
     it("shows drop zone overlay when dragging over", () => {
       render(<MessageInput onSend={vi.fn()} disabled={false} />);
-      const container = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)").closest("div.border-t")!;
+      const container = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)").closest("div.px-4")!;
       fireEvent.dragEnter(container, { dataTransfer: { files: [] } });
       expect(screen.getByText("Drop files here")).toBeInTheDocument();
     });
 
     it("hides drop zone overlay when dragging out", () => {
       render(<MessageInput onSend={vi.fn()} disabled={false} />);
-      const container = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)").closest("div.border-t")!;
+      const container = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)").closest("div.px-4")!;
       fireEvent.dragEnter(container, { dataTransfer: { files: [] } });
       expect(screen.getByText("Drop files here")).toBeInTheDocument();
       fireEvent.dragLeave(container, { dataTransfer: { files: [] } });

@@ -37,6 +37,7 @@ export function MessageInput({
   modelInfo,
   contextTokens = 0,
   hasActiveSession = false,
+  autoFocus = false,
 }: {
   onSend: (text: string) => void;
   disabled: boolean;
@@ -61,6 +62,8 @@ export function MessageInput({
   modelInfo?: ModelInfo | null;
   contextTokens?: number;
   hasActiveSession?: boolean;
+  /** When true, focus the textarea immediately. */
+  autoFocus?: boolean;
 }) {
   const [text, setText] = useState("");
   const [isDragging, setIsDragging] = useState(false);
@@ -86,6 +89,15 @@ export function MessageInput({
       });
     }
   }, []);
+
+  // Auto-focus textarea when requested (e.g. "New Session" click)
+  useEffect(() => {
+    if (autoFocus) {
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+      });
+    }
+  }, [autoFocus]);
 
   const addFiles = useCallback(
     (files: FileList | File[]) => {
@@ -299,9 +311,8 @@ export function MessageInput({
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder="Describe what to build... (type @ to attach files)"
-            disabled={disabled}
             rows={1}
-            className="w-full resize-none bg-transparent px-4 pt-3 pb-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none disabled:opacity-50 field-sizing-content"
+            className="w-full resize-none bg-transparent px-4 pt-3 pb-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none field-sizing-content"
           />
 
           {/* Toolbar row — below textarea */}

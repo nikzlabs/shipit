@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { PrLifecycleCard, PrStateBadge } from "./PrLifecycleCard.js";
 import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
@@ -110,7 +110,7 @@ describe("PrLifecycleCard", () => {
     render(<PrLifecycleCard sessionId="s1" />);
 
     expect(screen.getByText("feature-branch")).toBeInTheDocument();
-    expect(screen.getByText("View PR")).toBeInTheDocument();
+    expect(screen.getByTitle("PR #42")).toBeInTheDocument();
     expect(screen.getByText(/CI/)).toBeInTheDocument();
   });
 
@@ -160,10 +160,10 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" />);
 
-    expect(screen.getByText("Fix CI Issues")).toBeInTheDocument();
+    expect(screen.getByText("Fix CI")).toBeInTheDocument();
   });
 
-  it("shows auto-fix toggle when CI fails", () => {
+  it("shows auto-fix toggle when CI fails (inside overflow menu)", () => {
     setCard("s1", {
       ...openPrCard,
       checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
@@ -171,6 +171,7 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" />);
 
+    fireEvent.click(screen.getByLabelText("More options"));
     expect(screen.getByText("Auto-fix")).toBeInTheDocument();
   });
 
@@ -197,7 +198,7 @@ describe("PrLifecycleCard", () => {
 
     expect(screen.getByText(/Auto-fix exhausted/)).toBeInTheDocument();
     // Should show Fix CI Issues button as fallback
-    expect(screen.getByText("Fix CI Issues")).toBeInTheDocument();
+    expect(screen.getByText("Fix CI")).toBeInTheDocument();
   });
 
   it("hides Fix CI button when auto-fix is enabled and running", () => {
@@ -220,7 +221,9 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" />);
 
-    expect(screen.queryByText("Fix CI Issues")).toBeNull();
+    expect(screen.queryByText("Fix CI")).toBeNull();
+    // Auto-fix toggle should not appear even in overflow menu
+    fireEvent.click(screen.getByLabelText("More options"));
     expect(screen.queryByText("Auto-fix")).toBeNull();
   });
 
@@ -271,7 +274,7 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByText("Rebase and merge")).toBeInTheDocument();
   });
 
-  it("renders auto-merge toggle when CI passed", () => {
+  it("renders auto-merge toggle when CI passed (inside overflow menu)", () => {
     setCard("s1", {
       ...openPrCard,
       checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
@@ -279,6 +282,7 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" />);
 
+    fireEvent.click(screen.getByLabelText("More options"));
     expect(screen.getByText("Auto-merge")).toBeInTheDocument();
   });
 
@@ -366,7 +370,7 @@ describe("PrLifecycleCard", () => {
     render(<PrLifecycleCard sessionId="s1" />);
 
     expect(screen.getByText(/PR #42 merged/)).toBeInTheDocument();
-    expect(screen.getByText("View PR")).toBeInTheDocument();
+    expect(screen.getByTitle("PR #42 merged")).toBeInTheDocument();
   });
 
   it("renders error phase with message and retry button", () => {
