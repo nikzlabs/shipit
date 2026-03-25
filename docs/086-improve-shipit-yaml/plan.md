@@ -5,8 +5,8 @@ status: planned
 # Improve shipit.yaml
 
 Redesign shipit.yaml for long-term stability and extensibility. Replace the single
-`preview` block with named `services`, support multi-step installs, unify parsing,
-and add strict validation.
+`preview` block with named `services`, move capabilities and resources into their
+owning sections, support multi-step installs, unify parsing, and add strict validation.
 
 ## Motivation
 
@@ -25,8 +25,23 @@ The current shipit.yaml has grown organically and has several problems:
    still include a `preview` section or the parser throws.
 6. **`install` is a flat string** — no way to express multi-step installs (e.g.,
    `npm install` then `npx prisma generate`).
+7. **`capabilities` floats at top level** — `docker: true` only affects the agent
+   container, but nothing in the schema communicates that. Same for `resources` — agent
+   and services resources are split across a separate top-level block instead of living
+   next to what they configure.
 
 ## Design
+
+### Top-level structure
+
+Four top-level keys, each owning its own scope:
+
+```yaml
+version: 1          # Optional. Schema version for future-proofing.
+install: ...        # Optional. Dependency installation commands.
+agent: ...          # Optional. Agent container config (resources, capabilities).
+services: ...       # Optional. Named service processes + shared container resources.
+```
 
 ### Full example
 
@@ -37,7 +52,19 @@ install:
   - npm install
   - npx prisma generate
 
+agent:
+  memory: 2048
+  cpu: 1.0
+  pids: 512
+  capabilities:
+    docker: true
+
 services:
+  resources:
+    memory: 1024
+    cpu: 1.0
+    pids: 2048
+
   api:
     command: npm run server
     directory: packages/api
@@ -51,24 +78,11 @@ services:
   docs:
     html: docs/index.html
     preview: manual   # won't start until user clicks "Start" in the UI
-
-resources:
-  agent:
-    memory: 2048
-    cpu: 1.0
-    pids: 512
-  services:
-    memory: 1024
-    cpu: 1.0
-    pids: 2048
-
-capabilities:
-  docker: true
 ```
 
 ### Simple single-service form
 
-The common case stays concise — a config with one service:
+The common case stays concise:
 
 ```yaml
 install: npm install
@@ -79,7 +93,7 @@ services:
     port: 5173
 ```
 
-### Changes by section
+### Sections
 
 #### `version` (optional, integer)
 
@@ -115,20 +129,66 @@ is reported. The `.shipit/.install-done` marker is only written after all steps 
 
 When `install` is a string, it's normalized to a single-element list internally.
 
-#### `services` (optional, map of named services)
+#### `agent` (optional)
 
-Replaces the old `preview` block. Each service is a named entry with its own command,
-directory, port, and startup behavior.
+Configures the agent container (runs Claude CLI). Resources and capabilities live here
+because they only affect this container.
+
+```yaml
+agent:
+  memory: 2048        # Memory in MB (default: 1024, max: 4096)
+  cpu: 1.0            # CPU cores (default: 0.5, max: 4)
+  pids: 512           # Max processes (default: 256, max: 2048)
+  capabilities:
+    docker: true      # Grant Docker access (default: false)
+```
+
+**`agent` fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `memory` | integer | 1024 | Memory limit in MB |
+| `cpu` | float | 0.5 | CPU cores |
+| `pids` | integer | 256 | Max processes |
+| `capabilities.docker` | boolean | false | Grant Docker access via secure proxy |
+
+When `docker: true`, the agent container gets a Docker-capable image, a session-scoped
+bridge network, and `DOCKER_HOST` pointing to the secure proxy. Child container
+resources are capped at the agent's own limits.
+
+Resource values are capped at deployment-level maximums from env vars
+(`MAX_SESSION_MEMORY_MB`, etc.). Invalid or negative values fall back to defaults.
+
+#### `services` (optional, map of named services + optional `resources`)
+
+Defines processes that run in the services container. Each key is a service name
+except `resources`, which is a reserved key for the shared container resources.
 
 ```yaml
 services:
-  <name>:
-    command: <string>         # Shell command to start the service
-    html: <string>            # OR: path to HTML file (mutually exclusive with command)
-    directory: <string>       # Optional: subdirectory to run in
-    port: <number>            # Optional: port this service listens on
-    preview: auto | manual    # Optional: startup behavior (default: auto)
+  resources:                    # Reserved key: container resources
+    memory: 1024
+    cpu: 1.0
+    pids: 2048
+
+  <name>:                       # Service definition
+    command: <string>           # Shell command to start the service
+    html: <string>              # OR: path to HTML file (mutually exclusive with command)
+    directory: <string>         # Optional: subdirectory to run in
+    port: <number>              # Optional: port this service listens on
+    preview: auto | manual      # Optional: startup behavior (default: auto)
 ```
+
+**`services.resources` fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `memory` | integer | 512 | Memory limit in MB (shared across all services) |
+| `cpu` | float | 0.5 | CPU cores |
+| `pids` | integer | 1024 | Max processes |
+
+Resource values are capped at deployment-level maximums. Invalid or negative values
+fall back to defaults.
 
 **Service fields:**
 
@@ -149,6 +209,9 @@ services:
 
 Default is `auto` for all services.
 
+**Reserved service names:** `resources` is reserved. Using it as a service name is a
+validation error with a clear message.
+
 **Port detection:**
 
 - If `port` is specified, ShipIt polls that port for readiness.
@@ -165,36 +228,6 @@ single-preview limitation. With named services, each gets its own port. If a fra
 binds multiple ports (e.g., dev server + HMR WebSocket), the secondary ports are
 internal implementation details, not separate services.
 
-#### `resources` (optional)
-
-`resources.agent` configures the agent container (runs Claude CLI).
-`resources.services` configures the services container (runs all services). All
-services share a single container, so one resource block covers them all.
-
-```yaml
-resources:
-  agent:
-    memory: 2048    # Memory in MB (default: 1024, max: 4096)
-    cpu: 1.0        # CPU cores (default: 0.5, max: 4)
-    pids: 512       # Max processes (default: 256, max: 2048)
-  services:
-    memory: 1024    # Memory in MB (default: 512, max: 4096)
-    cpu: 1.0        # CPU cores (default: 0.5, max: 4)
-    pids: 2048      # Max processes (default: 1024, max: 2048)
-```
-
-Values are capped at deployment-level maximums from env vars (`MAX_SESSION_MEMORY_MB`,
-etc.). Invalid or negative values fall back to defaults.
-
-#### `capabilities` (optional)
-
-No changes. `docker: true` is the only capability today.
-
-```yaml
-capabilities:
-  docker: true
-```
-
 ### Unified parser
 
 Today's split parsing is merged into a single module:
@@ -205,10 +238,19 @@ Today's split parsing is merged into a single module:
 interface ShipitConfig {
   version?: number;
   install: string[];                    // normalized to array
-  services: Map<string, ServiceConfig>;
-  resources: SessionResourceConfig;
-  capabilities: SessionCapabilities;
+  agent: AgentConfig;
+  services: {
+    resources: ContainerResourceConfig;
+    definitions: Map<string, ServiceConfig>;
+  };
   source: "shipit.yaml" | "package.json" | "index.html" | "none";
+}
+
+interface AgentConfig {
+  memory: number;
+  cpu: number;
+  pids: number;
+  capabilities: { docker: boolean };
 }
 
 interface ServiceConfig {
@@ -229,8 +271,8 @@ interface ServiceConfig {
 
 **Consumers:**
 - `preview-config.ts` → deleted. PreviewManager reads `ShipitConfig.services`.
-- `session-config.ts` → thin wrapper over unified parser, extracts resources +
-  capabilities.
+- `session-config.ts` → thin wrapper over unified parser, extracts agent resources +
+  capabilities and services resources.
 - `container-session-runner.ts` → file watcher still triggers restart on shipit.yaml
   change, re-parses via the unified parser.
 
@@ -285,7 +327,7 @@ of the config parser work.
 
 ## Implementation order
 
-1. **Unified parser** — `shipit-config.ts` with `services` support, unknown-field
+1. **Unified parser** — `shipit-config.ts` with `agent`, `services`, unknown-field
    warnings, multi-step install.
 2. **Wire up parser** — delete `preview-config.ts`, update `session-config.ts` wrapper,
    update all callers.
