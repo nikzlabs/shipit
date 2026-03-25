@@ -414,8 +414,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         previewRetryListener = null;
       };
 
-      const scheduleAutoPush = (git: GitManager) => {
-        const runner = attachedRunner;
+      const scheduleAutoPush = (git: GitManager, sessionId?: string) => {
+        // Look up the runner from the registry by session ID instead of using
+        // the connection-scoped attachedRunner. If the WS reconnects during an
+        // agent turn, attachedRunner on the old connection becomes null and the
+        // push would be silently skipped.
+        const runner = (sessionId ? runnerRegistry.get(sessionId) : null) ?? attachedRunner;
         if (!runner) return;
         runner.clearPushTimer();
         runner.setPushTimer(setTimeout(async () => {

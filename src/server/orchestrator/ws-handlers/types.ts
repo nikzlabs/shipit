@@ -42,7 +42,7 @@ export interface ConnectionCtx {
   // Per-connection helpers
   checkGitIdentity: (dir: string) => void;
   readSystemPrompt: () => Promise<string | undefined>;
-  scheduleAutoPush: (git: GitManager) => void;
+  scheduleAutoPush: (git: GitManager, sessionId?: string) => void;
   clearLogBuffer: () => void;
 }
 

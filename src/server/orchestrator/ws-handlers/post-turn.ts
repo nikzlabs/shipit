@@ -4,7 +4,7 @@ import type { ConnectionCtx, AppCtx } from "./types.js";
 /** Full handler context — send-message handlers need all three sub-contexts. */
 type PostTurnCtx = Pick<ConnectionCtx & AppCtx, "createGitManager" | "chatHistoryManager"> & {
   getTurnSummary: () => string;
-  scheduleAutoPush: (git: ReturnType<AppCtx["createGitManager"]>) => void;
+  scheduleAutoPush: (git: ReturnType<AppCtx["createGitManager"]>, sessionId?: string) => void;
 };
 
 /**
@@ -26,7 +26,7 @@ export async function postTurnCommit(
   if (!commitHash) return null;
 
   opts.emit({ type: "git_committed", hash: commitHash, message: firstLine });
-  ctx.scheduleAutoPush(git);
+  ctx.scheduleAutoPush(git, opts.sessionId);
 
   if (opts.sessionId && parentHash) {
     ctx.chatHistoryManager.updateLastMessage(opts.sessionId, {
