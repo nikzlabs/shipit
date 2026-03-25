@@ -106,8 +106,6 @@ The agent learns how to write compose files for ShipIt via `/shipit-docs/compose
   see in the preview panel (typically the dev server). Set `manual` on infrastructure
   services (databases, caches) that the user doesn't browse. Omit for services where
   the default behavior (auto if has ports, manual otherwise) is correct.
-- **Common patterns** — examples for: React/Vite, Next.js, Python/Django,
-  Node.js API + Postgres, monorepo with multiple services.
 - **What not to do** — don't add `docker-socket` volumes (ShipIt manages that via
   shipit.yaml). Don't use `network_mode: host`. Don't set `privileged: true`.
 
