@@ -124,7 +124,10 @@ function useAttentionInfo(sessionId: string): string | null {
     return "Auto-merge needs repo configuration";
   }
 
-  // Priority 4: PR merged/closed — no action needed
+  // Priority 4: CI pending — wait for results before flagging
+  if (checks?.state === "pending") return null;
+
+  // Priority 5: PR merged/closed — no action needed
   if (prState === "merged" || prState === "closed") return null;
 
   // Agent is idle and session is not resolved — user needs to act
