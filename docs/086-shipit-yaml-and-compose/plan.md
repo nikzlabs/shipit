@@ -250,13 +250,16 @@ Service definitions come from parsing the compose file separately. The shipit.ya
 parser only handles agent config and the compose file path.
 
 **Parsing behavior:**
-- Unknown top-level keys → warning (logged, not thrown)
+- Unknown top-level keys → warning
 - Unknown keys inside `agent` → warning
-- Type mismatches → `ShipitConfigError` with clear message and field path
-- All sections optional — an empty `shipit.yaml` is valid (everything defaults)
 - Old-format keys (`preview`, `resources`, `capabilities`, `services`) → warning with
   migration hint (e.g., "The `preview` block has been removed. Define services in
   docker-compose.yml instead. See /shipit-docs/shipit-yaml.md.")
+- Type mismatches → `ShipitConfigError` with clear message and field path
+- All sections optional — an empty `shipit.yaml` is valid (everything defaults)
+
+Warnings are logged server-side and surfaced as a banner in the preview panel so the
+user sees them without blocking startup.
 
 ### What's gone
 
