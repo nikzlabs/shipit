@@ -5,8 +5,13 @@ status: planned
 # Improve shipit.yaml
 
 Redesign shipit.yaml for long-term stability and extensibility. Replace the single
-`preview` block with named `services`, move capabilities and resources into their
-owning sections, support multi-step installs, unify parsing, and add strict validation.
+`preview` block with named `services`, move agent config into its own section, support
+multi-step installs, unify parsing, and add strict validation.
+
+For projects that use Docker Compose, ShipIt can also read configuration directly from
+docker-compose.yml via `x-shipit` extensions — see
+[087-compose-unification](../087-compose-unification/plan.md). The two config surfaces
+share the same internal model; teams choose whichever fits their project.
 
 ## Motivation
 
@@ -25,21 +30,32 @@ The current shipit.yaml has grown organically and has several problems:
    still include a `preview` section or the parser throws.
 6. **`install` is a flat string** — no way to express multi-step installs (e.g.,
    `npm install` then `npx prisma generate`).
-7. **`capabilities` floats at top level** — `docker: true` only affects the agent
-   container, but nothing in the schema communicates that. Same for `resources` — agent
-   and services resources are split across a separate top-level block instead of living
-   next to what they configure.
+7. **`capabilities` and `resources` float at top level** — `docker: true` only affects
+   the agent container, but nothing in the schema communicates that.
 
 ## Design
 
-### Top-level structure
+### When to use shipit.yaml vs docker-compose.yml
 
-Four top-level keys, each owning its own scope:
+| Project type | Config surface |
+|---|---|
+| Simple (single dev server, no Docker) | shipit.yaml |
+| Multiple process services (monorepo) | shipit.yaml |
+| Docker Compose stack | docker-compose.yml with `x-shipit` extensions |
+| Docker Compose + process services | docker-compose.yml with `x-shipit` extensions |
+
+Teams with an existing docker-compose.yml should annotate it with `x-shipit`
+extensions (doc 087) rather than maintaining a separate shipit.yaml. The two files are
+mutually exclusive — ShipIt reads one or the other, not both.
+
+For projects without Docker Compose, shipit.yaml is the simpler, lighter option.
+
+### Top-level structure
 
 ```yaml
 version: 1          # Optional. Schema version for future-proofing.
 install: ...        # Optional. Dependency installation commands.
-agent: ...          # Optional. Agent container config (resources, capabilities).
+agent: ...          # Optional. Agent container config (resources).
 services: ...       # Optional. Named service processes + shared container resources.
 ```
 
@@ -56,8 +72,6 @@ agent:
   memory: 2048
   cpu: 1.0
   pids: 512
-  capabilities:
-    docker: true
 
 services:
   resources:
@@ -124,23 +138,22 @@ install:
   - npm run codegen
 ```
 
-Steps run sequentially. If any step fails, subsequent steps are skipped and the error
-is reported. The `.shipit/.install-done` marker is only written after all steps succeed.
+Steps run sequentially in the agent container. If any step fails, subsequent steps are
+skipped and the error is reported. The `.shipit/.install-done` marker is only written
+after all steps succeed.
 
 When `install` is a string, it's normalized to a single-element list internally.
 
 #### `agent` (optional)
 
-Configures the agent container (runs Claude CLI). Resources and capabilities live here
-because they only affect this container.
+Configures the agent container (runs Claude CLI). Resources live here because they
+only affect this container.
 
 ```yaml
 agent:
   memory: 2048        # Memory in MB (default: 1024, max: 4096)
   cpu: 1.0            # CPU cores (default: 0.5, max: 4)
   pids: 512           # Max processes (default: 256, max: 2048)
-  capabilities:
-    docker: true      # Grant Docker access (default: false)
 ```
 
 **`agent` fields:**
@@ -150,23 +163,19 @@ agent:
 | `memory` | integer | 1024 | Memory limit in MB |
 | `cpu` | float | 0.5 | CPU cores |
 | `pids` | integer | 256 | Max processes |
-| `capabilities.docker` | boolean | false | Grant Docker access via secure proxy |
-
-When `docker: true`, the agent container gets a Docker-capable image, a session-scoped
-bridge network, and `DOCKER_HOST` pointing to the secure proxy. Child container
-resources are capped at the agent's own limits.
 
 Resource values are capped at deployment-level maximums from env vars
 (`MAX_SESSION_MEMORY_MB`, etc.). Invalid or negative values fall back to defaults.
 
 #### `services` (optional, map of named services + optional `resources`)
 
-Defines processes that run in the services container. Each key is a service name
-except `resources`, which is a reserved key for the shared container resources.
+Defines processes that run as compose services (each in its own container using the
+ShipIt base image). Each key is a service name except `resources`, which is a reserved
+key for shared resource limits across all service containers.
 
 ```yaml
 services:
-  resources:                    # Reserved key: container resources
+  resources:                    # Reserved key: per-container resource limits
     memory: 1024
     cpu: 1.0
     pids: 2048
@@ -183,7 +192,7 @@ services:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `memory` | integer | 512 | Memory limit in MB (shared across all services) |
+| `memory` | integer | 512 | Memory limit in MB (per service container) |
 | `cpu` | float | 0.5 | CPU cores |
 | `pids` | integer | 1024 | Max processes |
 
@@ -243,14 +252,13 @@ interface ShipitConfig {
     resources: ContainerResourceConfig;
     definitions: Map<string, ServiceConfig>;
   };
-  source: "shipit.yaml" | "package.json" | "index.html" | "none";
+  source: "shipit.yaml" | "docker-compose.yml" | "package.json" | "index.html" | "none";
 }
 
 interface AgentConfig {
   memory: number;
   cpu: number;
   pids: number;
-  capabilities: { docker: boolean };
 }
 
 interface ServiceConfig {
@@ -262,6 +270,9 @@ interface ServiceConfig {
 }
 ```
 
+This config model is shared between shipit.yaml parsing and docker-compose.yml
+`x-shipit` parsing (doc 087). Both config surfaces produce the same `ShipitConfig`.
+
 **Parsing behavior:**
 - Single pass over the YAML document
 - Unknown top-level keys → warning (logged, not thrown)
@@ -270,15 +281,14 @@ interface ServiceConfig {
 - All sections optional — an empty `shipit.yaml` is valid (everything defaults)
 
 **Consumers:**
-- `preview-config.ts` → deleted. PreviewManager reads `ShipitConfig.services`.
-- `session-config.ts` → thin wrapper over unified parser, extracts agent resources +
-  capabilities and services resources.
+- `preview-config.ts` → deleted. ServiceManager reads `ShipitConfig.services`.
+- `session-config.ts` → thin wrapper over unified parser, extracts agent resources.
 - `container-session-runner.ts` → file watcher still triggers restart on shipit.yaml
   change, re-parses via the unified parser.
 
-### Fallback resolution (no shipit.yaml)
+### Fallback resolution (no config file)
 
-When no shipit.yaml exists, the current auto-detection logic is preserved:
+When neither shipit.yaml nor docker-compose.yml exists, auto-detection logic:
 
 1. `package.json` with `scripts.dev` → single `default` service in command mode
 2. `index.html` at root → single `default` service in html mode
@@ -311,12 +321,13 @@ of the config parser work.
 | Service dependencies (`depends_on`) | Over-engineering for now. Services start in parallel. If ordering matters, the install step can handle setup, and services can poll for readiness internally. |
 | Health checks | Current port-polling is sufficient. Named health check endpoints can be added later as an optional field on services. |
 | Restart policies | All services restart on shipit.yaml change. Per-service restart policies add complexity without clear user demand. |
+| Docker Compose integration | See [087-compose-unification](../087-compose-unification/plan.md). |
 
 ## Key files
 
 | File | Role |
 |------|------|
-| `src/server/shared/shipit-config.ts` | **New.** Unified parser for all shipit.yaml sections |
+| `src/server/shared/shipit-config.ts` | **New.** Unified parser for shipit.yaml and docker-compose.yml x-shipit |
 | `src/server/shared/shipit-config.test.ts` | **New.** Tests for unified parser |
 | `src/server/session/preview-config.ts` | **Delete.** Replaced by unified parser |
 | `src/server/session/preview-config.test.ts` | **Delete.** Tests move to unified parser |
@@ -328,7 +339,8 @@ of the config parser work.
 ## Implementation order
 
 1. **Unified parser** — `shipit-config.ts` with `agent`, `services`, unknown-field
-   warnings, multi-step install.
+   warnings, multi-step install. Shared config model for both shipit.yaml and
+   docker-compose.yml.
 2. **Wire up parser** — delete `preview-config.ts`, update `session-config.ts` wrapper,
    update all callers.
 3. **PreviewManager multi-service** — start/stop/status per named service.
