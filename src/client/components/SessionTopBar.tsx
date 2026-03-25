@@ -62,7 +62,7 @@ export function SessionTopBar({ title, onRename, onDownloadChat, onArchive }: Se
   }, []);
 
   return (
-    <div className="flex items-center justify-between px-4 py-2 border-b border-(--color-border-primary) min-h-[40px]">
+    <div className="flex items-center justify-between px-4 h-10 border-b border-(--color-border-primary)">
       {/* Left: session title (inline editable) */}
       <div className="flex-1 min-w-0 mr-2">
         {isEditing ? (

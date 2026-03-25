@@ -367,7 +367,7 @@ function ReadyPhase({ card, sessionId, creating: externalCreating }: { card: PrC
             size="sm"
             onClick={handleCreate}
             disabled={creating}
-            className="shrink-0 bg-(--color-success) hover:bg-(--color-success) hover:opacity-90 text-(--color-text-inverse)"
+            className="shrink-0 h-6 bg-(--color-success) hover:bg-(--color-success) hover:opacity-90 text-(--color-text-inverse)"
           >
             {creating && <CircleNotchIcon size={14} className="animate-spin" />}
             {creating ? "Creating PR..." : "Create PR"}
@@ -425,7 +425,7 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
               size="sm"
               onClick={handleFixCI}
               disabled={fixingCI}
-              className="shrink-0"
+              className="shrink-0 h-6"
             >
               {fixingCI ? "Fixing..." : "Fix CI"}
             </Button>
