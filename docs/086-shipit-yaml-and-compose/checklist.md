@@ -20,12 +20,15 @@
 
 - [ ] Add Docker Compose CLI to orchestrator Dockerfiles (`Dockerfile.dev`, `Dockerfile.prod`)
 - [x] Create `src/server/orchestrator/compose-generator.ts` — override file generation
+  - [x] Handle long-syntax port definitions (object form with published/target)
   - [x] Manual services get `profiles: ["shipit-manual"]` (preserve user-defined profiles alongside)
   - [x] Inject labels, network, `cap_drop: [NET_RAW]`
   - [x] Validate compose file: reject `privileged`, `network_mode: host`, Docker socket mounts (unless `docker-socket: true`)
-  - [x] Reject absolute paths and `../` bind mounts
+  - [x] Reject absolute paths and `../` bind mounts (both string and object form volumes)
+  - [x] Skip named volumes (type: volume) during security validation
 - [x] Create `src/server/orchestrator/service-manager.ts` — compose lifecycle, status, logs
   - [x] Log streaming via `docker compose logs -f` with multi-viewer broadcast
+  - [x] Port extraction supports IP:port:container and port/protocol formats
 - [ ] Wire ServiceManager into orchestrator (replace services container usage)
 
 ## Phase 3: Orchestrator migration
@@ -50,8 +53,9 @@
 
 ## Phase 5: Client updates
 
-- [ ] Define new WS message types for service status (`service_status`, `service_logs`, `service_list`)
-- [ ] Update `preview-store.ts` — replace preview state with per-service state (name, status, port, preview mode)
+- [x] Define new WS message types for service status (`service_status`, `service_log`, `service_list`)
+- [x] Define new WS client messages for service control (`start_service`, `stop_service`)
+- [x] Update `preview-store.ts` — add per-service state (name, status, port, preview mode)
 - [ ] Update `file-store.ts` — if file watching events change shape
 - [ ] Unified service list UI component (per-service status, logs, start/stop controls)
 - [ ] Preview panel states (onboarding, starting, ready, error, manual)
@@ -64,7 +68,7 @@
 - [ ] Delete session worker preview endpoints and SSE event stream for preview
 - [ ] Delete auto-detection heuristics (Vite detection, port extraction, package manager detection)
 - [ ] Update project templates — include docker-compose.yml and new shipit.yaml
-- [ ] Update docs 061 and 074 to cross-reference this doc
+- [x] Update docs 061 and 074 to cross-reference this doc
 
 Note: `preview-config.ts` is deleted in Phase 1 (parser replacement).
 `preview-manager.ts` is deleted in Phase 6 (after ServiceManager is wired up and

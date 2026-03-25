@@ -4,6 +4,8 @@ status: done
 
 # Preview Container Isolation
 
+**Note:** The dual-container topology (agent + preview) described here is being replaced by agent container + Docker Compose stack in [086-shipit-yaml-and-compose](../086-shipit-yaml-and-compose/plan.md). The dedicated preview container and its Fastify session worker are superseded by `docker compose` managed directly by the orchestrator.
+
 Run the preview (dev server) in a dedicated container, separate from the Claude session container. Today the preview process runs as a sibling to Claude CLI inside the same container — sharing memory, env vars, filesystem access, and PID namespace. A separate preview container provides resource isolation, secrets separation, and blast-radius containment.
 
 ## Motivation

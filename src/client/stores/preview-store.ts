@@ -1,9 +1,20 @@
 import { create } from "zustand";
 import type { PreviewStatus } from "../components/PreviewFrame.js";
+import type { ComposeServiceStatus, ComposeServicePreviewMode } from "../../server/shared/types/ws-server-messages.js";
 
 interface InstallStatus {
   status: "running" | "complete" | "error";
   message?: string;
+}
+
+// ---- Compose service state ----
+
+export interface ManagedServiceState {
+  name: string;
+  status: ComposeServiceStatus;
+  port?: number;
+  preview: ComposeServicePreviewMode;
+  error?: string;
 }
 
 export interface StartupStep {
@@ -48,6 +59,9 @@ interface PreviewState {
   autoFixRetries: number;
   startupSteps: StartupStep[];
 
+  /** Compose services for the current session (keyed by service name). */
+  services: ManagedServiceState[];
+
   setStatus: (status: PreviewStatus | null) => void;
   setSelectedPort: (port: number | null) => void;
   setConfigMissing: (missing: boolean) => void;
@@ -62,6 +76,10 @@ interface PreviewState {
   initStartupSteps: () => void;
   setStartupStep: (update: Partial<StartupStep> & { stepId: string }) => void;
   clearStartupSteps: () => void;
+  /** Replace the full service list (from service_list WS message). */
+  setServices: (services: ManagedServiceState[]) => void;
+  /** Update a single service status (from service_status WS message). */
+  updateService: (update: ManagedServiceState) => void;
   reset: () => void;
 }
 
@@ -114,6 +132,7 @@ const initialState = {
   autoFixEnabled: false,
   autoFixRetries: 0,
   startupSteps: [] as StartupStep[],
+  services: [] as ManagedServiceState[],
 };
 
 export const usePreviewStore = create<PreviewState>((set) => ({
@@ -166,6 +185,21 @@ export const usePreviewStore = create<PreviewState>((set) => ({
     })),
 
   clearStartupSteps: () => set({ startupSteps: [] }),
+
+  setServices: (services) => set({ services }),
+
+  updateService: (update) =>
+    set((state) => {
+      const existing = state.services.find(s => s.name === update.name);
+      if (existing) {
+        return {
+          services: state.services.map(s =>
+            s.name === update.name ? { ...s, ...update } : s,
+          ),
+        };
+      }
+      return { services: [...state.services, update] };
+    }),
 
   reset: () => {
     resetDedupState();

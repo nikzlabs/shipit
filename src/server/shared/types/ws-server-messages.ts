@@ -260,6 +260,43 @@ export interface WsPreviewConfigError {
   message: string;
 }
 
+// ---- Compose service messages (server → client) ----
+
+export type ComposeServiceStatus = "stopped" | "starting" | "running" | "error";
+export type ComposeServicePreviewMode = "auto" | "manual";
+
+/** Server → Client: status update for a single compose service. */
+export interface WsServiceStatus {
+  type: "service_status";
+  sessionId: string;
+  name: string;
+  status: ComposeServiceStatus;
+  port?: number;
+  preview: ComposeServicePreviewMode;
+  error?: string;
+}
+
+/** Server → Client: full list of compose services for a session. */
+export interface WsServiceList {
+  type: "service_list";
+  sessionId: string;
+  services: {
+    name: string;
+    status: ComposeServiceStatus;
+    port?: number;
+    preview: ComposeServicePreviewMode;
+    error?: string;
+  }[];
+}
+
+/** Server → Client: log output from a compose service. */
+export interface WsServiceLog {
+  type: "service_log";
+  sessionId: string;
+  name: string;
+  text: string;
+}
+
 // ---- Session runner messages (server → client) ----
 
 /** Server → Client: current runtime state of a session. */
@@ -404,4 +441,7 @@ export type WsServerMessage =
   | WsRollbackComplete
   | WsRewindComplete
   | WsSessionForked
-  | WsStartupStep;
+  | WsStartupStep
+  | WsServiceStatus
+  | WsServiceList
+  | WsServiceLog;
