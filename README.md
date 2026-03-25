@@ -87,6 +87,8 @@ The Vite dev server proxies WebSocket connections to the backend at `localhost:3
 |---------|-------------|
 | `npm run dev` | Start the backend dev server (tsx) |
 | `npm run build` | Build the frontend with Vite |
+| `npm run test:dev` | Run changed tests + smoke tests (fast local iteration) |
+| `npm run test:smoke` | Run only smoke tests (core startup/connectivity) |
 | `npm test` | Run all tests (Vitest) |
 | `npm run test:watch` | Run tests in watch mode |
 | `npm run lint` | Lint `src/` with ESLint |
@@ -133,7 +135,7 @@ src/
 | Layer | Technology |
 |-------|-----------|
 | Backend | [Fastify](https://fastify.dev/) 5, @fastify/websocket, TypeScript |
-| Frontend | [React](https://react.dev/) 19, [Vite](https://vite.dev/) 6, [Tailwind CSS](https://tailwindcss.com/) 4 |
+| Frontend | [React](https://react.dev/) 19, [Vite](https://vite.dev/) 7, [Tailwind CSS](https://tailwindcss.com/) 4 |
 | AI Engine | [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) |
 | Runtime | Node.js 20, Docker |
 | Testing | [Vitest](https://vitest.dev/) 4, @testing-library/react, jsdom |
@@ -228,7 +230,9 @@ Tests use [Vitest](https://vitest.dev/) with two project configurations:
 The backend uses dependency injection (`buildApp()` accepts an `AppDeps` object) so integration tests can inject stubs instead of spawning real processes.
 
 ```bash
-npm test                              # Run everything
+npm run test:dev                      # Preferred during development (fast)
+npm run test:smoke                    # Smoke coverage only
+npm test                              # Full suite
 npx vitest run src/server/git.test.ts # Run a specific file
 npm run test:watch                    # Watch mode
 ```
