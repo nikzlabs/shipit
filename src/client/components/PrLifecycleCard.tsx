@@ -106,7 +106,7 @@ function OverflowMenu({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
 
   return (
-    <span className="relative shrink-0">
+    <span className="relative shrink-0 -mr-2">
       <button
         onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
         className="h-6 w-6 flex items-center justify-center rounded text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors"
