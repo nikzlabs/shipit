@@ -352,38 +352,35 @@ then starts the compose stack. This serializes startup but is acceptable — ins
 typically runs once (tracked by `.shipit/.install-done` marker) and is skipped on
 resume.
 
+### Security policy
+The orchestrator runs compose directly against the Docker socket, bypassing the proxy.
+Policy-by-construction: the orchestrator generates the override, controls its contents
+(inject `cap_drop: [NET_RAW]`, no `privileged`, restrict volumes). User compose files
+are parsed and validated before merging — reject dangerous options using the same
+checks as the proxy's container create sanitization. Defense-in-depth: validate input
+and control output.
+
+### Resource management
+Each service is a separate container. For self-hosted, don't cap user-defined compose
+resources — the host enforces limits. For managed (doc 062), enforce caps at the
+Kubernetes level, not in ShipIt.
+
+### Execution model
+Always use compose, even for simple single-service projects. One code path is simpler
+than maintaining two execution models. The ~2s compose overhead is acceptable and
+the current services container (Fastify wrapper, SSE, HTTP API) is arguably heavier.
+
 ## Open questions
 
 ### Secrets injection
-Today the orchestrator injects secrets into the services container via HTTP. With
-compose:
-- Write `.shipit/.env` that the override references via `env_file:`. On disk but in a
-  dotdir. Orchestrator controls the file.
-- Both the agent and service containers can see the workspace volume. Doc 074's
-  secrets isolation (agent can't see secrets) may not hold. Does it need to?
-- Which services get secrets? All? Only those that opt in?
-
-### Security policy
-The orchestrator runs compose directly against the Docker socket, bypassing the proxy:
-- **Policy-by-construction**: orchestrator generates the override, controls its
-  contents. Inject `cap_drop: [NET_RAW]`, no `privileged`, restrict volumes.
-- **User compose validation**: parse user's file, reject dangerous options before
-  merging.
-- Defense-in-depth: validate input and control output.
-
-### Resource management
-Each service is a separate container:
-- User-defined compose services may specify `deploy.resources`. Should ShipIt cap
-  these at a session-level limit?
-- Total resource usage is unbounded unless the host enforces limits. Acceptable for
-  self-hosted? For managed (doc 062)?
-
-### Non-compose fast path
-For the simplest case (instant preview of a static HTML file), compose is heavier than
-just serving the file. Options:
-- Accept the overhead — compose startup for one service is still fast (~2s)
-- Keep the current `html` mode as an internal special case that doesn't use compose
-- Let the agent generate a compose file with a static file server image
+Today the orchestrator injects secrets into the services container via HTTP (held in
+memory, never on disk). With compose, secrets need a different mechanism:
+- Write `.shipit/.env` that the override references via `env_file:`. Orchestrator
+  controls the file. On disk but in a dotdir.
+- Doc 074's agent-vs-secrets isolation (agent can't see secrets) was designed for the
+  dual-container model which this supersedes. The workspace volume is shared, so
+  secrets on disk are visible to the agent. Is this acceptable?
+- Which services get secrets? All by default, or opt-in per service?
 
 ### Agent-generated compose quality
 The agent creates docker-compose.yml during onboarding. Mitigations:
