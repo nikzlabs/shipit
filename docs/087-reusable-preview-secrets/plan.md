@@ -27,7 +27,7 @@ The current HTTP-based push (`pushSecretsToPreview`, session worker `/secrets` e
 
 3. **No per-service scoping.** All secrets go to all services. A database password shouldn't be visible to the frontend dev server.
 
-4. **No agent access.** Secrets are injected into services but not available in the agent container. Build steps, migrations, and tests that need secrets fail.
+4. **No agent access to connection config.** The agent runs CLI tools (migrations, codegen, tests) that need connection strings like `DATABASE_URL`. These aren't real secrets — they're internal compose network addresses — but the agent container has no way to get them.
 
 5. **No "ShipIt-in-ShipIt" workflow.** The inner ShipIt instance needs the outer session's Claude OAuth, GitHub token, and Docker socket. There's no mechanism to forward platform credentials.
 
@@ -101,6 +101,7 @@ x-shipit-secrets:
   - name: DATABASE_URL
     description: PostgreSQL connection string
     required: true
+    agent: true               # also available in agent container (for migrations, etc.)
 
   # Platform credential — resolved from the outer session
   - name: ANTHROPIC_API_KEY
@@ -109,6 +110,8 @@ x-shipit-secrets:
   - name: GITHUB_TOKEN
     source: platform:github_token
 ```
+
+The `agent: true` flag marks a secret as also available in the agent container. This is for env vars the agent needs when running CLI tools — typically connection strings (`DATABASE_URL`, `REDIS_URL`) that aren't real secrets but just internal compose network addresses. Actual secrets (API keys, tokens) should generally stay `agent: false` (the default) — the agent writes code, compose services run it.
 
 **Schema:**
 
@@ -120,6 +123,7 @@ interface SecretRequirement {
   name: string;               // env var name
   description?: string;       // shown in UI
   required?: boolean;         // default: false. Missing required → warning
+  agent?: boolean;            // default: false. Also inject into agent container
   source?: string;            // "platform:claude_oauth" | "platform:github_token"
 }
 ```
@@ -174,25 +178,25 @@ services:
 
 ### 4. Agent container injection
 
-The agent container is orchestrator-managed (not in the compose stack), so it needs a separate mechanism. Agent secrets are declared in shipit.yaml — the only place where agent config lives:
+The agent container is orchestrator-managed (not in the compose stack), but some env vars need to be available there — typically connection strings for running migrations, tests, or codegen. The `agent: true` flag on `x-shipit-secrets` entries controls this:
 
 ```yaml
-# shipit.yaml
-agent:
-  install: npm install
-  secrets:                     # agent-scoped secrets
-    - NPM_TOKEN
-    - DATABASE_URL             # agent needs it for migrations
-
-compose: docker-compose.yml
+# docker-compose.yml
+services:
+  api:
+    x-shipit-secrets:
+      - name: DATABASE_URL
+        description: PostgreSQL connection string
+        agent: true              # agent needs it for running migrations
+      - STRIPE_KEY               # service-only — agent doesn't need this
 ```
 
-This is a natural fit: `agent` already has `memory`, `cpu`, `pids`, `install`. Adding `secrets` (list of env var names to inject) follows the same pattern.
+The orchestrator collects all `agent: true` secrets across services, writes `.shipit/.env.agent`, and passes it to the agent container:
 
-**Injection mechanism:**
-- Orchestrator writes `.shipit/.env.agent` with values from `SecretStore`.
 - On agent container creation: `docker create --env-file .shipit/.env.agent ...`
 - For runtime secret updates (user saves while agent is running): orchestrator calls the existing session worker `PUT /secrets` endpoint (agent container still has a session worker).
+
+No changes to shipit.yaml — agent env vars are declared in the compose file alongside the services that also use them.
 
 **Key files:**
 - `src/server/orchestrator/container-lifecycle.ts` — pass `--env-file` on container create
@@ -203,9 +207,9 @@ This is a natural fit: `agent` already has `memory`, `cpu`, `pids`, `install`. A
 Session activation flow (post-086):
 1. Orchestrator creates/activates session
 2. Loads secrets from `SecretStore` for the repo
-3. Parses `x-shipit-secrets` from compose file + `agent.secrets` from shipit.yaml
+3. Parses `x-shipit-secrets` from compose file
 4. Resolves platform credentials
-5. Writes `.shipit/.env.<service>` and `.shipit/.env.agent`
+5. Writes `.shipit/.env.<service>` and `.shipit/.env.agent` (for `agent: true` entries)
 6. Starts agent container (with `--env-file`)
 7. Runs install steps (`agent.install`)
 8. Generates compose override (with `env_file:` references)
@@ -222,13 +226,12 @@ New module that composes all secret sources and produces env files:
 
 interface ResolvedSecrets {
   perService: Record<string, Record<string, string>>;  // service name → env vars
-  agent: Record<string, string>;                        // agent env vars
+  agent: Record<string, string>;                        // agent: true entries
   missing: SecretRequirement[];                         // required but no value
 }
 
 async function resolveSecrets(opts: {
   composeSecrets: Record<string, SecretEntry[]>;  // service name → x-shipit-secrets
-  agentSecrets: string[];                          // from shipit.yaml agent.secrets
   userSecrets: Record<string, string>;             // from SecretStore
   platformCredentials: PlatformCredentials;         // from AuthManager etc.
 }): Promise<ResolvedSecrets>
@@ -236,7 +239,7 @@ async function resolveSecrets(opts: {
 
 Flow:
 1. For each service's `x-shipit-secrets`, resolve each entry: `source: platform:*` → credential store, otherwise → user secrets.
-2. For `agent.secrets`, resolve from user secrets.
+2. Collect entries with `agent: true` into the agent env file.
 3. Collect missing required secrets.
 4. Return structured result for the service manager to write to disk.
 
@@ -294,10 +297,10 @@ The orchestrator service gets the outer session's Claude and GitHub tokens via p
 ## Data flow
 
 ```
-docker-compose.yml              shipit.yaml
-(x-shipit-secrets per service)  (agent.secrets)
-        │                              │
-        ▼                              ▼
+docker-compose.yml
+(x-shipit-secrets per service, agent: true flag)
+        │
+        ▼
 ┌─────────────────┐    ┌──────────────────┐
 │  SecretStore     │    │ CredentialStore   │
 │  (user secrets)  │    │ (platform creds)  │
@@ -348,8 +351,8 @@ docker-compose.yml              shipit.yaml
 - UI: banner prompt for missing secrets, description display
 
 ### Phase 3: Agent injection
-- `agent.secrets` field in shipit.yaml
-- Write `.shipit/.env.agent`, pass `--env-file` on container create
+- `agent: true` flag on `x-shipit-secrets` entries
+- Write `.shipit/.env.agent` from agent-flagged entries, pass `--env-file` on container create
 - Runtime updates via session worker `/secrets`
 
 ### Phase 4: Platform credential forwarding
@@ -372,7 +375,7 @@ docker-compose.yml              shipit.yaml
 **Modify (from 086):**
 - `src/server/orchestrator/service-manager.ts` — call secret resolver before compose up
 - `src/server/orchestrator/compose-generator.ts` — parse `x-shipit-secrets`, add `env_file:` to override
-- `src/server/shared/shipit-config.ts` — parse `agent.secrets` field
+- `src/server/shared/shipit-config.ts` — no changes needed (agent secrets come from compose file)
 
 **Modify (existing):**
 - `src/server/orchestrator/api-routes-secrets.ts` — rewrite env files + compose up on save
@@ -388,6 +391,6 @@ docker-compose.yml              shipit.yaml
 
 ## Relation to 086
 
-This design **assumes 086 is implemented.** Phase 1 depends on 086's compose infrastructure (service manager, override generation, compose file parsing). `x-shipit-secrets` extends the compose file alongside `x-shipit-preview`. `agent.secrets` extends the `agent` block in shipit.yaml alongside `memory`, `cpu`, `pids`, `install`.
+This design **assumes 086 is implemented.** Phase 1 depends on 086's compose infrastructure (service manager, override generation, compose file parsing). `x-shipit-secrets` extends the compose file alongside `x-shipit-preview`. The `agent: true` flag on individual entries controls agent container injection — no shipit.yaml changes needed.
 
 If work is needed before 086, the only pre-086 fix is wiring `setSecretsLoader` in `app-lifecycle.ts` (auto-load into the existing preview container). One-line change, no new design.

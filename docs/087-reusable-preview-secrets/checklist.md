@@ -16,7 +16,7 @@
 
 ## Phase 2: Extended syntax + validation
 - [ ] Add `SecretEntry` / `SecretRequirement` types to `domain-types.ts`
-- [ ] Parse object form (`name`, `description`, `required`, `source`)
+- [ ] Parse object form (`name`, `description`, `required`, `agent`, `source`)
 - [ ] Validate required secrets on compose start
 - [ ] Add `secrets_missing` WS message type
 - [ ] Emit `secrets_missing` when required secrets are absent
@@ -26,13 +26,13 @@
 - [ ] Create `src/server/shipit-docs/secrets.md` agent-facing docs
 
 ## Phase 3: Agent injection
-- [ ] Add `agent.secrets` field to shipit-config parser
-- [ ] Write `.shipit/.env.agent` for agent-scoped secrets
+- [ ] Collect `agent: true` entries from `x-shipit-secrets` across all services
+- [ ] Write `.shipit/.env.agent` for agent-flagged entries
 - [ ] Pass `--env-file .shipit/.env.agent` on agent container creation
 - [ ] Runtime secret updates via session worker `/secrets` endpoint
 - [ ] Client: agent scope indicator in secrets panel
-- [ ] Test: `agent.secrets` value available in agent container
-- [ ] Test: service-only secret NOT in agent container
+- [ ] Test: `agent: true` secret available in agent container
+- [ ] Test: non-agent secret NOT in agent container
 
 ## Phase 4: Platform credential forwarding
 - [ ] Add platform credential lookup to `credential-store.ts`
