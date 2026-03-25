@@ -28,9 +28,11 @@ The current shipit.yaml has grown organically and has several problems:
 
 ## Design
 
-### Full example (new format)
+### Full example
 
 ```yaml
+version: 1
+
 install:
   - npm install
   - npx prisma generate
@@ -45,7 +47,6 @@ services:
     command: npm run dev
     directory: packages/web
     port: 5173
-    preview: auto
 
   docs:
     html: docs/index.html
@@ -56,7 +57,7 @@ resources:
     memory: 2048
     cpu: 1.0
     pids: 512
-  preview:
+  services:
     memory: 1024
     cpu: 1.0
     pids: 2048
@@ -65,33 +66,18 @@ capabilities:
   docker: true
 ```
 
-### Backward-compatible simple form
+### Simple single-service form
 
-The common case (single service) stays concise. A top-level `preview` block is sugar
-for a single anonymous service:
+The common case stays concise — a config with one service:
 
 ```yaml
 install: npm install
-
-preview:
-  command: npm run dev
-  ports: [5173]
-```
-
-Is equivalent to:
-
-```yaml
-install:
-  - npm install
 
 services:
   default:
     command: npm run dev
     port: 5173
-    preview: auto
 ```
-
-`preview` and `services` are mutually exclusive — specifying both is a validation error.
 
 ### Changes by section
 
@@ -101,14 +87,13 @@ services:
 version: 1
 ```
 
-Optional for now. When present, the parser validates against that version's schema.
-When absent, the parser infers the version from the shape (presence of `services` vs
-`preview`). This gives us a clean upgrade path if we ever need a breaking change after
-the project is public, without requiring it today.
+Optional. When present, the parser validates against that version's schema and gives
+clear errors if the config uses fields from a different version. When absent, the
+parser assumes the latest version.
 
-The version field is forward-looking insurance, not a current necessity. Since the
-project isn't public yet, we can freely change the schema. But once we ship, having
-the field already in the wild means we can introduce `version: 2` without a flag day.
+This is forward-looking insurance. The project isn't public yet, so we can freely
+change the schema now. But once we ship, having the field in the wild means we can
+introduce `version: 2` without a flag day.
 
 #### `install` (optional, string | string[])
 
@@ -132,8 +117,8 @@ When `install` is a string, it's normalized to a single-element list internally.
 
 #### `services` (optional, map of named services)
 
-Replaces `preview` as the primary way to define processes. Each service is a named
-entry with its own command, directory, port, and preview visibility.
+Replaces the old `preview` block. Each service is a named entry with its own command,
+directory, port, and startup behavior.
 
 ```yaml
 services:
@@ -142,7 +127,7 @@ services:
     html: <string>            # OR: path to HTML file (mutually exclusive with command)
     directory: <string>       # Optional: subdirectory to run in
     port: <number>            # Optional: port this service listens on
-    preview: auto | manual        # Optional: startup behavior (default: auto)
+    preview: auto | manual    # Optional: startup behavior (default: auto)
 ```
 
 **Service fields:**
@@ -174,54 +159,41 @@ Default is `auto` for all services.
 
 **Why `port` (singular) instead of `ports` (array):**
 
-Each service should own exactly one port. The current `ports: [3000, 5173]` pattern
-exists only because you can't define multiple services — it's working around the
+Each service should own exactly one port. The old `ports: [3000, 5173]` pattern
+existed only because you couldn't define multiple services — it was working around the
 single-preview limitation. With named services, each gets its own port. If a framework
 binds multiple ports (e.g., dev server + HMR WebSocket), the secondary ports are
 internal implementation details, not separate services.
 
-#### `preview` (optional, backward-compatible)
+#### `resources` (optional)
 
-The existing `preview` block is kept for backward compatibility and for the simple
-single-service case. It desugars to a single service named `default`:
-
-```yaml
-# This:
-preview:
-  command: npm run dev
-  ports: [5173]
-  directory: packages/frontend
-
-# Becomes internally:
-services:
-  default:
-    command: npm run dev
-    port: 5173
-    directory: packages/frontend
-    preview: auto
-```
-
-When `preview.ports` is an array with multiple values, the first port is used as the
-service port. This maintains backward compatibility while nudging users toward the
-`services` form for multi-port setups.
-
-`preview.html` desugars similarly:
+`resources.agent` configures the agent container (runs Claude CLI).
+`resources.services` configures the services container (runs all services). All
+services share a single container, so one resource block covers them all.
 
 ```yaml
-preview:
-  html: index.html
-# → services.default = { html: "index.html", preview: auto }
+resources:
+  agent:
+    memory: 2048    # Memory in MB (default: 1024, max: 4096)
+    cpu: 1.0        # CPU cores (default: 0.5, max: 4)
+    pids: 512       # Max processes (default: 256, max: 2048)
+  services:
+    memory: 1024    # Memory in MB (default: 512, max: 4096)
+    cpu: 1.0        # CPU cores (default: 0.5, max: 4)
+    pids: 2048      # Max processes (default: 1024, max: 2048)
 ```
 
-#### `resources` (optional, unchanged)
+Values are capped at deployment-level maximums from env vars (`MAX_SESSION_MEMORY_MB`,
+etc.). Invalid or negative values fall back to defaults.
 
-No changes to the resources schema. The existing nested `agent`/`preview` form is
-correct. The flat form (`resources.memory`) will emit a deprecation warning and be
-ignored (it already doesn't work — making that explicit).
-
-#### `capabilities` (optional, unchanged)
+#### `capabilities` (optional)
 
 No changes. `docker: true` is the only capability today.
+
+```yaml
+capabilities:
+  docker: true
+```
 
 ### Unified parser
 
@@ -233,7 +205,7 @@ Today's split parsing is merged into a single module:
 interface ShipitConfig {
   version?: number;
   install: string[];                    // normalized to array
-  services: Map<string, ServiceConfig>; // parsed from services or desugared from preview
+  services: Map<string, ServiceConfig>;
   resources: SessionResourceConfig;
   capabilities: SessionCapabilities;
   source: "shipit.yaml" | "package.json" | "index.html" | "none";
@@ -256,11 +228,11 @@ interface ServiceConfig {
 - All sections optional — an empty `shipit.yaml` is valid (everything defaults)
 
 **Consumers:**
-- `preview-config.ts` → replaced. PreviewManager reads `ShipitConfig.services`.
-- `session-config.ts` → keeps `resolveSessionConfig()` as a thin wrapper that calls
-  the unified parser and extracts resources + capabilities.
+- `preview-config.ts` → deleted. PreviewManager reads `ShipitConfig.services`.
+- `session-config.ts` → thin wrapper over unified parser, extracts resources +
+  capabilities.
 - `container-session-runner.ts` → file watcher still triggers restart on shipit.yaml
-  change, but now re-parses via the unified parser.
+  change, re-parses via the unified parser.
 
 ### Fallback resolution (no shipit.yaml)
 
@@ -270,8 +242,7 @@ When no shipit.yaml exists, the current auto-detection logic is preserved:
 2. `index.html` at root → single `default` service in html mode
 3. Nothing found → source: `"none"`
 
-Auto-detected configs always produce a single service named `default` with
-`preview: auto`.
+Auto-detected configs produce a single service named `default` with `preview: auto`.
 
 ### Preview panel changes
 
@@ -290,16 +261,6 @@ multiple services:
 This is a significant client change and should be implemented as a follow-up, not part
 of the config parser work.
 
-### Migration
-
-Since the project isn't public yet, migration is straightforward:
-
-1. Ship the unified parser that accepts both `preview` and `services` forms.
-2. Update the root `shipit.yaml` to use the new format.
-3. Update shipit-docs.
-4. The old `preview` form continues to work indefinitely — it's not deprecated, just
-   sugar for the common case.
-
 ### What's deferred
 
 | Topic | Reason |
@@ -315,8 +276,8 @@ Since the project isn't public yet, migration is straightforward:
 |------|------|
 | `src/server/shared/shipit-config.ts` | **New.** Unified parser for all shipit.yaml sections |
 | `src/server/shared/shipit-config.test.ts` | **New.** Tests for unified parser |
-| `src/server/session/preview-config.ts` | **Remove.** Replaced by unified parser |
-| `src/server/session/preview-config.test.ts` | **Remove.** Tests move to unified parser |
+| `src/server/session/preview-config.ts` | **Delete.** Replaced by unified parser |
+| `src/server/session/preview-config.test.ts` | **Delete.** Tests move to unified parser |
 | `src/server/shared/session-config.ts` | **Modify.** Thin wrapper over unified parser |
 | `src/server/session/preview-manager.ts` | **Modify.** Accept `ServiceConfig[]` instead of `PreviewConfig` |
 | `src/server/shipit-docs/shipit-yaml.md` | **Modify.** Document new format |
@@ -324,10 +285,10 @@ Since the project isn't public yet, migration is straightforward:
 
 ## Implementation order
 
-1. **Unified parser** — `shipit-config.ts` with support for both `preview` and
-   `services` forms, unknown-field warnings, multi-step install.
-2. **Wire up parser** — replace `preview-config.ts` callers, update `session-config.ts`
-   wrapper.
+1. **Unified parser** — `shipit-config.ts` with `services` support, unknown-field
+   warnings, multi-step install.
+2. **Wire up parser** — delete `preview-config.ts`, update `session-config.ts` wrapper,
+   update all callers.
 3. **PreviewManager multi-service** — start/stop/status per named service.
 4. **Update docs** — shipit-yaml.md, preview.md.
 5. **Client multi-service preview** — (follow-up PR) service picker, per-service status.
