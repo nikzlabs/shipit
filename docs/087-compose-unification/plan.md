@@ -352,14 +352,6 @@ then starts the compose stack. This serializes startup but is acceptable — ins
 typically runs once (tracked by `.shipit/.install-done` marker) and is skipped on
 resume.
 
-### Security policy
-The orchestrator runs compose directly against the Docker socket, bypassing the proxy.
-Policy-by-construction: the orchestrator generates the override, controls its contents
-(inject `cap_drop: [NET_RAW]`, no `privileged`, restrict volumes). User compose files
-are parsed and validated before merging — reject dangerous options using the same
-checks as the proxy's container create sanitization. Defense-in-depth: validate input
-and control output.
-
 ### Resource management
 Each service is a separate container. For self-hosted, don't cap user-defined compose
 resources — the host enforces limits. For managed (doc 062), enforce caps at the
@@ -371,6 +363,13 @@ than maintaining two execution models. The ~2s compose overhead is acceptable an
 the current services container (Fastify wrapper, SSE, HTTP API) is arguably heavier.
 
 ## Open questions
+
+### Security policy
+The orchestrator runs compose directly against the Docker socket, bypassing the proxy.
+The likely approach is policy-by-construction (orchestrator generates the override,
+controls its contents — inject `cap_drop: [NET_RAW]`, no `privileged`, restrict
+volumes) plus validation of user compose files before merging. But the exact rules and
+enforcement model need more thought, especially for managed deployments.
 
 ### Secrets injection
 Today the orchestrator injects secrets into the services container via HTTP (held in
