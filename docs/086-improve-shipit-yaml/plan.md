@@ -46,10 +46,15 @@ agent:
     - npm install
     - npx prisma generate
 
-compose: docker-compose.yml      # Path to compose file (relative to workspace root)
+compose: docker-compose.yml      # String form: path to compose file
+
+# Or object form with flags:
+compose:
+  file: docker-compose.yml
+  docker-socket: true            # Grant Docker socket access to compose services
 ```
 
-That's it. Three top-level keys: `version`, `agent`, `compose`.
+Three top-level keys: `version`, `agent`, `compose`.
 
 ### Examples
 
@@ -77,6 +82,19 @@ compose: docker-compose.yml
 **Minimal (agent defaults, compose auto-detected):**
 ```yaml
 compose: docker-compose.yml
+```
+
+**ShipIt-in-ShipIt (compose services need Docker socket):**
+```yaml
+agent:
+  memory: 3072
+  cpu: 2.0
+  pids: 2048
+  install: npm ci
+
+compose:
+  file: docker/local/dev/compose.yml
+  docker-socket: true
 ```
 
 ### Sections
@@ -122,13 +140,32 @@ Resource values are capped at deployment-level maximums from env vars
 - On resume, install is skipped (marker exists). Editing shipit.yaml clears the marker.
 - When `install` is a string, it's normalized to a single-element list internally.
 
-#### `compose` (optional, string)
+#### `compose` (optional, string or object)
 
-Path to a Docker Compose file, relative to workspace root:
+Path to a Docker Compose file, relative to workspace root. Accepts a string (just the
+path) or an object (path + flags):
 
 ```yaml
+# String form (most projects)
 compose: docker-compose.yml
+
+# Object form (when flags are needed)
+compose:
+  file: docker-compose.yml
+  docker-socket: true
 ```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `file` | string | required | Path to compose file (relative to workspace root) |
+| `docker-socket` | boolean | false | Grant Docker socket access to compose services |
+
+**`docker-socket`:** When true, the orchestrator does not strip Docker socket mounts
+(`/var/run/docker.sock`) from the user's compose file. Required for projects whose
+compose services need to create/manage Docker containers at runtime — the canonical
+example is ShipIt running inside ShipIt, where the inner orchestrator (a compose
+service) creates inner session containers dynamically. Other security policies (no
+`--privileged`, label injection, capability dropping) still apply.
 
 ShipIt reads the compose file, generates an override file with session labels, network,
 and volume rewrites, and manages the stack via `docker compose`. See
@@ -180,7 +217,7 @@ project and creates both docker-compose.yml and shipit.yaml. See "Onboarding flo
 interface ShipitConfig {
   version?: number;
   agent: AgentConfig;
-  compose?: string;                     // path to compose file
+  compose?: ComposeConfig;
 }
 
 interface AgentConfig {
@@ -188,6 +225,11 @@ interface AgentConfig {
   cpu: number;
   pids: number;
   install: string[];                    // normalized to array
+}
+
+interface ComposeConfig {
+  file: string;                         // path to compose file
+  dockerSocket: boolean;                // grant socket access (default: false)
 }
 ```
 
@@ -207,7 +249,7 @@ shipit.yaml parser only handles agent config and the compose file path.
 | `preview` block | docker-compose.yml services |
 | `services` block | docker-compose.yml services |
 | `resources.preview` / `resources.services` | compose resource limits per service |
-| `capabilities.docker` | Removed. Orchestrator manages all Docker operations directly. |
+| `capabilities.docker` | `compose.docker-socket` — scoped to compose services, not the agent |
 | `preview.command`, `preview.html`, `preview.ports` | Compose `command`, `ports` fields |
 | `preview.directory` | Compose `working_dir` field |
 | Auto-detection heuristics (Vite, package manager) | Agent generates compose file |
@@ -255,13 +297,16 @@ agent:
   pids: 2048
   install: NODE_ENV=development npm install
 
-compose: docker/local/dev/compose.yml
+compose:
+  file: docker/local/dev/compose.yml
+  docker-socket: true
 ```
 
 The existing `docker/local/dev/compose.yml` already defines the orchestrator and
-session worker services. This also fixes the flat resources bug (current
-`resources.memory` is silently ignored by the parser that expects
-`resources.agent.memory`).
+session worker services. `docker-socket: true` is needed because the inner ShipIt
+orchestrator (a compose service) creates inner session containers dynamically. This
+also fixes the flat resources bug (current `resources.memory` is silently ignored by
+the parser that expects `resources.agent.memory`).
 
 ## Implementation order
 

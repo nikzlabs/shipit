@@ -45,7 +45,8 @@ dependencies) would mean reimplementing compose badly.
   shipit.yaml as the entry point with `agent` config and `compose` file reference.
 - [061-self-hosting](../061-self-hosting/plan.md) — **partially superseded.** Docker
   API proxy and security policy remain useful for compose container sanitization.
-  `capabilities.docker` is removed — the orchestrator manages all Docker access.
+  `capabilities.docker` is replaced by `compose.docker-socket` (scoped to compose
+  services, not the agent).
 - [074-preview-container-isolation](../074-preview-container-isolation/plan.md) —
   **superseded.** The dual-container topology (agent + preview) is replaced by agent
   container + compose stack. Secrets isolation model changes (see open questions).
@@ -268,17 +269,27 @@ interface ManagedService {
 | Service error | Error state with logs for the failing service |
 | Manual service stopped | "Start" button next to service name |
 
-### No `capabilities.docker`
+### Docker socket access (`compose.docker-socket`)
 
-The orchestrator manages all Docker operations (compose stack, container lifecycle)
-directly via its Docker socket. The agent container does not need Docker access. If
-Claude needs to build an image or debug a container, it does so by editing the
-docker-compose.yml and letting ShipIt reconcile the stack — not by running ad-hoc
-Docker commands.
+The orchestrator manages compose stacks directly via its Docker socket. The agent
+container does not need Docker access. If Claude needs to build an image or add a
+service, it edits docker-compose.yml and ShipIt reconciles the stack.
 
-`capabilities.docker` from doc 061 is removed. The Docker API proxy (doc 061) remains
-useful for security policy enforcement on compose-created containers (see open
-questions on security policy).
+For the rare case where a compose service itself needs Docker access (e.g.,
+ShipIt-in-ShipIt, where the inner orchestrator creates containers dynamically),
+shipit.yaml provides `compose.docker-socket: true`. This tells the orchestrator to
+allow Docker socket mounts in the compose file rather than stripping them as a
+security violation. Other security policies still apply.
+
+```yaml
+compose:
+  file: docker/local/dev/compose.yml
+  docker-socket: true
+```
+
+This replaces the old `capabilities.docker` which granted Docker CLI access to the
+agent container. The new model is more precise — Docker access is scoped to specific
+compose services that declare a socket mount, not to the agent.
 
 ### What this replaces
 
