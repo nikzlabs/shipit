@@ -64,12 +64,19 @@ instead of a blank preview:
 3. Preview panel shows: **"Set up live preview"** with a "Generate" button and a brief
    explanation that ShipIt uses Docker Compose to run services.
 4. User clicks "Generate."
-5. ShipIt sends a message to the agent: "Analyze this project and create a
-   docker-compose.yml and shipit.yaml."
-6. Agent inspects the project (package.json, requirements.txt, Dockerfile, etc.),
-   picks appropriate base images and commands, writes both files.
-7. ShipIt detects the new compose file (via file watcher), starts the stack.
-8. Preview panel switches to the live preview automatically.
+5. The orchestrator sends a programmatic message to the agent (via the existing
+   `send_message` WebSocket handler) with a prompt like: "Analyze this project and
+   create a docker-compose.yml for the live preview. Read /shipit-docs/compose.md for
+   ShipIt-specific conventions."
+6. The agent uses the **session's already-running Claude process** — the same model and
+   context the user is chatting with. No separate model or process. The message appears
+   in the chat like any other exchange, so the user sees what the agent is doing and can
+   follow up ("add Redis too", "use port 8080 instead").
+7. Agent inspects the project (package.json, requirements.txt, Dockerfile, etc.),
+   reads the compose guide from shipit-docs, picks appropriate base images and
+   commands, writes docker-compose.yml (and shipit.yaml if needed).
+8. ShipIt detects the new compose file (via `fs.watch`), starts the stack.
+9. Preview panel switches to the live preview automatically.
 
 For **new projects from templates**, the template includes both files — no onboarding
 step. The user sees the preview immediately.
@@ -78,6 +85,31 @@ step. The user sees the preview immediately.
 ports from scripts, inferring package managers — all of that is replaced by the agent,
 which understands project structure far better than pattern matching. This removes
 ~150 lines of fragile heuristic code from `preview-config.ts`.
+
+### Agent documentation for compose
+
+The agent learns how to write compose files for ShipIt via `/shipit-docs/compose.md`
+(new file, baked into the session worker image alongside the existing shipit-docs).
+
+**`/shipit-docs/compose.md` should cover:**
+
+- **Image selection** — use standard public images (`node:20`, `python:3.12`,
+  `postgres:16`). Match the project's runtime version (check `engines.node` in
+  package.json, `.python-version`, etc.). Never use a custom ShipIt image.
+- **Port conventions** — expose ports via `ports: ["<port>:<port>"]`. Use the port the
+  framework defaults to (Vite: 5173, Next.js: 3000, Django: 8000). Set
+  `HOST=0.0.0.0` in `environment` so the server binds to all interfaces inside Docker.
+- **Volume mounts** — mount the workspace as `.:/workspace` and set
+  `working_dir: /workspace`. ShipIt's override rewrites this to the correct named
+  volume at runtime.
+- **`x-shipit-preview`** — set `x-shipit-preview: auto` on services the user wants to
+  see in the preview panel (typically the dev server). Set `manual` on infrastructure
+  services (databases, caches) that the user doesn't browse. Omit for services where
+  the default behavior (auto if has ports, manual otherwise) is correct.
+- **Common patterns** — examples for: React/Vite, Next.js, Python/Django,
+  Node.js API + Postgres, monorepo with multiple services.
+- **What not to do** — don't add `docker-socket` volumes (ShipIt manages that via
+  shipit.yaml). Don't use `network_mode: host`. Don't set `privileged: true`.
 
 ### Config surface
 
@@ -356,12 +388,14 @@ just serving the file. Options:
 - Let the agent generate a compose file with a static file server image
 
 ### Agent-generated compose quality
-The agent creates docker-compose.yml during onboarding. Concerns:
-- Quality depends on the agent's understanding of the project
-- Generated files should follow a consistent template/style
-- Agent instructions should include compose best practices for ShipIt (which images
-  to prefer, port conventions, volume patterns)
-- If the agent gets it wrong, the user (or agent) can edit and retry
+The agent creates docker-compose.yml during onboarding. Mitigations:
+- `/shipit-docs/compose.md` provides concrete guidance (image selection, port
+  conventions, volume patterns, common project templates) — see "Agent documentation
+  for compose" section above.
+- The generation happens in the user's chat, so they see the output and can
+  immediately ask for changes ("use port 8080", "add Redis").
+- If the compose file doesn't work, the error appears in the service status and the
+  user can ask the agent to fix it — same workflow as any other code the agent writes.
 
 ## Key files
 
@@ -378,7 +412,8 @@ The agent creates docker-compose.yml during onboarding. Concerns:
 | `docker/Dockerfile.dev` | **Modify.** Add docker compose CLI |
 | `docker/Dockerfile.prod` | **Modify.** Add docker compose CLI |
 | `src/server/shipit-docs/shipit-yaml.md` | **Modify.** New format |
-| `src/server/orchestrator/agent-instructions.ts` | **Modify.** Compose generation guidance |
+| `src/server/shipit-docs/compose.md` | **New.** Agent guide for generating compose files |
+| `src/server/orchestrator/agent-instructions.ts` | **Modify.** Reference compose.md in system prompt |
 
 ## Implementation order
 
