@@ -255,17 +255,18 @@ agent:
   pids: 2048
   install: NODE_ENV=development npm install
 
-compose: docker-compose.dev.yml
+compose: docker/local/dev/compose.yml
 ```
 
-Plus a new `docker-compose.dev.yml` defining the orchestrator and Vite dev server as
-compose services. This also fixes the flat resources bug (current `resources.memory` is
-silently ignored by the parser that expects `resources.agent.memory`).
+The existing `docker/local/dev/compose.yml` already defines the orchestrator and
+session worker services. This also fixes the flat resources bug (current
+`resources.memory` is silently ignored by the parser that expects
+`resources.agent.memory`).
 
 ## Implementation order
 
 1. **Parser** — `shipit-config.ts` with `agent` and `compose` fields.
 2. **Wire up** — delete `preview-config.ts`, update `session-config.ts`, update callers.
-3. **Migrate root shipit.yaml** — convert to new format, create docker-compose.dev.yml.
+3. **Migrate root shipit.yaml** — convert to new format, point to existing compose file.
 4. **Update shipit-docs** — new shipit.yaml reference.
 5. **Compose integration** — see [087-compose-unification](../087-compose-unification/plan.md).
