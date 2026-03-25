@@ -40,7 +40,6 @@ services:
     command: npm run server
     directory: packages/api
     port: 3000
-    preview: off
 
   web:
     command: npm run dev
@@ -50,7 +49,7 @@ services:
 
   docs:
     html: docs/index.html
-    preview: manual
+    preview: manual   # won't start until user clicks "Start" in the UI
 
 resources:
   agent:
@@ -143,7 +142,7 @@ services:
     html: <string>            # OR: path to HTML file (mutually exclusive with command)
     directory: <string>       # Optional: subdirectory to run in
     port: <number>            # Optional: port this service listens on
-    preview: auto | manual | off  # Optional: preview visibility (default: auto)
+    preview: auto | manual        # Optional: startup behavior (default: auto)
 ```
 
 **Service fields:**
@@ -154,27 +153,24 @@ services:
 | `html` | string | one of command/html | Static HTML file path |
 | `directory` | string | no | Subdirectory (relative to workspace root) |
 | `port` | integer | no | Port the service listens on |
-| `preview` | enum | no | Preview visibility (default: `auto`) |
+| `preview` | enum | no | Startup behavior (default: `auto`) |
 
 **`preview` field values:**
 
 | Value | Behavior |
 |-------|----------|
-| `auto` | Service preview is shown in the preview panel automatically when ready. This is the default for services that declare a `port` or use `html` mode. |
-| `manual` | Service runs and port is proxied, but the preview panel doesn't auto-navigate to it. User can manually select it from a service picker. Good for secondary services (docs site, admin panel). |
-| `off` | Service runs but is not exposed to the preview panel at all. Good for backend APIs, background workers, or processes that other services depend on but users don't browse directly. |
+| `auto` | Service starts automatically when the session begins. Once ready, its preview is shown in the preview panel. This is the default. |
+| `manual` | Service does **not** start until the user explicitly starts it from the service picker in the UI. Useful for expensive services (heavy build steps, large databases) or services only needed occasionally (docs site, admin panel, seed scripts). |
 
-When `preview` is omitted:
-- Services with `port` or `html` default to `auto`
-- Services without `port` default to `off`
+Default is `auto` for all services.
 
 **Port detection:**
 
 - If `port` is specified, ShipIt polls that port for readiness.
 - If `port` is omitted, ShipIt scans stdout for `http://localhost:PORT` patterns
   (current behavior, applied per-service).
-- A service with no port and no stdout detection is treated as a background process
-  (always "ready" after spawn).
+- A service with no port and no stdout detection is considered ready immediately
+  after spawn.
 
 **Why `port` (singular) instead of `ports` (array):**
 
@@ -248,7 +244,7 @@ interface ServiceConfig {
   mode: { kind: "command"; command: string } | { kind: "html"; html: string };
   directory?: string;
   port?: number;
-  preview: "auto" | "manual" | "off";
+  preview: "auto" | "manual";
 }
 ```
 
@@ -280,13 +276,16 @@ Auto-detected configs always produce a single service named `default` with
 ### Preview panel changes
 
 The preview panel currently shows a single preview. With services, it needs to support
-multiple previewed services:
+multiple services:
 
-- **Service tabs/picker** — when multiple services have `preview: auto` or `manual`,
-  show a tab bar or dropdown to switch between them.
-- **Auto-navigate** — on session start, auto-navigate to the first `preview: auto`
-  service that becomes ready.
+- **Service picker** — show all defined services with their status (stopped, starting,
+  ready, error). `auto` services start immediately; `manual` services show a "Start"
+  button.
+- **Auto-navigate** — on session start, auto-navigate to the first `auto` service
+  that becomes ready.
 - **Status per service** — each service has independent ready/error/stopped status.
+- **Manual start/stop** — users can start `manual` services and stop any running
+  service from the picker.
 
 This is a significant client change and should be implemented as a follow-up, not part
 of the config parser work.
