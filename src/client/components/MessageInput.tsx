@@ -38,6 +38,7 @@ export function MessageInput({
   contextTokens = 0,
   hasActiveSession = false,
   autoFocus = false,
+  hasPrCard = false,
 }: {
   onSend: (text: string) => void;
   disabled: boolean;
@@ -64,6 +65,8 @@ export function MessageInput({
   hasActiveSession?: boolean;
   /** When true, focus the textarea immediately. */
   autoFocus?: boolean;
+  /** When true, only round bottom corners (PR card provides the top). */
+  hasPrCard?: boolean;
 }) {
   const [text, setText] = useState("");
   const [isDragging, setIsDragging] = useState(false);
@@ -302,7 +305,7 @@ export function MessageInput({
         />
 
         {/* Unified input box */}
-        <div className="flex flex-col rounded-b-xl bg-(--color-bg-secondary) border border-(--color-border-secondary) focus-within:border-(--color-accent)/80 focus-within:ring-1 focus-within:ring-(--color-accent)/80">
+        <div className={`flex flex-col ${hasPrCard ? "rounded-b-xl" : "rounded-xl"} bg-(--color-bg-secondary) border border-(--color-border-secondary) focus-within:border-(--color-accent)/80 focus-within:ring-1 focus-within:ring-(--color-accent)/80`}>
           {/* Textarea — full width on top */}
           <textarea
             ref={textareaRef}
