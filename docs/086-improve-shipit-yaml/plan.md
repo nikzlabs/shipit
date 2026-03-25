@@ -267,46 +267,9 @@ shipit.yaml parser only handles agent config and the compose file path.
 
 ## Migration
 
-### ShipIt's own shipit.yaml
-
-The root `shipit.yaml` must be migrated to the new format. Current file:
-
-```yaml
-capabilities:
-  docker: true
-
-resources:
-  memory: 3072
-  cpu: 2.0
-  pids: 2048
-
-install: NODE_ENV=development npm install
-preview:
-  command: >-
-    ./node_modules/.bin/tsx watch src/server/orchestrator/index.ts &
-    ./node_modules/.bin/vite dev --host 0.0.0.0 --port 5173
-  ports: [5173]
-```
-
-Becomes:
-
-```yaml
-agent:
-  memory: 3072
-  cpu: 2.0
-  pids: 2048
-  install: NODE_ENV=development npm install
-
-compose:
-  file: docker/local/dev/compose.yml
-  docker-socket: true
-```
-
-The existing `docker/local/dev/compose.yml` already defines the orchestrator and
-session worker services. `docker-socket: true` is needed because the inner ShipIt
-orchestrator (a compose service) creates inner session containers dynamically. This
-also fixes the flat resources bug (current `resources.memory` is silently ignored by
-the parser that expects `resources.agent.memory`).
+See [087-compose-unification § Migration](../087-compose-unification/plan.md#migration)
+for the unified migration plan covering both the shipit.yaml schema change and the
+services container → compose transition.
 
 ## Implementation order
 

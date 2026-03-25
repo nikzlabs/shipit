@@ -409,6 +409,73 @@ The agent creates docker-compose.yml during onboarding. Mitigations:
 | `src/server/shipit-docs/compose.md` | **New.** Agent guide for generating compose files |
 | `src/server/orchestrator/agent-instructions.ts` | **Modify.** Reference compose.md in system prompt |
 
+## Migration
+
+### ShipIt's own config
+
+The root `shipit.yaml` migrates from the old format to the new schema. The current
+file:
+
+```yaml
+capabilities:
+  docker: true
+
+resources:
+  memory: 3072
+  cpu: 2.0
+  pids: 2048
+
+install: NODE_ENV=development npm install
+preview:
+  command: >-
+    ./node_modules/.bin/tsx watch src/server/orchestrator/index.ts &
+    ./node_modules/.bin/vite dev --host 0.0.0.0 --port 5173
+  ports: [5173]
+```
+
+Becomes:
+
+```yaml
+agent:
+  memory: 3072
+  cpu: 2.0
+  pids: 2048
+  install: NODE_ENV=development npm install
+
+compose:
+  file: docker/local/dev/compose.yml
+  docker-socket: true
+```
+
+- The existing `docker/local/dev/compose.yml` already defines the orchestrator and
+  session worker services — no new compose file needed.
+- `docker-socket: true` because the inner ShipIt orchestrator (a compose service)
+  creates inner session containers dynamically.
+- Fixes the flat resources bug: current `resources.memory` is silently ignored by the
+  parser (expects `resources.agent.memory`).
+- `capabilities.docker` → `compose.docker-socket` — scoped to compose services, not
+  the agent.
+- `preview` block → compose services with `x-shipit-preview` annotations (already
+  defined in the existing compose file, may need `x-shipit-preview: auto` added to
+  the Vite service).
+
+### Codebase changes
+
+1. **Delete services container code** — `preview-manager.ts`, `preview-config.ts`,
+   `install-runner.ts`, session worker preview endpoints, SSE event stream for preview.
+2. **Delete auto-detection heuristics** — Vite detection, port extraction from scripts,
+   package manager detection in `preview-config.ts`.
+3. **Update `session-config.ts`** — parse new schema (agent + compose), drop
+   `resources.preview`, `capabilities`.
+4. **Update `container-lifecycle.ts`** — remove `createPreviewContainer()`. Compose
+   stack replaces it.
+5. **Update `container-session-runner.ts`** — use ServiceManager instead of HTTP to
+   services container.
+6. **Update templates** — all project templates include docker-compose.yml and
+   shipit.yaml in the new format.
+7. **Update shipit-docs** — rewrite `shipit-yaml.md`, create `compose.md`, update
+   `preview.md` and `environment.md`.
+
 ## Implementation order
 
 1. **Add compose CLI to orchestrator image** — Dockerfile change.
