@@ -1,37 +1,37 @@
 # 087 — Reusable Preview Secrets Checklist
 
 ## Phase 1: Env file injection + auto-load (depends on 086)
-- [ ] Create `secret-resolver.ts` with env file writing logic
-- [ ] Write `.shipit/.env` from `SecretStore` on session activation (in service manager)
-- [ ] Add `env_file: [.shipit/.env]` to compose override generation
-- [ ] On `PUT /api/secrets`: rewrite `.env`, run `docker compose up -d`
+- [ ] Parse `x-shipit-secrets` (string form) from compose file in compose-generator
+- [ ] Create `secret-resolver.ts` with per-service env file writing
+- [ ] Write `.shipit/.env.<service>` from `SecretStore` on session activation
+- [ ] Add `env_file:` to compose override generation
+- [ ] On `PUT /api/secrets`: rewrite env files, run `docker compose up -d`
 - [ ] Remove `pushSecretsToPreview()` and preview worker `/secrets` endpoint
-- [ ] Test: new session for repo with saved secrets → services start with env vars
-- [ ] Test: save new secret → compose recreates containers with updated env
+- [ ] Test: new session with saved secrets → services start with correct env vars
+- [ ] Test: save new secret → compose recreates affected containers
+- [ ] Test: service only sees its own declared secrets
 
 ## Pre-086 stopgap (optional, can ship immediately)
 - [ ] Wire `setSecretsLoader` in `app-lifecycle.ts` → `buildRunnerFactory()`
-- [ ] Test: secrets auto-push on session activation with current preview container
 
-## Phase 2: Declarative requirements
-- [ ] Add `SecretRequirement` type to `domain-types.ts`
-- [ ] Add `secrets` top-level field to `shipit-config.ts` parser
+## Phase 2: Extended syntax + validation
+- [ ] Add `SecretEntry` / `SecretRequirement` types to `domain-types.ts`
+- [ ] Parse object form (`name`, `description`, `required`, `source`)
 - [ ] Validate required secrets on compose start
 - [ ] Add `secrets_missing` WS message type
 - [ ] Emit `secrets_missing` when required secrets are absent
-- [ ] Per-service scoping: write `.shipit/.env.<service>` files
-- [ ] Per-service `env_file:` references in compose override
 - [ ] Client: "Configure secrets" banner on `secrets_missing`
-- [ ] Client: show secret descriptions from shipit.yaml
-- [ ] Update `src/server/shipit-docs/shipit-yaml.md` with secrets field
+- [ ] Client: show secret descriptions from compose file
+- [ ] Update `src/server/shipit-docs/shipit-yaml.md` with `x-shipit-secrets` docs
 - [ ] Create `src/server/shipit-docs/secrets.md` agent-facing docs
 
 ## Phase 3: Agent injection
+- [ ] Add `agent.secrets` field to shipit-config parser
 - [ ] Write `.shipit/.env.agent` for agent-scoped secrets
 - [ ] Pass `--env-file .shipit/.env.agent` on agent container creation
 - [ ] Runtime secret updates via session worker `/secrets` endpoint
 - [ ] Client: agent scope indicator in secrets panel
-- [ ] Test: `agent: true` secret available in agent container
+- [ ] Test: `agent.secrets` value available in agent container
 - [ ] Test: service-only secret NOT in agent container
 
 ## Phase 4: Platform credential forwarding
@@ -44,7 +44,7 @@
 - [ ] Test: inner ShipIt compose service receives outer GitHub token
 
 ## Phase 5: UI polish
+- [ ] Per-service scope display
 - [ ] Required/optional indicators with description tooltips
-- [ ] Per-service scope labels
 - [ ] Undeclared (custom) secrets section
 - [ ] Missing secrets banner in preview panel with configure link
