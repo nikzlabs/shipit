@@ -1,127 +1,108 @@
 # shipit.yaml Reference
 
 Place `shipit.yaml` at the workspace root (`/workspace/shipit.yaml`) to
-configure the preview server, install commands, resource limits, and
-capabilities.
+configure the agent container, install commands, and compose file path.
 
-If no `shipit.yaml` exists, ShipIt falls back to detecting `package.json`
-(looks for a `dev` script) or `index.html` (static file mode).
+If no `shipit.yaml` exists, ShipIt auto-detects `docker-compose.yml` or
+`compose.yml` at the workspace root. If no compose file is found, the
+preview panel shows an onboarding UI.
 
 ## Full example
 
 ```yaml
-install: npm install
+version: 1
 
-preview:
-  command: npm run dev
-  ports: [5173]
-  directory: packages/frontend
+agent:
+  memory: 2048
+  cpu: 1.0
+  pids: 512
+  install:
+    - npm install
+    - npx prisma generate
 
-resources:
-  agent:
-    memory: 2048
-    cpu: 1.0
-    pids: 512
-  preview:
-    memory: 1024
-    cpu: 1.0
-    pids: 2048
-
-capabilities:
-  docker: true
+compose: docker-compose.yml
 ```
 
 ## Sections
 
-### `install` (optional)
-
-Shell command to run before the preview starts. Typically dependency
-installation.
+### `version` (optional)
 
 ```yaml
-install: npm install
+version: 1
 ```
 
-- Runs once on first session start. Skipped on resume (tracked by a
-  `.shipit/.install-done` marker file).
-- Runs in the workspace root, or in `preview.directory` if specified.
-- If it fails, the preview does not start.
+Schema version for forward compatibility. When present, the parser validates
+against that version's schema. When absent, the latest version is assumed.
 
-### `preview` (required for live preview)
+### `agent` (optional)
 
-Two mutually exclusive modes:
-
-#### Command mode
+Configures the agent container (runs Claude CLI).
 
 ```yaml
-preview:
-  command: npm run dev      # Required. Shell command to start the dev server.
-  ports: [5173]             # Optional. Ports to poll until they open.
-  directory: packages/app   # Optional. Subdirectory to run in (relative to workspace root).
+agent:
+  memory: 2048        # Memory in MB (default: 1024, max: 4096)
+  cpu: 1.0            # CPU cores as float (default: 0.5, max: 4)
+  pids: 512           # Max processes (default: 256, max: 2048)
+  install:            # Install commands, run sequentially
+    - npm install
+    - npx prisma generate
 ```
 
-- `command`: The shell command to run. `HOST=0.0.0.0` is injected automatically
-  so frameworks bind to all interfaces inside Docker.
-- `ports`: If provided, ShipIt polls these ports (500ms intervals, 30s timeout)
-  before marking the preview as ready. If omitted, ShipIt detects the port from
-  stdout (`http://localhost:PORT` or `http://127.0.0.1:PORT`).
-- `directory`: Run both the install and preview commands in this subdirectory.
-  Useful for monorepos.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `memory` | integer | 1024 | Memory limit in MB |
+| `cpu` | float | 0.5 | CPU cores |
+| `pids` | integer | 256 | Max processes |
+| `install` | string or string[] | none | Install commands, run sequentially |
 
-Multiple commands can be run in parallel using shell `&`:
-```yaml
-preview:
-  command: >-
-    npm run server &
-    npm run client
-  ports: [3000, 5173]
-```
+Resource values are capped at deployment-level maximums. Invalid or negative
+values fall back to defaults.
 
-#### HTML mode
+#### Install behavior
 
-```yaml
-preview:
-  html: index.html    # Path to HTML file relative to workspace root.
-```
+- Steps run sequentially in the agent container before services start.
+- If any step fails, subsequent steps are skipped and the error is reported.
+- The `.shipit/.install-done` marker is only written after all steps succeed.
+- On resume, install is skipped (marker exists). Editing `shipit.yaml` clears
+  the marker.
+- When `install` is a string, it's treated as a single-element list.
 
-Serves a static HTML file using a built-in Vite dev server with hot reload.
-Good for simple HTML/CSS/JS projects without a build step.
+### `compose` (optional)
 
-### `resources` (optional)
-
-Request compute resources for session containers. Resources are configured
-separately for the agent container (runs Claude CLI) and the preview
-container (runs dev server). Values are capped at deployment-level maximums.
+Path to a Docker Compose file, relative to workspace root. Accepts a string
+(just the path) or an object (path + flags):
 
 ```yaml
-resources:
-  agent:
-    memory: 2048    # Memory in MB (default: 1024, max: 4096)
-    cpu: 1.0        # CPU cores as float (default: 0.5, max: 4)
-    pids: 512       # Max processes (default: 256, max: 2048)
-  preview:
-    memory: 1024    # Memory in MB (default: 512, max: 4096)
-    cpu: 1.0        # CPU cores as float (default: 0.5, max: 4)
-    pids: 2048      # Max processes (default: 1024, max: 2048)
+# String form (most projects)
+compose: docker-compose.yml
+
+# Object form (when flags are needed)
+compose:
+  file: docker-compose.yml
+  docker-socket: true
 ```
 
-Increase `agent.memory` for projects where the agent needs more headroom
-(e.g., large codebases). Increase `preview.memory` and `preview.cpu` for
-projects with heavy build steps (e.g., TypeScript compilation, Webpack).
-Increase `preview.pids` for projects that spawn many child processes.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `file` | string | required | Path to compose file |
+| `docker-socket` | boolean | false | Grant Docker socket access to compose services |
 
-### `capabilities` (optional)
+When `compose` is omitted, ShipIt auto-detects `docker-compose.yml`,
+`docker-compose.yaml`, `compose.yml`, or `compose.yaml` at the workspace root.
 
-Enable additional container features.
+#### `docker-socket`
 
-```yaml
-capabilities:
-  docker: true    # Grant Docker access (default: false)
-```
+When true, Docker socket mounts (`/var/run/docker.sock`) in the compose file
+are allowed instead of being rejected. Required for projects whose compose
+services need to create Docker containers at runtime (e.g., ShipIt running
+inside ShipIt). Other security policies still apply.
 
-When `docker: true`, the session container can create and manage child Docker
-containers through a secure proxy. Child containers join an isolated bridge
-network scoped to the session.
+## Config resolution
+
+1. **shipit.yaml with `compose`** — use the referenced compose file
+2. **shipit.yaml without `compose`** — auto-detect compose file at workspace root
+3. **No shipit.yaml** — same auto-detection as (2)
+4. **No compose file found** — preview panel shows onboarding UI
 
 ## Onboarding a repository
 
@@ -137,8 +118,29 @@ committed.
 
 ## Config changes at runtime
 
-- Editing `shipit.yaml` triggers an immediate preview restart.
-- Changes to lockfiles are debounced (30s cooldown) to avoid install loops
-  during dependency resolution.
-- Resource and capability changes take effect on the next session container
-  creation (not live).
+- Editing `shipit.yaml` or the compose file triggers stack reconciliation
+  (regenerate override, `docker compose up -d`).
+- Changes to lockfiles are debounced (30s cooldown) to avoid install loops.
+- Resource changes take effect on the next session container creation (not live).
+
+## Services
+
+Services are defined in `docker-compose.yml`, not in shipit.yaml. See
+[compose.md](compose.md) for how to write compose files for ShipIt.
+
+## Migration from old format
+
+If you have a shipit.yaml with the old format (`preview`, `resources`,
+`capabilities`), migrate to the new schema:
+
+| Old | New |
+|-----|-----|
+| `resources.agent.memory` / `resources.memory` | `agent.memory` |
+| `resources.agent.cpu` | `agent.cpu` |
+| `resources.agent.pids` | `agent.pids` |
+| `install: npm install` (top-level) | `agent.install: npm install` |
+| `capabilities.docker: true` | `compose.docker-socket: true` |
+| `preview.command` / `preview.html` | Compose `command` / static file service |
+| `preview.ports` | Compose `ports` field |
+| `preview.directory` | Compose `working_dir` field |
+| `resources.preview` | Per-service resource limits in compose |

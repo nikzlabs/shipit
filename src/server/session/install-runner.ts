@@ -123,3 +123,31 @@ export function runInstallCommand(opts: RunInstallOptions): Promise<number> {
     });
   });
 }
+
+export interface RunInstallStepsOptions {
+  /** Install commands to run sequentially. */
+  commands: string[];
+  /** Working directory. */
+  cwd: string;
+  /** Called with each line of stdout/stderr output. */
+  onOutput?: (text: string) => void;
+  /** Called before each step starts, with the step index and command. */
+  onStepStart?: (index: number, command: string) => void;
+}
+
+/**
+ * Run multiple install commands sequentially. If any step fails (non-zero
+ * exit code), subsequent steps are skipped and the failing exit code is
+ * returned. Returns 0 only if all steps succeed.
+ */
+export async function runInstallSteps(opts: RunInstallStepsOptions): Promise<number> {
+  const { commands, cwd, onOutput, onStepStart } = opts;
+
+  for (let i = 0; i < commands.length; i++) {
+    onStepStart?.(i, commands[i]);
+    const exitCode = await runInstallCommand({ command: commands[i], cwd, onOutput });
+    if (exitCode !== 0) return exitCode;
+  }
+
+  return 0;
+}

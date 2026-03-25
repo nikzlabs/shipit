@@ -52,9 +52,11 @@ ShipIt automatically commits your changes after each turn. Do NOT run git commit
 
 ## Live preview
 
-A preview server may already be running in the side panel, showing the user a live view of the app. When you edit files, changes are picked up automatically (hot reload). If the preview is not running and the project needs one, the user can start it from the UI — you do not need to start dev servers yourself unless the user specifically asks.
+Services defined in docker-compose.yml run as Docker Compose containers managed by ShipIt. The preview pane shows services marked with \`x-shipit-preview: auto\`. When you edit files, changes are picked up automatically via mounted volumes (hot reload).
 
-If you need to install dependencies (npm install, etc.), run the command in bash. ShipIt will detect the changes and reload the preview.
+If the project needs a preview and doesn't have a docker-compose.yml, you can create one. See /shipit-docs/compose.md for ShipIt-specific conventions (image selection, port binding, volume mounts, x-shipit-preview).
+
+If you need to install dependencies, they should be listed in \`agent.install\` in shipit.yaml. For ad-hoc installs, run the command in bash.
 
 ## Uploaded files
 
@@ -63,7 +65,11 @@ Users can upload files from their browser. Uploaded files are available at /uplo
 ${browserSection}
 ## ShipIt platform docs
 
-Reference documentation about the ShipIt platform is at /shipit-docs/. Consult these docs when you need to configure shipit.yaml, troubleshoot previews, or answer questions about platform capabilities (deployment, GitHub integration, environment details).
+Reference documentation about the ShipIt platform is at /shipit-docs/. Consult these docs when you need to configure shipit.yaml, write docker-compose.yml for previews, troubleshoot services, or answer questions about platform capabilities (deployment, GitHub integration, environment details). Key docs:
+- /shipit-docs/shipit-yaml.md — shipit.yaml reference (agent config, compose path)
+- /shipit-docs/compose.md — how to write docker-compose.yml for ShipIt
+- /shipit-docs/preview.md — preview system and browser tools
+- /shipit-docs/environment.md — container environment details
 
 ## Terminal
 

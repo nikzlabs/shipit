@@ -1,0 +1,346 @@
+/**
+ * ServiceManager — manages Docker Compose service lifecycle for a session.
+ *
+ * Replaces the services container (Fastify session worker for preview) with
+ * direct `docker compose` CLI invocations from the orchestrator. Each session
+ * gets its own compose stack with an override file for ShipIt integration.
+ *
+ * Responsibilities:
+ * - Start/stop compose stack
+ * - Start/stop individual services
+ * - Service status polling
+ * - Log streaming via `docker compose logs -f`
+ * - Config change detection and stack reconciliation
+ */
+
+import { EventEmitter } from "node:events";
+import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
+import path from "node:path";
+import type { ComposeConfig } from "../shared/shipit-config.js";
+import {
+  parseComposeFile,
+  generateComposeOverride,
+  writeComposeOverride,
+  type ComposeOverrideOptions,
+} from "./compose-generator.js";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export type ServiceStatus = "stopped" | "starting" | "running" | "error";
+
+export interface ManagedService {
+  name: string;
+  port?: number;
+  preview: "auto" | "manual";
+  status: ServiceStatus;
+  error?: string;
+}
+
+export interface ServiceManagerOptions {
+  /** Session ID. */
+  sessionId: string;
+  /** Absolute path to the workspace directory. */
+  workspaceDir: string;
+  /** Compose config from shipit.yaml. */
+  composeConfig: ComposeConfig;
+  /** Workspace volume name for volume rewrites. */
+  workspaceVolume?: string;
+  /** Workspace subpath within the volume. */
+  workspaceSubpath?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+export interface ServiceManagerEvents {
+  service_status: (service: ManagedService) => void;
+  service_log: (serviceName: string, text: string) => void;
+  stack_ready: () => void;
+  stack_error: (error: Error) => void;
+}
+
+// ---------------------------------------------------------------------------
+// ServiceManager
+// ---------------------------------------------------------------------------
+
+export class ServiceManager extends EventEmitter {
+  private readonly sessionId: string;
+  private readonly workspaceDir: string;
+  private readonly composeConfig: ComposeConfig;
+  private readonly workspaceVolume: string;
+  private readonly workspaceSubpath: string;
+
+  private services = new Map<string, ManagedService>();
+  private logProcesses = new Map<string, ChildProcess>();
+  private _started = false;
+
+  constructor(opts: ServiceManagerOptions) {
+    super();
+    this.sessionId = opts.sessionId;
+    this.workspaceDir = opts.workspaceDir;
+    this.composeConfig = opts.composeConfig;
+    this.workspaceVolume = opts.workspaceVolume ?? "shipit-workspace";
+    this.workspaceSubpath = opts.workspaceSubpath ?? `sessions/${opts.sessionId}/workspace`;
+  }
+
+  /** Whether the compose stack has been started. */
+  get started(): boolean {
+    return this._started;
+  }
+
+  /** Get all managed services. */
+  getServices(): ManagedService[] {
+    return [...this.services.values()];
+  }
+
+  /** Get a specific service by name. */
+  getService(name: string): ManagedService | undefined {
+    return this.services.get(name);
+  }
+
+  /**
+   * Initialize the compose stack:
+   * 1. Parse and validate the compose file
+   * 2. Generate the override file
+   * 3. Start auto services via `docker compose up -d`
+   */
+  async start(): Promise<void> {
+    const composePath = path.join(this.workspaceDir, this.composeConfig.file);
+
+    // Parse and validate
+    const parsedServices = parseComposeFile(composePath, {
+      dockerSocket: this.composeConfig.dockerSocket,
+    });
+
+    // Build service map
+    for (const svc of parsedServices) {
+      const preview = svc.shipitPreview ?? (svc.ports?.length ? "auto" : "manual");
+      const port = svc.ports?.[0] ? extractHostPort(svc.ports[0]) : undefined;
+      this.services.set(svc.name, {
+        name: svc.name,
+        port,
+        preview,
+        status: "stopped",
+      });
+    }
+
+    // Generate override
+    const overrideOpts: ComposeOverrideOptions = {
+      sessionId: this.sessionId,
+      workspaceVolume: this.workspaceVolume,
+      workspaceSubpath: this.workspaceSubpath,
+      composeConfig: this.composeConfig,
+    };
+    const overrideContent = generateComposeOverride(parsedServices, overrideOpts);
+    writeComposeOverride(this.workspaceDir, overrideContent);
+
+    // Start auto services
+    const autoServices = [...this.services.values()].filter(s => s.preview === "auto");
+    for (const svc of autoServices) {
+      this.updateServiceStatus(svc.name, "starting");
+    }
+
+    try {
+      await this.composeUp();
+      this._started = true;
+
+      // Update status for auto services
+      for (const svc of autoServices) {
+        this.updateServiceStatus(svc.name, "running");
+      }
+
+      this.emit("stack_ready");
+    } catch (err) {
+      for (const svc of autoServices) {
+        this.updateServiceStatus(svc.name, "error", (err as Error).message);
+      }
+      this.emit("stack_error", err);
+      throw err;
+    }
+  }
+
+  /**
+   * Start a specific manual service.
+   */
+  async startService(name: string): Promise<void> {
+    const svc = this.services.get(name);
+    if (!svc) throw new Error(`Unknown service: ${name}`);
+
+    this.updateServiceStatus(name, "starting");
+    try {
+      await this.composeUpService(name);
+      this.updateServiceStatus(name, "running");
+    } catch (err) {
+      this.updateServiceStatus(name, "error", (err as Error).message);
+      throw err;
+    }
+  }
+
+  /**
+   * Stop a specific service.
+   */
+  async stopService(name: string): Promise<void> {
+    const svc = this.services.get(name);
+    if (!svc) throw new Error(`Unknown service: ${name}`);
+
+    try {
+      await this.composeStop(name);
+      this.updateServiceStatus(name, "stopped");
+    } catch (err) {
+      this.updateServiceStatus(name, "error", (err as Error).message);
+      throw err;
+    }
+  }
+
+  /**
+   * Stream logs for a service. Returns a cleanup function.
+   */
+  streamLogs(name: string): () => void {
+    const existing = this.logProcesses.get(name);
+    if (existing) {
+      existing.kill();
+      this.logProcesses.delete(name);
+    }
+
+    const args = this.composeArgs("logs", "-f", "--no-log-prefix", name);
+    const proc = spawn("docker", args, {
+      cwd: this.workspaceDir,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    const handleData = (chunk: Buffer) => {
+      this.emit("service_log", name, chunk.toString());
+    };
+
+    proc.stdout?.on("data", handleData);
+    proc.stderr?.on("data", handleData);
+
+    this.logProcesses.set(name, proc);
+
+    return () => {
+      proc.kill();
+      this.logProcesses.delete(name);
+    };
+  }
+
+  /**
+   * Reconcile the compose stack after a config change.
+   * Re-parses the compose file, regenerates the override, and runs `up -d`.
+   */
+  async reconcile(): Promise<void> {
+    // Re-start with the same config — start() handles parsing, override, and up
+    this.services.clear();
+    this._started = false;
+    await this.start();
+  }
+
+  /**
+   * Tear down the entire compose stack.
+   */
+  async stop(): Promise<void> {
+    // Kill all log streaming processes
+    for (const [name, proc] of this.logProcesses) {
+      proc.kill();
+      this.logProcesses.delete(name);
+    }
+
+    try {
+      await this.composeDown();
+    } catch {
+      // Best-effort cleanup
+    }
+
+    for (const [name] of this.services) {
+      this.updateServiceStatus(name, "stopped");
+    }
+    this._started = false;
+  }
+
+  // -----------------------------------------------------------------------
+  // Private helpers
+  // -----------------------------------------------------------------------
+
+  private updateServiceStatus(name: string, status: ServiceStatus, error?: string): void {
+    const svc = this.services.get(name);
+    if (!svc) return;
+    svc.status = status;
+    svc.error = error;
+    this.emit("service_status", { ...svc });
+  }
+
+  /** Build common compose CLI args with the user file and override. */
+  private composeArgs(...extra: string[]): string[] {
+    return [
+      "compose",
+      "-f", this.composeConfig.file,
+      "-f", ".shipit/compose.override.yml",
+      "-p", `shipit-${this.sessionId}`,
+      ...extra,
+    ];
+  }
+
+  /** Run `docker compose up -d` for auto services. */
+  private composeUp(): Promise<void> {
+    return this.runCompose("up", "-d", "--remove-orphans");
+  }
+
+  /** Run `docker compose up -d --profile shipit-manual <service>`. */
+  private composeUpService(name: string): Promise<void> {
+    return this.runCompose("up", "-d", "--profile", "shipit-manual", name);
+  }
+
+  /** Run `docker compose stop <service>`. */
+  private composeStop(name: string): Promise<void> {
+    return this.runCompose("stop", name);
+  }
+
+  /** Run `docker compose down --remove-orphans`. */
+  private composeDown(): Promise<void> {
+    return this.runCompose("down", "--remove-orphans");
+  }
+
+  /** Run a docker compose command and resolve/reject based on exit code. */
+  private runCompose(...subArgs: string[]): Promise<void> {
+    const args = this.composeArgs(...subArgs);
+    return new Promise((resolve, reject) => {
+      const proc = spawn("docker", args, {
+        cwd: this.workspaceDir,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      let stderr = "";
+      proc.stderr?.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+
+      proc.on("close", (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`docker compose ${subArgs[0]} failed (exit ${code}): ${stderr.trim()}`));
+        }
+      });
+
+      proc.on("error", reject);
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract the host port from a port mapping string.
+ * E.g., "5173:5173" → 5173, "8080:80" → 8080, "5173" → 5173
+ */
+function extractHostPort(portMapping: string): number | undefined {
+  const parts = portMapping.split(":");
+  const portStr = parts[0];
+  const port = parseInt(portStr, 10);
+  return Number.isFinite(port) && port > 0 ? port : undefined;
+}
