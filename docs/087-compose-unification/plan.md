@@ -5,9 +5,9 @@ status: planned
 # Compose Unification
 
 Replace the dedicated services container with Docker Compose as the universal execution
-model for all session services. Teams with an existing docker-compose.yml annotate it
-with `x-shipit` extensions — no separate shipit.yaml needed. ShipIt manages the
-compose stack, presents all services (process and container) in a unified UI.
+model for all session services. shipit.yaml is always the entry point — it references
+the compose file and configures the agent. The compose file stays standard, with only
+`x-shipit-preview` annotations per service.
 
 ## Motivation
 
@@ -34,16 +34,15 @@ configuration surfaces.
 - **Eliminates the services container** — the dedicated container with its Fastify
   session worker, SSE event stream, HTTP API, and custom lifecycle management is
   replaced by compose. Less code, fewer moving parts.
-- **Teams keep their docker-compose.yml** — add a few `x-shipit` annotations, done.
-  No separate config file to maintain.
+- **Teams keep their docker-compose.yml** — add `x-shipit-preview` annotations where
+  needed, point shipit.yaml at the file, done.
 - **Consistent networking** — all services share a compose network. Service discovery
-  via DNS names works across process and container services.
+  via DNS names works across all services.
 
 ## Prerequisites
 
 - [086-improve-shipit-yaml](../086-improve-shipit-yaml/plan.md) — the shared config
-  model (`ShipitConfig`, `ServiceConfig`) that both shipit.yaml and docker-compose.yml
-  parsing produce.
+  model (`ShipitConfig`, `ServiceConfig`) and the `compose` field in shipit.yaml.
 - [061-self-hosting](../061-self-hosting/plan.md) — Docker API proxy, security policy,
   session-scoped networks and labels. Partially superseded: the proxy was designed for
   agent-initiated Docker access; this design adds orchestrator-initiated compose
@@ -54,21 +53,26 @@ configuration surfaces.
 
 ## Design
 
-### Config surface: `x-shipit` extensions in docker-compose.yml
+### Config surface
 
-Teams annotate their existing docker-compose.yml. ShipIt reads the standard compose
-fields plus `x-shipit-*` extensions (ignored by `docker compose` when run locally).
-
-**Full example:**
+shipit.yaml is always the entry point. It contains agent config, install steps, and
+a reference to the compose file:
 
 ```yaml
-x-shipit-agent:
-  install:
-    - npm install
-    - npx prisma generate
-  memory: 2048
-  cpu: 1.0
+# shipit.yaml
+install: npm install
 
+agent:
+  memory: 2048
+
+compose: docker-compose.yml
+```
+
+The compose file is standard docker-compose.yml. The only ShipIt-specific annotation
+is `x-shipit-preview` per service:
+
+```yaml
+# docker-compose.yml
 services:
   web:
     build: .
@@ -82,8 +86,6 @@ services:
     build: ./api
     command: npm run server
     ports: ["3000:3000"]
-    volumes:
-      - .:/workspace
 
   db:
     image: postgres:16
@@ -96,43 +98,62 @@ services:
     image: redis:7
 ```
 
-**`x-shipit-agent` (top-level extension):**
+**Why shipit.yaml is always the entry point:**
+- You need to know which compose file to read before you can read it
+- Monorepos may have multiple compose files (`compose/dev.yml`, `packages/api/docker-compose.yml`)
+- Agent config (memory, install) is a ShipIt concern, not a compose concern
+- Keeps the compose file portable — it works with `docker compose up` locally with
+  zero ShipIt dependencies
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `install` | string or string[] | none | Install commands, run in agent container |
-| `memory` | integer | 1024 | Agent container memory in MB |
-| `cpu` | float | 0.5 | Agent container CPU cores |
-| `pids` | integer | 256 | Agent container max processes |
-
-**`x-shipit-preview` (per-service extension):**
+**`x-shipit-preview` per service:**
 
 | Value | Behavior |
 |-------|----------|
 | `auto` | Service starts automatically, preview shown when ready. Default for services with `ports`. |
 | `manual` | Service does not start until user clicks "Start" in UI. Default for services without `ports`. |
 
-When `x-shipit-preview` is omitted, the default is inferred: services that declare
-`ports` default to `auto`, services without `ports` default to `manual`.
+When omitted, services with `ports` default to `auto`, services without `ports`
+default to `manual`.
 
 **What ShipIt reads from standard compose fields:**
 
 | Compose field | ShipIt uses for |
 |---|---|
 | `services.<name>` | Service name in UI |
-| `ports` | Port detection, preview proxy routing |
+| `ports` | Port detection, preview proxy routing, default preview mode |
 | `build` / `image` | Determines if service needs image build |
-| `volumes` | Rewritten to use workspace named volume (see below) |
 | `depends_on` | Respected — compose handles startup ordering |
-| `profiles` | Used for `preview: manual` implementation |
 
-### How ShipIt uses the compose file
+### Architecture
 
-The orchestrator does **not** modify the user's docker-compose.yml. Instead, it
-generates a `.shipit/compose.override.yml` that layers on top:
+```
+Orchestrator
+  ├── reads shipit.yaml (agent, install, compose path)
+  ├── reads docker-compose.yml (service definitions, x-shipit-preview)
+  ├── generates .shipit/compose.override.yml (labels, network, volume rewrites)
+  ├── runs `docker compose` CLI (has Docker socket)
+  ├── watches workspace for config changes via fs.watch
+  └── reports unified status to browser via WebSocket
+
+Compose stack (per session)
+  ├── web          (user-defined service)
+  ├── api          (user-defined service)
+  ├── db           (user-defined service)
+  ├── redis        (user-defined service)
+  └── (session network, labels, shared workspace volume)
+
+Agent container (separate, orchestrator-managed)
+  ├── Claude CLI, Terminal PTY
+  └── joins session compose network for DNS resolution
+```
+
+### Compose override generation
+
+The orchestrator does **not** modify the user's docker-compose.yml. It generates
+`.shipit/compose.override.yml` that layers on top:
 
 ```yaml
-# .shipit/compose.override.yml (generated, not user-edited)
+# .shipit/compose.override.yml (generated)
 services:
   web:
     labels:
@@ -148,13 +169,7 @@ services:
       shipit-service-name: db
     networks:
       - shipit-session
-    profiles: ["manual"]
-  redis:
-    labels:
-      shipit-parent-session: ${SESSION_ID}
-      shipit-service-name: redis
-    networks:
-      - shipit-session
+    profiles: ["shipit-manual"]
 
 networks:
   shipit-session:
@@ -162,47 +177,25 @@ networks:
 ```
 
 Compose natively merges override files. The user's file defines services; the override
-adds ShipIt's labels, network, and volume rewrites. This is cleaner than generating a
-single merged file — the user's file stays untouched.
+adds ShipIt's labels, network, and volume rewrites.
 
-**Volume rewriting:** The user's bind mounts (e.g., `.:/workspace`) are rewritten in
-the override to use the workspace named volume with the correct subpath. The
-orchestrator detects bind mounts that reference the workspace root and replaces them.
+**Volume rewriting:** Bind mounts in the user's compose file (e.g., `.:/workspace`)
+are rewritten in the override to use the workspace named volume with the correct
+subpath. The orchestrator detects bind mounts referencing the workspace root and
+replaces them.
 
-**Manual services via profiles:** Services with `x-shipit-preview: manual` (or
-defaulting to manual) are assigned to the `manual` profile in the override. Compose
-only starts profiled services when explicitly requested:
-`docker compose up -d --profile manual <service-name>`.
-
-### Architecture
-
-```
-Orchestrator
-  ├── reads docker-compose.yml + x-shipit extensions
-  ├── generates .shipit/compose.override.yml
-  ├── runs `docker compose -f docker-compose.yml -f .shipit/compose.override.yml up -d`
-  ├── monitors via `docker compose ps`, `docker logs`, Docker events API
-  ├── watches workspace for config changes (shipit.yaml, docker-compose.yml)
-  └── reports unified status to browser via WebSocket
-
-Compose stack (per session)
-  ├── web          (user-defined service, workspace mounted)
-  ├── api          (user-defined service, workspace mounted)
-  ├── db           (user-defined service, own image)
-  ├── redis        (user-defined service, own image)
-  └── (session network, labels)
-
-Agent container (separate, orchestrator-managed)
-  ├── Claude CLI, Terminal PTY
-  └── joins session compose network for DNS resolution
-```
+**Manual services via profiles:** Services with `x-shipit-preview: manual` are
+assigned to the `shipit-manual` profile in the override. Compose only starts profiled
+services when explicitly requested. To start a manual service:
+`docker compose ... up -d --profile shipit-manual <service-name>`.
 
 ### shipit.yaml process services in compose
 
-When using shipit.yaml (no docker-compose.yml), the orchestrator generates a full
-compose file from the service definitions. A shipit.yaml process service:
+When shipit.yaml uses `services` (no compose file), the orchestrator generates a full
+compose file from the service definitions:
 
 ```yaml
+# shipit.yaml
 services:
   web:
     command: npm run dev
@@ -210,9 +203,10 @@ services:
     port: 5173
 ```
 
-Becomes a compose service:
+Becomes:
 
 ```yaml
+# .shipit/compose.yml (generated)
 services:
   web:
     image: ${SHIPIT_BASE_IMAGE}
@@ -230,30 +224,32 @@ services:
       - shipit-session
 ```
 
-The ShipIt base image provides Node.js and standard dev tooling. The user's command
-runs directly — no Fastify session worker wrapper.
+Same execution model either way — everything runs as compose.
 
 ### Compose CLI in the orchestrator
 
-The orchestrator shells out to `docker compose` for lifecycle management. Docker
-Compose CLI must be added to the orchestrator's Dockerfile (one `curl` + `tar`,
+Docker Compose CLI must be added to the orchestrator's Dockerfile (one `curl` + `tar`,
 same pattern as `Dockerfile.session-worker.docker`).
 
 The orchestrator already has everything else needed:
 - **Workspace filesystem** — mounted at `/workspace` via the named volume. Can read
-  `docker-compose.yml`, write `.shipit/compose.override.yml`. Relative paths in the
+  docker-compose.yml, write `.shipit/compose.override.yml`. Relative paths in the
   user's compose file resolve correctly.
 - **Docker socket** — `/var/run/docker.sock` is already mounted.
-- **Volume name** — `WORKSPACE_VOLUME` env var. Needed for generating volume mounts.
+- **Volume name** — `WORKSPACE_VOLUME` env var. Needed for volume rewrites.
 
 Key commands:
 ```
+# With user's compose file:
 docker compose -f docker-compose.yml -f .shipit/compose.override.yml up -d
 docker compose ... ps --format json
 docker compose ... logs -f <service>
-docker compose ... up -d --profile manual <service>
+docker compose ... up -d --profile shipit-manual <service>
 docker compose ... stop <service>
 docker compose ... down
+
+# With generated compose (shipit.yaml services):
+docker compose -f .shipit/compose.yml up -d
 ```
 
 ### File watching
@@ -263,9 +259,8 @@ Two kinds of file watching serve different purposes:
 **App-level watching (hot reload)** — handled by dev tools inside containers. The
 workspace volume is mounted in each service container. When Claude edits a file, the
 change is visible inside the container via the shared volume. Vite, webpack, nodemon,
-etc. detect the change via their own `fs.watch` and hot-reload. This works the same
-way teams' existing docker-compose setups work locally. ShipIt doesn't need to do
-anything here.
+etc. detect the change and hot-reload. This works the same way teams' existing
+docker-compose setups work locally. ShipIt doesn't need to do anything.
 
 **Platform-level watching (config changes, file tree UI)** — handled by the
 orchestrator directly. The orchestrator has the workspace mounted at `/workspace`. It
@@ -275,9 +270,8 @@ watches a small set of files per session:
 - `package-lock.json`, `yarn.lock`, etc. → re-run install (debounced 30s)
 - Workspace tree → notify browser for file explorer updates
 
-This eliminates the file-watcher sidecar container. The orchestrator uses `fs.watch`
-on Linux (inotify, kernel-level, cheap). One watcher per session is lightweight —
-comparable to the per-session state the orchestrator already holds.
+No file-watcher sidecar needed. The orchestrator uses `fs.watch` on Linux (inotify,
+kernel-level, cheap). One watcher per session is lightweight.
 
 ### Agent container integration
 
@@ -288,8 +282,8 @@ joins the session's compose network so Claude can reach services by DNS name:
 docker network connect shipit-session-${SESSION_ID} ${AGENT_CONTAINER_ID}
 ```
 
-The orchestrator does this after the compose stack starts. Services are then reachable
-from the agent by name (e.g., `db`, `redis`, `web`).
+The orchestrator does this after the compose stack starts. Services are reachable from
+the agent by name (e.g., `db`, `redis`, `web`).
 
 If the compose network is recreated (config change), the orchestrator re-joins the
 agent container.
@@ -302,15 +296,24 @@ The orchestrator provides a single service list to the browser:
 interface ManagedService {
   name: string;
   origin: "shipit.yaml" | "docker-compose.yml";
-  type: "process" | "container";
   port?: number;
   preview: "auto" | "manual";
   status: "stopped" | "starting" | "ready" | "error";
-  start(): Promise<void>;   // docker compose up -d [--profile manual] <name>
-  stop(): Promise<void>;    // docker compose stop <name>
-  logs(): AsyncIterable<string>;  // docker compose logs -f <name>
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  logs(): AsyncIterable<string>;
 }
 ```
+
+### `capabilities.docker` and compose
+
+With compose, the orchestrator manages the compose stack directly via its Docker
+socket. The agent container does **not** need Docker access for this — compose services
+are created by the orchestrator, not by Claude.
+
+`capabilities.docker` (from doc 061) remains available as a separate, independent
+concern for the rare case where Claude needs to run ad-hoc Docker commands (build
+images, debug containers, etc.). Most projects that use compose will not need it.
 
 ### What this replaces
 
@@ -322,75 +325,59 @@ interface ManagedService {
 | HTTP commands to services container | `docker compose` CLI |
 | File watcher in services container | Orchestrator-direct `fs.watch` |
 | Preview proxy (per-container port routing) | Same proxy, routes to compose service container IPs |
-| `capabilities.docker` for compose | Not needed — orchestrator manages compose directly |
 
 ### Config resolution order
 
-1. **docker-compose.yml with `x-shipit-agent`** → compose mode. ShipIt reads the
-   compose file, generates override, manages stack.
+1. **shipit.yaml with `compose`** → compose mode. Read the referenced compose file,
+   generate override, manage stack.
 2. **shipit.yaml with `services`** → generate compose from shipit.yaml services.
-3. **shipit.yaml with no `services`** + **docker-compose.yml without `x-shipit`** →
-   ShipIt ignores the compose file (not opted in). Falls back to auto-detection.
-4. **package.json with `scripts.dev`** → single `default` service.
-5. **index.html** → single `default` service in html mode.
-6. **Nothing** → source: `"none"`.
-
-shipit.yaml and docker-compose.yml with `x-shipit` are mutually exclusive. If both
-exist and both have ShipIt config, the parser warns and prefers docker-compose.yml.
+3. **shipit.yaml with neither** → fall through to auto-detection.
+4. **No shipit.yaml** → auto-detection:
+   a. `package.json` with `scripts.dev` → single `default` service
+   b. `index.html` → single `default` service in html mode
+   c. Nothing → source: `"none"`
 
 ## Open questions
 
 ### Install execution
 Install commands run in the agent container (it has the workspace and is long-lived).
-But install needs to happen before services start, and the agent container is created
-independently of the compose stack. Timing:
-- Orchestrator creates agent container → runs install in agent → then starts compose
-  stack. This serializes startup. Is that acceptable?
+Install needs to happen before services start:
+- Orchestrator creates agent container → runs install → starts compose stack.
+  This serializes startup. Acceptable?
 - Alternative: run install as a one-off compose container
-  (`docker compose run --rm <service> npm install`). The installed deps land in the
-  workspace volume, visible to all services. But which service's image to use? The
-  ShipIt base image?
+  (`docker compose run --rm <service> npm install`). Deps land in the workspace
+  volume. But which image to use?
 
 ### Secrets injection
 Today the orchestrator injects secrets into the services container via HTTP. With
-compose, options are:
+compose:
 - Write a `.shipit/.env` file that the override references via `env_file:`.
   Orchestrator controls the file. On disk, but in a dotdir.
 - Inject secrets as `environment:` in the override file. Also on disk.
 - Both are accessible to the agent container (Claude) via the workspace volume. Doc
   074 intentionally isolated secrets from the agent. Does this isolation still matter?
-  If so, secrets injection needs a different mechanism for compose services.
 
 ### Security policy for compose-created containers
-The orchestrator runs `docker compose up` directly against the Docker socket — not
-through the proxy. Security policies (no `privileged`, bind mount validation, cap
-drop) must be applied differently:
-- **Policy-by-construction**: the orchestrator generates the override file and controls
-  what goes in it. It can inject `cap_drop: [NET_RAW]`, restrict volumes, ensure no
-  `privileged: true`.
-- **User compose file validation**: before merging, the orchestrator parses the user's
-  compose file and rejects dangerous options (same checks as the proxy's container
-  create sanitization, but at the YAML level).
-- This is defense-in-depth — the orchestrator both validates input and controls output.
+The orchestrator runs `docker compose up` directly against the Docker socket, not
+through the proxy:
+- **Policy-by-construction**: the orchestrator generates the override and controls
+  what goes in it. Inject `cap_drop: [NET_RAW]`, restrict volumes, no `privileged`.
+- **User compose file validation**: parse and reject dangerous options before merging.
+- Defense-in-depth: validate input and control output.
 
 ### Resource management
 Each service is now a separate container:
-- `services.resources` in shipit.yaml sets limits per container. Each process service
-  gets these limits. Compose container services may have their own
-  `deploy.resources` — should ShipIt cap these?
-- The total resource usage across all services is unbounded unless the host enforces
-  limits. Is this acceptable for self-hosted? For managed (doc 062)?
+- `services.resources` in shipit.yaml sets limits per container for process services.
+- User-defined compose services may have their own `deploy.resources`. Should ShipIt
+  cap these?
+- Total resource usage across all services is unbounded unless the host enforces
+  limits. Acceptable for self-hosted? For managed (doc 062)?
 
 ### Non-compose fast path
-For simple projects (single `npm run dev`), compose adds overhead:
-- Container per service (vs child process in shared container)
-- Compose CLI parsing and reconciliation
-- Override file generation
-
-Possible approach: always use compose. The overhead is small (compose is fast for
-single-service stacks) and one code path is simpler than two. The current services
-container with its Fastify wrapper, SSE stream, and HTTP API is arguably more overhead
-than a compose service running the command directly.
+For simple projects (single `npm run dev`), compose adds container creation and CLI
+parsing overhead. But the current services container with its Fastify wrapper, SSE
+stream, and HTTP API is arguably heavier. One code path (always compose) is simpler
+than maintaining two. Is the tradeoff worth it?
 
 ## Key files
 
@@ -398,7 +385,7 @@ than a compose service running the command directly.
 |------|------|
 | `src/server/orchestrator/service-manager.ts` | **New.** Compose lifecycle, status, log streaming |
 | `src/server/orchestrator/compose-generator.ts` | **New.** Generates override compose file |
-| `src/server/shared/shipit-config.ts` | **Modify.** Add docker-compose.yml x-shipit parsing |
+| `src/server/shared/shipit-config.ts` | **Modify.** Parse compose file x-shipit-preview |
 | `src/server/session/preview-manager.ts` | **Delete.** Replaced by ServiceManager |
 | `src/server/session/preview-config.ts` | **Delete.** Replaced by unified config (doc 086) |
 | `src/server/orchestrator/container-lifecycle.ts` | **Modify.** Remove services container creation |
@@ -410,10 +397,9 @@ than a compose service running the command directly.
 ## Implementation order
 
 1. **Add compose CLI to orchestrator image** — Dockerfile change.
-2. **x-shipit parser** — extend `shipit-config.ts` to read docker-compose.yml with
-   `x-shipit` extensions, produce the same `ShipitConfig` model.
-3. **Compose override generator** — generates `.shipit/compose.override.yml` from
-   config.
+2. **Compose file parser** — extend `shipit-config.ts` to read compose file and
+   `x-shipit-preview` annotations, produce `ServiceConfig[]`.
+3. **Compose override generator** — generates `.shipit/compose.override.yml`.
 4. **ServiceManager** — wraps compose CLI for lifecycle, status, logs.
 5. **Wire up orchestrator** — replace services container creation with compose stack
    management.
