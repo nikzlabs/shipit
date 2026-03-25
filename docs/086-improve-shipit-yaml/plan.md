@@ -159,8 +159,9 @@ vars, volumes, health checks, dependencies, build contexts, and everything else
 projects need. Reimplementing a subset of this in shipit.yaml adds maintenance burden
 and limits capability.
 
-For projects without a docker-compose.yml (new projects, simple setups), ShipIt's
-onboarding UI prompts the agent to generate one. See "Onboarding flow" in
+For projects without a docker-compose.yml (new projects, simple setups), the preview
+panel shows an onboarding UI. The user clicks "Generate" and the agent analyzes the
+project and creates both docker-compose.yml and shipit.yaml. See "Onboarding flow" in
 [087-compose-unification](../087-compose-unification/plan.md).
 
 ### Config resolution
@@ -206,7 +207,7 @@ shipit.yaml parser only handles agent config and the compose file path.
 | `preview` block | docker-compose.yml services |
 | `services` block | docker-compose.yml services |
 | `resources.preview` / `resources.services` | compose resource limits per service |
-| `capabilities.docker` | Orchestrator manages compose directly |
+| `capabilities.docker` | Removed. Orchestrator manages all Docker operations directly. |
 | `preview.command`, `preview.html`, `preview.ports` | Compose `command`, `ports` fields |
 | `preview.directory` | Compose `working_dir` field |
 | Auto-detection heuristics (Vite, package manager) | Agent generates compose file |
@@ -222,9 +223,49 @@ shipit.yaml parser only handles agent config and the compose file path.
 | `src/server/shared/session-config.ts` | **Modify.** Thin wrapper over new parser |
 | `src/server/shipit-docs/shipit-yaml.md` | **Modify.** Document new format |
 
+## Migration
+
+### ShipIt's own shipit.yaml
+
+The root `shipit.yaml` must be migrated to the new format. Current file:
+
+```yaml
+capabilities:
+  docker: true
+
+resources:
+  memory: 3072
+  cpu: 2.0
+  pids: 2048
+
+install: NODE_ENV=development npm install
+preview:
+  command: >-
+    ./node_modules/.bin/tsx watch src/server/orchestrator/index.ts &
+    ./node_modules/.bin/vite dev --host 0.0.0.0 --port 5173
+  ports: [5173]
+```
+
+Becomes:
+
+```yaml
+agent:
+  memory: 3072
+  cpu: 2.0
+  pids: 2048
+  install: NODE_ENV=development npm install
+
+compose: docker-compose.dev.yml
+```
+
+Plus a new `docker-compose.dev.yml` defining the orchestrator and Vite dev server as
+compose services. This also fixes the flat resources bug (current `resources.memory` is
+silently ignored by the parser that expects `resources.agent.memory`).
+
 ## Implementation order
 
 1. **Parser** — `shipit-config.ts` with `agent` and `compose` fields.
 2. **Wire up** — delete `preview-config.ts`, update `session-config.ts`, update callers.
-3. **Update shipit-docs** — new shipit.yaml reference.
-4. **Compose integration** — see [087-compose-unification](../087-compose-unification/plan.md).
+3. **Migrate root shipit.yaml** — convert to new format, create docker-compose.dev.yml.
+4. **Update shipit-docs** — new shipit.yaml reference.
+5. **Compose integration** — see [087-compose-unification](../087-compose-unification/plan.md).

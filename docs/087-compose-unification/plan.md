@@ -39,15 +39,16 @@ dependencies) would mean reimplementing compose badly.
 - **Agent-generated config** — the agent creates compose files tailored to each
   project, replacing fragile auto-detection heuristics.
 
-## Prerequisites
+## Related docs
 
-- [086-improve-shipit-yaml](../086-improve-shipit-yaml/plan.md) — shipit.yaml as the
-  entry point with `agent` config and `compose` file reference.
-- [061-self-hosting](../061-self-hosting/plan.md) — Docker API proxy, security policy.
-  Partially superseded: compose management moves to the orchestrator.
+- [086-improve-shipit-yaml](../086-improve-shipit-yaml/plan.md) — prerequisite.
+  shipit.yaml as the entry point with `agent` config and `compose` file reference.
+- [061-self-hosting](../061-self-hosting/plan.md) — **partially superseded.** Docker
+  API proxy and security policy remain useful for compose container sanitization.
+  `capabilities.docker` is removed — the orchestrator manages all Docker access.
 - [074-preview-container-isolation](../074-preview-container-isolation/plan.md) —
-  superseded. The dual-container topology (agent + preview) is replaced by agent
-  container + compose stack.
+  **superseded.** The dual-container topology (agent + preview) is replaced by agent
+  container + compose stack. Secrets isolation model changes (see open questions).
 
 ## Design
 
@@ -267,14 +268,17 @@ interface ManagedService {
 | Service error | Error state with logs for the failing service |
 | Manual service stopped | "Start" button next to service name |
 
-### `capabilities.docker` and compose
+### No `capabilities.docker`
 
-The orchestrator manages the compose stack directly via its Docker socket. The agent
-does **not** need Docker access for compose services.
+The orchestrator manages all Docker operations (compose stack, container lifecycle)
+directly via its Docker socket. The agent container does not need Docker access. If
+Claude needs to build an image or debug a container, it does so by editing the
+docker-compose.yml and letting ShipIt reconcile the stack — not by running ad-hoc
+Docker commands.
 
-`capabilities.docker` (from doc 061) remains available as a separate concern for the
-rare case where Claude needs ad-hoc Docker commands (build custom images, debug
-containers). Most projects won't need it.
+`capabilities.docker` from doc 061 is removed. The Docker API proxy (doc 061) remains
+useful for security policy enforcement on compose-created containers (see open
+questions on security policy).
 
 ### What this replaces
 
@@ -293,18 +297,21 @@ containers). Most projects won't need it.
 ### Config resolution
 
 1. **shipit.yaml with `compose`** → use referenced compose file.
-2. **No `compose` in shipit.yaml** → auto-detect `docker-compose.yml` / `compose.yml`
-   at workspace root.
-3. **No compose file found** → show onboarding UI in preview panel.
+2. **shipit.yaml without `compose`** → auto-detect `docker-compose.yml` / `compose.yml`
+   at workspace root. If found, use it.
+3. **No shipit.yaml** → same auto-detection as (2).
+4. **No compose file found** → show onboarding UI in preview panel.
 
-## Open questions
+## Decided
 
 ### Install execution
-Install runs in the agent container before the compose stack starts:
-- Orchestrator creates agent container → runs install → starts compose stack.
-  Serializes startup. Acceptable for most projects.
-- For projects where install is long, the onboarding UI could show install progress
-  while the agent runs.
+Install runs in the agent container before the compose stack starts (decided in doc
+086). The orchestrator creates the agent container, runs install steps sequentially,
+then starts the compose stack. This serializes startup but is acceptable — install
+typically runs once (tracked by `.shipit/.install-done` marker) and is skipped on
+resume.
+
+## Open questions
 
 ### Secrets injection
 Today the orchestrator injects secrets into the services container via HTTP. With
