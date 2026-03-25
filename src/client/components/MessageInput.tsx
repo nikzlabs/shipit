@@ -37,7 +37,7 @@ export function MessageInput({
   modelInfo,
   contextTokens = 0,
   hasActiveSession = false,
-  autoFocus = false,
+  focusKey,
   hasPrCard = false,
 }: {
   onSend: (text: string) => void;
@@ -63,8 +63,8 @@ export function MessageInput({
   modelInfo?: ModelInfo | null;
   contextTokens?: number;
   hasActiveSession?: boolean;
-  /** When true, focus the textarea immediately. */
-  autoFocus?: boolean;
+  /** Changed value triggers textarea focus (e.g. session ID or route change). */
+  focusKey?: string;
   /** When true, only round bottom corners (PR card provides the top). */
   hasPrCard?: boolean;
 }) {
@@ -93,14 +93,14 @@ export function MessageInput({
     }
   }, []);
 
-  // Auto-focus textarea when requested (e.g. "New Session" click)
+  // Auto-focus textarea on session change (e.g. "New Session" click, session switch)
   useEffect(() => {
-    if (autoFocus) {
+    if (focusKey) {
       requestAnimationFrame(() => {
         textareaRef.current?.focus();
       });
     }
-  }, [autoFocus]);
+  }, [focusKey]);
 
   const addFiles = useCallback(
     (files: FileList | File[]) => {
