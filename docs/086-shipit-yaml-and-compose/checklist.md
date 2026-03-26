@@ -18,7 +18,7 @@
 
 ## Phase 2: Compose infrastructure
 
-- [ ] Add Docker Compose CLI to orchestrator Dockerfiles (`Dockerfile.dev`, `Dockerfile.prod`)
+- [x] Add Docker Compose CLI to orchestrator Dockerfiles (`Dockerfile.dev`, `Dockerfile.prod`)
 - [x] Create `src/server/orchestrator/compose-generator.ts` — override file generation
   - [x] Handle long-syntax port definitions (object form with published/target)
   - [x] Manual services get `profiles: ["shipit-manual"]` (preserve user-defined profiles alongside)
@@ -29,7 +29,8 @@
 - [x] Create `src/server/orchestrator/service-manager.ts` — compose lifecycle, status, logs
   - [x] Log streaming via `docker compose logs -f` with multi-viewer broadcast
   - [x] Port extraction supports IP:port:container and port/protocol formats
-- [ ] Wire ServiceManager into orchestrator (replace services container usage)
+- [x] Wire ServiceManager into orchestrator (WS handlers for start/stop, service manager registry)
+- [ ] Complete ServiceManager wiring (replace services container usage end-to-end)
 
 ## Phase 3: Orchestrator migration
 
@@ -49,7 +50,7 @@
 - [x] Update `src/server/shipit-docs/shipit-yaml.md` for new schema
 - [x] Update `src/server/shipit-docs/preview.md` and `environment.md` for compose model
 - [ ] Onboarding UI in preview panel ("Set up live preview" + Generate button)
-- [ ] Programmatic message to agent on "Generate" click (via `send_message` WS handler)
+- [x] Programmatic message to agent on "Generate" click (via `init_preview_config` → compose-oriented prompt)
 
 ## Phase 5: Client updates
 

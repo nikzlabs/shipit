@@ -19,6 +19,8 @@ import * as miscHandlers from "./ws-handlers/misc-handlers.js";
 import * as rollbackHandlers from "./ws-handlers/rollback-handlers.js";
 import * as rewindHandlers from "./ws-handlers/rewind-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
+import * as serviceHandlers from "./ws-handlers/service-handlers.js";
+import type { ServiceManager } from "./service-manager.js";
 import { registerApiRoutes } from "./api-routes.js";
 import type { GitManager } from "../shared/git.js";
 
@@ -154,6 +156,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     getDepCacheDir,
   });
   registryHolder.ref = runnerRegistry;
+
+  // ---- Service manager registry (per-session compose stacks) ----
+  const serviceManagers = new Map<string, ServiceManager>();
 
   // ---- PR Status Poller ----
   const prStatusPoller = createPrStatusPoller({
@@ -491,7 +496,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       };
 
       // ---- Handler context ----
-      const ctx: ConnectionCtx & RunnerCtx & AppCtx = {
+      const ctx: ConnectionCtx & RunnerCtx & AppCtx & serviceHandlers.ServiceCtx = {
         send, broadcastLog: sessionBroadcastLog, sseBroadcast,
         getActiveDir, getActiveGitManager,
         getActiveAppSessionId: () => activeAppSessionId,
@@ -539,6 +544,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
         prStatusPoller,
         workspaceDir, sessionsRoot, defaultAgentId,
+        getServiceManager: () => serviceManagers.get(sessionId) ?? null,
       };
 
       // Auto-activate the session on connect
@@ -643,26 +649,42 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           case "init_preview_config": {
             void sendMessageHandlers.handleSendMessage(ctx, {
               type: "send_message",
-              text: `Analyze this project and create a shipit.yaml file at the workspace root.
-The file configures the live preview and dependency installation.
+              text: `Analyze this project and set up live preview using Docker Compose.
 
-For projects with dependencies (npm, yarn, pip, etc.), include an install command:
+1. Create a \`docker-compose.yml\` at the workspace root with a service for the dev server.
+2. Create a \`shipit.yaml\` at the workspace root to configure the agent and install steps.
 
-install: npm install
-preview:
-  command: npm run dev
-  ports: [3000]
+Example docker-compose.yml for a Node.js project:
+\`\`\`yaml
+services:
+  web:
+    image: node:20
+    working_dir: /app
+    volumes:
+      - .:/app
+    ports:
+      - "3000:3000"
+    command: npm run dev
+\`\`\`
 
-For static HTML projects (no build step, no dependencies):
-
-preview:
-  html: index.html
+Example shipit.yaml:
+\`\`\`yaml
+version: 1
+agent:
+  install:
+    - npm install
+compose:
+  file: docker-compose.yml
+\`\`\`
 
 Look at package.json scripts, framework config files, and project structure
-to determine the correct install command, preview mode, command, and ports.`,
+to determine the correct dev command, ports, and install steps.
+Read /shipit-docs/compose.md for full details on the compose model.`,
             });
             return;
           }
+          case "start_service": return serviceHandlers.handleStartService(ctx, msg);
+          case "stop_service": return serviceHandlers.handleStopService(ctx, msg);
           case "send_message": return sendMessageHandlers.handleSendMessage(ctx, msg);
           case "answer_question": return sendMessageHandlers.handleAnswerQuestion(ctx, msg);
         }
