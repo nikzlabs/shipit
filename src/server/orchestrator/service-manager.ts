@@ -39,6 +39,9 @@ export interface ManagedService {
   error?: string;
 }
 
+/** Runs a docker compose command. Resolves on exit 0, rejects otherwise. */
+export type ComposeRunner = (args: string[], cwd: string) => Promise<void>;
+
 export interface ServiceManagerOptions {
   /** Session ID. */
   sessionId: string;
@@ -46,6 +49,8 @@ export interface ServiceManagerOptions {
   workspaceDir: string;
   /** Compose config from shipit.yaml. */
   composeConfig: ComposeConfig;
+  /** Optional override for running compose commands (useful for testing). */
+  composeRunner?: ComposeRunner;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,12 +76,14 @@ export class ServiceManager extends EventEmitter {
   private services = new Map<string, ManagedService>();
   private logProcesses = new Map<string, ChildProcess>();
   private _started = false;
+  private readonly composeRunner: ComposeRunner;
 
   constructor(opts: ServiceManagerOptions) {
     super();
     this.sessionId = opts.sessionId;
     this.workspaceDir = opts.workspaceDir;
     this.composeConfig = opts.composeConfig;
+    this.composeRunner = opts.composeRunner ?? defaultComposeRunner;
   }
 
   /** Whether the compose stack has been started. */
@@ -296,28 +303,36 @@ export class ServiceManager extends EventEmitter {
   /** Run a docker compose command and resolve/reject based on exit code. */
   private runCompose(...subArgs: string[]): Promise<void> {
     const args = this.composeArgs(...subArgs);
-    return new Promise((resolve, reject) => {
-      const proc = spawn("docker", args, {
-        cwd: this.workspaceDir,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-
-      let stderr = "";
-      proc.stderr?.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString();
-      });
-
-      proc.on("close", (code) => {
-        if (code === 0) {
-          resolve();
-        } else {
-          reject(new Error(`docker compose ${subArgs[0]} failed (exit ${code}): ${stderr.trim()}`));
-        }
-      });
-
-      proc.on("error", reject);
-    });
+    return this.composeRunner(args, this.workspaceDir);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Default compose runner
+// ---------------------------------------------------------------------------
+
+function defaultComposeRunner(args: string[], cwd: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("docker", args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stderr = "";
+    proc.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+
+    proc.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`docker compose ${args[0]} failed (exit ${code}): ${stderr.trim()}`));
+      }
+    });
+
+    proc.on("error", reject);
+  });
 }
 
 // ---------------------------------------------------------------------------

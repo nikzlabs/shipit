@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { ServiceManager } from "./service-manager.js";
+import { ServiceManager, type ComposeRunner } from "./service-manager.js";
 
 describe("ServiceManager", () => {
   let tmpDir: string;
@@ -20,11 +20,16 @@ describe("ServiceManager", () => {
     fs.writeFileSync(path.join(dir, "docker-compose.yml"), content);
   }
 
-  function createManager(dir: string) {
+  /** A compose runner that rejects immediately (no real Docker needed). */
+  const fakeComposeRunner: ComposeRunner = () =>
+    Promise.reject(new Error("docker not available in test"));
+
+  function createManager(dir: string, composeRunner: ComposeRunner = fakeComposeRunner) {
     return new ServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
     });
   }
 
