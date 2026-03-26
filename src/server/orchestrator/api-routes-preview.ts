@@ -4,7 +4,6 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import type { ContainerSessionRunner } from "./container-session-runner.js";
 import type { ApiDeps } from "./api-routes.js";
 
 import {
@@ -33,27 +32,6 @@ export async function registerPreviewRoutes(
     const status = runner.buildPreviewStatus();
     return { known: true, ...status };
   });
-
-  // POST /api/sessions/:id/preview/restart — restart the preview server
-  app.post<{ Params: { id: string } }>(
-    "/api/sessions/:id/preview/restart",
-    async (request, reply) => {
-      const runner = deps.runnerRegistry.get(request.params.id);
-      if (!runner) {
-        return reply.code(404).send({ error: "Session not found or no active runner" });
-      }
-      if (!runner.supportsRemoteTerminal) {
-        return reply.code(400).send({ error: "Preview restart only supported for container sessions" });
-      }
-      try {
-        const containerRunner = runner as ContainerSessionRunner;
-        await containerRunner.restartPreviewOnWorker();
-        return { restarted: true };
-      } catch (err) {
-        reply.code(500).send({ error: `Failed to restart preview: ${getErrorMessage(err)}` });
-      }
-    },
-  );
 
   // POST /api/sessions/:id/preview-errors — report preview error
   app.post<{ Params: { id: string }; Body: { message: string; stack?: string } }>(

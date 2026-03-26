@@ -12,7 +12,6 @@ import type { FastifyInstance } from "fastify";
 import type { SecretStore } from "./secret-store.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
-import type { ContainerSessionRunner } from "./container-session-runner.js";
 
 export interface SecretsDeps {
   secretStore: SecretStore;
@@ -24,7 +23,7 @@ export async function registerSecretsRoutes(
   app: FastifyInstance,
   deps: SecretsDeps,
 ): Promise<void> {
-  const { secretStore, runnerRegistry, sessionManager } = deps;
+  const { secretStore } = deps;
 
   // GET /api/secrets?repoUrl=... — load secrets for a repo
   app.get<{ Querystring: { repoUrl?: string } }>(
@@ -62,19 +61,8 @@ export async function registerSecretsRoutes(
       secretStore.saveSecrets(repoUrl, secrets);
 
       // Push to active preview containers for sessions using this repo
+      // Secrets are injected into compose services via .shipit/.env (handled by ServiceManager)
       const pushErrors: string[] = [];
-      for (const session of sessionManager.list()) {
-        if (session.remoteUrl !== repoUrl) continue;
-        const runner = runnerRegistry.get(session.id);
-        if (!runner?.supportsRemoteTerminal) continue;
-        try {
-          const containerRunner = runner as ContainerSessionRunner;
-          await containerRunner.pushSecretsToPreview(secrets);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          pushErrors.push(`${session.id}: ${msg}`);
-        }
-      }
 
       if (pushErrors.length > 0) {
         return { saved: true, pushErrors };

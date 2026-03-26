@@ -34,7 +34,6 @@ import {
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
 import { generateBranchPrefix } from "./git-utils.js";
-import { workerPost } from "./worker-http.js";
 
 /**
  * Fetch latest origin refs and hard-reset a warm session clone to the current
@@ -75,23 +74,6 @@ async function refreshCloneToLatestMain(
     try { unlinkSync(path.join(sessionDir, ".shipit", ".install-done")); } catch { /* marker may not exist */ }
   }
   return { headChanged, fetchDurationMs: Date.now() - t0 };
-}
-
-/**
- * Restart the preview (install + dev server) for a session.
- * Tries the runner first (if already created), then falls back to the
- * container manager for standby containers that have no runner yet.
- */
-function restartPreview(sessionId: string, deps: ApiDeps): void {
-  const runner = deps.runnerRegistry.get(sessionId);
-  if (runner && "restartPreviewOnWorker" in runner) {
-    void (runner as { restartPreviewOnWorker: () => Promise<void> }).restartPreviewOnWorker();
-  } else {
-    const sc = deps.containerManager?.get(sessionId);
-    if (sc?.previewWorkerUrl) {
-      void workerPost(sc.previewWorkerUrl, "/preview/restart").catch(() => {});
-    }
-  }
 }
 
 export async function registerSessionRoutes(
@@ -469,7 +451,7 @@ export async function registerSessionRoutes(
               const result = await refreshCloneToLatestMain(reusable.workspaceDir, createGitManager);
               fetchDurationMs = result.fetchDurationMs;
               if (result.headChanged) {
-                restartPreview(reusable.id, deps);
+                // Compose stack restart handled by ServiceManager on config change
               }
             } catch (err) {
               console.error(`[claim-session] Failed to refresh clone to latest main:`, getErrorMessage(err));
@@ -489,7 +471,7 @@ export async function registerSessionRoutes(
                 const result = await refreshCloneToLatestMain(warmSession.workspaceDir, createGitManager);
                 fetchDurationMs = result.fetchDurationMs;
                 if (result.headChanged) {
-                  restartPreview(sessionId, deps);
+                  // Compose stack restart handled by ServiceManager on config change
                 }
               } catch (err) {
                 console.error(`[claim-session] Failed to refresh clone to latest main:`, getErrorMessage(err));
@@ -514,7 +496,7 @@ export async function registerSessionRoutes(
                   const result = await refreshCloneToLatestMain(warmSession.workspaceDir, createGitManager);
                   fetchDurationMs = result.fetchDurationMs;
                   if (result.headChanged) {
-                    restartPreview(sessionId, deps);
+                    // Compose stack restart handled by ServiceManager on config change
                   }
                 } catch (err) {
                   console.error(`[claim-session] Failed to refresh clone to latest main:`, getErrorMessage(err));

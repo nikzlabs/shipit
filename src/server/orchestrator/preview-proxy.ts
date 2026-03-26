@@ -220,7 +220,7 @@ export function registerPreviewProxy(
 
     reply.hijack();
     proxyHttp(
-      sc.previewContainerIp ?? sc.containerIp,
+      sc.containerIp,
       targetPort,
       request.url,
       request.method,
@@ -256,7 +256,7 @@ export function registerPreviewProxy(
       const ready = await new Promise<boolean>((resolve) => {
         const probe = http.request(
           {
-            hostname: sc.previewContainerIp ?? sc.containerIp,
+            hostname: sc.containerIp,
             port: targetPort,
             path: "/",
             method: "HEAD",
@@ -312,7 +312,7 @@ export function registerPreviewProxy(
 
     reply.hijack();
     proxyHttp(
-      sc.previewContainerIp ?? sc.containerIp,
+      sc.containerIp,
       targetPort,
       targetPath,
       request.method,
@@ -352,7 +352,7 @@ export function registerPreviewProxy(
           return;
         }
         proxyWebSocket(
-          sc.previewContainerIp ?? sc.containerIp,
+          sc.containerIp,
           targetPort,
           req.url || "/",
           req.headers,
@@ -372,7 +372,7 @@ export function registerPreviewProxy(
           return;
         }
         proxyWebSocket(
-          sc.previewContainerIp ?? sc.containerIp,
+          sc.containerIp,
           targetPort,
           `/${restPath}`,
           req.headers,
