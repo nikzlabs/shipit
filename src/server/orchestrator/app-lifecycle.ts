@@ -746,6 +746,13 @@ export function createWarmPool(
 
         const cacheGit = createRepoGit(cacheDir);
 
+        // Refresh remote URL with current token (the bare cache may have a stale
+        // token embedded from clone time).
+        if (githubAuthManager.authenticated) {
+          const freshUrl = githubAuthManager.getAuthenticatedCloneUrl(repoUrl);
+          await cacheGit.setRemoteUrl(freshUrl);
+        }
+
         // Fetch latest refs in the bare cache (with 60s TTL).
         // Non-fatal — cache may not have a reachable remote (e.g. tests).
         try {

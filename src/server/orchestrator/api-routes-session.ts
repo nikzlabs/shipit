@@ -518,6 +518,12 @@ export async function registerSessionRoutes(
 
           const cacheGit = createRepoGit(cacheDir);
 
+          // Refresh remote URL with current token before fetching
+          if (deps.githubAuthManager.authenticated) {
+            const freshUrl = deps.githubAuthManager.getAuthenticatedCloneUrl(url);
+            await cacheGit.setRemoteUrl(freshUrl);
+          }
+
           const fetchT0 = Date.now();
           try {
             await cacheGit.fetchCache();
