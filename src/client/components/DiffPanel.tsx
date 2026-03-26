@@ -306,6 +306,16 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
     managerRef.current?.dispose();
     if (!selectedFile) return;
 
+    // Intercept dispose so we detach models before Monaco tears down the
+    // DiffEditorWidget. Without this, the TextModel fires its onDispose
+    // event while the widget still holds a reference, causing:
+    // "TextModel got disposed before DiffEditorWidget model got reset"
+    const originalDispose = editor.dispose.bind(editor);
+    editor.dispose = () => {
+      editor.setModel(null);
+      originalDispose();
+    };
+
     managerRef.current = createCommentWidgetManager(editor, {
       filePath: selectedFile.path,
       onAddComment: (line, text) => addLineComment(sessionId, selectedFile.path, line, text),
