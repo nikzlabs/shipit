@@ -15,18 +15,14 @@ function msg(role: "user" | "assistant", text: string, opts?: { toolUse?: ToolUs
 
 describe("MessageList", () => {
   describe("empty state", () => {
-    it("shows placeholder when there are no messages and not loading", () => {
-      render(<MessageList messages={[]} isLoading={false} />);
-      expect(
-        screen.getByText("Send a message to start coding.")
-      ).toBeInTheDocument();
+    it("shows rocket launch animation when there are no messages and not loading", () => {
+      const { container } = render(<MessageList messages={[]} isLoading={false} />);
+      expect(container.querySelector(".rocket-scene")).toBeInTheDocument();
     });
 
-    it("hides placeholder when loading with no messages", () => {
-      render(<MessageList messages={[]} isLoading={true} />);
-      expect(
-        screen.queryByText("Send a message to start coding.")
-      ).not.toBeInTheDocument();
+    it("hides rocket launch animation when loading with no messages", () => {
+      const { container } = render(<MessageList messages={[]} isLoading={true} />);
+      expect(container.querySelector(".rocket-scene")).not.toBeInTheDocument();
     });
   });
 

@@ -11,6 +11,7 @@ import type { SearchMatch } from "../hooks/useSearch.js";
 import { buildVisualElements } from "./visual-elements.js";
 import { RollbackDropdown, type RollbackMode } from "./RollbackDropdown.js";
 import { RewindDropdown, type RewindMode } from "./RewindDropdown.js";
+import { RocketLaunch } from "./RocketLaunch.js";
 
 // Sub-component imports
 import { ToolCallGroup, ToolUseItem } from "./message-tools.js";
@@ -173,12 +174,12 @@ export function MessageList({
     }
   }
 
+  const isEmpty = messages.length === 0 && !isLoading;
+
   return (
-    <div className="flex-1 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-4">
-      {messages.length === 0 && !isLoading && (
-        <div className="flex items-center justify-center h-full text-(--color-text-secondary)">
-          <p>Send a message to start coding.</p>
-        </div>
+    <div className={isEmpty ? "flex-1" : "flex-1 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-4"} style={isEmpty ? { clipPath: "inset(0 0 -80px 0)" } : undefined}>
+      {isEmpty && (
+        <RocketLaunch />
       )}
 
       {buildVisualElements(messages).map((el, elIdx, allElements) => {
