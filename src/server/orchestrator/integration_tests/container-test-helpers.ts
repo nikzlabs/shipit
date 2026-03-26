@@ -1,8 +1,7 @@
 /**
  * Shared stubs and helpers for container/worker integration tests.
  *
- * Used by worker-terminal.test.ts, worker-preview.test.ts, and
- * worker-file-watcher.test.ts.
+ * Used by worker-terminal.test.ts and worker-file-watcher.test.ts.
  */
 
 import { EventEmitter } from "node:events";
@@ -64,46 +63,6 @@ export class StubTerminal extends EventEmitter {
   resume(): void { this.paused = false; }
   kill(): void { this.killed = true; }
   get running(): boolean { return this.startCalled; }
-}
-
-/** Stub PreviewManager that doesn't spawn real processes. */
-export class StubPreview extends EventEmitter {
-  private _running = false;
-  private _ports: number[] = [];
-  startCalled = false;
-  stopCalled = false;
-
-  get running() { return this._running; }
-  get ports() { return this._ports; }
-
-  async start(_cwd: string) {
-    this.startCalled = true;
-    this._running = true;
-  }
-
-  stop() {
-    this.stopCalled = true;
-    this._running = false;
-  }
-
-  removeAllListeners() { super.removeAllListeners(); return this; }
-
-  /** Test helper: simulate becoming ready with ports. */
-  simulateReady(ports: number[]) {
-    this._ports = ports;
-    this.emit("ready", ports);
-  }
-
-  /** Test helper: simulate stopped event. */
-  simulateStopped(code: number | null) {
-    this._running = false;
-    this.emit("stopped", code);
-  }
-
-  /** Test helper: simulate log event. */
-  simulateLog(source: string, text: string) {
-    this.emit("log", { source, text });
-  }
 }
 
 /** Stub FileWatcher that doesn't watch the filesystem. */

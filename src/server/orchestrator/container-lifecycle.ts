@@ -134,21 +134,18 @@ export function buildMounts(
   return { binds, mounts, workspaceDir };
 }
 
-export type WorkerMode = "session" | "preview";
-
 export function buildEnv(
   config: ContainerConfig,
   workspaceDir: string,
   workerPort: number,
   dockerProxyHost: string | undefined,
   dockerProxyPort: number | undefined,
-  workerMode: WorkerMode = "session",
 ): string[] {
   const env: string[] = [
     `SESSION_ID=${config.sessionId}`,
     `WORKSPACE_DIR=${workspaceDir}`,
     `WORKER_PORT=${workerPort}`,
-    `WORKER_MODE=${workerMode}`,
+    "WORKER_MODE=session",
     "HOME=/root",
   ];
 
@@ -230,7 +227,6 @@ export async function createContainer(
     deps.workerPort,
     deps.dockerProxyHost,
     deps.dockerProxyPort,
-    "session",
   );
 
   // Use Docker-capable image when Docker access is requested

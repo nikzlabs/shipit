@@ -90,10 +90,20 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 }
 `,
       ".gitignore": NEXTJS_GITIGNORE,
-      "shipit.yaml": `install: npm install
-preview:
-  command: npm run dev
-  ports: [3001]
+      "shipit.yaml": `agent:
+  install:
+    - npm install
+compose: docker-compose.yml
+`,
+      "docker-compose.yml": `services:
+  app:
+    image: node:20-slim
+    working_dir: /workspace
+    command: npm run dev
+    ports:
+      - "3001:3001"
+    volumes:
+      - .:/workspace
 `,
     },
   },
@@ -169,10 +179,20 @@ const title = "My Astro Site";
 </html>
 `,
       ".gitignore": ASTRO_GITIGNORE,
-      "shipit.yaml": `install: npm install
-preview:
-  command: npm run dev
-  ports: [5173]
+      "shipit.yaml": `agent:
+  install:
+    - npm install
+compose: docker-compose.yml
+`,
+      "docker-compose.yml": `services:
+  dev:
+    image: node:20-slim
+    working_dir: /workspace
+    command: npm run dev -- --host 0.0.0.0
+    ports:
+      - "5173:5173"
+    volumes:
+      - .:/workspace
 `,
     },
   },

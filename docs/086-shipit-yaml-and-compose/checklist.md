@@ -62,7 +62,7 @@
 - [x] Define new WS message types for service status (`service_status`, `service_log`, `service_list`)
 - [x] Define new WS client messages for service control (`start_service`, `stop_service`)
 - [x] Update `preview-store.ts` — add per-service state (name, status, port, preview mode)
-- [ ] Update `file-store.ts` — if file watching events change shape
+- [x] Update `file-store.ts` — file watching events unchanged (no-op)
 - [x] Unified service list UI component (`ServiceList.tsx` — per-service status, start/stop controls, port links)
 - [x] Preview panel states (onboarding, starting, ready, error, manual, services)
 - [x] Wire `service_list`, `service_status`, `service_log` WS messages to preview store via `useMessageHandler`
@@ -70,11 +70,16 @@
 
 ## Phase 6: Cleanup
 
-- [ ] Delete `src/server/session/preview-manager.ts`
-- [ ] Delete `src/server/session/install-runner.ts` (install moves to orchestrator)
-- [ ] Delete session worker preview endpoints and SSE event stream for preview
-- [ ] Delete auto-detection heuristics (Vite detection, port extraction, package manager detection)
-- [ ] Update project templates — include docker-compose.yml and new shipit.yaml
+- [x] Delete `src/server/session/preview-manager.ts` + `preview-manager.test.ts`
+- [x] Delete `src/server/session/install-runner.ts` + `install-runner.test.ts`
+- [x] Delete `src/server/session/vite-error-plugin.ts` + `vite-error-plugin.test.ts`
+- [x] Delete `src/server/session/port-scanner.ts` + `port-scanner.test.ts`
+- [x] Delete session worker preview endpoints, SSE event types, and mode switching
+- [x] Delete `worker-preview.test.ts` and `worker-secrets.test.ts` (tested deleted preview mode)
+- [x] Remove `StubPreview` from container-test-helpers.ts
+- [x] Remove preview references from worker-terminal.test.ts and worker-file-watcher.test.ts
+- [x] Remove `WorkerMode` type from container-lifecycle.ts and session-container.ts
+- [x] Update project templates — include docker-compose.yml and new shipit.yaml format
 - [x] Update docs 061 and 074 to cross-reference this doc
 
 Note: `preview-config.ts` is deleted in Phase 1 (parser replacement).

@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 ---
 
 # shipit.yaml and Compose Unification

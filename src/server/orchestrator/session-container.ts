@@ -50,7 +50,6 @@ export {
   destroyContainer,
   buildContainerConfig,
   type LifecycleDeps,
-  type WorkerMode,
 } from "./container-lifecycle.js";
 
 export {

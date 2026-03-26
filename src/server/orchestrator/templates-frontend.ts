@@ -97,10 +97,20 @@ export function App() {
 }
 `,
       ".gitignore": VITE_GITIGNORE,
-      "shipit.yaml": `install: npm install
-preview:
-  command: npm run dev
-  ports: [5173]
+      "shipit.yaml": `agent:
+  install:
+    - npm install
+compose: docker-compose.yml
+`,
+      "docker-compose.yml": `services:
+  dev:
+    image: node:20-slim
+    working_dir: /workspace
+    command: npm run dev -- --host 0.0.0.0
+    ports:
+      - "5173:5173"
+    volumes:
+      - .:/workspace
 `,
     },
   },
@@ -205,10 +215,20 @@ export function App() {
 }
 `,
       ".gitignore": VITE_GITIGNORE,
-      "shipit.yaml": `install: npm install
-preview:
-  command: npm run dev
-  ports: [5173]
+      "shipit.yaml": `agent:
+  install:
+    - npm install
+compose: docker-compose.yml
+`,
+      "docker-compose.yml": `services:
+  dev:
+    image: node:20-slim
+    working_dir: /workspace
+    command: npm run dev -- --host 0.0.0.0
+    ports:
+      - "5173:5173"
+    volumes:
+      - .:/workspace
 `,
     },
   },
@@ -308,10 +328,20 @@ declare module "*.vue" {
 }
 `,
       ".gitignore": VITE_GITIGNORE,
-      "shipit.yaml": `install: npm install
-preview:
-  command: npm run dev
-  ports: [5173]
+      "shipit.yaml": `agent:
+  install:
+    - npm install
+compose: docker-compose.yml
+`,
+      "docker-compose.yml": `services:
+  dev:
+    image: node:20-slim
+    working_dir: /workspace
+    command: npm run dev -- --host 0.0.0.0
+    ports:
+      - "5173:5173"
+    volumes:
+      - .:/workspace
 `,
     },
   },
@@ -404,10 +434,20 @@ export default app;
 </div>
 `,
       ".gitignore": VITE_GITIGNORE,
-      "shipit.yaml": `install: npm install
-preview:
-  command: npm run dev
-  ports: [5173]
+      "shipit.yaml": `agent:
+  install:
+    - npm install
+compose: docker-compose.yml
+`,
+      "docker-compose.yml": `services:
+  dev:
+    image: node:20-slim
+    working_dir: /workspace
+    command: npm run dev -- --host 0.0.0.0
+    ports:
+      - "5173:5173"
+    volumes:
+      - .:/workspace
 `,
     },
   },
@@ -499,10 +539,20 @@ button:hover {
 }
 `,
       ".gitignore": VITE_GITIGNORE,
-      "shipit.yaml": `install: npm install
-preview:
-  command: npm run dev
-  ports: [5173]
+      "shipit.yaml": `agent:
+  install:
+    - npm install
+compose: docker-compose.yml
+`,
+      "docker-compose.yml": `services:
+  dev:
+    image: node:20-slim
+    working_dir: /workspace
+    command: npm run dev -- --host 0.0.0.0
+    ports:
+      - "5173:5173"
+    volumes:
+      - .:/workspace
 `,
     },
   },
@@ -560,8 +610,15 @@ h1 {
       ".gitignore": `.shipit
 .vite
 `,
-      "shipit.yaml": `preview:
-  html: index.html
+      "shipit.yaml": `compose: docker-compose.yml
+`,
+      "docker-compose.yml": `services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - .:/usr/share/nginx/html:ro
 `,
     },
   },

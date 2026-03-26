@@ -72,10 +72,20 @@ app.listen(PORT, "0.0.0.0", () => {
 });
 `,
       ".gitignore": NODE_GITIGNORE,
-      "shipit.yaml": `install: npm install
-preview:
-  command: npm run dev
-  ports: [3001]
+      "shipit.yaml": `agent:
+  install:
+    - npm install
+compose: docker-compose.yml
+`,
+      "docker-compose.yml": `services:
+  api:
+    image: node:20-slim
+    working_dir: /workspace
+    command: npm run dev
+    ports:
+      - "3001:3001"
+    volumes:
+      - .:/workspace
 `,
     },
   },
@@ -142,10 +152,20 @@ console.log("Server running at http://localhost:3001");
 serve({ fetch: app.fetch, port: 3001, hostname: "0.0.0.0" });
 `,
       ".gitignore": NODE_GITIGNORE,
-      "shipit.yaml": `install: npm install
-preview:
-  command: npm run dev
-  ports: [3001]
+      "shipit.yaml": `agent:
+  install:
+    - npm install
+compose: docker-compose.yml
+`,
+      "docker-compose.yml": `services:
+  api:
+    image: node:20-slim
+    working_dir: /workspace
+    command: npm run dev
+    ports:
+      - "3001:3001"
+    volumes:
+      - .:/workspace
 `,
     },
   },
@@ -210,10 +230,20 @@ app.get("/api/health", async () => {
 app.listen({ port: 3001, host: "0.0.0.0" });
 `,
       ".gitignore": NODE_GITIGNORE,
-      "shipit.yaml": `install: npm install
-preview:
-  command: npm run dev
-  ports: [3001]
+      "shipit.yaml": `agent:
+  install:
+    - npm install
+compose: docker-compose.yml
+`,
+      "docker-compose.yml": `services:
+  api:
+    image: node:20-slim
+    working_dir: /workspace
+    command: npm run dev
+    ports:
+      - "3001:3001"
+    volumes:
+      - .:/workspace
 `,
     },
   },

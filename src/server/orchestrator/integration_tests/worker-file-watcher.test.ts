@@ -16,12 +16,10 @@ import { SessionWorker } from "../../session/session-worker.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import type { WsServerMessage } from "../../shared/types.js";
 import type { FileWatcher } from "../../session/file-watcher.js";
-import type { PreviewManager } from "../../session/preview-manager.js";
 import type { TerminalProcess } from "../../session/terminal.js";
 import {
   FakeWorkerAgent,
   StubTerminal,
-  StubPreview,
   StubWatcher,
   collectSSE,
   waitFor,
@@ -114,9 +112,6 @@ describe("ContainerSessionRunner File Watcher Proxy", () => {
       createFileWatcher: () => {
         lastWatcher = new StubWatcher();
         return lastWatcher as unknown as FileWatcher;
-      },
-      createPreviewManager: () => {
-        return new StubPreview() as unknown as PreviewManager;
       },
       createTerminal: () => {
         return new StubTerminal() as unknown as TerminalProcess;
@@ -249,30 +244,4 @@ describe("Worker Cleanup", () => {
     expect(watcher!.stopCalled).toBe(true);
   });
 
-  it("cleans up preview on stop (preview mode)", async () => {
-    let preview: StubPreview | null = null;
-
-    const worker = new SessionWorker({
-      agentFactory: () => new FakeWorkerAgent(),
-      port: 0,
-      host: "127.0.0.1",
-      workerMode: "preview",
-      createPreviewManager: () => {
-        preview = new StubPreview();
-        return preview as unknown as PreviewManager;
-      },
-    });
-
-    await worker.start();
-
-    // Start preview-mode resources
-    await worker.getApp().inject({ method: "POST", url: "/preview/start" });
-
-    expect(preview!.startCalled).toBe(true);
-
-    // Stop worker — should clean up preview
-    await worker.stop();
-
-    expect(preview!.stopCalled).toBe(true);
-  });
 });
