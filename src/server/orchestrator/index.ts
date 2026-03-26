@@ -139,6 +139,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // ---- Runner factory ----
   const effectiveRunnerFactory = buildRunnerFactory({ deps, containerManager, credentialsDir });
 
+  // ---- Service manager registry (per-session compose stacks) ----
+  const serviceManagers = new Map<string, ServiceManager>();
+
   // ---- Session runner registry ----
   // Idle enforcement uses a lazy reference to `runnerRegistry` — the callback
   // only fires when a runner goes idle (always after initialization).
@@ -153,12 +156,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     effectiveRunnerFactory, sessionManager, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
-    getDepCacheDir,
+    getDepCacheDir, serviceManagers, containerManager,
   });
   registryHolder.ref = runnerRegistry;
-
-  // ---- Service manager registry (per-session compose stacks) ----
-  const serviceManagers = new Map<string, ServiceManager>();
 
   // ---- PR Status Poller ----
   const prStatusPoller = createPrStatusPoller({

@@ -9,7 +9,7 @@ import simpleGit from "simple-git";
 import { generateBranchPrefix, repoUrlToHash, pushToOrigin } from "./git-utils.js";
 import { SessionContainerManager } from "./session-container.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
-import type { SessionRunnerFactory } from "./session-runner.js";
+import type { SessionRunnerFactory, SessionRunnerInterface } from "./session-runner.js";
 import { SessionRunnerRegistry } from "./session-runner.js";
 import { resolveSessionConfig } from "../shared/session-config.js";
 import { createDockerProxy, resolveOwnContainerIp } from "./docker-proxy.js";
@@ -18,6 +18,8 @@ import { PrStatusPoller } from "./pr-status-poller.js";
 import { getErrorMessage } from "./validation.js";
 import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
 import { deleteSession, markMergedAndPruneExcess } from "./services/session.js";
+import { ServiceManager } from "./service-manager.js";
+import { resolveShipitConfig } from "../shared/shipit-config.js";
 import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
 import type { RepoGit } from "./repo-git.js";
@@ -328,6 +330,10 @@ export interface RunnerRegistryDeps {
   sseBroadcast: (event: string, data: unknown) => void;
   enforceIdleContainerLimit: () => void;
   getDepCacheDir: (repoUrl: string) => string;
+  /** Per-session ServiceManager registry (compose stacks). */
+  serviceManagers: Map<string, ServiceManager>;
+  /** Container manager for connecting agent containers to compose networks. */
+  containerManager: SessionContainerManager | null;
 }
 
 /**
@@ -340,7 +346,7 @@ export function createRunnerRegistry(
     effectiveRunnerFactory, sessionManager, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
-    getDepCacheDir,
+    getDepCacheDir, serviceManagers, containerManager,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -387,8 +393,81 @@ export function createRunnerRegistry(
         finalizeInProgress: (sessionId) => chatHistoryManager.finalizeInProgress(sessionId),
         clearInProgress: (sessionId) => chatHistoryManager.clearInProgress(sessionId),
       });
+
+      // Set up compose ServiceManager if the session has a compose config
+      setupServiceManager(runner, {
+        sessionManager, serviceManagers, containerManager,
+      });
     },
   });
+}
+
+/**
+ * Create and wire a ServiceManager for a runner's session if compose config
+ * is detected. Fire-and-forget — compose stack start is async.
+ */
+function setupServiceManager(
+  runner: SessionRunnerInterface,
+  deps: {
+    sessionManager: SessionManager;
+    serviceManagers: Map<string, ServiceManager>;
+    containerManager: SessionContainerManager | null;
+  },
+): void {
+  const { sessionManager, serviceManagers, containerManager } = deps;
+  const session = sessionManager.get(runner.sessionId);
+  const workspaceDir = session?.workspaceDir ?? runner.sessionDir;
+
+  let shipitConfig;
+  try {
+    shipitConfig = resolveShipitConfig(workspaceDir);
+  } catch {
+    return; // Invalid config — skip compose setup
+  }
+
+  if (!shipitConfig.compose) return;
+
+  const mgr = new ServiceManager({
+    sessionId: runner.sessionId,
+    workspaceDir,
+    composeConfig: shipitConfig.compose,
+  });
+
+  serviceManagers.set(runner.sessionId, mgr);
+
+  // Wire ServiceManager to runner for event relay to WS clients
+  if (runner.setServiceManager) {
+    runner.setServiceManager(mgr);
+  }
+
+  // Clean up on runner dispose
+  runner.on("disposed", () => {
+    serviceManagers.delete(runner.sessionId);
+    mgr.stop().catch((err: unknown) => {
+      console.error(`[compose:${runner.sessionId}] Failed to stop compose stack:`, err);
+    });
+  });
+
+  // Start the compose stack asynchronously
+  void (async () => {
+    try {
+      await mgr.start();
+      console.log(`[compose:${runner.sessionId}] Compose stack started`);
+
+      // Connect agent container to compose network so it can reach services
+      if (containerManager) {
+        const networkName = `shipit-session-${runner.sessionId}`;
+        try {
+          await containerManager.connectToNetwork(runner.sessionId, networkName);
+          console.log(`[compose:${runner.sessionId}] Agent container joined compose network ${networkName}`);
+        } catch (err) {
+          console.warn(`[compose:${runner.sessionId}] Failed to join compose network:`, getErrorMessage(err));
+        }
+      }
+    } catch (err) {
+      console.error(`[compose:${runner.sessionId}] Failed to start compose stack:`, getErrorMessage(err));
+    }
+  })();
 }
 
 // ---- SSE (Server-Sent Events) ----

@@ -9,6 +9,7 @@
 import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, AgentEvent, TerminalProcess, AgentRunParams } from "../shared/types.js";
 import type { WsServerMessage, ImageAttachment, FileContextRef, UploadRef, PermissionMode, ClaudeContentBlockToolUse } from "../shared/types.js";
+import type { ServiceManager } from "./service-manager.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -261,6 +262,10 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   /** Wait until preview state is known (SSE connected + worker reported). Resolves
    *  immediately if already known. */
   waitForPreviewStatus(): Promise<void>;
+
+  // Compose service management
+  /** Attach a ServiceManager for compose lifecycle events. Optional — not all runners have compose. */
+  setServiceManager?(mgr: ServiceManager): void;
 
   // System-initiated turns
   /** Inject dependencies needed for server-initiated agent turns. */

@@ -30,18 +30,23 @@
   - [x] Log streaming via `docker compose logs -f` with multi-viewer broadcast
   - [x] Port extraction supports IP:port:container and port/protocol formats
 - [x] Wire ServiceManager into orchestrator (WS handlers for start/stop, service manager registry)
-- [ ] Complete ServiceManager wiring (replace services container usage end-to-end)
+- [x] Complete ServiceManager wiring (replace services container usage end-to-end)
 
 ## Phase 3: Orchestrator migration
 
-- [ ] Update `container-lifecycle.ts` — remove `createPreviewContainer()`
-- [ ] Update `container-session-runner.ts` — use ServiceManager instead of HTTP to services container
-- [ ] Update `sse-client.ts` — replace SSE from services container with `docker compose logs` + Docker events API
-- [ ] Move file watching from services container session worker to orchestrator-direct `fs.watch`
-  - Config changes (`shipit.yaml`, `docker-compose.yml`) → regenerate override, reconcile stack
-  - Lockfile changes → re-run install (debounced 30s)
-  - Workspace tree → notify browser for file explorer
-- [ ] Agent container joins compose network (`docker network connect`), re-joins on network recreation
+- [x] Update `container-lifecycle.ts` — remove `createPreviewContainer()`
+- [x] Update `container-session-runner.ts` — remove preview worker HTTP/SSE, simplify to compose model
+- [x] Update `container-discovery.ts` — remove preview container discovery
+- [x] Update `preview-proxy.ts` — remove preview container IP fallback
+- [x] Update `api-routes-preview.ts` — remove POST /preview/restart route
+- [x] Update `api-routes-session.ts` — remove restartPreview() function
+- [x] Update `api-routes-secrets.ts` — remove preview container secret push
+- [x] Update `session-container.ts` — remove preview container fields and creation
+- [x] Update `claude-execution.ts` — remove resolvePreviewUrl() call
+- [x] Delete `container-lifecycle-dual.test.ts` — tested deleted preview container creation
+- [x] Config file change detection → compose reconcile (shipit.yaml, docker-compose.yml changes trigger ServiceManager.reconcile())
+- [x] Agent container joins compose network (`docker network connect`) after compose stack starts
+- [ ] Lockfile changes → re-run install (debounced 30s) — deferred to Phase 6 cleanup
 
 ## Phase 4: Onboarding and agent docs
 

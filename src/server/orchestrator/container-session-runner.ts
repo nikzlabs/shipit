@@ -21,6 +21,7 @@ import { workerPost, workerGet } from "./worker-http.js";
 import { truncateTerminalBuffer } from "./terminal-buffer.js";
 import { ProxyAgentProcess } from "./proxy-agent-process.js";
 import type { ProxyAgentRunner } from "./proxy-agent-process.js";
+import type { ServiceManager, ManagedService } from "./service-manager.js";
 
 // ---------------------------------------------------------------------------
 // Barrel re-exports for backwards compatibility
@@ -105,6 +106,19 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   // Per-session detected ports
   private _detectedPorts: number[] = [];
+
+  // Compose service management
+  private _serviceManager: ServiceManager | null = null;
+  private _serviceManagerListeners: (() => void)[] = [];
+
+  /** Config files that trigger a compose reconcile when changed. */
+  private static readonly CONFIG_FILES = new Set([
+    "shipit.yaml",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "compose.yml",
+    "compose.yaml",
+  ]);
 
   private _disposed = false;
 
@@ -255,6 +269,71 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get detectedPorts(): number[] { return this._detectedPorts; }
   set detectedPorts(ports: number[]) { this._detectedPorts = ports; }
+
+  // --- Service Manager ---
+
+  get serviceManager(): ServiceManager | null { return this._serviceManager; }
+
+  /**
+   * Attach a ServiceManager and wire its events to WS messages.
+   * The ServiceManager's service_status and service_log events are relayed
+   * to all connected viewers via emitMessage().
+   */
+  setServiceManager(mgr: ServiceManager): void {
+    this.clearServiceManager();
+    this._serviceManager = mgr;
+
+    const onStatus = (svc: ManagedService) => {
+      this.emitMessage({
+        type: "service_status",
+        name: svc.name,
+        status: svc.status,
+        port: svc.port,
+        preview: svc.preview,
+        error: svc.error,
+      } as WsServerMessage);
+    };
+
+    const onLog = (name: string, text: string) => {
+      this.emitMessage({
+        type: "service_log",
+        name,
+        text,
+      } as WsServerMessage);
+    };
+
+    const onReady = () => {
+      // Send full service list on stack ready
+      const services = mgr.getServices();
+      this.emitMessage({
+        type: "service_list",
+        services: services.map(s => ({
+          name: s.name,
+          status: s.status,
+          port: s.port,
+          preview: s.preview,
+          error: s.error,
+        })),
+      } as WsServerMessage);
+    };
+
+    mgr.on("service_status", onStatus);
+    mgr.on("service_log", onLog);
+    mgr.on("stack_ready", onReady);
+
+    this._serviceManagerListeners = [
+      () => mgr.off("service_status", onStatus),
+      () => mgr.off("service_log", onLog),
+      () => mgr.off("stack_ready", onReady),
+    ];
+  }
+
+  /** Detach and clean up the current ServiceManager. */
+  private clearServiceManager(): void {
+    for (const unsub of this._serviceManagerListeners) unsub();
+    this._serviceManagerListeners = [];
+    this._serviceManager = null;
+  }
 
   // --- Viewer management ---
 
@@ -586,6 +665,20 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         case "file_changes": {
           const paths = (data.paths as string[]) ?? [];
           this.emitMessage({ type: "files_changed", paths } as WsServerMessage);
+
+          // Detect config file changes and trigger compose reconciliation
+          if (this._serviceManager?.started) {
+            const hasConfigChange = paths.some(p =>
+              ContainerSessionRunner.CONFIG_FILES.has(p) ||
+              ContainerSessionRunner.CONFIG_FILES.has(p.replace(/^\.\//, "")),
+            );
+            if (hasConfigChange) {
+              console.log(`[container-runner:${this.sessionId}] Config file changed, reconciling compose stack`);
+              this._serviceManager.reconcile().catch((err: unknown) => {
+                console.error(`[container-runner:${this.sessionId}] Compose reconcile failed:`, err);
+              });
+            }
+          }
           break;
         }
       }
@@ -644,6 +737,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // stays alive and a new runner may reconnect to it. Stopping the preview
     // would force a full restart on reconnect.
 
+    this.clearServiceManager();
     this.disconnectEventStream();
     this.clearPushTimer();
     this._messageQueue.length = 0;
