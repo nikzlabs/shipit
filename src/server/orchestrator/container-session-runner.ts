@@ -270,6 +270,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   get detectedPorts(): number[] { return this._detectedPorts; }
   set detectedPorts(ports: number[]) { this._detectedPorts = ports; }
 
+  /** Collect ports from all running auto-preview services. */
+  private buildDetectedPortsFromServices(mgr: ServiceManager): number[] {
+    return mgr.getServices()
+      .filter(s => s.preview === "auto" && s.status === "running" && s.port)
+      .map(s => s.port!);
+  }
+
   // --- Service Manager ---
 
   get serviceManager(): ServiceManager | null { return this._serviceManager; }
@@ -292,6 +299,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         preview: svc.preview,
         error: svc.error,
       } as WsServerMessage);
+
+      // When an auto-preview service starts running, update detected ports
+      // and emit preview_status so the iframe loads the app.
+      if (svc.preview === "auto" && svc.status === "running" && svc.port) {
+        this._detectedPorts = this.buildDetectedPortsFromServices(mgr);
+        this.emitMessage(this.buildPreviewStatus());
+      }
     };
 
     const onLog = (name: string, text: string) => {
