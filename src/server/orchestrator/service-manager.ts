@@ -203,7 +203,7 @@ export class ServiceManager extends EventEmitter {
       this.logProcesses.delete(name);
     }
 
-    const args = this.composeArgs("logs", "-f", "--no-log-prefix", name);
+    const args = this.composeArgs([], "logs", "-f", "--no-log-prefix", name);
     const proc = spawn("docker", args, {
       cwd: this.workspaceDir,
       stdio: ["ignore", "pipe", "pipe"],
@@ -270,39 +270,40 @@ export class ServiceManager extends EventEmitter {
   }
 
   /** Build common compose CLI args with the user file and override. */
-  private composeArgs(...extra: string[]): string[] {
+  private composeArgs(profiles: string[], ...extra: string[]): string[] {
     return [
       "compose",
       "-f", this.composeConfig.file,
       "-f", ".shipit/compose.override.yml",
       "-p", `shipit-${this.sessionId}`,
+      ...profiles.flatMap(p => ["--profile", p]),
       ...extra,
     ];
   }
 
   /** Run `docker compose up -d` for auto services. */
   private composeUp(): Promise<void> {
-    return this.runCompose("up", "-d", "--remove-orphans");
+    return this.runCompose([], "up", "-d", "--remove-orphans");
   }
 
-  /** Run `docker compose up -d --profile shipit-manual <service>`. */
+  /** Run `docker compose up -d` with the shipit-manual profile for a specific service. */
   private composeUpService(name: string): Promise<void> {
-    return this.runCompose("up", "-d", "--profile", "shipit-manual", name);
+    return this.runCompose(["shipit-manual"], "up", "-d", name);
   }
 
   /** Run `docker compose stop <service>`. */
   private composeStop(name: string): Promise<void> {
-    return this.runCompose("stop", name);
+    return this.runCompose([], "stop", name);
   }
 
   /** Run `docker compose down --remove-orphans`. */
   private composeDown(): Promise<void> {
-    return this.runCompose("down", "--remove-orphans");
+    return this.runCompose([], "down", "--remove-orphans");
   }
 
   /** Run a docker compose command and resolve/reject based on exit code. */
-  private runCompose(...subArgs: string[]): Promise<void> {
-    const args = this.composeArgs(...subArgs);
+  private runCompose(profiles: string[], ...subArgs: string[]): Promise<void> {
+    const args = this.composeArgs(profiles, ...subArgs);
     return this.composeRunner(args, this.workspaceDir);
   }
 }
