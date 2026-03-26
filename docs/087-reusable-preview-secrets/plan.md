@@ -327,21 +327,100 @@ docker-compose.yml
   web service  api service   agent container
 ```
 
-## Security considerations
+## Security: Docker secrets for service isolation
 
-- **`.shipit/` is gitignored.** The `.env` files are never committed. The orchestrator owns this directory.
-- **Per-service isolation.** Each service only sees its declared secrets. No over-sharing by default.
-- **Agent can read `.shipit/.env.*`.** The workspace volume is shared. An agent with filesystem access can read any env file. This is acceptable — the agent already has user trust to execute code. If stricter isolation is needed in the future, Docker secrets (mounted as files inside specific containers) could replace env files.
-- **Platform credentials in `.env` files.** OAuth tokens written to disk is a tradeoff. Mitigations: `.shipit/` is tmpfs in production, files are 0600, tokens are session-scoped (short-lived).
-- **No secrets in compose override.** The override YAML never contains secret values — only `env_file:` references. Safe to log/debug.
+### Problem
+
+The workspace volume is shared between the agent and compose services. If secrets are written as `.env` files in `.shipit/`, the agent can read them all — including secrets it shouldn't have access to (API keys, payment tokens).
+
+### Solution: Compose secrets with entrypoint wrapper
+
+Use Docker Compose's native `secrets:` feature. Secrets are mounted as read-only files on tmpfs at `/run/secrets/<name>` inside only the declared containers — never on the workspace volume.
+
+**The env var bridge.** Docker secrets are files, not env vars. Most apps expect `process.env.DATABASE_URL`, not a file read. The orchestrator injects a lightweight entrypoint wrapper via the compose override that exports secrets as env vars before starting the app:
+
+```sh
+#!/bin/sh
+# .shipit/secrets-entrypoint.sh (generated, baked into orchestrator image)
+for f in /run/secrets/shipit-*; do
+  [ -f "$f" ] || continue
+  export "$(basename "$f" | sed 's/^shipit-//')"="$(cat "$f")"
+done
+exec "$@"
+```
+
+The `shipit-` prefix namespaces our secrets to avoid collisions with other compose secrets the project might use. The wrapper strips the prefix when exporting (`shipit-DATABASE_URL` → `DATABASE_URL`).
+
+**How secrets reach containers:**
+
+1. Orchestrator resolves secret values (from `SecretStore` + platform credentials).
+2. Writes per-secret temp files to orchestrator-local storage (not the workspace).
+3. Generates compose override with `secrets:` top-level and per-service references:
+
+```yaml
+# .shipit/compose.override.yml (generated)
+services:
+  api:
+    secrets: [shipit-DATABASE_URL, shipit-REDIS_URL, shipit-STRIPE_KEY]
+    entrypoint: [/shipit/secrets-entrypoint.sh]
+    command: <original command from user's compose file>
+    labels: { ... }
+    networks: [shipit-session]
+  web:
+    secrets: [shipit-STRIPE_KEY]
+    entrypoint: [/shipit/secrets-entrypoint.sh]
+    command: <original command>
+    labels: { ... }
+    networks: [shipit-session]
+  db:
+    # no secrets
+    labels: { ... }
+    networks: [shipit-session]
+
+secrets:
+  shipit-DATABASE_URL:
+    file: /var/shipit/secrets/<sessionId>/DATABASE_URL
+  shipit-REDIS_URL:
+    file: /var/shipit/secrets/<sessionId>/REDIS_URL
+  shipit-STRIPE_KEY:
+    file: /var/shipit/secrets/<sessionId>/STRIPE_KEY
+```
+
+The `file:` paths point to the orchestrator's local storage. Compose reads them at `docker compose up` time and creates tmpfs mounts inside each service container. The files are never on the workspace volume.
+
+**Entrypoint injection.** The override sets `entrypoint` to the wrapper script and moves the user's original `command` (or the image's default `CMD`) to `command`. The wrapper exports secrets, then `exec "$@"` runs the original command. If the user's compose file sets `entrypoint`, the orchestrator preserves it by chaining: wrapper → user entrypoint → command.
+
+**Secret file storage.** The orchestrator writes secret files to `/var/shipit/secrets/<sessionId>/`. This path is on the orchestrator's filesystem (or a dedicated secrets volume), not the workspace volume. Files are 0600, cleaned up on session teardown.
+
+### Security properties
+
+- **Agent cannot read service secrets.** The workspace volume has no secret files. The agent container doesn't mount the secrets volume or the per-secret tmpfs mounts.
+- **Per-service isolation.** Each service only sees secrets declared in its `x-shipit-secrets`. Compose enforces this — the `secrets:` field per service controls which tmpfs mounts are created.
+- **Secrets not visible in Docker inspect.** Unlike `environment:` in compose, secrets don't appear in container metadata.
+- **tmpfs-backed.** Secrets exist only in memory inside the container. No disk persistence.
+- **No secrets in compose override YAML.** The override references file paths, not values. Safe to log/debug.
+
+### Agent container secrets
+
+The agent container is not a compose service, so Docker secrets don't apply. For `agent: true` entries:
+- Orchestrator passes `--env-file .shipit/.env.agent` on `docker create`. This file is on the orchestrator's filesystem, not the workspace volume.
+- The agent only gets entries explicitly marked `agent: true` — typically connection strings, not real secrets.
+
+### Other considerations
+
+- **`.shipit/` is gitignored.** Any fallback files are never committed.
+- **Platform credentials.** OAuth tokens follow the same path — written as secret files, mounted via compose secrets. Session-scoped (short-lived).
+- **Entrypoint wrapper is simple.** ~5 lines of POSIX shell. Baked into the orchestrator image, mounted into service containers via a read-only bind mount or copied to the workspace `.shipit/` dir.
 
 ## Implementation phases
 
-### Phase 1: Env file injection + auto-load
+### Phase 1: Docker secrets injection + auto-load
 - Parse `x-shipit-secrets` (simple string form only) from compose file
-- Write per-service `.shipit/.env.<service>` from `SecretStore` on session activation
-- Add `env_file:` to compose override generation
-- Rewrite on `PUT /api/secrets`, run `docker compose up -d` to apply
+- Create `secret-resolver.ts` — resolve values, write per-secret files to orchestrator storage
+- Generate compose override with `secrets:` top-level + per-service `secrets:` references
+- Inject entrypoint wrapper into compose override
+- Auto-load from `SecretStore` on session activation
+- On `PUT /api/secrets`: rewrite secret files, run `docker compose up -d` to apply
 - Delete old `pushSecretsToPreview` HTTP flow
 - **Depends on:** 086 compose infrastructure
 
@@ -352,7 +431,7 @@ docker-compose.yml
 
 ### Phase 3: Agent injection
 - `agent: true` flag on `x-shipit-secrets` entries
-- Write `.shipit/.env.agent` from agent-flagged entries, pass `--env-file` on container create
+- Write `.shipit/.env.agent` to orchestrator storage, pass `--env-file` on container create
 - Runtime updates via session worker `/secrets`
 
 ### Phase 4: Platform credential forwarding
@@ -369,16 +448,18 @@ docker-compose.yml
 ## Key files
 
 **New:**
-- `src/server/orchestrator/secret-resolver.ts` — merges user + platform secrets, writes per-service env files
+- `src/server/orchestrator/secret-resolver.ts` — merges user + platform secrets, writes per-secret files
+- `src/server/orchestrator/secrets-entrypoint.sh` — POSIX shell wrapper that exports `/run/secrets/shipit-*` as env vars
 - `src/server/shipit-docs/secrets.md` — agent-facing docs for secrets in compose
 
 **Modify (from 086):**
 - `src/server/orchestrator/service-manager.ts` — call secret resolver before compose up
-- `src/server/orchestrator/compose-generator.ts` — parse `x-shipit-secrets`, add `env_file:` to override
+- `src/server/orchestrator/compose-generator.ts` — parse `x-shipit-secrets`, add `secrets:` and entrypoint to override
 - `src/server/shared/shipit-config.ts` — no changes needed (agent secrets come from compose file)
+- `docker/Dockerfile.dev`, `docker/Dockerfile.prod` — bake in `secrets-entrypoint.sh`
 
 **Modify (existing):**
-- `src/server/orchestrator/api-routes-secrets.ts` — rewrite env files + compose up on save
+- `src/server/orchestrator/api-routes-secrets.ts` — rewrite secret files + compose up on save
 - `src/server/orchestrator/container-lifecycle.ts` — `--env-file` for agent container
 - `src/server/shared/types/domain-types.ts` — `SecretEntry`, `SecretRequirement` types
 - `src/server/shared/types/ws-server-messages.ts` — `secrets_missing` message
@@ -386,7 +467,7 @@ docker-compose.yml
 - `src/client/components/` — secrets panel enhancements
 
 **Delete (post-086):**
-- `ContainerSessionRunner.pushSecretsToPreview()` — replaced by env files
+- `ContainerSessionRunner.pushSecretsToPreview()` — replaced by Docker secrets
 - Preview worker `PUT /secrets` endpoint — container no longer exists
 
 ## Relation to 086
