@@ -524,6 +524,32 @@ export function useMessageHandler(params: {
       preview.clearStartupSteps();
     }
 
+    if (data.type === "service_list") {
+      preview.setServices(
+        data.services.map((s) => ({
+          name: s.name,
+          status: s.status,
+          port: s.port,
+          preview: s.preview,
+          error: s.error,
+        })),
+      );
+    }
+
+    if (data.type === "service_status") {
+      preview.updateService({
+        name: data.name,
+        status: data.status,
+        port: data.port,
+        preview: data.preview,
+        error: data.error,
+      });
+    }
+
+    if (data.type === "service_log") {
+      terminal.addEntry({ source: "preview", text: `[${data.name}] ${data.text}`, timestamp: new Date().toISOString() });
+    }
+
     if (data.type === "turn_diff") {
       git.setTurnDiff({ fromCommit: data.fromCommit, toCommit: data.toCommit, files: data.files, stats: data.stats });
     }

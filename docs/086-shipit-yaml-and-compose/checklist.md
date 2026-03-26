@@ -6,14 +6,14 @@
 - [x] Create `src/server/shared/shipit-config.test.ts`
 - [x] Old-format keys (`preview`, `resources`, `capabilities`, `services`) emit warnings with migration hints
 - [x] Update `src/server/shared/session-config.ts` — thin wrapper over new parser
-- [ ] Delete `src/server/session/preview-config.ts` and `preview-config.test.ts`
-- [ ] Update callers of old APIs:
-  - [ ] `container-lifecycle.ts` (reads session config for resource limits)
-  - [ ] `container-session-runner.ts` (reads preview config)
-  - [ ] `session-worker.ts` (calls `resolvePreviewConfig`)
-  - [ ] `preview-manager.ts` (uses `PreviewConfig` types)
+- [x] Delete `src/server/session/preview-config.ts` and `preview-config.test.ts`
+- [x] Update callers of old APIs:
+  - [x] `container-lifecycle.ts` — no direct import; uses `session-config.ts` which already bridges to `shipit-config.ts`
+  - [x] `container-session-runner.ts` — no direct import; manages preview via HTTP to worker
+  - [x] `session-worker.ts` — no direct import; uses `PreviewManager` which now inlines preview config
+  - [x] `preview-manager.ts` — inlined `PreviewConfig` types and `resolvePreviewConfig()` from deleted `preview-config.ts`
   - [x] `install-runner.ts` (reads install command — added `runInstallSteps`)
-  - [ ] Any integration tests that construct old config shapes
+  - [x] Integration tests — no tests import `preview-config.ts` directly
 - [x] Migrate root `shipit.yaml` to new format
 
 ## Phase 2: Compose infrastructure
@@ -49,7 +49,7 @@
 - [x] Update `src/server/orchestrator/agent-instructions.ts` — reference compose.md in system prompt
 - [x] Update `src/server/shipit-docs/shipit-yaml.md` for new schema
 - [x] Update `src/server/shipit-docs/preview.md` and `environment.md` for compose model
-- [ ] Onboarding UI in preview panel ("Set up live preview" + Generate button)
+- [x] Onboarding UI in preview panel ("Set up live preview" + Generate button)
 - [x] Programmatic message to agent on "Generate" click (via `init_preview_config` → compose-oriented prompt)
 
 ## Phase 5: Client updates
@@ -58,9 +58,10 @@
 - [x] Define new WS client messages for service control (`start_service`, `stop_service`)
 - [x] Update `preview-store.ts` — add per-service state (name, status, port, preview mode)
 - [ ] Update `file-store.ts` — if file watching events change shape
-- [ ] Unified service list UI component (per-service status, logs, start/stop controls)
-- [ ] Preview panel states (onboarding, starting, ready, error, manual)
-- [ ] Update client integration tests that mock old preview/services behavior
+- [x] Unified service list UI component (`ServiceList.tsx` — per-service status, start/stop controls, port links)
+- [x] Preview panel states (onboarding, starting, ready, error, manual, services)
+- [x] Wire `service_list`, `service_status`, `service_log` WS messages to preview store via `useMessageHandler`
+- [x] Update client integration tests that mock old preview/services behavior
 
 ## Phase 6: Cleanup
 

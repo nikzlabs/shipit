@@ -360,8 +360,8 @@ describe("PreviewFrame", () => {
         onInitPreviewConfig={onInitPreviewConfig}
       />,
     );
-    expect(screen.getByText(/No preview configuration found/)).toBeInTheDocument();
-    const btn = screen.getByText("Set up with Claude");
+    expect(screen.getByText(/Set up live preview/)).toBeInTheDocument();
+    const btn = screen.getByText("Generate");
     expect(btn).toBeInTheDocument();
     fireEvent.click(btn);
     expect(onInitPreviewConfig).toHaveBeenCalled();
@@ -371,8 +371,8 @@ describe("PreviewFrame", () => {
     render(
       <PreviewFrame preview={null} {...defaultProps} configMissing={true} />,
     );
-    expect(screen.getByText(/No preview configuration found/)).toBeInTheDocument();
-    expect(screen.queryByText("Set up with Claude")).not.toBeInTheDocument();
+    expect(screen.getByText(/Set up live preview/)).toBeInTheDocument();
+    expect(screen.queryByText("Generate")).not.toBeInTheDocument();
   });
 
   // ---- Install status tests (via startup steps) ----

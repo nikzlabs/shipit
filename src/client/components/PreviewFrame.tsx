@@ -1,11 +1,12 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: poll external preview server URL until ready with cancellation (external system sync)
 import { useState, useEffect, useRef } from "react";
-import { WarningIcon, GearSixIcon, CircleNotchIcon, ArrowClockwiseIcon, ArrowSquareOutIcon } from "@phosphor-icons/react";
+import { WarningIcon, CircleNotchIcon, ArrowClockwiseIcon, ArrowSquareOutIcon, CubeIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import type { PreviewError } from "../hooks/usePreviewErrors.js";
 import { usePreviewStore } from "../stores/preview-store.js";
 import { StartupSteps } from "./StartupSteps.js";
+import { ServiceList } from "./ServiceList.js";
 
 export interface PreviewStatus {
   running: boolean;
@@ -47,6 +48,10 @@ interface PreviewFrameProps {
   onRestartPreview?: () => void;
   /** Called when user clicks "Fix with Claude" to send crash info to the agent. */
   onSendCrashToAgent?: () => void;
+  /** Called when user clicks "Start" on a compose service. */
+  onStartService?: (name: string) => void;
+  /** Called when user clicks "Stop" on a compose service. */
+  onStopService?: (name: string) => void;
 }
 
 function formatErrorForMessage(errors: PreviewError[]): string {
@@ -84,6 +89,8 @@ export function PreviewFrame({
   crashInfo,
   onRestartPreview,
   onSendCrashToAgent,
+  onStartService,
+  onStopService,
 }: PreviewFrameProps) {
   const autoFixEnabled = usePreviewStore((s) => s.autoFixEnabled);
   const autoFixRetries = usePreviewStore((s) => s.autoFixRetries);
@@ -279,10 +286,12 @@ export function PreviewFrame({
 
   const hasErrors = errors.length > 0;
   const startupSteps = usePreviewStore((s) => s.startupSteps);
+  const services = usePreviewStore((s) => s.services);
   const showCrash = !!(crashInfo && !preview?.running);
   const showStartupSteps = startupSteps.length > 0 && !isRunning && !showCrash;
   const showStarting = !showStartupSteps && !preview && !!sessionId;
   const showConfigMissing = !isRunning && !showCrash && !showStartupSteps && !showStarting && !!configMissing;
+  const showServices = services.length > 0 && !isRunning && !showCrash && !showStartupSteps && !showConfigMissing;
 
   // When not running, hide the iframe behind the overlay (but keep DOM element alive)
   const hideIframe = !isRunning && !showStarting;
@@ -350,14 +359,26 @@ export function PreviewFrame({
     );
   } else if (showConfigMissing) {
     overlayContent = (
-      <div className="text-center space-y-3">
-        <GearSixIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
-        <p>No preview configuration found.</p>
-        <p className="text-xs text-(--color-text-tertiary) max-w-sm">
-          Create a shipit.yaml file to configure how the preview server runs, or let Claude set it up for you.
-        </p>
-        {onInitPreviewConfig && <Button variant="primary" size="sm" onClick={onInitPreviewConfig}>Set up with Claude</Button>}
+      <div className="text-center space-y-4">
+        <CubeIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
+        <div className="space-y-1">
+          <p className="font-medium text-(--color-text-primary)">Set up live preview</p>
+          <p className="text-xs text-(--color-text-tertiary) max-w-sm">
+            ShipIt uses Docker Compose to run your project&#39;s services.
+            Claude will analyze your project and generate a docker-compose.yml tailored to it.
+          </p>
+        </div>
+        {onInitPreviewConfig && <Button variant="primary" size="sm" onClick={onInitPreviewConfig}>Generate</Button>}
       </div>
+    );
+  } else if (showServices) {
+    overlayContent = (
+      <ServiceList
+        services={services}
+        onStart={(name) => onStartService?.(name)}
+        onStop={(name) => onStopService?.(name)}
+        onSelectPreview={(_, port) => onSelectPort(port)}
+      />
     );
   }
 
