@@ -63,9 +63,6 @@ function useSidebarResize() {
 
   return { width, isDragging, onMouseDown };
 }
-
-export type { SessionInfo };
-
 interface SessionSidebarProps {
   sessions: SessionInfo[];
   activeRepoUrl: string | undefined;
@@ -80,7 +77,7 @@ interface SessionSidebarProps {
   onToggleCollapse: () => void;
 }
 
-export interface SessionItemProps {
+interface SessionItemProps {
   session: SessionInfo;
   isCurrent: boolean;
   onResume: (id: string) => void;
