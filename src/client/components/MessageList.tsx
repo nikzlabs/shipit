@@ -119,6 +119,8 @@ export function MessageList({
   onRewind?: (messageIndex: number, mode: RewindMode) => void;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const autoScrollRef = useRef(true);
   const currentMatchRef = useRef<HTMLElement | null>(null);
   // Track which message has an open dropdown so the toolbar stays visible
   const [openDropdownIndex, setOpenDropdownIndex] = useState<number | null>(null);
@@ -153,8 +155,26 @@ export function MessageList({
     };
   }, [messages]);
 
+  // Track whether the user has scrolled away from the bottom
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "instant" });
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = container;
+      // Consider "at bottom" if within 40px of the end
+      autoScrollRef.current = scrollHeight - scrollTop - clientHeight < 40;
+    };
+
+    container.addEventListener("scroll", handleScroll);
+    return () => container.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  // Auto-scroll to bottom only if user hasn't scrolled up
+  useEffect(() => {
+    if (autoScrollRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: "instant" });
+    }
   }, [messages, isLoading]);
 
   // Scroll to the current search match when it changes
@@ -177,7 +197,7 @@ export function MessageList({
   const isEmpty = messages.length === 0 && !isLoading;
 
   return (
-    <div className={isEmpty ? "flex-1" : "flex-1 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-4"} style={isEmpty ? { clipPath: "inset(0 0 -80px 0)" } : undefined}>
+    <div ref={containerRef} className={isEmpty ? "flex-1" : "flex-1 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-4"} style={isEmpty ? { clipPath: "inset(0 0 -80px 0)" } : undefined}>
       {isEmpty && (
         <RocketLaunch />
       )}
