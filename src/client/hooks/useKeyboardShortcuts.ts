@@ -49,7 +49,7 @@ export function useKeyboardShortcuts(params: {
   // Escape key to interrupt Claude while loading (only when not typing in an input or overlay open)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && isLoading && !searchOpen && !shortcutsOpen && !settingsOpen) {
+      if (e.key === "Escape" && !e.defaultPrevented && isLoading && !searchOpen && !shortcutsOpen && !settingsOpen) {
         const tag = (e.target as HTMLElement)?.tagName;
         if (tag === "INPUT" || tag === "SELECT") return;
         e.preventDefault();

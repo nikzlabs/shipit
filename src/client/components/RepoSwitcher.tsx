@@ -26,7 +26,7 @@ export function RepoSwitcher({ open, onClose, repos, activeRepoUrl, onSelectRepo
       }
     };
     const keyHandler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") { e.preventDefault(); onClose(); }
     };
     document.addEventListener("mousedown", handler);
     document.addEventListener("keydown", keyHandler);
