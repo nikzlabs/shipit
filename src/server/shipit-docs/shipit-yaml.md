@@ -123,10 +123,10 @@ When `docker: true`, the session container can create and manage child Docker
 containers through a secure proxy. Child containers join an isolated bridge
 network scoped to the session.
 
-## Adding to a repository
+## Onboarding a repository
 
-When adding `shipit.yaml` to a repository, also add `.shipit` to the
-project's `.gitignore`. ShipIt uses the `.shipit/` directory for internal
+When onboarding a repository, also add `.shipit` to the project's
+`.gitignore`. ShipIt uses the `.shipit/` directory for internal
 state (e.g., `.shipit/.install-done`) and its contents should not be
 committed.
 
