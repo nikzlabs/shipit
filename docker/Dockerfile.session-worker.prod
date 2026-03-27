@@ -25,7 +25,7 @@ RUN apt-get update && apt-get install -y git curl python3 make g++ zip unzip && 
 RUN --mount=type=cache,target=/root/.npm npm install -g @anthropic-ai/claude-code @openai/codex @playwright/mcp
 
 # Install Chrome and its system dependencies for Playwright MCP browser tools
-RUN npx playwright install --with-deps chrome
+RUN npx playwright install --with-deps chromium
 
 WORKDIR /app
 
