@@ -611,10 +611,12 @@ export default function App() {
         <button onClick={() => handleTabChange("terminal")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors ${rightTab === "terminal" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Terminal</button>
         <button onClick={() => handleTabChange("history")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors ${rightTab === "history" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>History</button>
       </div>
-      <div className="flex-1 min-h-0">
-        {rightTab === "preview" ? (
+      <div className="flex-1 min-h-0 relative">
+        {/* PreviewFrame is always rendered to preserve iframe state; hidden via CSS when another tab is active */}
+        <div className={`absolute inset-0 ${rightTab === "preview" ? "" : "invisible pointer-events-none"}`}>
           <PreviewFrame preview={previewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} configMissing={configMissing} onInitPreviewConfig={() => send({ type: "init_preview_config" })} crashInfo={crashInfo} onRestartPreview={handleRestartPreview} onSendCrashToAgent={handleSendCrashToAgent} />
-        ) : rightTab === "docs" ? (
+        </div>
+        {rightTab === "docs" ? (
           reviewingDoc ? (
             <DocReviewPanel feature={reviewingDoc.doc} content={reviewingDoc.content} onSendComments={handleReviewSendComments} onClose={() => setReviewingDoc(null)} />
           ) : (
@@ -628,9 +630,9 @@ export default function App() {
           } />
         ) : rightTab === "history" ? (
           <GitHistory commits={gitCommits} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().fetchLog(sid).catch(() => {}); }} onViewDiff={handleViewDiff} />
-        ) : (
+        ) : rightTab === "files" ? (
           <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); void useFileStore.getState().hydrateUploads(sid); } }} onFileClick={handleOpenFilePreview} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} onDownload={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) { const a = document.createElement("a"); a.href = `/api/sessions/${sid}/files/download/${f}`; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); } }} uploads={sessionUploads} onDeleteUpload={(u) => { const sid = useSessionStore.getState().sessionId; if (u.path) markUploadDeleted(u.path); if (sid && u.path) { const filename = u.path.replace(/^\/uploads\//, ""); void fetch(`/api/sessions/${sid}/files/uploads/${encodeURIComponent(filename)}`, { method: "DELETE" }); } if (u.previewUrl) URL.revokeObjectURL(u.previewUrl); if (u.path) useFileStore.getState().removeSessionUpload(u.path); else useFileStore.getState().removeSessionUploadById(u.id); }} />
-        )}
+        ) : null}
       </div>
     </>
   );
