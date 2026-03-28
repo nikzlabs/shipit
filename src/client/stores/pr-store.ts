@@ -169,9 +169,15 @@ export const usePrStore = create<PrState>((set, get) => ({
   },
 
   updateCard: (sessionId, card) => {
-    set((state) => ({
-      cardBySession: { ...state.cardBySession, [sessionId]: card },
-    }));
+    set((state) => {
+      const existing = state.cardBySession[sessionId];
+      // Don't regress from terminal phases (merged/closed) — SSE poller is authoritative
+      if (existing && (existing.phase === "merged" || existing.phase === "closed") &&
+          card.phase !== "merged" && card.phase !== "closed") {
+        return state;
+      }
+      return { cardBySession: { ...state.cardBySession, [sessionId]: card } };
+    });
   },
 
   setCardCreating: (sessionId) => {
