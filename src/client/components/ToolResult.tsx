@@ -262,9 +262,51 @@ function ToolResultImages({ images }: { images: ToolResultImage[] }) {
   );
 }
 
+/**
+ * Try to extract images and text from a JSON-stringified MCP content array.
+ * Used when loading from persisted history where the server stored the raw
+ * JSON.stringify of the content array.
+ */
+function parseContentForImages(content: string): { text: string; images: ToolResultImage[] } | null {
+  if (!content.startsWith("[")) return null;
+  try {
+    const blocks = JSON.parse(content) as Record<string, unknown>[];
+    if (!Array.isArray(blocks)) return null;
+    let text = "";
+    const images: ToolResultImage[] = [];
+    for (const block of blocks) {
+      if (block.type === "text" && typeof block.text === "string") {
+        text += (text ? "\n" : "") + block.text;
+      } else if (block.type === "image") {
+        const source = block.source as Record<string, unknown> | undefined;
+        if (source?.data && typeof source.data === "string") {
+          images.push({
+            data: source.data,
+            mediaType: (source.media_type as string) ?? "image/png",
+          });
+        }
+      }
+    }
+    if (images.length === 0) return null;
+    return { text, images };
+  } catch {
+    return null;
+  }
+}
+
 export function ToolResult({ tool, result }: { tool: string; result: ToolResultBlock }) {
-  const hasImages = result.images && result.images.length > 0;
-  const hasContent = !!result.content;
+  // Use structured images if present, otherwise try parsing from JSON content (history reload)
+  const parsed = useMemo(() => {
+    if (result.images && result.images.length > 0) {
+      return { text: result.content, images: result.images };
+    }
+    return parseContentForImages(result.content);
+  }, [result.content, result.images]);
+
+  const displayContent = parsed?.text ?? result.content;
+  const images = parsed?.images ?? [];
+  const hasImages = images.length > 0;
+  const hasContent = !!displayContent;
 
   if (!hasContent && !result.isError && !hasImages) {
     return (
@@ -280,20 +322,20 @@ export function ToolResult({ tool, result }: { tool: string; result: ToolResultB
   let textResult = null;
   if (hasContent || result.isError) {
     if (tool === "Bash") {
-      textResult = <BashResult content={result.content} isError={result.isError} maxLines={textMaxLines} />;
+      textResult = <BashResult content={displayContent} isError={result.isError} maxLines={textMaxLines} />;
     } else if (tool === "Read") {
-      textResult = <ReadResult content={result.content} maxLines={textMaxLines} />;
+      textResult = <ReadResult content={displayContent} maxLines={textMaxLines} />;
     } else if (tool === "Grep" || tool === "Glob") {
-      textResult = <GrepResult content={result.content} maxLines={textMaxLines} />;
+      textResult = <GrepResult content={displayContent} maxLines={textMaxLines} />;
     } else {
-      textResult = <GenericResult content={result.content} isError={result.isError} maxLines={textMaxLines} />;
+      textResult = <GenericResult content={displayContent} isError={result.isError} maxLines={textMaxLines} />;
     }
   }
 
   return (
     <div>
       {textResult}
-      {hasImages && <ToolResultImages images={result.images!} />}
+      {hasImages && <ToolResultImages images={images} />}
     </div>
   );
 }
