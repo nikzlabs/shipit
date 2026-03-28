@@ -293,6 +293,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     const onStatus = (svc: ManagedService) => {
       this.emitMessage({
         type: "service_status",
+        sessionId: this.sessionId,
         name: svc.name,
         status: svc.status,
         port: svc.port,
@@ -300,9 +301,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         error: svc.error,
       } as WsServerMessage);
 
-      // When an auto-preview service starts running, update detected ports
-      // and emit preview_status so the iframe loads the app.
-      if (svc.preview === "auto" && svc.status === "running" && svc.port) {
+      // When an auto-preview service changes status, recalculate detected
+      // ports and emit preview_status so the client reflects the real state
+      // (e.g. green dot → error when a container crashes).
+      if (svc.preview === "auto") {
         this._detectedPorts = this.buildDetectedPortsFromServices(mgr);
         this.emitMessage(this.buildPreviewStatus());
       }
@@ -311,6 +313,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     const onLog = (name: string, text: string) => {
       this.emitMessage({
         type: "service_log",
+        sessionId: this.sessionId,
         name,
         text,
       } as WsServerMessage);
@@ -321,6 +324,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       const services = mgr.getServices();
       this.emitMessage({
         type: "service_list",
+        sessionId: this.sessionId,
         services: services.map(s => ({
           name: s.name,
           status: s.status,

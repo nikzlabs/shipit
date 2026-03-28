@@ -42,6 +42,9 @@ export interface ManagedService {
 /** Runs a docker compose command. Resolves on exit 0, rejects otherwise. */
 export type ComposeRunner = (args: string[], cwd: string) => Promise<void>;
 
+/** Runs a docker compose command and returns stdout. */
+export type ComposeQuery = (args: string[], cwd: string) => Promise<string>;
+
 export interface ServiceManagerOptions {
   /** Session ID. */
   sessionId: string;
@@ -51,6 +54,10 @@ export interface ServiceManagerOptions {
   composeConfig: ComposeConfig;
   /** Optional override for running compose commands (useful for testing). */
   composeRunner?: ComposeRunner;
+  /** Optional override for querying compose commands (useful for testing). */
+  composeQuery?: ComposeQuery;
+  /** Status poll interval in ms. 0 disables polling. Default: 5000. */
+  pollIntervalMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -77,6 +84,9 @@ export class ServiceManager extends EventEmitter {
   private logProcesses = new Map<string, ChildProcess>();
   private _started = false;
   private readonly composeRunner: ComposeRunner;
+  private readonly composeQuery: ComposeQuery;
+  private readonly pollIntervalMs: number;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(opts: ServiceManagerOptions) {
     super();
@@ -84,6 +94,8 @@ export class ServiceManager extends EventEmitter {
     this.workspaceDir = opts.workspaceDir;
     this.composeConfig = opts.composeConfig;
     this.composeRunner = opts.composeRunner ?? defaultComposeRunner;
+    this.composeQuery = opts.composeQuery ?? defaultComposeQuery;
+    this.pollIntervalMs = opts.pollIntervalMs ?? 5_000;
   }
 
   /** Whether the compose stack has been started. */
@@ -145,10 +157,16 @@ export class ServiceManager extends EventEmitter {
       await this.composeUp();
       this._started = true;
 
-      // Update status for auto services
-      for (const svc of autoServices) {
-        this.updateServiceStatus(svc.name, "running");
+      // Poll actual container state instead of assuming "running"
+      await this.pollStatus();
+
+      // Start log streaming for all services
+      for (const svc of this.services.values()) {
+        this.streamLogs(svc.name);
       }
+
+      // Begin periodic status polling to detect crashes
+      this.startPolling();
 
       this.emit("stack_ready");
     } catch (err) {
@@ -170,7 +188,8 @@ export class ServiceManager extends EventEmitter {
     this.updateServiceStatus(name, "starting");
     try {
       await this.composeUpService(name);
-      this.updateServiceStatus(name, "running");
+      await this.pollStatus();
+      this.streamLogs(name);
     } catch (err) {
       this.updateServiceStatus(name, "error", (err as Error).message);
       throw err;
@@ -239,6 +258,8 @@ export class ServiceManager extends EventEmitter {
    * Tear down the entire compose stack.
    */
   async stop(): Promise<void> {
+    this.stopPolling();
+
     // Kill all log streaming processes
     for (const [name, proc] of this.logProcesses) {
       proc.kill();
@@ -260,6 +281,66 @@ export class ServiceManager extends EventEmitter {
   // -----------------------------------------------------------------------
   // Private helpers
   // -----------------------------------------------------------------------
+
+  /**
+   * Query `docker compose ps --format json` and update service statuses
+   * based on actual container state.
+   */
+  private async pollStatus(): Promise<void> {
+    const args = this.composeArgs([], "ps", "--format", "json", "-a");
+    let stdout: string;
+    try {
+      stdout = await this.composeQuery(args, this.workspaceDir);
+    } catch {
+      return; // Poll failure is non-fatal
+    }
+
+    // docker compose ps --format json outputs one JSON object per line
+    for (const line of stdout.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let entry: { Service?: string; State?: string; ExitCode?: number };
+      try {
+        entry = JSON.parse(trimmed) as typeof entry;
+      } catch {
+        continue;
+      }
+      const svc = entry.Service ? this.services.get(entry.Service) : undefined;
+      if (!svc) continue;
+
+      const prev = svc.status;
+      const state = entry.State ?? "";
+      if (state === "running") {
+        if (prev !== "running") this.updateServiceStatus(svc.name, "running");
+      } else if (state === "exited" || state === "dead") {
+        const code = entry.ExitCode ?? 1;
+        if (code === 0) {
+          if (prev !== "stopped") this.updateServiceStatus(svc.name, "stopped");
+        } else {
+          this.updateServiceStatus(svc.name, "error", `Exited with code ${code}`);
+        }
+      } else if (state === "restarting") {
+        if (prev !== "starting") this.updateServiceStatus(svc.name, "starting");
+      }
+    }
+  }
+
+  /** Start periodic status polling. */
+  private startPolling(): void {
+    this.stopPolling();
+    if (this.pollIntervalMs <= 0) return;
+    this.pollTimer = setInterval(() => {
+      this.pollStatus().catch(() => { /* non-fatal */ });
+    }, this.pollIntervalMs);
+  }
+
+  /** Stop periodic status polling. */
+  private stopPolling(): void {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+  }
 
   private updateServiceStatus(name: string, status: ServiceStatus, error?: string): void {
     const svc = this.services.get(name);
@@ -327,6 +408,34 @@ function defaultComposeRunner(args: string[], cwd: string): Promise<void> {
     proc.on("close", (code) => {
       if (code === 0) {
         resolve();
+      } else {
+        reject(new Error(`docker compose ${args[0]} failed (exit ${code}): ${stderr.trim()}`));
+      }
+    });
+
+    proc.on("error", reject);
+  });
+}
+
+function defaultComposeQuery(args: string[], cwd: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("docker", args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    proc.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    proc.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+
+    proc.on("close", (code) => {
+      if (code === 0) {
+        resolve(stdout);
       } else {
         reject(new Error(`docker compose ${args[0]} failed (exit ${code}): ${stderr.trim()}`));
       }
