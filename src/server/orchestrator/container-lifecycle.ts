@@ -229,6 +229,13 @@ export async function createContainer(
     deps.dockerProxyPort,
   );
 
+  // Expose orchestrator API so the agent can query service status/logs
+  env.push(`SHIPIT_SESSION_ID=${config.sessionId}`);
+  const orchestratorPort = process.env.PORT || "3000";
+  const orchestratorHost = (await import("node:os")).hostname();
+  env.push(`SHIPIT_PORT=${orchestratorPort}`);
+  env.push(`SHIPIT_HOST=${orchestratorHost}`);
+
   // Use Docker-capable image when Docker access is requested
   const imageName = (config.dockerAccess && deps.dockerImageName)
     ? deps.dockerImageName

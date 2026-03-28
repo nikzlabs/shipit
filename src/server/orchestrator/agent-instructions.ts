@@ -75,8 +75,8 @@ Reference documentation about the ShipIt platform is at /shipit-docs/. Consult t
 
 You can check the status and logs of Docker Compose services via the ShipIt API:
 
-- List services and their status: \`curl -s http://localhost:\${SHIPIT_PORT}/api/sessions/\${SHIPIT_SESSION_ID}/services\`
-- Fetch recent logs for a service: \`curl -s http://localhost:\${SHIPIT_PORT}/api/sessions/\${SHIPIT_SESSION_ID}/services/SERVICE_NAME/logs?lines=100\`
+- List services and their status: \`curl -s http://\${SHIPIT_HOST}:\${SHIPIT_PORT}/api/sessions/\${SHIPIT_SESSION_ID}/services\`
+- Fetch recent logs for a service: \`curl -s http://\${SHIPIT_HOST}:\${SHIPIT_PORT}/api/sessions/\${SHIPIT_SESSION_ID}/services/SERVICE_NAME/logs?lines=100\`
 
 Use these when debugging service crashes or startup failures. The user can also send you service logs directly from the UI.
 
