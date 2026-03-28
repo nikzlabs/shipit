@@ -12,6 +12,7 @@ import { useTheme } from "./hooks/useTheme.js";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts.js";
 import { useConnectionSync } from "./hooks/useConnectionSync.js";
 import { useAutoFix } from "./hooks/useAutoFix.js";
+import { useActivityTracker } from "./hooks/useActivityTracker.js";
 import { useFileUpload } from "./hooks/useFileUpload.js";
 import { CircleNotchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "./design-tokens.js";
@@ -72,6 +73,8 @@ export default function App() {
 
   // SSE for global push (session list, repos, auth, activity dots) — always active
   useServerEvents();
+  // Heartbeat to server so PR polling stays active while user is engaged
+  useActivityTracker();
 
   // ── Store selectors ──
   const sessionId = useSessionStore((s) => s.sessionId);

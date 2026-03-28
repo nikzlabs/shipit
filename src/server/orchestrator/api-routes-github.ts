@@ -325,4 +325,15 @@ export async function registerGitHubRoutes(
       return gitHubLogout(deps.githubAuthManager);
     },
   );
+
+  // POST /api/activity/heartbeat — client reports it's active (keeps PR polling alive)
+  app.post(
+    "/api/activity/heartbeat",
+    async (_request, reply) => {
+      if (deps.prStatusPoller) {
+        deps.prStatusPoller.recordClientActivity();
+      }
+      reply.code(204).send();
+    },
+  );
 }
