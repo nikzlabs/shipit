@@ -1,5 +1,5 @@
 ---
-status: done
+status: in-progress
 ---
 
 # 088 — Security Audit (2026-03-28)
