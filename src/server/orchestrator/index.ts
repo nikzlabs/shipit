@@ -567,8 +567,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         const session = sessionManager.get(sessionId);
         if (session?.remoteUrl && session.workspaceDir && session.branchRenamed) {
           const prStatus = prStatusPoller.getStatus(sessionId);
-          if (!prStatus) {
-            // No open/merged PR — send branch info and diff stats
+          if (!prStatus && !session.mergedAt) {
+            // No open/merged PR and not already merged — send branch info and diff stats
             void (async () => {
               try {
                 const git = createGitManager(session.workspaceDir!);

@@ -129,6 +129,7 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
           const s = ctx.sessionManager.get(effectiveSessionId);
           if (!s?.remoteUrl || !s.workspaceDir) return;
           if (ctx.prStatusPoller.getStatus(effectiveSessionId)) return; // PR already exists
+          if (s.mergedAt) return; // PR was already merged
           try {
             const git = ctx.createGitManager(s.workspaceDir);
             const headBranch = s.branch || await git.getCurrentBranch();

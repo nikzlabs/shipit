@@ -236,7 +236,7 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
     if (commitHash && capturedSessionId && capturedSessionDir) {
       try {
         const session = ctx.sessionManager.get(capturedSessionId);
-        if (session?.remoteUrl && session.branchRenamed !== false) {
+        if (session?.remoteUrl && session.branchRenamed !== false && !session.mergedAt) {
           const git = ctx.createGitManager(capturedSessionDir);
 
           // Check if a PR already exists for this branch
