@@ -519,7 +519,7 @@ export class ServiceManager extends EventEmitter {
       "compose",
       "-f", this.composeConfig.file,
       "-f", ".shipit/compose.override.yml",
-      "-p", `shipit-${this.sessionId}`,
+      "-p", `shipit-${this.sessionId.slice(0, 12)}`,
       ...extra,
     ];
   }
