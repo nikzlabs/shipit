@@ -460,6 +460,7 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
                       renderOverviewRuler: false,
                       diffWordWrap: "off",
                       glyphMargin: true,
+                      hideUnchangedRegions: { enabled: true },
                       scrollbar: {
                         verticalScrollbarSize: 8,
                         horizontalScrollbarSize: 8,
