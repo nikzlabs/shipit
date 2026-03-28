@@ -8,6 +8,8 @@ interface ServiceListProps {
   onStart: (name: string) => void;
   onStop: (name: string) => void;
   onSelectPreview: (name: string, port: number) => void;
+  /** When provided, clicking a service name navigates to its log view. */
+  onSelect?: (name: string) => void;
 }
 
 function StatusIcon({ status }: { status: ManagedServiceState["status"] }) {
@@ -40,23 +42,34 @@ function StatusLabel({ status }: { status: ManagedServiceState["status"] }) {
   }
 }
 
-export function ServiceList({ services, onStart, onStop, onSelectPreview }: ServiceListProps) {
+export function ServiceList({ services, onStart, onStop, onSelectPreview, onSelect }: ServiceListProps) {
   if (services.length === 0) return null;
 
   return (
-    <div className="w-full max-w-md space-y-1">
-      <h3 className="text-xs font-medium text-(--color-text-secondary) uppercase tracking-wider px-2 mb-2">
-        Services
-      </h3>
+    <div className={`w-full space-y-1 ${onSelect ? "" : "max-w-md"}`}>
+      {!onSelect && (
+        <h3 className="text-xs font-medium text-(--color-text-secondary) uppercase tracking-wider px-2 mb-2">
+          Services
+        </h3>
+      )}
       {services.map((svc) => (
         <div
           key={svc.name}
           className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-(--color-bg-hover) text-sm"
         >
           <StatusIcon status={svc.status} />
-          <span className="text-(--color-text-primary) font-medium min-w-0 truncate">
-            {svc.name}
-          </span>
+          {onSelect ? (
+            <button
+              onClick={() => onSelect(svc.name)}
+              className="text-(--color-text-primary) font-medium min-w-0 truncate hover:underline text-left"
+            >
+              {svc.name}
+            </button>
+          ) : (
+            <span className="text-(--color-text-primary) font-medium min-w-0 truncate">
+              {svc.name}
+            </span>
+          )}
           {svc.port && svc.status === "running" && (
             <button
               onClick={() => onSelectPreview(svc.name, svc.port!)}

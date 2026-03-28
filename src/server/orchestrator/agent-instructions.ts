@@ -71,6 +71,15 @@ Reference documentation about the ShipIt platform is at /shipit-docs/. Consult t
 - /shipit-docs/preview.md — preview system and browser tools
 - /shipit-docs/environment.md — container environment details
 
+## Service logs
+
+You can check the status and logs of Docker Compose services via the ShipIt API:
+
+- List services and their status: \`curl -s http://localhost:\${SHIPIT_PORT}/api/sessions/\${SHIPIT_SESSION_ID}/services\`
+- Fetch recent logs for a service: \`curl -s http://localhost:\${SHIPIT_PORT}/api/sessions/\${SHIPIT_SESSION_ID}/services/SERVICE_NAME/logs?lines=100\`
+
+Use these when debugging service crashes or startup failures. The user can also send you service logs directly from the UI.
+
 ## Terminal
 
 The user has access to an interactive terminal in the UI. You can run shell commands via your Bash tool. For long-running processes, prefer letting the preview system handle dev servers rather than starting them in bash.

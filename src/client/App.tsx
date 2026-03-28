@@ -34,6 +34,7 @@ import { FileTree } from "./components/FileTree.js";
 import { FilePreviewModal } from "./components/FilePreviewModal.js";
 import { TerminalPanel } from "./components/TerminalPanel.js";
 import { InteractiveTerminal, type InteractiveTerminalHandle } from "./components/InteractiveTerminal.js";
+import { ServicesPanel } from "./components/ServicesPanel.js";
 import { SearchBar } from "./components/SearchBar.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
 import { HomeScreen } from "./components/HomeScreen.js";
@@ -116,6 +117,7 @@ export default function App() {
   const selectedPort = usePreviewStore((s) => s.selectedPort);
   const configMissing = usePreviewStore((s) => s.configMissing);
   const crashInfo = usePreviewStore((s) => s.crashInfo);
+  const composeServices = usePreviewStore((s) => s.services);
 
   const logEntries = useTerminalStore((s) => s.entries);
 
@@ -388,6 +390,15 @@ export default function App() {
     send({ type: "send_message", text, sessionId: session.sessionId, permissionMode: pm !== "auto" ? pm : undefined });
   }, [send, requestPermission]);
 
+  const handleSendServiceLogsToAgent = useCallback((serviceName: string, status: string, logs: string) => {
+    const lines = [`The Docker Compose service "${serviceName}" is in state "${status}". Recent logs:`, ""];
+    if (logs) {
+      lines.push("```", logs, "```", "");
+    }
+    lines.push("Please investigate and fix the issue.");
+    useSessionStore.getState().setPrefillText(lines.join("\n"));
+  }, []);
+
   const handleAnswerQuestion = useCallback(
     (toolUseId: string, answers: Record<string, string>) => {
       send({ type: "answer_question", toolUseId, answers });
@@ -449,7 +460,7 @@ export default function App() {
   );
 
   const handleTabChange = useCallback(
-    (tab: "preview" | "docs" | "files" | "terminal" | "history") => {
+    (tab: "preview" | "docs" | "files" | "terminal" | "history" | "services") => {
       useUiStore.getState().setRightTab(tab);
       const sid = useSessionStore.getState().sessionId;
       if (tab === "docs" && useFileStore.getState().docFiles.length === 0 && sid) useFileStore.getState().fetchDocs(sid).catch(() => {});
@@ -609,6 +620,9 @@ export default function App() {
     <>
       <div className="flex h-10 border-b border-(--color-border-primary) bg-(--color-bg-secondary)">
         <button onClick={() => handleTabChange("preview")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors ${rightTab === "preview" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Preview</button>
+        {composeServices.length > 0 && (
+          <button onClick={() => handleTabChange("services")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors ${rightTab === "services" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Services</button>
+        )}
         <button onClick={() => handleTabChange("docs")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors ${rightTab === "docs" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Docs</button>
         <button onClick={() => handleTabChange("files")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors ${rightTab === "files" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Files</button>
         <button onClick={() => handleTabChange("terminal")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors ${rightTab === "terminal" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Terminal</button>
@@ -633,6 +647,8 @@ export default function App() {
           } />
         ) : rightTab === "history" ? (
           <GitHistory commits={gitCommits} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().fetchLog(sid).catch(() => {}); }} onViewDiff={handleViewDiff} />
+        ) : rightTab === "services" ? (
+          <ServicesPanel lastMessage={lastMessage} send={send} onSendToAgent={handleSendServiceLogsToAgent} />
         ) : rightTab === "files" ? (
           <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); void useFileStore.getState().hydrateUploads(sid); } }} onFileClick={handleOpenFilePreview} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} onDownload={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) { const a = document.createElement("a"); a.href = `/api/sessions/${sid}/files/download/${f}`; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); } }} uploads={sessionUploads} onDeleteUpload={(u) => { const sid = useSessionStore.getState().sessionId; if (u.path) markUploadDeleted(u.path); if (sid && u.path) { const filename = u.path.replace(/^\/uploads\//, ""); void fetch(`/api/sessions/${sid}/files/uploads/${encodeURIComponent(filename)}`, { method: "DELETE" }); } if (u.previewUrl) URL.revokeObjectURL(u.previewUrl); if (u.path) useFileStore.getState().removeSessionUpload(u.path); else useFileStore.getState().removeSessionUploadById(u.id); }} />
         ) : null}

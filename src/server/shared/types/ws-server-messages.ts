@@ -297,6 +297,13 @@ export interface WsServiceLog {
   text: string;
 }
 
+/** Server → Client: buffered log replay for a compose service. */
+export interface WsServiceLogBuffer {
+  type: "service_log_buffer";
+  name: string;
+  buffer: string;
+}
+
 // ---- Session runner messages (server → client) ----
 
 /** Server → Client: current runtime state of a session. */
@@ -444,4 +451,5 @@ export type WsServerMessage =
   | WsStartupStep
   | WsServiceStatus
   | WsServiceList
-  | WsServiceLog;
+  | WsServiceLog
+  | WsServiceLogBuffer;

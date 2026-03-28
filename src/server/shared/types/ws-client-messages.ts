@@ -60,6 +60,12 @@ export interface WsStopService {
   name: string;
 }
 
+/** Client → Server: request buffered logs for a compose service. */
+export interface WsSubscribeServiceLogs {
+  type: "subscribe_service_logs";
+  name: string;
+}
+
 // ---- Prompt queuing messages ----
 
 /** Client → Server: cancel a specific queued message or clear the entire queue. */
@@ -119,6 +125,7 @@ export type WsClientMessage =
   | WsInitPreviewConfig
   | WsStartService
   | WsStopService
+  | WsSubscribeServiceLogs
   | WsRollbackCode
   | WsRollbackCodeAndChat
   | WsForkSessionFromMessage

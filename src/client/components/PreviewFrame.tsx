@@ -5,8 +5,8 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import type { PreviewError } from "../hooks/usePreviewErrors.js";
 import { usePreviewStore } from "../stores/preview-store.js";
+import { useUiStore } from "../stores/ui-store.js";
 import { StartupSteps } from "./StartupSteps.js";
-import { ServiceList } from "./ServiceList.js";
 
 export interface PreviewStatus {
   running: boolean;
@@ -48,10 +48,6 @@ interface PreviewFrameProps {
   onRestartPreview?: () => void;
   /** Called when user clicks "Fix with Claude" to send crash info to the agent. */
   onSendCrashToAgent?: () => void;
-  /** Called when user clicks "Start" on a compose service. */
-  onStartService?: (name: string) => void;
-  /** Called when user clicks "Stop" on a compose service. */
-  onStopService?: (name: string) => void;
 }
 
 function formatErrorForMessage(errors: PreviewError[]): string {
@@ -89,8 +85,6 @@ export function PreviewFrame({
   crashInfo,
   onRestartPreview,
   onSendCrashToAgent,
-  onStartService,
-  onStopService,
 }: PreviewFrameProps) {
   const autoFixEnabled = usePreviewStore((s) => s.autoFixEnabled);
   const autoFixRetries = usePreviewStore((s) => s.autoFixRetries);
@@ -373,12 +367,13 @@ export function PreviewFrame({
     );
   } else if (showServices) {
     overlayContent = (
-      <ServiceList
-        services={services}
-        onStart={(name) => onStartService?.(name)}
-        onStop={(name) => onStopService?.(name)}
-        onSelectPreview={(_, port) => onSelectPort(port)}
-      />
+      <div className="text-center space-y-3">
+        <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
+        <p className="text-sm text-(--color-text-secondary)">No preview running</p>
+        <Button variant="secondary" size="sm" onClick={() => useUiStore.getState().setRightTab("services")}>
+          View service logs
+        </Button>
+      </div>
     );
   }
 

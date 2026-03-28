@@ -297,6 +297,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     databaseManager,
     secretStore,
     reviewStore,
+    serviceManagers,
   });
 
   // ---- Preview reverse proxy (container mode) ----
@@ -685,6 +686,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
           }
           case "start_service": return serviceHandlers.handleStartService(ctx, msg);
           case "stop_service": return serviceHandlers.handleStopService(ctx, msg);
+          case "subscribe_service_logs": { serviceHandlers.handleSubscribeServiceLogs(ctx, msg); return; }
           case "send_message": return sendMessageHandlers.handleSendMessage(ctx, msg);
           case "answer_question": return sendMessageHandlers.handleAnswerQuestion(ctx, msg);
         }

@@ -18,6 +18,7 @@ import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import path from "node:path";
 import type { ComposeConfig } from "../shared/shipit-config.js";
+import { truncateTerminalBuffer } from "./terminal-buffer.js";
 import {
   parseComposeFile,
   generateComposeOverride,
@@ -80,8 +81,11 @@ export class ServiceManager extends EventEmitter {
   private readonly workspaceDir: string;
   private readonly composeConfig: ComposeConfig;
 
+  private static readonly MAX_LOG_BUFFER = 80_000;
+
   private services = new Map<string, ManagedService>();
   private logProcesses = new Map<string, ChildProcess>();
+  private logBuffers = new Map<string, string>();
   private _started = false;
   private readonly composeRunner: ComposeRunner;
   private readonly composeQuery: ComposeQuery;
@@ -111,6 +115,11 @@ export class ServiceManager extends EventEmitter {
   /** Get a specific service by name. */
   getService(name: string): ManagedService | undefined {
     return this.services.get(name);
+  }
+
+  /** Get the buffered log output for a service. */
+  getLogBuffer(name: string): string {
+    return this.logBuffers.get(name) ?? "";
   }
 
   /**
@@ -229,7 +238,16 @@ export class ServiceManager extends EventEmitter {
     });
 
     const handleData = (chunk: Buffer) => {
-      this.emit("service_log", name, chunk.toString());
+      const text = chunk.toString();
+
+      // Append to per-service ring buffer
+      let buf = (this.logBuffers.get(name) ?? "") + text;
+      if (buf.length > ServiceManager.MAX_LOG_BUFFER) {
+        buf = truncateTerminalBuffer(buf, ServiceManager.MAX_LOG_BUFFER);
+      }
+      this.logBuffers.set(name, buf);
+
+      this.emit("service_log", name, text);
     };
 
     proc.stdout?.on("data", handleData);
@@ -250,6 +268,7 @@ export class ServiceManager extends EventEmitter {
   async reconcile(): Promise<void> {
     // Re-start with the same config — start() handles parsing, override, and up
     this.services.clear();
+    this.logBuffers.clear();
     this._started = false;
     await this.start();
   }
@@ -275,6 +294,7 @@ export class ServiceManager extends EventEmitter {
     for (const [name] of this.services) {
       this.updateServiceStatus(name, "stopped");
     }
+    this.logBuffers.clear();
     this._started = false;
   }
 

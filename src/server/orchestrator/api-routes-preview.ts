@@ -11,6 +11,7 @@ import {
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
+import { stripAnsi } from "../shared/strip-ansi.js";
 
 export async function registerPreviewRoutes(
   app: FastifyInstance,
@@ -32,6 +33,40 @@ export async function registerPreviewRoutes(
     const status = runner.buildPreviewStatus();
     return { known: true, ...status };
   });
+
+  // GET /api/sessions/:id/services — list compose services with status
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/services", async (request, reply) => {
+    const mgr = deps.serviceManagers?.get(request.params.id);
+    if (!mgr) {
+      reply.code(404).send({ error: "No compose stack for this session" });
+      return;
+    }
+    return { services: mgr.getServices() };
+  });
+
+  // GET /api/sessions/:id/services/:name/logs — fetch service logs (ANSI stripped)
+  app.get<{ Params: { id: string; name: string }; Querystring: { lines?: string } }>(
+    "/api/sessions/:id/services/:name/logs",
+    async (request, reply) => {
+      const mgr = deps.serviceManagers?.get(request.params.id);
+      if (!mgr) {
+        reply.code(404).send({ error: "No compose stack for this session" });
+        return;
+      }
+      const svc = mgr.getService(request.params.name);
+      if (!svc) {
+        reply.code(404).send({ error: `Unknown service: ${request.params.name}` });
+        return;
+      }
+      let logs = stripAnsi(mgr.getLogBuffer(request.params.name));
+      const lines = parseInt(request.query.lines ?? "", 10);
+      if (Number.isFinite(lines) && lines > 0) {
+        const allLines = logs.split("\n");
+        logs = allLines.slice(-lines).join("\n");
+      }
+      return { name: request.params.name, logs };
+    },
+  );
 
   // POST /api/sessions/:id/preview-errors — report preview error
   app.post<{ Params: { id: string }; Body: { message: string; stack?: string } }>(
