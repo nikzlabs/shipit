@@ -198,8 +198,10 @@ export class ServiceManager extends EventEmitter {
     }
 
     try {
-      // 1. Start compose stack
-      await this.composeUp();
+      // 1. Start auto services (named explicitly so manual services aren't
+      //    started but remain part of the project for dependency resolution)
+      const autoNames = autoServices.map(s => s.name);
+      await this.composeUp(autoNames);
       this._started = true;
 
       // 2. Join agent container to compose network (before IP resolution)
@@ -287,7 +289,7 @@ export class ServiceManager extends EventEmitter {
     // Clear buffer before (re)starting — --tail 1000 replays history into it
     this.logBuffers.delete(name);
 
-    const args = this.composeArgs([], "logs", "-f", "--tail", "1000", "--no-log-prefix", name);
+    const args = this.composeArgs("logs", "-f", "--tail", "1000", "--no-log-prefix", name);
     const proc = spawn("docker", args, {
       cwd: this.workspaceDir,
       stdio: ["ignore", "pipe", "pipe"],
@@ -364,7 +366,7 @@ export class ServiceManager extends EventEmitter {
    * based on actual container state.
    */
   private async pollStatus(): Promise<void> {
-    const args = this.composeArgs([], "ps", "--format", "json", "-a");
+    const args = this.composeArgs("ps", "--format", "json", "-a");
     let stdout: string;
     try {
       stdout = await this.composeQuery(args, this.workspaceDir);
@@ -512,35 +514,34 @@ export class ServiceManager extends EventEmitter {
   }
 
   /** Build common compose CLI args with the user file and override. */
-  private composeArgs(profiles: string[], ...extra: string[]): string[] {
+  private composeArgs(...extra: string[]): string[] {
     return [
       "compose",
       "-f", this.composeConfig.file,
       "-f", ".shipit/compose.override.yml",
       "-p", `shipit-${this.sessionId}`,
-      ...profiles.flatMap(p => ["--profile", p]),
       ...extra,
     ];
   }
 
-  /** Run `docker compose up -d` for auto services. */
-  private composeUp(): Promise<void> {
-    return this.runCompose([], "up", "-d", "--remove-orphans");
+  /** Run `docker compose up -d`, optionally for specific services only. */
+  private composeUp(serviceNames?: string[]): Promise<void> {
+    return this.runCompose("up", "-d", "--remove-orphans", ...(serviceNames ?? []));
   }
 
-  /** Run `docker compose up -d` with the shipit-manual profile for a specific service. */
+  /** Run `docker compose up -d` for a specific manual service. */
   private composeUpService(name: string): Promise<void> {
-    return this.runCompose(["shipit-manual"], "up", "-d", name);
+    return this.runCompose("up", "-d", name);
   }
 
   /** Run `docker compose stop <service>`. */
   private composeStop(name: string): Promise<void> {
-    return this.runCompose([], "stop", name);
+    return this.runCompose("stop", name);
   }
 
   /** Run `docker compose down --remove-orphans`. */
   private composeDown(): Promise<void> {
-    return this.runCompose([], "down", "--remove-orphans");
+    return this.runCompose("down", "--remove-orphans");
   }
 
   /**
@@ -568,8 +569,8 @@ export class ServiceManager extends EventEmitter {
   }
 
   /** Run a docker compose command and resolve/reject based on exit code. */
-  private runCompose(profiles: string[], ...subArgs: string[]): Promise<void> {
-    const args = this.composeArgs(profiles, ...subArgs);
+  private runCompose(...subArgs: string[]): Promise<void> {
+    const args = this.composeArgs(...subArgs);
     return this.composeRunner(args, this.workspaceDir);
   }
 }

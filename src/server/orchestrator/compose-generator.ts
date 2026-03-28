@@ -297,15 +297,6 @@ export function generateComposeOverride(
       cap_drop: ["NET_RAW"],
     };
 
-    // Manual services get the shipit-manual profile
-    if (mode === "manual") {
-      const profiles = svc.profiles ? [...svc.profiles] : [];
-      if (!profiles.includes("shipit-manual")) {
-        profiles.push("shipit-manual");
-      }
-      entry.profiles = profiles;
-    }
-
     // Strip host port bindings — compose services are accessed through
     // the preview proxy via the session network, not direct host ports.
     // Publishing to the host causes "port already allocated" conflicts.

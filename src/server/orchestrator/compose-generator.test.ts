@@ -232,21 +232,15 @@ describe("generateComposeOverride", () => {
     expect(override).toContain("NET_RAW");
   });
 
-  it("assigns shipit-manual profile to manual services", () => {
+  it("labels manual services without adding profiles", () => {
     const override = generateComposeOverride(
       [{ name: "db", shipitPreview: "manual" }],
       baseOpts,
     );
-    expect(override).toContain("shipit-manual");
-  });
-
-  it("preserves user-defined profiles alongside shipit-manual", () => {
-    const override = generateComposeOverride(
-      [{ name: "db", shipitPreview: "manual", profiles: ["debug"] }],
-      baseOpts,
-    );
-    expect(override).toContain("debug");
-    expect(override).toContain("shipit-manual");
+    expect(override).toContain("shipit-preview-mode: manual");
+    // Profiles are no longer used — manual services stay in the project
+    // so depends_on references resolve correctly
+    expect(override).not.toContain("profiles");
   });
 
   it("defaults services with ports to auto", () => {
@@ -255,8 +249,6 @@ describe("generateComposeOverride", () => {
       baseOpts,
     );
     expect(override).toContain("shipit-preview-mode: auto");
-    // Should NOT have shipit-manual profile
-    expect(override).not.toContain("shipit-manual");
   });
 
   it("defaults services without ports to manual", () => {
@@ -265,7 +257,6 @@ describe("generateComposeOverride", () => {
       baseOpts,
     );
     expect(override).toContain("shipit-preview-mode: manual");
-    expect(override).toContain("shipit-manual");
   });
 });
 
