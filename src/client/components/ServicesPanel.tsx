@@ -129,7 +129,9 @@ function ServiceLogViewer({
       bufferReceivedRef.current = true;
       termRef.current.write(data.buffer);
     }
-    if (data.type === "service_log" && data.name === serviceName) {
+    // Only write live log events after the buffer replay — events that
+    // arrived before the buffer would duplicate its content.
+    if (data.type === "service_log" && data.name === serviceName && bufferReceivedRef.current) {
       termRef.current.write(data.text);
     }
   }, [lastMessage, serviceName]);

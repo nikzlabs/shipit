@@ -439,7 +439,22 @@ function setupServiceManager(
     workspaceVolume: wsVolume,
     workspaceSubpath: wsSubpath,
     networkJoinFn: containerManager
-      ? (networkName: string) => containerManager.connectToNetwork(runner.sessionId, networkName)
+      ? async (networkName: string) => {
+          // Connect agent container to compose network
+          await containerManager.connectToNetwork(runner.sessionId, networkName);
+          // Connect orchestrator container so the preview proxy can reach services
+          try {
+            const orchestratorId = (await import("node:os")).hostname();
+            const docker = containerManager.getDockerClient();
+            const network = docker.getNetwork(networkName);
+            await network.connect({ Container: orchestratorId });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (!msg.includes("already exists")) {
+              console.warn(`[compose] Failed to connect orchestrator to ${networkName}:`, msg);
+            }
+          }
+        }
       : undefined,
   });
 

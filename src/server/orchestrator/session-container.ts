@@ -335,6 +335,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * Used to join the agent container to the compose service network.
    * Silently succeeds if the container is already on the network.
    */
+  getDockerClient(): Docker { return this.docker; }
+
   async connectToNetwork(sessionId: string, networkName: string): Promise<void> {
     const sc = this.containers.get(sessionId);
     if (!sc?.id) throw new Error(`No container found for session ${sessionId}`);

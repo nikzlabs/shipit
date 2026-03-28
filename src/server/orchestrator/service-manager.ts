@@ -211,8 +211,7 @@ export class ServiceManager extends EventEmitter {
         this.emit("service_status", { ...svc });
       }
 
-      // 5. Seed log buffers with existing output, then start live streaming
-      await this.seedLogBuffers();
+      // 5. Start log streaming (--tail 1000 replays recent history + follows)
       for (const svc of this.services.values()) {
         this.streamLogs(svc.name);
       }
@@ -268,28 +267,6 @@ export class ServiceManager extends EventEmitter {
   /**
    * Stream logs for a service. Returns a cleanup function.
    */
-  /**
-   * Seed log buffers with existing container output (one-shot, no follow).
-   * Called once before starting the live `--tail 0` stream.
-   */
-  private async seedLogBuffers(): Promise<void> {
-    for (const svc of this.services.values()) {
-      try {
-        const args = this.composeArgs([], "logs", "--no-log-prefix", svc.name);
-        const output = await this.composeQuery(args, this.workspaceDir);
-        if (output) {
-          let buf = output;
-          if (buf.length > ServiceManager.MAX_LOG_BUFFER) {
-            buf = truncateTerminalBuffer(buf, ServiceManager.MAX_LOG_BUFFER);
-          }
-          this.logBuffers.set(svc.name, buf);
-        }
-      } catch {
-        // Non-fatal — buffer stays empty
-      }
-    }
-  }
-
   streamLogs(name: string): () => void {
     const existing = this.logProcesses.get(name);
     if (existing) {
@@ -297,10 +274,10 @@ export class ServiceManager extends EventEmitter {
       this.logProcesses.delete(name);
     }
 
-    // --tail 0: skip log history replay — the buffer is seeded separately
-    // via seedLogBuffer(). Without this, restarting the stream (e.g. on
-    // reconcile) would replay the full history into the buffer again.
-    const args = this.composeArgs([], "logs", "-f", "--tail", "0", "--no-log-prefix", name);
+    // Clear buffer before (re)starting — --tail 1000 replays history into it
+    this.logBuffers.delete(name);
+
+    const args = this.composeArgs([], "logs", "-f", "--tail", "1000", "--no-log-prefix", name);
     const proc = spawn("docker", args, {
       cwd: this.workspaceDir,
       stdio: ["ignore", "pipe", "pipe"],
@@ -381,8 +358,9 @@ export class ServiceManager extends EventEmitter {
     let stdout: string;
     try {
       stdout = await this.composeQuery(args, this.workspaceDir);
-    } catch {
-      return; // Poll failure is non-fatal
+    } catch (err) {
+      console.warn(`[compose:${this.sessionId}] pollStatus failed:`, (err as Error).message);
+      return;
     }
 
     // Parse container info and collect names for IP resolution
@@ -392,7 +370,7 @@ export class ServiceManager extends EventEmitter {
     for (const line of stdout.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      let entry: { Service?: string; Name?: string; State?: string; ExitCode?: number };
+      let entry: { Service?: string; ID?: string; Name?: string; State?: string; ExitCode?: number };
       try {
         entry = JSON.parse(trimmed) as typeof entry;
       } catch {
@@ -401,7 +379,9 @@ export class ServiceManager extends EventEmitter {
       const svc = entry.Service ? this.services.get(entry.Service) : undefined;
       if (!svc) continue;
 
-      if (entry.Name) containerNames.set(entry.Name, svc.name);
+      // Use container ID for inspect (more reliable than name)
+      const containerRef = entry.ID ?? entry.Name;
+      if (containerRef) containerNames.set(containerRef, svc.name);
       statusUpdates.push({
         name: svc.name,
         state: entry.State ?? "",
@@ -435,41 +415,58 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
-   * Query `docker network inspect` on the session network and update
-   * container IPs for known services.
+   * Resolve container IPs via `docker inspect` on each container.
+   * Prefers the session network IP, falls back to any available IP.
    */
   private async resolveContainerIps(
     containerNames: Map<string, string>,
   ): Promise<void> {
     const networkName = `shipit-session-${this.sessionId}`;
-    let stdout: string;
-    try {
-      stdout = await this.composeQuery(
-        ["network", "inspect", networkName],
-        this.workspaceDir,
-      );
-    } catch {
-      return;
-    }
 
-    let networks: { Containers?: Record<string, { Name?: string; IPv4Address?: string }> }[];
-    try {
-      networks = JSON.parse(stdout) as typeof networks;
-    } catch {
-      return;
-    }
+    for (const [containerName, serviceName] of containerNames) {
+      try {
+        const stdout = await this.composeQuery(
+          ["inspect", containerName],
+          this.workspaceDir,
+        );
+        const parsed = JSON.parse(stdout) as { NetworkSettings?: { IPAddress?: string; Networks?: Record<string, { IPAddress?: string }> } }[];
+        const netSettings = parsed[0]?.NetworkSettings;
+        let nets = netSettings?.Networks;
 
-    const containers = networks[0]?.Containers;
-    if (!containers) return;
+        // Docker Compose v5 on some platforms (e.g. WSL2) sets NetworkMode
+        // to the custom network but doesn't actually attach the container.
+        // Fix: explicitly connect the container if it has no networks.
+        if (!nets || Object.keys(nets).length === 0) {
+          try {
+            await this.composeQuery(
+              ["network", "connect", networkName, containerName],
+              this.workspaceDir,
+            );
+            // Re-inspect to get the IP
+            const stdout2 = await this.composeQuery(["inspect", containerName], this.workspaceDir);
+            const parsed2 = JSON.parse(stdout2) as typeof parsed;
+            nets = parsed2[0]?.NetworkSettings?.Networks;
+          } catch {
+            // Non-fatal
+          }
+        }
 
-    for (const info of Object.values(containers)) {
-      const name = info.Name;
-      const ip = info.IPv4Address?.split("/")[0]; // strip CIDR suffix
-      if (!name || !ip) continue;
-      const serviceName = containerNames.get(name);
-      if (!serviceName) continue;
-      const svc = this.services.get(serviceName);
-      if (svc) svc.containerIp = ip;
+        if (!nets) continue;
+
+        // Prefer the session network, fall back to any network with an IP
+        let ip = nets[networkName]?.IPAddress;
+        if (!ip) {
+          for (const net of Object.values(nets)) {
+            if (net.IPAddress) { ip = net.IPAddress; break; }
+          }
+        }
+        if (ip) {
+          const svc = this.services.get(serviceName);
+          if (svc) svc.containerIp = ip;
+        }
+      } catch (err) {
+        console.warn(`[compose:${this.sessionId}] docker inspect ${containerName} failed:`, (err as Error).message);
+      }
     }
   }
 
@@ -478,7 +475,9 @@ export class ServiceManager extends EventEmitter {
     this.stopPolling();
     if (this.pollIntervalMs <= 0) return;
     this.pollTimer = setInterval(() => {
-      this.pollStatus().catch(() => { /* non-fatal */ });
+      this.pollStatus().catch((err: unknown) => {
+        console.warn(`[compose:${this.sessionId}] periodic poll error:`, (err as Error).message);
+      });
     }, this.pollIntervalMs);
   }
 
