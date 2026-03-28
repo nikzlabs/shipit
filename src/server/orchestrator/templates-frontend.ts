@@ -105,12 +105,12 @@ compose: docker-compose.yml
       "docker-compose.yml": `services:
   dev:
     image: node:20-slim
-    working_dir: /workspace
-    command: npm run dev -- --host 0.0.0.0
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
     ports:
       - "5173:5173"
     volumes:
-      - .:/workspace
+      - .:/app
 `,
     },
   },
@@ -223,12 +223,12 @@ compose: docker-compose.yml
       "docker-compose.yml": `services:
   dev:
     image: node:20-slim
-    working_dir: /workspace
-    command: npm run dev -- --host 0.0.0.0
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
     ports:
       - "5173:5173"
     volumes:
-      - .:/workspace
+      - .:/app
 `,
     },
   },
@@ -336,12 +336,12 @@ compose: docker-compose.yml
       "docker-compose.yml": `services:
   dev:
     image: node:20-slim
-    working_dir: /workspace
-    command: npm run dev -- --host 0.0.0.0
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
     ports:
       - "5173:5173"
     volumes:
-      - .:/workspace
+      - .:/app
 `,
     },
   },
@@ -442,12 +442,12 @@ compose: docker-compose.yml
       "docker-compose.yml": `services:
   dev:
     image: node:20-slim
-    working_dir: /workspace
-    command: npm run dev -- --host 0.0.0.0
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
     ports:
       - "5173:5173"
     volumes:
-      - .:/workspace
+      - .:/app
 `,
     },
   },
@@ -547,12 +547,12 @@ compose: docker-compose.yml
       "docker-compose.yml": `services:
   dev:
     image: node:20-slim
-    working_dir: /workspace
-    command: npm run dev -- --host 0.0.0.0
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
     ports:
       - "5173:5173"
     volumes:
-      - .:/workspace
+      - .:/app
 `,
     },
   },
