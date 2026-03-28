@@ -101,10 +101,10 @@ services:
     const mgr = createManager(dir);
     try { await mgr.start(); } catch { /* expected */ }
     const web = mgr.getService("web");
-    expect(web?.port).toBe(8080);
+    expect(web?.port).toBe(80);
   });
 
-  it("extracts host port from IP:port:container format", async () => {
+  it("extracts container port from IP:host:container format", async () => {
     const dir = setup();
     writeCompose(dir, `
 services:

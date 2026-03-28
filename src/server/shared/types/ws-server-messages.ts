@@ -300,6 +300,7 @@ export interface WsServiceLog {
 /** Server → Client: buffered log replay for a compose service. */
 export interface WsServiceLogBuffer {
   type: "service_log_buffer";
+  sessionId: string;
   name: string;
   buffer: string;
 }

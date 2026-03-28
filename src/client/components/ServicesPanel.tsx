@@ -185,15 +185,12 @@ export function ServicesPanel({ lastMessage, send, onSendToAgent }: ServicesPane
     onSendToAgent(selectedService, svc?.status ?? "unknown", logs);
   }, [selectedService, services, onSendToAgent]);
 
-  const selectedSvc = selectedService ? services.find(s => s.name === selectedService) : null;
-
-  // If the selected service was removed, go back to the list
-  if (selectedService && !selectedSvc) {
-    setSelectedService(null);
-  }
+  // Derive effective selection — if the service was removed, treat as deselected
+  const effectiveService = selectedService && services.some(s => s.name === selectedService) ? selectedService : null;
+  const selectedSvc = effectiveService ? services.find(s => s.name === effectiveService) : null;
 
   // --- List view ---
-  if (!selectedService) {
+  if (!effectiveService) {
     return (
       <div className="h-full flex flex-col">
         <div className="flex-1 overflow-auto p-2">
@@ -224,7 +221,7 @@ export function ServicesPanel({ lastMessage, send, onSendToAgent }: ServicesPane
           <ArrowLeftIcon size={ICON_SIZE.SM} />
         </Button>
         <StatusDot status={selectedSvc?.status ?? "stopped"} />
-        <span className="font-medium text-(--color-text-primary) truncate">{selectedService}</span>
+        <span className="font-medium text-(--color-text-primary) truncate">{effectiveService}</span>
         {selectedSvc?.port && selectedSvc.status === "running" && (
           <span className="text-xs text-(--color-text-tertiary)">:{selectedSvc.port}</span>
         )}
@@ -235,12 +232,12 @@ export function ServicesPanel({ lastMessage, send, onSendToAgent }: ServicesPane
         )}
         <div className="ml-auto flex items-center gap-1">
           {(selectedSvc?.status === "stopped" || selectedSvc?.status === "error") && (
-            <Button variant="ghost" size="sm" onClick={() => send({ type: "start_service", name: selectedService })} title={`Start ${selectedService}`}>
+            <Button variant="ghost" size="sm" onClick={() => send({ type: "start_service", name: effectiveService })} title={`Start ${effectiveService}`}>
               <PlayIcon size={ICON_SIZE.SM} />
             </Button>
           )}
           {(selectedSvc?.status === "running" || selectedSvc?.status === "starting") && (
-            <Button variant="ghost" size="sm" onClick={() => send({ type: "stop_service", name: selectedService })} title={`Stop ${selectedService}`}>
+            <Button variant="ghost" size="sm" onClick={() => send({ type: "stop_service", name: effectiveService })} title={`Stop ${effectiveService}`}>
               <StopIcon size={ICON_SIZE.SM} />
             </Button>
           )}
@@ -253,7 +250,7 @@ export function ServicesPanel({ lastMessage, send, onSendToAgent }: ServicesPane
       {/* Log viewer */}
       <div className="flex-1 min-h-0">
         <ServiceLogViewer
-          serviceName={selectedService}
+          serviceName={effectiveService}
           lastMessage={lastMessage}
           send={send}
         />

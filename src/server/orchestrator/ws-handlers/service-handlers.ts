@@ -42,7 +42,7 @@ export function handleSubscribeServiceLogs(
     return;
   }
   const buffer = mgr.getLogBuffer(msg.name);
-  ctx.send({ type: "service_log_buffer", name: msg.name, buffer });
+  ctx.send({ type: "service_log_buffer", sessionId: ctx.getActiveAppSessionId() ?? "", name: msg.name, buffer });
 }
 
 export async function handleStopService(

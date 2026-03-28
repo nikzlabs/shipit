@@ -172,7 +172,7 @@ export class ServiceManager extends EventEmitter {
     // Build service map
     for (const svc of parsedServices) {
       const preview = svc.shipitPreview ?? (svc.ports?.length ? "auto" : "manual");
-      const port = svc.ports?.[0] ? extractHostPort(svc.ports[0]) : undefined;
+      const port = svc.ports?.[0] ? extractContainerPort(svc.ports[0]) : undefined;
       this.services.set(svc.name, {
         name: svc.name,
         port,
@@ -637,14 +637,18 @@ function defaultComposeQuery(args: string[], cwd: string): Promise<string> {
 
 /**
  * Extract the host port from a port mapping string.
+ * Extracts the container (target) port — the port the service actually listens
+ * on inside the container. The preview proxy routes to this port directly on
+ * the session network (host port bindings are stripped by the override).
+ *
  * Supports common Docker Compose forms:
  * - "5173" → 5173
  * - "5173:5173" → 5173
- * - "8080:80" → 8080
+ * - "8080:80" → 80
  * - "5173:5173/tcp" → 5173
- * - "127.0.0.1:5173:5173" → 5173
+ * - "127.0.0.1:8080:80" → 80
  */
-function extractHostPort(portMapping: string): number | undefined {
+function extractContainerPort(portMapping: string): number | undefined {
   if (!portMapping) return undefined;
 
   // Strip optional protocol suffix ("/tcp", "/udp")
@@ -652,24 +656,8 @@ function extractHostPort(portMapping: string): number | undefined {
   if (!withoutProtocol) return undefined;
 
   const parts = withoutProtocol.split(":");
-  let portStr: string | undefined;
-
-  switch (parts.length) {
-    case 1:
-      // "HOST_PORT"
-      portStr = parts[0];
-      break;
-    case 2:
-      // "HOST_PORT:CONTAINER_PORT"
-      portStr = parts[0];
-      break;
-    case 3:
-      // "HOST_IP:HOST_PORT:CONTAINER_PORT"
-      portStr = parts[1];
-      break;
-    default:
-      return undefined;
-  }
+  // Container port is always the last segment
+  const portStr = parts[parts.length - 1];
 
   const port = parseInt(portStr, 10);
   return Number.isFinite(port) && port > 0 ? port : undefined;

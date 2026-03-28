@@ -219,7 +219,28 @@ function resolvePreviewMode(svc: ComposeService): "auto" | "manual" {
 }
 
 /**
- * Rewrite volume entries: replace workspace bind mounts ("." or "./" source)
+ * Check if a volume source is a relative workspace path (., ./, ./subdir).
+ * Returns the relative subdirectory (empty string for root) or null if not.
+ */
+function isRelativeWorkspacePath(source: string): string | null {
+  if (source === "." || source === "./") return "";
+  if (source.startsWith("./")) return source.slice(2);
+  return null;
+}
+
+/**
+ * Join the workspace subpath with a relative volume path.
+ * Returns undefined if both are empty (root mount with no subpath).
+ */
+function joinSubpath(workspaceSubpath: string | undefined, relPath: string): string | undefined {
+  if (workspaceSubpath && relPath) return `${workspaceSubpath}/${relPath}`;
+  if (workspaceSubpath) return workspaceSubpath;
+  if (relPath) return relPath;
+  return undefined;
+}
+
+/**
+ * Rewrite volume entries: replace workspace bind mounts (., ./, ./subdir)
  * with the shared Docker named volume so compose services see the same files
  * as the agent container.
  *
@@ -234,17 +255,19 @@ function rewriteVolumes(
     if (typeof vol === "string") {
       const parts = vol.split(":");
       const source = parts[0];
-      if (source === "." || source === "./") {
+      const relPath = isRelativeWorkspacePath(source);
+      if (relPath !== null) {
         const target = parts[1];
         if (!target) return vol; // bare "." with no target — leave as-is
         const mode = parts[2];
+        const subpath = joinSubpath(opts.workspaceSubpath, relPath);
         const entry: Record<string, unknown> = {
           type: "volume",
           source: "shipit-workspace",
           target,
         };
-        if (opts.workspaceSubpath) {
-          entry.volume = { subpath: opts.workspaceSubpath };
+        if (subpath) {
+          entry.volume = { subpath };
         }
         if (mode === "ro") entry.read_only = true;
         return entry;
@@ -253,16 +276,20 @@ function rewriteVolumes(
     }
     if (vol && typeof vol === "object") {
       const obj = vol as Record<string, unknown>;
-      if (typeof obj.source === "string" && (obj.source === "." || obj.source === "./")) {
-        const entry: Record<string, unknown> = {
-          ...obj,
-          type: "volume",
-          source: "shipit-workspace",
-        };
-        if (opts.workspaceSubpath) {
-          entry.volume = { subpath: opts.workspaceSubpath };
+      if (typeof obj.source === "string") {
+        const relPath = isRelativeWorkspacePath(obj.source);
+        if (relPath !== null) {
+          const subpath = joinSubpath(opts.workspaceSubpath, relPath);
+          const entry: Record<string, unknown> = {
+            ...obj,
+            type: "volume",
+            source: "shipit-workspace",
+          };
+          if (subpath) {
+            entry.volume = { subpath };
+          }
+          return entry;
         }
-        return entry;
       }
     }
     return vol;
