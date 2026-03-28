@@ -3,6 +3,11 @@ import hljs from "highlight.js";
 import { Button } from "./ui/button.js";
 import type { ToolResultBlock } from "./MessageList.js";
 
+interface ToolResultImage {
+  data: string;      // base64-encoded image data
+  mediaType: string; // "image/png", etc.
+}
+
 const BASH_MAX_LINES = 30;
 const READ_MAX_LINES = 20;
 const GREP_MAX_LINES = 20;
@@ -47,11 +52,12 @@ function extractFilePathFromReadContent(content: string): string | null {
   return null;
 }
 
-function BashResult({ content, isError }: { content: string; isError?: boolean }) {
+function BashResult({ content, isError, maxLines }: { content: string; isError?: boolean; maxLines?: number }) {
   const [expanded, setExpanded] = useState(false);
+  const effectiveMax = maxLines ?? BASH_MAX_LINES;
   const { text: preview, truncated, totalLines } = useMemo(
-    () => truncateLines(content, BASH_MAX_LINES),
-    [content]
+    () => truncateLines(content, effectiveMax),
+    [content, effectiveMax]
   );
 
   const displayText = expanded ? content : preview;
@@ -86,11 +92,12 @@ function BashResult({ content, isError }: { content: string; isError?: boolean }
   );
 }
 
-function ReadResult({ content }: { content: string }) {
+function ReadResult({ content, maxLines }: { content: string; maxLines?: number }) {
   const [expanded, setExpanded] = useState(false);
+  const effectiveMax = maxLines ?? READ_MAX_LINES;
   const { text: preview, truncated, totalLines } = useMemo(
-    () => truncateLines(content, READ_MAX_LINES),
-    [content]
+    () => truncateLines(content, effectiveMax),
+    [content, effectiveMax]
   );
 
   extractFilePathFromReadContent(content);
@@ -131,11 +138,12 @@ function ReadResult({ content }: { content: string }) {
   );
 }
 
-function GrepResult({ content }: { content: string }) {
+function GrepResult({ content, maxLines }: { content: string; maxLines?: number }) {
   const [expanded, setExpanded] = useState(false);
+  const effectiveMax = maxLines ?? GREP_MAX_LINES;
   const { text: preview, truncated, totalLines } = useMemo(
-    () => truncateLines(content, GREP_MAX_LINES),
-    [content]
+    () => truncateLines(content, effectiveMax),
+    [content, effectiveMax]
   );
 
   const displayText = expanded ? content : preview;
@@ -190,11 +198,12 @@ function GrepResult({ content }: { content: string }) {
   );
 }
 
-function GenericResult({ content, isError }: { content: string; isError?: boolean }) {
+function GenericResult({ content, isError, maxLines }: { content: string; isError?: boolean; maxLines?: number }) {
   const [expanded, setExpanded] = useState(false);
+  const effectiveMax = maxLines ?? GENERIC_MAX_LINES;
   const { text: preview, truncated, totalLines } = useMemo(
-    () => truncateLines(content, GENERIC_MAX_LINES),
-    [content]
+    () => truncateLines(content, effectiveMax),
+    [content, effectiveMax]
   );
 
   const displayText = expanded ? content : preview;
@@ -229,8 +238,75 @@ function GenericResult({ content, isError }: { content: string; isError?: boolea
   );
 }
 
+/** Render images from tool result content (e.g. Playwright screenshots). */
+function ToolResultImages({ images }: { images: ToolResultImage[] }) {
+  return (
+    <div className="flex gap-2 flex-wrap mt-2" data-testid="tool-result-images">
+      {images.map((img, i) => {
+        const src = `data:${img.mediaType};base64,${img.data}`;
+        return (
+          <img
+            key={i}
+            src={src}
+            alt={`Tool output image ${i + 1}`}
+            className="max-w-full max-h-64 rounded-md border border-(--color-border-secondary)/50 object-contain"
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Try to extract images and text from a JSON-stringified MCP content array.
+ *
+ * MCP tools (e.g. mcp__playwright__browser_take_screenshot) return content as
+ * an array of {type:"text"} and {type:"image"} blocks. The server stores this
+ * as JSON.stringify(content), so we parse it back here.
+ *
+ * The `startsWith("[")` guard is a fast-path to skip plain string content.
+ * If content happens to be a JSON array without image blocks, we return null
+ * and fall through to normal text rendering.
+ */
+export function parseContentForImages(content: string): { text: string; images: ToolResultImage[] } | null {
+  if (!content.startsWith("[")) return null;
+  try {
+    const blocks = JSON.parse(content) as Record<string, unknown>[];
+    if (!Array.isArray(blocks)) return null;
+    let text = "";
+    const images: ToolResultImage[] = [];
+    for (const block of blocks) {
+      if (block.type === "text" && typeof block.text === "string") {
+        text += (text ? "\n" : "") + block.text;
+      } else if (block.type === "image") {
+        const source = block.source as Record<string, unknown> | undefined;
+        if (source?.data && typeof source.data === "string") {
+          images.push({
+            data: source.data,
+            mediaType: (source.media_type as string) ?? "image/png",
+          });
+        }
+      }
+    }
+    if (images.length === 0) return null;
+    return { text, images };
+  } catch {
+    return null;
+  }
+}
+
 export function ToolResult({ tool, result }: { tool: string; result: ToolResultBlock }) {
-  if (!result.content && !result.isError) {
+  const parsed = useMemo(
+    () => parseContentForImages(result.content),
+    [result.content],
+  );
+
+  const displayContent = parsed?.text ?? result.content;
+  const images = parsed?.images ?? [];
+  const hasImages = images.length > 0;
+  const hasContent = !!displayContent;
+
+  if (!hasContent && !result.isError && !hasImages) {
     return (
       <div className="mt-1 text-xs text-(--color-text-secondary) italic" role="status">
         (no output)
@@ -238,16 +314,28 @@ export function ToolResult({ tool, result }: { tool: string; result: ToolResultB
     );
   }
 
-  if (tool === "Bash") {
-    return <BashResult content={result.content} isError={result.isError} />;
+  // When images are present, shrink the text output panel
+  const textMaxLines = hasImages ? 8 : undefined;
+
+  let textResult = null;
+  if (hasContent || result.isError) {
+    if (tool === "Bash") {
+      textResult = <BashResult content={displayContent} isError={result.isError} maxLines={textMaxLines} />;
+    } else if (tool === "Read") {
+      textResult = <ReadResult content={displayContent} maxLines={textMaxLines} />;
+    } else if (tool === "Grep" || tool === "Glob") {
+      textResult = <GrepResult content={displayContent} maxLines={textMaxLines} />;
+    } else {
+      textResult = <GenericResult content={displayContent} isError={result.isError} maxLines={textMaxLines} />;
+    }
   }
-  if (tool === "Read") {
-    return <ReadResult content={result.content} />;
-  }
-  if (tool === "Grep" || tool === "Glob") {
-    return <GrepResult content={result.content} />;
-  }
-  return <GenericResult content={result.content} isError={result.isError} />;
+
+  return (
+    <div>
+      {textResult}
+      {hasImages && <ToolResultImages images={images} />}
+    </div>
+  );
 }
 
 export { truncateLines, languageFromPath };
