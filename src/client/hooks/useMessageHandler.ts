@@ -350,7 +350,7 @@ export function useMessageHandler(params: {
 
     if (data.type === "chat_history") {
       const loaded: ChatMessage[] = data.messages.map((m: WsChatHistoryMessage) => ({
-        role: m.role, text: m.text, toolUse: m.toolUse, images: m.images, files: m.files, isError: m.isError, streaming: false,
+        role: m.role, text: m.text, toolUse: m.toolUse, toolResults: m.toolResults, images: m.images, files: m.files, isError: m.isError, streaming: false,
         commitHash: m.commitHash, parentCommitHash: m.parentCommitHash, uploadPaths: m.uploadPaths,
       }));
       session.setMessages(loaded);
