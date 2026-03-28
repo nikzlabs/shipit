@@ -46,7 +46,7 @@ interface PreviewFrameProps {
   crashInfo?: { exitCode: number | null; output: string } | null;
   /** Called when user clicks "Retry" to restart the preview server. */
   onRestartPreview?: () => void;
-  /** Called when user clicks "Fix with Claude" to send crash info to the agent. */
+  /** Called when user clicks "Send to agent" to send crash info to the agent. */
   onSendCrashToAgent?: () => void;
 }
 
@@ -281,11 +281,13 @@ export function PreviewFrame({
   const hasErrors = errors.length > 0;
   const startupSteps = usePreviewStore((s) => s.startupSteps);
   const services = usePreviewStore((s) => s.services);
+  const composeError = usePreviewStore((s) => s.composeError);
   const showCrash = !!(crashInfo && !preview?.running);
-  const showStartupSteps = startupSteps.length > 0 && !isRunning && !showCrash;
-  const showStarting = !showStartupSteps && !preview && !!sessionId;
-  const showConfigMissing = !isRunning && !showCrash && !showStartupSteps && !showStarting && !!configMissing;
-  const showServices = services.length > 0 && !isRunning && !showCrash && !showStartupSteps && !showConfigMissing;
+  const showComposeError = !!composeError && !isRunning && !showCrash;
+  const showStartupSteps = startupSteps.length > 0 && !isRunning && !showCrash && !showComposeError;
+  const showStarting = !showStartupSteps && !showComposeError && !preview && !!sessionId;
+  const showConfigMissing = !isRunning && !showCrash && !showComposeError && !showStartupSteps && !showStarting && !!configMissing;
+  const showServices = services.length > 0 && !isRunning && !showCrash && !showComposeError && !showStartupSteps && !showConfigMissing;
 
   // When not running, hide the iframe behind the overlay (but keep DOM element alive)
   const hideIframe = !isRunning && !showStarting;
@@ -308,8 +310,19 @@ export function PreviewFrame({
         )}
         <div className="flex items-center justify-center gap-2">
           {onRestartPreview && <Button variant="secondary" size="sm" onClick={onRestartPreview}>Retry</Button>}
-          {onSendCrashToAgent && <Button variant="primary" size="sm" onClick={onSendCrashToAgent}>Fix with Claude</Button>}
+          {onSendCrashToAgent && <Button variant="primary" size="sm" onClick={onSendCrashToAgent}>Send to agent</Button>}
         </div>
+      </div>
+    );
+  } else if (showComposeError) {
+    overlayContent = (
+      <div className="text-center space-y-3 max-w-lg px-4">
+        <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-error)" />
+        <p className="text-(--color-error) font-medium">Docker Compose error</p>
+        <pre className="text-left text-xs text-(--color-text-secondary) bg-(--color-bg-secondary) rounded p-3 max-h-48 overflow-auto whitespace-pre-wrap border border-(--color-border-secondary)">
+          {composeError}
+        </pre>
+        {onSendCrashToAgent && <Button variant="primary" size="sm" onClick={onSendCrashToAgent}>Send to agent</Button>}
       </div>
     );
   } else if (showStarting && !showIframe) {

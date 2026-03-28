@@ -393,9 +393,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         if (runner.running || runner.queueLength > 0) {
           send({ type: "session_status", sessionId: runner.sessionId, running: runner.running, queueLength: runner.queueLength });
         }
-        // Replay current service list so the Services tab appears after reload
+        // Replay current service/compose state so the UI is correct after reload
         const mgr = serviceManagers.get(runner.sessionId);
         if (mgr) {
+          if (mgr.startError) {
+            send({
+              type: "compose_error",
+              sessionId: runner.sessionId,
+              message: mgr.startError,
+            } as WsServerMessage);
+          }
           const services = mgr.getServices();
           if (services.length > 0) {
             send({

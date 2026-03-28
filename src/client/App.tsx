@@ -372,23 +372,22 @@ export default function App() {
   }, [apiPost]);
 
   const handleSendCrashToAgent = useCallback(() => {
-    const crash = usePreviewStore.getState().crashInfo;
-    if (!crash) return;
-    const lines = [`The preview server crashed${  crash.exitCode !== null ? ` (exit code ${crash.exitCode})` : ""  }:`, ""];
-    if (crash.output) {
-      lines.push("```", crash.output.trim(), "```", "");
+    const { crashInfo: crash, composeError } = usePreviewStore.getState();
+    let text: string;
+    if (composeError) {
+      text = `Docker Compose failed to start:\n\n\`\`\`\n${composeError.trim()}\n\`\`\`\n\nPlease fix this error so the services can start successfully.`;
+    } else if (crash) {
+      const lines = [`The preview server crashed${  crash.exitCode !== null ? ` (exit code ${crash.exitCode})` : ""  }:`, ""];
+      if (crash.output) {
+        lines.push("```", crash.output.trim(), "```", "");
+      }
+      lines.push("Please fix this error so the preview server can start successfully.");
+      text = lines.join("\n");
+    } else {
+      return;
     }
-    lines.push("Please fix this error so the preview server can start successfully.");
-    const text = lines.join("\n");
-    requestPermission();
-    useUiStore.getState().setShowTemplates(false);
-    const session = useSessionStore.getState();
-    session.setMessages((prev) => [...prev, { role: "user", text }]);
-    session.setIsLoading(true);
-    session.setActivity({ label: "Thinking..." });
-    const pm = useSettingsStore.getState().permissionMode;
-    send({ type: "send_message", text, sessionId: session.sessionId, permissionMode: pm !== "auto" ? pm : undefined });
-  }, [send, requestPermission]);
+    useSessionStore.getState().setPrefillText(text);
+  }, []);
 
   const handleSendServiceLogsToAgent = useCallback((serviceName: string, status: string, logs: string) => {
     const lines = [`The Docker Compose service "${serviceName}" is in state "${status}". Recent logs:`, ""];

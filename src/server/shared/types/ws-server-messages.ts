@@ -304,6 +304,13 @@ export interface WsServiceLogBuffer {
   buffer: string;
 }
 
+/** Server → Client: Docker Compose stack failed to start. */
+export interface WsComposeError {
+  type: "compose_error";
+  sessionId: string;
+  message: string;
+}
+
 // ---- Session runner messages (server → client) ----
 
 /** Server → Client: current runtime state of a session. */
@@ -452,4 +459,5 @@ export type WsServerMessage =
   | WsServiceStatus
   | WsServiceList
   | WsServiceLog
-  | WsServiceLogBuffer;
+  | WsServiceLogBuffer
+  | WsComposeError;

@@ -61,6 +61,8 @@ interface PreviewState {
 
   /** Compose services for the current session (keyed by service name). */
   services: ManagedServiceState[];
+  /** Error message when Docker Compose stack fails to start. */
+  composeError: string | null;
 
   setStatus: (status: PreviewStatus | null) => void;
   setSelectedPort: (port: number | null) => void;
@@ -80,6 +82,7 @@ interface PreviewState {
   setServices: (services: ManagedServiceState[]) => void;
   /** Update a single service status (from service_status WS message). */
   updateService: (update: ManagedServiceState) => void;
+  setComposeError: (error: string | null) => void;
   reset: () => void;
 }
 
@@ -133,6 +136,7 @@ const initialState = {
   autoFixRetries: 0,
   startupSteps: [] as StartupStep[],
   services: [] as ManagedServiceState[],
+  composeError: null as string | null,
 };
 
 export const usePreviewStore = create<PreviewState>((set) => ({
@@ -186,7 +190,9 @@ export const usePreviewStore = create<PreviewState>((set) => ({
 
   clearStartupSteps: () => set({ startupSteps: [] }),
 
-  setServices: (services) => set({ services }),
+  setComposeError: (composeError) => set({ composeError }),
+
+  setServices: (services) => set({ services, composeError: null }),
 
   updateService: (update) =>
     set((state) => {

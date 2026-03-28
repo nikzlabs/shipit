@@ -305,7 +305,7 @@ describe("PreviewFrame", () => {
     expect(onRestartPreview).toHaveBeenCalled();
   });
 
-  it("shows Fix with Claude button that calls onSendCrashToAgent", () => {
+  it("shows Send to agent button that calls onSendCrashToAgent", () => {
     const onSendCrashToAgent = vi.fn();
     render(
       <PreviewFrame
@@ -315,7 +315,7 @@ describe("PreviewFrame", () => {
         onSendCrashToAgent={onSendCrashToAgent}
       />,
     );
-    const btn = screen.getByText("Fix with Claude");
+    const btn = screen.getByText("Send to agent");
     fireEvent.click(btn);
     expect(onSendCrashToAgent).toHaveBeenCalled();
   });

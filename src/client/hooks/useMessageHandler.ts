@@ -546,6 +546,10 @@ export function useMessageHandler(params: {
       });
     }
 
+    if (data.type === "compose_error") {
+      preview.setComposeError(data.message);
+    }
+
     if (data.type === "service_log") {
       terminal.addEntry({ source: "preview", text: `[${data.name}] ${data.text}`, timestamp: new Date().toISOString() });
     }

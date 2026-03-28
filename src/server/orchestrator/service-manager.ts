@@ -103,6 +103,8 @@ export class ServiceManager extends EventEmitter {
   private readonly workspaceSubpath?: string;
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
   private _startupComplete = false;
+  /** Error message if the compose stack failed to start. */
+  startError: string | null = null;
 
   constructor(opts: ServiceManagerOptions) {
     super();

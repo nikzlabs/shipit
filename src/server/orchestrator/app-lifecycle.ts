@@ -480,7 +480,14 @@ function setupServiceManager(
       await mgr.start();
       console.log(`[compose:${runner.sessionId}] Compose stack started`);
     } catch (err) {
-      console.error(`[compose:${runner.sessionId}] Failed to start compose stack:`, getErrorMessage(err));
+      const errMsg = getErrorMessage(err);
+      console.error(`[compose:${runner.sessionId}] Failed to start compose stack:`, errMsg);
+      mgr.startError = errMsg;
+      runner.emitMessage({
+        type: "compose_error",
+        sessionId: runner.sessionId,
+        message: errMsg,
+      });
     }
   })();
 }

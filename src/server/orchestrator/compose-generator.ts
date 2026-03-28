@@ -165,6 +165,9 @@ function validateServiceSecurity(
       // Extract source path from both string and object forms
       let source: string | undefined;
       if (typeof vol === "string") {
+        // Single absolute path without ":" is an anonymous volume target
+        // (e.g. "/app/node_modules"), not a bind mount source — skip it.
+        if (!vol.includes(":")) continue;
         source = vol.split(":")[0];
       } else if (vol && typeof vol === "object") {
         const obj = vol as Record<string, unknown>;
