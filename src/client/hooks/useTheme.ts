@@ -67,6 +67,7 @@ function applyTheme(theme: Theme): void {
 export function useTheme() {
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     applyTheme(theme);
     try {

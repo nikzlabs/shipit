@@ -17,6 +17,7 @@ export function ThemePicker({ theme, onSelectTheme }: ThemePickerProps) {
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   // Close on outside click
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
@@ -29,6 +30,7 @@ export function ThemePicker({ theme, onSelectTheme }: ThemePickerProps) {
   }, [open]);
 
   // Focus the active item when dropdown opens
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (open) {
       const activeIndex = THEME_OPTIONS.findIndex((o) => o.id === theme);
@@ -37,6 +39,7 @@ export function ThemePicker({ theme, onSelectTheme }: ThemePickerProps) {
   }, [open, theme]);
 
   // Scroll focused item into view
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (open && focusIndex >= 0) {
       itemRefs.current[focusIndex]?.scrollIntoView({ block: "nearest" });

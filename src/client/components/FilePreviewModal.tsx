@@ -130,6 +130,7 @@ function CodeEditor({
   const editComment = useCommentStore((s) => s.editComment);
   const deleteComment = useCommentStore((s) => s.deleteComment);
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!editorRef.current) return;
     let disposed = false;
@@ -175,6 +176,7 @@ function CodeEditor({
   }, [filePath, content, sessionId, addLineComment, editComment, deleteComment]);
 
   // Sync comments changes
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     managerRef.current?.setComments(commentsForFile);
   }, [commentsForFile]);
@@ -250,6 +252,7 @@ export function FilePreviewModal({ filePath, content, fileType, actions, onClose
   const commentCount = allComments.length;
   const clearComments = useCommentStore((s) => s.clearComments);
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") { e.preventDefault(); onClose(); }

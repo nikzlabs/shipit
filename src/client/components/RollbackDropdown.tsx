@@ -27,6 +27,7 @@ export function RollbackDropdown({ messageIndex, parentCommitHash, disabled, onR
   };
 
   // Close on outside click
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {

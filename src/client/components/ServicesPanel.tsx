@@ -44,6 +44,7 @@ function ServiceLogViewer({
   const bufferReceivedRef = useRef(false);
 
   // Initialize xterm.js
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     bufferReceivedRef.current = false;
     const container = containerRef.current;
@@ -115,6 +116,7 @@ function ServiceLogViewer({
   }, [serviceName, send]);
 
   // Write incoming WS messages to xterm
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!parsedMessage || !termRef.current) return;
 
@@ -156,11 +158,13 @@ export function ServicesPanel({ lastMessage, send, onSendToAgent }: ServicesPane
   const plainLinesRef = useRef<string[]>([]);
 
   // Reset plain lines when switching services
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     plainLinesRef.current = [];
   }, [selectedService]);
 
   // Accumulate plain-text log lines from WS messages
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!parsedMessage || !selectedService) return;
 

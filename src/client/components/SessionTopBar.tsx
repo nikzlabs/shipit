@@ -19,6 +19,7 @@ export function SessionTopBar({ title, onRename, onDownloadChat, onArchive }: Se
   const editResolvedRef = useRef(false);
 
   // Focus & select on edit start
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (isEditing && inputRef.current) {
       editResolvedRef.current = false;
@@ -28,6 +29,7 @@ export function SessionTopBar({ title, onRename, onDownloadChat, onArchive }: Se
   }, [isEditing]);
 
   // Close menu on outside click
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!menuOpen) return;
     const handler = (e: MouseEvent) => {

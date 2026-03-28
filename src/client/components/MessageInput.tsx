@@ -77,6 +77,7 @@ export function MessageInput({
   const dragCountRef = useRef(0);
 
   // Consume prefill text from store (e.g. "Start Session" from docs viewer, "Send to Agent" from services panel)
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const consume = (prefill: string | undefined) => {
       if (!prefill) return;
@@ -99,6 +100,7 @@ export function MessageInput({
   }, []);
 
   // Auto-focus textarea on session change (e.g. "New Session" click, session switch)
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (focusKey) {
       requestAnimationFrame(() => {

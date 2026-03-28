@@ -17,12 +17,14 @@ interface ToastProps {
 export function Toast({ toast, onDismiss }: ToastProps) {
   const [visible, setVisible] = useState(false);
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     // Trigger slide-in on mount
     const frame = requestAnimationFrame(() => setVisible(true));
     return () => cancelAnimationFrame(frame);
   }, []);
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const duration = toast.duration ?? 8000;
     const timer = setTimeout(() => {

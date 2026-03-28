@@ -38,6 +38,7 @@ export function AgentPicker({ agents, activeAgentId, onAgentChange, disabled }: 
   const displayName = activeAgent?.name ?? activeAgentId;
 
   // Close on outside click
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!open) return;
     const handleClick = (e: MouseEvent) => {
@@ -50,6 +51,7 @@ export function AgentPicker({ agents, activeAgentId, onAgentChange, disabled }: 
   }, [open]);
 
   // Close on Escape
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!open) return;
     const handleKeyDown = (e: KeyboardEvent) => {

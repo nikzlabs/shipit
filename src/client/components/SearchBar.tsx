@@ -31,6 +31,7 @@ export function SearchBar({
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     inputRef.current?.focus();
   }, []);

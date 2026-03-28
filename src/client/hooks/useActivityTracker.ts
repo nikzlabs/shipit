@@ -22,6 +22,7 @@ export function useActivityTracker(): void {
   const lastActivityRef = useRef(Date.now());
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const apiHost = import.meta.env.VITE_API_HOST as string | undefined;
     const baseUrl = apiHost ? `${window.location.protocol}//${apiHost}` : "";

@@ -73,6 +73,7 @@ export function TerminalPanel({ entries, onClear, terminalMode, onTerminalModeCh
   );
 
   // Track whether user has scrolled up (disable auto-scroll)
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -88,6 +89,7 @@ export function TerminalPanel({ entries, onClear, terminalMode, onTerminalModeCh
   }, []);
 
   // Auto-scroll when new entries arrive
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (autoScrollRef.current) {
       bottomRef.current?.scrollIntoView({ behavior: "instant" });

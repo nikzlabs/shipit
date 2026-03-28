@@ -26,6 +26,7 @@ export function RewindDropdown({ messageIndex, disabled, onRewind, onOpenChange 
   };
 
   // Close on outside click
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {

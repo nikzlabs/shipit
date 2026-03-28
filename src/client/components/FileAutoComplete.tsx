@@ -83,12 +83,14 @@ export function FileAutoComplete({
     [matches, selectedIndex, onSelect, onDismiss],
   );
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
 
   // Scroll selected item into view
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const el = listRef.current?.children[selectedIndex] as HTMLElement | undefined;
     if (el && typeof el.scrollIntoView === "function") {

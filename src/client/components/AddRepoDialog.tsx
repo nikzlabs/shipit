@@ -52,6 +52,7 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
 
   // Auto-close and navigate when the pending repo becomes ready
   const pendingRepo = pendingUrl ? repos.find((r) => r.url === pendingUrl) : null;
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (pendingRepo?.status === "ready" && pendingUrl) {
       const url = pendingUrl;

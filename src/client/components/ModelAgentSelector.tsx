@@ -42,6 +42,7 @@ export function ModelAgentSelector({
   const canOpen = !hasActiveSession && !disabled;
 
   // Close on outside click
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!open) return;
     const handleClick = (e: MouseEvent) => {
@@ -54,6 +55,7 @@ export function ModelAgentSelector({
   }, [open]);
 
   // Close on Escape
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!open) return;
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -76,6 +78,7 @@ export function ModelAgentSelector({
   );
 
   // Clear pending model once the CLI confirms it, or on session change (modelInfo resets)
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (resolvedModel) {
       setPendingModel(undefined);

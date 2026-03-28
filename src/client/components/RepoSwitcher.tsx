@@ -18,6 +18,7 @@ interface RepoSwitcherProps {
 export function RepoSwitcher({ open, onClose, repos, activeRepoUrl, onSelectRepo, onAddRepo, onCreateNew }: RepoSwitcherProps) {
   const ref = useRef<HTMLDivElement>(null);
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {

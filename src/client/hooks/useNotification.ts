@@ -16,6 +16,7 @@ export function useNotification() {
   const titleChangedRef = useRef(false);
 
   // Track tab visibility
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const onVisibilityChange = () => {
       hiddenRef.current = document.hidden;

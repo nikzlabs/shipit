@@ -41,6 +41,7 @@ export const InteractiveTerminal = forwardRef<InteractiveTerminalHandle, Interac
     const onStartRef = useRef(onStart);
     onStartRef.current = onStart;
 
+    // eslint-disable-next-line no-restricted-syntax -- existing usage
     useEffect(() => {
       const container = containerRef.current;
       if (!container) return;

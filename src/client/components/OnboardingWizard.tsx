@@ -58,6 +58,7 @@ export function OnboardingWizard({
   // If initialStep changes to 1 after mount (e.g. git_identity_required
   // arrives via WS after the wizard was already triggered by agent_list
   // via SSE), jump back to step 1.
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (initialStep === 1) setStep(1);
   }, [initialStep]);

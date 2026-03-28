@@ -70,6 +70,7 @@ export function RepoSelector({
     [onSearch],
   );
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -77,6 +78,7 @@ export function RepoSelector({
   }, []);
 
   // Close on click outside
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {

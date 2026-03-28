@@ -326,6 +326,7 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
   }, []);
 
   // Clean up all comment managers on unmount
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     return () => {
       for (const manager of managersRef.current.values()) {
@@ -336,6 +337,7 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
   }, []);
 
   // Sync comments to all active managers
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     for (const [filePath, manager] of managersRef.current.entries()) {
       manager.setComments(allComments.filter((c) => c.filePath === filePath));

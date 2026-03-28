@@ -30,6 +30,7 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!url) {
       setStatus("closed");
