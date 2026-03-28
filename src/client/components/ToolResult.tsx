@@ -1,7 +1,6 @@
 import { useState, useMemo } from "react";
 import hljs from "highlight.js";
 import { Button } from "./ui/button.js";
-import { useFileStore } from "../stores/file-store.js";
 import type { ToolResultBlock, ToolResultImage } from "./MessageList.js";
 
 const BASH_MAX_LINES = 30;
@@ -241,21 +240,12 @@ function ToolResultImages({ images }: { images: ToolResultImage[] }) {
       {images.map((img, i) => {
         const src = `data:${img.mediaType};base64,${img.data}`;
         return (
-          <button
+          <img
             key={i}
-            onClick={() => {
-              useFileStore.getState().openPreviewWithContent(`Screenshot ${i + 1}`, src, "image");
-            }}
-            className="block rounded-md overflow-hidden border border-(--color-border-secondary)/50 hover:border-(--color-text-link) transition-colors cursor-pointer"
-            title="Click to view full size"
-            aria-label={`View screenshot ${i + 1} full size`}
-          >
-            <img
-              src={src}
-              alt={`Tool output image ${i + 1}`}
-              className="max-w-full max-h-64 object-contain"
-            />
-          </button>
+            src={src}
+            alt={`Tool output image ${i + 1}`}
+            className="max-w-full max-h-64 rounded-md border border-(--color-border-secondary)/50 object-contain"
+          />
         );
       })}
     </div>
