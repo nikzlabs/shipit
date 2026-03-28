@@ -14,10 +14,16 @@ import type { WsServerMessage, ImageAttachment, FileContextRef, UploadRef, Permi
 // Types
 // ---------------------------------------------------------------------------
 
+export interface ToolResultImage {
+  data: string;
+  mediaType: string;
+}
+
 export interface ToolResultEntry {
   toolUseId: string;
   content: string;
   isError?: boolean;
+  images?: ToolResultImage[];
 }
 
 export interface ChatMessageGroup {

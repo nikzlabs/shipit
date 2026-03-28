@@ -28,10 +28,16 @@ export interface ToolUseBlock {
   input: Record<string, unknown>;
 }
 
+export interface ToolResultImage {
+  data: string;      // base64-encoded image data
+  mediaType: string; // "image/png", etc.
+}
+
 export interface ToolResultBlock {
   toolUseId: string;
   content: string;
   isError?: boolean;
+  images?: ToolResultImage[];
 }
 
 export interface ChatMessageImage {

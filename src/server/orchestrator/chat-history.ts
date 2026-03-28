@@ -30,6 +30,10 @@ export interface PersistedMessage {
     toolUseId: string;
     content: string;
     isError?: boolean;
+    images?: {
+      data: string;
+      mediaType: string;
+    }[];
   }[];
   /** True while the agent turn that produced this message is still running. */
   inProgress?: boolean;

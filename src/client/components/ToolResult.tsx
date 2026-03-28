@@ -1,7 +1,8 @@
 import { useState, useMemo } from "react";
 import hljs from "highlight.js";
 import { Button } from "./ui/button.js";
-import type { ToolResultBlock } from "./MessageList.js";
+import { useFileStore } from "../stores/file-store.js";
+import type { ToolResultBlock, ToolResultImage } from "./MessageList.js";
 
 const BASH_MAX_LINES = 30;
 const READ_MAX_LINES = 20;
@@ -47,11 +48,12 @@ function extractFilePathFromReadContent(content: string): string | null {
   return null;
 }
 
-function BashResult({ content, isError }: { content: string; isError?: boolean }) {
+function BashResult({ content, isError, maxLines }: { content: string; isError?: boolean; maxLines?: number }) {
   const [expanded, setExpanded] = useState(false);
+  const effectiveMax = maxLines ?? BASH_MAX_LINES;
   const { text: preview, truncated, totalLines } = useMemo(
-    () => truncateLines(content, BASH_MAX_LINES),
-    [content]
+    () => truncateLines(content, effectiveMax),
+    [content, effectiveMax]
   );
 
   const displayText = expanded ? content : preview;
@@ -86,11 +88,12 @@ function BashResult({ content, isError }: { content: string; isError?: boolean }
   );
 }
 
-function ReadResult({ content }: { content: string }) {
+function ReadResult({ content, maxLines }: { content: string; maxLines?: number }) {
   const [expanded, setExpanded] = useState(false);
+  const effectiveMax = maxLines ?? READ_MAX_LINES;
   const { text: preview, truncated, totalLines } = useMemo(
-    () => truncateLines(content, READ_MAX_LINES),
-    [content]
+    () => truncateLines(content, effectiveMax),
+    [content, effectiveMax]
   );
 
   extractFilePathFromReadContent(content);
@@ -131,11 +134,12 @@ function ReadResult({ content }: { content: string }) {
   );
 }
 
-function GrepResult({ content }: { content: string }) {
+function GrepResult({ content, maxLines }: { content: string; maxLines?: number }) {
   const [expanded, setExpanded] = useState(false);
+  const effectiveMax = maxLines ?? GREP_MAX_LINES;
   const { text: preview, truncated, totalLines } = useMemo(
-    () => truncateLines(content, GREP_MAX_LINES),
-    [content]
+    () => truncateLines(content, effectiveMax),
+    [content, effectiveMax]
   );
 
   const displayText = expanded ? content : preview;
@@ -190,11 +194,12 @@ function GrepResult({ content }: { content: string }) {
   );
 }
 
-function GenericResult({ content, isError }: { content: string; isError?: boolean }) {
+function GenericResult({ content, isError, maxLines }: { content: string; isError?: boolean; maxLines?: number }) {
   const [expanded, setExpanded] = useState(false);
+  const effectiveMax = maxLines ?? GENERIC_MAX_LINES;
   const { text: preview, truncated, totalLines } = useMemo(
-    () => truncateLines(content, GENERIC_MAX_LINES),
-    [content]
+    () => truncateLines(content, effectiveMax),
+    [content, effectiveMax]
   );
 
   const displayText = expanded ? content : preview;
@@ -229,8 +234,39 @@ function GenericResult({ content, isError }: { content: string; isError?: boolea
   );
 }
 
+/** Render images from tool result content (e.g. Playwright screenshots). */
+function ToolResultImages({ images }: { images: ToolResultImage[] }) {
+  return (
+    <div className="flex gap-2 flex-wrap mt-2" data-testid="tool-result-images">
+      {images.map((img, i) => {
+        const src = `data:${img.mediaType};base64,${img.data}`;
+        return (
+          <button
+            key={i}
+            onClick={() => {
+              useFileStore.getState().openPreviewWithContent(`Screenshot ${i + 1}`, src, "image");
+            }}
+            className="block rounded-md overflow-hidden border border-(--color-border-secondary)/50 hover:border-(--color-text-link) transition-colors cursor-pointer"
+            title="Click to view full size"
+            aria-label={`View screenshot ${i + 1} full size`}
+          >
+            <img
+              src={src}
+              alt={`Tool output image ${i + 1}`}
+              className="max-w-full max-h-64 object-contain"
+            />
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function ToolResult({ tool, result }: { tool: string; result: ToolResultBlock }) {
-  if (!result.content && !result.isError) {
+  const hasImages = result.images && result.images.length > 0;
+  const hasContent = !!result.content;
+
+  if (!hasContent && !result.isError && !hasImages) {
     return (
       <div className="mt-1 text-xs text-(--color-text-secondary) italic" role="status">
         (no output)
@@ -238,16 +274,28 @@ export function ToolResult({ tool, result }: { tool: string; result: ToolResultB
     );
   }
 
-  if (tool === "Bash") {
-    return <BashResult content={result.content} isError={result.isError} />;
+  // When images are present, shrink the text output panel
+  const textMaxLines = hasImages ? 8 : undefined;
+
+  let textResult = null;
+  if (hasContent || result.isError) {
+    if (tool === "Bash") {
+      textResult = <BashResult content={result.content} isError={result.isError} maxLines={textMaxLines} />;
+    } else if (tool === "Read") {
+      textResult = <ReadResult content={result.content} maxLines={textMaxLines} />;
+    } else if (tool === "Grep" || tool === "Glob") {
+      textResult = <GrepResult content={result.content} maxLines={textMaxLines} />;
+    } else {
+      textResult = <GenericResult content={result.content} isError={result.isError} maxLines={textMaxLines} />;
+    }
   }
-  if (tool === "Read") {
-    return <ReadResult content={result.content} />;
-  }
-  if (tool === "Grep" || tool === "Glob") {
-    return <GrepResult content={result.content} />;
-  }
-  return <GenericResult content={result.content} isError={result.isError} />;
+
+  return (
+    <div>
+      {textResult}
+      {hasImages && <ToolResultImages images={result.images!} />}
+    </div>
+  );
 }
 
 export { truncateLines, languageFromPath };

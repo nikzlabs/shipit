@@ -15,13 +15,42 @@ export function extractToolResults(event: AgentEvent): ToolResultEntry[] {
   return content
     .filter((b): b is Record<string, unknown> =>
       typeof b === "object" && b !== null && (b as Record<string, unknown>).type === "tool_result" && !!(b as Record<string, unknown>).tool_use_id)
-    .map((b) => ({
-      toolUseId: b.tool_use_id as string,
-      content: typeof b.content === "string" ? b.content
-        : (b.content === null || b.content === undefined) ? ""
-        : JSON.stringify(b.content),
-      isError: (b.is_error as boolean) ?? false,
-    }));
+    .map((b) => {
+      let textContent = "";
+      const images: { data: string; mediaType: string }[] = [];
+
+      if (typeof b.content === "string") {
+        textContent = b.content;
+      } else if (Array.isArray(b.content)) {
+        // MCP tools return content as an array of {type:"text"} and {type:"image"} blocks
+        for (const block of b.content as Record<string, unknown>[]) {
+          if (block.type === "text" && typeof block.text === "string") {
+            textContent += (textContent ? "\n" : "") + block.text;
+          } else if (block.type === "image") {
+            const source = block.source as Record<string, unknown> | undefined;
+            if (source?.data && typeof source.data === "string") {
+              images.push({
+                data: source.data,
+                mediaType: (source.media_type as string) ?? "image/png",
+              });
+            }
+          }
+        }
+        // If no text/image blocks were extracted, fall back to JSON
+        if (!textContent && images.length === 0) {
+          textContent = JSON.stringify(b.content);
+        }
+      } else if (b.content !== null && b.content !== undefined) {
+        textContent = JSON.stringify(b.content);
+      }
+
+      return {
+        toolUseId: b.tool_use_id as string,
+        content: textContent,
+        isError: (b.is_error as boolean) ?? false,
+        ...(images.length > 0 ? { images } : {}),
+      };
+    });
 }
 
 /**
