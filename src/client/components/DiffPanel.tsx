@@ -239,9 +239,33 @@ interface DiffPanelProps {
   onSendComments?: (prompt: string) => void;
 }
 
+/** Monaco DiffEditor options shared by all file sections. */
+const DIFF_EDITOR_OPTIONS = {
+  readOnly: true,
+  renderSideBySide: true,
+  minimap: { enabled: false },
+  scrollBeyondLastLine: false,
+  fontSize: 12,
+  lineNumbers: "on" as const,
+  folding: false,
+  wordWrap: "off" as const,
+  renderOverviewRuler: false,
+  diffWordWrap: "off" as const,
+  glyphMargin: true,
+  hideUnchangedRegions: { enabled: true },
+  scrollbar: {
+    verticalScrollbarSize: 8,
+    horizontalScrollbarSize: 8,
+    alwaysConsumeMouseWheel: false,
+  },
+};
+
 export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: DiffPanelProps) {
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
-  const managerRef = useRef<CommentWidgetManager | null>(null);
+  const [collapsedFiles, setCollapsedFiles] = useState<Set<number>>(new Set());
+  const fileSectionRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const editorContainerRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const managersRef = useRef<Map<string, CommentWidgetManager>>(new Map());
 
   const sessionId = useSessionStore((s) => s.sessionId) ?? "";
   const sessionComments = useCommentStore((s) => s.commentsBySession[sessionId]);
@@ -278,55 +302,85 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
     });
   }, []);
 
-  const selectedFile = diff.files[selectedFileIndex] ?? null;
+  /** Sidebar click: highlight, expand if collapsed, scroll into view. */
+  const handleSelectFile = useCallback((index: number) => {
+    setSelectedFileIndex(index);
+    setCollapsedFiles((prev) => {
+      if (!prev.has(index)) return prev;
+      const next = new Set(prev);
+      next.delete(index);
+      return next;
+    });
+    requestAnimationFrame(() => {
+      fileSectionRefs.current.get(index)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, []);
 
-  const language = useMemo(() => {
-    return selectedFile ? getLanguageFromPath(selectedFile.path) : "plaintext";
-  }, [selectedFile]);
+  const toggleFileCollapse = useCallback((index: number) => {
+    setCollapsedFiles((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  }, []);
 
-  const commentsForFile = useMemo(() => {
-    if (!selectedFile) return [];
-    return allComments.filter((c) => c.filePath === selectedFile.path);
-  }, [allComments, selectedFile]);
-
-  // Clean up manager on unmount
+  // Clean up all comment managers on unmount
   useEffect(() => {
     return () => {
-      managerRef.current?.dispose();
-      managerRef.current = null;
+      for (const manager of managersRef.current.values()) {
+        manager.dispose();
+      }
+      managersRef.current.clear();
     };
   }, []);
 
-  // Sync comments to manager
+  // Sync comments to all active managers
   useEffect(() => {
-    managerRef.current?.setComments(commentsForFile);
-  }, [commentsForFile]);
+    for (const [filePath, manager] of managersRef.current.entries()) {
+      manager.setComments(allComments.filter((c) => c.filePath === filePath));
+    }
+  }, [allComments]);
 
-  const handleEditorMount: DiffOnMount = useCallback((editor) => {
-    managerRef.current?.dispose();
-    if (!selectedFile) return;
+  /** Called when each file's DiffEditor mounts. Sets up auto-height + comments. */
+  const handleEditorMount = useCallback((editor: Parameters<DiffOnMount>[0], fileIndex: number) => {
+    const file = diff.files[fileIndex];
+    if (!file) return;
 
-    // Intercept dispose so we detach models before Monaco tears down the
-    // DiffEditorWidget. Without this, the TextModel fires its onDispose
-    // event while the widget still holds a reference, causing:
-    // "TextModel got disposed before DiffEditorWidget model got reset"
+    // --- Auto-height: resize container to fit content ---
+    const containerEl = editorContainerRefs.current.get(fileIndex);
+    const updateHeight = () => {
+      if (!containerEl) return;
+      const contentHeight = editor.getModifiedEditor().getContentHeight();
+      const clampedHeight = Math.min(Math.max(contentHeight, 80), 800);
+      containerEl.style.height = `${clampedHeight}px`;
+      editor.layout();
+    };
+    editor.getModifiedEditor().onDidContentSizeChange(updateHeight);
+    // Initial measurement after hideUnchangedRegions collapses sections
+    requestAnimationFrame(() => setTimeout(updateHeight, 100));
+
+    // --- Dispose interceptor (prevents Monaco teardown race) ---
     const originalDispose = editor.dispose.bind(editor);
     editor.dispose = () => {
       editor.setModel(null);
       originalDispose();
     };
 
-    managerRef.current = createCommentWidgetManager(editor, {
-      filePath: selectedFile.path,
-      onAddComment: (line, text) => addLineComment(sessionId, selectedFile.path, line, text),
+    // --- Comment widgets ---
+    managersRef.current.get(file.path)?.dispose();
+    const manager = createCommentWidgetManager(editor, {
+      filePath: file.path,
+      onAddComment: (line, text) => addLineComment(sessionId, file.path, line, text),
       onEditComment: (id, text) => editComment(sessionId, id, text),
       onDeleteComment: (id) => deleteComment(sessionId, id),
       side: "modified",
     });
-    managerRef.current.setComments(
-      useCommentStore.getState().getCommentsForFile(sessionId, selectedFile.path),
+    manager.setComments(
+      useCommentStore.getState().getCommentsForFile(sessionId, file.path),
     );
-  }, [selectedFile, sessionId, addLineComment, editComment, deleteComment]);
+    managersRef.current.set(file.path, manager);
+  }, [diff.files, sessionId, addLineComment, editComment, deleteComment]);
 
   const handleSendComments = useCallback(() => {
     if (commentCount === 0 || !onSendComments) return;
@@ -411,7 +465,7 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
         </Button>
       </div>
 
-      {/* Main area: file list + diff */}
+      {/* Main area: file tree sidebar + stacked diffs */}
       <div className="flex flex-1 min-h-0">
         {/* File tree sidebar */}
         <div className="w-56 shrink-0 border-r border-(--color-border-primary) overflow-y-auto bg-(--color-bg-secondary) py-1">
@@ -421,60 +475,72 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
               node={node}
               depth={0}
               selectedFileIndex={selectedFileIndex}
-              onSelect={setSelectedFileIndex}
+              onSelect={handleSelectFile}
               expandedDirs={expandedDirs}
               onToggleDir={toggleDir}
             />
           ))}
         </div>
 
-        {/* Diff view */}
-        <div className="flex-1 min-w-0">
-          {selectedFile ? (
-            selectedFile.binary ? (
-              <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
-                Binary file — cannot display diff
-              </div>
-            ) : (
-              <div className="h-full">
-                <div className="px-3 py-1 text-xs text-(--color-text-secondary) border-b border-(--color-border-primary) bg-(--color-bg-secondary) truncate">
-                  {selectedFile.oldPath ? `${selectedFile.oldPath} \u2192 ${selectedFile.path}` : selectedFile.path}
+        {/* All files stacked in a single scrollable container */}
+        <div className="flex-1 min-w-0 overflow-y-auto">
+          {diff.files.map((file, i) => {
+            const collapsed = collapsedFiles.has(i);
+            return (
+              <div
+                key={file.path}
+                ref={(el) => {
+                  if (el) fileSectionRefs.current.set(i, el);
+                  else fileSectionRefs.current.delete(i);
+                }}
+              >
+                {/* File section header */}
+                <div
+                  className="flex items-center gap-2 px-3 py-1.5 bg-(--color-bg-secondary) cursor-pointer hover:bg-(--color-bg-hover) sticky top-0 z-10 border-y border-(--color-border-primary)"
+                  onClick={() => { setSelectedFileIndex(i); toggleFileCollapse(i); }}
+                >
+                  {collapsed
+                    ? <CaretRightIcon size={ICON_SIZE.SM} className="shrink-0 text-(--color-text-tertiary)" />
+                    : <CaretDownIcon size={ICON_SIZE.SM} className="shrink-0 text-(--color-text-tertiary)" />
+                  }
+                  <span className="text-xs text-(--color-text-primary) truncate">
+                    {file.oldPath ? `${file.oldPath} \u2192 ${file.path}` : file.path}
+                  </span>
+                  <span className="ml-auto shrink-0 flex gap-1.5 text-xs font-mono">
+                    {file.insertions > 0 && <span className="text-(--color-success)">+{file.insertions}</span>}
+                    {file.deletions > 0 && <span className="text-(--color-error)">-{file.deletions}</span>}
+                  </span>
                 </div>
-                <div className="h-[calc(100%-1.75rem)]">
-                  <DiffEditor
-                    key={selectedFile.path}
-                    original={selectedFile.oldContent}
-                    modified={selectedFile.newContent}
-                    language={language}
-                    theme="vs-dark"
-                    onMount={handleEditorMount}
-                    options={{
-                      readOnly: true,
-                      renderSideBySide: true,
-                      minimap: { enabled: false },
-                      scrollBeyondLastLine: false,
-                      fontSize: 12,
-                      lineNumbers: "on",
-                      folding: false,
-                      wordWrap: "off",
-                      renderOverviewRuler: false,
-                      diffWordWrap: "off",
-                      glyphMargin: true,
-                      hideUnchangedRegions: { enabled: true },
-                      scrollbar: {
-                        verticalScrollbarSize: 8,
-                        horizontalScrollbarSize: 8,
-                      },
-                    }}
-                  />
-                </div>
+
+                {/* Diff editor (collapsible) */}
+                {!collapsed && (
+                  file.binary ? (
+                    <div className="flex items-center justify-center py-8 text-(--color-text-secondary) text-sm">
+                      Binary file — cannot display diff
+                    </div>
+                  ) : (
+                    <div
+                      ref={(el) => {
+                        if (el) editorContainerRefs.current.set(i, el);
+                        else editorContainerRefs.current.delete(i);
+                      }}
+                      style={{ height: "200px" }}
+                    >
+                      <DiffEditor
+                        key={file.path}
+                        original={file.oldContent}
+                        modified={file.newContent}
+                        language={getLanguageFromPath(file.path)}
+                        theme="vs-dark"
+                        onMount={(editor) => handleEditorMount(editor, i)}
+                        options={DIFF_EDITOR_OPTIONS}
+                      />
+                    </div>
+                  )
+                )}
               </div>
-            )
-          ) : (
-            <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
-              Select a file to view its diff
-            </div>
-          )}
+            );
+          })}
         </div>
       </div>
 

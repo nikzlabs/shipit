@@ -116,7 +116,7 @@ describe("DiffPanel", () => {
   });
 
   describe("file selection", () => {
-    it("shows diff for clicked file", () => {
+    it("renders all file diffs in a single scrollable view", () => {
       const props = defaultProps();
       props.diff = makeDiff({
         files: [
@@ -127,13 +127,17 @@ describe("DiffPanel", () => {
       });
       render(<DiffPanel {...props} />);
 
-      // Initially shows first file
-      expect(screen.getByTestId("original")).toHaveTextContent("old1");
+      // Both files are rendered simultaneously in the stacked view
+      const editors = screen.getAllByTestId("mock-diff-editor");
+      expect(editors).toHaveLength(2);
 
-      // Click second file
-      fireEvent.click(screen.getByText("second.ts"));
-      expect(screen.getByTestId("original")).toHaveTextContent("old2");
-      expect(screen.getByTestId("modified")).toHaveTextContent("new2");
+      const originals = screen.getAllByTestId("original");
+      expect(originals[0]).toHaveTextContent("old1");
+      expect(originals[1]).toHaveTextContent("old2");
+
+      const modifieds = screen.getAllByTestId("modified");
+      expect(modifieds[0]).toHaveTextContent("new1");
+      expect(modifieds[1]).toHaveTextContent("new2");
     });
   });
 
