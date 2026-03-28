@@ -1,7 +1,12 @@
 import { useState, useMemo } from "react";
 import hljs from "highlight.js";
 import { Button } from "./ui/button.js";
-import type { ToolResultBlock, ToolResultImage } from "./MessageList.js";
+import type { ToolResultBlock } from "./MessageList.js";
+
+interface ToolResultImage {
+  data: string;      // base64-encoded image data
+  mediaType: string; // "image/png", etc.
+}
 
 const BASH_MAX_LINES = 30;
 const READ_MAX_LINES = 20;
@@ -254,10 +259,16 @@ function ToolResultImages({ images }: { images: ToolResultImage[] }) {
 
 /**
  * Try to extract images and text from a JSON-stringified MCP content array.
- * Used when loading from persisted history where the server stored the raw
- * JSON.stringify of the content array.
+ *
+ * MCP tools (e.g. mcp__playwright__browser_take_screenshot) return content as
+ * an array of {type:"text"} and {type:"image"} blocks. The server stores this
+ * as JSON.stringify(content), so we parse it back here.
+ *
+ * The `startsWith("[")` guard is a fast-path to skip plain string content.
+ * If content happens to be a JSON array without image blocks, we return null
+ * and fall through to normal text rendering.
  */
-function parseContentForImages(content: string): { text: string; images: ToolResultImage[] } | null {
+export function parseContentForImages(content: string): { text: string; images: ToolResultImage[] } | null {
   if (!content.startsWith("[")) return null;
   try {
     const blocks = JSON.parse(content) as Record<string, unknown>[];
@@ -285,13 +296,10 @@ function parseContentForImages(content: string): { text: string; images: ToolRes
 }
 
 export function ToolResult({ tool, result }: { tool: string; result: ToolResultBlock }) {
-  // Use structured images if present, otherwise try parsing from JSON content (history reload)
-  const parsed = useMemo(() => {
-    if (result.images && result.images.length > 0) {
-      return { text: result.content, images: result.images };
-    }
-    return parseContentForImages(result.content);
-  }, [result.content, result.images]);
+  const parsed = useMemo(
+    () => parseContentForImages(result.content),
+    [result.content],
+  );
 
   const displayContent = parsed?.text ?? result.content;
   const images = parsed?.images ?? [];

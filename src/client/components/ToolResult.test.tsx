@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
-import { ToolResult, truncateLines } from "./ToolResult.js";
+import { ToolResult, truncateLines, parseContentForImages } from "./ToolResult.js";
 import type { ToolResultBlock } from "./MessageList.js";
 
 afterEach(cleanup);
@@ -216,5 +216,121 @@ describe("ToolResult", () => {
       render(<ToolResult tool="WebSearch" result={result(longOutput)} />);
       expect(screen.getByText(/Show all 25 lines/)).toBeInTheDocument();
     });
+  });
+
+  describe("MCP tool images", () => {
+    const mcpContent = JSON.stringify([
+      { type: "text", text: "### Result\nScreenshot taken" },
+      { type: "image", source: { data: "iVBORw0KGgo=", media_type: "image/png" } },
+    ]);
+
+    it("renders images from JSON-stringified MCP content", () => {
+      render(<ToolResult tool="mcp__playwright__browser_take_screenshot" result={result(mcpContent)} />);
+      const img = screen.getByAltText("Tool output image 1");
+      expect(img).toBeInTheDocument();
+      expect(img.getAttribute("src")).toContain("data:image/png;base64,iVBORw0KGgo=");
+    });
+
+    it("renders text alongside images", () => {
+      render(<ToolResult tool="mcp__playwright__browser_take_screenshot" result={result(mcpContent)} />);
+      expect(screen.getByText(/Screenshot taken/)).toBeInTheDocument();
+    });
+
+    it("truncates text to 8 lines when images are present", () => {
+      const longText = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join("\n");
+      const content = JSON.stringify([
+        { type: "text", text: longText },
+        { type: "image", source: { data: "abc=", media_type: "image/png" } },
+      ]);
+      render(<ToolResult tool="mcp__playwright__browser_take_screenshot" result={result(content)} />);
+      expect(screen.getByText(/Show all 20 lines/)).toBeInTheDocument();
+    });
+
+    it("renders image-only result without text panel", () => {
+      const imageOnly = JSON.stringify([
+        { type: "image", source: { data: "abc=", media_type: "image/jpeg" } },
+      ]);
+      const { container } = render(
+        <ToolResult tool="mcp__playwright__browser_take_screenshot" result={result(imageOnly)} />
+      );
+      expect(container.querySelector("pre")).toBeNull();
+      expect(screen.getByAltText("Tool output image 1")).toBeInTheDocument();
+    });
+
+    it("falls through to normal rendering for JSON arrays without images", () => {
+      const noImages = JSON.stringify([{ type: "text", text: "just text" }]);
+      const { container } = render(
+        <ToolResult tool="mcp__playwright__browser_snapshot" result={result(noImages)} />
+      );
+      // No image container, rendered as generic text
+      expect(container.querySelector("[data-testid='tool-result-images']")).toBeNull();
+    });
+
+    it("falls through for plain string content", () => {
+      const { container } = render(
+        <ToolResult tool="mcp__playwright__browser_snapshot" result={result("plain text output")} />
+      );
+      expect(container.querySelector("[data-testid='tool-result-images']")).toBeNull();
+      expect(screen.getByText("plain text output")).toBeInTheDocument();
+    });
+  });
+});
+
+describe("parseContentForImages", () => {
+  it("returns null for plain string content", () => {
+    expect(parseContentForImages("hello world")).toBeNull();
+  });
+
+  it("returns null for non-array JSON", () => {
+    expect(parseContentForImages('{"key": "value"}')).toBeNull();
+  });
+
+  it("returns null for JSON arrays without image blocks", () => {
+    const content = JSON.stringify([{ type: "text", text: "just text" }]);
+    expect(parseContentForImages(content)).toBeNull();
+  });
+
+  it("extracts text and images from MCP content array", () => {
+    const content = JSON.stringify([
+      { type: "text", text: "line 1" },
+      { type: "text", text: "line 2" },
+      { type: "image", source: { data: "abc=", media_type: "image/png" } },
+    ]);
+    const parsed = parseContentForImages(content);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.text).toBe("line 1\nline 2");
+    expect(parsed!.images).toHaveLength(1);
+    expect(parsed!.images[0].data).toBe("abc=");
+    expect(parsed!.images[0].mediaType).toBe("image/png");
+  });
+
+  it("defaults mediaType to image/png when missing", () => {
+    const content = JSON.stringify([
+      { type: "image", source: { data: "abc=" } },
+    ]);
+    const parsed = parseContentForImages(content);
+    expect(parsed!.images[0].mediaType).toBe("image/png");
+  });
+
+  it("handles multiple images", () => {
+    const content = JSON.stringify([
+      { type: "image", source: { data: "img1=", media_type: "image/png" } },
+      { type: "image", source: { data: "img2=", media_type: "image/jpeg" } },
+    ]);
+    const parsed = parseContentForImages(content);
+    expect(parsed!.images).toHaveLength(2);
+  });
+
+  it("returns null for invalid JSON", () => {
+    expect(parseContentForImages("[not valid json")).toBeNull();
+  });
+
+  it("skips image blocks with missing source data", () => {
+    const content = JSON.stringify([
+      { type: "image", source: {} },
+      { type: "image", source: { data: "valid=", media_type: "image/png" } },
+    ]);
+    const parsed = parseContentForImages(content);
+    expect(parsed!.images).toHaveLength(1);
   });
 });

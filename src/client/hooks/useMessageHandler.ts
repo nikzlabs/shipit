@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: WebSocket message dispatch to stores (external system sync)
 import { useEffect, type RefObject } from "react";
-import type { ChatMessage, ToolResultBlock, ToolResultImage } from "../components/MessageList.js";
+import type { ChatMessage, ToolResultBlock } from "../components/MessageList.js";
 import { activityFromTool } from "../components/StreamingIndicator.js";
 import type { InteractiveTerminalHandle } from "../components/InteractiveTerminal.js";
 import type {
@@ -156,27 +156,8 @@ export function useMessageHandler(params: {
           if (block.type === "tool_result" && block.tool_use_id) {
             const rawContent = block.content;
             let content: string;
-            const images: ToolResultImage[] = [];
-
             if (typeof rawContent === "string") {
               content = rawContent;
-            } else if (Array.isArray(rawContent)) {
-              // MCP tools return content as an array of {type:"text"} and {type:"image"} blocks
-              let textParts = "";
-              for (const sub of rawContent as Record<string, unknown>[]) {
-                if (sub.type === "text" && typeof sub.text === "string") {
-                  textParts += (textParts ? "\n" : "") + sub.text;
-                } else if (sub.type === "image") {
-                  const source = sub.source as Record<string, unknown> | undefined;
-                  if (source?.data && typeof source.data === "string") {
-                    images.push({
-                      data: source.data,
-                      mediaType: (source.media_type as string) ?? "image/png",
-                    });
-                  }
-                }
-              }
-              content = textParts || (images.length === 0 ? JSON.stringify(rawContent) : "");
             } else if (rawContent === null || rawContent === undefined) {
               content = "";
             } else {
@@ -189,7 +170,6 @@ export function useMessageHandler(params: {
               toolUseId: block.tool_use_id as string,
               content,
               isError: (block.is_error as boolean) ?? false,
-              ...(images.length > 0 ? { images } : {}),
             });
           }
         }
