@@ -21,6 +21,8 @@ import { parseGitHubRemote } from "./git-utils.js";
 
 const POLL_INTERVAL_MS = 3_000;
 const MAX_AUTO_FIX_ATTEMPTS = 3;
+/** How long after the last client heartbeat before we consider the user idle (ms). */
+const CLIENT_IDLE_TIMEOUT_MS = 30_000;
 
 /** GraphQL query: fetch all open PRs for a repo with CI status. */
 const PR_STATUS_QUERY = `
@@ -294,6 +296,9 @@ export class PrStatusPoller {
   /** repoKey (owner/repo) → whether the repo has .github/workflows files. */
   private repoHasWorkflows = new Map<string, boolean>();
 
+  /** Timestamp of the last client activity heartbeat. */
+  private lastClientActivity = Date.now();
+
   constructor(opts: {
     githubAuth: GitHubAuthManager;
     sessionManager: SessionManager;
@@ -310,6 +315,34 @@ export class PrStatusPoller {
     this.getSharedRepoDir = opts.getSharedRepoDir;
     this.fetchAndFixCb = opts.fetchAndFixCb;
     this.onMergeDetectedCb = opts.onMergeDetectedCb;
+  }
+
+  /** Record a heartbeat from a connected client — resets the idle timer. */
+  recordClientActivity(): void {
+    this.lastClientActivity = Date.now();
+  }
+
+  /** True when no client heartbeat has arrived within the idle timeout. */
+  private isClientIdle(): boolean {
+    return Date.now() - this.lastClientActivity > CLIENT_IDLE_TIMEOUT_MS;
+  }
+
+  /**
+   * True when polling can be skipped — the user is idle AND no CI checks
+   * are currently pending across all tracked sessions.
+   */
+  private canSkipPoll(): boolean {
+    if (!this.isClientIdle()) return false;
+
+    // If any tracked session has pending CI, keep polling so auto-fix /
+    // auto-merge can react promptly.
+    for (const [sessionId] of this.sessionRepos) {
+      if (this.mergedSessions.has(sessionId)) continue;
+      const status = this.lastKnown.get(sessionId);
+      if (status?.checks.state === "pending") return false;
+    }
+
+    return true;
   }
 
   /** Register a session as having an open PR. Starts polling for its repo. */
@@ -568,6 +601,7 @@ export class PrStatusPoller {
 
   private async pollRepo(repoKey: string, owner: string, repo: string): Promise<void> {
     if (!this.githubAuth.authenticated) return;
+    if (this.canSkipPoll()) return;
 
     const result = await this.githubAuth.graphqlQuery<GraphQLResponse>(
       PR_STATUS_QUERY,

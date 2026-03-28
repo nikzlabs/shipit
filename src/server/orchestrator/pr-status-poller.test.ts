@@ -442,6 +442,98 @@ describe("PrStatusPoller", () => {
     expect(githubAuth.graphqlQuery).not.toHaveBeenCalled();
     expect(sseBroadcast).not.toHaveBeenCalled();
   });
+
+  it("skips polling when client is idle and no CI is pending", async () => {
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+    };
+    githubAuth = makeGitHubAuth(graphqlResult);
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    // Initial poll fires (client just connected, considered active)
+    await vi.advanceTimersByTimeAsync(0);
+    expect(githubAuth.graphqlQuery).toHaveBeenCalledTimes(1);
+
+    // Advance past the idle timeout (30s) — polls during this window still fire
+    await vi.advanceTimersByTimeAsync(31_000);
+    const callsBeforeIdle = (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length;
+    expect(callsBeforeIdle).toBeGreaterThan(1); // polls during the active window
+
+    // Now advance another 30s — client is idle & CI is success → polls should be skipped
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBeforeIdle);
+  });
+
+  it("keeps polling when client is idle but CI is pending", async () => {
+    const pendingNode = makeGraphQLPrNode({
+      commits: {
+        nodes: [{
+          commit: {
+            statusCheckRollup: {
+              state: "PENDING",
+              contexts: {
+                nodes: [
+                  { name: "test", status: "IN_PROGRESS", conclusion: null },
+                ],
+              },
+            },
+          },
+        }],
+      },
+    });
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [pendingNode] } } },
+    };
+    githubAuth = makeGitHubAuth(graphqlResult);
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    // Initial poll
+    await vi.advanceTimersByTimeAsync(0);
+    expect(githubAuth.graphqlQuery).toHaveBeenCalledTimes(1);
+
+    // Advance past idle timeout — but CI is pending, so polling should continue
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("resumes polling after recordClientActivity is called", async () => {
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+    };
+    githubAuth = makeGitHubAuth(graphqlResult);
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    // Initial poll + advance past idle timeout
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(31_000);
+    const callsBeforeIdle = (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    // Confirm idle — no more polls
+    await vi.advanceTimersByTimeAsync(9_000);
+    expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBeforeIdle);
+
+    // User comes back — send heartbeat
+    poller.recordClientActivity();
+
+    // Next poll tick should fire
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(callsBeforeIdle);
+  });
 });
 
 // ---- Phase 2: failedChecks and auto-fix ----
