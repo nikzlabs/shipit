@@ -427,10 +427,20 @@ function setupServiceManager(
 
   if (!shipitConfig.compose) return;
 
+  // Workspace volume info for compose volume rewriting: user `.:/workspace`
+  // bind mounts must map to the same storage as the agent container.
+  const wsVolume = process.env.WORKSPACE_VOLUME;
+  const wsSubpath = wsVolume ? workspaceDir.replace(/^\/workspace\//, "") : undefined;
+
   const mgr = new ServiceManager({
     sessionId: runner.sessionId,
     workspaceDir,
     composeConfig: shipitConfig.compose,
+    workspaceVolume: wsVolume,
+    workspaceSubpath: wsSubpath,
+    networkJoinFn: containerManager
+      ? (networkName: string) => containerManager.connectToNetwork(runner.sessionId, networkName)
+      : undefined,
   });
 
   serviceManagers.set(runner.sessionId, mgr);
@@ -448,22 +458,12 @@ function setupServiceManager(
     });
   });
 
-  // Start the compose stack asynchronously
+  // Start the compose stack asynchronously — the full sequence (compose up →
+  // network join → IP resolution → event flush) is handled inside mgr.start().
   void (async () => {
     try {
       await mgr.start();
       console.log(`[compose:${runner.sessionId}] Compose stack started`);
-
-      // Connect agent container to compose network so it can reach services
-      if (containerManager) {
-        const networkName = `shipit-session-${runner.sessionId}`;
-        try {
-          await containerManager.connectToNetwork(runner.sessionId, networkName);
-          console.log(`[compose:${runner.sessionId}] Agent container joined compose network ${networkName}`);
-        } catch (err) {
-          console.warn(`[compose:${runner.sessionId}] Failed to join compose network:`, getErrorMessage(err));
-        }
-      }
     } catch (err) {
       console.error(`[compose:${runner.sessionId}] Failed to start compose stack:`, getErrorMessage(err));
     }

@@ -302,7 +302,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Preview reverse proxy (container mode) ----
   if (containerManager) {
-    registerPreviewProxy(app, { containerManager });
+    registerPreviewProxy(app, { containerManager, serviceManagers });
   }
 
   // ---- Test-only session creation endpoint ----

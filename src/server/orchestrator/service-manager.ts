@@ -38,6 +38,8 @@ export interface ManagedService {
   preview: "auto" | "manual";
   status: ServiceStatus;
   error?: string;
+  /** Container IP on the session network (populated by status polling). */
+  containerIp?: string;
 }
 
 /** Runs a docker compose command. Resolves on exit 0, rejects otherwise. */
@@ -59,6 +61,12 @@ export interface ServiceManagerOptions {
   composeQuery?: ComposeQuery;
   /** Status poll interval in ms. 0 disables polling. Default: 5000. */
   pollIntervalMs?: number;
+  /** Docker named volume holding the workspace (for compose volume rewriting). */
+  workspaceVolume?: string;
+  /** Subpath within the workspace volume for this session. */
+  workspaceSubpath?: string;
+  /** Called during start() to join the agent container to the compose network. */
+  networkJoinFn?: (networkName: string) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +99,10 @@ export class ServiceManager extends EventEmitter {
   private readonly composeQuery: ComposeQuery;
   private readonly pollIntervalMs: number;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly workspaceVolume?: string;
+  private readonly workspaceSubpath?: string;
+  private readonly networkJoinFn?: (networkName: string) => Promise<void>;
+  private _startupComplete = false;
 
   constructor(opts: ServiceManagerOptions) {
     super();
@@ -100,6 +112,9 @@ export class ServiceManager extends EventEmitter {
     this.composeRunner = opts.composeRunner ?? defaultComposeRunner;
     this.composeQuery = opts.composeQuery ?? defaultComposeQuery;
     this.pollIntervalMs = opts.pollIntervalMs ?? 5_000;
+    this.workspaceVolume = opts.workspaceVolume;
+    this.workspaceSubpath = opts.workspaceSubpath;
+    this.networkJoinFn = opts.networkJoinFn;
   }
 
   /** Whether the compose stack has been started. */
@@ -115,6 +130,14 @@ export class ServiceManager extends EventEmitter {
   /** Get a specific service by name. */
   getService(name: string): ManagedService | undefined {
     return this.services.get(name);
+  }
+
+  /** Find the container IP for a service listening on the given port. */
+  getContainerIpForPort(port: number): string | undefined {
+    for (const svc of this.services.values()) {
+      if (svc.port === port && svc.containerIp) return svc.containerIp;
+    }
+    return undefined;
   }
 
   /** Get the buffered log output for a service. */
@@ -152,33 +175,54 @@ export class ServiceManager extends EventEmitter {
     const overrideOpts: ComposeOverrideOptions = {
       sessionId: this.sessionId,
       composeConfig: this.composeConfig,
+      workspaceVolume: this.workspaceVolume,
+      workspaceSubpath: this.workspaceSubpath,
     };
     const overrideContent = generateComposeOverride(parsedServices, overrideOpts);
     writeComposeOverride(this.workspaceDir, overrideContent);
 
-    // Start auto services
+    // Mark auto services as starting (silently — _startupComplete is false)
     const autoServices = [...this.services.values()].filter(s => s.preview === "auto");
     for (const svc of autoServices) {
       this.updateServiceStatus(svc.name, "starting");
     }
 
     try {
+      // 1. Start compose stack
       await this.composeUp();
       this._started = true;
 
-      // Poll actual container state instead of assuming "running"
+      // 2. Join agent container to compose network (before IP resolution)
+      if (this.networkJoinFn) {
+        const networkName = `shipit-session-${this.sessionId}`;
+        try {
+          await this.networkJoinFn(networkName);
+        } catch {
+          // Non-fatal — agent may not reach services by DNS but proxy still works
+        }
+      }
+
+      // 3. Resolve container IPs and actual statuses
       await this.pollStatus();
 
-      // Start log streaming for all services
+      // 4. Startup complete — flush all service statuses to listeners at once
+      this._startupComplete = true;
+      for (const svc of this.services.values()) {
+        this.emit("service_status", { ...svc });
+      }
+
+      // 5. Seed log buffers with existing output, then start live streaming
+      await this.seedLogBuffers();
       for (const svc of this.services.values()) {
         this.streamLogs(svc.name);
       }
 
-      // Begin periodic status polling to detect crashes
+      // 6. Begin periodic polling to detect crashes
       this.startPolling();
 
       this.emit("stack_ready");
     } catch (err) {
+      this._startupComplete = true;
       for (const svc of autoServices) {
         this.updateServiceStatus(svc.name, "error", (err as Error).message);
       }
@@ -224,6 +268,28 @@ export class ServiceManager extends EventEmitter {
   /**
    * Stream logs for a service. Returns a cleanup function.
    */
+  /**
+   * Seed log buffers with existing container output (one-shot, no follow).
+   * Called once before starting the live `--tail 0` stream.
+   */
+  private async seedLogBuffers(): Promise<void> {
+    for (const svc of this.services.values()) {
+      try {
+        const args = this.composeArgs([], "logs", "--no-log-prefix", svc.name);
+        const output = await this.composeQuery(args, this.workspaceDir);
+        if (output) {
+          let buf = output;
+          if (buf.length > ServiceManager.MAX_LOG_BUFFER) {
+            buf = truncateTerminalBuffer(buf, ServiceManager.MAX_LOG_BUFFER);
+          }
+          this.logBuffers.set(svc.name, buf);
+        }
+      } catch {
+        // Non-fatal — buffer stays empty
+      }
+    }
+  }
+
   streamLogs(name: string): () => void {
     const existing = this.logProcesses.get(name);
     if (existing) {
@@ -231,7 +297,10 @@ export class ServiceManager extends EventEmitter {
       this.logProcesses.delete(name);
     }
 
-    const args = this.composeArgs([], "logs", "-f", "--no-log-prefix", name);
+    // --tail 0: skip log history replay — the buffer is seeded separately
+    // via seedLogBuffer(). Without this, restarting the stream (e.g. on
+    // reconcile) would replay the full history into the buffer again.
+    const args = this.composeArgs([], "logs", "-f", "--tail", "0", "--no-log-prefix", name);
     const proc = spawn("docker", args, {
       cwd: this.workspaceDir,
       stdio: ["ignore", "pipe", "pipe"],
@@ -270,6 +339,7 @@ export class ServiceManager extends EventEmitter {
     this.services.clear();
     this.logBuffers.clear();
     this._started = false;
+    this._startupComplete = false;
     await this.start();
   }
 
@@ -315,11 +385,14 @@ export class ServiceManager extends EventEmitter {
       return; // Poll failure is non-fatal
     }
 
-    // docker compose ps --format json outputs one JSON object per line
+    // Parse container info and collect names for IP resolution
+    const containerNames = new Map<string, string>();
+    const statusUpdates: { name: string; state: string; exitCode: number }[] = [];
+
     for (const line of stdout.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      let entry: { Service?: string; State?: string; ExitCode?: number };
+      let entry: { Service?: string; Name?: string; State?: string; ExitCode?: number };
       try {
         entry = JSON.parse(trimmed) as typeof entry;
       } catch {
@@ -328,20 +401,75 @@ export class ServiceManager extends EventEmitter {
       const svc = entry.Service ? this.services.get(entry.Service) : undefined;
       if (!svc) continue;
 
+      if (entry.Name) containerNames.set(entry.Name, svc.name);
+      statusUpdates.push({
+        name: svc.name,
+        state: entry.State ?? "",
+        exitCode: entry.ExitCode ?? 1,
+      });
+    }
+
+    // Resolve container IPs *before* emitting status events so the preview
+    // proxy can route requests as soon as the client learns a service is running.
+    if (containerNames.size > 0) {
+      await this.resolveContainerIps(containerNames);
+    }
+
+    // Now emit status updates
+    for (const { name, state, exitCode } of statusUpdates) {
+      const svc = this.services.get(name);
+      if (!svc) continue;
       const prev = svc.status;
-      const state = entry.State ?? "";
       if (state === "running") {
-        if (prev !== "running") this.updateServiceStatus(svc.name, "running");
+        if (prev !== "running") this.updateServiceStatus(name, "running");
       } else if (state === "exited" || state === "dead") {
-        const code = entry.ExitCode ?? 1;
-        if (code === 0) {
-          if (prev !== "stopped") this.updateServiceStatus(svc.name, "stopped");
+        if (exitCode === 0) {
+          if (prev !== "stopped") this.updateServiceStatus(name, "stopped");
         } else {
-          this.updateServiceStatus(svc.name, "error", `Exited with code ${code}`);
+          this.updateServiceStatus(name, "error", `Exited with code ${exitCode}`);
         }
       } else if (state === "restarting") {
-        if (prev !== "starting") this.updateServiceStatus(svc.name, "starting");
+        if (prev !== "starting") this.updateServiceStatus(name, "starting");
       }
+    }
+  }
+
+  /**
+   * Query `docker network inspect` on the session network and update
+   * container IPs for known services.
+   */
+  private async resolveContainerIps(
+    containerNames: Map<string, string>,
+  ): Promise<void> {
+    const networkName = `shipit-session-${this.sessionId}`;
+    let stdout: string;
+    try {
+      stdout = await this.composeQuery(
+        ["network", "inspect", networkName],
+        this.workspaceDir,
+      );
+    } catch {
+      return;
+    }
+
+    let networks: { Containers?: Record<string, { Name?: string; IPv4Address?: string }> }[];
+    try {
+      networks = JSON.parse(stdout) as typeof networks;
+    } catch {
+      return;
+    }
+
+    const containers = networks[0]?.Containers;
+    if (!containers) return;
+
+    for (const info of Object.values(containers)) {
+      const name = info.Name;
+      const ip = info.IPv4Address?.split("/")[0]; // strip CIDR suffix
+      if (!name || !ip) continue;
+      const serviceName = containerNames.get(name);
+      if (!serviceName) continue;
+      const svc = this.services.get(serviceName);
+      if (svc) svc.containerIp = ip;
     }
   }
 
@@ -367,7 +495,11 @@ export class ServiceManager extends EventEmitter {
     if (!svc) return;
     svc.status = status;
     svc.error = error;
-    this.emit("service_status", { ...svc });
+    // During initial startup, updates are batched — events are flushed
+    // once the full sequence (compose up → network join → IP resolution) completes.
+    if (this._startupComplete) {
+      this.emit("service_status", { ...svc });
+    }
   }
 
   /** Build common compose CLI args with the user file and override. */

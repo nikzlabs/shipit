@@ -41,9 +41,11 @@ function ServiceLogViewer({
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const bufferReceivedRef = useRef(false);
 
   // Initialize xterm.js
   useEffect(() => {
+    bufferReceivedRef.current = false;
     const container = containerRef.current;
     if (!container) return;
 
@@ -123,7 +125,8 @@ function ServiceLogViewer({
       return;
     }
 
-    if (data.type === "service_log_buffer" && data.name === serviceName) {
+    if (data.type === "service_log_buffer" && data.name === serviceName && !bufferReceivedRef.current) {
+      bufferReceivedRef.current = true;
       termRef.current.write(data.buffer);
     }
     if (data.type === "service_log" && data.name === serviceName) {

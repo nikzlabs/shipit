@@ -144,8 +144,8 @@ services:
 
     try { await mgr.start(); } catch { /* expected */ }
 
-    // Should have emitted at least a 'starting' event
-    expect(events.some(e => e.name === "web" && e.status === "starting")).toBe(true);
+    // Events are batched — startup emits final state only (error since compose up fails in test)
+    expect(events.some(e => e.name === "web" && e.status === "error")).toBe(true);
   });
 
   it("throws for unknown service in startService", async () => {
