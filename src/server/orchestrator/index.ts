@@ -393,6 +393,24 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         if (runner.running || runner.queueLength > 0) {
           send({ type: "session_status", sessionId: runner.sessionId, running: runner.running, queueLength: runner.queueLength });
         }
+        // Replay current service list so the Services tab appears after reload
+        const mgr = serviceManagers.get(runner.sessionId);
+        if (mgr) {
+          const services = mgr.getServices();
+          if (services.length > 0) {
+            send({
+              type: "service_list",
+              sessionId: runner.sessionId,
+              services: services.map(s => ({
+                name: s.name,
+                status: s.status,
+                port: s.port,
+                preview: s.preview,
+                error: s.error,
+              })),
+            } as WsServerMessage);
+          }
+        }
         // Don't send preview_status here — it's sent once after the log
         // buffer replay (see below) so React 18 batching can't swallow it.
         // For container runners where preview state isn't yet known (SSE

@@ -152,6 +152,14 @@ export class ServiceManager extends EventEmitter {
    * 3. Start auto services via `docker compose up -d`
    */
   async start(): Promise<void> {
+    // Kill any stale compose containers left over from a previous orchestrator
+    // run (e.g. ShipIt restart). Uses label filter — no compose files needed.
+    try {
+      await this.killStaleContainers();
+    } catch {
+      // Best-effort cleanup
+    }
+
     const composePath = path.join(this.workspaceDir, this.composeConfig.file);
 
     // Parse and validate
@@ -531,6 +539,30 @@ export class ServiceManager extends EventEmitter {
   /** Run `docker compose down --remove-orphans`. */
   private composeDown(): Promise<void> {
     return this.runCompose([], "down", "--remove-orphans");
+  }
+
+  /**
+   * Kill and remove any containers from a previous compose stack for this
+   * session. Uses the `shipit-parent-session` label so no compose files needed.
+   */
+  private async killStaleContainers(): Promise<void> {
+    const stdout = await this.composeQuery(
+      ["ps", "-aq", "--filter", `label=shipit-parent-session=${this.sessionId}`],
+      this.workspaceDir,
+    );
+    const ids = stdout.split("\n").map(s => s.trim()).filter(Boolean);
+    if (ids.length === 0) return;
+    console.log(`[compose:${this.sessionId}] Removing ${ids.length} stale container(s)`);
+    await this.composeQuery(["rm", "-f", ...ids], this.workspaceDir);
+    // Also remove the old network if it exists
+    try {
+      await this.composeQuery(
+        ["network", "rm", `shipit-session-${this.sessionId}`],
+        this.workspaceDir,
+      );
+    } catch {
+      // Network may not exist or may be in use — that's fine
+    }
   }
 
   /** Run a docker compose command and resolve/reject based on exit code. */

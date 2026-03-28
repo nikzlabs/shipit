@@ -11,13 +11,12 @@ services:
   web:
     image: node:20
     command: npm run dev
-    working_dir: /workspace
+    working_dir: /app
     ports: ["5173:5173"]
     environment:
       HOST: "0.0.0.0"
     volumes:
-      - .:/workspace
-    x-shipit-preview: auto
+      - .:/app
 ```
 
 ## Image selection
@@ -45,12 +44,16 @@ Expose ports via `ports: ["<port>:<port>"]`. Use the framework's default port:
 | Rails | 3000 |
 
 Set `HOST=0.0.0.0` in `environment` so the server binds to all interfaces
-inside Docker. Without this, the preview won't be accessible.
+inside Docker. Without this, the preview won't be accessible. If your
+framework config already binds to `0.0.0.0` (e.g. in `vite.config.ts` or
+`next.config.js`), the `HOST` env var can be omitted.
 
 ## Volume mounts
 
-Mount the workspace as `.:/workspace` and set `working_dir: /workspace`.
-ShipIt rewrites this to the correct named volume at runtime.
+Mount the workspace as `.:/app` and set `working_dir: /app`.
+ShipIt rewrites `.` bind mounts to the correct named volume at runtime.
+Use `/app` (not `/workspace`) to avoid conflicts with the agent container's
+own `/workspace` directory.
 
 For subdirectory mounts (monorepos):
 ```yaml
@@ -92,12 +95,12 @@ services:
   web:
     image: node:20
     command: npm run dev
-    working_dir: /workspace
+    working_dir: /app
     ports: ["5173:5173"]
     environment:
       HOST: "0.0.0.0"
     volumes:
-      - .:/workspace
+      - .:/app
 ```
 
 ### Next.js
@@ -107,12 +110,12 @@ services:
   web:
     image: node:20
     command: npm run dev
-    working_dir: /workspace
+    working_dir: /app
     ports: ["3000:3000"]
     environment:
       HOSTNAME: "0.0.0.0"
     volumes:
-      - .:/workspace
+      - .:/app
 ```
 
 ### Full-stack (Node + Postgres + Redis)
@@ -122,14 +125,14 @@ services:
   web:
     image: node:20
     command: npm run dev
-    working_dir: /workspace
+    working_dir: /app
     ports: ["3000:3000"]
     environment:
       HOST: "0.0.0.0"
       DATABASE_URL: postgresql://dev:dev@db:5432/app
       REDIS_URL: redis://redis:6379
     volumes:
-      - .:/workspace
+      - .:/app
     depends_on:
       - db
       - redis
@@ -155,10 +158,10 @@ services:
   web:
     image: python:3.12
     command: python manage.py runserver 0.0.0.0:8000
-    working_dir: /workspace
+    working_dir: /app
     ports: ["8000:8000"]
     volumes:
-      - .:/workspace
+      - .:/app
 ```
 
 ## What not to do

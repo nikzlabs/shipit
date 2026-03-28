@@ -144,3 +144,35 @@ If you have a shipit.yaml with the old format (`preview`, `resources`,
 | `preview.ports` | Compose `ports` field |
 | `preview.directory` | Compose `working_dir` field |
 | `resources.preview` | Per-service resource limits in compose |
+
+### Before / after
+
+```yaml
+# Before (old format) — shipit.yaml
+install: npm install
+preview:
+  command: npm run dev
+  ports: [5173]
+```
+
+```yaml
+# After — shipit.yaml
+version: 1
+
+agent:
+  install: npm install
+
+compose: docker-compose.yml
+```
+
+```yaml
+# After — docker-compose.yml
+services:
+  web:
+    image: node:20
+    command: npm run dev
+    working_dir: /app
+    ports: ["5173:5173"]
+    volumes:
+      - .:/app
+```
