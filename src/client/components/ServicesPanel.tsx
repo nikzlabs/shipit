@@ -44,6 +44,7 @@ function ServiceLogViewer({
   const bufferReceivedRef = useRef(false);
 
   // Initialize xterm.js
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     bufferReceivedRef.current = false;
     const container = containerRef.current;
@@ -115,6 +116,7 @@ function ServiceLogViewer({
   }, [serviceName, send]);
 
   // Write incoming WS messages to xterm
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!parsedMessage || !termRef.current) return;
 
@@ -154,25 +156,29 @@ export function ServicesPanel({ lastMessage, send, onSendToAgent }: ServicesPane
 
   // Track plain-text log lines for the selected service (for Send to Agent)
   const plainLinesRef = useRef<string[]>([]);
+  const prevSelectedServiceRef = useRef(selectedService);
+  const prevLastMessageRef = useRef(lastMessage);
 
-  // Reset plain lines when switching services
-  useEffect(() => {
+  // Reset plain lines when switching services (inline during render)
+  if (prevSelectedServiceRef.current !== selectedService) {
+    prevSelectedServiceRef.current = selectedService;
     plainLinesRef.current = [];
-  }, [selectedService]);
+  }
 
-  // Accumulate plain-text log lines from WS messages
-  useEffect(() => {
-    if (!parsedMessage || !selectedService) return;
-
-    if (parsedMessage.type === "service_log_buffer" && parsedMessage.name === selectedService) {
-      const lines = parsedMessage.buffer.split("\n");
-      plainLinesRef.current = lines.slice(-MAX_PLAIN_LINES);
+  // Accumulate plain-text log lines from WS messages (inline during render)
+  if (lastMessage !== prevLastMessageRef.current) {
+    prevLastMessageRef.current = lastMessage;
+    if (parsedMessage && selectedService) {
+      if (parsedMessage.type === "service_log_buffer" && parsedMessage.name === selectedService) {
+        const lines = parsedMessage.buffer.split("\n");
+        plainLinesRef.current = lines.slice(-MAX_PLAIN_LINES);
+      }
+      if (parsedMessage.type === "service_log" && parsedMessage.name === selectedService) {
+        const newLines = parsedMessage.text.split("\n");
+        plainLinesRef.current = [...plainLinesRef.current, ...newLines].slice(-MAX_PLAIN_LINES);
+      }
     }
-    if (parsedMessage.type === "service_log" && parsedMessage.name === selectedService) {
-      const newLines = parsedMessage.text.split("\n");
-      plainLinesRef.current = [...plainLinesRef.current, ...newLines].slice(-MAX_PLAIN_LINES);
-    }
-  }, [parsedMessage, selectedService]);
+  }
 
   const handleSendToAgent = useCallback(() => {
     if (!selectedService) return;

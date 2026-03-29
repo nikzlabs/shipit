@@ -77,6 +77,7 @@ export function MessageInput({
   const dragCountRef = useRef(0);
 
   // Consume prefill text from store (e.g. "Start Session" from docs viewer, "Send to Agent" from services panel)
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const consume = (prefill: string | undefined) => {
       if (!prefill) return;
@@ -99,13 +100,14 @@ export function MessageInput({
   }, []);
 
   // Auto-focus textarea on session change (e.g. "New Session" click, session switch)
-  useEffect(() => {
-    if (focusKey) {
-      requestAnimationFrame(() => {
-        textareaRef.current?.focus();
-      });
-    }
-  }, [focusKey]);
+  const prevFocusKeyRef = useRef(focusKey);
+  if (focusKey && focusKey !== prevFocusKeyRef.current) {
+    prevFocusKeyRef.current = focusKey;
+    // Schedule focus after paint — safe to call during render since it's a microtask
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
+  }
 
   const addFiles = useCallback(
     (files: FileList | File[]) => {

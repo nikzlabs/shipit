@@ -1,6 +1,7 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: debounce cleanup on unmount + document mousedown click-outside with cleanup (browser API subscription)
+// eslint-disable-next-line no-restricted-imports -- useEffect: debounce cleanup on unmount
 import { useState, useRef, useEffect, useCallback } from "react";
 import { parseRepoLabel } from "../utils/repo-label.js";
+import { useClickOutside } from "../hooks/useClickOutside.js";
 import { Badge } from "./ui/badge.js";
 import type { SessionInfo } from "../../server/shared/types.js";
 
@@ -70,22 +71,15 @@ export function RepoSelector({
     [onSearch],
   );
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
   }, []);
 
-  // Close on click outside
-  useEffect(() => {
-    const handleClick = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, []);
+  const handleClickOutsideClose = useCallback(() => setOpen(false), []);
+  useClickOutside(containerRef, handleClickOutsideClose, open);
 
   const handleSelect = useCallback(
     (repoUrl: string) => {

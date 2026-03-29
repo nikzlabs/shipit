@@ -23,6 +23,7 @@ export function useAutoFix(params: {
   const autoFixErrorSignatureRef = useRef<string | null>(null);
 
   // Forward preview errors to the server for terminal log relay
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const sessionId = useSessionStore.getState().sessionId;
     if (previewErrors.length === 0 || status !== "open" || !sessionId) return;
@@ -50,6 +51,7 @@ export function useAutoFix(params: {
 
   // Auto-fix logic
   const prevErrorCountRef = useRef(0);
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!autoFixEnabled || isLoading || previewErrors.length === 0) {
       prevErrorCountRef.current = previewErrors.length;

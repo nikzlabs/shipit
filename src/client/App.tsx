@@ -224,6 +224,7 @@ export default function App() {
 
   // Delayed spinner for bootstrap loading gate — only show after 1s
   const [showBootstrapSpinner, setShowBootstrapSpinner] = useState(false);
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (bootstrapLoaded) return;
     const timer = setTimeout(() => setShowBootstrapSpinner(true), 1000);
@@ -238,6 +239,7 @@ export default function App() {
   });
 
   // Initialize sessionId from URL on mount
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (urlSessionId) {
       useSessionStore.getState().setSessionId(urlSessionId);
@@ -249,6 +251,7 @@ export default function App() {
 
   // Sync session state when URL changes (back/forward navigation)
   // WS auto-connects/disconnects via useSessionWebSocket(wsSessionId)
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (urlSessionId && urlSessionId !== useSessionStore.getState().sessionId) {
       resumeSessionInternal(urlSessionId);
@@ -266,6 +269,7 @@ export default function App() {
   }, [urlSessionId, isNewSessionRoute, disableAutoFix]);
 
   // Auto-claim session when landing on /{slug}/new (direct URL navigation or page refresh)
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!isNewSessionRoute || !newSessionRepoUrl || sessionId) return;
     const ac = new AbortController();
@@ -277,6 +281,7 @@ export default function App() {
   }, [isNewSessionRoute, newSessionRepoUrl, sessionId]);
 
   // Redirect to home if /{slug}/new doesn't match any known repo
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (isNewSessionRoute && !newSessionRepoUrl && bootstrapLoaded && repos.length > 0) {
       void navigate("/", { replace: true });

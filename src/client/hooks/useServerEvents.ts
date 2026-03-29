@@ -14,6 +14,7 @@ import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats } from "
 export function useServerEvents(): void {
   const eventSourceRef = useRef<EventSource | null>(null);
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const apiHost = import.meta.env.VITE_API_HOST as string | undefined;
     const baseUrl = apiHost ? `${window.location.protocol}//${apiHost}` : "";

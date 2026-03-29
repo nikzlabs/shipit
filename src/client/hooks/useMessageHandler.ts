@@ -33,6 +33,7 @@ export function useMessageHandler(params: {
 }): void {
   const { lastMessage, send, terminalRef, notify } = params;
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!lastMessage) return;
 

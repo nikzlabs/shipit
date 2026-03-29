@@ -1,6 +1,6 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: document mousedown listener for click-outside with cleanup (browser API subscription)
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useCallback } from "react";
 import { ArrowCounterClockwiseIcon } from "@phosphor-icons/react";
+import { useClickOutside } from "../hooks/useClickOutside.js";
 
 export type RewindMode = "fork_chat" | "rewind_code" | "rewind_all";
 
@@ -25,17 +25,8 @@ export function RewindDropdown({ messageIndex, disabled, onRewind, onOpenChange 
     onOpenChange?.(value);
   };
 
-  // Close on outside click
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        updateOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
+  const handleClose = useCallback(() => updateOpen(false), [onOpenChange]);
+  useClickOutside(ref, handleClose, open);
 
   const handleClick = (mode: RewindMode) => {
     updateOpen(false);

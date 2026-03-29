@@ -16,6 +16,7 @@ export function useConnectionSync(params: {
   const bootstrapFetchedRef = useRef(false);
 
   // Fetch bootstrap data via HTTP — fires once on mount
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (bootstrapFetchedRef.current) return;
     bootstrapFetchedRef.current = true;
@@ -29,6 +30,7 @@ export function useConnectionSync(params: {
   // On per-session WS connect, fetch session history + send any pending message
   // (No activate_session needed — the per-session WS auto-activates via URL)
   // (No set_agent needed — passed as query param on WS URL)
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (status === "open" && !historyLoadedRef.current && useSessionStore.getState().sessionId) {
       historyLoadedRef.current = true;
@@ -58,6 +60,7 @@ export function useConnectionSync(params: {
 
   // Handle WebSocket disconnection during streaming
   const prevStatusRef = useRef(status);
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const wasOpen = prevStatusRef.current === "open";
     prevStatusRef.current = status;

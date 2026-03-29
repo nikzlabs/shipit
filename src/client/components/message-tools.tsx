@@ -20,6 +20,7 @@ export function ToolCallGroup({ items, isStreaming }: {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom when new tools are added during streaming
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (isStreaming && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;

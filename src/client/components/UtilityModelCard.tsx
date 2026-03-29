@@ -27,6 +27,7 @@ export function UtilityModelCard() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     // eslint-disable-next-line no-restricted-syntax -- fire-and-forget one-liner
     api.get<UtilityModelStatus>("/api/settings/utility-model").then(setStatus).catch(() => {});

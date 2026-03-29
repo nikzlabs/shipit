@@ -60,6 +60,7 @@ function CommentInput({
 }) {
   const [text, setText] = useState(initialText ?? "");
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {

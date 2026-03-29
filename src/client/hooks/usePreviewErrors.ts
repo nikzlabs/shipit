@@ -59,6 +59,7 @@ export function usePreviewErrors(): UsePreviewErrorsReturn {
   const clearErrors = usePreviewStore((s) => s.clearErrors);
   const addError = usePreviewStore((s) => s.addError);
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const handler = (event: MessageEvent) => {
       const data = event.data as PostMessageData | undefined;
