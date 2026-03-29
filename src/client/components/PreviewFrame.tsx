@@ -116,9 +116,9 @@ export function PreviewFrame({
   const [refreshKey, setRefreshKey] = useState(0);
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
 
-  // Focus-steal prevention: overlay blocks pointer events on the iframe until the
-  // user explicitly clicks the preview area. Re-enabled when focus returns to the
-  // main document (e.g. user clicks the chat input or presses a key outside).
+  // Prevent accidental focus loss to the iframe: an overlay blocks pointer events
+  // until the user explicitly clicks the preview. When focus returns to the main
+  // window (user clicks the chat input, presses a key, etc.) the overlay re-enables.
   const [iframeInteractive, setIframeInteractive] = useState(false);
   // eslint-disable-next-line no-restricted-syntax -- re-enable overlay when window regains focus
   useEffect(() => {
@@ -504,9 +504,9 @@ export function PreviewFrame({
             />
           );
         })}
-        {/* Focus-steal guard: transparent overlay blocks pointer events on the iframe.
-            Clicking the overlay activates iframe interaction; focus returning to the
-            main window (e.g. clicking the chat input) re-enables the guard. */}
+        {/* Click guard: blocks accidental clicks that would move focus into the iframe.
+            One click activates iframe interaction; focus returning to the main window
+            (e.g. clicking the chat input) re-enables the guard. */}
         {showIframe && !hideIframe && !overlayContent && !iframeInteractive && (
           <div
             className="absolute inset-0 z-[5] cursor-pointer"
