@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 ---
 
 # 061 — Self-Hosted Docker-Capable Sessions
@@ -8,9 +8,16 @@ Give session containers access to Docker so users running ShipIt locally can dev
 
 **Note:** The Docker API proxy and security policy from this doc remain relevant for compose container sanitization. The `capabilities.docker` config field has been replaced by `compose.docker-socket` in [086-shipit-yaml-and-compose](../086-shipit-yaml-and-compose/plan.md), which scopes Docker access to compose services rather than the agent container.
 
+**Status:** Phases 1-3b (resource config, container hardening, Docker API proxy) are fully implemented and tested. Phase 4 (self-hosting validation — running ShipIt inside ShipIt) is tracked in [089-shipit-in-shipit](../089-shipit-in-shipit/plan.md), which identifies and fixes the remaining proxy policy gaps.
+
 ## Scope
 
 This doc covers **self-hosted ShipIt** — a single user running ShipIt on their own machine (macOS Docker Desktop, Linux, WSL2). The threat model is "protect the user from Claude mistakes," not "protect tenants from each other." Multi-tenant managed hosting is a separate concern with different isolation requirements — see [062-managed-shipit](../062-managed-shipit/plan.md).
+
+## Related docs
+
+- [086-shipit-yaml-and-compose](../086-shipit-yaml-and-compose/plan.md) — supersedes the `capabilities.docker` config field with `compose.docker-socket`. The proxy and security policy from this doc remain the enforcement layer.
+- [089-shipit-in-shipit](../089-shipit-in-shipit/plan.md) — addresses the Phase 4 self-hosting validation blockers. The proxy policy needs surgical relaxations (safe CapAdd allowlist, SecurityOpt `no-new-privileges`, volume allowlist) and volume context propagation to support a nested orchestrator.
 
 ## Motivation
 

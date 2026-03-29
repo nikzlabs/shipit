@@ -173,6 +173,8 @@
 
 ## Phase 4: Self-hosting validation
 
+Blocked by proxy policy gaps — see [089-shipit-in-shipit](../089-shipit-in-shipit/plan.md) for the fixes needed.
+
 - [x] Write `shipit.yaml` for the ShipIt repo (capabilities, resources, install, preview)
 - [ ] Clone ShipIt in a ShipIt session with Docker access + elevated resources
 - [ ] Validate: `npm ci` completes
