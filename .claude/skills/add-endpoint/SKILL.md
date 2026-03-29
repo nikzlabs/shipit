@@ -1,4 +1,5 @@
 ---
+name: add-endpoint
 description: "Step-by-step guide for adding new server functionality to ShipIt: HTTP endpoints (service -> route -> client hook -> test), WebSocket messages (type -> handler -> dispatcher -> client), deploy targets, tool activity labels, and the WebSocket vs HTTP decision framework. Load when adding a new API endpoint, WS message type, deploy target, or activity label."
 user-invocable: true
 ---

@@ -1,4 +1,5 @@
 ---
+name: design-language
 description: "ShipIt design language: color tokens, typography, iconography, motion, and multi-theme architecture. Load when working on UI components, styling, theming, or adding new visual elements."
 user-invocable: true
 ---

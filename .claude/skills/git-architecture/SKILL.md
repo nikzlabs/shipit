@@ -1,4 +1,5 @@
 ---
+name: git-architecture
 description: "ShipIt git architecture: GitManager (per-session), RepoGit (shared repo clones and worktrees), credential setup, auto-commit flow, worktree lifecycle, branch naming. Load when working on git operations, worktrees, credentials, or repo management."
 user-invocable: true
 ---

@@ -1,4 +1,5 @@
 ---
+name: session-processes
 description: "ShipIt session worker processes: Claude CLI spawning and NDJSON parsing, agent abstraction (AgentProcess, ProxyAgentProcess), Docker Compose services (ServiceManager), file watcher, terminal PTY, session worker endpoints. Load when working on Claude process management, compose services, file watcher, terminal, or agent adapters."
 user-invocable: true
 ---

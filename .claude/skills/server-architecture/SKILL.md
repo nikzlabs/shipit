@@ -1,4 +1,5 @@
 ---
+name: server-architecture
 description: "ShipIt server/orchestrator architecture: buildApp(), HTTP API routes, services layer, WebSocket handler dispatch, SSE broadcasts, dependency injection, state scopes, manager initialization, type system. Load when working on orchestrator code, routes, services, or WebSocket handlers."
 user-invocable: true
 ---

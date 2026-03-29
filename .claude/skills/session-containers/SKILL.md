@@ -1,4 +1,5 @@
 ---
+name: session-containers
 description: "ShipIt Docker container and session runner architecture: ContainerSessionRunner, SessionRunnerRegistry, container creation/destruction, health monitoring, idle container disposal, reconnection after disposal, graceful shutdown. Load when working on containers, runners, idle cleanup, or container debugging."
 user-invocable: true
 ---
