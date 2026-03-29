@@ -118,6 +118,22 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     },
   });
 
+  // ---- CORS for dev (client on a different port) ----
+  app.addHook("onRequest", (request, reply, done) => {
+    const origin = request.headers.origin;
+    if (origin) {
+      reply.header("Access-Control-Allow-Origin", origin);
+      reply.header("Access-Control-Allow-Credentials", "true");
+      reply.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
+      reply.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    }
+    if (request.method === "OPTIONS") {
+      reply.status(204).send();
+      return;
+    }
+    done();
+  });
+
   // ---- Container manager (Docker isolation) ----
   const { containerManager, dockerProxyServer } = await setupContainerManager({
     deps, isTestMode, credentialsDir, sessionManager,
