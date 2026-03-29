@@ -320,7 +320,7 @@ describe("PreviewFrame", () => {
 
   // ---- Stale iframe tests ----
 
-  it("shows stale iframe while polling for new session's preview", async () => {
+  it("preserves session A iframe in pool while polling for session B", async () => {
     const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     const { rerender } = render(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
     // Wait for iframe to become ready (fetch mock resolves immediately)
@@ -333,12 +333,12 @@ describe("PreviewFrame", () => {
     const previewB: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "vite" };
     rerender(<PreviewFrame preview={previewB} sessionId="session-b" {...defaultProps} />);
 
-    // Stale iframe from session A should still be visible
-    const iframe = screen.getByTitle("Live Preview");
+    // Session A's iframe is preserved in pool as a background preview
+    const iframe = screen.getByTitle("Background Preview");
     expect(iframe).toHaveAttribute("src", "http://localhost:5173");
   });
 
-  it("shows stale iframe during session switch even when preview is null", async () => {
+  it("preserves session A iframe in pool during session switch with null preview", async () => {
     const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     const { rerender } = render(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
     await screen.findByTitle("Live Preview");
@@ -346,10 +346,9 @@ describe("PreviewFrame", () => {
     // Switch to session B where preview is null (waiting for WS message)
     rerender(<PreviewFrame preview={null} sessionId="session-b" {...defaultProps} />);
 
-    // Stale iframe should be visible — dev server is already running, just waiting for WS
-    const iframe = screen.getByTitle("Live Preview");
+    // Session A's iframe is preserved in pool as a background preview
+    const iframe = screen.getByTitle("Background Preview");
     expect(iframe).toHaveAttribute("src", "http://localhost:5173");
-    expect(screen.queryByText("Starting dev server...")).not.toBeInTheDocument();
   });
 
   it("shows spinner for fresh session start (no stale iframe)", () => {
