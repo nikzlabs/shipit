@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: poll external preview server URL until ready with cancellation (external system sync)
 import { useState, useEffect, useRef } from "react";
-import { WarningIcon, CircleNotchIcon, ArrowClockwiseIcon, ArrowSquareOutIcon, CubeIcon } from "@phosphor-icons/react";
+import { WarningIcon, CircleNotchIcon, ArrowClockwiseIcon, ArrowSquareOutIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import type { PreviewError } from "../hooks/usePreviewErrors.js";
@@ -38,15 +38,7 @@ interface PreviewFrameProps {
   onSendErrors: (errors: PreviewError[]) => void;
   /** Called to clear all errors. */
   onClearErrors: () => void;
-  /** Whether no preview config was found for the session. */
-  configMissing?: boolean;
-  /** Called when user clicks "Set up with Claude" to generate shipit.yaml. */
-  onInitPreviewConfig?: () => void;
-  /** Crash information when preview server exited with error. */
-  crashInfo?: { exitCode: number | null; output: string } | null;
-  /** Called when user clicks "Retry" to restart the preview server. */
-  onRestartPreview?: () => void;
-  /** Called when user clicks "Send to agent" to send crash info to the agent. */
+  /** Called when user clicks "Send to agent" to send error info to the agent. */
   onSendCrashToAgent?: () => void;
 }
 
@@ -80,10 +72,6 @@ export function PreviewFrame({
   errors,
   onSendErrors,
   onClearErrors,
-  configMissing,
-  onInitPreviewConfig,
-  crashInfo,
-  onRestartPreview,
   onSendCrashToAgent,
 }: PreviewFrameProps) {
   const autoFixEnabled = usePreviewStore((s) => s.autoFixEnabled);
@@ -282,12 +270,10 @@ export function PreviewFrame({
   const startupSteps = usePreviewStore((s) => s.startupSteps);
   const services = usePreviewStore((s) => s.services);
   const composeError = usePreviewStore((s) => s.composeError);
-  const showCrash = !!(crashInfo && !preview?.running);
-  const showComposeError = !!composeError && !isRunning && !showCrash;
-  const showStartupSteps = startupSteps.length > 0 && !isRunning && !showCrash && !showComposeError;
+  const showComposeError = !!composeError && !isRunning;
+  const showStartupSteps = startupSteps.length > 0 && !isRunning && !showComposeError;
   const showStarting = !showStartupSteps && !showComposeError && !preview && !!sessionId;
-  const showConfigMissing = !isRunning && !showCrash && !showComposeError && !showStartupSteps && !showStarting && !!configMissing;
-  const showServices = services.length > 0 && !isRunning && !showCrash && !showComposeError && !showStartupSteps && !showConfigMissing;
+  const showServices = services.length > 0 && !isRunning && !showComposeError && !showStartupSteps;
 
   // When not running, hide the iframe behind the overlay (but keep DOM element alive)
   const hideIframe = !isRunning && !showStarting;
@@ -296,24 +282,6 @@ export function PreviewFrame({
   let overlayContent: React.ReactNode = null;
   if (showStartupSteps) {
     overlayContent = <StartupSteps steps={startupSteps} />;
-  } else if (showCrash) {
-    overlayContent = (
-      <div className="text-center space-y-3 max-w-lg px-4">
-        <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-error)" />
-        <p className="text-(--color-error) font-medium">
-          Preview server crashed{crashInfo?.exitCode !== null && crashInfo?.exitCode !== undefined ? ` (exit code ${crashInfo.exitCode})` : ""}
-        </p>
-        {crashInfo?.output && (
-          <pre className="text-left text-xs text-(--color-text-secondary) bg-(--color-bg-secondary) rounded p-3 max-h-48 overflow-auto whitespace-pre-wrap border border-(--color-border-secondary)">
-            {crashInfo.output}
-          </pre>
-        )}
-        <div className="flex items-center justify-center gap-2">
-          {onRestartPreview && <Button variant="secondary" size="sm" onClick={onRestartPreview}>Retry</Button>}
-          {onSendCrashToAgent && <Button variant="primary" size="sm" onClick={onSendCrashToAgent}>Send to agent</Button>}
-        </div>
-      </div>
-    );
   } else if (showComposeError) {
     overlayContent = (
       <div className="text-center space-y-3 max-w-lg px-4">
@@ -362,20 +330,6 @@ export function PreviewFrame({
             Retry
           </Button>
         </div>
-      </div>
-    );
-  } else if (showConfigMissing) {
-    overlayContent = (
-      <div className="text-center space-y-4">
-        <CubeIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
-        <div className="space-y-1">
-          <p className="font-medium text-(--color-text-primary)">Set up live preview</p>
-          <p className="text-xs text-(--color-text-tertiary) max-w-sm">
-            ShipIt uses Docker Compose to run your project&#39;s services.
-            Claude will analyze your project and generate a docker-compose.yml tailored to it.
-          </p>
-        </div>
-        {onInitPreviewConfig && <Button variant="primary" size="sm" onClick={onInitPreviewConfig}>Generate</Button>}
       </div>
     );
   } else if (showServices) {

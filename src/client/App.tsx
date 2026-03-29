@@ -115,8 +115,6 @@ export default function App() {
 
   const previewStatus = usePreviewStore((s) => s.status);
   const selectedPort = usePreviewStore((s) => s.selectedPort);
-  const configMissing = usePreviewStore((s) => s.configMissing);
-  const crashInfo = usePreviewStore((s) => s.crashInfo);
   const composeServices = usePreviewStore((s) => s.services);
 
   const logEntries = useTerminalStore((s) => s.entries);
@@ -363,29 +361,10 @@ export default function App() {
     [send, requestPermission],
   );
 
-  const handleRestartPreview = useCallback(() => {
-    const sid = useSessionStore.getState().sessionId;
-    if (sid) {
-      usePreviewStore.getState().setCrashInfo(null);
-      apiPost(`/api/sessions/${sid}/preview/restart`, {}).catch(() => {});
-    }
-  }, [apiPost]);
-
-  const handleSendCrashToAgent = useCallback(() => {
-    const { crashInfo: crash, composeError } = usePreviewStore.getState();
-    let text: string;
-    if (composeError) {
-      text = `Docker Compose failed to start:\n\n\`\`\`\n${composeError.trim()}\n\`\`\`\n\nPlease fix this error so the services can start successfully.`;
-    } else if (crash) {
-      const lines = [`The preview server crashed${  crash.exitCode !== null ? ` (exit code ${crash.exitCode})` : ""  }:`, ""];
-      if (crash.output) {
-        lines.push("```", crash.output.trim(), "```", "");
-      }
-      lines.push("Please fix this error so the preview server can start successfully.");
-      text = lines.join("\n");
-    } else {
-      return;
-    }
+  const handleSendComposeErrorToAgent = useCallback(() => {
+    const { composeError } = usePreviewStore.getState();
+    if (!composeError) return;
+    const text = `Docker Compose failed to start:\n\n\`\`\`\n${composeError.trim()}\n\`\`\`\n\nPlease fix this error so the services can start successfully.`;
     useSessionStore.getState().setPrefillText(text);
   }, []);
 
@@ -630,7 +609,7 @@ export default function App() {
       <div className="flex-1 min-h-0 relative">
         {/* PreviewFrame is always rendered to preserve iframe state; hidden via CSS when another tab is active */}
         <div className={`absolute inset-0 ${rightTab === "preview" ? "" : "invisible pointer-events-none"}`}>
-          <PreviewFrame preview={previewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} configMissing={configMissing} onInitPreviewConfig={() => send({ type: "init_preview_config" })} crashInfo={crashInfo} onRestartPreview={handleRestartPreview} onSendCrashToAgent={handleSendCrashToAgent} />
+          <PreviewFrame preview={previewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} onSendCrashToAgent={handleSendComposeErrorToAgent} />
         </div>
         {rightTab === "docs" ? (
           reviewingDoc ? (

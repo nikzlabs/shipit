@@ -3,9 +3,7 @@
  * Handles: loading and saving per-repo environment variable secrets.
  *
  * Secrets are stored in the orchestrator's SQLite database (SecretStore),
- * keyed by repo URL. On save, they are pushed to the active preview
- * container(s) for sessions using that repo via PUT /secrets on each
- * preview worker.
+ * keyed by repo URL.
  */
 
 import type { FastifyInstance } from "fastify";

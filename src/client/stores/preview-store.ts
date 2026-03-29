@@ -2,11 +2,6 @@ import { create } from "zustand";
 import type { PreviewStatus } from "../components/PreviewFrame.js";
 import type { ComposeServiceStatus, ComposeServicePreviewMode } from "../../server/shared/types/ws-server-messages.js";
 
-interface InstallStatus {
-  status: "running" | "complete" | "error";
-  message?: string;
-}
-
 // ---- Compose service state ----
 
 export interface ManagedServiceState {
@@ -23,11 +18,6 @@ export interface StartupStep {
   durationMs?: number;
   message?: string;
   logLines: string[];
-}
-
-interface CrashInfo {
-  exitCode: number | null;
-  output: string;
 }
 
 export interface PreviewError {
@@ -51,9 +41,6 @@ const DEDUP_WINDOW_MS = 1000;
 interface PreviewState {
   status: PreviewStatus | null;
   selectedPort: number | null;
-  configMissing: boolean;
-  installStatus: InstallStatus | null;
-  crashInfo: CrashInfo | null;
   errors: PreviewError[];
   autoFixEnabled: boolean;
   autoFixRetries: number;
@@ -66,9 +53,6 @@ interface PreviewState {
 
   setStatus: (status: PreviewStatus | null) => void;
   setSelectedPort: (port: number | null) => void;
-  setConfigMissing: (missing: boolean) => void;
-  setInstallStatus: (status: InstallStatus | null) => void;
-  setCrashInfo: (info: CrashInfo | null) => void;
   addError: (error: PreviewError) => void;
   clearErrors: () => void;
   setAutoFixEnabled: (enabled: boolean) => void;
@@ -128,9 +112,6 @@ export function resetDedupState(): void {
 const initialState = {
   status: null as PreviewStatus | null,
   selectedPort: null as number | null,
-  configMissing: false,
-  installStatus: null as InstallStatus | null,
-  crashInfo: null as CrashInfo | null,
   errors: [] as PreviewError[],
   autoFixEnabled: false,
   autoFixRetries: 0,
@@ -145,12 +126,6 @@ export const usePreviewStore = create<PreviewState>((set) => ({
   setStatus: (status) => set({ status }),
 
   setSelectedPort: (port) => set({ selectedPort: port }),
-
-  setConfigMissing: (missing) => set({ configMissing: missing }),
-
-  setInstallStatus: (installStatus) => set({ installStatus }),
-
-  setCrashInfo: (crashInfo) => set({ crashInfo }),
 
   addError: (error) =>
     set((state) => {

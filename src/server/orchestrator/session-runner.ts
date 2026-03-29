@@ -250,8 +250,6 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
 
   // Viewer management
   readonly viewerCount: number;
-  getPreview(): null;
-  getFileWatcher(): null;
   attachViewer(): void;
   detachViewer(): void;
   buildPreviewStatus(): WsServerMessage;
@@ -399,8 +397,6 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   get detectedPorts(): number[] { return this._detectedPorts; }
   set detectedPorts(ports: number[]) { this._detectedPorts = ports; }
   get viewerCount(): number { return this._viewerCount; }
-  getPreview(): null { return null; }
-  getFileWatcher(): null { return null; }
   attachViewer(): void { this._viewerCount++; }
   detachViewer(): void { this._viewerCount = Math.max(0, this._viewerCount - 1); }
   buildPreviewStatus(): WsServerMessage {

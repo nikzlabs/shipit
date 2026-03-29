@@ -430,10 +430,6 @@ describe("Integration: Session Worker IPC", () => {
     // Viewer management
     expect(runner.viewerCount).toBe(0);
 
-    // Preview (Phase 3 — returns null)
-    expect(runner.getPreview()).toBeNull();
-    expect(runner.getFileWatcher()).toBeNull();
-
     // Lifecycle
     expect(runner.disposed).toBe(false);
     runner.dispose();

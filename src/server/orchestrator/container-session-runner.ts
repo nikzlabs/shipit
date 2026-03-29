@@ -357,9 +357,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get viewerCount(): number { return this._viewerCount; }
 
-  getPreview(): null { return null; }
-  getFileWatcher(): null { return null; }
-
   private _workerResourcesStarted = false;
 
   attachViewer(): void {
