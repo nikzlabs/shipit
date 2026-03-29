@@ -488,10 +488,17 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
 
 function TerminalPhase({ card, sessionId, text }: { card: PrCardState; sessionId: string; text: string }) {
   const pr = card.pr;
+  const openDiff = useOpenPrDiff(pr?.baseBranch);
+  const hasDiffStats = pr && (pr.insertions > 0 || pr.deletions > 0);
   return (
     <div className="flex items-center gap-3 flex-nowrap">
       <PrStateBadge sessionId={sessionId} url={pr?.url} prNumber={pr?.number} />
       <span className="h-6 flex items-center text-xs text-(--color-text-secondary) truncate min-w-0">{text}</span>
+      {hasDiffStats && (
+        <span className="ml-auto shrink-0">
+          <DiffStats ins={pr.insertions} del={pr.deletions} onClick={openDiff} />
+        </span>
+      )}
     </div>
   );
 }
