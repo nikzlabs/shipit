@@ -425,6 +425,17 @@ function setupServiceManager(
     return; // Invalid config — skip compose setup
   }
 
+  // Surface config migration warnings so the user/agent can act on them
+  if (shipitConfig.warnings.length > 0) {
+    const text = `shipit.yaml needs migration:\n${shipitConfig.warnings.map(w => `  • ${w}`).join("\n")}`;
+    runner.emitMessage({
+      type: "log_entry",
+      source: "server",
+      text,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   if (!shipitConfig.compose) return;
 
   // Workspace volume info for compose volume rewriting: user `.:/workspace`

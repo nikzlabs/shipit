@@ -324,11 +324,17 @@ export class ServiceManager extends EventEmitter {
    * Re-parses the compose file, regenerates the override, and runs `up -d`.
    */
   async reconcile(): Promise<void> {
-    // Re-start with the same config — start() handles parsing, override, and up
+    // Kill orphaned log processes before clearing state — if a service was
+    // renamed or removed, start() won't find its old process to clean up.
+    for (const [, proc] of this.logProcesses) proc.kill();
+    this.logProcesses.clear();
+    this.stopPolling();
+
     this.services.clear();
     this.logBuffers.clear();
     this._started = false;
     this._startupComplete = false;
+    this.startError = null;
     await this.start();
   }
 
@@ -623,7 +629,7 @@ function defaultComposeQuery(args: string[], cwd: string): Promise<string> {
       if (code === 0) {
         resolve(stdout);
       } else {
-        reject(new Error(`docker compose ${args[0]} failed (exit ${code}): ${stderr.trim()}`));
+        reject(new Error(`docker ${args[0]} failed (exit ${code}): ${stderr.trim()}`));
       }
     });
 

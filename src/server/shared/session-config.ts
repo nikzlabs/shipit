@@ -32,8 +32,6 @@ export interface ContainerResourceConfig {
 export interface SessionResourceConfig {
   /** Agent container resources. */
   agent: ContainerResourceConfig;
-  /** Preview container resources. */
-  preview: ContainerResourceConfig;
 }
 
 export interface SessionCapabilities {
@@ -52,7 +50,6 @@ export interface SessionConfig {
 
 const DEFAULT_RESOURCES: SessionResourceConfig = {
   agent: { memory: 1024, cpu: 0.5, pids: 256 },
-  preview: { memory: 512, cpu: 0.5, pids: 1024 },
 };
 
 const DEFAULT_CAPABILITIES: SessionCapabilities = {
@@ -69,11 +66,6 @@ export function getResourceCaps(): SessionResourceConfig {
       memory: parseEnvInt("MAX_SESSION_MEMORY_MB", 4096),
       cpu: parseEnvFloat("MAX_SESSION_CPU", 4),
       pids: parseEnvInt("MAX_SESSION_PIDS", 2048),
-    },
-    preview: {
-      memory: parseEnvInt("MAX_SESSION_PREVIEW_MEMORY_MB", 4096),
-      cpu: parseEnvFloat("MAX_SESSION_PREVIEW_CPU", 4),
-      pids: parseEnvInt("MAX_SESSION_PREVIEW_PIDS", 2048),
     },
   };
 }
@@ -144,7 +136,6 @@ export function resolveSessionConfig(sessionDir: string): SessionConfig {
         cpu: shipitConfig.agent.cpu,
         pids: shipitConfig.agent.pids,
       },
-      preview: { ...DEFAULT_RESOURCES.preview },
     };
     capabilities = {
       docker: shipitConfig.compose?.dockerSocket ?? false,
@@ -160,7 +151,6 @@ export function resolveSessionConfig(sessionDir: string): SessionConfig {
   return {
     resources: {
       agent: clampResources(resources.agent, caps.agent),
-      preview: clampResources(resources.preview, caps.preview),
     },
     capabilities,
   };
@@ -207,9 +197,8 @@ function parseResources(doc: Record<string, unknown> | undefined): SessionResour
   const res = doc.resources as Record<string, unknown>;
 
   const agent = parseContainerResources(res.agent, DEFAULT_RESOURCES.agent);
-  const preview = parseContainerResources(res.preview, DEFAULT_RESOURCES.preview);
 
-  return { agent, preview };
+  return { agent };
 }
 
 function parseCapabilities(doc: Record<string, unknown> | undefined): SessionCapabilities {
