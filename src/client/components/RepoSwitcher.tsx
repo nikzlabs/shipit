@@ -1,5 +1,5 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: document mousedown + keydown listeners for click-outside/Escape with cleanup (browser API subscription)
-import { useRef, useEffect } from "react";
+import { useRef } from "react";
+import { useClickOutside } from "../hooks/useClickOutside.js";
 import { PlusIcon, FolderPlusIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { parseRepoName } from "../utils/repo-label.js";
@@ -18,24 +18,7 @@ interface RepoSwitcherProps {
 export function RepoSwitcher({ open, onClose, repos, activeRepoUrl, onSelectRepo, onAddRepo, onCreateNew }: RepoSwitcherProps) {
   const ref = useRef<HTMLDivElement>(null);
 
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        onClose();
-      }
-    };
-    const keyHandler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); onClose(); }
-    };
-    document.addEventListener("mousedown", handler);
-    document.addEventListener("keydown", keyHandler);
-    return () => {
-      document.removeEventListener("mousedown", handler);
-      document.removeEventListener("keydown", keyHandler);
-    };
-  }, [open, onClose]);
+  useClickOutside(ref, onClose, open);
 
   if (!open) return null;
 

@@ -1,5 +1,5 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: document mousedown + keydown listeners for click-outside/Escape with cleanup (browser API subscription)
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useCallback } from "react";
+import { useClickOutside } from "../hooks/useClickOutside.js";
 import { CaretDownIcon, CheckIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { AgentId } from "../../server/shared/types.js";
@@ -37,29 +37,8 @@ export function AgentPicker({ agents, activeAgentId, onAgentChange, disabled }: 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const displayName = activeAgent?.name ?? activeAgentId;
 
-  // Close on outside click
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    if (!open) return;
-    const handleClick = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [open]);
-
-  // Close on Escape
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    if (!open) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); setOpen(false); }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [open]);
+  const handleClose = useCallback(() => setOpen(false), []);
+  useClickOutside(containerRef, handleClose, open);
 
   const handleSelect = useCallback(
     (agent: AgentOption) => {

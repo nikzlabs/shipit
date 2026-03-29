@@ -1,4 +1,4 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: requestAnimationFrame for animation + setTimeout auto-dismiss with cleanup (timer-based side effects)
+// eslint-disable-next-line no-restricted-imports -- useEffect: setTimeout auto-dismiss with cleanup (timer-based side effect)
 import { useEffect, useState } from "react";
 import { CheckCircleIcon } from "@phosphor-icons/react";
 import { Button } from "./ui/button.js";
@@ -15,14 +15,7 @@ interface ToastProps {
 }
 
 export function Toast({ toast, onDismiss }: ToastProps) {
-  const [visible, setVisible] = useState(false);
-
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    // Trigger slide-in on mount
-    const frame = requestAnimationFrame(() => setVisible(true));
-    return () => cancelAnimationFrame(frame);
-  }, []);
+  const [visible, setVisible] = useState(true);
 
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
@@ -43,7 +36,7 @@ export function Toast({ toast, onDismiss }: ToastProps) {
   return (
     <div
       data-testid="toast"
-      className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg border border-(--color-border-primary) bg-(--color-bg-elevated) text-sm text-(--color-text-primary) transition-all duration-200 ${
+      className={`toast-enter fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg border border-(--color-border-primary) bg-(--color-bg-elevated) text-sm text-(--color-text-primary) transition-all duration-200 ${
         visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2"
       }`}
     >

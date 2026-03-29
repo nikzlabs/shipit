@@ -1,5 +1,5 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: document mousedown + keydown listeners for click-outside/Escape with cleanup (browser API subscription)
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useCallback } from "react";
+import { useClickOutside } from "../hooks/useClickOutside.js";
 import { CaretDownIcon, CheckIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatModelName, resolveModelAlias } from "../utils/format-model.js";
@@ -41,29 +41,8 @@ export function ModelAgentSelector({
   // Only allow opening before first message AND not in a loading transition
   const canOpen = !hasActiveSession && !disabled;
 
-  // Close on outside click
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    if (!open) return;
-    const handleClick = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [open]);
-
-  // Close on Escape
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    if (!open) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); setOpen(false); }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [open]);
+  const handleClose = useCallback(() => setOpen(false), []);
+  useClickOutside(containerRef, handleClose, open);
 
   const handleModelSelect = useCallback(
     (agentId: AgentId, model: string) => {
@@ -77,13 +56,12 @@ export function ModelAgentSelector({
     [activeAgentId, onAgentChange, onModelChange],
   );
 
-  // Clear pending model once the CLI confirms it, or on session change (modelInfo resets)
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    if (resolvedModel) {
-      setPendingModel(undefined);
-    }
-  }, [resolvedModel]);
+  // Clear pending model once the CLI confirms it (inline during render)
+  const prevResolvedRef = useRef(resolvedModel);
+  if (resolvedModel && resolvedModel !== prevResolvedRef.current) {
+    setPendingModel(undefined);
+  }
+  prevResolvedRef.current = resolvedModel;
 
   return (
     <div ref={containerRef} className="relative" data-testid="model-agent-selector">

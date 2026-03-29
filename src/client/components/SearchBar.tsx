@@ -1,5 +1,4 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: auto-focus input on mount (one-time DOM setup)
-import { useRef, useEffect } from "react";
+import { useRef } from "react";
 import { CaretUpIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
@@ -31,11 +30,6 @@ export function SearchBar({
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") {
       onClose();
@@ -52,6 +46,7 @@ export function SearchBar({
     <div className="flex items-center gap-2 px-4 py-2 bg-(--color-bg-secondary) border-b border-(--color-border-primary)">
       <input
         ref={inputRef}
+        autoFocus
         type="text"
         value={query}
         onChange={(e) => onQueryChange(e.target.value)}

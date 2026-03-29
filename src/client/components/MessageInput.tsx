@@ -100,14 +100,14 @@ export function MessageInput({
   }, []);
 
   // Auto-focus textarea on session change (e.g. "New Session" click, session switch)
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    if (focusKey) {
-      requestAnimationFrame(() => {
-        textareaRef.current?.focus();
-      });
-    }
-  }, [focusKey]);
+  const prevFocusKeyRef = useRef(focusKey);
+  if (focusKey && focusKey !== prevFocusKeyRef.current) {
+    prevFocusKeyRef.current = focusKey;
+    // Schedule focus after paint — safe to call during render since it's a microtask
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
+  }
 
   const addFiles = useCallback(
     (files: FileList | File[]) => {

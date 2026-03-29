@@ -1,5 +1,5 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: focus input on edit start + click-outside listener for dropdown
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useCallback } from "react";
+import { useClickOutside } from "../hooks/useClickOutside.js";
 import { DotsThreeVerticalIcon, DownloadSimpleIcon, PencilSimpleIcon, ArchiveIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 
@@ -18,32 +18,17 @@ export function SessionTopBar({ title, onRename, onDownloadChat, onArchive }: Se
   const menuRef = useRef<HTMLDivElement>(null);
   const editResolvedRef = useRef(false);
 
-  // Focus & select on edit start
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    if (isEditing && inputRef.current) {
-      editResolvedRef.current = false;
-      inputRef.current.focus();
-      inputRef.current.select();
-    }
-  }, [isEditing]);
-
-  // Close menu on outside click
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    if (!menuOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [menuOpen]);
+  const handleMenuClose = useCallback(() => setMenuOpen(false), []);
+  useClickOutside(menuRef, handleMenuClose, menuOpen);
 
   const startEditing = useCallback(() => {
     setEditingTitle(title);
+    editResolvedRef.current = false;
     setIsEditing(true);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
   }, [title]);
 
   const submitRename = useCallback(() => {
