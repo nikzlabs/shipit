@@ -110,6 +110,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   // Compose service management
   private _serviceManager: ServiceManager | null = null;
   private _serviceManagerListeners: (() => void)[] = [];
+  /** Called when config files change and no ServiceManager exists (e.g. after migration). */
+  onComposeConfigChanged?: () => void;
 
   /** Config files that trigger a compose reconcile when changed. */
   private static readonly CONFIG_FILES = new Set([
@@ -690,16 +692,21 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           this.emitMessage({ type: "files_changed", paths } as WsServerMessage);
 
           // Detect config file changes and trigger compose reconciliation
-          if (this._serviceManager?.started) {
-            const hasConfigChange = paths.some(p =>
-              ContainerSessionRunner.CONFIG_FILES.has(p) ||
-              ContainerSessionRunner.CONFIG_FILES.has(p.replace(/^\.\//, "")),
-            );
-            if (hasConfigChange) {
+          const hasConfigChange = paths.some(p =>
+            ContainerSessionRunner.CONFIG_FILES.has(p) ||
+            ContainerSessionRunner.CONFIG_FILES.has(p.replace(/^\.\//, "")),
+          );
+          if (hasConfigChange) {
+            if (this._serviceManager?.started) {
               console.log(`[container-runner:${this.sessionId}] Config file changed, reconciling compose stack`);
               this._serviceManager.reconcile().catch((err: unknown) => {
                 console.error(`[container-runner:${this.sessionId}] Compose reconcile failed:`, err);
               });
+            } else if (!this._serviceManager && this.onComposeConfigChanged) {
+              // No ServiceManager yet (e.g. old-format config was just migrated)
+              // — re-evaluate the config and set up compose if now available
+              console.log(`[container-runner:${this.sessionId}] Config file changed, attempting compose setup`);
+              this.onComposeConfigChanged();
             }
           }
           break;

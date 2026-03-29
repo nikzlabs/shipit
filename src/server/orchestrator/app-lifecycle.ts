@@ -397,9 +397,15 @@ export function createRunnerRegistry(
       });
 
       // Set up compose ServiceManager if the session has a compose config
-      setupServiceManager(runner, {
-        sessionManager, serviceManagers, composeWarnings, containerManager,
-      });
+      const setupDeps = { sessionManager, serviceManagers, composeWarnings, containerManager };
+      setupServiceManager(runner, setupDeps);
+
+      // Allow re-setup when config files change (e.g. old-format migrated to new)
+      if ("onComposeConfigChanged" in runner) {
+        (runner as { onComposeConfigChanged?: () => void }).onComposeConfigChanged = () => {
+          setupServiceManager(runner, setupDeps);
+        };
+      }
     },
   });
 }
@@ -430,11 +436,18 @@ function setupServiceManager(
 
   // Surface config migration warnings in the preview panel.
   // Store in composeWarnings map for replay on viewer attach — at this point
-  // the WS listener is not yet connected so emitMessage would be lost.
+  // (first call) the WS listener may not yet be connected so emitMessage
+  // would be lost. On subsequent calls (config re-evaluation), emitMessage
+  // works and we also update the map.
   if (shipitConfig.warnings.length > 0) {
     const text = `shipit.yaml needs migration:\n${shipitConfig.warnings.map(w => `• ${w}`).join("\n")}`;
     composeWarnings.set(runner.sessionId, text);
+    runner.emitMessage({ type: "compose_error", sessionId: runner.sessionId, message: text });
     runner.on("disposed", () => composeWarnings.delete(runner.sessionId));
+  } else if (composeWarnings.has(runner.sessionId)) {
+    // Warnings cleared (config was fixed) — remove stale warning
+    composeWarnings.delete(runner.sessionId);
+    runner.emitMessage({ type: "compose_error", sessionId: runner.sessionId, message: "" });
   }
 
   if (!shipitConfig.compose) return;
@@ -471,6 +484,8 @@ function setupServiceManager(
   });
 
   serviceManagers.set(runner.sessionId, mgr);
+  // Clear any stale migration warning — compose is now set up
+  composeWarnings.delete(runner.sessionId);
 
   // Wire ServiceManager to runner for event relay to WS clients
   if (runner.setServiceManager) {

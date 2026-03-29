@@ -507,7 +507,7 @@ export function useMessageHandler(params: {
     }
 
     if (data.type === "compose_error") {
-      preview.setComposeError(data.message);
+      preview.setComposeError(data.message || null);
     }
 
     if (data.type === "service_log") {
