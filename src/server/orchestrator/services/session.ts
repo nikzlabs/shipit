@@ -348,22 +348,10 @@ export function renameSession(
 export async function archiveSession(
   sessionManager: SessionManager,
   runnerRegistry: SessionRunnerRegistry,
-  createRepoGit: (dir: string) => RepoGit,
   getBareCacheDir: (url: string) => string,
   sessionId: string,
 ): Promise<{ sessions: SessionInfo[] }> {
   const session = sessionManager.get(sessionId);
-
-  // Try to delete the remote branch
-  if (session?.branch && session.remoteUrl) {
-    try {
-      const cacheDir = getBareCacheDir(session.remoteUrl);
-      const cacheGit = createRepoGit(cacheDir);
-      await cacheGit.deleteBranch(session.branch);
-    } catch (err) {
-      console.warn("[server] Remote branch cleanup failed:", String(err));
-    }
-  }
 
   // Dispose runner
   runnerRegistry.dispose(sessionId);
@@ -409,7 +397,6 @@ const MAX_MERGED_SESSIONS = 5;
 export async function markMergedAndPruneExcess(
   sessionManager: SessionManager,
   runnerRegistry: SessionRunnerRegistry,
-  createRepoGit: (dir: string) => RepoGit,
   getBareCacheDir: (url: string) => string,
   sessionId: string,
 ): Promise<{ sessions: SessionInfo[] }> {
@@ -419,7 +406,7 @@ export async function markMergedAndPruneExcess(
   // Archive oldest merged sessions beyond the limit (list is sorted newest-first)
   const toArchive = merged.slice(MAX_MERGED_SESSIONS);
   for (const session of toArchive) {
-    await archiveSession(sessionManager, runnerRegistry, createRepoGit, getBareCacheDir, session.id);
+    await archiveSession(sessionManager, runnerRegistry, getBareCacheDir, session.id);
   }
 
   return { sessions: sessionManager.list() };

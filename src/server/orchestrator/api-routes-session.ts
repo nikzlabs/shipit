@@ -239,7 +239,6 @@ export async function registerSessionRoutes(
         const result = await archiveSession(
           sessionManager,
           deps.runnerRegistry,
-          createRepoGit,
           deps.getSharedRepoDir,
           request.params.id,
         );
