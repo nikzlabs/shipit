@@ -25,6 +25,11 @@ export function resetSessionState() {
  * WS connects automatically via the per-session WS URL; no activate_session needed.
  */
 export function resumeSessionInternal(sessionId: string) {
+  // Snapshot outgoing session's preview state before switching
+  const outgoingSessionId = useSessionStore.getState().sessionId;
+  const preview = usePreviewStore.getState();
+  if (outgoingSessionId) preview.snapshotSession(outgoingSessionId);
+
   const session = useSessionStore.getState();
   session.setSessionId(sessionId);
   session.setMessages([]);
@@ -38,7 +43,9 @@ export function resumeSessionInternal(sessionId: string) {
   useGitStore.getState().reset();
   useTerminalStore.getState().reset();
   useUiStore.getState().reset();
-  usePreviewStore.getState().reset();
+
+  // Restore incoming session's preview state (or reset to defaults)
+  preview.restoreSession(sessionId);
 
   // Session data is loaded via HTTP by useConnectionSync when the per-session WS connects.
   // Don't load here — it races with the WS connection and causes double-loading.
