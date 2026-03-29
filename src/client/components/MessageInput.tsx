@@ -109,6 +109,24 @@ export function MessageInput({
     });
   }
 
+  // Guard against iframe focus theft: when the textarea is focused and an iframe
+  // (e.g. preview loading) steals focus, the textarea fires a blur event with no
+  // relatedTarget (cross-origin iframes don't expose it). Reclaim focus in that case
+  // unless the user intentionally clicked another element in the main document.
+  const handleBlur = useCallback((e: React.FocusEvent<HTMLTextAreaElement>) => {
+    // relatedTarget is set when focus moves to another element in the same document
+    // (e.g. a button click). When an iframe steals focus, relatedTarget is null.
+    if (e.relatedTarget) return;
+    requestAnimationFrame(() => {
+      // If activeElement is body or an iframe, the textarea lost focus to something
+      // outside the main document — reclaim it.
+      const active = document.activeElement;
+      if (!active || active === document.body || active.tagName === "IFRAME") {
+        textareaRef.current?.focus();
+      }
+    });
+  }, []);
+
   const addFiles = useCallback(
     (files: FileList | File[]) => {
       const fileArray = Array.from(files);
@@ -319,6 +337,7 @@ export function MessageInput({
             value={text}
             onChange={handleTextChange}
             onKeyDown={handleKeyDown}
+            onBlur={handleBlur}
             onPaste={handlePaste}
             placeholder="Describe what to build... (type @ to attach files)"
             rows={1}
