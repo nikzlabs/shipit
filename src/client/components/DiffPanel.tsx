@@ -361,9 +361,15 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
     requestAnimationFrame(() => setTimeout(updateHeight, 100));
 
     // --- Dispose interceptor (prevents Monaco teardown race) ---
+    // We pass keepCurrentOriginalModel + keepCurrentModifiedModel to the
+    // DiffEditor so @monaco-editor/react won't dispose models before calling
+    // editor.dispose(). Instead we detach models first, then dispose them.
     const originalDispose = editor.dispose.bind(editor);
     editor.dispose = () => {
+      const model = editor.getModel();
       editor.setModel(null);
+      model?.original?.dispose();
+      model?.modified?.dispose();
       originalDispose();
     };
 
@@ -534,6 +540,8 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
                         theme="vs-dark"
                         onMount={(editor) => handleEditorMount(editor, i)}
                         options={DIFF_EDITOR_OPTIONS}
+                        keepCurrentOriginalModel
+                        keepCurrentModifiedModel
                       />
                     </div>
                   )
