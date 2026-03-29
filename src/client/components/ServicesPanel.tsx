@@ -15,6 +15,7 @@ const MAX_PLAIN_LINES = 200;
 
 interface ServicesPanelProps {
   lastMessage: MessageEvent | null;
+  drainMessages: () => MessageEvent[];
   send: (msg: WsClientMessage) => void;
   onSendToAgent: (serviceName: string, status: string, logs: string) => void;
 }
@@ -31,11 +32,13 @@ function StatusDot({ status }: { status: ManagedServiceState["status"] }) {
 /** Read-only xterm.js log viewer for a single service. */
 function ServiceLogViewer({
   serviceName,
-  parsedMessage,
+  lastMessage,
+  drainMessages,
   send,
 }: {
   serviceName: string;
-  parsedMessage: WsServerMessage | null;
+  lastMessage: MessageEvent | null;
+  drainMessages: () => MessageEvent[];
   send: (msg: WsClientMessage) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -115,21 +118,30 @@ function ServiceLogViewer({
     };
   }, [serviceName, send]);
 
-  // Write incoming WS messages to xterm
+  // Write incoming WS messages to xterm — drain the full queue so no log
+  // chunks are lost when React batches renders.
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
-    if (!parsedMessage || !termRef.current) return;
+    if (!termRef.current) return;
+    // Note: drainMessages() is shared with useMessageHandler which runs first
+    // (same render cycle). By the time this effect runs the queue is already
+    // drained, so we also check lastMessage as a fallback for the current msg.
+    const pending = drainMessages();
+    const events: MessageEvent[] = pending.length > 0 ? pending : (lastMessage ? [lastMessage] : []);
 
-    if (parsedMessage.type === "service_log_buffer" && parsedMessage.name === serviceName && !bufferReceivedRef.current) {
-      bufferReceivedRef.current = true;
-      termRef.current.write(parsedMessage.buffer);
+    for (const evt of events) {
+      let parsed: WsServerMessage;
+      try { parsed = JSON.parse(evt.data as string) as WsServerMessage; } catch { continue; }
+
+      if (parsed.type === "service_log_buffer" && parsed.name === serviceName && !bufferReceivedRef.current) {
+        bufferReceivedRef.current = true;
+        termRef.current.write(parsed.buffer);
+      }
+      if (parsed.type === "service_log" && parsed.name === serviceName && bufferReceivedRef.current) {
+        termRef.current.write(parsed.text);
+      }
     }
-    // Only write live log events after the buffer replay — events that
-    // arrived before the buffer would duplicate its content.
-    if (parsedMessage.type === "service_log" && parsedMessage.name === serviceName && bufferReceivedRef.current) {
-      termRef.current.write(parsedMessage.text);
-    }
-  }, [parsedMessage, serviceName]);
+  }, [lastMessage, drainMessages, serviceName]);
 
   return (
     <div
@@ -140,19 +152,9 @@ function ServiceLogViewer({
   );
 }
 
-export function ServicesPanel({ lastMessage, send, onSendToAgent }: ServicesPanelProps) {
+export function ServicesPanel({ lastMessage, drainMessages, send, onSendToAgent }: ServicesPanelProps) {
   const services = usePreviewStore((s) => s.services);
   const [selectedService, setSelectedService] = useState<string | null>(null);
-
-  // Parse WS message once — shared by ServiceLogViewer and plain-text accumulator
-  const parsedMessage = (() => {
-    if (!lastMessage) return null;
-    try {
-      return JSON.parse(lastMessage.data as string) as WsServerMessage;
-    } catch {
-      return null;
-    }
-  })();
 
   // Track plain-text log lines for the selected service (for Send to Agent)
   const plainLinesRef = useRef<string[]>([]);
@@ -165,17 +167,23 @@ export function ServicesPanel({ lastMessage, send, onSendToAgent }: ServicesPane
     plainLinesRef.current = [];
   }
 
-  // Accumulate plain-text log lines from WS messages (inline during render)
+  // Accumulate plain-text log lines from WS messages (inline during render).
+  // We check lastMessage identity change as a render trigger, then parse
+  // the message for plain-text accumulation (best-effort for Send to Agent).
   if (lastMessage !== prevLastMessageRef.current) {
     prevLastMessageRef.current = lastMessage;
-    if (parsedMessage && selectedService) {
-      if (parsedMessage.type === "service_log_buffer" && parsedMessage.name === selectedService) {
-        const lines = parsedMessage.buffer.split("\n");
-        plainLinesRef.current = lines.slice(-MAX_PLAIN_LINES);
-      }
-      if (parsedMessage.type === "service_log" && parsedMessage.name === selectedService) {
-        const newLines = parsedMessage.text.split("\n");
-        plainLinesRef.current = [...plainLinesRef.current, ...newLines].slice(-MAX_PLAIN_LINES);
+    if (lastMessage && selectedService) {
+      let parsedMessage: WsServerMessage | null = null;
+      try { parsedMessage = JSON.parse(lastMessage.data as string) as WsServerMessage; } catch { /* ignore */ }
+      if (parsedMessage) {
+        if (parsedMessage.type === "service_log_buffer" && parsedMessage.name === selectedService) {
+          const lines = parsedMessage.buffer.split("\n");
+          plainLinesRef.current = lines.slice(-MAX_PLAIN_LINES);
+        }
+        if (parsedMessage.type === "service_log" && parsedMessage.name === selectedService) {
+          const newLines = parsedMessage.text.split("\n");
+          plainLinesRef.current = [...plainLinesRef.current, ...newLines].slice(-MAX_PLAIN_LINES);
+        }
       }
     }
   }
@@ -253,7 +261,8 @@ export function ServicesPanel({ lastMessage, send, onSendToAgent }: ServicesPane
       <div className="flex-1 min-h-0">
         <ServiceLogViewer
           serviceName={effectiveService}
-          parsedMessage={parsedMessage}
+          lastMessage={lastMessage}
+          drainMessages={drainMessages}
           send={send}
         />
       </div>

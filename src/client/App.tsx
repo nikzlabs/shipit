@@ -82,7 +82,7 @@ export default function App() {
 
   // Per-session WS — connects using URL param, or store sessionId when on /{slug}/new route
   const wsSessionId = urlSessionId ?? (isNewSessionRoute ? sessionId : undefined);
-  const { send, lastMessage, status, reconnectAttempt, reconnect } = useSessionWebSocket(wsSessionId);
+  const { send, lastMessage, drainMessages, status, reconnectAttempt, reconnect } = useSessionWebSocket(wsSessionId);
   const { get: apiGet, post: apiPost, put: apiPut, del: apiDel } = useApi();
   const claimAbortRef = useRef<AbortController | null>(null);
   const terminalRef = useRef<InteractiveTerminalHandle>(null);
@@ -233,6 +233,7 @@ export default function App() {
 
   useMessageHandler({
     lastMessage,
+    drainMessages,
     send,
     terminalRef,
     notify,
@@ -631,7 +632,7 @@ export default function App() {
         ) : rightTab === "history" ? (
           <GitHistory commits={gitCommits} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().fetchLog(sid).catch(() => {}); }} onViewDiff={handleViewDiff} />
         ) : rightTab === "services" ? (
-          <ServicesPanel lastMessage={lastMessage} send={send} onSendToAgent={handleSendServiceLogsToAgent} />
+          <ServicesPanel lastMessage={lastMessage} drainMessages={drainMessages} send={send} onSendToAgent={handleSendServiceLogsToAgent} />
         ) : rightTab === "files" ? (
           <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); void useFileStore.getState().hydrateUploads(sid); } }} onFileClick={handleOpenFilePreview} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} onDownload={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) { const a = document.createElement("a"); a.href = `/api/sessions/${sid}/files/download/${f}`; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); } }} uploads={sessionUploads} onDeleteUpload={(u) => { const sid = useSessionStore.getState().sessionId; if (u.path) markUploadDeleted(u.path); if (sid && u.path) { const filename = u.path.replace(/^\/uploads\//, ""); void fetch(`/api/sessions/${sid}/files/uploads/${encodeURIComponent(filename)}`, { method: "DELETE" }); } if (u.previewUrl) URL.revokeObjectURL(u.previewUrl); if (u.path) useFileStore.getState().removeSessionUpload(u.path); else useFileStore.getState().removeSessionUploadById(u.id); }} />
         ) : null}

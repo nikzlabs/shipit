@@ -5,7 +5,18 @@ export type WsStatus = "connecting" | "open" | "closed";
 
 export interface UseWebSocketReturn {
   send: (data: unknown) => void;
+  /**
+   * The most recent WebSocket message. Used as a React render trigger — when
+   * multiple messages arrive between renders, only the last one is visible here.
+   * Use {@link drainMessages} to process every message without drops.
+   */
   lastMessage: MessageEvent | null;
+  /**
+   * Drain all messages that arrived since the last drain. Returns and clears
+   * the internal queue. This guarantees no messages are lost even when React
+   * batches multiple `setLastMessage` calls between renders.
+   */
+  drainMessages: () => MessageEvent[];
   status: WsStatus;
   /** Number of consecutive reconnect attempts since last successful connection. */
   reconnectAttempt: number;
@@ -25,6 +36,7 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
   const wsRef = useRef<WebSocket | null>(null);
   const [status, setStatus] = useState<WsStatus>(url ? "connecting" : "closed");
   const [lastMessage, setLastMessage] = useState<MessageEvent | null>(null);
+  const messageQueueRef = useRef<MessageEvent[]>([]);
   const [connectAttempt, setConnectAttempt] = useState(0);
   const reconnectAttemptRef = useRef(0);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
@@ -70,7 +82,10 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
       );
     };
 
-    ws.onmessage = (event) => setLastMessage(event);
+    ws.onmessage = (event) => {
+      messageQueueRef.current.push(event);
+      setLastMessage(event);
+    };
 
     return () => {
       intentionalClose = true;
@@ -105,5 +120,11 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
     setConnectAttempt((n) => n + 1);
   }, []);
 
-  return { send, lastMessage, status, reconnectAttempt, reconnect };
+  const drainMessages = useCallback((): MessageEvent[] => {
+    const msgs = messageQueueRef.current;
+    messageQueueRef.current = [];
+    return msgs;
+  }, []);
+
+  return { send, lastMessage, drainMessages, status, reconnectAttempt, reconnect };
 }
