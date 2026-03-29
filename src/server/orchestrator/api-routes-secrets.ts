@@ -3,16 +3,13 @@
  * Handles: loading and saving per-repo environment variable secrets.
  *
  * Secrets are stored in the orchestrator's SQLite database (SecretStore),
- * keyed by repo URL. On save, they are pushed to the active preview
- * container(s) for sessions using that repo via PUT /secrets on each
- * preview worker.
+ * keyed by repo URL.
  */
 
 import type { FastifyInstance } from "fastify";
 import type { SecretStore } from "./secret-store.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
-import type { ContainerSessionRunner } from "./container-session-runner.js";
 
 export interface SecretsDeps {
   secretStore: SecretStore;
@@ -24,7 +21,7 @@ export async function registerSecretsRoutes(
   app: FastifyInstance,
   deps: SecretsDeps,
 ): Promise<void> {
-  const { secretStore, runnerRegistry, sessionManager } = deps;
+  const { secretStore } = deps;
 
   // GET /api/secrets?repoUrl=... — load secrets for a repo
   app.get<{ Querystring: { repoUrl?: string } }>(
@@ -61,24 +58,7 @@ export async function registerSecretsRoutes(
       // Save to database
       secretStore.saveSecrets(repoUrl, secrets);
 
-      // Push to active preview containers for sessions using this repo
-      const pushErrors: string[] = [];
-      for (const session of sessionManager.list()) {
-        if (session.remoteUrl !== repoUrl) continue;
-        const runner = runnerRegistry.get(session.id);
-        if (!runner?.supportsRemoteTerminal) continue;
-        try {
-          const containerRunner = runner as ContainerSessionRunner;
-          await containerRunner.pushSecretsToPreview(secrets);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          pushErrors.push(`${session.id}: ${msg}`);
-        }
-      }
-
-      if (pushErrors.length > 0) {
-        return { saved: true, pushErrors };
-      }
+      // TODO: Push secrets to compose services via .shipit/.env
       return { saved: true };
     },
   );

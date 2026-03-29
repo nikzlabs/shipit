@@ -4,7 +4,6 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import type { ContainerSessionRunner } from "./container-session-runner.js";
 import type { ApiDeps } from "./api-routes.js";
 
 import {
@@ -12,6 +11,7 @@ import {
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
+import { stripAnsi } from "../shared/strip-ansi.js";
 
 export async function registerPreviewRoutes(
   app: FastifyInstance,
@@ -34,24 +34,37 @@ export async function registerPreviewRoutes(
     return { known: true, ...status };
   });
 
-  // POST /api/sessions/:id/preview/restart — restart the preview server
-  app.post<{ Params: { id: string } }>(
-    "/api/sessions/:id/preview/restart",
+  // GET /api/sessions/:id/services — list compose services with status
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/services", async (request, reply) => {
+    const mgr = deps.serviceManagers?.get(request.params.id);
+    if (!mgr) {
+      reply.code(404).send({ error: "No compose stack for this session" });
+      return;
+    }
+    return { services: mgr.getServices() };
+  });
+
+  // GET /api/sessions/:id/services/:name/logs — fetch service logs (ANSI stripped)
+  app.get<{ Params: { id: string; name: string }; Querystring: { lines?: string } }>(
+    "/api/sessions/:id/services/:name/logs",
     async (request, reply) => {
-      const runner = deps.runnerRegistry.get(request.params.id);
-      if (!runner) {
-        return reply.code(404).send({ error: "Session not found or no active runner" });
+      const mgr = deps.serviceManagers?.get(request.params.id);
+      if (!mgr) {
+        reply.code(404).send({ error: "No compose stack for this session" });
+        return;
       }
-      if (!runner.supportsRemoteTerminal) {
-        return reply.code(400).send({ error: "Preview restart only supported for container sessions" });
+      const svc = mgr.getService(request.params.name);
+      if (!svc) {
+        reply.code(404).send({ error: `Unknown service: ${request.params.name}` });
+        return;
       }
-      try {
-        const containerRunner = runner as ContainerSessionRunner;
-        await containerRunner.restartPreviewOnWorker();
-        return { restarted: true };
-      } catch (err) {
-        reply.code(500).send({ error: `Failed to restart preview: ${getErrorMessage(err)}` });
+      let logs = stripAnsi(mgr.getLogBuffer(request.params.name));
+      const lines = parseInt(request.query.lines ?? "", 10);
+      if (Number.isFinite(lines) && lines > 0) {
+        const allLines = logs.split("\n");
+        logs = allLines.slice(-lines).join("\n");
       }
+      return { name: request.params.name, logs };
     },
   );
 

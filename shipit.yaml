@@ -1,14 +1,9 @@
-capabilities:
-  docker: true
-
-resources:
+agent:
   memory: 3072
   cpu: 2.0
   pids: 2048
+  install: NODE_ENV=development npm install
 
-install: NODE_ENV=development npm install
-preview:
-  command: >-
-    ./node_modules/.bin/tsx watch src/server/orchestrator/index.ts &
-    ./node_modules/.bin/vite dev --host 0.0.0.0 --port 5173
-  ports: [5173]
+compose:
+  file: docker/local/dev/compose.yml
+  docker-socket: true

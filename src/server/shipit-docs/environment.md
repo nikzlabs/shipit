@@ -26,15 +26,20 @@ You are running inside a Docker container managed by ShipIt.
 `git commit`, `git add`, or `git push` — this is handled automatically. The
 commit message is derived from your turn summary.
 
-**Hot reload**: When you edit files, the preview picks up changes automatically.
-No need to restart dev servers after code edits.
+**Hot reload**: When you edit files, compose services with mounted volumes
+pick up changes automatically. No need to restart dev servers after code edits.
 
 **Dependency detection**: Changes to lockfiles (`package-lock.json`,
-`yarn.lock`, `pnpm-lock.yaml`) trigger an automatic install + preview restart
+`yarn.lock`, `pnpm-lock.yaml`) trigger an automatic install + service restart
 (debounced with a 30s cooldown).
+
+**Compose services**: Project services (dev servers, databases, caches) run as
+Docker Compose containers managed by ShipIt. Define them in
+`docker-compose.yml`. See [compose.md](compose.md) for details.
 
 ## Resource limits
 
-Containers have default limits (512 MB memory, 0.5 CPU, 256 PIDs) that can be
-increased via `shipit.yaml`. See [shipit-yaml.md](shipit-yaml.md) for the
-`resources` section.
+Agent containers have default limits (1024 MB memory, 0.5 CPU, 256 PIDs) that
+can be increased via the `agent` section in `shipit.yaml`. See
+[shipit-yaml.md](shipit-yaml.md) for details. Service containers have their
+own resource limits set in `docker-compose.yml`.

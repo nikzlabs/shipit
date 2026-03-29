@@ -8,8 +8,6 @@ import { getErrorMessage, resolveFileAttachments, resolveUploadRefs, formatFileC
 import { wireAgentListeners } from "./agent-listeners.js";
 import { postTurnCommit } from "./post-turn.js";
 import { buildAgentSystemInstructions } from "../agent-instructions.js";
-import { ContainerSessionRunner } from "../container-session-runner.js";
-
 /**
  * Save base64 images to the session's uploads directory on the host.
  * Returns a prompt prefix referencing the saved files (container paths).
@@ -271,11 +269,8 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
     }
   });
 
-  // Resolve preview URL from the container runner (if available)
-  let previewUrl: string | undefined;
-  if (runner instanceof ContainerSessionRunner) {
-    previewUrl = runner.resolvePreviewUrl();
-  }
+  // Preview URL — compose services are accessed via the preview proxy
+  const previewUrl: string | undefined = undefined;
 
   // Build the system prompt, incorporating agent system instructions and conversation replay
   const agentInstructions = ctx.credentialStore.getAgentSystemInstructionsEnabled()

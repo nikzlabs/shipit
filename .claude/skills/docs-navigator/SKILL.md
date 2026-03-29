@@ -1,4 +1,5 @@
 ---
+name: docs-navigator
 description: "Feature docs index and navigation. Load when you need to understand how a specific feature was implemented, find related feature docs for a task, or check what's planned/in-progress. Not needed for pure architecture questions (use the architecture skills instead)."
 user-invocable: true
 ---

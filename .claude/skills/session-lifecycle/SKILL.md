@@ -1,4 +1,5 @@
 ---
+name: session-lifecycle
 description: "ShipIt session lifecycle: session types (standalone, worktree, warm), creation paths, warm session pool mechanics, session activation flow, session switching. Load when working on session creation, warm pool, or activation logic."
 user-invocable: true
 ---

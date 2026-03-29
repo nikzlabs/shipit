@@ -9,6 +9,7 @@
 import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, AgentEvent, TerminalProcess, AgentRunParams } from "../shared/types.js";
 import type { WsServerMessage, ImageAttachment, FileContextRef, UploadRef, PermissionMode, ClaudeContentBlockToolUse } from "../shared/types.js";
+import type { ServiceManager } from "./service-manager.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -249,8 +250,6 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
 
   // Viewer management
   readonly viewerCount: number;
-  getPreview(): null;
-  getFileWatcher(): null;
   attachViewer(): void;
   detachViewer(): void;
   buildPreviewStatus(): WsServerMessage;
@@ -261,6 +260,10 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   /** Wait until preview state is known (SSE connected + worker reported). Resolves
    *  immediately if already known. */
   waitForPreviewStatus(): Promise<void>;
+
+  // Compose service management
+  /** Attach a ServiceManager for compose lifecycle events. Optional — not all runners have compose. */
+  setServiceManager?(mgr: ServiceManager): void;
 
   // System-initiated turns
   /** Inject dependencies needed for server-initiated agent turns. */
@@ -394,8 +397,6 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   get detectedPorts(): number[] { return this._detectedPorts; }
   set detectedPorts(ports: number[]) { this._detectedPorts = ports; }
   get viewerCount(): number { return this._viewerCount; }
-  getPreview(): null { return null; }
-  getFileWatcher(): null { return null; }
   attachViewer(): void { this._viewerCount++; }
   detachViewer(): void { this._viewerCount = Math.max(0, this._viewerCount - 1); }
   buildPreviewStatus(): WsServerMessage {

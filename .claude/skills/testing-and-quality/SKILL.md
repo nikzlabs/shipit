@@ -1,4 +1,5 @@
 ---
+name: testing-and-quality
 description: "ShipIt testing conventions and quality checklist: Vitest config (server vs client), server test patterns (temp dirs), integration tests (buildApp, TestClient, test-helpers.ts), client tests (render, renderHook, FakeWebSocket), mocking patterns, and the pre-completion quality checklist (input validation, component tests, integration tests). Load when writing tests, reviewing coverage, or completing a feature."
 user-invocable: true
 ---

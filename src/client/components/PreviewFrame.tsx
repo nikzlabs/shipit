@@ -1,10 +1,11 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: poll external preview server URL until ready with cancellation (external system sync)
 import { useState, useEffect, useRef } from "react";
-import { WarningIcon, GearSixIcon, CircleNotchIcon, ArrowClockwiseIcon, ArrowSquareOutIcon } from "@phosphor-icons/react";
+import { WarningIcon, CircleNotchIcon, ArrowClockwiseIcon, ArrowSquareOutIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import type { PreviewError } from "../hooks/usePreviewErrors.js";
 import { usePreviewStore } from "../stores/preview-store.js";
+import { useUiStore } from "../stores/ui-store.js";
 import { StartupSteps } from "./StartupSteps.js";
 
 export interface PreviewStatus {
@@ -37,15 +38,7 @@ interface PreviewFrameProps {
   onSendErrors: (errors: PreviewError[]) => void;
   /** Called to clear all errors. */
   onClearErrors: () => void;
-  /** Whether no preview config was found for the session. */
-  configMissing?: boolean;
-  /** Called when user clicks "Set up with Claude" to generate shipit.yaml. */
-  onInitPreviewConfig?: () => void;
-  /** Crash information when preview server exited with error. */
-  crashInfo?: { exitCode: number | null; output: string } | null;
-  /** Called when user clicks "Retry" to restart the preview server. */
-  onRestartPreview?: () => void;
-  /** Called when user clicks "Fix with Claude" to send crash info to the agent. */
+  /** Called when user clicks "Send to agent" to send error info to the agent. */
   onSendCrashToAgent?: () => void;
 }
 
@@ -79,10 +72,6 @@ export function PreviewFrame({
   errors,
   onSendErrors,
   onClearErrors,
-  configMissing,
-  onInitPreviewConfig,
-  crashInfo,
-  onRestartPreview,
   onSendCrashToAgent,
 }: PreviewFrameProps) {
   const autoFixEnabled = usePreviewStore((s) => s.autoFixEnabled);
@@ -279,10 +268,12 @@ export function PreviewFrame({
 
   const hasErrors = errors.length > 0;
   const startupSteps = usePreviewStore((s) => s.startupSteps);
-  const showCrash = !!(crashInfo && !preview?.running);
-  const showStartupSteps = startupSteps.length > 0 && !isRunning && !showCrash;
-  const showStarting = !showStartupSteps && !preview && !!sessionId;
-  const showConfigMissing = !isRunning && !showCrash && !showStartupSteps && !showStarting && !!configMissing;
+  const services = usePreviewStore((s) => s.services);
+  const composeError = usePreviewStore((s) => s.composeError);
+  const showComposeError = !!composeError && !isRunning;
+  const showStartupSteps = startupSteps.length > 0 && !isRunning && !showComposeError;
+  const showStarting = !showStartupSteps && !showComposeError && !preview && !!sessionId;
+  const showServices = services.length > 0 && !isRunning && !showComposeError && !showStartupSteps;
 
   // When not running, hide the iframe behind the overlay (but keep DOM element alive)
   const hideIframe = !isRunning && !showStarting;
@@ -291,22 +282,15 @@ export function PreviewFrame({
   let overlayContent: React.ReactNode = null;
   if (showStartupSteps) {
     overlayContent = <StartupSteps steps={startupSteps} />;
-  } else if (showCrash) {
+  } else if (showComposeError) {
     overlayContent = (
       <div className="text-center space-y-3 max-w-lg px-4">
         <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-error)" />
-        <p className="text-(--color-error) font-medium">
-          Preview server crashed{crashInfo?.exitCode !== null && crashInfo?.exitCode !== undefined ? ` (exit code ${crashInfo.exitCode})` : ""}
-        </p>
-        {crashInfo?.output && (
-          <pre className="text-left text-xs text-(--color-text-secondary) bg-(--color-bg-secondary) rounded p-3 max-h-48 overflow-auto whitespace-pre-wrap border border-(--color-border-secondary)">
-            {crashInfo.output}
-          </pre>
-        )}
-        <div className="flex items-center justify-center gap-2">
-          {onRestartPreview && <Button variant="secondary" size="sm" onClick={onRestartPreview}>Retry</Button>}
-          {onSendCrashToAgent && <Button variant="primary" size="sm" onClick={onSendCrashToAgent}>Fix with Claude</Button>}
-        </div>
+        <p className="text-(--color-error) font-medium">Docker Compose error</p>
+        <pre className="text-left text-xs text-(--color-text-secondary) bg-(--color-bg-secondary) rounded p-3 max-h-48 overflow-auto whitespace-pre-wrap border border-(--color-border-secondary)">
+          {composeError}
+        </pre>
+        {onSendCrashToAgent && <Button variant="primary" size="sm" onClick={onSendCrashToAgent}>Send to agent</Button>}
       </div>
     );
   } else if (showStarting && !showIframe) {
@@ -348,15 +332,14 @@ export function PreviewFrame({
         </div>
       </div>
     );
-  } else if (showConfigMissing) {
+  } else if (showServices) {
     overlayContent = (
       <div className="text-center space-y-3">
-        <GearSixIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
-        <p>No preview configuration found.</p>
-        <p className="text-xs text-(--color-text-tertiary) max-w-sm">
-          Create a shipit.yaml file to configure how the preview server runs, or let Claude set it up for you.
-        </p>
-        {onInitPreviewConfig && <Button variant="primary" size="sm" onClick={onInitPreviewConfig}>Set up with Claude</Button>}
+        <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
+        <p className="text-sm text-(--color-text-secondary)">No preview running</p>
+        <Button variant="secondary" size="sm" onClick={() => useUiStore.getState().setRightTab("services")}>
+          View service logs
+        </Button>
       </div>
     );
   }

@@ -76,13 +76,12 @@ export function MessageInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dragCountRef = useRef(0);
 
-  // Consume prefill text from store (e.g. "Start Session" from docs viewer)
+  // Consume prefill text from store (e.g. "Start Session" from docs viewer, "Send to Agent" from services panel)
   useEffect(() => {
-    const prefill = useSessionStore.getState().prefillText;
-    if (prefill) {
+    const consume = (prefill: string | undefined) => {
+      if (!prefill) return;
       setText(prefill);
       useSessionStore.getState().setPrefillText(undefined);
-      // Focus and move cursor to end
       requestAnimationFrame(() => {
         const ta = textareaRef.current;
         if (ta) {
@@ -90,7 +89,13 @@ export function MessageInput({
           ta.setSelectionRange(prefill.length, prefill.length);
         }
       });
-    }
+    };
+    // Check on mount
+    consume(useSessionStore.getState().prefillText);
+    // Subscribe to future changes
+    return useSessionStore.subscribe((state) => {
+      consume(state.prefillText);
+    });
   }, []);
 
   // Auto-focus textarea on session change (e.g. "New Session" click, session switch)

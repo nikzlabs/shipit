@@ -66,12 +66,6 @@ export function useMessageHandler(params: {
         source: data.source,
         detectedPorts: data.detectedPorts,
       });
-      // Track crash info
-      if (!data.running && data.exitCode !== null && data.exitCode !== undefined && data.exitCode !== 0) {
-        preview.setCrashInfo({ exitCode: data.exitCode, output: data.errorOutput ?? "" });
-      } else if (data.running) {
-        preview.setCrashInfo(null);
-      }
       const currentPort = usePreviewStore.getState().selectedPort;
       if (currentPort !== null) {
         const allAvailable = [...(data.detectedPorts ?? [])];
@@ -490,38 +484,34 @@ export function useMessageHandler(params: {
       terminal.clearEntries();
     }
 
-    if (data.type === "preview_config_missing") {
-      preview.setConfigMissing(true);
+    if (data.type === "service_list") {
+      preview.setServices(
+        data.services.map((s) => ({
+          name: s.name,
+          status: s.status,
+          port: s.port,
+          preview: s.preview,
+          error: s.error,
+        })),
+      );
     }
 
-    if (data.type === "preview_config_error") {
-      preview.setConfigMissing(false);
-      ui.setToast({ message: `Preview config error: ${data.message}` });
-    }
-
-    if (data.type === "install_status") {
-      preview.setInstallStatus({ status: data.status, message: data.message });
-      if (data.status === "complete") {
-        setTimeout(() => usePreviewStore.getState().setInstallStatus(null), 1000);
-      }
-    }
-
-    if (data.type === "startup_step") {
-      const currentSessionId = session.sessionId;
-      if (data.sessionId && currentSessionId && data.sessionId !== currentSessionId) return;
-      preview.setStartupStep({
-        stepId: data.stepId,
+    if (data.type === "service_status") {
+      preview.updateService({
+        name: data.name,
         status: data.status,
-        durationMs: data.durationMs,
-        message: data.message,
-        logLines: data.logLines ?? [],
+        port: data.port,
+        preview: data.preview,
+        error: data.error,
       });
     }
 
-    if (data.type === "preview_status" && data.running) {
-      preview.setConfigMissing(false);
-      preview.setInstallStatus(null);
-      preview.clearStartupSteps();
+    if (data.type === "compose_error") {
+      preview.setComposeError(data.message || null);
+    }
+
+    if (data.type === "service_log") {
+      terminal.addEntry({ source: "preview", text: `[${data.name}] ${data.text}`, timestamp: new Date().toISOString() });
     }
 
     if (data.type === "turn_diff") {

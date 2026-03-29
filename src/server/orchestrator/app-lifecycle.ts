@@ -9,16 +9,17 @@ import simpleGit from "simple-git";
 import { generateBranchPrefix, repoUrlToHash, pushToOrigin } from "./git-utils.js";
 import { SessionContainerManager } from "./session-container.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
-import type { SessionRunnerFactory } from "./session-runner.js";
+import type { SessionRunnerFactory, SessionRunnerInterface } from "./session-runner.js";
 import { SessionRunnerRegistry } from "./session-runner.js";
 import { resolveSessionConfig } from "../shared/session-config.js";
 import { createDockerProxy, resolveOwnContainerIp } from "./docker-proxy.js";
 import type { SessionInfo as DockerProxySessionInfo } from "./docker-proxy.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
 import { getErrorMessage } from "./validation.js";
-import { workerPost } from "./worker-http.js";
 import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
 import { deleteSession, markMergedAndPruneExcess } from "./services/session.js";
+import { ServiceManager } from "./service-manager.js";
+import { resolveShipitConfig } from "../shared/shipit-config.js";
 import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
 import type { RepoGit } from "./repo-git.js";
@@ -176,7 +177,6 @@ export function buildRunnerFactory(
         sessionDir: o.sessionDir,
         defaultAgentId: o.defaultAgentId,
         workerUrl: existing.workerUrl,
-        previewWorkerUrl: existing.previewWorkerUrl,
       });
     }
 
@@ -201,7 +201,6 @@ export function buildRunnerFactory(
               mgr.claimStandby(o.sessionId);
               console.log(`[container] Standby container ready for ${o.sessionId} at ${sc.workerUrl}`);
               runner.setWorkerUrl(sc.workerUrl);
-              if (sc.previewWorkerUrl) runner.setPreviewWorkerUrl(sc.previewWorkerUrl);
               return;
             }
             if (!sc) break; // Creation failed and entry was removed
@@ -219,15 +218,11 @@ export function buildRunnerFactory(
             memoryLimit: sessionConfig.resources.agent.memory * 1024 * 1024,
             cpuQuota: Math.round(sessionConfig.resources.agent.cpu * 100_000),
             pidsLimit: sessionConfig.resources.agent.pids,
-            previewMemoryLimit: sessionConfig.resources.preview.memory * 1024 * 1024,
-            previewCpuQuota: Math.round(sessionConfig.resources.preview.cpu * 100_000),
-            previewPidsLimit: sessionConfig.resources.preview.pids,
             dockerAccess: sessionConfig.capabilities.docker,
           });
           const sc = await mgr.create(config);
           console.log(`[container] Container ready for ${o.sessionId} at ${sc.workerUrl}`);
           runner.setWorkerUrl(sc.workerUrl);
-          if (sc.previewWorkerUrl) runner.setPreviewWorkerUrl(sc.previewWorkerUrl);
         } catch (err) {
           console.error(`[container] Failed to start container for ${o.sessionId}:`, getErrorMessage(err));
           runner.dispose();
@@ -248,9 +243,6 @@ export function buildRunnerFactory(
       memoryLimit: sessionConfig.resources.agent.memory * 1024 * 1024,
       cpuQuota: Math.round(sessionConfig.resources.agent.cpu * 100_000),
       pidsLimit: sessionConfig.resources.agent.pids,
-      previewMemoryLimit: sessionConfig.resources.preview.memory * 1024 * 1024,
-      previewCpuQuota: Math.round(sessionConfig.resources.preview.cpu * 100_000),
-      previewPidsLimit: sessionConfig.resources.preview.pids,
       dockerAccess: sessionConfig.capabilities.docker,
     });
     const runner = new ContainerSessionRunner({
@@ -268,7 +260,6 @@ export function buildRunnerFactory(
         const sc = await mgr.create(config);
         console.log(`[container] Container ready for ${o.sessionId} at ${sc.workerUrl}`);
         runner.setWorkerUrl(sc.workerUrl);
-        if (sc.previewWorkerUrl) runner.setPreviewWorkerUrl(sc.previewWorkerUrl);
       } catch (err) {
         console.error(`[container] Failed to start container for ${o.sessionId}:`, getErrorMessage(err));
         runner.dispose();
@@ -339,6 +330,12 @@ export interface RunnerRegistryDeps {
   sseBroadcast: (event: string, data: unknown) => void;
   enforceIdleContainerLimit: () => void;
   getDepCacheDir: (repoUrl: string) => string;
+  /** Per-session ServiceManager registry (compose stacks). */
+  serviceManagers: Map<string, ServiceManager>;
+  /** Per-session compose warnings for old-format configs without a ServiceManager. */
+  composeWarnings: Map<string, string>;
+  /** Container manager for connecting agent containers to compose networks. */
+  containerManager: SessionContainerManager | null;
 }
 
 /**
@@ -351,7 +348,7 @@ export function createRunnerRegistry(
     effectiveRunnerFactory, sessionManager, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
-    getDepCacheDir,
+    getDepCacheDir, serviceManagers, composeWarnings, containerManager,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -398,8 +395,128 @@ export function createRunnerRegistry(
         finalizeInProgress: (sessionId) => chatHistoryManager.finalizeInProgress(sessionId),
         clearInProgress: (sessionId) => chatHistoryManager.clearInProgress(sessionId),
       });
+
+      // Set up compose ServiceManager if the session has a compose config
+      const setupDeps = { sessionManager, serviceManagers, composeWarnings, containerManager };
+      setupServiceManager(runner, setupDeps);
+
+      // Allow re-setup when config files change (e.g. old-format migrated to new)
+      if ("onComposeConfigChanged" in runner) {
+        (runner as { onComposeConfigChanged?: () => void }).onComposeConfigChanged = () => {
+          setupServiceManager(runner, setupDeps);
+        };
+      }
     },
   });
+}
+
+/**
+ * Create and wire a ServiceManager for a runner's session if compose config
+ * is detected. Fire-and-forget — compose stack start is async.
+ */
+function setupServiceManager(
+  runner: SessionRunnerInterface,
+  deps: {
+    sessionManager: SessionManager;
+    serviceManagers: Map<string, ServiceManager>;
+    composeWarnings: Map<string, string>;
+    containerManager: SessionContainerManager | null;
+  },
+): void {
+  const { sessionManager, serviceManagers, composeWarnings, containerManager } = deps;
+  const session = sessionManager.get(runner.sessionId);
+  const workspaceDir = session?.workspaceDir ?? runner.sessionDir;
+
+  let shipitConfig;
+  try {
+    shipitConfig = resolveShipitConfig(workspaceDir);
+  } catch {
+    return; // Invalid config — skip compose setup
+  }
+
+  // Surface config migration warnings in the preview panel.
+  // Store in composeWarnings map for replay on viewer attach — at this point
+  // (first call) the WS listener may not yet be connected so emitMessage
+  // would be lost. On subsequent calls (config re-evaluation), emitMessage
+  // works and we also update the map.
+  if (shipitConfig.warnings.length > 0) {
+    const text = `shipit.yaml needs migration:\n${shipitConfig.warnings.map(w => `• ${w}`).join("\n")}`;
+    composeWarnings.set(runner.sessionId, text);
+    runner.emitMessage({ type: "compose_error", sessionId: runner.sessionId, message: text });
+    runner.on("disposed", () => composeWarnings.delete(runner.sessionId));
+  } else if (composeWarnings.has(runner.sessionId)) {
+    // Warnings cleared (config was fixed) — remove stale warning
+    composeWarnings.delete(runner.sessionId);
+    runner.emitMessage({ type: "compose_error", sessionId: runner.sessionId, message: "" });
+  }
+
+  if (!shipitConfig.compose) return;
+
+  // Workspace volume info for compose volume rewriting: user `.:/workspace`
+  // bind mounts must map to the same storage as the agent container.
+  const wsVolume = process.env.WORKSPACE_VOLUME;
+  const wsSubpath = wsVolume ? workspaceDir.replace(/^\/workspace\//, "") : undefined;
+
+  const mgr = new ServiceManager({
+    sessionId: runner.sessionId,
+    workspaceDir,
+    composeConfig: shipitConfig.compose,
+    workspaceVolume: wsVolume,
+    workspaceSubpath: wsSubpath,
+    networkJoinFn: containerManager
+      ? async (networkName: string) => {
+          // Connect agent container to compose network
+          await containerManager.connectToNetwork(runner.sessionId, networkName);
+          // Connect orchestrator container so the preview proxy can reach services
+          try {
+            const orchestratorId = (await import("node:os")).hostname();
+            const docker = containerManager.getDockerClient();
+            const network = docker.getNetwork(networkName);
+            await network.connect({ Container: orchestratorId });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (!msg.includes("already exists")) {
+              console.warn(`[compose] Failed to connect orchestrator to ${networkName}:`, msg);
+            }
+          }
+        }
+      : undefined,
+  });
+
+  serviceManagers.set(runner.sessionId, mgr);
+  // Clear any stale migration warning — compose is now set up
+  composeWarnings.delete(runner.sessionId);
+
+  // Wire ServiceManager to runner for event relay to WS clients
+  if (runner.setServiceManager) {
+    runner.setServiceManager(mgr);
+  }
+
+  // Clean up on runner dispose
+  runner.on("disposed", () => {
+    serviceManagers.delete(runner.sessionId);
+    mgr.stop().catch((err: unknown) => {
+      console.error(`[compose:${runner.sessionId}] Failed to stop compose stack:`, err);
+    });
+  });
+
+  // Start the compose stack asynchronously — the full sequence (compose up →
+  // network join → IP resolution → event flush) is handled inside mgr.start().
+  void (async () => {
+    try {
+      await mgr.start();
+      console.log(`[compose:${runner.sessionId}] Compose stack started`);
+    } catch (err) {
+      const errMsg = getErrorMessage(err);
+      console.error(`[compose:${runner.sessionId}] Failed to start compose stack:`, errMsg);
+      mgr.startError = errMsg;
+      runner.emitMessage({
+        type: "compose_error",
+        sessionId: runner.sessionId,
+        message: errMsg,
+      });
+    }
+  })();
 }
 
 // ---- SSE (Server-Sent Events) ----
@@ -678,6 +795,13 @@ export function createWarmPool(
 
         const cacheGit = createRepoGit(cacheDir);
 
+        // Refresh remote URL with current token (the bare cache may have a stale
+        // token embedded from clone time).
+        if (githubAuthManager.authenticated) {
+          const freshUrl = githubAuthManager.getAuthenticatedCloneUrl(repoUrl);
+          await cacheGit.setRemoteUrl(freshUrl);
+        }
+
         // Fetch latest refs in the bare cache (with 60s TTL).
         // Non-fatal — cache may not have a reachable remote (e.g. tests).
         try {
@@ -737,14 +861,7 @@ export function createWarmPool(
               console.log(`[warm] Standby container ready for ${appSessionId} at ${sc.workerUrl}`);
               // Pre-run install so the user doesn't wait for it on activation.
               // Preview endpoints live on the preview container, not the session container.
-              try {
-                if (sc.previewWorkerUrl) {
-                  await workerPost(sc.previewWorkerUrl, "/preview/start");
-                  console.log(`[warm] Pre-started preview/install for ${appSessionId}`);
-                }
-              } catch (err: unknown) {
-                console.error(`[warm] Pre-start preview failed for ${appSessionId}:`, getErrorMessage(err));
-              }
+              // Warm container ready — compose stack startup handled by ServiceManager
             }).catch((err: unknown) => {
               console.error(`[warm] Standby container failed for ${appSessionId}:`, getErrorMessage(err));
             });

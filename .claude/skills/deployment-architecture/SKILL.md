@@ -1,4 +1,5 @@
 ---
+name: deployment-architecture
 description: "ShipIt deployment architecture: auto-deploy on push via platform Git integration, GitHub Deployments API for status tracking, deployment status in PR lifecycle card. Load when working on deployment features."
 user-invocable: true
 ---

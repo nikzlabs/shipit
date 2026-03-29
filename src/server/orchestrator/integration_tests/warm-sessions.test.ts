@@ -15,7 +15,6 @@ import type { FastifyInstance } from "fastify";
 import { buildApp } from "../index.js";
 import { repoUrlToHash } from "../git-utils.js";
 import { GitManager } from "../../shared/git.js";
-import { isInstallDone, markInstallDone } from "../../session/install-runner.js";
 import { SessionManager } from "../sessions.js";
 import { RepoStore } from "../repo-store.js";
 import type { AuthManager } from "../auth.js";
@@ -255,8 +254,9 @@ describe("Integration: warm session lifecycle", () => {
       const workspaceDir = warmSession.workspaceDir!;
 
       // Simulate a completed install (marker present)
-      markInstallDone(workspaceDir);
-      expect(isInstallDone(workspaceDir)).toBe(true);
+      fs.mkdirSync(path.join(workspaceDir, ".shipit"), { recursive: true });
+      fs.writeFileSync(path.join(workspaceDir, ".shipit", ".install-done"), new Date().toISOString());
+      expect(fs.existsSync(path.join(workspaceDir, ".shipit", ".install-done"))).toBe(true);
 
       // Claim the session — refreshCloneToLatestMain fetches but HEAD hasn't changed
       const encodedUrl = encodeURIComponent(REPO_URL);
@@ -267,7 +267,7 @@ describe("Integration: warm session lifecycle", () => {
 
       expect(res.statusCode).toBe(200);
       // Install marker should still be present (no reinstall needed)
-      expect(isInstallDone(workspaceDir)).toBe(true);
+      expect(fs.existsSync(path.join(workspaceDir, ".shipit", ".install-done"))).toBe(true);
     }, 15000);
 
     it("clears install marker when HEAD changed", async () => {
@@ -281,8 +281,9 @@ describe("Integration: warm session lifecycle", () => {
       const workspaceDir = warmSession.workspaceDir!;
 
       // Simulate a completed install
-      markInstallDone(workspaceDir);
-      expect(isInstallDone(workspaceDir)).toBe(true);
+      fs.mkdirSync(path.join(workspaceDir, ".shipit"), { recursive: true });
+      fs.writeFileSync(path.join(workspaceDir, ".shipit", ".install-done"), new Date().toISOString());
+      expect(fs.existsSync(path.join(workspaceDir, ".shipit", ".install-done"))).toBe(true);
 
       // Point the clone's origin to the local shared repo so fetch works
       const repoDir = getSharedRepoDirForUrl(tmpDir, REPO_URL);
@@ -307,7 +308,7 @@ describe("Integration: warm session lifecycle", () => {
 
       expect(res.statusCode).toBe(200);
       // Install marker should be cleared (reinstall needed)
-      expect(isInstallDone(workspaceDir)).toBe(false);
+      expect(fs.existsSync(path.join(workspaceDir, ".shipit", ".install-done"))).toBe(false);
     }, 15000);
   });
 

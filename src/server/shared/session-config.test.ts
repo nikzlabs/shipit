@@ -5,8 +5,7 @@ import os from "node:os";
 import { resolveSessionConfig, getResourceCaps } from "./session-config.js";
 
 const AGENT_DEFAULTS = { memory: 1024, cpu: 0.5, pids: 256 };
-const PREVIEW_DEFAULTS = { memory: 512, cpu: 0.5, pids: 1024 };
-const DEFAULT_RESOURCES = { agent: AGENT_DEFAULTS, preview: PREVIEW_DEFAULTS };
+const DEFAULT_RESOURCES = { agent: AGENT_DEFAULTS };
 
 describe("resolveSessionConfig", () => {
   let tmpDir: string;
@@ -18,13 +17,9 @@ describe("resolveSessionConfig", () => {
 
   afterEach(() => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-    // Clean up env vars
     delete process.env.MAX_SESSION_MEMORY_MB;
-    delete process.env.MAX_SESSION_PREVIEW_MEMORY_MB;
     delete process.env.MAX_SESSION_CPU;
-    delete process.env.MAX_SESSION_PREVIEW_CPU;
     delete process.env.MAX_SESSION_PIDS;
-    delete process.env.MAX_SESSION_PREVIEW_PIDS;
   });
 
   // --- Missing file (defaults) ---
@@ -38,16 +33,15 @@ describe("resolveSessionConfig", () => {
 
   // --- Valid config ---
 
-  it("parses agent and preview resources blocks", () => {
+  it("parses agent resources block", () => {
     const dir = setup();
     fs.writeFileSync(
       path.join(dir, "shipit.yaml"),
-      "resources:\n  agent:\n    memory: 2048\n    cpu: 2.0\n    pids: 512\n  preview:\n    memory: 1024\n    cpu: 1.0\n    pids: 2048\npreview:\n  command: npm run dev\n",
+      "resources:\n  agent:\n    memory: 2048\n    cpu: 2.0\n    pids: 512\npreview:\n  command: npm run dev\n",
     );
     const config = resolveSessionConfig(dir);
     expect(config.resources).toEqual({
       agent: { memory: 2048, cpu: 2.0, pids: 512 },
-      preview: { memory: 1024, cpu: 1.0, pids: 2048 },
     });
   });
 
@@ -69,7 +63,6 @@ describe("resolveSessionConfig", () => {
     );
     const config = resolveSessionConfig(dir);
     expect(config.resources.agent).toEqual({ memory: 3072, cpu: 2.0, pids: 2048 });
-    expect(config.resources.preview).toEqual(PREVIEW_DEFAULTS);
     expect(config.capabilities).toEqual({ docker: true });
   });
 
@@ -83,7 +76,6 @@ describe("resolveSessionConfig", () => {
     );
     const config = resolveSessionConfig(dir);
     expect(config.resources.agent).toEqual({ memory: 2048, cpu: 0.5, pids: 256 });
-    expect(config.resources.preview).toEqual(PREVIEW_DEFAULTS);
   });
 
   it("uses defaults for missing capabilities block", () => {
@@ -198,18 +190,14 @@ describe("resolveSessionConfig", () => {
 describe("getResourceCaps", () => {
   afterEach(() => {
     delete process.env.MAX_SESSION_MEMORY_MB;
-    delete process.env.MAX_SESSION_PREVIEW_MEMORY_MB;
     delete process.env.MAX_SESSION_CPU;
-    delete process.env.MAX_SESSION_PREVIEW_CPU;
     delete process.env.MAX_SESSION_PIDS;
-    delete process.env.MAX_SESSION_PREVIEW_PIDS;
   });
 
   it("returns defaults when env vars are not set", () => {
     const caps = getResourceCaps();
     expect(caps).toEqual({
       agent: { memory: 4096, cpu: 4, pids: 2048 },
-      preview: { memory: 4096, cpu: 4, pids: 2048 },
     });
   });
 

@@ -274,6 +274,12 @@ export async function unarchiveSession(
 
     const cacheGit = createRepoGit(cacheDir);
 
+    // Refresh remote URL with current token before fetching
+    if (githubAuthManager.authenticated) {
+      const freshUrl = githubAuthManager.getAuthenticatedCloneUrl(session.remoteUrl);
+      await cacheGit.setRemoteUrl(freshUrl);
+    }
+
     // Remove stale remnants
     await fs.rm(session.workspaceDir, { recursive: true, force: true });
 

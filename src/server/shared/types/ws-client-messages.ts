@@ -41,9 +41,29 @@ export interface WsInterruptClaude {
 
 // ---- Preview config messages ----
 
-/** Client → Server: request Claude to generate a shipit.yaml config. */
+/** Client → Server: request Claude to generate a docker-compose.yml for preview. */
 export interface WsInitPreviewConfig {
   type: "init_preview_config";
+}
+
+// ---- Service control messages ----
+
+/** Client → Server: start a manual compose service. */
+export interface WsStartService {
+  type: "start_service";
+  name: string;
+}
+
+/** Client → Server: stop a compose service. */
+export interface WsStopService {
+  type: "stop_service";
+  name: string;
+}
+
+/** Client → Server: request buffered logs for a compose service. */
+export interface WsSubscribeServiceLogs {
+  type: "subscribe_service_logs";
+  name: string;
 }
 
 // ---- Prompt queuing messages ----
@@ -103,6 +123,9 @@ export type WsClientMessage =
   | WsCancelQueuedMessage
   | WsInterruptClaude
   | WsInitPreviewConfig
+  | WsStartService
+  | WsStopService
+  | WsSubscribeServiceLogs
   | WsRollbackCode
   | WsRollbackCodeAndChat
   | WsForkSessionFromMessage

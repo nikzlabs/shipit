@@ -18,6 +18,7 @@ import http from "node:http";
 import type { Duplex } from "node:stream";
 import type { FastifyInstance } from "fastify";
 import type { SessionContainerManager } from "./session-container.js";
+import type { ServiceManager } from "./service-manager.js";
 
 // ---------------------------------------------------------------------------
 // Subdomain parsing
@@ -193,9 +194,26 @@ export function registerPreviewProxy(
   app: FastifyInstance,
   opts: {
     containerManager: SessionContainerManager;
+    serviceManagers: Map<string, ServiceManager>;
   },
 ): void {
-  const { containerManager } = opts;
+  const { containerManager, serviceManagers } = opts;
+
+  /**
+   * Resolve the container IP for a session + port combination.
+   * Checks compose service containers first (by port), falls back to agent container.
+   */
+  function resolveContainerIp(sessionId: string, port: number): string | null {
+    // Check compose services for a container listening on this port
+    const mgr = serviceManagers.get(sessionId);
+    if (mgr) {
+      const ip = mgr.getContainerIpForPort(port);
+      if (ip) return ip;
+    }
+    // Fall back to the agent container
+    const sc = containerManager.get(sessionId);
+    return sc?.containerIp ?? null;
+  }
 
   // --- Subdomain-based proxy (intercepts before Fastify routing) ----------
   //
@@ -211,8 +229,8 @@ export function registerPreviewProxy(
     }
 
     const { sessionId, port: targetPort } = parsed;
-    const sc = containerManager.get(sessionId);
-    if (!sc) {
+    const containerIp = resolveContainerIp(sessionId, targetPort);
+    if (!containerIp) {
       reply.code(404).send({ error: "Session container not found" });
       done();
       return;
@@ -220,7 +238,7 @@ export function registerPreviewProxy(
 
     reply.hijack();
     proxyHttp(
-      sc.previewContainerIp ?? sc.containerIp,
+      containerIp,
       targetPort,
       request.url,
       request.method,
@@ -248,15 +266,15 @@ export function registerPreviewProxy(
       ) {
         return reply.send({ ready: false });
       }
-      const sc = containerManager.get(params.sessionId);
-      if (!sc) {
+      const containerIp = resolveContainerIp(params.sessionId, targetPort);
+      if (!containerIp) {
         return reply.send({ ready: false });
       }
-      // Quick HTTP probe to the container's dev server (route to preview container)
+      // Quick HTTP probe to the container's dev server
       const ready = await new Promise<boolean>((resolve) => {
         const probe = http.request(
           {
-            hostname: sc.previewContainerIp ?? sc.containerIp,
+            hostname: containerIp,
             port: targetPort,
             path: "/",
             method: "HEAD",
@@ -299,8 +317,8 @@ export function registerPreviewProxy(
       return reply.code(400).send({ error: "Invalid port" });
     }
 
-    const sc = containerManager.get(sessionId);
-    if (!sc) {
+    const containerIp = resolveContainerIp(sessionId, targetPort);
+    if (!containerIp) {
       return reply.code(404).send({ error: "Session container not found" });
     }
 
@@ -312,7 +330,7 @@ export function registerPreviewProxy(
 
     reply.hijack();
     proxyHttp(
-      sc.previewContainerIp ?? sc.containerIp,
+      containerIp,
       targetPort,
       targetPath,
       request.method,
@@ -346,13 +364,13 @@ export function registerPreviewProxy(
       const subdomainParsed = parsePreviewSubdomain(req.headers.host);
       if (subdomainParsed) {
         const { sessionId, port: targetPort } = subdomainParsed;
-        const sc = containerManager.get(sessionId);
-        if (!sc) {
+        const containerIp = resolveContainerIp(sessionId, targetPort);
+        if (!containerIp) {
           socket.destroy();
           return;
         }
         proxyWebSocket(
-          sc.previewContainerIp ?? sc.containerIp,
+          containerIp,
           targetPort,
           req.url || "/",
           req.headers,
@@ -366,13 +384,13 @@ export function registerPreviewProxy(
       if (match) {
         const [, sessionId, portStr, restPath] = match;
         const targetPort = Number(portStr);
-        const sc = containerManager.get(sessionId);
-        if (!sc) {
+        const containerIp = sessionId ? resolveContainerIp(sessionId, targetPort) : null;
+        if (!containerIp) {
           socket.destroy();
           return;
         }
         proxyWebSocket(
-          sc.previewContainerIp ?? sc.containerIp,
+          containerIp,
           targetPort,
           `/${restPath}`,
           req.headers,
