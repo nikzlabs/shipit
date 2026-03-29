@@ -65,6 +65,9 @@ Today ShipIt has two disconnected ways to run services:
   **superseded.** The dual-container topology (agent + preview) is replaced by agent
   container + compose stack. Secrets isolation model changes (see open questions).
   Update that doc to cross-reference this one.
+- [089-shipit-in-shipit](../089-shipit-in-shipit/plan.md) — uses
+  `compose.docker-socket` as the mechanism for granting Docker access to the nested
+  orchestrator. Requires proxy policy relaxations beyond what this doc covers.
 
 ## Design
 

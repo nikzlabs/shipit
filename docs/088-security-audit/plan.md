@@ -100,6 +100,18 @@ The audit identified several well-implemented security controls:
 | Database operations | `secret-store.ts`, `database.ts` | Secure |
 | Preview config | `preview-config.ts`, `preview-manager.ts` | Medium (path traversal) |
 
+## Planned proxy policy changes (089-shipit-in-shipit)
+
+[089-shipit-in-shipit](../089-shipit-in-shipit/plan.md) proposes three proxy relaxations to support nested orchestrators. Security analysis:
+
+1. **Allow safe CapAdd when CapDrop: ALL is present** — the allowlist (`CHOWN`, `SETUID`, `SETGID`, `FOWNER`, `DAC_OVERRIDE`, `NET_BIND_SERVICE`, `KILL`) is a strict subset of Docker's default capability set. The dangerous capabilities (`SYS_ADMIN`, `SYS_PTRACE`, `NET_ADMIN`, `NET_RAW`) remain blocked. `NET_RAW` is still force-injected into `CapDrop`. **No change to threat model.**
+
+2. **Allow `no-new-privileges` in SecurityOpt** — this is a hardening flag, not a relaxation. Allowing it makes child containers *more* secure. Currently the proxy strips it, which silently weakens child container security. **Improves security posture.**
+
+3. **Volume allowlist for workspace/credentials volumes** — allows sessions to mount the named volumes they were given (by name, not by host path). The session already has full read/write access to these volumes, so allowing child containers to mount them doesn't expand the access boundary. The allowlist is set by the orchestrator, not by the session. **No change to threat model.**
+
+The TOCTOU race (issue #2) applies identically under nested scenarios — same mitigations, same accepted-risk status.
+
 ## Checklist
 
 - [x] Audit injection vulnerabilities (command, SQL, template, path traversal)
@@ -111,3 +123,4 @@ The audit identified several well-implemented security controls:
 - [x] Document findings
 - [ ] Fix path traversal in preview.directory (issue #1)
 - [ ] Add accepted-risk documentation for TOCTOU race (issue #2)
+- [ ] Review proxy policy changes from 089-shipit-in-shipit once implemented
