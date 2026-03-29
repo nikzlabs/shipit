@@ -702,6 +702,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
               this._serviceManager.reconcile().catch((err: unknown) => {
                 console.error(`[container-runner:${this.sessionId}] Compose reconcile failed:`, err);
               });
+            } else if (this._serviceManager && !this._serviceManager.started) {
+              // ServiceManager exists but start() failed (e.g. compose file
+              // was missing when shipit.yaml was written first) — retry
+              console.log(`[container-runner:${this.sessionId}] Config file changed, retrying compose start`);
+              this._serviceManager.reconcile().catch((err: unknown) => {
+                console.error(`[container-runner:${this.sessionId}] Compose retry failed:`, err);
+              });
             } else if (!this._serviceManager && this.onComposeConfigChanged) {
               // No ServiceManager yet (e.g. old-format config was just migrated)
               // — re-evaluate the config and set up compose if now available
