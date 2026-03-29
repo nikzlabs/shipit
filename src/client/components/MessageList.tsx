@@ -156,6 +156,7 @@ export function MessageList({
   }, [messages]);
 
   // Track whether the user has scrolled away from the bottom
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -171,6 +172,7 @@ export function MessageList({
   }, []);
 
   // Auto-scroll to bottom only if user hasn't scrolled up
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (autoScrollRef.current) {
       bottomRef.current?.scrollIntoView({ behavior: "instant" });
@@ -178,6 +180,7 @@ export function MessageList({
   }, [messages, isLoading]);
 
   // Scroll to the current search match when it changes
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (currentMatch && currentMatchRef.current) {
       currentMatchRef.current.scrollIntoView({ behavior: "smooth", block: "center" });

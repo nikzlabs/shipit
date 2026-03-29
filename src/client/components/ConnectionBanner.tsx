@@ -33,6 +33,7 @@ export function ConnectionBanner({
   const [showDisconnect, setShowDisconnect] = useState(false);
   const hasConnectedRef = useRef(false);
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const prevStatus = prevStatusRef.current;
     prevStatusRef.current = status;

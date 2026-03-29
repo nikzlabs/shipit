@@ -242,6 +242,14 @@
   }
 }
 
+/* Toast entry animation — start invisible, transition to visible on mount */
+@starting-style {
+  .toast-enter {
+    opacity: 0;
+    transform: translateX(-50%) translateY(0.5rem);
+  }
+}
+
 /* Typing indicator — three bouncing dots */
 @keyframes typing-bounce {
   0%, 60%, 100% {

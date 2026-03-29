@@ -62,14 +62,27 @@ export function FileAutoComplete({
     setSelectedIndex(0);
   }
 
+  const scrollSelectedIntoView = useCallback((index: number) => {
+    const el = listRef.current?.children[index] as HTMLElement | undefined;
+    el?.scrollIntoView({ block: "nearest" });
+  }, []);
+
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setSelectedIndex((prev) => Math.min(prev + 1, matches.length - 1));
+        setSelectedIndex((prev) => {
+          const next = Math.min(prev + 1, matches.length - 1);
+          scrollSelectedIntoView(next);
+          return next;
+        });
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
-        setSelectedIndex((prev) => Math.max(prev - 1, 0));
+        setSelectedIndex((prev) => {
+          const next = Math.max(prev - 1, 0);
+          scrollSelectedIntoView(next);
+          return next;
+        });
       } else if (e.key === "Enter" || e.key === "Tab") {
         e.preventDefault();
         if (matches.length > 0) {
@@ -80,21 +93,14 @@ export function FileAutoComplete({
         onDismiss();
       }
     },
-    [matches, selectedIndex, onSelect, onDismiss],
+    [matches, selectedIndex, onSelect, onDismiss, scrollSelectedIntoView],
   );
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
-
-  // Scroll selected item into view
-  useEffect(() => {
-    const el = listRef.current?.children[selectedIndex] as HTMLElement | undefined;
-    if (el && typeof el.scrollIntoView === "function") {
-      el.scrollIntoView({ block: "nearest" });
-    }
-  }, [selectedIndex]);
 
   if (matches.length === 0) {
     return (

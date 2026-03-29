@@ -146,6 +146,21 @@ export default tseslint.config(
           }],
         },
       ],
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "CallExpression > MemberExpression[property.name='then']",
+          message: "Prefer async/await over .then(). Use store methods or async helpers. Add eslint-disable if .then() is intentional (fire-and-forget in sync context, lazy(), Promise two-arg form).",
+        },
+        {
+          selector: "TSImportType",
+          message: "Avoid inline import() types. Use a top-level `import type { X } from '...'` instead. Add eslint-disable if dynamic import() is intentional (lazy(), conditional loading).",
+        },
+        {
+          selector: "CallExpression[callee.name='useEffect']",
+          message: "useEffect is restricted. Prefer event handlers, derived state, useMemo, or key props. If useEffect is genuinely needed (external system sync, browser API subscription, cleanup), add eslint-disable-next-line with a justification.",
+        },
+      ],
     },
   },
   // ── Layer boundary enforcement ──────────────────────────────────────────

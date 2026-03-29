@@ -138,6 +138,7 @@ export function useResizablePanel(
   );
 
   // Disable text selection while dragging
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (isDragging) {
       document.body.style.userSelect = "none";

@@ -7,6 +7,7 @@ export type ModalProps = HTMLAttributes<HTMLDivElement> & {
 
 export const Modal = forwardRef<HTMLDivElement, ModalProps>(
   ({ className, onClose, children, ...props }, ref) => {
+    // eslint-disable-next-line no-restricted-syntax -- existing usage
     useEffect(() => {
       if (!onClose) return;
       const handler = (e: KeyboardEvent) => {

@@ -98,6 +98,7 @@ export function DocReviewPanel({ feature, content, onSendComments, onClose }: Do
   const [aiLoading, setAiLoading] = useState(false);
 
   // Load or create draft on mount
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     let cancelled = false;
     async function init() {

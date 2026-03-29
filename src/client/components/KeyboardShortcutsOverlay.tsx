@@ -56,6 +56,7 @@ function KeyCombo({ keys }: { keys: string[] }) {
 export function KeyboardShortcutsOverlay({ onClose }: { onClose: () => void }) {
   const overlayRef = useRef<HTMLDivElement>(null);
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape" || e.key === "?") {

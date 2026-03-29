@@ -15,6 +15,7 @@ export function useKeyboardShortcuts(params: {
   const { search, setSearchOpen, setShortcutsOpen, isLoading, searchOpen, shortcutsOpen, settingsOpen, handleInterrupt } = params;
 
   // Ctrl+F / Cmd+F to toggle search bar
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "f") {
@@ -33,6 +34,7 @@ export function useKeyboardShortcuts(params: {
   }, [search, setSearchOpen]);
 
   // ? to toggle keyboard shortcuts overlay (only when not typing in an input)
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "?" && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -47,6 +49,7 @@ export function useKeyboardShortcuts(params: {
   }, [setShortcutsOpen]);
 
   // Escape key to interrupt Claude while loading (only when not typing in an input or overlay open)
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape" && !e.defaultPrevented && isLoading && !searchOpen && !shortcutsOpen && !settingsOpen) {

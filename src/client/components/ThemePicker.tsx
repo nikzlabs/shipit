@@ -1,5 +1,5 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: document mousedown listener for click-outside with cleanup (browser API subscription)
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useCallback } from "react";
+import { useClickOutside } from "../hooks/useClickOutside.js";
 import { PaletteIcon, CheckIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
@@ -16,32 +16,12 @@ export function ThemePicker({ theme, onSelectTheme }: ThemePickerProps) {
   const ref = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
-  // Close on outside click
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
+  const handleClose = useCallback(() => setOpen(false), []);
+  useClickOutside(ref, handleClose, open);
 
-  // Focus the active item when dropdown opens
-  useEffect(() => {
-    if (open) {
-      const activeIndex = THEME_OPTIONS.findIndex((o) => o.id === theme);
-      setFocusIndex(activeIndex >= 0 ? activeIndex : 0);
-    }
-  }, [open, theme]);
-
-  // Scroll focused item into view
-  useEffect(() => {
-    if (open && focusIndex >= 0) {
-      itemRefs.current[focusIndex]?.scrollIntoView({ block: "nearest" });
-    }
-  }, [open, focusIndex]);
+  const scrollFocusedIntoView = useCallback((index: number) => {
+    itemRefs.current[index]?.scrollIntoView({ block: "nearest" });
+  }, []);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -49,23 +29,19 @@ export function ThemePicker({ theme, onSelectTheme }: ThemePickerProps) {
       switch (e.key) {
         case "ArrowDown":
           e.preventDefault();
-          setFocusIndex((i) => (i + 1) % THEME_OPTIONS.length);
+          setFocusIndex((i) => { const next = (i + 1) % THEME_OPTIONS.length; scrollFocusedIntoView(next); return next; });
           break;
         case "ArrowUp":
           e.preventDefault();
-          setFocusIndex(
-            (i) => (i - 1 + THEME_OPTIONS.length) % THEME_OPTIONS.length,
-          );
+          setFocusIndex((i) => { const next = (i - 1 + THEME_OPTIONS.length) % THEME_OPTIONS.length; scrollFocusedIntoView(next); return next; });
           break;
         case "ArrowRight":
           e.preventDefault();
-          setFocusIndex((i) =>
-            i + 1 < THEME_OPTIONS.length ? i + 1 : i,
-          );
+          setFocusIndex((i) => { const next = i + 1 < THEME_OPTIONS.length ? i + 1 : i; scrollFocusedIntoView(next); return next; });
           break;
         case "ArrowLeft":
           e.preventDefault();
-          setFocusIndex((i) => (i > 0 ? i - 1 : i));
+          setFocusIndex((i) => { const next = i > 0 ? i - 1 : i; scrollFocusedIntoView(next); return next; });
           break;
         case "Enter": {
           e.preventDefault();
@@ -80,7 +56,7 @@ export function ThemePicker({ theme, onSelectTheme }: ThemePickerProps) {
           break;
       }
     },
-    [open, focusIndex, onSelectTheme],
+    [open, focusIndex, onSelectTheme, scrollFocusedIntoView],
   );
 
   return (
@@ -88,7 +64,13 @@ export function ThemePicker({ theme, onSelectTheme }: ThemePickerProps) {
       <Button
         variant="ghost"
         size="sm"
-        onClick={() => setOpen(!open)}
+        onClick={() => {
+          if (!open) {
+            const activeIndex = THEME_OPTIONS.findIndex((o) => o.id === theme);
+            setFocusIndex(activeIndex >= 0 ? activeIndex : 0);
+          }
+          setOpen(!open);
+        }}
         title="Change theme"
         aria-label="Change theme"
         aria-haspopup="listbox"

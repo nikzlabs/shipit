@@ -51,6 +51,7 @@ function useSidebarResize() {
     document.addEventListener("mouseup", onMouseUp);
   }, []);
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (isDragging) {
       document.body.style.userSelect = "none";

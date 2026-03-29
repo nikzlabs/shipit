@@ -169,6 +169,7 @@ export function PreviewFrame({
     : (activePort ? `http://localhost:${activePort}` : null);
 
   // Poll and create/update the active slot when session/port changes.
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!activeSlotKey || !activePort || !preview?.running || !pollUrl) return;
 
@@ -234,6 +235,7 @@ export function PreviewFrame({
   const [authBlocked, setAuthBlocked] = useState(false);
   const previewLoadedRef = useRef(false);
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const handler = (event: MessageEvent) => {
       const data = event.data as { source?: string; type?: string } | undefined;
@@ -249,6 +251,7 @@ export function PreviewFrame({
   const isLocalPreview = /^(localhost|127\.\d+\.\d+\.\d+|::1)(:|$)/i.test(apiHost);
   const previewSubdomainUrl = isContainerMode && sessionId ? buildSubdomainUrl(sessionId, activePort, apiHost) : null;
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!activeSlotUrl || !previewSubdomainUrl || isLocalPreview) return;
     previewLoadedRef.current = false;
@@ -263,6 +266,7 @@ export function PreviewFrame({
 
   // Force-reload the active iframe on refresh click
   const lastRefreshKey = useRef(refreshKey);
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (refreshKey !== lastRefreshKey.current) {
       lastRefreshKey.current = refreshKey;

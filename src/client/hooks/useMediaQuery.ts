@@ -17,6 +17,7 @@ export function useMediaQuery(query: string): boolean {
     return window.matchMedia(query).matches;
   });
 
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const mql = window.matchMedia(query);
     setMatches(mql.matches);
