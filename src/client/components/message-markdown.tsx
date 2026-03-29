@@ -61,7 +61,7 @@ const chatMarked = new Marked({
       const langLabel = language
         ? `<div class="text-xs text-(--color-text-secondary) px-3 py-1 border-b border-(--color-border-primary)">${language}</div>`
         : "";
-      return `<div class="my-2 rounded-md overflow-hidden bg-(--color-bg-secondary)">${langLabel}<pre class="p-3 overflow-x-auto text-xs leading-relaxed"><code class="hljs">${highlighted}</code></pre></div>`;
+      return `<div class="my-2 rounded-md overflow-hidden bg-(--color-bg-secondary) w-0 min-w-full">${langLabel}<pre class="p-3 overflow-x-auto text-xs leading-relaxed"><code class="hljs">${highlighted}</code></pre></div>`;
     },
   },
 });
@@ -113,7 +113,7 @@ export function CodeBlock({ code, language }: { code: string; language: string }
   }, [code, language]);
 
   return (
-    <div className="my-2 rounded-md overflow-hidden bg-(--color-bg-secondary)">
+    <div className="my-2 rounded-md overflow-hidden bg-(--color-bg-secondary) w-0 min-w-full">
       {language && (
         <div className="text-xs text-(--color-text-secondary) px-3 py-1 border-b border-(--color-border-primary)">
           {language}
