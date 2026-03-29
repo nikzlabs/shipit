@@ -121,6 +121,26 @@ export async function findPullRequestAnyState(
   if (prs.length === 0) return null;
 
   const pr = prs[0];
+
+  // The list endpoint may not include additions/deletions — fetch the individual PR for accurate stats.
+  let additions = pr.additions ?? 0;
+  let deletions = pr.deletions ?? 0;
+  if (!additions && !deletions) {
+    try {
+      const detailRes = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/pulls/${pr.number}`,
+        { headers: GITHUB_HEADERS(token) },
+      );
+      if (detailRes.ok) {
+        const detail = (await detailRes.json()) as { additions: number; deletions: number };
+        additions = detail.additions ?? 0;
+        deletions = detail.deletions ?? 0;
+      }
+    } catch {
+      // Fall back to zero stats
+    }
+  }
+
   return {
     url: pr.html_url,
     number: pr.number,
@@ -128,8 +148,8 @@ export async function findPullRequestAnyState(
     title: pr.title,
     state: pr.state,
     merged_at: pr.merged_at,
-    additions: pr.additions,
-    deletions: pr.deletions,
+    additions,
+    deletions,
   };
 }
 
