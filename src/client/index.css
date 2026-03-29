@@ -345,7 +345,25 @@
 /* ── Syntax highlighting (token-based, works in all themes) ── */
 .hljs {
   color: var(--color-syntax-base);
-  background: var(--color-syntax-bg);
+  background: transparent;
+}
+
+/* ── Prose overrides — strip default inline-code and pre styling ── */
+.prose :where(code):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  background: transparent;
+  padding: 0;
+  font-weight: inherit;
+  border-radius: 0;
+}
+.prose :where(code):not(:where([class~="not-prose"], [class~="not-prose"] *))::before,
+.prose :where(code):not(:where([class~="not-prose"], [class~="not-prose"] *))::after {
+  content: none;
+}
+.prose :where(pre):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
 }
 .hljs-doctag,
 .hljs-keyword,
