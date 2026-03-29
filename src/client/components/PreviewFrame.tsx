@@ -116,6 +116,18 @@ export function PreviewFrame({
   const [refreshKey, setRefreshKey] = useState(0);
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
 
+  // Focus-steal prevention: overlay blocks pointer events on the iframe until the
+  // user explicitly clicks the preview area. Re-enabled when focus returns to the
+  // main document (e.g. user clicks the chat input or presses a key outside).
+  const [iframeInteractive, setIframeInteractive] = useState(false);
+  // eslint-disable-next-line no-restricted-syntax -- re-enable overlay when window regains focus
+  useEffect(() => {
+    if (!iframeInteractive) return;
+    const deactivate = () => setIframeInteractive(false);
+    window.addEventListener("focus", deactivate);
+    return () => window.removeEventListener("focus", deactivate);
+  }, [iframeInteractive]);
+
   // Compute active port early so hooks can reference it (0 when not running)
   const activePort = preview?.running ? (selectedPort ?? preview.port) : 0;
 
@@ -486,11 +498,22 @@ export function PreviewFrame({
               ref={(el) => { iframeRefs.current.set(key, el); }}
               src={slot.url}
               title={isActive ? "Live Preview" : "Background Preview"}
+              tabIndex={-1}
               className={`absolute inset-0 w-full h-full ${hidden ? "invisible" : ""} ${isActive && hasErrors && errorPanelOpen ? "max-h-[60%]" : ""}`}
               {...(!slot.containerMode && { sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-modals" })}
             />
           );
         })}
+        {/* Focus-steal guard: transparent overlay blocks pointer events on the iframe.
+            Clicking the overlay activates iframe interaction; focus returning to the
+            main window (e.g. clicking the chat input) re-enables the guard. */}
+        {showIframe && !hideIframe && !overlayContent && !iframeInteractive && (
+          <div
+            className="absolute inset-0 z-[5] cursor-pointer"
+            onClick={() => setIframeInteractive(true)}
+            aria-hidden
+          />
+        )}
         {/* Transition overlay while polling for new session/port (background iframe may be visible underneath) */}
         {isTransitioning && !overlayContent && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/10 pointer-events-none">
