@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { ServiceManager, type ComposeRunner } from "./service-manager.js";
+import { ServiceManager, type ComposeRunner, type ComposeQuery } from "./service-manager.js";
 
 describe("ServiceManager", () => {
   let tmpDir: string;
@@ -160,5 +160,160 @@ services:
     writeCompose(dir, "services:\n  web:\n    image: node:20\n");
     const mgr = createManager(dir);
     await expect(mgr.stopService("nonexistent")).rejects.toThrow("Unknown service");
+  });
+});
+
+describe("ServiceManager lifecycle (mocked docker)", () => {
+  let tmpDir: string;
+
+  function setup() {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "service-mgr-lc-"));
+    return tmpDir;
+  }
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function writeCompose(dir: string, content: string): void {
+    fs.writeFileSync(path.join(dir, "docker-compose.yml"), content);
+  }
+
+  /** Creates a manager with fully mocked compose runner + query. */
+  function createMockedManager(
+    dir: string,
+    queryResponses: Record<string, string> = {},
+  ) {
+    const composeRunner: ComposeRunner = () => Promise.resolve();
+    const composeQuery: ComposeQuery = (args) => {
+      // Route based on subcommand
+      const key = args.find(a => a === "ps" || a === "inspect" || a === "rm" || a === "network") ?? args[0];
+      return Promise.resolve(queryResponses[key] ?? "");
+    };
+    return new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0, // disable periodic polling
+    });
+  }
+
+  it("full start lifecycle emits stack_ready", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
+
+    const psOutput = JSON.stringify({
+      Service: "web", ID: "abc123", State: "running", ExitCode: 0,
+    });
+    const inspectOutput = JSON.stringify([{
+      NetworkSettings: {
+        Networks: { "shipit-session-test-session": { IPAddress: "172.20.0.2" } },
+      },
+    }]);
+
+    const mgr = createMockedManager(dir, { ps: psOutput, inspect: inspectOutput });
+    let stackReady = false;
+    mgr.on("stack_ready", () => { stackReady = true; });
+
+    await mgr.start();
+
+    expect(mgr.started).toBe(true);
+    expect(stackReady).toBe(true);
+    const web = mgr.getService("web");
+    expect(web?.status).toBe("running");
+    expect(web?.containerIp).toBe("172.20.0.2");
+  });
+
+  it("pollStatus maps exited with non-zero to error", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
+
+    const psRunning = JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 });
+    const psCrashed = JSON.stringify({ Service: "web", ID: "abc", State: "exited", ExitCode: 1 });
+    let psResponse = psRunning;
+
+    const mgr = createMockedManager(dir, {
+      get ps() { return psResponse; },
+      inspect: JSON.stringify([{ NetworkSettings: { Networks: {} } }]),
+    });
+
+    await mgr.start();
+    expect(mgr.getService("web")?.status).toBe("running");
+
+    // Simulate crash
+    psResponse = psCrashed;
+    // Trigger a manual poll via reconcile-like path — call pollStatus indirectly
+    // by tracking status events
+    const events: string[] = [];
+    mgr.on("service_status", (svc) => events.push(svc.status));
+
+    // We can't call pollStatus directly (private), but stop+start will re-poll
+    // Instead, let's test via the public reconcile path
+    await mgr.reconcile();
+    // After reconcile, it re-starts and polls — web should be in error state now
+    const web = mgr.getService("web");
+    expect(web?.status).toBe("error");
+  });
+
+  it("stop kills log processes and runs compose down", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
+
+    const psOutput = JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 });
+    const mgr = createMockedManager(dir, {
+      ps: psOutput,
+      inspect: JSON.stringify([{ NetworkSettings: { Networks: {} } }]),
+    });
+
+    await mgr.start();
+    expect(mgr.started).toBe(true);
+
+    await mgr.stop();
+    expect(mgr.getService("web")?.status).toBe("stopped");
+  });
+
+  it("reconcile clears startError on success", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
+
+    const psOutput = JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 });
+    const mgr = createMockedManager(dir, {
+      ps: psOutput,
+      inspect: JSON.stringify([{ NetworkSettings: { Networks: {} } }]),
+    });
+
+    mgr.startError = "previous error";
+    await mgr.start();
+    // startError should be cleared during reconcile but start doesn't clear it
+    // reconcile does
+    mgr.startError = "stale error";
+    await mgr.reconcile();
+    expect(mgr.startError).toBeNull();
+  });
+
+  it("getLogBuffer returns empty string for unknown service", () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n");
+    const mgr = createMockedManager(dir);
+    expect(mgr.getLogBuffer("nonexistent")).toBe("");
+  });
+
+  it("getContainerIpForPort returns IP for matching service", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+
+    const psOutput = JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 });
+    const mgr = createMockedManager(dir, {
+      ps: psOutput,
+      inspect: JSON.stringify([{
+        NetworkSettings: { Networks: { "shipit-session-test-session": { IPAddress: "172.20.0.5" } } },
+      }]),
+    });
+
+    await mgr.start();
+    expect(mgr.getContainerIpForPort(5173)).toBe("172.20.0.5");
+    expect(mgr.getContainerIpForPort(9999)).toBeUndefined();
   });
 });

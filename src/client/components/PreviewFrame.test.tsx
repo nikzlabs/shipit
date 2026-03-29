@@ -278,6 +278,30 @@ describe("PreviewFrame", () => {
     expect(screen.getByText(/exit code 1/)).toBeInTheDocument();
   });
 
+  // ---- Compose error overlay tests ----
+
+  it("shows compose error overlay when composeError is set", () => {
+    usePreviewStore.getState().setComposeError("Service `dev`: Absolute bind mount path `/app/node_modules` is not allowed.");
+    render(<PreviewFrame preview={null} {...defaultProps} />);
+    expect(screen.getByText("Docker Compose error")).toBeInTheDocument();
+    expect(screen.getByText(/Absolute bind mount/)).toBeInTheDocument();
+  });
+
+  it("shows Send to agent button in compose error overlay", () => {
+    usePreviewStore.getState().setComposeError("some error");
+    const onSendCrashToAgent = vi.fn();
+    render(<PreviewFrame preview={null} {...defaultProps} onSendCrashToAgent={onSendCrashToAgent} />);
+    const btn = screen.getByText("Send to agent");
+    fireEvent.click(btn);
+    expect(onSendCrashToAgent).toHaveBeenCalled();
+  });
+
+  it("clears compose error when services arrive", () => {
+    usePreviewStore.getState().setComposeError("old error");
+    usePreviewStore.getState().setServices([{ name: "web", status: "running", port: 5173, preview: "auto" }]);
+    expect(usePreviewStore.getState().composeError).toBeNull();
+  });
+
   // ---- Managed source tests ----
 
   it("renders iframe for managed source preview", async () => {

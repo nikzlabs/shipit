@@ -258,6 +258,61 @@ describe("generateComposeOverride", () => {
     );
     expect(override).toContain("shipit-preview-mode: manual");
   });
+
+  it("strips ports with !reset sentinel", () => {
+    const override = generateComposeOverride(
+      [{ name: "web", ports: ["5173:5173"] }],
+      baseOpts,
+    );
+    expect(override).toContain("!reset []");
+  });
+
+  it("rewrites workspace volumes when workspaceVolume is set", () => {
+    const override = generateComposeOverride(
+      [{ name: "web", ports: ["5173:5173"], volumes: [".:/app"] }],
+      { ...baseOpts, workspaceVolume: "shipit-ws-vol", workspaceSubpath: "sessions/abc/workspace" },
+    );
+    expect(override).toContain("source: shipit-workspace");
+    expect(override).toContain("target: /app");
+    expect(override).toContain("subpath: sessions/abc/workspace");
+    expect(override).toContain("shipit-workspace");
+    expect(override).toContain("external: true");
+  });
+
+  it("rewrites subdirectory volumes with combined subpath", () => {
+    const override = generateComposeOverride(
+      [{ name: "api", volumes: ["./backend:/app"] }],
+      { ...baseOpts, workspaceVolume: "shipit-ws-vol", workspaceSubpath: "sessions/abc/workspace" },
+    );
+    expect(override).toContain("subpath: sessions/abc/workspace/backend");
+    expect(override).toContain("target: /app");
+  });
+
+  it("preserves read-only mode on rewritten volumes", () => {
+    const override = generateComposeOverride(
+      [{ name: "web", volumes: [".:/app:ro"] }],
+      { ...baseOpts, workspaceVolume: "shipit-ws-vol" },
+    );
+    expect(override).toContain("read_only: true");
+  });
+
+  it("leaves non-workspace volumes untouched", () => {
+    const override = generateComposeOverride(
+      [{ name: "db", volumes: ["pgdata:/var/lib/postgresql/data"] }],
+      { ...baseOpts, workspaceVolume: "shipit-ws-vol" },
+    );
+    // Non-workspace volume should pass through as-is
+    expect(override).toContain("pgdata:/var/lib/postgresql/data");
+  });
+
+  it("rewrites object-form workspace volumes", () => {
+    const override = generateComposeOverride(
+      [{ name: "web", volumes: [{ type: "bind", source: ".", target: "/app" }] }],
+      { ...baseOpts, workspaceVolume: "shipit-ws-vol", workspaceSubpath: "ws/dir" },
+    );
+    expect(override).toContain("source: shipit-workspace");
+    expect(override).toContain("subpath: ws/dir");
+  });
 });
 
 describe("writeComposeOverride", () => {
