@@ -38,6 +38,17 @@ const MAX_ERRORS = 50;
 /** Time window in ms for deduplication — same error within this window is dropped. */
 const DEDUP_WINDOW_MS = 1000;
 
+/** Per-session state that gets snapshotted on session switch. */
+export interface SessionPreviewSnapshot {
+  status: PreviewStatus | null;
+  selectedPort: number | null;
+  errors: PreviewError[];
+  autoFixRetries: number;
+  startupSteps: StartupStep[];
+  services: ManagedServiceState[];
+  composeError: string | null;
+}
+
 interface PreviewState {
   status: PreviewStatus | null;
   selectedPort: number | null;
@@ -50,6 +61,9 @@ interface PreviewState {
   services: ManagedServiceState[];
   /** Error message when Docker Compose stack fails to start. */
   composeError: string | null;
+
+  /** Saved preview state per session, keyed by sessionId. */
+  sessionSnapshots: Record<string, SessionPreviewSnapshot>;
 
   setStatus: (status: PreviewStatus | null) => void;
   setSelectedPort: (port: number | null) => void;
@@ -67,6 +81,12 @@ interface PreviewState {
   /** Update a single service status (from service_status WS message). */
   updateService: (update: ManagedServiceState) => void;
   setComposeError: (error: string | null) => void;
+  /** Save current top-level state into sessionSnapshots[sessionId]. */
+  snapshotSession: (sessionId: string) => void;
+  /** Restore from snapshot if exists, otherwise reset to defaults. */
+  restoreSession: (sessionId: string) => void;
+  /** Read-only access to a session's snapshot. */
+  getSnapshot: (sessionId: string) => SessionPreviewSnapshot | undefined;
   reset: () => void;
 }
 
@@ -109,18 +129,23 @@ export function resetDedupState(): void {
   idCounter = 0;
 }
 
-const initialState = {
-  status: null as PreviewStatus | null,
-  selectedPort: null as number | null,
-  errors: [] as PreviewError[],
-  autoFixEnabled: false,
+const initialSessionState: SessionPreviewSnapshot = {
+  status: null,
+  selectedPort: null,
+  errors: [],
   autoFixRetries: 0,
-  startupSteps: [] as StartupStep[],
-  services: [] as ManagedServiceState[],
-  composeError: null as string | null,
+  startupSteps: [],
+  services: [],
+  composeError: null,
 };
 
-export const usePreviewStore = create<PreviewState>((set) => ({
+const initialState = {
+  ...initialSessionState,
+  autoFixEnabled: false,
+  sessionSnapshots: {} as Record<string, SessionPreviewSnapshot>,
+};
+
+export const usePreviewStore = create<PreviewState>((set, get) => ({
   ...initialState,
 
   setStatus: (status) => set({ status }),
@@ -182,8 +207,36 @@ export const usePreviewStore = create<PreviewState>((set) => ({
       return { services: [...state.services, update] };
     }),
 
+  snapshotSession: (sessionId) =>
+    set((state) => ({
+      sessionSnapshots: {
+        ...state.sessionSnapshots,
+        [sessionId]: {
+          status: state.status,
+          selectedPort: state.selectedPort,
+          errors: state.errors,
+          autoFixRetries: state.autoFixRetries,
+          startupSteps: state.startupSteps,
+          services: state.services,
+          composeError: state.composeError,
+        },
+      },
+    })),
+
+  restoreSession: (sessionId) => {
+    const snap = get().sessionSnapshots[sessionId];
+    if (snap) {
+      set({ ...snap });
+    } else {
+      resetDedupState();
+      set({ ...initialSessionState });
+    }
+  },
+
+  getSnapshot: (sessionId): SessionPreviewSnapshot | undefined => get().sessionSnapshots[sessionId],
+
   reset: () => {
     resetDedupState();
-    set({ ...initialState });
+    set({ ...initialState, sessionSnapshots: {} });
   },
 }));

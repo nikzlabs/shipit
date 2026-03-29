@@ -69,12 +69,11 @@ The preview store is global and gets `reset()` on every session switch, wiping e
 interface SessionPreviewSnapshot {
   status: PreviewStatus | null;
   selectedPort: number | null;
-  configMissing: boolean;
-  installStatus: InstallStatus | null;
-  crashInfo: CrashInfo | null;
   errors: PreviewError[];
   startupSteps: StartupStep[];
   autoFixRetries: number;
+  services: ManagedServiceState[];
+  composeError: string | null;
 }
 ```
 

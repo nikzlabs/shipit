@@ -6,6 +6,7 @@ import {
   nextErrorId,
   type PreviewError,
 } from "../stores/preview-store.js";
+import { useSessionStore } from "../stores/session-store.js";
 
 // Re-export for consumers that import the type from here.
 export type { PreviewError } from "../stores/preview-store.js";
@@ -31,9 +32,27 @@ interface PostMessageData {
 }
 
 /**
+ * Extract session ID from a preview subdomain origin.
+ * Subdomain format: {sessionId}--{port}.hostname
+ * Returns the sessionId or null if the origin doesn't match.
+ */
+function extractSessionIdFromOrigin(origin: string): string | null {
+  try {
+    const hostname = new URL(origin).hostname;
+    const match = /^(.+?)--\d+\./.exec(hostname);
+    return match ? match[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Hook that listens for `postMessage` events from the preview iframe's
  * error-capture script and writes errors into the Zustand preview store.
  * Deduplication and rolling-buffer logic live in the store.
+ *
+ * With the iframe pool, multiple iframes may emit errors. We filter by
+ * origin to only process errors from the active session's iframe.
  */
 export function usePreviewErrors(): UsePreviewErrorsReturn {
   const errors = usePreviewStore((s) => s.errors);
@@ -44,6 +63,14 @@ export function usePreviewErrors(): UsePreviewErrorsReturn {
     const handler = (event: MessageEvent) => {
       const data = event.data as PostMessageData | undefined;
       if (data?.source !== "shipit-preview") return;
+
+      // Filter out errors from background iframes (non-active sessions).
+      // Preview subdomains embed the sessionId: {sessionId}--{port}.hostname
+      const originSessionId = extractSessionIdFromOrigin(event.origin);
+      if (originSessionId) {
+        const activeSessionId = useSessionStore.getState().sessionId;
+        if (activeSessionId && originSessionId !== activeSessionId) return;
+      }
 
       let errorEntry: PreviewError | null = null;
 

@@ -1,5 +1,5 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: poll external preview server URL until ready with cancellation (external system sync)
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { WarningIcon, CircleNotchIcon, ArrowClockwiseIcon, ArrowSquareOutIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
@@ -63,6 +63,42 @@ function formatErrorForMessage(errors: PreviewError[]): string {
 
 export { formatErrorForMessage };
 
+// ---- Iframe pool types ----
+
+/** Maximum number of retained iframes across all sessions and ports. */
+const MAX_IFRAME_SLOTS = 20;
+
+interface IframeSlot {
+  url: string;
+  containerMode: boolean;
+}
+
+/**
+ * Build a subdomain URL for container-mode previews.
+ * Pattern: {sessionId}--{port}.{apiHostname}:{apiPort}
+ */
+function buildSubdomainUrl(sessionId: string, port: number, apiHost: string): string | null {
+  const [rawHostname, apiPort] = apiHost.includes(":") ? apiHost.split(":") as [string, string] : [apiHost, ""];
+  const apiHostname = /^(127\.\d+\.\d+\.\d+|::1)$/.test(rawHostname) ? "localhost" : rawHostname;
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(apiHostname) || apiHostname.includes(":")) return null;
+  const portSuffix = apiPort ? `:${apiPort}` : "";
+  return `${window.location.protocol}//${sessionId}--${port}.${apiHostname}${portSuffix}/`;
+}
+
+/**
+ * Compute the preview URL for a given session/port/preview status.
+ */
+function computePreviewUrl(sessionId: string, port: number, preview: PreviewStatus, apiHost: string): { url: string; containerMode: boolean } | null {
+  if (!preview.running || !port) return null;
+  const isContainer = preview.url?.startsWith("/preview/") ?? false;
+  if (isContainer) {
+    const subdomain = buildSubdomainUrl(sessionId, port, apiHost);
+    const url = subdomain ?? preview.url;
+    return { url, containerMode: true };
+  }
+  return { url: `http://localhost:${port}`, containerMode: false };
+}
+
 export function PreviewFrame({
   preview,
   sessionId,
@@ -86,100 +122,115 @@ export function PreviewFrame({
   // API host for container-mode subdomain URLs (e.g. "localhost:3001")
   const apiHost = (import.meta.env.VITE_API_HOST as string | undefined) || window.location.host;
 
-  // Derive iframe readiness from a key: when session/port/refresh changes,
-  // the key changes and iframeReady becomes false *in the same render* —
-  // no effect-based reset needed, which avoids a one-frame gap where the
-  // iframe would briefly load the new URL before the reset fires.
-  const targetKey = `${sessionId}:${activePort}:${refreshKey}`;
-  const [readyForKey, setReadyForKey] = useState("");
-  const iframeReady = readyForKey === targetKey;
+  // ---- Iframe pool: one iframe per (session, port) ----
+  // Slots are keyed by "sessionId:port". Only the active slot is visible.
+  // Background slots keep their iframes alive in the DOM.
+  const [slots, setSlots] = useState<Map<string, IframeSlot>>(new Map());
+  const [slotOrder, setSlotOrder] = useState<string[]>([]); // LRU, most recent first
+  const iframeRefs = useRef<Map<string, HTMLIFrameElement | null>>(new Map());
 
-  // For container mode, build a subdomain URL so absolute paths (/src/main.tsx)
-  // resolve naturally against the preview origin without HTML rewriting.
-  // Pattern: {sessionId}--{port}.{apiHostname}:{apiPort}
-  // When accessed via IP (e.g. 127.0.0.1), substitute "localhost" — browsers
-  // resolve *.localhost to 127.0.0.1 per spec, so subdomains work without DNS.
-  const previewSubdomainUrl = preview?.url?.startsWith("/preview/") && sessionId
-    ? (() => {
-        const [rawHostname, apiPort] = apiHost.includes(":") ? apiHost.split(":") as [string, string] : [apiHost, ""];
-        // Substitute loopback IPs with "localhost" so subdomains resolve
-        const apiHostname = /^(127\.\d+\.\d+\.\d+|::1)$/.test(rawHostname) ? "localhost" : rawHostname;
-        // Other IP addresses (e.g. LAN) can't use subdomains without wildcard DNS
-        if (/^\d+\.\d+\.\d+\.\d+$/.test(apiHostname) || apiHostname.includes(":")) return null;
-        const portSuffix = apiPort ? `:${apiPort}` : "";
-        return `${window.location.protocol}//${sessionId}--${activePort}.${apiHostname}${portSuffix}/`;
-      })()
-    : null;
+  const activeSlotKey = activePort ? `${sessionId ?? "_"}:${activePort}` : null;
+  const activeSlot = activeSlotKey ? slots.get(activeSlotKey) ?? null : null;
 
-  // Container mode: poll via health-check endpoint (always 200, no console
-  // errors). Local mode: poll localhost with no-cors.
+  // Container mode detection for the current preview
   const isContainerMode = !!(preview?.url?.startsWith("/preview/"));
-  const pollUrl = isContainerMode
+
+  // Track which slot keys have been created (ref to avoid effect deps on slots state)
+  const createdSlotsRef = useRef<Set<string>>(new Set());
+  // Track which slots are currently being polled (to avoid duplicate polls)
+  const pollingRef = useRef<Set<string>>(new Set());
+
+  // Promote a key to the front of the LRU and evict if over capacity.
+  const promoteSlot = useCallback((key: string) => {
+    setSlotOrder((prev) => {
+      const without = prev.filter((k) => k !== key);
+      const next = [key, ...without];
+      // Evict oldest slots beyond the cap
+      if (next.length > MAX_IFRAME_SLOTS) {
+        const evicted = next.slice(MAX_IFRAME_SLOTS);
+        setSlots((s) => {
+          const updated = new Map(s);
+          for (const k of evicted) {
+            updated.delete(k);
+            iframeRefs.current.delete(k);
+            createdSlotsRef.current.delete(k);
+          }
+          return updated;
+        });
+        return next.slice(0, MAX_IFRAME_SLOTS);
+      }
+      return next;
+    });
+  }, []);
+
+  // Compute poll URL for the active slot
+  const pollUrl = isContainerMode && sessionId
     ? `/api/preview-health/${sessionId}/${activePort}`
     : (activePort ? `http://localhost:${activePort}` : null);
 
-  // Poll the preview URL until it responds, then allow iframe to render.
-  // Prevents showing a broken-page icon while the dev server is still starting
-  // or Docker port mapping is not yet established.
+  // Poll and create/update the active slot when session/port changes.
   useEffect(() => {
-    if (!activePort || !pollUrl || iframeReady) return;
+    if (!activeSlotKey || !activePort || !preview?.running || !pollUrl) return;
+
+    // If slot already exists (previously visited), just promote it
+    if (createdSlotsRef.current.has(activeSlotKey)) {
+      promoteSlot(activeSlotKey);
+      return;
+    }
+
+    // Prevent duplicate polls for the same key
+    if (pollingRef.current.has(activeSlotKey)) return;
+    pollingRef.current.add(activeSlotKey);
+
     const state = { cancelled: false };
-    const key = targetKey;
+    const key = activeSlotKey;
+
     const poll = async () => {
       for (let i = 0; i < 30 && !state.cancelled; i++) {
         try {
           if (isContainerMode) {
             const resp = await fetch(pollUrl);
             const data = await resp.json() as { ready?: boolean };
-            if (data.ready) {
-              if (!state.cancelled) setReadyForKey(key);
-              return;
-            }
+            if (data.ready) break;
           } else {
             await fetch(pollUrl, { mode: "no-cors" });
-            if (!state.cancelled) setReadyForKey(key);
-            return;
+            break;
           }
         } catch {
           // Network error — retry
         }
         await new Promise((r) => setTimeout(r, 500));
       }
-      // Give up after ~15s — show iframe anyway
-      if (!state.cancelled) setReadyForKey(key);
+
+      pollingRef.current.delete(key);
+      if (state.cancelled) return;
+
+      // Compute the URL and add the slot
+      const result = computePreviewUrl(sessionId ?? "_", activePort, preview, apiHost);
+      if (result) {
+        createdSlotsRef.current.add(key);
+        setSlots((prev) => {
+          const updated = new Map(prev);
+          updated.set(key, { url: result.url, containerMode: result.containerMode });
+          return updated;
+        });
+        promoteSlot(key);
+      }
     };
     void poll();
-    return () => { state.cancelled = true; };
-  }, [activePort, pollUrl, iframeReady, isContainerMode, targetKey]);
+    return () => {
+      state.cancelled = true;
+      pollingRef.current.delete(key);
+    };
+  }, [activeSlotKey, activePort, sessionId, preview?.running, preview?.url, pollUrl, isContainerMode, apiHost, promoteSlot]);
 
-  // ---- Persistent iframe: never unmounted, src only changes when ready ----
-  // The iframe ref lets us imperatively navigate via src assignment so the
-  // DOM element is preserved across session switches (no remount = no flash).
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-
-  // The URL the iframe is currently displaying (or should display).
-  // Updated only when polling confirms the new session's preview is reachable.
-  const [displayedUrl, setDisplayedUrl] = useState<string | null>(null);
-
-  // Compute what the new URL *would* be once ready
-  const candidateUrl = preview?.running
-    ? (previewSubdomainUrl ?? (preview.url?.startsWith("/preview/") ? preview.url : `http://localhost:${activePort}`))
-    : null;
-
-  // When polling confirms the new preview is reachable, commit its URL.
-  // Also handle refresh: same session but refreshKey changed.
-  useEffect(() => {
-    if (iframeReady && candidateUrl) {
-      setDisplayedUrl(candidateUrl);
-    }
-  }, [iframeReady, candidateUrl]);
+  // Derive active slot state for overlay/UI logic
+  const activeSlotUrl = activeSlot?.url ?? null;
+  const showIframe = slotOrder.length > 0;
+  const activeSlotReady = !!activeSlot;
+  const isTransitioning = !activeSlotReady && activePort > 0 && preview?.running && showIframe;
 
   // --- Auth-blocked detection ---
-  // When behind a reverse proxy with auth (e.g. Cloudflare Zero Trust), the
-  // preview subdomain may require separate authentication. The auth redirect
-  // can't render inside an iframe (frame-ancestors 'none'). Detect this by
-  // waiting for a "loaded" postMessage from the preview proxy's injected
-  // script. If it doesn't arrive, the iframe is likely auth-blocked.
   const [authBlocked, setAuthBlocked] = useState(false);
   const previewLoadedRef = useRef(false);
 
@@ -195,12 +246,11 @@ export function PreviewFrame({
     return () => window.removeEventListener("message", handler);
   }, []);
 
-  // Skip auth detection for localhost — no reverse proxy auth locally.
-  // previewSubdomainUrl looks like "http://uuid--port.localhost:3001/",
-  // so check the apiHost directly rather than parsing the subdomain URL.
   const isLocalPreview = /^(localhost|127\.\d+\.\d+\.\d+|::1)(:|$)/i.test(apiHost);
+  const previewSubdomainUrl = isContainerMode && sessionId ? buildSubdomainUrl(sessionId, activePort, apiHost) : null;
+
   useEffect(() => {
-    if (!displayedUrl || !previewSubdomainUrl || isLocalPreview) return;
+    if (!activeSlotUrl || !previewSubdomainUrl || isLocalPreview) return;
     previewLoadedRef.current = false;
     setAuthBlocked(false);
     const timer = setTimeout(() => {
@@ -209,28 +259,23 @@ export function PreviewFrame({
       }
     }, 5000);
     return () => clearTimeout(timer);
-    // refreshKey: re-run detection after user clicks Retry
-  }, [displayedUrl, previewSubdomainUrl, isLocalPreview, refreshKey]);
+  }, [activeSlotUrl, previewSubdomainUrl, isLocalPreview, refreshKey]);
 
-  // Force-reload the iframe on refresh click by re-assigning the same src.
-  // This avoids changing displayedUrl (which wouldn't trigger a navigation
-  // for the same value) and instead uses the DOM API directly.
+  // Force-reload the active iframe on refresh click
   const lastRefreshKey = useRef(refreshKey);
   useEffect(() => {
     if (refreshKey !== lastRefreshKey.current) {
       lastRefreshKey.current = refreshKey;
       previewLoadedRef.current = false;
       setAuthBlocked(false);
-      if (iframeRef.current && displayedUrl) {
-        iframeRef.current.src = displayedUrl;
+      if (activeSlotKey) {
+        const el = iframeRefs.current.get(activeSlotKey);
+        if (el && activeSlotUrl) {
+          el.src = activeSlotUrl;
+        }
       }
     }
-  }, [refreshKey, displayedUrl]);
-
-  // Whether the persistent iframe should be visible
-  const showIframe = !!displayedUrl;
-  // Whether we're transitioning (iframe shows old content, new session loading)
-  const isTransitioning = showIframe && !iframeReady;
+  }, [refreshKey, activeSlotKey, activeSlotUrl]);
 
   // Remember the last port label so the top bar doesn't flash "Preview" during session switch
   const lastPortLabel = useRef<string | null>(null);
@@ -300,7 +345,7 @@ export function PreviewFrame({
         <p>Starting dev server...</p>
       </div>
     );
-  } else if (authBlocked && displayedUrl) {
+  } else if (authBlocked && activeSlotUrl) {
     overlayContent = (
       <div className="text-center space-y-3 max-w-sm px-4">
         <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-warning)" />
@@ -313,7 +358,7 @@ export function PreviewFrame({
           <Button
             variant="primary"
             size="sm"
-            onClick={() => window.open(displayedUrl, "_blank")}
+            onClick={() => window.open(activeSlotUrl, "_blank")}
           >
             <ArrowSquareOutIcon size={ICON_SIZE.SM} />
             Open in new tab
@@ -413,31 +458,37 @@ export function PreviewFrame({
             variant="ghost"
             size="sm"
             onClick={() => {
-              const url = displayedUrl ?? candidateUrl;
-              if (url) window.open(url, "_blank", "noopener,noreferrer");
+              if (activeSlotUrl) window.open(activeSlotUrl, "_blank", "noopener,noreferrer");
             }}
             title="Open preview in new tab"
-            disabled={!displayedUrl && !candidateUrl}
+            disabled={!activeSlotUrl}
           >
             <ArrowSquareOutIcon size={ICON_SIZE.SM} />
           </Button>
         </div>
       </div>
 
-      {/* Main content area — iframe is always in the same DOM position */}
+      {/* Main content area — iframe pool, one per (session, port) */}
       <div className="flex-1 relative">
-        {/* Persistent iframe — never unmounted, src only changes when new preview is ready */}
-        {showIframe && (
-          <iframe
-            ref={iframeRef}
-            src={displayedUrl}
-            title="Live Preview"
-            className={`absolute inset-0 w-full h-full ${hideIframe ? "invisible" : ""} ${hasErrors && errorPanelOpen ? "max-h-[60%]" : ""}`}
-            {...(!isContainerMode && { sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-modals" })}
-          />
-        )}
-        {/* Transition overlay while polling for new session (iframe visible underneath) */}
-        {isTransitioning && showIframe && !overlayContent && (
+        {/* Persistent iframes — each (session, port) gets its own iframe, hidden via CSS when not active */}
+        {slotOrder.map((key) => {
+          const slot = slots.get(key);
+          if (!slot) return null;
+          const isActive = key === activeSlotKey;
+          const hidden = !isActive || hideIframe;
+          return (
+            <iframe
+              key={key}
+              ref={(el) => { iframeRefs.current.set(key, el); }}
+              src={slot.url}
+              title={isActive ? "Live Preview" : "Background Preview"}
+              className={`absolute inset-0 w-full h-full ${hidden ? "invisible" : ""} ${isActive && hasErrors && errorPanelOpen ? "max-h-[60%]" : ""}`}
+              {...(!slot.containerMode && { sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-modals" })}
+            />
+          );
+        })}
+        {/* Transition overlay while polling for new session/port (background iframe may be visible underneath) */}
+        {isTransitioning && !overlayContent && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/10 pointer-events-none">
             <CircleNotchIcon size={ICON_SIZE.MD} className="animate-spin text-(--color-accent)" />
           </div>
@@ -454,8 +505,8 @@ export function PreviewFrame({
             {overlayContent}
           </div>
         )}
-        {/* Spinner when no iframe has ever been shown and preview is running but polling */}
-        {isRunning && !showIframe && !iframeReady && !overlayContent && (
+        {/* Spinner when no iframe exists for this session/port and preview is running but polling */}
+        {isRunning && !activeSlotReady && !overlayContent && (
           <div className="absolute inset-0 flex items-center justify-center bg-(--color-bg-primary) text-(--color-text-secondary) text-sm">
             <div className="text-center space-y-3">
               <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
