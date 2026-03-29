@@ -333,6 +333,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           error: s.error,
         })),
       } as WsServerMessage);
+
+      // Emit preview_status AFTER service_list so it's the last message in the
+      // stack-ready burst.  React 18 automatic batching can swallow intermediate
+      // WS messages (setLastMessage is overwritten before a re-render), so the
+      // preview_status emitted per-service in onStatus may be lost.  Sending it
+      // here as the final message guarantees the client sees it.
+      this._detectedPorts = this.buildDetectedPortsFromServices(mgr);
+      this.emitMessage(this.buildPreviewStatus());
     };
 
     mgr.on("service_status", onStatus);
