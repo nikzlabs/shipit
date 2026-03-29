@@ -9,7 +9,7 @@
 import { useState, useMemo } from "react";
 import { XIcon } from "@phosphor-icons/react";
 import hljs from "highlight.js";
-import { Modal } from "./ui/modal.js";
+import { Dialog, DialogContent } from "./ui/dialog.js";
 import { sessionRelativePath } from "../path-utils.js";
 
 export interface DiffBlockProps {
@@ -72,7 +72,8 @@ function DiffModal({ filePath, oldString, newString, isWrite, onClose }: {
   onClose: () => void;
 }) {
   return (
-    <Modal onClose={onClose} className="w-[min(90vw,56rem)] max-h-[80vh] flex flex-col">
+    <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
+    <DialogContent className="w-[min(90vw,56rem)] max-h-[80vh] flex flex-col">
       <div className="flex items-center justify-between px-4 py-3 border-b border-(--color-border-primary)">
         <span className="text-xs font-semibold text-(--color-text-primary) shrink-0">Tool Call</span>
         <button
@@ -91,7 +92,8 @@ function DiffModal({ filePath, oldString, newString, isWrite, onClose }: {
           <EditDiff oldString={oldString} newString={newString} />
         )}
       </div>
-    </Modal>
+    </DialogContent>
+    </Dialog>
   );
 }
 

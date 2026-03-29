@@ -1,8 +1,13 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: poll external preview server URL until ready with cancellation (external system sync)
 import { useState, useEffect, useRef, useCallback } from "react";
 import { WarningIcon, CircleNotchIcon, ArrowClockwiseIcon, ArrowSquareOutIcon, CaretDownIcon, CheckIcon } from "@phosphor-icons/react";
-import { useClickOutside } from "../hooks/useClickOutside.js";
 import { ICON_SIZE } from "../design-tokens.js";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "./ui/dropdown-menu.js";
 import { Button } from "./ui/button.js";
 import { StatusDot } from "./ui/status-dot.js";
 import type { PreviewError } from "../hooks/usePreviewErrors.js";
@@ -138,8 +143,6 @@ export function PreviewFrame({
   const [refreshKey, setRefreshKey] = useState(0);
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
   const [portSelectorOpen, setPortSelectorOpen] = useState(false);
-  const portSelectorRef = useRef<HTMLDivElement>(null);
-  useClickOutside(portSelectorRef, () => setPortSelectorOpen(false), portSelectorOpen);
 
   // Compute active port early so hooks can reference it (0 when not running)
   const activePort = preview?.running ? (selectedPort ?? preview.port) : 0;
@@ -453,40 +456,38 @@ export function PreviewFrame({
       <div className="flex items-center justify-between px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs text-(--color-text-secondary)">
         <span className="flex items-center gap-2">
           {showSelector ? (
-            <div ref={portSelectorRef} className="relative">
-              <button
-                onClick={() => setPortSelectorOpen((v) => !v)}
-                className="flex items-center gap-1.5 text-(--color-text-primary) hover:text-(--color-text-secondary) transition-colors cursor-pointer"
-                aria-label="Select preview port"
-                aria-expanded={portSelectorOpen}
-              >
-                <StatusDot status={statusToDotVariant(activeStatus)} />
-                <span>{portLabel}</span>
-                <CaretDownIcon size={ICON_SIZE.XS} />
-              </button>
-              {portSelectorOpen && (
-                <div className="absolute top-full left-0 mt-1 min-w-35 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-lg shadow-xl z-50 overflow-hidden py-1">
-                  {allPorts.map((item) => {
-                    const isActive = item.port === activePort;
-                    return (
-                      <button
-                        key={item.port}
-                        onClick={() => { onSelectPort(item.port); setPortSelectorOpen(false); }}
-                        className={`flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left transition-colors cursor-pointer ${
-                          isActive
-                            ? "text-(--color-text-primary) bg-(--color-bg-hover)"
-                            : "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
-                        }`}
-                      >
-                        <StatusDot status={statusToDotVariant(item.status)} />
-                        <span className="flex-1">{item.label}</span>
-                        {isActive && <CheckIcon size={ICON_SIZE.XS} className="text-(--color-success)" />}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
+            <DropdownMenu open={portSelectorOpen} onOpenChange={setPortSelectorOpen}>
+              <DropdownMenuTrigger asChild>
+                <button
+                  className="flex items-center gap-1.5 text-(--color-text-primary) hover:text-(--color-text-secondary) transition-colors cursor-pointer"
+                  aria-label="Select preview port"
+                >
+                  <StatusDot status={statusToDotVariant(activeStatus)} />
+                  <span>{portLabel}</span>
+                  <CaretDownIcon size={ICON_SIZE.XS} />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="min-w-35">
+                {allPorts.map((item) => {
+                  const isActive = item.port === activePort;
+                  return (
+                    <DropdownMenuItem
+                      key={item.port}
+                      onClick={() => onSelectPort(item.port)}
+                      className={`text-xs ${
+                        isActive
+                          ? "text-(--color-text-primary) bg-(--color-bg-hover)"
+                          : "text-(--color-text-secondary)"
+                      }`}
+                    >
+                      <StatusDot status={statusToDotVariant(item.status)} />
+                      <span className="flex-1">{item.label}</span>
+                      {isActive && <CheckIcon size={ICON_SIZE.XS} className="text-(--color-success)" />}
+                    </DropdownMenuItem>
+                  );
+                })}
+              </DropdownMenuContent>
+            </DropdownMenu>
           ) : (
             <>
               <StatusDot status={isRunning || portLabel ? "success" : "info"} />

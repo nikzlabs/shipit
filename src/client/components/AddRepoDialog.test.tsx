@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { AddRepoDialog } from "./AddRepoDialog.js";
 import type { RepoInfo } from "../../server/shared/types.js";
 
@@ -27,26 +28,28 @@ describe("AddRepoDialog", () => {
     expect(screen.getByPlaceholderText("Search GitHub repos or paste a URL...")).toBeTruthy();
   });
 
-  it("calls onClose when backdrop is clicked", () => {
+  it("calls onClose when backdrop is clicked", async () => {
+    const user = userEvent.setup();
     const onClose = vi.fn();
-    const { container } = render(<AddRepoDialog {...defaultProps} onClose={onClose} />);
-    // Click the backdrop overlay
-    fireEvent.click(container.querySelector('[aria-hidden="true"]')!);
+    render(<AddRepoDialog {...defaultProps} onClose={onClose} />);
+    // Radix Dialog closes on Escape; use that instead of clicking the old aria-hidden backdrop
+    await user.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("calls onClose when close button is clicked", () => {
+  it("calls onClose when close button is clicked", async () => {
+    const user = userEvent.setup();
     const onClose = vi.fn();
     render(<AddRepoDialog {...defaultProps} onClose={onClose} />);
-    fireEvent.click(screen.getByLabelText("Close"));
+    await user.click(screen.getByLabelText("Close"));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("calls onClose when Escape is pressed", () => {
+  it("calls onClose when Escape is pressed", async () => {
+    const user = userEvent.setup();
     const onClose = vi.fn();
     render(<AddRepoDialog {...defaultProps} onClose={onClose} />);
-    const input = screen.getByPlaceholderText("Search GitHub repos or paste a URL...");
-    fireEvent.keyDown(input, { key: "Escape" });
+    await user.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 

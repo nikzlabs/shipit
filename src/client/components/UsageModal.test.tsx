@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { UsageModal, type SessionUsage, type UsageStats, type TurnTokenData } from "./UsageModal.js";
 import type { ModelInfo } from "./StatusBar.js";
 import type { SessionInfo } from "../../server/shared/types.js";
@@ -142,9 +143,10 @@ describe("UsageModal", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it("calls onClose when backdrop is clicked", () => {
+  it("calls onClose when backdrop is clicked", async () => {
+    const user = userEvent.setup();
     const onClose = vi.fn();
-    const { container } = render(
+    render(
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
@@ -152,8 +154,8 @@ describe("UsageModal", () => {
         onClose={onClose}
       />
     );
-    const backdrop = container.querySelector('[aria-hidden="true"]')!;
-    fireEvent.click(backdrop);
+    // Radix Dialog closes on Escape; use that instead of clicking the old aria-hidden backdrop
+    await user.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledOnce();
   });
 

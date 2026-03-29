@@ -2,7 +2,7 @@
 import { useMemo, useEffect, useRef, useCallback } from "react";
 import { XIcon, PaperPlaneTiltIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
-import { Modal } from "./ui/modal.js";
+import { Dialog, DialogContent } from "./ui/dialog.js";
 import { Button } from "./ui/button.js";
 import { MarkdownSectionComments } from "./MarkdownSectionComments.js";
 import type { SectionCommentData } from "./MarkdownSectionComments.js";
@@ -252,15 +252,6 @@ export function FilePreviewModal({ filePath, content, fileType, actions, onClose
   const commentCount = allComments.length;
   const clearComments = useCommentStore((s) => s.clearComments);
 
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); onClose(); }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
-
   const handleSendComments = useCallback(() => {
     if (commentCount === 0 || !onSendComments) return;
 
@@ -273,7 +264,8 @@ export function FilePreviewModal({ filePath, content, fileType, actions, onClose
   }, [commentCount, onSendComments, allComments, filePath, content, clearComments, sessionId]);
 
   return (
-    <Modal onClose={onClose} className="w-[90vw] max-w-4xl h-[85vh] flex flex-col">
+    <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
+      <DialogContent className="w-[90vw] max-w-4xl h-[85vh] flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-(--color-border-secondary) shrink-0">
         <h2 className="text-sm font-medium text-(--color-text-primary) truncate" title={filePath}>{filePath}</h2>
@@ -335,6 +327,7 @@ export function FilePreviewModal({ filePath, content, fileType, actions, onClose
           </Button>
         </div>
       )}
-    </Modal>
+      </DialogContent>
+    </Dialog>
   );
 }

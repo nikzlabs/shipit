@@ -4,7 +4,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
 import { Button } from "./ui/button.js";
-import { Modal } from "./ui/modal.js";
+import { Dialog, DialogContent } from "./ui/dialog.js";
 import { SessionItem } from "./SessionSidebar.js";
 
 interface AllSessionsDialogProps {
@@ -108,10 +108,8 @@ export function AllSessionsDialog({
   };
 
   return (
-    <Modal
-      onClose={onClose}
-      className="w-full max-md:flex max-md:flex-col md:max-w-lg rounded-lg border-(--color-border-secondary)"
-    >
+    <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
+      <DialogContent className="w-full max-md:flex max-md:flex-col md:max-w-lg rounded-lg border-(--color-border-secondary)">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-(--color-border-secondary) px-4 py-3">
           <h2 className="text-sm font-medium text-(--color-text-primary)">
@@ -190,6 +188,7 @@ export function AllSessionsDialog({
             Close
           </Button>
         </div>
-    </Modal>
+      </DialogContent>
+    </Dialog>
   );
 }

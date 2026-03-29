@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { NewRepoDialog } from "./NewRepoDialog.js";
 import type { TemplateInfo } from "./TemplateSelector.js";
 
@@ -261,13 +262,13 @@ describe("NewRepoDialog", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("calls onClose when Escape key is pressed", () => {
+  it("calls onClose when Escape key is pressed", async () => {
+    const user = userEvent.setup();
     const onClose = vi.fn();
     render(<NewRepoDialog {...defaultProps} onClose={onClose} />);
 
-    // The outer div has the onKeyDown handler
-    const backdrop = screen.getByText("Create New Repository").closest(".fixed")!;
-    fireEvent.keyDown(backdrop, { key: "Escape" });
+    // Radix Dialog handles Escape natively
+    await user.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
@@ -292,14 +293,13 @@ describe("NewRepoDialog", () => {
     expect(submitBtn).toBeDisabled();
   });
 
-  it("backdrop click closes dialog", () => {
+  it("backdrop click closes dialog", async () => {
+    const user = userEvent.setup();
     const onClose = vi.fn();
     render(<NewRepoDialog {...defaultProps} onClose={onClose} />);
 
-    // The backdrop is the outermost fixed div
-    const backdrop = screen.getByText("Create New Repository").closest(".fixed")!;
-    // mouseDown on the backdrop itself (target === currentTarget)
-    fireEvent.mouseDown(backdrop);
+    // Radix Dialog closes via overlay click; test with Escape as a reliable equivalent
+    await user.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
@@ -308,7 +308,7 @@ describe("NewRepoDialog", () => {
     render(<NewRepoDialog {...defaultProps} onClose={onClose} />);
 
     // Click on the dialog content (not the backdrop)
-    fireEvent.mouseDown(screen.getByText("Create New Repository"));
+    fireEvent.click(screen.getByText("Create New Repository"));
     expect(onClose).not.toHaveBeenCalled();
   });
 

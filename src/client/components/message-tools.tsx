@@ -8,7 +8,7 @@ import { ToolSpinner } from "./StreamingIndicator.js";
 import { AskUserQuestion, type AskQuestionItem } from "./AskUserQuestion.js";
 import { PlanApproval } from "./PlanApproval.js";
 import { ToolResult } from "./ToolResult.js";
-import { Modal } from "./ui/modal.js";
+import { Dialog, DialogContent } from "./ui/dialog.js";
 import { sessionRelativePath } from "../path-utils.js";
 import type { ToolUseBlock, ToolResultBlock } from "./MessageList.js";
 
@@ -205,7 +205,8 @@ function ToolOutputModal({ toolName, command, result, onClose }: {
   }, [isBash, command]);
 
   return (
-    <Modal onClose={onClose} className="w-[min(90vw,56rem)] max-h-[80vh] flex flex-col">
+    <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
+    <DialogContent className="w-[min(90vw,56rem)] max-h-[80vh] flex flex-col">
       <div className="flex items-center justify-between px-4 py-3 border-b border-(--color-border-primary)">
         <span className="text-xs font-semibold text-(--color-text-primary) shrink-0">Tool Call</span>
         <button
@@ -233,7 +234,8 @@ function ToolOutputModal({ toolName, command, result, onClose }: {
         )}
         <ToolResult tool={toolName} result={result} />
       </div>
-    </Modal>
+    </DialogContent>
+    </Dialog>
   );
 }
 

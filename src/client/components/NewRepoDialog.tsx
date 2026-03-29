@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { TemplateInfo } from "./TemplateSelector.js";
 import { Button } from "./ui/button.js";
+import { Dialog, DialogContent } from "./ui/dialog.js";
 
 const CATEGORY_LABELS: Record<TemplateInfo["category"], string> = {
   frontend: "Frontend",
@@ -61,12 +62,6 @@ export function NewRepoDialog({
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Escape") {
-      onClose();
-    }
-  };
-
   const filtered =
     filter === "all"
       ? templates
@@ -79,14 +74,8 @@ export function NewRepoDialog({
   })).filter((g) => g.items.length > 0);
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-(--color-bg-overlay) backdrop-blur-sm"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-      onKeyDown={handleKeyDown}
-    >
-      <div className="max-w-2xl w-full mx-4 rounded-xl bg-(--color-bg-elevated) border border-(--color-border-secondary) max-h-[90vh] flex flex-col">
+    <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
+      <DialogContent className="max-w-2xl w-full mx-4 max-h-[90vh] flex flex-col">
         {/* Header */}
         <div className="px-6 pt-6 pb-4 border-b border-(--color-border-secondary)">
           <div className="flex items-center justify-between mb-4">
@@ -260,7 +249,7 @@ export function NewRepoDialog({
             {creating ? "Creating..." : "Create & Setup"}
           </Button>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
