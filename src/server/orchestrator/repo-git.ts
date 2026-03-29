@@ -121,8 +121,18 @@ export class RepoGit {
 
   /** Delete a remote branch. Used during session cleanup. */
   async deleteBranch(branchName: string): Promise<void> {
-    await this.git.raw(["push", "origin", "--delete", branchName]);
-    console.log("[git] Deleted remote branch:", branchName);
+    try {
+      await this.git.raw(["push", "origin", "--delete", branchName]);
+      console.log("[git] Deleted remote branch:", branchName);
+    } catch (err) {
+      // Branch may never have been pushed (e.g. renamed before first push,
+      // or session archived before any code was committed). That's fine.
+      if (String(err).includes("remote ref does not exist")) {
+        console.log("[git] Remote branch not found (already gone or never pushed):", branchName);
+        return;
+      }
+      throw err;
+    }
   }
 
   /**

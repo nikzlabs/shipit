@@ -562,7 +562,7 @@ export function createPrStatusPoller(
 ): PrStatusPoller {
   const {
     deps, githubAuthManager, sessionManager, sseBroadcast,
-    runnerRegistry, createRepoGit, getBareCacheDir,
+    runnerRegistry, getBareCacheDir,
   } = pollerDeps;
 
   const prStatusPoller = deps.prStatusPoller ?? new PrStatusPoller({
@@ -585,7 +585,7 @@ export function createPrStatusPoller(
     onMergeDetectedCb: async (sessionId) => {
       try {
         const result = await markMergedAndPruneExcess(
-          sessionManager, runnerRegistry, createRepoGit, getBareCacheDir, sessionId,
+          sessionManager, runnerRegistry, getBareCacheDir, sessionId,
         );
         sseBroadcast("session_list", { sessions: result.sessions });
         console.log(`[pr-poller] Post-merge: marked ${sessionId} as merged`);
