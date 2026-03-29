@@ -425,14 +425,13 @@ function setupServiceManager(
     return; // Invalid config — skip compose setup
   }
 
-  // Surface config migration warnings so the user/agent can act on them
+  // Surface config migration warnings in the preview panel
   if (shipitConfig.warnings.length > 0) {
-    const text = `shipit.yaml needs migration:\n${shipitConfig.warnings.map(w => `  • ${w}`).join("\n")}`;
+    const text = `shipit.yaml needs migration:\n${shipitConfig.warnings.map(w => `• ${w}`).join("\n")}`;
     runner.emitMessage({
-      type: "log_entry",
-      source: "server",
-      text,
-      timestamp: new Date().toISOString(),
+      type: "compose_error",
+      sessionId: runner.sessionId,
+      message: text,
     });
   }
 
