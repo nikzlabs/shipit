@@ -27,23 +27,41 @@ const queuedMessageStash = new Map<string, ChatMessage>();
 
 export function useMessageHandler(params: {
   lastMessage: MessageEvent | null;
+  drainMessages: () => MessageEvent[];
   send: (msg: WsClientMessage) => void;
   terminalRef: RefObject<InteractiveTerminalHandle | null>;
   notify: (msg: string) => void;
 }): void {
-  const { lastMessage, send, terminalRef, notify } = params;
+  const { lastMessage, drainMessages, send, terminalRef, notify } = params;
 
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
-    if (!lastMessage) return;
+    // Drain ALL messages that arrived since the last render. This prevents
+    // message loss when React batches multiple setLastMessage() calls between
+    // renders (common during compose stack startup bursts).
+    const messages = drainMessages();
+    if (messages.length === 0) return;
 
-    let data: WsServerMessage;
-    try {
-      data = JSON.parse(lastMessage.data as string) as WsServerMessage;
-    } catch {
-      return;
+    for (const msg of messages) {
+      let data: WsServerMessage;
+      try {
+        data = JSON.parse(msg.data as string) as WsServerMessage;
+      } catch {
+        continue;
+      }
+      processMessage(data, { terminalRef, notify });
     }
+  }, [lastMessage, drainMessages, send, terminalRef, notify]);
+}
 
+function processMessage(
+  data: WsServerMessage,
+  deps: {
+    terminalRef: RefObject<InteractiveTerminalHandle | null>;
+    notify: (msg: string) => void;
+  },
+): void {
+    const { terminalRef, notify } = deps;
     const session = useSessionStore.getState();
     const git = useGitStore.getState();
     const file = useFileStore.getState();
@@ -557,5 +575,4 @@ export function useMessageHandler(params: {
 
     // session_agent_started/finished, repo_status, repo_warm_ready, repo_list
     // are now delivered via SSE (useServerEvents hook)
-  }, [lastMessage, send, terminalRef, notify]);
 }

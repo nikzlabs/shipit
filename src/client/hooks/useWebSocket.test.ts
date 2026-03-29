@@ -100,6 +100,28 @@ describe("useWebSocket", () => {
     expect(result.current.lastMessage).not.toBeNull();
   });
 
+  it("drainMessages returns all queued messages and clears the queue", () => {
+    const { result } = renderHook(() => useWebSocket("ws://test"));
+    act(() => latestWs().simulateOpen());
+
+    // Send multiple messages in a single act (simulates burst between renders)
+    act(() => {
+      latestWs().simulateMessage({ type: "a" });
+      latestWs().simulateMessage({ type: "b" });
+      latestWs().simulateMessage({ type: "c" });
+    });
+
+    // Drain should return all 3 messages
+    let drained: MessageEvent[] = [];
+    act(() => { drained = result.current.drainMessages(); });
+    expect(drained).toHaveLength(3);
+
+    // Subsequent drain should return empty
+    let second: MessageEvent[] = [];
+    act(() => { second = result.current.drainMessages(); });
+    expect(second).toHaveLength(0);
+  });
+
   // --- Reconnection ---
 
   it("increments reconnectAttempt on close", () => {
