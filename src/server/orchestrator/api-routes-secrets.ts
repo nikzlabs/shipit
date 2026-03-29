@@ -60,13 +60,7 @@ export async function registerSecretsRoutes(
       // Save to database
       secretStore.saveSecrets(repoUrl, secrets);
 
-      // Push to active preview containers for sessions using this repo
-      // Secrets are injected into compose services via .shipit/.env (handled by ServiceManager)
-      const pushErrors: string[] = [];
-
-      if (pushErrors.length > 0) {
-        return { saved: true, pushErrors };
-      }
+      // TODO: Push secrets to compose services via .shipit/.env
       return { saved: true };
     },
   );

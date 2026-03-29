@@ -31,11 +31,11 @@ function StatusDot({ status }: { status: ManagedServiceState["status"] }) {
 /** Read-only xterm.js log viewer for a single service. */
 function ServiceLogViewer({
   serviceName,
-  lastMessage,
+  parsedMessage,
   send,
 }: {
   serviceName: string;
-  lastMessage: MessageEvent | null;
+  parsedMessage: WsServerMessage | null;
   send: (msg: WsClientMessage) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -116,25 +116,18 @@ function ServiceLogViewer({
 
   // Write incoming WS messages to xterm
   useEffect(() => {
-    if (!lastMessage || !termRef.current) return;
+    if (!parsedMessage || !termRef.current) return;
 
-    let data: WsServerMessage;
-    try {
-      data = JSON.parse(lastMessage.data as string) as WsServerMessage;
-    } catch {
-      return;
-    }
-
-    if (data.type === "service_log_buffer" && data.name === serviceName && !bufferReceivedRef.current) {
+    if (parsedMessage.type === "service_log_buffer" && parsedMessage.name === serviceName && !bufferReceivedRef.current) {
       bufferReceivedRef.current = true;
-      termRef.current.write(data.buffer);
+      termRef.current.write(parsedMessage.buffer);
     }
     // Only write live log events after the buffer replay — events that
     // arrived before the buffer would duplicate its content.
-    if (data.type === "service_log" && data.name === serviceName && bufferReceivedRef.current) {
-      termRef.current.write(data.text);
+    if (parsedMessage.type === "service_log" && parsedMessage.name === serviceName && bufferReceivedRef.current) {
+      termRef.current.write(parsedMessage.text);
     }
-  }, [lastMessage, serviceName]);
+  }, [parsedMessage, serviceName]);
 
   return (
     <div
@@ -149,6 +142,16 @@ export function ServicesPanel({ lastMessage, send, onSendToAgent }: ServicesPane
   const services = usePreviewStore((s) => s.services);
   const [selectedService, setSelectedService] = useState<string | null>(null);
 
+  // Parse WS message once — shared by ServiceLogViewer and plain-text accumulator
+  const parsedMessage = (() => {
+    if (!lastMessage) return null;
+    try {
+      return JSON.parse(lastMessage.data as string) as WsServerMessage;
+    } catch {
+      return null;
+    }
+  })();
+
   // Track plain-text log lines for the selected service (for Send to Agent)
   const plainLinesRef = useRef<string[]>([]);
 
@@ -159,24 +162,17 @@ export function ServicesPanel({ lastMessage, send, onSendToAgent }: ServicesPane
 
   // Accumulate plain-text log lines from WS messages
   useEffect(() => {
-    if (!lastMessage || !selectedService) return;
+    if (!parsedMessage || !selectedService) return;
 
-    let data: WsServerMessage;
-    try {
-      data = JSON.parse(lastMessage.data as string) as WsServerMessage;
-    } catch {
-      return;
-    }
-
-    if (data.type === "service_log_buffer" && data.name === selectedService) {
-      const lines = data.buffer.split("\n");
+    if (parsedMessage.type === "service_log_buffer" && parsedMessage.name === selectedService) {
+      const lines = parsedMessage.buffer.split("\n");
       plainLinesRef.current = lines.slice(-MAX_PLAIN_LINES);
     }
-    if (data.type === "service_log" && data.name === selectedService) {
-      const newLines = data.text.split("\n");
+    if (parsedMessage.type === "service_log" && parsedMessage.name === selectedService) {
+      const newLines = parsedMessage.text.split("\n");
       plainLinesRef.current = [...plainLinesRef.current, ...newLines].slice(-MAX_PLAIN_LINES);
     }
-  }, [lastMessage, selectedService]);
+  }, [parsedMessage, selectedService]);
 
   const handleSendToAgent = useCallback(() => {
     if (!selectedService) return;
@@ -251,7 +247,7 @@ export function ServicesPanel({ lastMessage, send, onSendToAgent }: ServicesPane
       <div className="flex-1 min-h-0">
         <ServiceLogViewer
           serviceName={effectiveService}
-          lastMessage={lastMessage}
+          parsedMessage={parsedMessage}
           send={send}
         />
       </div>
