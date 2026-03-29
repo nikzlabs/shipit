@@ -1,18 +1,23 @@
 /**
- * Session configuration resolver — reads `resources` and `capabilities`
- * blocks from `shipit.yaml` before container creation.
+ * Session configuration resolver — reads agent resources and capabilities
+ * from `shipit.yaml` before container creation.
  *
- * This lives in `shared/` because the orchestrator calls it before creating
- * the container (the session worker hasn't started yet). The session worker's
- * `preview-config.ts` continues to parse preview-specific config independently.
+ * This is a compatibility wrapper over the new unified `shipit-config.ts`
+ * parser. It supports both the new format (version/agent/compose) and the
+ * old format (resources/capabilities/preview) for backward compatibility
+ * during migration.
+ *
+ * Callers should migrate to `resolveShipitConfig()` from `shipit-config.ts`
+ * directly when the old format is fully retired.
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
+import { resolveShipitConfig, type ShipitConfig } from "./shipit-config.js";
 
 // ---------------------------------------------------------------------------
-// Types
+// Types (preserved for backward compatibility)
 // ---------------------------------------------------------------------------
 
 export interface ContainerResourceConfig {
@@ -27,8 +32,6 @@ export interface ContainerResourceConfig {
 export interface SessionResourceConfig {
   /** Agent container resources. */
   agent: ContainerResourceConfig;
-  /** Preview container resources. */
-  preview: ContainerResourceConfig;
 }
 
 export interface SessionCapabilities {
@@ -47,7 +50,6 @@ export interface SessionConfig {
 
 const DEFAULT_RESOURCES: SessionResourceConfig = {
   agent: { memory: 1024, cpu: 0.5, pids: 256 },
-  preview: { memory: 512, cpu: 0.5, pids: 1024 },
 };
 
 const DEFAULT_CAPABILITIES: SessionCapabilities = {
@@ -64,11 +66,6 @@ export function getResourceCaps(): SessionResourceConfig {
       memory: parseEnvInt("MAX_SESSION_MEMORY_MB", 4096),
       cpu: parseEnvFloat("MAX_SESSION_CPU", 4),
       pids: parseEnvInt("MAX_SESSION_PIDS", 2048),
-    },
-    preview: {
-      memory: parseEnvInt("MAX_SESSION_PREVIEW_MEMORY_MB", 4096),
-      cpu: parseEnvFloat("MAX_SESSION_PREVIEW_CPU", 4),
-      pids: parseEnvInt("MAX_SESSION_PREVIEW_PIDS", 2048),
     },
   };
 }
@@ -95,10 +92,12 @@ function parseEnvFloat(key: string, fallback: number): number {
  * Resolve session config (resources + capabilities) from `shipit.yaml` in the
  * given directory. Returns defaults for missing fields or missing file.
  *
- * Resource values are capped at deployment-level maximums from env vars:
- * - `MAX_SESSION_MEMORY_MB` (default 4096)
- * - `MAX_SESSION_CPU` (default 4)
- * - `MAX_SESSION_PIDS` (default 2048)
+ * Supports both the new format (agent/compose) and the old format
+ * (resources/capabilities/preview). When the new format is detected
+ * (has `agent` or `compose` key, or no old-format keys), uses the new
+ * parser. Otherwise falls back to old-format parsing.
+ *
+ * Resource values are capped at deployment-level maximums from env vars.
  */
 export function resolveSessionConfig(sessionDir: string): SessionConfig {
   const yamlPath = path.join(sessionDir, "shipit.yaml");
@@ -114,14 +113,44 @@ export function resolveSessionConfig(sessionDir: string): SessionConfig {
     // File doesn't exist or can't be read — use defaults
   }
 
-  const resources = parseResources(doc);
-  const capabilities = parseCapabilities(doc);
+  // Detect format: new format has `agent` or `compose` or `version` keys.
+  // When new keys are present, prefer the new parser even if old keys also exist
+  // (common during migration).
+  const hasNewKeys = doc && ("agent" in doc || "compose" in doc || "version" in doc);
+
+  let resources: SessionResourceConfig;
+  let capabilities: SessionCapabilities;
+
+  if (hasNewKeys) {
+    // New format — delegate to unified parser
+    let shipitConfig: ShipitConfig;
+    try {
+      shipitConfig = resolveShipitConfig(sessionDir);
+    } catch {
+      // Parser error — fall back to defaults
+      shipitConfig = { agent: { memory: 1024, cpu: 0.5, pids: 256, install: [] }, warnings: [] };
+    }
+    resources = {
+      agent: {
+        memory: shipitConfig.agent.memory,
+        cpu: shipitConfig.agent.cpu,
+        pids: shipitConfig.agent.pids,
+      },
+    };
+    capabilities = {
+      docker: shipitConfig.compose?.dockerSocket ?? false,
+    };
+  } else {
+    // Old format or no doc — use legacy parsing
+    resources = parseResources(doc);
+    capabilities = parseCapabilities(doc);
+  }
+
   const caps = getResourceCaps();
 
   return {
     resources: {
       agent: clampResources(resources.agent, caps.agent),
-      preview: clampResources(resources.preview, caps.preview),
     },
     capabilities,
   };
@@ -168,9 +197,8 @@ function parseResources(doc: Record<string, unknown> | undefined): SessionResour
   const res = doc.resources as Record<string, unknown>;
 
   const agent = parseContainerResources(res.agent, DEFAULT_RESOURCES.agent);
-  const preview = parseContainerResources(res.preview, DEFAULT_RESOURCES.preview);
 
-  return { agent, preview };
+  return { agent };
 }
 
 function parseCapabilities(doc: Record<string, unknown> | undefined): SessionCapabilities {

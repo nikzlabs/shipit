@@ -1,4 +1,5 @@
 ---
+name: server-architecture
 description: "ShipIt server/orchestrator architecture: buildApp(), HTTP API routes, services layer, WebSocket handler dispatch, SSE broadcasts, dependency injection, state scopes, manager initialization, type system. Load when working on orchestrator code, routes, services, or WebSocket handlers."
 user-invocable: true
 ---
@@ -305,7 +306,8 @@ Types are shared between server and client (client imports from `../../server/sh
 | `src/server/orchestrator/session-container.ts` | Docker container management |
 | `src/server/session/session-worker.ts` | In-container Fastify server |
 | `src/server/session/claude.ts` | `ClaudeProcess` — spawns CLI, parses NDJSON |
-| `src/server/session/preview-manager.ts` | `PreviewManager` — Vite dev server |
+| `src/server/orchestrator/service-manager.ts` | `ServiceManager` — Docker Compose lifecycle |
+| `src/server/orchestrator/compose-generator.ts` | Compose override generation, volume rewriting |
 | `src/server/shared/git.ts` | `GitManager` — per-session git |
 | `src/server/orchestrator/repo-git.ts` | `RepoGit` — shared-repo and worktree ops |
 | `src/client/App.tsx` | Main React component |

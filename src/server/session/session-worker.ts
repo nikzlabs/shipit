@@ -2,9 +2,8 @@
  * Session Worker — lightweight Fastify server that runs inside each container
  * (or as a subprocess in non-Docker mode for testing).
  *
- * Supports two modes controlled by WORKER_MODE env var:
- * - "session" (default): agent, terminal, file watcher endpoints. No preview.
- * - "preview": preview server, secrets injection, health check. No agent/terminal.
+ * Provides agent, terminal, and file watcher endpoints. Preview/services
+ * are managed by Docker Compose via ServiceManager in the orchestrator.
  *
  * Streams events back to the orchestrator via SSE.
  * The orchestrator talks to this server over HTTP on port 9100 (or a
@@ -17,7 +16,6 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import type { AgentProcess, AgentRunParams, AgentEvent, AgentId } from "./agents/agent-process.js";
 import { TerminalProcess } from "./terminal.js";
-import { PreviewManager } from "./preview-manager.js";
 import { FileWatcher } from "./file-watcher.js";
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
 import { scanFileTree } from "../shared/file-tree.js";
@@ -30,16 +28,11 @@ import { ClaudeAdapter } from "./agents/claude-adapter.js";
 // Types
 // ---------------------------------------------------------------------------
 
-/** Worker mode: session (agent/terminal/files) or preview (dev server/secrets). */
-export type WorkerMode = "session" | "preview";
-
 /** Event types sent over the SSE stream to the orchestrator. */
 export interface WorkerSSEEvent {
   type:
     | "agent_event" | "agent_done" | "agent_error" | "agent_auth_required" | "agent_log"
     | "terminal_data" | "terminal_exit"
-    | "preview_ready" | "preview_stopped" | "preview_config_missing"
-    | "preview_config_error" | "preview_install_status" | "preview_startup_step" | "preview_log"
     | "file_changes";
   data: unknown;
 }
@@ -56,10 +49,6 @@ export interface SessionWorkerDeps {
   host?: string;
   /** Workspace directory inside the container. Defaults to "/workspace". */
   workspaceDir?: string;
-  /** Worker mode: "session" or "preview". Defaults to "session". */
-  workerMode?: WorkerMode;
-  /** Factory for creating PreviewManager (injectable for testing). */
-  createPreviewManager?: () => PreviewManager;
   /** Factory for creating FileWatcher (injectable for testing). */
   createFileWatcher?: () => FileWatcher;
   /** Factory for creating TerminalProcess (injectable for testing). */
@@ -71,12 +60,9 @@ export interface SessionWorkerDeps {
 // ---------------------------------------------------------------------------
 
 /**
- * The session worker manages a single agent process, terminal, preview server,
- * and file watcher. Exposes them over HTTP. SSE clients connect to GET /events
- * and receive real-time events.
- *
- * In "session" mode: agent, terminal, file watcher.
- * In "preview" mode: preview server, secrets injection.
+ * The session worker manages a single agent process, terminal, and file watcher.
+ * Exposes them over HTTP. SSE clients connect to GET /events and receive
+ * real-time events.
  */
 export class SessionWorker extends EventEmitter {
   private app: FastifyInstance;
@@ -87,27 +73,15 @@ export class SessionWorker extends EventEmitter {
   private port: number;
   private host: string;
   private workspaceDir: string;
-  readonly workerMode: WorkerMode;
 
-  // Phase 3: per-session resources
   private terminal: TerminalProcess | null = null;
-  private preview: PreviewManager | null = null;
   private fileWatcher: FileWatcher | null = null;
-  private _createPreviewManager: () => PreviewManager;
   private _createFileWatcher: () => FileWatcher;
   private _createTerminal: () => TerminalProcess;
-
-  // Preview crash state for SSE replay
-  private _previewLogBuffer: string[] = [];
-  private static readonly MAX_PREVIEW_LOG_LINES = 50;
-  private _lastPreviewExitCode: number | null = null;
 
   // Terminal backpressure state
   private _sseBackpressured = new Set<ServerResponse>();
   private _terminalPaused = false;
-
-  // Secrets tracking (preview mode only) — tracks which keys were set by PUT /secrets
-  private _trackedSecretKeys = new Set<string>();
 
   constructor(deps: SessionWorkerDeps) {
     super();
@@ -115,8 +89,6 @@ export class SessionWorker extends EventEmitter {
     this.port = deps.port ?? 9100;
     this.host = deps.host ?? "0.0.0.0";
     this.workspaceDir = deps.workspaceDir ?? "/workspace";
-    this.workerMode = deps.workerMode ?? "session";
-    this._createPreviewManager = deps.createPreviewManager ?? (() => new PreviewManager());
     this._createFileWatcher = deps.createFileWatcher ?? (() => new FileWatcher());
     this._createTerminal = deps.createTerminal ?? (() => new TerminalProcess());
     this.app = this.buildApp();
@@ -125,16 +97,8 @@ export class SessionWorker extends EventEmitter {
   private buildApp(): FastifyInstance {
     const app = Fastify({ logger: false });
 
-    // Health check — always available in both modes
-    app.get("/health", async () => ({ status: "ok", mode: this.workerMode }));
-
-    if (this.workerMode === "session") {
-      this.registerSessionEndpoints(app);
-    } else {
-      this.registerPreviewEndpoints(app);
-    }
-
-    // SSE event stream — available in both modes
+    app.get("/health", async () => ({ status: "ok" }));
+    this.registerSessionEndpoints(app);
     this.registerSSEEndpoint(app);
 
     return app;
@@ -299,105 +263,7 @@ export class SessionWorker extends EventEmitter {
     });
   }
 
-  // --- Preview mode endpoints (preview, secrets) ---
-
-  private registerPreviewEndpoints(app: FastifyInstance): void {
-    // --- Secrets endpoint ---
-
-    app.put<{ Body: Record<string, string> }>("/secrets", async (request) => {
-      const secrets = request.body ?? {};
-
-      // Detect whether any env vars actually changed before restarting
-      let changed = false;
-
-      // Remove keys that were tracked but are absent from the new payload
-      for (const key of this._trackedSecretKeys) {
-        if (!(key in secrets)) {
-          // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- cleaning up env vars by name
-          delete process.env[key];
-          changed = true;
-        }
-      }
-
-      // Set new keys and update tracking
-      const oldKeys = new Set(this._trackedSecretKeys);
-      this._trackedSecretKeys.clear();
-      for (const [key, value] of Object.entries(secrets)) {
-        if (!oldKeys.has(key) || process.env[key] !== value) {
-          changed = true;
-        }
-        process.env[key] = value;
-        this._trackedSecretKeys.add(key);
-      }
-
-      // Restart the dev server only if env vars actually changed
-      if (changed && this.preview?.running) {
-        this.preview.restart(this.workspaceDir).catch((err: unknown) => {
-          this.broadcastSSE({
-            type: "preview_config_error",
-            data: { message: getErrorMessage(err) },
-          });
-        });
-      }
-
-      return { updated: true, keyCount: Object.keys(secrets).length };
-    });
-
-    // --- Preview endpoints ---
-
-    app.post("/preview/start", async (_request, reply) => {
-      if (this.preview?.running) {
-        return reply.code(409).send({ error: "Preview already running" });
-      }
-
-      this.preview = this._createPreviewManager();
-      this.wirePreviewEvents(this.preview);
-      this.preview.start(this.workspaceDir).catch((err: unknown) => {
-        this.broadcastSSE({
-          type: "preview_config_error",
-          data: { message: getErrorMessage(err) },
-        });
-      });
-      return { started: true };
-    });
-
-    app.post("/preview/stop", async () => {
-      if (this.preview) {
-        this.preview.stop();
-        this.preview.removeAllListeners();
-        this.preview = null;
-      }
-      return { stopped: true };
-    });
-
-    app.post("/preview/restart", async () => {
-      if (this.preview) {
-        this.preview.restart(this.workspaceDir).catch((err: unknown) => {
-          this.broadcastSSE({
-            type: "preview_config_error",
-            data: { message: getErrorMessage(err) },
-          });
-        });
-      } else {
-        this.preview = this._createPreviewManager();
-        this.wirePreviewEvents(this.preview);
-        this.preview.start(this.workspaceDir).catch((err: unknown) => {
-          this.broadcastSSE({
-            type: "preview_config_error",
-            data: { message: getErrorMessage(err) },
-          });
-        });
-      }
-      return { restarted: true };
-    });
-
-    app.get("/preview/status", async () => ({
-      running: this.preview?.running ?? false,
-      ports: this.preview?.ports ?? [],
-    }));
-  }
-
-  // --- SSE event stream (both modes) ---
+  // --- SSE event stream ---
 
   private registerSSEEndpoint(app: FastifyInstance): void {
     app.get("/events", (request, reply) => {
@@ -433,14 +299,6 @@ export class SessionWorker extends EventEmitter {
       this.sseRawResponses.add(reply.raw);
 
       // Replay current state so late-connecting clients don't miss events
-      if (this.preview?.running && this.preview.ports.length > 0) {
-        sendEvent({ type: "preview_ready", data: { ports: this.preview.ports } });
-      } else if (this._lastPreviewExitCode !== null && this._lastPreviewExitCode !== undefined && !this.preview?.running) {
-        for (const text of this._previewLogBuffer) {
-          sendEvent({ type: "preview_log", data: { source: "preview", text } });
-        }
-        sendEvent({ type: "preview_stopped", data: { code: this._lastPreviewExitCode } });
-      }
       if (this.terminal) {
         sendEvent({ type: "terminal_data", data: { data: "" } });
       }
@@ -505,44 +363,6 @@ export class SessionWorker extends EventEmitter {
     });
   }
 
-  /** Wire preview manager events to the SSE stream. */
-  private wirePreviewEvents(preview: PreviewManager): void {
-    preview.on("ready", (ports: number[]) => {
-      this._previewLogBuffer = [];
-      this._lastPreviewExitCode = null;
-      this.broadcastSSE({ type: "preview_ready", data: { ports } });
-    });
-
-    preview.on("stopped", (code: number | null) => {
-      this._lastPreviewExitCode = code;
-      this.broadcastSSE({ type: "preview_stopped", data: { code } });
-    });
-
-    preview.on("config_missing", (checked: string[]) => {
-      this.broadcastSSE({ type: "preview_config_missing", data: { checked } });
-    });
-
-    preview.on("config_error", (message: string) => {
-      this.broadcastSSE({ type: "preview_config_error", data: { message } });
-    });
-
-    preview.on("install_status", (status: { status: string; message?: string }) => {
-      this.broadcastSSE({ type: "preview_install_status", data: status });
-    });
-
-    preview.on("startup_step", (step: { stepId: string; status: string; durationMs?: number; message?: string; logLines?: string[] }) => {
-      this.broadcastSSE({ type: "preview_startup_step", data: step });
-    });
-
-    preview.on("log", (entry: { source: string; text: string }) => {
-      this._previewLogBuffer.push(entry.text);
-      if (this._previewLogBuffer.length > SessionWorker.MAX_PREVIEW_LOG_LINES) {
-        this._previewLogBuffer.shift();
-      }
-      this.broadcastSSE({ type: "preview_log", data: entry });
-    });
-  }
-
   /** Wire file watcher events to the SSE stream. */
   private wireFileWatcherEvents(watcher: FileWatcher): void {
     watcher.on("changes", (paths: string[]) => {
@@ -591,11 +411,6 @@ export class SessionWorker extends EventEmitter {
       this.terminal = null;
       this._terminalPaused = false;
     }
-    if (this.preview) {
-      this.preview.stop();
-      this.preview.removeAllListeners();
-      this.preview = null;
-    }
     if (this.fileWatcher) {
       this.fileWatcher.stop();
       this.fileWatcher.removeAllListeners();
@@ -619,17 +434,14 @@ export class SessionWorker extends EventEmitter {
 
 // Only auto-start when run directly (not when imported for testing)
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
-  const workerMode = (process.env.WORKER_MODE ?? "session") as WorkerMode;
-
   const worker = new SessionWorker({
     agentFactory: () => new ClaudeAdapter(new ClaudeProcess()),
     port: Number(process.env.WORKER_PORT) || 9100,
     workspaceDir: process.env.WORKSPACE_DIR || CONTAINER_WORKSPACE_DIR,
-    workerMode,
   });
 
   const address = await worker.start();
-  console.log(`[session-worker] Listening on ${address} (mode=${workerMode})`);
+  console.log(`[session-worker] Listening on ${address}`);
 
   // Graceful shutdown
   for (const signal of ["SIGTERM", "SIGINT"] as const) {

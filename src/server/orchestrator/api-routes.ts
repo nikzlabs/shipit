@@ -21,6 +21,7 @@ import type { ChatHistoryManager } from "./chat-history.js";
 import type { AuthManager } from "./auth.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { DatabaseManager } from "../shared/database.js";
+import type { ServiceManager } from "./service-manager.js";
 
 import { ServiceError } from "./services/index.js";
 
@@ -77,6 +78,8 @@ export interface ApiDeps {
   secretStore?: SecretStore;
   /** Review store — design doc review comments persistence. */
   reviewStore?: ReviewStore;
+  /** Service managers — per-session compose lifecycle (keyed by sessionId). */
+  serviceManagers?: Map<string, ServiceManager>;
 }
 
 /**

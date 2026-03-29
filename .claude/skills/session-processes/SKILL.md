@@ -1,5 +1,6 @@
 ---
-description: "ShipIt session worker processes: Claude CLI spawning and NDJSON parsing, agent abstraction (AgentProcess, ProxyAgentProcess), preview manager, file watcher, terminal PTY, session worker endpoints. Load when working on Claude process management, preview server, file watcher, terminal, or agent adapters."
+name: session-processes
+description: "ShipIt session worker processes: Claude CLI spawning and NDJSON parsing, agent abstraction (AgentProcess, ProxyAgentProcess), Docker Compose services (ServiceManager), file watcher, terminal PTY, session worker endpoints. Load when working on Claude process management, compose services, file watcher, terminal, or agent adapters."
 user-invocable: true
 ---
 
@@ -22,9 +23,6 @@ Each session runs in a Docker container with a Fastify server (port 9100) that m
 | `POST` | `/terminal/start` | Start interactive shell |
 | `POST` | `/terminal/input` | Write to terminal |
 | `POST` | `/terminal/resize` | Resize terminal |
-| `POST` | `/preview/start` | Start preview server |
-| `POST` | `/preview/stop` | Stop preview server |
-| `POST` | `/preview/restart` | Restart preview server |
 | `POST` | `/files/watch` | Start file watcher (idempotent) |
 | `POST` | `/files/unwatch` | Stop file watcher |
 | `GET` | `/files/tree` | Scan file tree |
@@ -44,18 +42,12 @@ The `/events` endpoint is a long-lived SSE connection. The worker broadcasts eve
 | `agent_log` | Claude CLI | Non-JSON output lines |
 | `terminal_data` | Terminal | Output data |
 | `terminal_exit` | Terminal | Exit code |
-| `preview_ready` | PreviewManager | Detected ports |
-| `preview_stopped` | PreviewManager | Exit code |
-| `preview_config_missing` | PreviewManager | No valid config |
-| `preview_config_error` | PreviewManager | Config parse error |
-| `preview_install_status` | PreviewManager | Install progress |
-| `preview_log` | PreviewManager | Build output |
 | `file_changes` | FileWatcher | Changed file paths |
 
 On SSE connect (or reconnect), the worker replays current state:
-- If preview is running -> sends `preview_ready` with ports
-- If preview crashed -> replays recent log lines + `preview_stopped`
 - If terminal is alive -> sends empty `terminal_data` signal
+
+Note: Preview/dev servers are now managed by Docker Compose via `ServiceManager` in the orchestrator, not inside the session worker. See `service-manager.ts` and `compose-generator.ts`.
 
 ## Claude Process
 
@@ -127,29 +119,16 @@ In production, the orchestrator never creates agents directly. Instead, `Contain
 
 Agent events flow back via SSE -> proxied to the `ProxyAgentProcess` event emitter.
 
-## Preview Manager
+## Docker Compose Services
 
-`src/server/session/preview-manager.ts` — config-driven preview server.
+Dev servers and other services are managed by Docker Compose, not the session worker. The orchestrator runs:
 
-### Config Resolution
+- `ServiceManager` (`src/server/orchestrator/service-manager.ts`) — per-session compose lifecycle: start/stop, status polling, log streaming, IP resolution
+- `compose-generator.ts` — generates override files with ShipIt labels, session network, volume rewrites, port stripping
 
-Via `resolvePreviewConfig()` in `preview-config.ts`:
-1. Read `shipit.yaml` (if present) for explicit config
-2. Fall back to `package.json` and `index.html` detection
-3. Two modes: **HTML** (bundled Vite + error-capture plugin) or **Command** (arbitrary shell command)
+Services are defined in `docker-compose.yml` at the workspace root. `shipit.yaml` references the compose file and configures the agent container (install commands, resource limits).
 
-### Install Step
-
-Runs install command once per session, marks completion with `.shipit/.install-done` sentinel file.
-
-### Port Detection
-
-- **HTML mode**: Vite reports its URL on stdout
-- **Command mode**: Polls configured port or scans stdout for port patterns
-
-### Error Capture
-
-`vite-error-plugin.ts` injects a script into preview HTML that captures uncaught errors and posts them to the parent frame. The client's `usePreviewErrors` hook receives these and can trigger auto-fix.
+The agent container can query service status/logs via the orchestrator API using `SHIPIT_HOST`, `SHIPIT_PORT`, and `SHIPIT_SESSION_ID` environment variables.
 
 ## File Watcher
 
@@ -176,4 +155,4 @@ Runs install command once per session, marks completion with `.shipit/.install-d
 | Message queue | 50 | `SessionRunnerInterface` |
 | Turn event buffer | 1,000 | `SessionRunnerInterface` |
 | Terminal output buffer | 10K chars | `SessionRunnerInterface` |
-| Preview log buffer | 50 lines | `PreviewManager` |
+| Service log buffer | 80K chars | `ServiceManager` |

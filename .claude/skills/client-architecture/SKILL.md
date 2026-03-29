@@ -1,4 +1,5 @@
 ---
+name: client-architecture
 description: "ShipIt React client architecture: Zustand stores, communication hooks (useApi, useSessionWebSocket, useServerEvents, useMessageHandler), component inventory, data flow patterns. Load when working on frontend components, stores, hooks, or client state."
 user-invocable: true
 ---

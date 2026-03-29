@@ -262,119 +262,6 @@ describe("PreviewFrame", () => {
     expect(screen.getByText("Deprecation warning")).toBeInTheDocument();
   });
 
-  // ---- Crash state tests ----
-
-  it("shows crash state with error output when preview crashed", () => {
-    const preview: PreviewStatus = { running: false, port: 5173, url: "http://localhost:5173" };
-    render(
-      <PreviewFrame
-        preview={preview}
-        {...defaultProps}
-        crashInfo={{ exitCode: 1, output: "Error: Cannot find module '@rollup/rollup-linux-arm64-gnu'" }}
-      />,
-    );
-    expect(screen.getByText(/Preview server crashed/)).toBeInTheDocument();
-    expect(screen.getByText(/exit code 1/)).toBeInTheDocument();
-    expect(screen.getByText(/Cannot find module/)).toBeInTheDocument();
-  });
-
-  it("shows crash state without output when output is empty", () => {
-    render(
-      <PreviewFrame
-        preview={{ running: false, port: 5173, url: "http://localhost:5173" }}
-        {...defaultProps}
-        crashInfo={{ exitCode: 137, output: "" }}
-      />,
-    );
-    expect(screen.getByText(/Preview server crashed/)).toBeInTheDocument();
-    expect(screen.getByText(/exit code 137/)).toBeInTheDocument();
-  });
-
-  it("shows Retry button that calls onRestartPreview", () => {
-    const onRestartPreview = vi.fn();
-    render(
-      <PreviewFrame
-        preview={{ running: false, port: 5173, url: "http://localhost:5173" }}
-        {...defaultProps}
-        crashInfo={{ exitCode: 1, output: "some error" }}
-        onRestartPreview={onRestartPreview}
-      />,
-    );
-    const btn = screen.getByText("Retry");
-    fireEvent.click(btn);
-    expect(onRestartPreview).toHaveBeenCalled();
-  });
-
-  it("shows Fix with Claude button that calls onSendCrashToAgent", () => {
-    const onSendCrashToAgent = vi.fn();
-    render(
-      <PreviewFrame
-        preview={{ running: false, port: 5173, url: "http://localhost:5173" }}
-        {...defaultProps}
-        crashInfo={{ exitCode: 1, output: "some error" }}
-        onSendCrashToAgent={onSendCrashToAgent}
-      />,
-    );
-    const btn = screen.getByText("Fix with Claude");
-    fireEvent.click(btn);
-    expect(onSendCrashToAgent).toHaveBeenCalled();
-  });
-
-  it("does not show crash state when preview is running", async () => {
-    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
-    render(
-      <PreviewFrame
-        preview={preview}
-        {...defaultProps}
-        crashInfo={{ exitCode: 1, output: "old error" }}
-      />,
-    );
-    const iframe = await screen.findByTitle("Live Preview");
-    expect(iframe).toBeInTheDocument();
-    expect(screen.queryByText(/Preview server crashed/)).not.toBeInTheDocument();
-  });
-
-  it("shows crash state over placeholder when crashInfo is set", () => {
-    render(
-      <PreviewFrame
-        preview={null}
-        sessionId="abc"
-        {...defaultProps}
-        crashInfo={{ exitCode: 1, output: "crash output" }}
-      />,
-    );
-    // Crash state should take priority over the "Starting dev server..." spinner
-    expect(screen.getByText(/Preview server crashed/)).toBeInTheDocument();
-    expect(screen.queryByText("Starting dev server...")).not.toBeInTheDocument();
-  });
-
-  // ---- Config missing tests ----
-
-  it("shows config missing state with setup button", () => {
-    const onInitPreviewConfig = vi.fn();
-    render(
-      <PreviewFrame
-        preview={null}
-        {...defaultProps}
-        configMissing={true}
-        onInitPreviewConfig={onInitPreviewConfig}
-      />,
-    );
-    expect(screen.getByText(/No preview configuration found/)).toBeInTheDocument();
-    const btn = screen.getByText("Set up with Claude");
-    expect(btn).toBeInTheDocument();
-    fireEvent.click(btn);
-    expect(onInitPreviewConfig).toHaveBeenCalled();
-  });
-
-  it("shows config missing without button when onInitPreviewConfig is not provided", () => {
-    render(
-      <PreviewFrame preview={null} {...defaultProps} configMissing={true} />,
-    );
-    expect(screen.getByText(/No preview configuration found/)).toBeInTheDocument();
-    expect(screen.queryByText("Set up with Claude")).not.toBeInTheDocument();
-  });
-
   // ---- Install status tests (via startup steps) ----
 
   it("shows install running state via startup steps", () => {
@@ -389,6 +276,30 @@ describe("PreviewFrame", () => {
     usePreviewStore.getState().setStartupStep({ stepId: "install", status: "error", message: "exit code 1" });
     render(<PreviewFrame preview={null} {...defaultProps} />);
     expect(screen.getByText(/exit code 1/)).toBeInTheDocument();
+  });
+
+  // ---- Compose error overlay tests ----
+
+  it("shows compose error overlay when composeError is set", () => {
+    usePreviewStore.getState().setComposeError("Service `dev`: Absolute bind mount path `/app/node_modules` is not allowed.");
+    render(<PreviewFrame preview={null} {...defaultProps} />);
+    expect(screen.getByText("Docker Compose error")).toBeInTheDocument();
+    expect(screen.getByText(/Absolute bind mount/)).toBeInTheDocument();
+  });
+
+  it("shows Send to agent button in compose error overlay", () => {
+    usePreviewStore.getState().setComposeError("some error");
+    const onSendCrashToAgent = vi.fn();
+    render(<PreviewFrame preview={null} {...defaultProps} onSendCrashToAgent={onSendCrashToAgent} />);
+    const btn = screen.getByText("Send to agent");
+    fireEvent.click(btn);
+    expect(onSendCrashToAgent).toHaveBeenCalled();
+  });
+
+  it("clears compose error when services arrive", () => {
+    usePreviewStore.getState().setComposeError("old error");
+    usePreviewStore.getState().setServices([{ name: "web", status: "running", port: 5173, preview: "auto" }]);
+    expect(usePreviewStore.getState().composeError).toBeNull();
   });
 
   // ---- Managed source tests ----
@@ -448,27 +359,6 @@ describe("PreviewFrame", () => {
     expect(screen.queryByTitle("Live Preview")).not.toBeInTheDocument();
   });
 
-  it("clears stale iframe on crash", async () => {
-    const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
-    const { rerender } = render(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
-    await screen.findByTitle("Live Preview");
-
-    // Preview crashes
-    rerender(
-      <PreviewFrame
-        preview={{ running: false, port: 5173, url: "http://localhost:5173" }}
-        sessionId="session-a"
-        {...defaultProps}
-        crashInfo={{ exitCode: 1, output: "error" }}
-      />,
-    );
-
-    expect(screen.getByText(/Preview server crashed/)).toBeInTheDocument();
-    // Iframe is still in the DOM (persistent) but hidden behind crash overlay
-    const iframe = screen.queryByTitle("Live Preview");
-    expect(iframe).toBeInTheDocument();
-    expect(iframe).toHaveClass("invisible");
-  });
 });
 
 describe("formatErrorForMessage", () => {

@@ -38,12 +38,7 @@ src/
     session/         Code that runs inside a session container
       claude.ts      ClaudeProcess — spawns CLI, parses NDJSON, emits events
       terminal.ts    TerminalProcess — interactive PTY
-      preview-manager.ts  PreviewManager — spawns/manages preview server
-      preview-config.ts   Preview config parsing (shipit.yaml)
       file-watcher.ts     FileWatcher — recursive fs.watch, debounced change events
-      port-scanner.ts     Port detection for dev server previews
-      install-runner.ts   Runs install commands (npm install, etc.)
-      vite-error-plugin.ts  Injects error-capture script into preview HTML
       session-worker.ts   Fastify server that runs inside each container
       agents/        Agent process adapters
         agent-process.ts   Base agent interface
@@ -69,6 +64,8 @@ src/
       container-session-runner.ts  ContainerSessionRunner (proxy)
       session-container.ts  SessionContainerManager — Docker orchestration
       container-lifecycle.ts  Container start/stop/restart logic
+      service-manager.ts  ServiceManager — Docker Compose lifecycle per session
+      compose-generator.ts  Compose override generation, volume rewriting
       container-discovery.ts  Find running containers
       container-health.ts     Container health checks
       preview-proxy.ts     Reverse proxy for container previews
@@ -171,7 +168,7 @@ Session containers run a Fastify server (`session-worker.ts`) that exposes HTTP 
 - **Commands flow via HTTP**: `worker-http.ts` sends requests to the container's worker URL (e.g., `POST /agent/start`, `POST /terminal/resize`). `ContainerSessionRunner` wraps these calls and exposes them as the `SessionRunner` interface.
 - **Events flow back via SSE**: Containers stream real-time events (agent output, terminal data, file changes) over `GET /events`. The orchestrator's `sse-client.ts` connects to this endpoint and relays events to the browser's WebSocket.
 - **Proxy agent pattern**: `ProxyAgentProcess` implements the `AgentProcess` interface but delegates everything to the container over HTTP+SSE. This lets orchestrator code treat local and remote agents identically.
-- **Two worker modes**: Containers run in either `"session"` mode (agent, terminal, files) or `"preview"` mode (dev server, secrets). Each session gets two containers.
+- **Single container + compose**: Each session gets one agent container. Dev servers and other services run in Docker Compose stacks managed by `ServiceManager`.
 - **SSE reconnection**: Exponential backoff (1s, 2s, 4s… capped at 10s). On reconnect, terminal output is replayed with a reset sequence (`\x1bc`) to avoid corrupted xterm.js rendering. Terminal retries are limited to 3 attempts.
 - **Backpressure**: If an SSE client can't keep up with terminal output, the PTY is paused until `drain` fires. This prevents unbounded memory growth.
 - **Multi-viewer**: Multiple browser tabs can attach to the same runner. The runner broadcasts to all via `emitMessage()`. Resources (SSE, preview) start on first viewer attach and persist after detach for fast re-attach.

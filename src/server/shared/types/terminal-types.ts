@@ -36,14 +36,6 @@ export interface WsClearLogs {
   type: "clear_logs";
 }
 
-export interface WsPreviewError {
-  type: "preview_error";
-  message: string;
-  stack?: string;
-  source?: string;
-  line?: number;
-}
-
 // ---- Interactive terminal types (server → client) ----
 
 export interface WsTerminalOutput {

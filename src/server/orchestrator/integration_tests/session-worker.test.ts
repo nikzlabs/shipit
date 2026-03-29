@@ -113,7 +113,7 @@ describe("Integration: Session Worker IPC", () => {
   it("worker responds to health check", async () => {
     const res = await worker.getApp().inject({ method: "GET", url: "/health" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ status: "ok", mode: "session" });
+    expect(res.json()).toEqual({ status: "ok" });
   });
 
   // ---- Agent start/status ----
@@ -429,10 +429,6 @@ describe("Integration: Session Worker IPC", () => {
 
     // Viewer management
     expect(runner.viewerCount).toBe(0);
-
-    // Preview (Phase 3 — returns null)
-    expect(runner.getPreview()).toBeNull();
-    expect(runner.getFileWatcher()).toBeNull();
 
     // Lifecycle
     expect(runner.disposed).toBe(false);

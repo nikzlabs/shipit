@@ -219,44 +219,56 @@ export interface WsFullResetComplete {
   type: "full_reset_complete";
 }
 
-/** Server → Client: install command status update. */
-export interface WsInstallStatus {
-  type: "install_status";
-  status: "running" | "complete" | "error";
-  /** Human-readable message (e.g. error details). */
-  message?: string;
+
+// ---- Compose service messages (server → client) ----
+
+export type ComposeServiceStatus = "stopped" | "starting" | "running" | "error";
+export type ComposeServicePreviewMode = "auto" | "manual";
+
+/** Server → Client: status update for a single compose service. */
+export interface WsServiceStatus {
+  type: "service_status";
+  sessionId: string;
+  name: string;
+  status: ComposeServiceStatus;
+  port?: number;
+  preview: ComposeServicePreviewMode;
+  error?: string;
 }
 
-// ---- Startup step messages ----
-
-export type StartupStepId = "fetch" | "install" | "dev_server";
-export type StartupStepStatus = "pending" | "running" | "complete" | "error";
-
-/** Server → Client: progressive startup step update. */
-export interface WsStartupStep {
-  type: "startup_step";
-  stepId: StartupStepId;
-  status: StartupStepStatus;
-  /** Duration in milliseconds (set when status is "complete"). */
-  durationMs?: number;
-  /** Human-readable error message (set when status is "error"). */
-  message?: string;
-  /** Rolling log lines (last N) for this step. */
-  logLines?: string[];
-  /** Session that owns this step — client discards stale messages. */
-  sessionId?: string;
+/** Server → Client: full list of compose services for a session. */
+export interface WsServiceList {
+  type: "service_list";
+  sessionId: string;
+  services: {
+    name: string;
+    status: ComposeServiceStatus;
+    port?: number;
+    preview: ComposeServicePreviewMode;
+    error?: string;
+  }[];
 }
 
-/** Server → Client: no preview config found for the session. */
-export interface WsPreviewConfigMissing {
-  type: "preview_config_missing";
-  /** What was checked and not found. */
-  checked: ("shipit.yaml" | "package.json")[];
+/** Server → Client: log output from a compose service. */
+export interface WsServiceLog {
+  type: "service_log";
+  sessionId: string;
+  name: string;
+  text: string;
 }
 
-/** Server → Client: shipit.yaml exists but is malformed. */
-export interface WsPreviewConfigError {
-  type: "preview_config_error";
+/** Server → Client: buffered log replay for a compose service. */
+export interface WsServiceLogBuffer {
+  type: "service_log_buffer";
+  sessionId: string;
+  name: string;
+  buffer: string;
+}
+
+/** Server → Client: Docker Compose stack failed to start. */
+export interface WsComposeError {
+  type: "compose_error";
+  sessionId: string;
   message: string;
 }
 
@@ -387,9 +399,6 @@ export type WsServerMessage =
   | WsAgentListMessage
   | WsClaudeInterrupted
   | WsFullResetComplete
-  | WsInstallStatus
-  | WsPreviewConfigMissing
-  | WsPreviewConfigError
   | WsClearLogs
   | WsTurnDiff
   | WsSessionStatus
@@ -404,4 +413,8 @@ export type WsServerMessage =
   | WsRollbackComplete
   | WsRewindComplete
   | WsSessionForked
-  | WsStartupStep;
+  | WsServiceStatus
+  | WsServiceList
+  | WsServiceLog
+  | WsServiceLogBuffer
+  | WsComposeError;

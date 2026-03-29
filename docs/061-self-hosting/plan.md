@@ -6,6 +6,8 @@ status: in-progress
 
 Give session containers access to Docker so users running ShipIt locally can develop projects that use Docker Compose, run containerized services, or — the motivating case — develop ShipIt itself inside ShipIt.
 
+**Note:** The Docker API proxy and security policy from this doc remain relevant for compose container sanitization. The `capabilities.docker` config field has been replaced by `compose.docker-socket` in [086-shipit-yaml-and-compose](../086-shipit-yaml-and-compose/plan.md), which scopes Docker access to compose services rather than the agent container.
+
 ## Scope
 
 This doc covers **self-hosted ShipIt** — a single user running ShipIt on their own machine (macOS Docker Desktop, Linux, WSL2). The threat model is "protect the user from Claude mistakes," not "protect tenants from each other." Multi-tenant managed hosting is a separate concern with different isolation requirements — see [062-managed-shipit](../062-managed-shipit/plan.md).

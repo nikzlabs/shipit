@@ -34,6 +34,7 @@ import { FileTree } from "./components/FileTree.js";
 import { FilePreviewModal } from "./components/FilePreviewModal.js";
 import { TerminalPanel } from "./components/TerminalPanel.js";
 import { InteractiveTerminal, type InteractiveTerminalHandle } from "./components/InteractiveTerminal.js";
+import { ServicesPanel } from "./components/ServicesPanel.js";
 import { SearchBar } from "./components/SearchBar.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
 import { HomeScreen } from "./components/HomeScreen.js";
@@ -114,8 +115,7 @@ export default function App() {
 
   const previewStatus = usePreviewStore((s) => s.status);
   const selectedPort = usePreviewStore((s) => s.selectedPort);
-  const configMissing = usePreviewStore((s) => s.configMissing);
-  const crashInfo = usePreviewStore((s) => s.crashInfo);
+  const composeServices = usePreviewStore((s) => s.services);
 
   const logEntries = useTerminalStore((s) => s.entries);
 
@@ -361,32 +361,21 @@ export default function App() {
     [send, requestPermission],
   );
 
-  const handleRestartPreview = useCallback(() => {
-    const sid = useSessionStore.getState().sessionId;
-    if (sid) {
-      usePreviewStore.getState().setCrashInfo(null);
-      apiPost(`/api/sessions/${sid}/preview/restart`, {}).catch(() => {});
-    }
-  }, [apiPost]);
+  const handleSendComposeErrorToAgent = useCallback(() => {
+    const { composeError } = usePreviewStore.getState();
+    if (!composeError) return;
+    const text = `Docker Compose failed to start:\n\n\`\`\`\n${composeError.trim()}\n\`\`\`\n\nPlease fix this error so the services can start successfully.`;
+    useSessionStore.getState().setPrefillText(text);
+  }, []);
 
-  const handleSendCrashToAgent = useCallback(() => {
-    const crash = usePreviewStore.getState().crashInfo;
-    if (!crash) return;
-    const lines = [`The preview server crashed${  crash.exitCode !== null ? ` (exit code ${crash.exitCode})` : ""  }:`, ""];
-    if (crash.output) {
-      lines.push("```", crash.output.trim(), "```", "");
+  const handleSendServiceLogsToAgent = useCallback((serviceName: string, status: string, logs: string) => {
+    const lines = [`The Docker Compose service "${serviceName}" is in state "${status}". Recent logs:`, ""];
+    if (logs) {
+      lines.push("```", logs, "```", "");
     }
-    lines.push("Please fix this error so the preview server can start successfully.");
-    const text = lines.join("\n");
-    requestPermission();
-    useUiStore.getState().setShowTemplates(false);
-    const session = useSessionStore.getState();
-    session.setMessages((prev) => [...prev, { role: "user", text }]);
-    session.setIsLoading(true);
-    session.setActivity({ label: "Thinking..." });
-    const pm = useSettingsStore.getState().permissionMode;
-    send({ type: "send_message", text, sessionId: session.sessionId, permissionMode: pm !== "auto" ? pm : undefined });
-  }, [send, requestPermission]);
+    lines.push("Please investigate and fix the issue.");
+    useSessionStore.getState().setPrefillText(lines.join("\n"));
+  }, []);
 
   const handleAnswerQuestion = useCallback(
     (toolUseId: string, answers: Record<string, string>) => {
@@ -449,7 +438,7 @@ export default function App() {
   );
 
   const handleTabChange = useCallback(
-    (tab: "preview" | "docs" | "files" | "terminal" | "history") => {
+    (tab: "preview" | "docs" | "files" | "terminal" | "history" | "services") => {
       useUiStore.getState().setRightTab(tab);
       const sid = useSessionStore.getState().sessionId;
       if (tab === "docs" && useFileStore.getState().docFiles.length === 0 && sid) useFileStore.getState().fetchDocs(sid).catch(() => {});
@@ -609,6 +598,9 @@ export default function App() {
     <>
       <div className="flex h-10 border-b border-(--color-border-primary) bg-(--color-bg-secondary)">
         <button onClick={() => handleTabChange("preview")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors ${rightTab === "preview" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Preview</button>
+        {composeServices.length > 0 && (
+          <button onClick={() => handleTabChange("services")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors ${rightTab === "services" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Services</button>
+        )}
         <button onClick={() => handleTabChange("docs")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors ${rightTab === "docs" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Docs</button>
         <button onClick={() => handleTabChange("files")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors ${rightTab === "files" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Files</button>
         <button onClick={() => handleTabChange("terminal")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors ${rightTab === "terminal" ? "text-(--color-text-primary) border-b-2 border-(--color-border-focus)" : "text-(--color-text-secondary) hover:text-(--color-text-primary)"}`}>Terminal</button>
@@ -617,7 +609,7 @@ export default function App() {
       <div className="flex-1 min-h-0 relative">
         {/* PreviewFrame is always rendered to preserve iframe state; hidden via CSS when another tab is active */}
         <div className={`absolute inset-0 ${rightTab === "preview" ? "" : "invisible pointer-events-none"}`}>
-          <PreviewFrame preview={previewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} configMissing={configMissing} onInitPreviewConfig={() => send({ type: "init_preview_config" })} crashInfo={crashInfo} onRestartPreview={handleRestartPreview} onSendCrashToAgent={handleSendCrashToAgent} />
+          <PreviewFrame preview={previewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} onSendCrashToAgent={handleSendComposeErrorToAgent} />
         </div>
         {rightTab === "docs" ? (
           reviewingDoc ? (
@@ -633,6 +625,8 @@ export default function App() {
           } />
         ) : rightTab === "history" ? (
           <GitHistory commits={gitCommits} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().fetchLog(sid).catch(() => {}); }} onViewDiff={handleViewDiff} />
+        ) : rightTab === "services" ? (
+          <ServicesPanel lastMessage={lastMessage} send={send} onSendToAgent={handleSendServiceLogsToAgent} />
         ) : rightTab === "files" ? (
           <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); void useFileStore.getState().hydrateUploads(sid); } }} onFileClick={handleOpenFilePreview} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} onDownload={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) { const a = document.createElement("a"); a.href = `/api/sessions/${sid}/files/download/${f}`; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); } }} uploads={sessionUploads} onDeleteUpload={(u) => { const sid = useSessionStore.getState().sessionId; if (u.path) markUploadDeleted(u.path); if (sid && u.path) { const filename = u.path.replace(/^\/uploads\//, ""); void fetch(`/api/sessions/${sid}/files/uploads/${encodeURIComponent(filename)}`, { method: "DELETE" }); } if (u.previewUrl) URL.revokeObjectURL(u.previewUrl); if (u.path) useFileStore.getState().removeSessionUpload(u.path); else useFileStore.getState().removeSessionUploadById(u.id); }} />
         ) : null}

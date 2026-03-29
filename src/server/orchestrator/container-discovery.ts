@@ -10,7 +10,6 @@ import {
   CONTAINER_SESSION_ID_LABEL,
   CONTAINER_STANDBY_LABEL,
 } from "./session-container.js";
-import { PREVIEW_CONTAINER_LABEL } from "./container-lifecycle.js";
 
 // ---------------------------------------------------------------------------
 // Internal types for dependency injection
@@ -90,34 +89,6 @@ export async function rediscoverContainers(
     // Docker may not be available
   }
 
-  // Second pass: discover preview containers and attach to their session entries
-  try {
-    const previewContainers = await deps.docker.listContainers({
-      all: true,
-      filters: { label: [PREVIEW_CONTAINER_LABEL] },
-    });
-    for (const ci of previewContainers) {
-      const sessionId = ci.Labels?.[PREVIEW_CONTAINER_LABEL];
-      if (!sessionId) continue;
-      const sc = deps.containers.get(sessionId);
-      if (!sc || sc.previewContainerId) continue; // already populated or session not tracked
-      if (ci.State !== "running") continue;
-      try {
-        const container = deps.docker.getContainer(ci.Id);
-        const info = await container.inspect();
-        const networkInfo = info.NetworkSettings?.Networks?.[deps.networkName];
-        if (!networkInfo?.IPAddress) continue;
-        sc.previewContainerId = ci.Id;
-        sc.previewContainerIp = networkInfo.IPAddress;
-        sc.previewWorkerUrl = `http://${networkInfo.IPAddress}:${deps.workerPort}`;
-      } catch {
-        // Container may have exited
-      }
-    }
-  } catch {
-    // Docker may not be available
-  }
-
   return count;
 }
 
@@ -177,7 +148,7 @@ export function getSessionByContainerIp(
   ip: string,
 ): SessionContainer | undefined {
   for (const sc of containers.values()) {
-    if (sc.containerIp === ip || sc.previewContainerIp === ip) return sc;
+    if (sc.containerIp === ip) return sc;
   }
   return undefined;
 }

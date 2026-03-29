@@ -40,6 +40,14 @@ export class RepoGit {
   }
 
   /**
+   * Update the origin remote URL. Used to refresh embedded credentials
+   * before fetching when tokens rotate.
+   */
+  async setRemoteUrl(url: string, remote = "origin"): Promise<void> {
+    await this.git.raw(["remote", "set-url", remote, url]);
+  }
+
+  /**
    * Fetch all refs in the bare cache from origin.
    * Skips if the last fetch was less than `ttlMs` ago.
    */

@@ -5,32 +5,45 @@ automatically as you edit files.
 
 ## How it works
 
-1. ShipIt reads `shipit.yaml` (or falls back to `package.json` / `index.html`).
-2. If an `install` command is specified, it runs first.
-3. The preview command starts in a separate container with `HOST=0.0.0.0`.
-4. ShipIt detects when the port opens and routes browser traffic to the
-   container through a reverse proxy.
+1. ShipIt reads `shipit.yaml` for the compose file path (or auto-detects
+   `docker-compose.yml` / `compose.yml` at the workspace root).
+2. If `agent.install` commands are specified, they run first in the agent
+   container.
+3. Services defined in docker-compose.yml start as Docker Compose containers.
+   Services marked as `auto` (or with `ports`) start automatically.
+4. ShipIt detects when ports are ready and routes browser traffic through a
+   reverse proxy.
 
-## Port detection
+## Service types
 
-- **Explicit ports** (`ports: [5173]` in shipit.yaml): ShipIt polls until the
-  port accepts connections.
-- **Auto-detection**: If no ports specified, ShipIt scans stdout for
-  `http://localhost:PORT` or `http://127.0.0.1:PORT` patterns.
+| `x-shipit-preview` | Behavior |
+|---------------------|----------|
+| `auto` (default for services with ports) | Starts automatically, shown in preview |
+| `manual` (default for services without ports) | User clicks "Start" in UI |
 
-## Multi-port
+## Multi-service
 
-List multiple ports in `shipit.yaml` to expose several services:
+Define multiple services in docker-compose.yml. Each service with ports gets
+its own preview tab:
 
 ```yaml
-preview:
-  command: >-
-    npm run api &
-    npm run frontend
-  ports: [3001, 5173]
-```
+services:
+  frontend:
+    image: node:20
+    command: npm run dev
+    ports: ["5173:5173"]
+    x-shipit-preview: auto
 
-The user can switch between ports in the preview pane.
+  api:
+    image: node:20
+    command: npm run api
+    ports: ["3001:3001"]
+    x-shipit-preview: auto
+
+  db:
+    image: postgres:16
+    x-shipit-preview: manual
+```
 
 ## Hot Module Replacement (HMR)
 
@@ -43,7 +56,7 @@ out of the box.
 | Change | Effect |
 |--------|--------|
 | Source file edit | Hot reload (no restart) |
-| `shipit.yaml` edit | Immediate preview restart |
+| `shipit.yaml` or compose file edit | Stack reconciliation (restart services) |
 | Lockfile change | Install + restart (30s debounce) |
 
 ## Browser tools
@@ -60,13 +73,18 @@ verify your work:
 
 Use browser tools proactively after UI changes to catch issues early.
 
+## Creating a compose file
+
+If the project doesn't have a docker-compose.yml, see
+[compose.md](compose.md) for how to create one for ShipIt.
+
 ## Troubleshooting
 
-- **Preview not loading**: Check that `shipit.yaml` has the correct command and
-  port. Verify with `curl http://localhost:PORT` from the terminal.
-- **Port not detected**: Add explicit `ports` to `shipit.yaml`.
-- **Connection refused**: The dev server may need a moment to start. If using
-  auto-detection, ensure the server prints the URL to stdout.
+- **Preview not loading**: Check that docker-compose.yml has the correct
+  command and port. Verify the service is running with
+  `docker compose ps` from the terminal.
+- **Port not detected**: Ensure `ports` is set in docker-compose.yml.
+- **Connection refused**: The dev server may need a moment to start. Ensure it
+  binds to `0.0.0.0` (set `HOST=0.0.0.0` in the compose environment).
 - **HMR not working**: Ensure the dev server binds to `0.0.0.0`, not
-  `127.0.0.1`. ShipIt injects `HOST=0.0.0.0` but some frameworks need explicit
-  config.
+  `127.0.0.1`. Add `HOST: "0.0.0.0"` to the service's environment.
