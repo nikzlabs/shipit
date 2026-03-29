@@ -494,9 +494,12 @@ function TerminalPhase({ card, sessionId, text }: { card: PrCardState; sessionId
     <div className="flex items-center gap-3 flex-nowrap">
       <PrStateBadge sessionId={sessionId} url={pr?.url} prNumber={pr?.number} />
       <span className="h-6 flex items-center text-xs text-(--color-text-secondary) truncate min-w-0">{text}</span>
-      {hasDiffStats && (
+      {pr && (
         <span className="ml-auto shrink-0">
-          <DiffStats ins={pr.insertions} del={pr.deletions} onClick={openDiff} />
+          {hasDiffStats
+            ? <DiffStats ins={pr.insertions} del={pr.deletions} onClick={openDiff} />
+            : <button onClick={openDiff} className={`${linkClass} shrink-0 cursor-pointer hover:text-(--color-text-secondary)`} title="View full diff">Diff</button>
+          }
         </span>
       )}
     </div>
