@@ -1,8 +1,10 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: poll external preview server URL until ready with cancellation (external system sync)
 import { useState, useEffect, useRef, useCallback } from "react";
-import { WarningIcon, CircleNotchIcon, ArrowClockwiseIcon, ArrowSquareOutIcon } from "@phosphor-icons/react";
+import { WarningIcon, CircleNotchIcon, ArrowClockwiseIcon, ArrowSquareOutIcon, CaretDownIcon, CheckIcon } from "@phosphor-icons/react";
+import { useClickOutside } from "../hooks/useClickOutside.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
+import { StatusDot } from "./ui/status-dot.js";
 import type { PreviewError } from "../hooks/usePreviewErrors.js";
 import { usePreviewStore } from "../stores/preview-store.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -115,6 +117,9 @@ export function PreviewFrame({
   const onToggleAutoFix = usePreviewStore((s) => s.toggleAutoFix);
   const [refreshKey, setRefreshKey] = useState(0);
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
+  const [portSelectorOpen, setPortSelectorOpen] = useState(false);
+  const portSelectorRef = useRef<HTMLDivElement>(null);
+  useClickOutside(portSelectorRef, () => setPortSelectorOpen(false), portSelectorOpen);
 
   // Compute active port early so hooks can reference it (0 when not running)
   const activePort = preview?.running ? (selectedPort ?? preview.port) : 0;
@@ -288,12 +293,15 @@ export function PreviewFrame({
   // By computing overlay content instead of returning early, we keep a single
   // DOM tree so the iframe element is never destroyed/recreated.
   const isRunning = !!preview?.running;
-  const isManaged = isRunning && (preview.source === "vite" || preview.source === "managed") && activePort === preview.port;
   const showSelector = isRunning && (detectedPorts.length > 1 || ((preview.source === "vite" || preview.source === "managed") && detectedPorts.length > 0));
+  const startupSteps = usePreviewStore((s) => s.startupSteps);
+  const services = usePreviewStore((s) => s.services);
 
   // Compute current port label and remember it for transitions
+  // Prefer service name over raw port number for detected services
+  const serviceForPort = (port: number) => services.find(s => s.port === port);
   const currentPortLabel = isRunning
-    ? (preview?.url?.startsWith("/preview/") ? `port ${activePort}` : `localhost:${activePort}`)
+    ? (serviceForPort(activePort)?.name ?? (preview?.url?.startsWith("/preview/") ? `port ${activePort}` : `localhost:${activePort}`))
     : null;
   if (currentPortLabel) {
     lastPortLabel.current = currentPortLabel;
@@ -302,22 +310,31 @@ export function PreviewFrame({
   const portLabel = currentPortLabel ?? (showIframe ? lastPortLabel.current : null);
 
   // Build the list of all available ports for the selector
-  const allPorts: { port: number; label: string }[] = [];
+  const allPorts: { port: number; label: string; status: "running" | "starting" | "error" | "stopped" }[] = [];
   if (isRunning && (preview.source === "vite" || preview.source === "managed")) {
-    const label = preview.source === "vite" ? `${preview.port} (Vite)` : `${preview.port} (Preview)`;
-    allPorts.push({ port: preview.port, label });
+    const label = preview.source === "vite" ? "Vite" : "Preview";
+    allPorts.push({ port: preview.port, label, status: "running" });
   }
   if (isRunning) {
     for (const p of detectedPorts) {
       if (p !== preview.port || (preview.source !== "vite" && preview.source !== "managed")) {
-        allPorts.push({ port: p, label: `${p}` });
+        const svc = serviceForPort(p);
+        allPorts.push({ port: p, label: svc?.name ?? `port ${p}`, status: svc?.status ?? "running" });
       }
     }
   }
 
+  const statusToDotVariant = (status: string): "success" | "warning" | "error" | "info" => {
+    switch (status) {
+      case "running": return "success";
+      case "starting": return "warning";
+      case "error": return "error";
+      default: return "info";
+    }
+  };
+  const activeStatus = allPorts.find(p => p.port === activePort)?.status ?? (isRunning ? "running" : "stopped");
+
   const hasErrors = errors.length > 0;
-  const startupSteps = usePreviewStore((s) => s.startupSteps);
-  const services = usePreviewStore((s) => s.services);
   const composeError = usePreviewStore((s) => s.composeError);
   const showComposeError = !!composeError && !isRunning;
   const showStartupSteps = startupSteps.length > 0 && !isRunning && !showComposeError;
@@ -398,29 +415,46 @@ export function PreviewFrame({
       {/* Top bar — always rendered for layout stability */}
       <div className="flex items-center justify-between px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs text-(--color-text-secondary)">
         <span className="flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full ${isRunning || portLabel ? "bg-(--color-success)" : "bg-(--color-text-tertiary)"}`} />
           {showSelector ? (
-            <select
-              value={activePort}
-              onChange={(e) => onSelectPort(Number(e.target.value))}
-              className="bg-(--color-bg-tertiary) text-(--color-text-primary) text-xs rounded px-1.5 py-0.5 border border-(--color-border-secondary) focus:outline-none focus:border-(--color-border-focus)"
-              aria-label="Select preview port"
-            >
-              {allPorts.map((item) => (
-                <option key={item.port} value={item.port}>
-                  :{item.label}
-                </option>
-              ))}
-            </select>
-          ) : portLabel ? (
-            <>
-              {portLabel}
-              {isRunning && !isManaged && preview.source === "detected" && (
-                <span className="text-(--color-warning)">(auto-detected)</span>
+            <div ref={portSelectorRef} className="relative">
+              <button
+                onClick={() => setPortSelectorOpen((v) => !v)}
+                className="flex items-center gap-1.5 text-(--color-text-primary) hover:text-(--color-text-secondary) transition-colors cursor-pointer"
+                aria-label="Select preview port"
+                aria-expanded={portSelectorOpen}
+              >
+                <StatusDot status={statusToDotVariant(activeStatus)} />
+                <span>{portLabel}</span>
+                <CaretDownIcon size={ICON_SIZE.XS} />
+              </button>
+              {portSelectorOpen && (
+                <div className="absolute top-full left-0 mt-1 min-w-35 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-lg shadow-xl z-50 overflow-hidden py-1">
+                  {allPorts.map((item) => {
+                    const isActive = item.port === activePort;
+                    return (
+                      <button
+                        key={item.port}
+                        onClick={() => { onSelectPort(item.port); setPortSelectorOpen(false); }}
+                        className={`flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left transition-colors cursor-pointer ${
+                          isActive
+                            ? "text-(--color-text-primary) bg-(--color-bg-hover)"
+                            : "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+                        }`}
+                      >
+                        <StatusDot status={statusToDotVariant(item.status)} />
+                        <span className="flex-1">{item.label}</span>
+                        {isActive && <CheckIcon size={ICON_SIZE.XS} className="text-(--color-success)" />}
+                      </button>
+                    );
+                  })}
+                </div>
               )}
-            </>
+            </div>
           ) : (
-            <span className="text-(--color-text-tertiary)">Preview</span>
+            <>
+              <StatusDot status={isRunning || portLabel ? "success" : "info"} />
+              {portLabel ? portLabel : <span className="text-(--color-text-tertiary)">Preview</span>}
+            </>
           )}
         </span>
         <div className="flex items-center gap-2">

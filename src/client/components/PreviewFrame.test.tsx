@@ -69,10 +69,11 @@ describe("PreviewFrame", () => {
     expect(iframe).toHaveAttribute("src", "http://localhost:5173");
   });
 
-  it("shows (auto-detected) label for detected source with single port", () => {
+  it("shows service name for detected source when service is known", () => {
+    usePreviewStore.getState().setServices([{ name: "web", status: "running", port: 3001, preview: "auto" }]);
     const preview: PreviewStatus = { running: true, port: 3001, url: "http://localhost:3001", source: "detected" };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001]} selectedPort={null} onSelectPort={vi.fn()} />);
-    expect(screen.getByText("(auto-detected)")).toBeInTheDocument();
+    expect(screen.getByText("web")).toBeInTheDocument();
   });
 
   it("shows port text without selector when only one detected port", () => {
@@ -85,34 +86,39 @@ describe("PreviewFrame", () => {
   it("shows dropdown selector when multiple detected ports exist", () => {
     const preview: PreviewStatus = { running: true, port: 3001, url: "http://localhost:3001", source: "detected", detectedPorts: [3001, 8080] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001, 8080]} selectedPort={null} onSelectPort={vi.fn()} />);
-    const select = screen.getByLabelText("Select preview port");
-    expect(select).toBeInTheDocument();
-    expect(select.tagName).toBe("SELECT");
+    const trigger = screen.getByLabelText("Select preview port");
+    expect(trigger).toBeInTheDocument();
+    expect(trigger.tagName).toBe("BUTTON");
   });
 
   it("shows dropdown when Vite is running and detected ports also exist", () => {
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite", detectedPorts: [3001] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001]} selectedPort={null} onSelectPort={vi.fn()} />);
-    const select = screen.getByLabelText("Select preview port");
-    expect(select).toBeInTheDocument();
+    const trigger = screen.getByLabelText("Select preview port");
+    expect(trigger).toBeInTheDocument();
   });
 
   it("lists Vite port and detected ports in the selector", () => {
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite", detectedPorts: [3001, 8080] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001, 8080]} selectedPort={null} onSelectPort={vi.fn()} />);
-    const options = screen.getAllByRole("option");
-    expect(options).toHaveLength(3);
-    expect(options[0]).toHaveTextContent("5173 (Vite)");
-    expect(options[1]).toHaveTextContent("3001");
-    expect(options[2]).toHaveTextContent("8080");
+    // Open the dropdown
+    fireEvent.click(screen.getByLabelText("Select preview port"));
+    const items = screen.getAllByRole("button").filter(b => b.closest("[class*='bg-(--color-bg-elevated)']"));
+    expect(items).toHaveLength(3);
+    expect(items[0]).toHaveTextContent("Vite");
+    expect(items[1]).toHaveTextContent("port 3001");
+    expect(items[2]).toHaveTextContent("port 8080");
   });
 
-  it("calls onSelectPort when user changes the dropdown", () => {
+  it("calls onSelectPort when user clicks a dropdown item", () => {
     const onSelectPort = vi.fn();
     const preview: PreviewStatus = { running: true, port: 3001, url: "http://localhost:3001", source: "detected", detectedPorts: [3001, 8080] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001, 8080]} selectedPort={null} onSelectPort={onSelectPort} />);
-    const select = screen.getByLabelText("Select preview port");
-    fireEvent.change(select, { target: { value: "8080" } });
+    // Open the dropdown
+    fireEvent.click(screen.getByLabelText("Select preview port"));
+    // Click the second port option
+    const items = screen.getAllByRole("button").filter(b => b.closest("[class*='bg-(--color-bg-elevated)']"));
+    fireEvent.click(items[1]);
     expect(onSelectPort).toHaveBeenCalledWith(8080);
   });
 
@@ -140,11 +146,11 @@ describe("PreviewFrame", () => {
     await screen.findByTitle("Live Preview");
   });
 
-  it("selector value matches selectedPort", () => {
+  it("selector label matches selectedPort", () => {
     const preview: PreviewStatus = { running: true, port: 3001, url: "http://localhost:3001", source: "detected", detectedPorts: [3001, 8080] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001, 8080]} selectedPort={8080} onSelectPort={vi.fn()} />);
-    const select = screen.getByLabelText("Select preview port") as HTMLSelectElement;
-    expect(select.value).toBe("8080");
+    const trigger = screen.getByLabelText("Select preview port");
+    expect(trigger).toHaveTextContent("localhost:8080");
   });
 
   // ---- Error badge & panel tests ----
@@ -314,8 +320,10 @@ describe("PreviewFrame", () => {
   it("shows Preview label in port selector for managed source", () => {
     const preview: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "managed", detectedPorts: [8080] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[8080]} selectedPort={null} onSelectPort={vi.fn()} />);
-    const options = screen.getAllByRole("option");
-    expect(options[0]).toHaveTextContent("3000 (Preview)");
+    // Open the dropdown
+    fireEvent.click(screen.getByLabelText("Select preview port"));
+    const items = screen.getAllByRole("button").filter(b => b.closest("[class*='bg-(--color-bg-elevated)']"));
+    expect(items[0]).toHaveTextContent("Preview");
   });
 
   // ---- Stale iframe tests ----
