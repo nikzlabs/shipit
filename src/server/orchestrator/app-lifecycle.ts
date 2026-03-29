@@ -332,6 +332,8 @@ export interface RunnerRegistryDeps {
   getDepCacheDir: (repoUrl: string) => string;
   /** Per-session ServiceManager registry (compose stacks). */
   serviceManagers: Map<string, ServiceManager>;
+  /** Per-session compose warnings for old-format configs without a ServiceManager. */
+  composeWarnings: Map<string, string>;
   /** Container manager for connecting agent containers to compose networks. */
   containerManager: SessionContainerManager | null;
 }
@@ -346,7 +348,7 @@ export function createRunnerRegistry(
     effectiveRunnerFactory, sessionManager, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
-    getDepCacheDir, serviceManagers, containerManager,
+    getDepCacheDir, serviceManagers, composeWarnings, containerManager,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -396,7 +398,7 @@ export function createRunnerRegistry(
 
       // Set up compose ServiceManager if the session has a compose config
       setupServiceManager(runner, {
-        sessionManager, serviceManagers, containerManager,
+        sessionManager, serviceManagers, composeWarnings, containerManager,
       });
     },
   });
@@ -411,10 +413,11 @@ function setupServiceManager(
   deps: {
     sessionManager: SessionManager;
     serviceManagers: Map<string, ServiceManager>;
+    composeWarnings: Map<string, string>;
     containerManager: SessionContainerManager | null;
   },
 ): void {
-  const { sessionManager, serviceManagers, containerManager } = deps;
+  const { sessionManager, serviceManagers, composeWarnings, containerManager } = deps;
   const session = sessionManager.get(runner.sessionId);
   const workspaceDir = session?.workspaceDir ?? runner.sessionDir;
 
@@ -425,14 +428,13 @@ function setupServiceManager(
     return; // Invalid config — skip compose setup
   }
 
-  // Surface config migration warnings in the preview panel
+  // Surface config migration warnings in the preview panel.
+  // Store in composeWarnings map for replay on viewer attach — at this point
+  // the WS listener is not yet connected so emitMessage would be lost.
   if (shipitConfig.warnings.length > 0) {
     const text = `shipit.yaml needs migration:\n${shipitConfig.warnings.map(w => `• ${w}`).join("\n")}`;
-    runner.emitMessage({
-      type: "compose_error",
-      sessionId: runner.sessionId,
-      message: text,
-    });
+    composeWarnings.set(runner.sessionId, text);
+    runner.on("disposed", () => composeWarnings.delete(runner.sessionId));
   }
 
   if (!shipitConfig.compose) return;

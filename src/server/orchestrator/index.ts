@@ -141,6 +141,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Service manager registry (per-session compose stacks) ----
   const serviceManagers = new Map<string, ServiceManager>();
+  /** Per-session compose warnings/errors for configs without a ServiceManager (e.g. old format). */
+  const composeWarnings = new Map<string, string>();
 
   // ---- Session runner registry ----
   // Idle enforcement uses a lazy reference to `runnerRegistry` — the callback
@@ -156,7 +158,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     effectiveRunnerFactory, sessionManager, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
-    getDepCacheDir, serviceManagers, containerManager,
+    getDepCacheDir, serviceManagers, composeWarnings, containerManager,
   });
   registryHolder.ref = runnerRegistry;
 
@@ -417,6 +419,17 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
               })),
             } as WsServerMessage);
           }
+        }
+        // Replay compose warnings (e.g. old-format migration hints) when no
+        // ServiceManager exists — the warning was stored before the WS listener
+        // was attached, so emitMessage couldn't deliver it.
+        const warning = composeWarnings.get(runner.sessionId);
+        if (warning && !mgr) {
+          send({
+            type: "compose_error",
+            sessionId: runner.sessionId,
+            message: warning,
+          } as WsServerMessage);
         }
         // Don't send preview_status here — it's sent once after the log
         // buffer replay (see below) so React 18 batching can't swallow it.
