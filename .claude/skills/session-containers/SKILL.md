@@ -75,21 +75,15 @@ SSE events map to actions:
 |-----------|--------|
 | `agent_event` | Forward to ProxyAgentProcess -> emitted as WS `assistant_*` messages |
 | `agent_done` | Forward to ProxyAgentProcess -> triggers onAgentFinished |
-| `preview_ready` | Update local ports, set `_previewStateReceived=true`, emit preview_status |
-| `preview_stopped` | Clear ports, emit preview_status |
-| `preview_config_missing` | Emit config_missing |
-| `preview_install_status` | Emit install status |
-| `file_changes` | Emit files_changed. If shipit.yaml changed, restart preview |
+| `file_changes` | Emit files_changed. If shipit.yaml/compose changed, reconcile compose stack |
 | `terminal_data` | Emit terminal_output |
 
 ### SSE Replay
 
 When the SSE connection opens (or reconnects), the session worker replays current state:
-- If preview is running with ports -> sends `preview_ready`
-- If preview crashed -> replays recent log lines + `preview_stopped`
 - If terminal is alive -> sends empty `terminal_data` signal
 
-This ensures the runner always has current state, even after SSE reconnect.
+Preview/service state is managed by the orchestrator's `ServiceManager` (Docker Compose), not the session worker.
 
 ### attachViewer / detachViewer
 
@@ -113,7 +107,6 @@ startWorkerResources():
   _workerResourcesStarted = true
   await _workerReady
   POST {workerUrl}/files/watch   <- idempotent
-  POST {workerUrl}/preview/start <- returns 409 if already running (reconnect case)
 ```
 
 ## Container Lifecycle
@@ -198,7 +191,6 @@ reconnect to existing containers instead of creating duplicates.
 
 When a `ContainerSessionRunner` is disposed (idle container cleanup), the Docker container is destroyed along with the runner. However, when a runner is disposed without explicit container destruction (e.g. server shutdown cleanup), the `dispose()` method:
 - Kills the agent process in the container (fire-and-forget)
-- Does NOT call `/preview/stop` or `/files/unwatch`
 - Disconnects the SSE stream
 - Emits `"disposed"` -> removed from `SessionRunnerRegistry`
 
@@ -247,23 +239,12 @@ When a user returns to a session whose runner was disposed:
       -> Worker replays current state (preview_ready, etc.)
       -> startWorkerResources():
         - POST /files/watch -> idempotent (already watching)
-        - POST /preview/start -> 409 "already running" -> handled gracefully
-   b. Send preview_status if runner.previewStatusKnown
-4. Client receives preview state -> shows preview immediately
+   b. Send preview_status (built from ServiceManager detected ports)
+   c. Send service_list (current compose service states)
+4. Client receives service/preview state -> shows preview immediately
 ```
 
-**No container restart. No preview restart. Instant reconnect.**
-
-## Preview Status Delivery
-
-Preview status reaches the client through multiple redundant paths to handle React 18 batching edge cases:
-
-1. **Primary**: SSE -> Runner -> WS (normal push path)
-2. **Microtask re-send**: On `attachToRunner` when `previewStatusKnown === false`, registers one-shot listener that re-sends via `queueMicrotask` to survive React batching
-3. **HTTP fallback**: `GET /api/sessions/{id}/preview-status` with retry after 3s if `known: false`
-4. **Log buffer mitigation**: Re-sends preview_status after log buffer flush
-
-These redundant paths mitigate the `useWebSocket` hook's `setLastMessage()` batching issue where rapid WS messages in the same event-loop tick cause intermediate messages to be silently dropped.
+**No container restart. Instant reconnect.** Compose services persist independently of the runner lifecycle.
 
 ## Graceful Shutdown
 
