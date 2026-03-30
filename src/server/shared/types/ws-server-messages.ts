@@ -272,6 +272,12 @@ export interface WsComposeError {
   message: string;
 }
 
+/** Server → Client: No compose file configured in shipit.yaml. */
+export interface WsComposeNotConfigured {
+  type: "compose_not_configured";
+  sessionId: string;
+}
+
 // ---- Session runner messages (server → client) ----
 
 /** Server → Client: current runtime state of a session. */
@@ -417,4 +423,5 @@ export type WsServerMessage =
   | WsServiceList
   | WsServiceLog
   | WsServiceLogBuffer
-  | WsComposeError;
+  | WsComposeError
+  | WsComposeNotConfigured;

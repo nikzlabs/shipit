@@ -308,6 +308,30 @@ describe("PreviewFrame", () => {
     expect(usePreviewStore.getState().composeError).toBeNull();
   });
 
+  // ---- Compose not configured hint tests ----
+
+  it("shows compose hint when composeNotConfigured is set", () => {
+    usePreviewStore.getState().setComposeNotConfigured(true);
+    render(<PreviewFrame preview={null} {...defaultProps} />);
+    expect(screen.getByText(/shipit\.yaml/)).toBeInTheDocument();
+    expect(screen.getByText(/to enable previews/)).toBeInTheDocument();
+  });
+
+  it("shows Send to agent button in compose hint overlay", () => {
+    usePreviewStore.getState().setComposeNotConfigured(true);
+    const onSendComposeHintToAgent = vi.fn();
+    render(<PreviewFrame preview={null} {...defaultProps} onSendComposeHintToAgent={onSendComposeHintToAgent} />);
+    const btn = screen.getByText("Send to agent");
+    fireEvent.click(btn);
+    expect(onSendComposeHintToAgent).toHaveBeenCalled();
+  });
+
+  it("clears composeNotConfigured when services arrive", () => {
+    usePreviewStore.getState().setComposeNotConfigured(true);
+    usePreviewStore.getState().setServices([{ name: "web", status: "running", port: 5173, preview: "auto" }]);
+    expect(usePreviewStore.getState().composeNotConfigured).toBe(false);
+  });
+
   // ---- Managed source tests ----
 
   it("renders iframe for managed source preview", async () => {

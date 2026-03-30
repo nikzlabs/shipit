@@ -529,6 +529,10 @@ function processMessage(
       preview.setComposeError(data.message || null);
     }
 
+    if (data.type === "compose_not_configured") {
+      preview.setComposeNotConfigured(true);
+    }
+
     if (data.type === "service_log") {
       terminal.addEntry({ source: "preview", text: `[${data.name}] ${data.text}`, timestamp: new Date().toISOString() });
     }

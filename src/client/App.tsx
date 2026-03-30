@@ -374,6 +374,11 @@ export default function App() {
     useSessionStore.getState().setPrefillText(text);
   }, []);
 
+  const handleSendComposeHintToAgent = useCallback(() => {
+    const text = "The preview panel needs a Docker Compose configuration. Please add a `compose` key to `shipit.yaml` pointing to the project's compose file so that previews can be enabled.";
+    useSessionStore.getState().setPrefillText(text);
+  }, []);
+
   const handleSendServiceLogsToAgent = useCallback((serviceName: string, status: string, logs: string) => {
     const lines = [`The Docker Compose service "${serviceName}" is in state "${status}". Recent logs:`, ""];
     if (logs) {
@@ -615,7 +620,7 @@ export default function App() {
       <div className="flex-1 min-h-0 relative">
         {/* PreviewFrame is always rendered to preserve iframe state; hidden via CSS when another tab is active */}
         <div className={`absolute inset-0 ${rightTab === "preview" ? "" : "invisible pointer-events-none"}`}>
-          <PreviewFrame preview={previewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} onSendCrashToAgent={handleSendComposeErrorToAgent} />
+          <PreviewFrame preview={previewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} onSendCrashToAgent={handleSendComposeErrorToAgent} onSendComposeHintToAgent={handleSendComposeHintToAgent} />
         </div>
         {rightTab === "docs" ? (
           reviewingDoc ? (
