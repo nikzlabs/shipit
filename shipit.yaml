@@ -3,7 +3,3 @@ agent:
   cpu: 2.0
   pids: 2048
   install: NODE_ENV=development npm install
-
-compose:
-  file: docker/local/dev/compose.yml
-  docker-socket: true
