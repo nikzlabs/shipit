@@ -446,9 +446,13 @@ export function MessageList({
         );
       })}
 
-      {/* Thinking indicator — shown when waiting for the first response,
-         or when a tool is actively executing (to surface the activity label). */}
-      {isLoading && (messages[messages.length - 1]?.role === "user" || activity?.tool) && (
+      {/* Thinking indicator — shown only when waiting for the first response
+         (last message is from the user). Once the agent starts responding,
+         the streaming message bubble and tool-group spinners take over.
+         Previously also shown during tool execution (activity?.tool), but
+         that caused a "flash" — the indicator appeared then vanished when
+         the tool result arrived, making the dialog jump. */}
+      {isLoading && messages[messages.length - 1]?.role === "user" && (
         <ThinkingIndicator activity={activity} />
       )}
 

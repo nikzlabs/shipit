@@ -42,8 +42,7 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
     const subagentTools = msg.toolUse?.filter((t) => SUBAGENT_TOOLS.has(t.name)) ?? [];
     const nonSubagentTools = msg.toolUse?.filter((t) => !SUBAGENT_TOOLS.has(t.name)) ?? [];
     const groupableTools = nonSubagentTools.filter((t) => !STANDALONE_TOOLS.has(t.name));
-    const hasStandaloneTools = nonSubagentTools.some((t) => STANDALONE_TOOLS.has(t.name));
-    const canGroupTools = msg.role === "assistant" && groupableTools.length > 0 && !hasStandaloneTools;
+    const canGroupTools = msg.role === "assistant" && groupableTools.length > 0;
 
     if (canGroupTools) {
       // Emit a bubble only if the message has visible non-tool content.
@@ -61,6 +60,22 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
       }
       toolMsgIndices.push(i);
       lastToolMsgStreaming = !!msg.streaming;
+
+      // Extract standalone tools (ExitPlanMode, AskUserQuestion) as separate elements
+      // so they don't force the entire message out of the tool-group rendering path.
+      // Without this, force-merging a standalone tool into a message with groupable
+      // tools would change the rendering from tool-group → message bubble, causing
+      // the tool-group to disappear and the dialog to jump.
+      const extractableStandalone = nonSubagentTools.filter(
+        (t) => STANDALONE_TOOLS.has(t.name) && t.name !== "TodoWrite",
+      );
+      if (extractableStandalone.length > 0) {
+        flushTools();
+        for (const tool of extractableStandalone) {
+          const result = msg.toolResults?.find((r) => r.toolUseId === tool.id);
+          elements.push({ kind: "standalone-tool", tool, result, streaming: !!msg.streaming, messageIndex: i });
+        }
+      }
     } else if (nonSubagentTools.length > 0 || msg.text.trim() || msg.images?.length || msg.files?.length || msg.role === "user") {
       flushTools();
       const hasVisibleContent = !!msg.text.trim() || !!msg.images?.length || !!msg.files?.length;
