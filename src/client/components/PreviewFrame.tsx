@@ -42,6 +42,8 @@ interface PreviewFrameProps {
   onClearErrors: () => void;
   /** Called when user clicks "Send to agent" to send error info to the agent. */
   onSendCrashToAgent?: () => void;
+  /** Called when user clicks "Send to agent" to ask the agent to add compose config. */
+  onSendComposeHintToAgent?: () => void;
 }
 
 function formatErrorForMessage(errors: PreviewError[]): string {
@@ -111,6 +113,7 @@ export function PreviewFrame({
   onSendErrors,
   onClearErrors,
   onSendCrashToAgent,
+  onSendComposeHintToAgent,
 }: PreviewFrameProps) {
   const autoFixEnabled = usePreviewStore((s) => s.autoFixEnabled);
   const autoFixRetries = usePreviewStore((s) => s.autoFixRetries);
@@ -336,10 +339,12 @@ export function PreviewFrame({
 
   const hasErrors = errors.length > 0;
   const composeError = usePreviewStore((s) => s.composeError);
+  const composeNotConfigured = usePreviewStore((s) => s.composeNotConfigured);
   const showComposeError = !!composeError && !isRunning;
-  const showStartupSteps = startupSteps.length > 0 && !isRunning && !showComposeError;
-  const showStarting = !showStartupSteps && !showComposeError && !preview && !!sessionId;
-  const showServices = services.length > 0 && !isRunning && !showComposeError && !showStartupSteps;
+  const showComposeHint = composeNotConfigured && !isRunning && !showComposeError;
+  const showStartupSteps = startupSteps.length > 0 && !isRunning && !showComposeError && !showComposeHint;
+  const showStarting = !showStartupSteps && !showComposeError && !showComposeHint && !preview && !!sessionId;
+  const showServices = services.length > 0 && !isRunning && !showComposeError && !showStartupSteps && !showComposeHint;
 
   // When not running, hide the iframe behind the overlay (but keep DOM element alive)
   const hideIframe = !isRunning && !showStarting;
@@ -357,6 +362,15 @@ export function PreviewFrame({
           {composeError}
         </pre>
         {onSendCrashToAgent && <Button variant="primary" size="sm" onClick={onSendCrashToAgent}>Send to agent</Button>}
+      </div>
+    );
+  } else if (showComposeHint) {
+    overlayContent = (
+      <div className="text-center space-y-3 max-w-lg px-4">
+        <p className="text-sm text-(--color-text-secondary)">
+          Add <code className="px-1.5 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary) text-xs">compose</code> to <code className="px-1.5 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary) text-xs">shipit.yaml</code> to enable previews
+        </p>
+        {onSendComposeHintToAgent && <Button variant="primary" size="sm" onClick={onSendComposeHintToAgent}>Send to agent</Button>}
       </div>
     );
   } else if (showStarting && !showIframe) {

@@ -269,33 +269,15 @@ describe("resolveShipitConfig", () => {
     expect(config.compose).toEqual({ file: "docker-compose.yml", dockerSocket: false });
   });
 
-  it("auto-detects docker-compose.yml when compose not specified", () => {
+  it("does not auto-detect compose files", () => {
     const dir = setup();
     fs.writeFileSync(path.join(dir, "shipit.yaml"), "agent:\n  memory: 2048\n");
     fs.writeFileSync(path.join(dir, "docker-compose.yml"), "services: {}\n");
     const config = resolveShipitConfig(dir);
-    expect(config.compose).toEqual({ file: "docker-compose.yml", dockerSocket: false });
+    expect(config.compose).toBeUndefined();
   });
 
-  it("auto-detects compose.yml when no shipit.yaml", () => {
-    const dir = setup();
-    fs.writeFileSync(path.join(dir, "compose.yml"), "services: {}\n");
-    const config = resolveShipitConfig(dir);
-    expect(config.compose).toEqual({ file: "compose.yml", dockerSocket: false });
-  });
-
-  it("does not auto-detect when compose is explicitly specified", () => {
-    const dir = setup();
-    fs.writeFileSync(
-      path.join(dir, "shipit.yaml"),
-      "compose: custom-compose.yml\n",
-    );
-    fs.writeFileSync(path.join(dir, "docker-compose.yml"), "services: {}\n");
-    const config = resolveShipitConfig(dir);
-    expect(config.compose!.file).toBe("custom-compose.yml");
-  });
-
-  it("returns undefined compose when no compose file found", () => {
+  it("returns undefined compose when not specified", () => {
     const dir = setup();
     fs.writeFileSync(path.join(dir, "shipit.yaml"), "agent:\n  memory: 2048\n");
     const config = resolveShipitConfig(dir);
