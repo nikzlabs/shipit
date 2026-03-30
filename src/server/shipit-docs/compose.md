@@ -164,6 +164,56 @@ services:
       - .:/app
 ```
 
+## Service control API
+
+You can manage compose services programmatically via HTTP endpoints on
+`localhost:9100`. This is useful for starting/stopping services as part of
+a workflow without asking the user to do it manually in the UI.
+
+### List services
+
+```bash
+curl http://localhost:9100/services/list
+```
+
+Returns:
+```json
+{
+  "services": [
+    { "name": "web", "status": "running", "port": 5173, "preview": "auto" },
+    { "name": "db", "status": "stopped", "port": 5432, "preview": "manual" }
+  ]
+}
+```
+
+### Start a service
+
+```bash
+curl -X POST http://localhost:9100/services/start \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "db"}'
+```
+
+### Stop a service
+
+```bash
+curl -X POST http://localhost:9100/services/stop \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "db"}'
+```
+
+### Restart a service
+
+```bash
+curl -X POST http://localhost:9100/services/restart \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "web"}'
+```
+
+All mutation endpoints return `{ "ok": true, "name": "...", "status": "..." }`
+on success or an error with an HTTP 500 status if the operation fails. Service
+names must match those defined in docker-compose.yml.
+
 ## What not to do
 
 - **Don't mount the Docker socket** (`/var/run/docker.sock`) — ShipIt manages
