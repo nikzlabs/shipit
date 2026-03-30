@@ -685,6 +685,17 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           this.emitMessage({ type: "terminal_exit", exitCode: data.exitCode as number | null });
           break;
 
+        // --- Service control requests (from agent via worker) ---
+
+        case "service_request": {
+          const requestId = data.requestId as string;
+          const action = data.action as string;
+          const name = data.name as string | undefined;
+          // Handle asynchronously — don't block SSE processing
+          void this.handleServiceRequest(requestId, action, name);
+          break;
+        }
+
         // --- File watcher events ---
 
         case "file_changes": {
@@ -721,6 +732,64 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       }
     } catch (err) {
       console.error(`[container-runner:${this.sessionId}] Failed to parse SSE event:`, err);
+    }
+  }
+
+  // --- Service control request handling ---
+
+  /**
+   * Handle a service control request from the agent (received via SSE from the worker).
+   * Performs the action via ServiceManager and POSTs the result back to the worker.
+   */
+  private async handleServiceRequest(requestId: string, action: string, name?: string): Promise<void> {
+    let result: unknown;
+    let error: string | undefined;
+
+    try {
+      const mgr = this._serviceManager;
+      if (!mgr) {
+        throw new Error("No compose stack configured for this session");
+      }
+
+      switch (action) {
+        case "list":
+          result = {
+            services: mgr.getServices().map(s => ({
+              name: s.name,
+              status: s.status,
+              port: s.port,
+              preview: s.preview,
+              error: s.error,
+            })),
+          };
+          break;
+        case "start":
+          if (!name) throw new Error("Service name is required");
+          await mgr.startService(name);
+          result = { ok: true, name, status: "running" };
+          break;
+        case "stop":
+          if (!name) throw new Error("Service name is required");
+          await mgr.stopService(name);
+          result = { ok: true, name, status: "stopped" };
+          break;
+        case "restart":
+          if (!name) throw new Error("Service name is required");
+          await mgr.restartService(name);
+          result = { ok: true, name, status: "running" };
+          break;
+        default:
+          throw new Error(`Unknown service action: ${action}`);
+      }
+    } catch (err) {
+      error = (err as Error).message;
+    }
+
+    // POST result back to the worker's callback endpoint
+    try {
+      await workerPost(this.workerUrl, "/services/_callback", { requestId, result, error });
+    } catch (err) {
+      console.error(`[container-runner:${this.sessionId}] Failed to send service callback:`, (err as Error).message);
     }
   }
 

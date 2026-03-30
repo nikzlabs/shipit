@@ -261,6 +261,26 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
+   * Restart a specific service (stop then start).
+   */
+  async restartService(name: string): Promise<void> {
+    const svc = this.services.get(name);
+    if (!svc) throw new Error(`Unknown service: ${name}`);
+
+    this.updateServiceStatus(name, "starting");
+    try {
+      await this.composeStop(name);
+      await this.composeUpService(name);
+      await this.pollStatus();
+      // Restart log streaming to pick up new container output
+      this.streamLogs(name);
+    } catch (err) {
+      this.updateServiceStatus(name, "error", (err as Error).message);
+      throw err;
+    }
+  }
+
+  /**
    * Stop a specific service.
    */
   async stopService(name: string): Promise<void> {

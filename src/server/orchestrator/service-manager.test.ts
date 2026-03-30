@@ -161,6 +161,13 @@ services:
     const mgr = createManager(dir);
     await expect(mgr.stopService("nonexistent")).rejects.toThrow("Unknown service");
   });
+
+  it("throws for unknown service in restartService", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n");
+    const mgr = createManager(dir);
+    await expect(mgr.restartService("nonexistent")).rejects.toThrow("Unknown service");
+  });
 });
 
 describe("ServiceManager lifecycle (mocked docker)", () => {
@@ -298,6 +305,43 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
     writeCompose(dir, "services:\n  web:\n    image: node:20\n");
     const mgr = createMockedManager(dir);
     expect(mgr.getLogBuffer("nonexistent")).toBe("");
+  });
+
+  it("restartService stops then starts a service", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
+
+    const psOutput = JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 });
+    const commands: string[] = [];
+    const composeRunner: ComposeRunner = (args) => {
+      // Track subcommands (up, stop, etc.)
+      const subcommand = args.find(a => a === "up" || a === "stop" || a === "down");
+      if (subcommand) commands.push(subcommand);
+      return Promise.resolve();
+    };
+    const composeQuery: ComposeQuery = (args) => {
+      const key = args.find(a => a === "ps" || a === "inspect" || a === "rm" || a === "network") ?? args[0];
+      if (key === "ps") return Promise.resolve(psOutput);
+      if (key === "inspect") return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
+      return Promise.resolve("");
+    };
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+    });
+
+    await mgr.start();
+    commands.length = 0; // Clear startup commands
+
+    await mgr.restartService("web");
+
+    // Should have called stop then up
+    expect(commands).toEqual(["stop", "up"]);
+    expect(mgr.getService("web")?.status).toBe("running");
   });
 
   it("getContainerIpForPort returns IP for matching service", async () => {
