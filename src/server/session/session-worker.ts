@@ -33,8 +33,16 @@ export interface WorkerSSEEvent {
   type:
     | "agent_event" | "agent_done" | "agent_error" | "agent_auth_required" | "agent_log"
     | "terminal_data" | "terminal_exit"
-    | "file_changes";
+    | "file_changes"
+    | "service_request";
   data: unknown;
+}
+
+/** Pending service request awaiting orchestrator callback. */
+interface PendingServiceRequest {
+  resolve: (result: unknown) => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 /** Factory function that creates an AgentProcess from an agent ID. */
@@ -78,6 +86,11 @@ export class SessionWorker extends EventEmitter {
   private fileWatcher: FileWatcher | null = null;
   private _createFileWatcher: () => FileWatcher;
   private _createTerminal: () => TerminalProcess;
+
+  // Service request/callback state
+  private _pendingServiceRequests = new Map<string, PendingServiceRequest>();
+  private _serviceRequestCounter = 0;
+  private static readonly SERVICE_REQUEST_TIMEOUT_MS = 60_000;
 
   // Terminal backpressure state
   private _sseBackpressured = new Set<ServerResponse>();
@@ -261,6 +274,82 @@ export class SessionWorker extends EventEmitter {
       const tree = await scanFileTree(this.workspaceDir);
       return { tree };
     });
+
+    // --- Service control endpoints (called by agent) ---
+
+    app.get("/services/list", async () => {
+      return this.sendServiceRequest("list");
+    });
+
+    app.post<{ Body: { name: string } }>("/services/start", async (request, reply) => {
+      const { name } = request.body ?? {};
+      if (typeof name !== "string" || !name) {
+        return reply.code(400).send({ error: "name is required" });
+      }
+      return this.sendServiceRequest("start", name);
+    });
+
+    app.post<{ Body: { name: string } }>("/services/stop", async (request, reply) => {
+      const { name } = request.body ?? {};
+      if (typeof name !== "string" || !name) {
+        return reply.code(400).send({ error: "name is required" });
+      }
+      return this.sendServiceRequest("stop", name);
+    });
+
+    app.post<{ Body: { name: string } }>("/services/restart", async (request, reply) => {
+      const { name } = request.body ?? {};
+      if (typeof name !== "string" || !name) {
+        return reply.code(400).send({ error: "name is required" });
+      }
+      return this.sendServiceRequest("restart", name);
+    });
+
+    // --- Service callback endpoint (called by orchestrator with results) ---
+
+    app.post<{ Body: { requestId: string; result?: unknown; error?: string } }>("/services/_callback", async (request, reply) => {
+      const { requestId, result, error } = request.body ?? {};
+      if (typeof requestId !== "string") {
+        return reply.code(400).send({ error: "requestId is required" });
+      }
+      const pending = this._pendingServiceRequests.get(requestId);
+      if (!pending) {
+        return reply.code(404).send({ error: "Unknown or expired request" });
+      }
+      this._pendingServiceRequests.delete(requestId);
+      clearTimeout(pending.timer);
+      if (error) {
+        pending.reject(new Error(error));
+      } else {
+        pending.resolve(result ?? { ok: true });
+      }
+      return { received: true };
+    });
+  }
+
+  // --- Service request bridge ---
+
+  /**
+   * Send a service control request to the orchestrator via SSE and wait
+   * for the callback response. The orchestrator handles the request via
+   * ServiceManager and POSTs the result back to /services/_callback.
+   */
+  private sendServiceRequest(action: string, name?: string): Promise<unknown> {
+    const requestId = `svc-${++this._serviceRequestCounter}-${Date.now()}`;
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._pendingServiceRequests.delete(requestId);
+        reject(new Error(`Service ${action} request timed out`));
+      }, SessionWorker.SERVICE_REQUEST_TIMEOUT_MS);
+
+      this._pendingServiceRequests.set(requestId, { resolve, reject, timer });
+
+      this.broadcastSSE({
+        type: "service_request",
+        data: { requestId, action, name },
+      });
+    });
   }
 
   // --- SSE event stream ---
@@ -415,6 +504,11 @@ export class SessionWorker extends EventEmitter {
       this.fileWatcher.stop();
       this.fileWatcher.removeAllListeners();
       this.fileWatcher = null;
+    }
+    for (const [id, pending] of this._pendingServiceRequests) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error("Worker shutting down"));
+      this._pendingServiceRequests.delete(id);
     }
     for (const raw of this.sseRawResponses) {
       try { raw.end(); } catch { /* already closed */ }
