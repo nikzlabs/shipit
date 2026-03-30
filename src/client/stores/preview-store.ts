@@ -47,6 +47,7 @@ export interface SessionPreviewSnapshot {
   startupSteps: StartupStep[];
   services: ManagedServiceState[];
   composeError: string | null;
+  composeNotConfigured: boolean;
 }
 
 interface PreviewState {
@@ -61,6 +62,8 @@ interface PreviewState {
   services: ManagedServiceState[];
   /** Error message when Docker Compose stack fails to start. */
   composeError: string | null;
+  /** True when no compose file is configured in shipit.yaml. */
+  composeNotConfigured: boolean;
 
   /** Saved preview state per session, keyed by sessionId. */
   sessionSnapshots: Record<string, SessionPreviewSnapshot>;
@@ -81,6 +84,7 @@ interface PreviewState {
   /** Update a single service status (from service_status WS message). */
   updateService: (update: ManagedServiceState) => void;
   setComposeError: (error: string | null) => void;
+  setComposeNotConfigured: (value: boolean) => void;
   /** Save current top-level state into sessionSnapshots[sessionId]. */
   snapshotSession: (sessionId: string) => void;
   /** Restore from snapshot if exists, otherwise reset to defaults. */
@@ -137,6 +141,7 @@ const initialSessionState: SessionPreviewSnapshot = {
   startupSteps: [],
   services: [],
   composeError: null,
+  composeNotConfigured: false,
 };
 
 const initialState = {
@@ -192,7 +197,9 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
 
   setComposeError: (composeError) => set({ composeError }),
 
-  setServices: (services) => set({ services, composeError: null }),
+  setComposeNotConfigured: (composeNotConfigured) => set({ composeNotConfigured }),
+
+  setServices: (services) => set({ services, composeError: null, composeNotConfigured: false }),
 
   updateService: (update) =>
     set((state) => {
@@ -219,6 +226,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
           startupSteps: state.startupSteps,
           services: state.services,
           composeError: state.composeError,
+          composeNotConfigured: state.composeNotConfigured,
         },
       },
     })),

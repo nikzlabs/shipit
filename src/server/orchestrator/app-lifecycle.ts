@@ -334,6 +334,8 @@ export interface RunnerRegistryDeps {
   serviceManagers: Map<string, ServiceManager>;
   /** Per-session compose warnings for old-format configs without a ServiceManager. */
   composeWarnings: Map<string, string>;
+  /** Sessions where compose is not configured in shipit.yaml. */
+  composeNotConfigured: Set<string>;
   /** Container manager for connecting agent containers to compose networks. */
   containerManager: SessionContainerManager | null;
 }
@@ -348,7 +350,7 @@ export function createRunnerRegistry(
     effectiveRunnerFactory, sessionManager, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
-    getDepCacheDir, serviceManagers, composeWarnings, containerManager,
+    getDepCacheDir, serviceManagers, composeWarnings, composeNotConfigured, containerManager,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -397,7 +399,7 @@ export function createRunnerRegistry(
       });
 
       // Set up compose ServiceManager if the session has a compose config
-      const setupDeps = { sessionManager, serviceManagers, composeWarnings, containerManager };
+      const setupDeps = { sessionManager, serviceManagers, composeWarnings, composeNotConfigured, containerManager };
       setupServiceManager(runner, setupDeps);
 
       // Allow re-setup when config files change (e.g. old-format migrated to new)
@@ -420,10 +422,11 @@ function setupServiceManager(
     sessionManager: SessionManager;
     serviceManagers: Map<string, ServiceManager>;
     composeWarnings: Map<string, string>;
+    composeNotConfigured: Set<string>;
     containerManager: SessionContainerManager | null;
   },
 ): void {
-  const { sessionManager, serviceManagers, composeWarnings, containerManager } = deps;
+  const { sessionManager, serviceManagers, composeWarnings, composeNotConfigured, containerManager } = deps;
   const session = sessionManager.get(runner.sessionId);
   const workspaceDir = session?.workspaceDir ?? runner.sessionDir;
 
@@ -450,7 +453,14 @@ function setupServiceManager(
     runner.emitMessage({ type: "compose_error", sessionId: runner.sessionId, message: "" });
   }
 
-  if (!shipitConfig.compose) return;
+  if (!shipitConfig.compose) {
+    composeNotConfigured.add(runner.sessionId);
+    runner.emitMessage({ type: "compose_not_configured", sessionId: runner.sessionId });
+    runner.on("disposed", () => composeNotConfigured.delete(runner.sessionId));
+    return;
+  }
+  // Compose is now configured — clear stale not-configured flag
+  composeNotConfigured.delete(runner.sessionId);
 
   // Workspace volume info for compose volume rewriting: user `.:/workspace`
   // bind mounts must map to the same storage as the agent container.

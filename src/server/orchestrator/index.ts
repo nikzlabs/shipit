@@ -159,6 +159,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const serviceManagers = new Map<string, ServiceManager>();
   /** Per-session compose warnings/errors for configs without a ServiceManager (e.g. old format). */
   const composeWarnings = new Map<string, string>();
+  /** Sessions where compose is not configured in shipit.yaml. */
+  const composeNotConfigured = new Set<string>();
 
   // ---- Session runner registry ----
   // Idle enforcement uses a lazy reference to `runnerRegistry` — the callback
@@ -174,7 +176,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     effectiveRunnerFactory, sessionManager, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
-    getDepCacheDir, serviceManagers, composeWarnings, containerManager,
+    getDepCacheDir, serviceManagers, composeWarnings, composeNotConfigured, containerManager,
   });
   registryHolder.ref = runnerRegistry;
 
@@ -445,6 +447,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             type: "compose_error",
             sessionId: runner.sessionId,
             message: warning,
+          } as WsServerMessage);
+        }
+        // Replay compose-not-configured hint so the preview panel shows
+        // the setup prompt after page reload.
+        if (!mgr && !warning && composeNotConfigured.has(runner.sessionId)) {
+          send({
+            type: "compose_not_configured",
+            sessionId: runner.sessionId,
           } as WsServerMessage);
         }
         // Don't send preview_status here — it's sent once after the log

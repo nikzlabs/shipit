@@ -232,11 +232,8 @@ function parseComposeConfig(raw: unknown): ComposeConfig | undefined {
  * Resolve shipit config from a shipit.yaml file in the given directory.
  * Returns defaults (with warnings) if the file doesn't exist or is empty.
  *
- * Config resolution for compose:
- * 1. If shipit.yaml has `compose` → use that path
- * 2. If shipit.yaml has no `compose` → auto-detect docker-compose.yml or compose.yml
- * 3. If no shipit.yaml → same auto-detection
- * 4. If no compose file found → compose is undefined
+ * Compose must be explicitly specified via the `compose` key in shipit.yaml.
+ * If not specified, compose is undefined and no services will be started.
  */
 export function resolveShipitConfig(dir: string): ShipitConfig {
   const yamlPath = path.join(dir, "shipit.yaml");
@@ -265,18 +262,6 @@ export function resolveShipitConfig(dir: string): ShipitConfig {
   } else {
     // Already set above in the catch block, but TypeScript needs this
     config ??= { agent: { ...AGENT_DEFAULTS, install: [] }, warnings: [] };
-  }
-
-  // Auto-detect compose file if not explicitly specified
-  if (!config.compose) {
-    const candidates = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"];
-    for (const candidate of candidates) {
-      const candidatePath = path.join(dir, candidate);
-      if (fs.existsSync(candidatePath)) {
-        config.compose = { file: candidate, dockerSocket: false };
-        break;
-      }
-    }
   }
 
   return config;

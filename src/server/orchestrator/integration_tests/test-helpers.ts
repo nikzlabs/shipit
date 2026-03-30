@@ -47,6 +47,8 @@ export class TestClient {
     this.sessionId = sessionId;
     ws.on("message", (data: WebSocket.Data) => {
       const msg = JSON.parse((data as Buffer).toString()) as WsServerMessage;
+      // Auto-skip informational messages that tests don't care about
+      if (msg.type === "compose_not_configured") return;
       const waiter = this.waiters.shift();
       if (waiter) {
         waiter(msg);
