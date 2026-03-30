@@ -197,13 +197,56 @@ describe("buildVisualElements", () => {
       expect(elements[1]).toMatchObject({ kind: "subagent" });
     });
 
-    it("does not group when message has a mix of standalone and groupable tools", () => {
+    it("groups groupable tools even when standalone tools are present in the same message", () => {
       const elements = buildVisualElements([
         toolMsg([tool("t1", "Bash"), tool("t2", "TodoWrite", { todos: [] })]),
       ]);
-      // hasStandaloneTools is true → entire message rendered standalone
+      // Bash goes into tool-group; TodoWrite is standalone but excluded from extraction (not AskUserQuestion/ExitPlanMode)
       expect(elements).toHaveLength(1);
-      expect(elements[0]).toMatchObject({ kind: "message", index: 0, hideTools: false });
+      expect(elements[0].kind).toBe("tool-group");
+      if (elements[0].kind === "tool-group") {
+        expect(elements[0].items).toHaveLength(1);
+        expect(elements[0].items[0].tool.name).toBe("Bash");
+      }
+    });
+
+    it("splits mixed groupable + ExitPlanMode into tool-group + standalone (no dialog jump)", () => {
+      // This simulates the force-merge scenario: Read tool followed by ExitPlanMode
+      // merged into the same message. Previously this caused the tool-group to
+      // disappear and be replaced by a message bubble (dialog jump).
+      const elements = buildVisualElements([
+        assistantMsg("Here is my plan."),
+        toolMsg([tool("t1", "Read"), tool("t2", "ExitPlanMode")]),
+      ]);
+      // message(text), tool-group(Read), standalone-tool(ExitPlanMode)
+      expect(elements).toHaveLength(3);
+      expect(elements[0]).toMatchObject({ kind: "message", index: 0 });
+      expect(elements[1].kind).toBe("tool-group");
+      if (elements[1].kind === "tool-group") {
+        expect(elements[1].items).toHaveLength(1);
+        expect(elements[1].items[0].tool.name).toBe("Read");
+      }
+      expect(elements[2]).toMatchObject({ kind: "standalone-tool" });
+      if (elements[2].kind === "standalone-tool") {
+        expect(elements[2].tool.name).toBe("ExitPlanMode");
+      }
+    });
+
+    it("splits mixed groupable + AskUserQuestion into tool-group + standalone", () => {
+      const elements = buildVisualElements([
+        toolMsg([tool("t1", "Grep"), tool("t2", "AskUserQuestion", { questions: [] })]),
+      ]);
+      // tool-group(Grep), standalone-tool(AskUserQuestion)
+      expect(elements).toHaveLength(2);
+      expect(elements[0].kind).toBe("tool-group");
+      if (elements[0].kind === "tool-group") {
+        expect(elements[0].items).toHaveLength(1);
+        expect(elements[0].items[0].tool.name).toBe("Grep");
+      }
+      expect(elements[1]).toMatchObject({ kind: "standalone-tool" });
+      if (elements[1].kind === "standalone-tool") {
+        expect(elements[1].tool.name).toBe("AskUserQuestion");
+      }
     });
   });
 

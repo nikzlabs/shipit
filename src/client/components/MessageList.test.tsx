@@ -269,7 +269,7 @@ describe("MessageList", () => {
       expect(screen.getByText("Editing src/app.ts")).toBeInTheDocument();
     });
 
-    it("shows tool activity indicator when last message is from assistant", () => {
+    it("does not show thinking indicator when last message is from assistant (tool-group spinners handle it)", () => {
       render(
         <MessageList
           messages={[
@@ -280,7 +280,7 @@ describe("MessageList", () => {
           activity={{ label: "Editing src/app.ts", tool: "Edit" }}
         />
       );
-      expect(screen.getByText("Editing src/app.ts")).toBeInTheDocument();
+      expect(screen.queryByText("Editing src/app.ts")).not.toBeInTheDocument();
     });
   });
 
