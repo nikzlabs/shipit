@@ -341,7 +341,7 @@ export function MessageInput({
             onPaste={handlePaste}
             placeholder="Describe what to build... (type @ to attach files)"
             rows={1}
-            className="w-full resize-none bg-transparent px-4 pt-3 pb-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none field-sizing-content"
+            className="w-full resize-none bg-transparent px-4 pt-3 pb-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none field-sizing-content max-h-[40vh] overflow-y-auto"
           />
 
           {/* Toolbar row — below textarea */}
