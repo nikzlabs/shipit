@@ -54,18 +54,19 @@ interface MessageRow {
   parent_commit_hash: string | null;
   in_progress: number;
   tool_results: string | null;
+  upload_paths: string | null;
   created_at: string;
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths)
 `;
 
 const UPDATE_SQL = `
   UPDATE messages SET role=@role, content=@content, tool_use=@tool_use, images=@images,
     files=@files, is_error=@is_error, commit_hash=@commit_hash, parent_commit_hash=@parent_commit_hash,
-    in_progress=@in_progress, tool_results=@tool_results
+    in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths
   WHERE id = @id
 `;
 
@@ -103,6 +104,7 @@ export class ChatHistoryManager {
       parent_commit_hash: msg.parentCommitHash ?? null,
       in_progress: msg.inProgress ? 1 : 0,
       tool_results: msg.toolResults ? JSON.stringify(msg.toolResults) : null,
+      upload_paths: msg.uploadPaths ? JSON.stringify(msg.uploadPaths) : null,
     };
   }
 
@@ -119,6 +121,7 @@ export class ChatHistoryManager {
     if (row.in_progress) msg.inProgress = true;
     if (row.commit_hash) msg.commitHash = row.commit_hash;
     if (row.parent_commit_hash) msg.parentCommitHash = row.parent_commit_hash;
+    if (row.upload_paths) msg.uploadPaths = JSON.parse(row.upload_paths) as string[];
     return msg;
   }
 
