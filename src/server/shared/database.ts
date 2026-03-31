@@ -125,6 +125,10 @@ const MIGRATIONS: Migration[] = [
     db.exec("DROP TABLE IF EXISTS deploy_history");
     db.exec("DROP TABLE IF EXISTS deploy_configs");
   },
+  // Migration 6: add upload_paths column to messages for tracking which uploads were sent
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN upload_paths TEXT");
+  },
 ];
 
 export class DatabaseManager {
