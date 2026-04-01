@@ -1,4 +1,4 @@
-import { PaletteIcon, CheckIcon } from "@phosphor-icons/react";
+import { PaletteIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { THEME_OPTIONS, type Theme } from "../hooks/useTheme.js";
@@ -43,7 +43,7 @@ export function ThemePicker({ theme, onSelectTheme }: ThemePickerProps) {
               <DropdownMenuRadioItem
                 key={opt.id}
                 value={opt.id}
-                className={`${opt.id} relative rounded-md p-2.5 text-left border bg-(--color-bg-primary) border-(--color-border-secondary) transition-shadow focus:ring-2 focus:ring-(--color-border-focus) outline-none${isActive ? " ring-2 ring-(--color-accent)" : ""}`}
+                className={`${opt.id} rounded-md p-2.5 text-left border bg-(--color-bg-primary) border-(--color-border-secondary) hover:bg-(--color-bg-primary) focus:bg-(--color-bg-primary) hover:brightness-[0.92] focus:brightness-[0.92] transition-all focus:ring-2 focus:ring-(--color-border-focus) outline-none${isActive ? " ring-2 ring-(--color-accent)" : ""}`}
               >
                 <span className="block text-[11px] font-semibold leading-tight text-(--color-accent)">
                   {opt.label}
@@ -51,13 +51,6 @@ export function ThemePicker({ theme, onSelectTheme }: ThemePickerProps) {
                 <span className="block text-[10px] leading-tight mt-0.5 text-(--color-text-secondary)">
                   {opt.description}
                 </span>
-                {isActive && (
-                  <CheckIcon
-                    size={12}
-                    weight="bold"
-                    className="absolute top-1.5 right-1.5 text-(--color-accent)"
-                  />
-                )}
               </DropdownMenuRadioItem>
             );
           })}
