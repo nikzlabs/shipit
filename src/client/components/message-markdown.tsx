@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import hljs from "highlight.js";
 import { Marked } from "marked";
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./ui/tooltip.js";
 import type { MessageSegment } from "./MessageList.js";
 
 /**
@@ -83,23 +84,22 @@ export function MarkdownContent({ text }: { text: string }) {
 
 /** Hover tooltip that renders its content as markdown. Scrollable. */
 export function MarkdownTooltip({ content, children }: { content: string; children: React.ReactNode }) {
-  const [visible, setVisible] = useState(false);
   const html = useMemo(() => chatMarked.parse(content, { async: false }), [content]);
 
   return (
-    <div className="relative" onMouseEnter={() => setVisible(true)} onMouseLeave={() => setVisible(false)}>
-      {children}
-      {visible && (
-        <div className="absolute left-0 top-full z-50 pt-1">
-          <div className="max-w-lg max-h-80 overflow-auto rounded-lg border border-(--color-border-secondary) bg-(--color-bg-elevated) shadow-xl p-3">
-            <div
-              className="prose dark:prose-invert prose-sm max-w-none text-xs"
-              dangerouslySetInnerHTML={{ __html: html }}
-            />
-          </div>
-        </div>
-      )}
-    </div>
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div>{children}</div>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" align="start" className="max-w-lg max-h-80 overflow-auto p-3">
+          <div
+            className="prose dark:prose-invert prose-sm max-w-none text-xs"
+            dangerouslySetInnerHTML={{ __html: html }}
+          />
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }
 

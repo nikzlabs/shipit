@@ -79,8 +79,7 @@ export function ModelAgentSelector({
             {canOpen && <CaretDownIcon size={ICON_SIZE.XS} />}
           </button>
         </DropdownMenuTrigger>
-        {canOpen && (
-          <DropdownMenuContent side="top" align="end" className="w-56" data-testid="model-agent-dropdown">
+        <DropdownMenuContent side="top" align="end" className="w-56" data-testid="model-agent-dropdown">
             {agents.map((agent) => {
               const isActiveAgent = agent.id === activeAgentId;
               const isAvailable = agent.installed && agent.authConfigured;
@@ -105,7 +104,7 @@ export function ModelAgentSelector({
                     return (
                       <DropdownMenuItem
                         key={`${agent.id}-${model}`}
-                        onClick={() => isAvailable ? handleModelSelect(agent.id as AgentId, model) : undefined}
+                        onSelect={() => handleModelSelect(agent.id as AgentId, model)}
                         disabled={!isAvailable}
                         className={`pl-5 pr-3 py-1.5 text-sm ${
                           isCurrentModel
@@ -125,7 +124,6 @@ export function ModelAgentSelector({
               );
             })}
           </DropdownMenuContent>
-        )}
       </DropdownMenu>
     </div>
   );

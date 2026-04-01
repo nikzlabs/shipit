@@ -5,7 +5,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import type { RepoInfo } from "../../server/shared/types.js";
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
-import { Dialog, DialogContent } from "./ui/dialog.js";
+import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 
 interface AddRepoDialogProps {
   open: boolean;
@@ -100,7 +100,7 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
     <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
       <DialogContent className="w-full max-w-lg rounded-lg border-(--color-border-secondary)">
         <div className="flex items-center justify-between border-b border-(--color-border-secondary) px-4 py-3">
-          <h2 className="text-sm font-medium text-(--color-text-primary)">Add Repository</h2>
+          <DialogTitle className="text-sm font-medium text-(--color-text-primary)">Add Repository</DialogTitle>
           <Button
             variant="ghost"
             size="sm"

@@ -4,7 +4,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
 import { Button } from "./ui/button.js";
-import { Dialog, DialogContent } from "./ui/dialog.js";
+import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { SessionItem } from "./SessionSidebar.js";
 
 interface AllSessionsDialogProps {
@@ -112,9 +112,9 @@ export function AllSessionsDialog({
       <DialogContent className="w-full max-md:flex max-md:flex-col md:max-w-lg rounded-lg border-(--color-border-secondary)">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-(--color-border-secondary) px-4 py-3">
-          <h2 className="text-sm font-medium text-(--color-text-primary)">
+          <DialogTitle className="text-sm font-medium text-(--color-text-primary)">
             All Sessions
-          </h2>
+          </DialogTitle>
           <Button
             variant="ghost"
             size="sm"

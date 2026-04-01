@@ -73,7 +73,7 @@ export function AgentPicker({ agents, activeAgentId, onAgentChange, disabled }: 
             return (
               <DropdownMenuItem
                 key={agent.id}
-                onClick={() => handleSelect(agent)}
+                onSelect={() => handleSelect(agent)}
                 disabled={!isAvailable}
                 className={`text-sm ${
                   isActive

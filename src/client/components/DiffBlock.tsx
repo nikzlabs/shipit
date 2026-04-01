@@ -73,7 +73,7 @@ function DiffModal({ filePath, oldString, newString, isWrite, onClose }: {
 }) {
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
-    <DialogContent className="w-[min(90vw,56rem)] max-h-[80vh] flex flex-col">
+    <DialogContent className="w-[min(90vw,56rem)] max-h-[80vh] flex flex-col" aria-label="Diff view">
       <div className="flex items-center justify-between px-4 py-3 border-b border-(--color-border-primary)">
         <span className="text-xs font-semibold text-(--color-text-primary) shrink-0">Tool Call</span>
         <button

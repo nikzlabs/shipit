@@ -38,7 +38,7 @@ describe("UsageModal", () => {
         onClose={() => {}}
       />
     );
-    expect(screen.getByRole("dialog")).toHaveAttribute("aria-label", "Usage Summary");
+    expect(screen.getByRole("dialog", { name: "Usage Summary" })).toBeInTheDocument();
   });
 
   it("renders the header title", () => {

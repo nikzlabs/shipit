@@ -33,21 +33,21 @@
 ## Phase 3 — Popover
 - [x] Create `src/client/components/ui/popover.tsx`
 - [x] Migrate `RepoSelector`
-- [ ] Migrate `FileAutoComplete` (skipped — uses window-level keydown, not a standard popover)
+- [x] Migrate `FileAutoComplete` (PopoverContent for portal rendering, kept window keydown for combobox pattern)
 
 ## Phase 4 — Tooltip
 - [x] Create `src/client/components/ui/tooltip.tsx`
 - [x] Add `TooltipProvider` to `App.tsx`
-- [ ] Migrate `MarkdownTooltip` in `message-markdown.tsx`
-- [ ] Migrate key `title` attributes to Radix Tooltip
+- [x] Migrate `MarkdownTooltip` in `message-markdown.tsx`
+- [x] Migrate key `title` attributes to Radix Tooltip (sidebar, header, input toolbar via `WithTooltip` helper)
 
 ## Phase 5 — Tabs
 - [x] Create `src/client/components/ui/tabs.tsx`
 - [x] Migrate `Settings.tsx` tabs
 
 ## Phase 6 — Minor primitives
-- [ ] Evaluate `@radix-ui/react-toggle` for `PlanModeToggle`
-- [ ] Evaluate `@radix-ui/react-select` for native `<select>` elements
+- [x] Evaluate `@radix-ui/react-toggle` for `PlanModeToggle` — not needed, current `aria-pressed` is already accessible
+- [x] Evaluate `@radix-ui/react-select` for native `<select>` elements — not needed, only 2 instances, native `<select>` is better on mobile
 
 ## Cleanup
 - [x] Delete `src/client/hooks/useClickOutside.ts` (verified no remaining consumers)

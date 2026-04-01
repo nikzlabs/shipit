@@ -10,14 +10,12 @@ interface RepoState {
   activeRepoUrl: string | undefined;
   addRepoDialogOpen: boolean;
   newRepoDialogOpen: boolean;
-  repoSwitcherOpen: boolean;
 
   // Actions
   setRepos: (repos: RepoInfo[]) => void;
   setActiveRepoUrl: (url: string | undefined) => void;
   setAddRepoDialogOpen: (open: boolean) => void;
   setNewRepoDialogOpen: (open: boolean) => void;
-  setRepoSwitcherOpen: (open: boolean) => void;
   updateRepoStatus: (url: string, status: "cloning" | "ready") => void;
   updateRepoWarmSession: (url: string, sessionId: string) => void;
   reset: () => void;
@@ -33,7 +31,6 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   activeRepoUrl: getSavedActiveRepo(),
   addRepoDialogOpen: false,
   newRepoDialogOpen: false,
-  repoSwitcherOpen: false,
 
   setRepos: (repos) => {
     const { activeRepoUrl } = get();
@@ -55,8 +52,6 @@ export const useRepoStore = create<RepoState>((set, get) => ({
 
   setNewRepoDialogOpen: (open) => set({ newRepoDialogOpen: open }),
 
-  setRepoSwitcherOpen: (open) => set({ repoSwitcherOpen: open }),
-
   updateRepoStatus: (url, status) =>
     set((state) => {
       const found = state.repos.some((r) => r.url === url);
@@ -76,7 +71,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       ),
     })),
 
-  reset: () => set({ repos: [], activeRepoUrl: undefined, addRepoDialogOpen: false, newRepoDialogOpen: false, repoSwitcherOpen: false }),
+  reset: () => set({ repos: [], activeRepoUrl: undefined, addRepoDialogOpen: false, newRepoDialogOpen: false }),
 
   addRepo: async (url) => {
     try {

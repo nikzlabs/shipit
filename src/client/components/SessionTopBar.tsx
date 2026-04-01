@@ -89,15 +89,15 @@ export function SessionTopBar({ title, onRename, onDownloadChat, onArchive }: Se
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={startEditing}>
+            <DropdownMenuItem onSelect={startEditing}>
               <PencilSimpleIcon size={ICON_SIZE.SM} />
               Rename
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={onDownloadChat}>
+            <DropdownMenuItem onSelect={onDownloadChat}>
               <DownloadSimpleIcon size={ICON_SIZE.SM} />
               Download chat
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={onArchive}>
+            <DropdownMenuItem onSelect={onArchive}>
               <ArchiveIcon size={ICON_SIZE.SM} />
               Archive
             </DropdownMenuItem>

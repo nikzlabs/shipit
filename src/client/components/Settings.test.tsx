@@ -36,9 +36,9 @@ const defaultProps: SettingsProps = {
 };
 
 describe("Settings", () => {
-  it("renders dialog with correct role and aria-label", () => {
+  it("renders dialog with correct role and accessible name", () => {
     render(<Settings {...defaultProps} />);
-    expect(screen.getByRole("dialog")).toHaveAttribute("aria-label", "Settings");
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBeInTheDocument();
   });
 
   it("renders header title", () => {

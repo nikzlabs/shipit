@@ -9,6 +9,8 @@ import { ContextMeterIcon } from "./ContextMeterIcon.js";
 import { FileAttachmentChips } from "./FileAttachmentChips.js";
 import { FileUploadChips } from "./FileUploadChips.js";
 import { FileAutoComplete } from "./FileAutoComplete.js";
+import { Popover, PopoverAnchor } from "./ui/popover.js";
+import { WithTooltip } from "./ui/tooltip.js";
 import type { PermissionMode, FileContextRef, FileTreeNode, AgentId } from "../../server/shared/types.js";
 import type { UploadItem } from "../hooks/useFileUpload.js";
 import type { AgentOption } from "./AgentPicker.js";
@@ -307,18 +309,9 @@ export function MessageInput({
         </div>
       )}
 
+      <Popover open={showAutoComplete} modal={false}>
+      <PopoverAnchor asChild>
       <div className="relative">
-        {/* @ autocomplete popup */}
-        {showAutoComplete && (
-          <FileAutoComplete
-            query={autoCompleteQuery}
-            fileTree={fileTree}
-            onSelect={handleAutoCompleteSelect}
-            onDismiss={handleAutoCompleteDismiss}
-            uploadPaths={(allUploads ?? uploads).filter((u) => u.status === "ready" && u.path).map((u) => u.path!)}
-          />
-        )}
-
         {/* Hidden file input */}
         <input
           ref={fileInputRef}
@@ -347,15 +340,16 @@ export function MessageInput({
           {/* Toolbar row — below textarea */}
           <div className="flex items-center gap-1 px-2 pb-2">
             {/* Add files button */}
+            <WithTooltip label="Add files">
             <button
               onClick={handleAttachClick}
               disabled={disabled}
               className="flex items-center justify-center shrink-0 rounded-lg p-1.5 text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Add files"
               aria-label="Add files"
             >
               <PlusIcon size={ICON_SIZE.SM} />
             </button>
+            </WithTooltip>
 
             {/* Plan mode toggle */}
             {onPermissionModeChange && (
@@ -390,15 +384,16 @@ export function MessageInput({
             {/* Send / Stop button — extra gap from model selector */}
             <div className="w-1" />
             {isLoading && onInterrupt ? (
+              <WithTooltip label="Stop (Esc)">
               <button
                 onClick={onInterrupt}
                 className="flex items-center justify-center shrink-0 rounded-lg p-2 bg-(--color-error) text-white hover:brightness-110 transition-colors"
-                title="Stop (Esc)"
                 aria-label="Stop Claude"
                 data-testid="stop-button"
               >
                 <StopIcon size={ICON_SIZE.SM} weight="fill" />
               </button>
+              </WithTooltip>
             ) : (
               <button
                 onClick={handleSubmit}
@@ -413,6 +408,17 @@ export function MessageInput({
           </div>
         </div>
       </div>
+      </PopoverAnchor>
+      {showAutoComplete && (
+        <FileAutoComplete
+          query={autoCompleteQuery}
+          fileTree={fileTree}
+          onSelect={handleAutoCompleteSelect}
+          onDismiss={handleAutoCompleteDismiss}
+          uploadPaths={(allUploads ?? uploads).filter((u) => u.status === "ready" && u.path).map((u) => u.path!)}
+        />
+      )}
+      </Popover>
     </div>
   );
 }

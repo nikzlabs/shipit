@@ -2,7 +2,7 @@
 import { useMemo, useEffect, useRef, useCallback } from "react";
 import { XIcon, PaperPlaneTiltIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
-import { Dialog, DialogContent } from "./ui/dialog.js";
+import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { Button } from "./ui/button.js";
 import { MarkdownSectionComments } from "./MarkdownSectionComments.js";
 import type { SectionCommentData } from "./MarkdownSectionComments.js";
@@ -268,7 +268,7 @@ export function FilePreviewModal({ filePath, content, fileType, actions, onClose
       <DialogContent className="w-[90vw] max-w-4xl h-[85vh] flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-(--color-border-secondary) shrink-0">
-        <h2 className="text-sm font-medium text-(--color-text-primary) truncate" title={filePath}>{filePath}</h2>
+        <DialogTitle className="text-sm font-medium text-(--color-text-primary) truncate" title={filePath}>{filePath}</DialogTitle>
         <div className="flex items-center gap-2 shrink-0 ml-4">
           {actions?.map((action) => (
             <Button

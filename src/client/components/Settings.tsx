@@ -1,7 +1,7 @@
 import { useState, useRef } from "react";
 import type { AgentOption } from "./AgentPicker.js";
 import { Button } from "./ui/button.js";
-import { Dialog, DialogContent } from "./ui/dialog.js";
+import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs.js";
 import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
 import { CodexAuthCard } from "./CodexAuthCard.js";
@@ -121,7 +121,7 @@ export function Settings({
     onSaveInstructions(content);
   };
 
-  const handleBackdropClick = () => {
+  const handleClose = () => {
     if (!savedRef.current) {
       onClose();
     }
@@ -158,16 +158,15 @@ export function Settings({
   };
 
   return (
-    <Dialog open onOpenChange={(isOpen) => { if (!isOpen) handleBackdropClick(); }}>
+    <Dialog open onOpenChange={(isOpen) => { if (!isOpen) handleClose(); }}>
       <DialogContent
         className="rounded-lg border-(--color-border-secondary) max-w-2xl w-full mx-4 flex flex-col h-120"
         data-testid="settings-backdrop"
         onKeyDown={handleKeyDown}
-        aria-label="Settings"
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-(--color-border-secondary)">
-          <h2 className="text-lg font-semibold text-(--color-text-primary)">Settings</h2>
+          <DialogTitle className="text-lg font-semibold">Settings</DialogTitle>
           <Button
             variant="ghost"
             size="sm"

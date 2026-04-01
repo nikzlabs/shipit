@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { TemplateInfo } from "./TemplateSelector.js";
 import { Button } from "./ui/button.js";
-import { Dialog, DialogContent } from "./ui/dialog.js";
+import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 
 const CATEGORY_LABELS: Record<TemplateInfo["category"], string> = {
   frontend: "Frontend",
@@ -79,9 +79,9 @@ export function NewRepoDialog({
         {/* Header */}
         <div className="px-6 pt-6 pb-4 border-b border-(--color-border-secondary)">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-(--color-text-primary)">
+            <DialogTitle className="text-lg font-semibold">
               Create New Repository
-            </h2>
+            </DialogTitle>
             <Button
               variant="ghost"
               size="sm"

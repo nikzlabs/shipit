@@ -157,7 +157,6 @@ export default function App() {
 
   const repos = useRepoStore((s) => s.repos);
   const activeRepoUrl = useRepoStore((s) => s.activeRepoUrl);
-  const repoSwitcherOpen = useRepoStore((s) => s.repoSwitcherOpen);
   const addRepoDialogOpen = useRepoStore((s) => s.addRepoDialogOpen);
   const newRepoDialogOpen = useRepoStore((s) => s.newRepoDialogOpen);
   const activeRepoName = useMemo(() => activeRepoUrl ? parseRepoName(activeRepoUrl) : "", [activeRepoUrl]);
@@ -745,7 +744,7 @@ export default function App() {
       {showUsageModal && <UsageModal currentSessionUsage={currentSessionUsage} allUsage={allUsageStats} sessions={sessions} onClose={() => useUiStore.getState().setShowUsageModal(false)} modelInfo={modelInfo} contextTokens={contextTokens} turnTokens={turnTokens} />}
       {diffDialogOpen && turnDiff && (
         <Dialog open onOpenChange={(isOpen) => { if (!isOpen) useGitStore.getState().closeDiffDialog(); }}>
-          <DialogContent className="w-[90vw] h-[85vh] max-h-[85vh]! overflow-hidden! flex flex-col">
+          <DialogContent className="w-[90vw] h-[85vh] max-h-[85vh]! overflow-hidden! flex flex-col" aria-label="Diff view">
             <Suspense fallback={<div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">Loading diff viewer...</div>}>
               <DiffPanel diff={turnDiff} onClose={() => useGitStore.getState().closeDiffDialog()} commitMessage={diffDialogTitle} onSendComments={handleFileSendComments} />
             </Suspense>
@@ -792,11 +791,8 @@ export default function App() {
           handleSessionResume(sid, navigate);
         }}
         onArchiveSession={async (sid: string) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId && activeRepoUrl) { void handleNewSessionForRepo(activeRepoUrl); } }}
-        onOpenRepoSwitcher={() => useRepoStore.getState().setRepoSwitcherOpen(!repoSwitcherOpen)}
         onNewSession={() => { if (activeRepoUrl) void handleNewSessionForRepo(activeRepoUrl); }}
         onToggleSidebarCollapse={() => useUiStore.getState().setSidebarCollapsed(!sidebarCollapsed)}
-        repoSwitcherOpen={repoSwitcherOpen}
-        onCloseRepoSwitcher={() => useRepoStore.getState().setRepoSwitcherOpen(false)}
         repos={repos}
         onSelectRepo={(url: string) => useRepoStore.getState().setActiveRepoUrl(url)}
         onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)}

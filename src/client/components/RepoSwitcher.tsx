@@ -3,6 +3,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { parseRepoName } from "../utils/repo-label.js";
 import {
   DropdownMenu,
+  DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
@@ -10,23 +11,21 @@ import {
 import type { RepoInfo } from "../../server/shared/types.js";
 
 interface RepoSwitcherProps {
-  open: boolean;
-  onClose: () => void;
   repos: RepoInfo[];
   activeRepoUrl: string | undefined;
   onSelectRepo: (url: string) => void;
   onAddRepo: () => void;
   onCreateNew: () => void;
+  children: React.ReactNode;
 }
 
-export function RepoSwitcher({ open, onClose, repos, activeRepoUrl, onSelectRepo, onAddRepo, onCreateNew }: RepoSwitcherProps) {
+export function RepoSwitcher({ repos, activeRepoUrl, onSelectRepo, onAddRepo, onCreateNew, children }: RepoSwitcherProps) {
   return (
-    <DropdownMenu open={open} onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
-      <DropdownMenuContent
-        align="end"
-        className="w-52"
-        onCloseAutoFocus={(e) => e.preventDefault()}
-      >
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        {children}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-52">
         {repos.length > 0 && (
           <>
             {repos.map((repo) => {
@@ -34,15 +33,13 @@ export function RepoSwitcher({ open, onClose, repos, activeRepoUrl, onSelectRepo
               return (
                 <DropdownMenuItem
                   key={repo.url}
-                  onClick={() => onSelectRepo(repo.url)}
-                  className={`text-xs ${
-                    isActive ? "text-(--color-text-primary)" : "text-(--color-text-secondary)"
-                  }`}
+                  onSelect={() => onSelectRepo(repo.url)}
+                  className={isActive ? "text-(--color-text-primary)" : "text-(--color-text-secondary)"}
                 >
                   <span className={`w-3 text-center ${isActive ? "text-(--color-success)" : "opacity-0"}`}>
                     ✓
                   </span>
-                  <span className="truncate flex-1">{parseRepoName(repo.url)}</span>
+                  <span className="truncate flex-1 text-left">{parseRepoName(repo.url)}</span>
                   {repo.status === "cloning" && (
                     <span className="text-[9px] text-(--color-warning) animate-pulse">cloning</span>
                   )}
@@ -52,11 +49,11 @@ export function RepoSwitcher({ open, onClose, repos, activeRepoUrl, onSelectRepo
             <DropdownMenuSeparator />
           </>
         )}
-        <DropdownMenuItem onClick={onAddRepo} className="text-xs text-(--color-text-link)">
+        <DropdownMenuItem onSelect={onAddRepo} className="text-(--color-text-link)">
           <PlusIcon size={ICON_SIZE.XS} className="shrink-0" />
           Add Repository
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={onCreateNew} className="text-xs text-(--color-text-link)">
+        <DropdownMenuItem onSelect={onCreateNew} className="text-(--color-text-link)">
           <FolderPlusIcon size={ICON_SIZE.XS} className="shrink-0" />
           Create New
         </DropdownMenuItem>

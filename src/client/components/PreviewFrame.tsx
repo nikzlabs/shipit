@@ -473,7 +473,7 @@ export function PreviewFrame({
                   return (
                     <DropdownMenuItem
                       key={item.port}
-                      onClick={() => onSelectPort(item.port)}
+                      onSelect={() => onSelectPort(item.port)}
                       className={`text-xs ${
                         isActive
                           ? "text-(--color-text-primary) bg-(--color-bg-hover)"

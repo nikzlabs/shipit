@@ -28,4 +28,25 @@ const TooltipContent = forwardRef<
 ));
 TooltipContent.displayName = TooltipPrimitive.Content.displayName;
 
-export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider };
+/** Convenience wrapper: wraps a single child element with a Radix tooltip.
+ *  Includes its own TooltipProvider so it works in isolation (e.g. tests). */
+function WithTooltip({
+  label,
+  side,
+  children,
+}: {
+  label: string;
+  side?: "top" | "bottom" | "left" | "right";
+  children: React.ReactNode;
+}) {
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>{children}</TooltipTrigger>
+        <TooltipContent side={side}>{label}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider, WithTooltip };

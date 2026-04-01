@@ -40,16 +40,16 @@ export function RollbackDropdown({ messageIndex, parentCommitHash, disabled, onR
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" side="top" className="w-52">
-        <DropdownMenuItem onClick={() => handleClick("code")} className="flex-col items-start">
+        <DropdownMenuItem onSelect={() => handleClick("code")} className="flex-col items-start">
           <div className="font-medium text-(--color-text-primary)">Rollback code</div>
           <div className="text-(--color-text-secondary) mt-0.5">Revert files, keep chat history</div>
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => handleClick("code_and_chat")} className="flex-col items-start">
+        <DropdownMenuItem onSelect={() => handleClick("code_and_chat")} className="flex-col items-start">
           <div className="font-medium text-(--color-text-primary)">Rollback code + chat</div>
           <div className="text-(--color-text-secondary) mt-0.5">Revert files, dim later messages</div>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => handleClick("fork")} className="flex-col items-start">
+        <DropdownMenuItem onSelect={() => handleClick("fork")} className="flex-col items-start">
           <div className="font-medium text-(--color-text-primary)">Fork as new session</div>
           <div className="text-(--color-text-secondary) mt-0.5">New branch from this point</div>
         </DropdownMenuItem>

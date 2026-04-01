@@ -1,5 +1,5 @@
 import { Button } from "./ui/button.js";
-import { Dialog, DialogContent } from "./ui/dialog.js";
+import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import type { SessionInfo } from "../../server/shared/types.js";
 import { formatTokenCount, getContextLevel, type ModelInfo } from "./StatusBar.js";
 
@@ -79,11 +79,10 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
       <DialogContent
         className="rounded-lg border-(--color-border-secondary) max-w-md w-full mx-4 max-h-[80vh] overflow-y-auto"
         data-testid="usage-modal-backdrop"
-        aria-label="Usage Summary"
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-(--color-border-secondary)">
-          <h2 className="text-lg font-semibold text-(--color-text-primary)">Usage Summary</h2>
+          <DialogTitle className="text-lg font-semibold">Usage Summary</DialogTitle>
           <Button
             variant="ghost"
             size="sm"

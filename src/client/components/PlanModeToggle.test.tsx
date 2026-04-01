@@ -9,14 +9,14 @@ describe("PlanModeToggle", () => {
     render(<PlanModeToggle mode="auto" onChange={vi.fn()} disabled={false} />);
     const toggle = screen.getByTestId("plan-mode-toggle");
     expect(toggle).toHaveAttribute("aria-pressed", "false");
-    expect(toggle).toHaveAttribute("title", "Auto mode");
+    expect(toggle).toHaveAttribute("aria-label", "Switch to plan mode");
   });
 
   it("renders with plan mode label when mode is plan", () => {
     render(<PlanModeToggle mode="plan" onChange={vi.fn()} disabled={false} />);
     const toggle = screen.getByTestId("plan-mode-toggle");
     expect(toggle).toHaveAttribute("aria-pressed", "true");
-    expect(toggle).toHaveAttribute("title", "Plan mode (read-only)");
+    expect(toggle).toHaveAttribute("aria-label", "Switch to auto mode");
   });
 
   it("toggles from auto to plan on click", () => {

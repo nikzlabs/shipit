@@ -2,9 +2,20 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { FileAutoComplete } from "./FileAutoComplete.js";
+import { Popover, PopoverAnchor } from "./ui/popover.js";
 import type { FileTreeNode } from "../../server/shared/types.js";
 
 afterEach(cleanup);
+
+/** Wrap FileAutoComplete in a Popover context (required since it renders PopoverContent). */
+function PopoverWrapper({ children }: { children: React.ReactNode }) {
+  return (
+    <Popover open modal={false}>
+      <PopoverAnchor asChild><div style={{ width: 400 }} /></PopoverAnchor>
+      {children}
+    </Popover>
+  );
+}
 
 const sampleTree: FileTreeNode[] = [
   {
@@ -30,12 +41,12 @@ const sampleTree: FileTreeNode[] = [
 describe("FileAutoComplete", () => {
   it("shows matching files when query is provided", () => {
     render(
-      <FileAutoComplete
+      <PopoverWrapper><FileAutoComplete
         query="utils"
         fileTree={sampleTree}
         onSelect={() => {}}
         onDismiss={() => {}}
-      />,
+      /></PopoverWrapper>,
     );
     const items = screen.getAllByTestId("file-autocomplete-item");
     expect(items.length).toBe(1);
@@ -44,12 +55,12 @@ describe("FileAutoComplete", () => {
 
   it("shows all files (up to 20) when query is empty", () => {
     render(
-      <FileAutoComplete
+      <PopoverWrapper><FileAutoComplete
         query=""
         fileTree={sampleTree}
         onSelect={() => {}}
         onDismiss={() => {}}
-      />,
+      /></PopoverWrapper>,
     );
     const items = screen.getAllByTestId("file-autocomplete-item");
     expect(items.length).toBe(4); // index.ts, utils.ts, App.tsx, package.json
@@ -59,12 +70,12 @@ describe("FileAutoComplete", () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();
     render(
-      <FileAutoComplete
+      <PopoverWrapper><FileAutoComplete
         query="package"
         fileTree={sampleTree}
         onSelect={onSelect}
         onDismiss={() => {}}
-      />,
+      /></PopoverWrapper>,
     );
     const item = screen.getByTestId("file-autocomplete-item");
     await user.click(item);
@@ -75,12 +86,12 @@ describe("FileAutoComplete", () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();
     render(
-      <FileAutoComplete
+      <PopoverWrapper><FileAutoComplete
         query="index"
         fileTree={sampleTree}
         onSelect={onSelect}
         onDismiss={() => {}}
-      />,
+      /></PopoverWrapper>,
     );
     await user.keyboard("{Enter}");
     expect(onSelect).toHaveBeenCalledWith("src/index.ts");
@@ -90,12 +101,12 @@ describe("FileAutoComplete", () => {
     const user = userEvent.setup();
     const onDismiss = vi.fn();
     render(
-      <FileAutoComplete
+      <PopoverWrapper><FileAutoComplete
         query="index"
         fileTree={sampleTree}
         onSelect={() => {}}
         onDismiss={onDismiss}
-      />,
+      /></PopoverWrapper>,
     );
     await user.keyboard("{Escape}");
     expect(onDismiss).toHaveBeenCalled();
@@ -103,24 +114,24 @@ describe("FileAutoComplete", () => {
 
   it("shows 'No matching files' when nothing matches", () => {
     render(
-      <FileAutoComplete
+      <PopoverWrapper><FileAutoComplete
         query="nonexistent-file-xyz"
         fileTree={sampleTree}
         onSelect={() => {}}
         onDismiss={() => {}}
-      />,
+      /></PopoverWrapper>,
     );
     expect(screen.getByText("No matching files")).toBeTruthy();
   });
 
   it("filters are case-insensitive", () => {
     render(
-      <FileAutoComplete
+      <PopoverWrapper><FileAutoComplete
         query="APP"
         fileTree={sampleTree}
         onSelect={() => {}}
         onDismiss={() => {}}
-      />,
+      /></PopoverWrapper>,
     );
     const items = screen.getAllByTestId("file-autocomplete-item");
     expect(items.length).toBe(1);

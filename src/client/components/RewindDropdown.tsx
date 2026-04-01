@@ -38,15 +38,15 @@ export function RewindDropdown({ messageIndex, disabled, onRewind, onOpenChange 
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" side="top" className="w-60">
-        <DropdownMenuItem onClick={() => handleClick("fork_chat")} className="flex-col items-start">
+        <DropdownMenuItem onSelect={() => handleClick("fork_chat")} className="flex-col items-start">
           <div className="font-medium text-(--color-text-primary)">Fork conversation from here</div>
           <div className="text-(--color-text-secondary) mt-0.5">New conversation branch, keep code as-is</div>
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => handleClick("rewind_code")} className="flex-col items-start">
+        <DropdownMenuItem onSelect={() => handleClick("rewind_code")} className="flex-col items-start">
           <div className="font-medium text-(--color-text-primary)">Rewind code to here</div>
           <div className="text-(--color-text-secondary) mt-0.5">Revert files, keep conversation</div>
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => handleClick("rewind_all")} className="flex-col items-start">
+        <DropdownMenuItem onSelect={() => handleClick("rewind_all")} className="flex-col items-start">
           <div className="font-medium text-(--color-text-primary)">Fork conversation and rewind code</div>
           <div className="text-(--color-text-secondary) mt-0.5">Revert files, new conversation branch</div>
         </DropdownMenuItem>

@@ -1,5 +1,6 @@
 import { NotepadIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
+import { WithTooltip } from "./ui/tooltip.js";
 import type { PermissionMode } from "../../server/shared/types.js";
 
 export function PlanModeToggle({
@@ -18,10 +19,10 @@ export function PlanModeToggle({
   };
 
   return (
+    <WithTooltip label={isPlan ? "Plan mode (read-only)" : "Auto mode"}>
     <button
       onClick={toggle}
       disabled={disabled}
-      title={isPlan ? "Plan mode (read-only)" : "Auto mode"}
       aria-label={isPlan ? "Switch to auto mode" : "Switch to plan mode"}
       aria-pressed={isPlan}
       className={`flex items-center gap-1.5 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
@@ -34,5 +35,6 @@ export function PlanModeToggle({
       <NotepadIcon size={ICON_SIZE.SM} weight={isPlan ? "fill" : "regular"} />
       {isPlan && <span className="text-xs font-medium">Plan mode</span>}
     </button>
+    </WithTooltip>
   );
 }
