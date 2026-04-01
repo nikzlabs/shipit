@@ -310,7 +310,7 @@ export function MessageList({
                 !useMarkdown && !hasCodeBlocks ? "whitespace-pre-wrap" : ""
               } ${
                 msg.role === "user"
-                  ? "w-full rounded-lg px-4 py-3"
+                  ? "max-w-full rounded-lg px-4 py-3"
                   : "w-full"
               } ${
                 msg.isError
