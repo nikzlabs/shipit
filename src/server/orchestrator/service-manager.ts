@@ -65,6 +65,8 @@ export interface ServiceManagerOptions {
   workspaceVolume?: string;
   /** Subpath within the workspace volume for this session. */
   workspaceSubpath?: string;
+  /** Docker stack name (e.g. "shipit-dev") — propagated to compose labels for cleanup filtering. */
+  stackName?: string;
   /** Called during start() to join the agent container to the compose network. */
   networkJoinFn?: (networkName: string) => Promise<void>;
 }
@@ -101,6 +103,7 @@ export class ServiceManager extends EventEmitter {
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private readonly workspaceVolume?: string;
   private readonly workspaceSubpath?: string;
+  private readonly stackName?: string;
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
   private _startupComplete = false;
   /** Error message if the compose stack failed to start. */
@@ -116,6 +119,7 @@ export class ServiceManager extends EventEmitter {
     this.pollIntervalMs = opts.pollIntervalMs ?? 5_000;
     this.workspaceVolume = opts.workspaceVolume;
     this.workspaceSubpath = opts.workspaceSubpath;
+    this.stackName = opts.stackName;
     this.networkJoinFn = opts.networkJoinFn;
   }
 
@@ -187,6 +191,7 @@ export class ServiceManager extends EventEmitter {
       composeConfig: this.composeConfig,
       workspaceVolume: this.workspaceVolume,
       workspaceSubpath: this.workspaceSubpath,
+      stackName: this.stackName,
     };
     const overrideContent = generateComposeOverride(parsedServices, overrideOpts);
     writeComposeOverride(this.workspaceDir, overrideContent);

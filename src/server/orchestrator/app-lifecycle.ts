@@ -12,6 +12,7 @@ import { ContainerSessionRunner } from "./container-session-runner.js";
 import type { SessionRunnerFactory, SessionRunnerInterface } from "./session-runner.js";
 import { SessionRunnerRegistry } from "./session-runner.js";
 import { resolveSessionConfig } from "../shared/session-config.js";
+import { cleanupOrphanComposeResources } from "./container-discovery.js";
 import { createDockerProxy, resolveOwnContainerIp } from "./docker-proxy.js";
 import type { SessionInfo as DockerProxySessionInfo } from "./docker-proxy.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
@@ -74,6 +75,8 @@ export async function setupContainerManager(
       const activeIds = new Set(sessionManager.allIds());
       const orphans = await containerManager.cleanupOrphans(activeIds);
       if (orphans > 0) console.log(`[server] Cleaned up ${orphans} orphan container(s)`);
+      const composeOrphans = await cleanupOrphanComposeResources(containerManager.getDockerClient(), activeIds);
+      if (composeOrphans > 0) console.log(`[server] Cleaned up ${composeOrphans} orphan compose container(s)`);
       const rediscovered = await containerManager.rediscover(activeIds, (sessionId) => {
         const session = sessionManager.get(sessionId);
         if (!session?.workspaceDir) return undefined;
@@ -473,6 +476,7 @@ function setupServiceManager(
     composeConfig: shipitConfig.compose,
     workspaceVolume: wsVolume,
     workspaceSubpath: wsSubpath,
+    stackName: process.env.DOCKER_STACK,
     networkJoinFn: containerManager
       ? async (networkName: string) => {
           // Connect agent container to compose network

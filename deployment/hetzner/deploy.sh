@@ -9,8 +9,9 @@ COMPOSE_FILE="$SHIPIT_DIR/deployment/hetzner/docker-compose.yml"
 
 cd "$SHIPIT_DIR"
 
-# Kill stale session-worker containers from previous runs
+# Kill stale session-worker and compose service containers from previous runs
 docker rm -f $(docker ps -aq --filter "label=shipit-stack=shipit") 2>/dev/null || true
+docker rm -f $(docker ps -aq --filter "label=shipit-parent-session") 2>/dev/null || true
 
 # Prune orphaned networks from previous sessions to reclaim address space
 docker network prune -f

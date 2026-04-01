@@ -46,6 +46,8 @@ export interface ComposeOverrideOptions {
    * (e.g. "sessions/abc/workspace").
    */
   workspaceSubpath?: string;
+  /** Docker stack name (e.g. "shipit-dev") — added as a label for cleanup filtering. */
+  stackName?: string;
 }
 
 export class ComposeValidationError extends Error {
@@ -314,12 +316,16 @@ export function generateComposeOverride(
 
   for (const svc of services) {
     const mode = resolvePreviewMode(svc);
+    const labels: Record<string, string> = {
+      "shipit-parent-session": opts.sessionId,
+      "shipit-service-name": svc.name,
+      "shipit-preview-mode": mode,
+    };
+    if (opts.stackName) {
+      labels["shipit-stack"] = opts.stackName;
+    }
     const entry: Record<string, unknown> = {
-      labels: {
-        "shipit-parent-session": opts.sessionId,
-        "shipit-service-name": svc.name,
-        "shipit-preview-mode": mode,
-      },
+      labels,
       networks: ["shipit-session"],
       cap_drop: ["NET_RAW"],
     };
