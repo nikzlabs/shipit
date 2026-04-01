@@ -12,6 +12,9 @@ cd "$SHIPIT_DIR"
 # Kill stale session-worker containers from previous runs
 docker rm -f $(docker ps -aq --filter "label=shipit-stack=shipit") 2>/dev/null || true
 
+# Prune orphaned networks from previous sessions to reclaim address space
+docker network prune -f
+
 # Build both images (session-worker is a build-only profile, must be named explicitly)
 docker compose -f "$COMPOSE_FILE" build session-worker shipit
 

@@ -10,6 +10,23 @@ import { usePreviewStore } from "../stores/preview-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { StartupSteps } from "./StartupSteps.js";
 
+/** Maps known Docker/Compose error patterns to user-facing remediation hints. */
+function getComposeErrorHint(error: string): string | null {
+  if (error.includes("address pools have been fully subnetted")) {
+    return "Your Docker host has run out of network address space. Run \"docker network prune\" in your terminal to remove unused networks, then retry.";
+  }
+  if (error.includes("port is already allocated") || error.includes("address already in use")) {
+    return "A port required by this service is already in use. Stop the conflicting process or change the port mapping in shipit.yaml, then retry.";
+  }
+  if (error.includes("no space left on device")) {
+    return "Your Docker host is out of disk space. Run \"docker system prune\" to free space, then retry.";
+  }
+  if (error.includes("pull access denied") || error.includes("repository does not exist")) {
+    return "Docker could not pull the required image. Check that the image name in your Dockerfile or shipit.yaml is correct and that you are logged in to the registry.";
+  }
+  return null;
+}
+
 export interface PreviewStatus {
   running: boolean;
   port: number;
@@ -354,6 +371,7 @@ export function PreviewFrame({
   if (showStartupSteps) {
     overlayContent = <StartupSteps steps={startupSteps} />;
   } else if (showComposeError) {
+    const hint = getComposeErrorHint(composeError);
     overlayContent = (
       <div className="text-center space-y-3 max-w-lg px-4">
         <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-error)" />
@@ -361,6 +379,11 @@ export function PreviewFrame({
         <pre className="text-left text-xs text-(--color-text-secondary) bg-(--color-bg-secondary) rounded p-3 max-h-48 overflow-auto whitespace-pre-wrap border border-(--color-border-secondary)">
           {composeError}
         </pre>
+        {hint && (
+          <p className="text-left text-xs text-(--color-text-secondary) bg-(--color-warning)/10 rounded p-3 border border-(--color-warning)/25">
+            {hint}
+          </p>
+        )}
         {onSendCrashToAgent && <Button variant="primary" size="sm" onClick={onSendCrashToAgent}>Send to agent</Button>}
       </div>
     );

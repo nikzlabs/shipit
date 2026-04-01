@@ -124,6 +124,32 @@ else
   apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin
 fi
 
+# --- Configure Docker network address pools ---
+# ShipIt creates one Docker network per session. The default pool (~30 /16 subnets)
+# is easily exhausted, causing "all predefined address pools have been fully subnetted".
+# Expand to use the full 172.16.0.0/12 range with /24 subnets (~4000 networks).
+DAEMON_JSON="/etc/docker/daemon.json"
+DESIRED_POOL='172.16.0.0/12'
+if [ -f "$DAEMON_JSON" ] && grep -q "$DESIRED_POOL" "$DAEMON_JSON" 2>/dev/null; then
+  echo "==> Docker address pools already configured, skipping."
+else
+  echo "==> Expanding Docker network address pools..."
+  if [ -f "$DAEMON_JSON" ]; then
+    # Merge into existing config
+    jq '. + {"default-address-pools": [{"base": "172.16.0.0/12", "size": 24}]}' "$DAEMON_JSON" > "${DAEMON_JSON}.tmp"
+    mv "${DAEMON_JSON}.tmp" "$DAEMON_JSON"
+  else
+    cat > "$DAEMON_JSON" <<'EODJ'
+{
+  "default-address-pools": [
+    { "base": "172.16.0.0/12", "size": 24 }
+  ]
+}
+EODJ
+  fi
+  systemctl restart docker
+fi
+
 # --- Install cloudflared ---
 if command -v cloudflared &>/dev/null; then
   echo "==> cloudflared already installed, skipping."
