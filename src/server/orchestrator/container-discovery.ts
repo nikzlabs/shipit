@@ -10,6 +10,7 @@ import {
   CONTAINER_SESSION_ID_LABEL,
   CONTAINER_STANDBY_LABEL,
 } from "./session-container.js";
+import { cleanupSessionDockerResources } from "./container-lifecycle.js";
 
 // ---------------------------------------------------------------------------
 // Internal types for dependency injection
@@ -128,6 +129,49 @@ export async function cleanupOrphanContainers(
           // Container may already be gone
         }
       }
+    }
+  } catch {
+    // Docker may not be available
+  }
+  return removed;
+}
+
+// ---------------------------------------------------------------------------
+// Orphan compose stack cleanup
+// ---------------------------------------------------------------------------
+
+const PARENT_SESSION_LABEL = "shipit-parent-session";
+
+/**
+ * Remove compose stack resources (containers, networks, volumes) left over
+ * from a previous orchestrator run. Finds containers labeled with
+ * `shipit-parent-session` whose session ID is not in the active set, then
+ * delegates to `cleanupSessionDockerResources()` for the actual teardown.
+ */
+export async function cleanupOrphanComposeResources(
+  docker: Docker,
+  activeSessionIds: Set<string>,
+): Promise<number> {
+  let removed = 0;
+  try {
+    const containers = await docker.listContainers({
+      all: true,
+      filters: { label: [PARENT_SESSION_LABEL] },
+    });
+
+    // Collect orphaned session IDs (deduplicate — multiple containers per session)
+    const orphanedSessionIds = new Set<string>();
+    for (const ci of containers) {
+      const sessionId = ci.Labels?.[PARENT_SESSION_LABEL];
+      if (sessionId && !activeSessionIds.has(sessionId)) {
+        orphanedSessionIds.add(sessionId);
+        removed++;
+      }
+    }
+
+    // Clean up all resources for each orphaned session
+    for (const sessionId of orphanedSessionIds) {
+      await cleanupSessionDockerResources(docker, sessionId);
     }
   } catch {
     // Docker may not be available
