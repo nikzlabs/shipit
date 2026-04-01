@@ -1,9 +1,7 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: DOM scroll sync (scrollIntoView), window keydown listener, xterm auto-scroll
 import { useMemo, useEffect, useRef, useState } from "react";
 import {
-  ThinkingIndicator,
   TypingDots,
-  type StreamingActivity,
 } from "./StreamingIndicator.js";
 import { TodoPanel, type TodoItem } from "./TodoPanel.js";
 import { CircleNotchIcon } from "@phosphor-icons/react";
@@ -100,7 +98,6 @@ export { buildVisualElements, STANDALONE_TOOLS, SUBAGENT_TOOLS, type VisualEleme
 export function MessageList({
   messages,
   isLoading,
-  activity,
   searchMatches,
   currentMatch,
   onAnswerQuestion,
@@ -110,7 +107,6 @@ export function MessageList({
 }: {
   messages: ChatMessage[];
   isLoading: boolean;
-  activity?: StreamingActivity;
   searchMatches?: SearchMatch[];
   currentMatch?: SearchMatch;
   onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void;
@@ -445,16 +441,6 @@ export function MessageList({
           </div>
         );
       })}
-
-      {/* Thinking indicator — shown only when waiting for the first response
-         (last message is from the user). Once the agent starts responding,
-         the streaming message bubble and tool-group spinners take over.
-         Previously also shown during tool execution (activity?.tool), but
-         that caused a "flash" — the indicator appeared then vanished when
-         the tool result arrived, making the dialog jump. */}
-      {isLoading && messages[messages.length - 1]?.role === "user" && (
-        <ThinkingIndicator activity={activity} />
-      )}
 
       <div ref={bottomRef} />
     </div>

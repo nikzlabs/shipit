@@ -234,56 +234,6 @@ describe("MessageList", () => {
     });
   });
 
-  describe("thinking indicator", () => {
-    it("shows thinking indicator when loading and last message is from user", () => {
-      render(
-        <MessageList
-          messages={[msg("user", "Do something")]}
-          isLoading={true}
-        />
-      );
-      expect(screen.getByText("Thinking...")).toBeInTheDocument();
-    });
-
-    it("hides thinking indicator when last message is from assistant and no tool activity", () => {
-      render(
-        <MessageList
-          messages={[
-            msg("user", "Hi there"),
-            msg("assistant", "Hello back"),
-          ]}
-          isLoading={true}
-        />
-      );
-      expect(screen.queryByText("Thinking...")).not.toBeInTheDocument();
-    });
-
-    it("shows custom activity label when last message is from user", () => {
-      render(
-        <MessageList
-          messages={[msg("user", "Do something")]}
-          isLoading={true}
-          activity={{ label: "Editing src/app.ts", tool: "Edit" }}
-        />
-      );
-      expect(screen.getByText("Editing src/app.ts")).toBeInTheDocument();
-    });
-
-    it("does not show thinking indicator when last message is from assistant (tool-group spinners handle it)", () => {
-      render(
-        <MessageList
-          messages={[
-            msg("user", "Edit my file"),
-            msg("assistant", "Sure, editing now"),
-          ]}
-          isLoading={true}
-          activity={{ label: "Editing src/app.ts", tool: "Edit" }}
-        />
-      );
-      expect(screen.queryByText("Editing src/app.ts")).not.toBeInTheDocument();
-    });
-  });
-
   describe("error messages", () => {
     it("renders error messages with red styling", () => {
       const errorMsg: ChatMessage = {
