@@ -47,6 +47,7 @@ import type { TurnDiffData } from "./components/DiffPanel.js";
 const DiffPanel = lazy(() => import("./components/DiffPanel.js").then(m => ({ default: m.DiffPanel })));
 import { PrLifecycleCard } from "./components/PrLifecycleCard.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
+import { AgentStatusBar } from "./components/AgentStatusBar.js";
 import type { AgentOption } from "./components/AgentPicker.js";
 import type { AgentId, DocEntry } from "../server/shared/types.js";
 
@@ -661,7 +662,8 @@ export default function App() {
         <HomeScreen onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)} hasRepos={repos.length > 0} />
       ) : (
         <>
-          <MessageList messages={messages} isLoading={isLoading} activity={activity} searchMatches={search.matches} currentMatch={search.currentMatch} onAnswerQuestion={handleAnswerQuestion} onSendFollowUp={handleSendFollowUp} onRollback={handleRollback} onRewind={handleRewind} />
+          <MessageList messages={messages} isLoading={isLoading} searchMatches={search.matches} currentMatch={search.currentMatch} onAnswerQuestion={handleAnswerQuestion} onSendFollowUp={handleSendFollowUp} onRollback={handleRollback} onRewind={handleRewind} />
+          {isLoading && <AgentStatusBar activity={activity} />}
           {wsSessionId && <PrLifecycleCard sessionId={wsSessionId} />}
         </>
       )}
