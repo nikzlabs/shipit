@@ -1,6 +1,7 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: window keydown listener + DOM scrollIntoView (browser API subscriptions with cleanup)
 import { useState, useEffect, useRef, useCallback } from "react";
 import { FileIcon } from "@phosphor-icons/react";
+import { PopoverContent } from "./ui/popover.js";
 import type { FileTreeNode } from "../../server/shared/types.js";
 
 export interface FileAutoCompleteProps {
@@ -12,8 +13,6 @@ export interface FileAutoCompleteProps {
   onSelect: (filePath: string) => void;
   /** Called when the autocomplete should be dismissed. */
   onDismiss: () => void;
-  /** Position hint for the popup (pixels from bottom of viewport). */
-  anchorBottom?: number;
   /** Uploaded file paths (e.g. "/uploads/data.csv") to include in autocomplete. */
   uploadPaths?: string[];
 }
@@ -104,18 +103,28 @@ export function FileAutoComplete({
 
   if (matches.length === 0) {
     return (
-      <div
-        className="absolute bottom-full left-0 right-0 mb-1 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-lg shadow-lg z-20 p-2 text-xs text-(--color-text-secondary)"
+      <PopoverContent
+        side="top"
+        align="start"
+        className="p-2 text-xs text-(--color-text-secondary)"
+        style={{ width: "var(--radix-popover-trigger-width)" }}
+        onOpenAutoFocus={(e) => e.preventDefault()}
+        onCloseAutoFocus={(e) => e.preventDefault()}
         data-testid="file-autocomplete"
       >
         No matching files
-      </div>
+      </PopoverContent>
     );
   }
 
   return (
-    <div
-      className="absolute bottom-full left-0 right-0 mb-1 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-lg shadow-lg z-20 max-h-48 overflow-y-auto"
+    <PopoverContent
+      side="top"
+      align="start"
+      className="max-h-48 overflow-y-auto p-0"
+      style={{ width: "var(--radix-popover-trigger-width)" }}
+      onOpenAutoFocus={(e) => e.preventDefault()}
+      onCloseAutoFocus={(e) => e.preventDefault()}
       data-testid="file-autocomplete"
       ref={listRef}
     >
@@ -135,6 +144,6 @@ export function FileAutoComplete({
           <span className="truncate">{filePath}</span>
         </button>
       ))}
-    </div>
+    </PopoverContent>
   );
 }

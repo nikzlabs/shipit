@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { FilePreviewModal } from "./FilePreviewModal.js";
 
 // Monaco editor uses dynamic import("monaco-editor") and won't work in jsdom.
@@ -43,11 +44,12 @@ describe("FilePreviewModal", () => {
   });
 
   it("renders code content in an editor container", () => {
-    const { container } = render(
+    render(
       <FilePreviewModal filePath="hello.js" content="const x = 1;" fileType="code" onClose={() => {}} />
     );
     // CodeEditor renders a div with h-full w-full for the Monaco editor mount point
-    const editorDiv = container.querySelector(".h-full.w-full");
+    // Content is portaled by Radix Dialog, so query the full document
+    const editorDiv = document.querySelector(".h-full.w-full");
     expect(editorDiv).not.toBeNull();
   });
 
@@ -107,12 +109,13 @@ describe("FilePreviewModal", () => {
     expect(onAction).toHaveBeenCalledOnce();
   });
 
-  it("closes on Escape key", () => {
+  it("closes on Escape key", async () => {
+    const user = userEvent.setup();
     const onClose = vi.fn();
     render(
       <FilePreviewModal filePath="test.txt" content="hello" fileType="code" onClose={onClose} />
     );
-    fireEvent.keyDown(window, { key: "Escape" });
+    await user.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledOnce();
   });
 

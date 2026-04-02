@@ -1,52 +1,55 @@
 # Radix UI Migration Checklist
 
 ## Setup
-- [ ] Install Radix packages + tailwind-merge + clsx
-- [ ] Create `src/client/utils/cn.ts`
+- [x] Install Radix packages + tailwind-merge + clsx
+- [x] Create `src/client/utils/cn.ts`
 
 ## Phase 1 — DropdownMenu
-- [ ] Create `src/client/components/ui/dropdown-menu.tsx`
-- [ ] Migrate `SessionTopBar`
-- [ ] Migrate `RollbackDropdown`
-- [ ] Migrate `RewindDropdown`
-- [ ] Migrate `AgentPicker`
-- [ ] Migrate `ModelAgentSelector`
-- [ ] Migrate `PreviewFrame` port selector
-- [ ] Migrate `RepoSwitcher`
-- [ ] Migrate `ThemePicker`
-- [ ] Delete `src/client/components/ui/dropdown.tsx`
+- [x] Create `src/client/components/ui/dropdown-menu.tsx`
+- [x] Migrate `SessionTopBar`
+- [x] Migrate `RollbackDropdown`
+- [x] Migrate `RewindDropdown`
+- [x] Migrate `AgentPicker`
+- [x] Migrate `ModelAgentSelector`
+- [x] Migrate `PreviewFrame` port selector
+- [x] Migrate `RepoSwitcher`
+- [x] Migrate `ThemePicker`
+- [x] Delete `src/client/components/ui/dropdown.tsx`
 
 ## Phase 2 — Dialog
-- [ ] Create `src/client/components/ui/dialog.tsx`
-- [ ] Migrate `ui/modal.tsx` consumers to `dialog.tsx`
-- [ ] Migrate `AllSessionsDialog`
-- [ ] Migrate `AddRepoDialog`
-- [ ] Migrate `NewRepoDialog`
-- [ ] Migrate `Settings`
-- [ ] Migrate `UsageModal`
-- [ ] Migrate `FilePreviewModal`
-- [ ] Delete `src/client/components/ui/modal.tsx`
+- [x] Create `src/client/components/ui/dialog.tsx`
+- [x] Migrate `ui/modal.tsx` consumers to `dialog.tsx`
+- [x] Migrate `AllSessionsDialog`
+- [x] Migrate `AddRepoDialog`
+- [x] Migrate `NewRepoDialog`
+- [x] Migrate `Settings`
+- [x] Migrate `UsageModal`
+- [x] Migrate `FilePreviewModal`
+- [x] Migrate `message-tools.tsx` (ToolCallModal)
+- [x] Migrate `DiffBlock.tsx` (DiffModal)
+- [x] Migrate `App.tsx` DiffPanel modal
+- [x] Delete `src/client/components/ui/modal.tsx`
 
 ## Phase 3 — Popover
-- [ ] Create `src/client/components/ui/popover.tsx`
-- [ ] Migrate `RepoSelector`
-- [ ] Migrate `FileAutoComplete`
+- [x] Create `src/client/components/ui/popover.tsx`
+- [x] Migrate `RepoSelector`
+- [x] Migrate `FileAutoComplete` (PopoverContent for portal rendering, kept window keydown for combobox pattern)
 
 ## Phase 4 — Tooltip
-- [ ] Create `src/client/components/ui/tooltip.tsx`
-- [ ] Add `TooltipProvider` to `App.tsx`
-- [ ] Migrate `MarkdownTooltip` in `message-markdown.tsx`
-- [ ] Migrate key `title` attributes to Radix Tooltip
+- [x] Create `src/client/components/ui/tooltip.tsx`
+- [x] Add `TooltipProvider` to `App.tsx`
+- [x] Migrate `MarkdownTooltip` in `message-markdown.tsx`
+- [x] Migrate key `title` attributes to Radix Tooltip (sidebar, header, input toolbar via `WithTooltip` helper)
 
 ## Phase 5 — Tabs
-- [ ] Create `src/client/components/ui/tabs.tsx`
-- [ ] Migrate `Settings.tsx` tabs
+- [x] Create `src/client/components/ui/tabs.tsx`
+- [x] Migrate `Settings.tsx` tabs
 
 ## Phase 6 — Minor primitives
-- [ ] Evaluate `@radix-ui/react-toggle` for `PlanModeToggle`
-- [ ] Evaluate `@radix-ui/react-select` for native `<select>` elements
+- [x] Evaluate `@radix-ui/react-toggle` for `PlanModeToggle` — not needed, current `aria-pressed` is already accessible
+- [x] Evaluate `@radix-ui/react-select` for native `<select>` elements — not needed, only 2 instances, native `<select>` is better on mobile
 
 ## Cleanup
-- [ ] Delete `src/client/hooks/useClickOutside.ts` (verify no remaining consumers)
-- [ ] Run full test suite
-- [ ] Run lint + typecheck
+- [x] Delete `src/client/hooks/useClickOutside.ts` (verified no remaining consumers)
+- [x] Run full test suite
+- [x] Run lint + typecheck

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { SessionSidebar } from "./SessionSidebar.js";
 import type { SessionInfo } from "../../server/shared/types.js";
 
@@ -22,10 +23,13 @@ const defaultProps = {
   currentSessionId: undefined,
   onResume: vi.fn(),
   onArchive: vi.fn(),
-  onOpenRepoSwitcher: vi.fn(),
   onNewSession: vi.fn(),
   collapsed: false,
   onToggleCollapse: vi.fn(),
+  repos: [],
+  onSelectRepo: vi.fn(),
+  onAddRepo: vi.fn(),
+  onCreateNewRepo: vi.fn(),
 };
 
 describe("SessionSidebar", () => {
@@ -40,11 +44,12 @@ describe("SessionSidebar", () => {
     expect(screen.getByText("No repository")).toBeTruthy();
   });
 
-  it("calls onOpenRepoSwitcher when gear is clicked", () => {
-    const onOpenRepoSwitcher = vi.fn();
-    render(<SessionSidebar {...defaultProps} onOpenRepoSwitcher={onOpenRepoSwitcher} />);
-    fireEvent.click(screen.getByLabelText("Change repository"));
-    expect(onOpenRepoSwitcher).toHaveBeenCalledTimes(1);
+  it("opens repo switcher dropdown when gear is clicked", async () => {
+    const user = userEvent.setup();
+    render(<SessionSidebar {...defaultProps} />);
+    await user.click(screen.getByLabelText("Change repository"));
+    // DropdownMenu renders "Add Repository" item in a portal
+    expect(await screen.findByText("Add Repository")).toBeTruthy();
   });
 
   it("renders session items filtered to active repo", () => {
@@ -96,7 +101,7 @@ describe("SessionSidebar", () => {
     const onArchive = vi.fn();
     const sessions = [baseSession({ id: "s1", title: "Archivable", remoteUrl: "https://github.com/owner/repo.git" })];
     render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" onArchive={onArchive} />);
-    const archiveBtn = screen.getByTitle("Archive session");
+    const archiveBtn = screen.getByLabelText("Archive session");
     expect(archiveBtn).toBeTruthy();
     fireEvent.click(archiveBtn);
     expect(onArchive).toHaveBeenCalledWith("s1");
@@ -105,7 +110,7 @@ describe("SessionSidebar", () => {
   it("shows archive button on current session", () => {
     const sessions = [baseSession({ id: "s1", title: "Current", remoteUrl: "https://github.com/owner/repo.git" })];
     render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" />);
-    expect(screen.queryByTitle("Archive session")).not.toBeNull();
+    expect(screen.queryByLabelText("Archive session")).not.toBeNull();
   });
 
   it("shows collapsed state with expand button", () => {

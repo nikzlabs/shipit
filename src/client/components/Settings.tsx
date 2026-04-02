@@ -1,7 +1,8 @@
 import { useState, useRef } from "react";
 import type { AgentOption } from "./AgentPicker.js";
 import { Button } from "./ui/button.js";
-import { Modal } from "./ui/modal.js";
+import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs.js";
 import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
 import { CodexAuthCard } from "./CodexAuthCard.js";
 import { GitHubTokenForm } from "./GitHubTokenForm.js";
@@ -120,7 +121,7 @@ export function Settings({
     onSaveInstructions(content);
   };
 
-  const handleBackdropClick = () => {
+  const handleClose = () => {
     if (!savedRef.current) {
       onClose();
     }
@@ -157,17 +158,15 @@ export function Settings({
   };
 
   return (
-    <Modal
-      onClose={handleBackdropClick}
-      className="rounded-lg border-(--color-border-secondary) max-w-2xl w-full mx-4 flex flex-col h-120"
-      data-testid="settings-backdrop"
-      onKeyDown={handleKeyDown}
-      role="dialog"
-      aria-label="Settings"
-    >
+    <Dialog open onOpenChange={(isOpen) => { if (!isOpen) handleClose(); }}>
+      <DialogContent
+        className="rounded-lg border-(--color-border-secondary) max-w-2xl w-full mx-4 flex flex-col h-120"
+        data-testid="settings-backdrop"
+        onKeyDown={handleKeyDown}
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-(--color-border-secondary)">
-          <h2 className="text-lg font-semibold text-(--color-text-primary)">Settings</h2>
+          <DialogTitle className="text-lg font-semibold">Settings</DialogTitle>
           <Button
             variant="ghost"
             size="sm"
@@ -180,65 +179,44 @@ export function Settings({
         </div>
 
         {/* Body: sidebar tabs + content */}
-        <div className="flex flex-1 min-h-0">
+        <Tabs value={activeTab} onValueChange={(v) => {
+          const tab = v as Tab;
+          if (tab === "secrets" && !hasActiveSession) return;
+          setActiveTab(tab);
+          if (tab === "instructions") {
+            requestAnimationFrame(() => textareaRef.current?.focus());
+          }
+        }} className="flex flex-1 min-h-0" orientation="vertical">
           {/* Left tab sidebar */}
-          <nav className="w-40 shrink-0 border-r border-(--color-border-secondary) py-2">
+          <TabsList className="w-40 shrink-0 border-r border-(--color-border-secondary) py-2">
             <div className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-(--color-text-tertiary)">
               General
             </div>
             {generalTabs.map((tab) => (
-              <button
-                key={tab}
-                onClick={() => {
-                  setActiveTab(tab);
-                  if (tab === "instructions") {
-                    requestAnimationFrame(() => textareaRef.current?.focus());
-                  }
-                }}
-                className={`w-full text-left px-4 py-2 text-sm transition-colors ${
-                  activeTab === tab
-                    ? "bg-(--color-bg-secondary) text-(--color-text-primary) font-medium"
-                    : "text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"
-                }`}
-              >
+              <TabsTrigger key={tab} value={tab}>
                 {tabLabel(tab)}
-              </button>
+              </TabsTrigger>
             ))}
 
             <div className="px-4 py-1.5 mt-3 text-[10px] font-semibold uppercase tracking-wider text-(--color-text-tertiary)">
               Project
             </div>
-            <button
-              onClick={() => setActiveTab("deployments")}
-              className={`w-full text-left px-4 py-2 text-sm transition-colors ${
-                activeTab === "deployments"
-                  ? "bg-(--color-bg-secondary) text-(--color-text-primary) font-medium"
-                  : "text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"
-              }`}
-              data-testid="settings-tab-deployments"
-            >
+            <TabsTrigger value="deployments" data-testid="settings-tab-deployments">
               Deployments
-            </button>
-            <button
-              onClick={() => { if (hasActiveSession) { setActiveTab("secrets"); } }}
+            </TabsTrigger>
+            <TabsTrigger
+              value="secrets"
               disabled={!hasActiveSession}
               title={!hasActiveSession ? "Requires active session" : undefined}
-              className={`w-full text-left px-4 py-2 text-sm transition-colors ${
-                !hasActiveSession
-                  ? "text-(--color-text-tertiary) cursor-not-allowed"
-                  : activeTab === "secrets"
-                    ? "bg-(--color-bg-secondary) text-(--color-text-primary) font-medium"
-                    : "text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"
-              }`}
               data-testid="settings-tab-secrets"
             >
               Secrets
-            </button>
-          </nav>
+            </TabsTrigger>
+          </TabsList>
 
           {/* Right content area */}
-          {activeTab === "agent" && (
-            <div className="flex-1 min-w-0 px-5 py-4 flex flex-col gap-4 overflow-y-auto">
+          <TabsContent value="agent">
+            <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
               <ClaudeAuthCard
                 agent={claudeAgent}
                 authUrl={authUrl}
@@ -262,10 +240,10 @@ export function Settings({
                 <UtilityModelCard />
               </div>
             </div>
-          )}
+          </TabsContent>
 
-          {activeTab === "instructions" && (
-            <div className="flex-1 min-w-0 px-5 py-4 flex flex-col gap-3 overflow-y-auto">
+          <TabsContent value="instructions">
+            <div className="px-5 py-4 flex flex-col gap-3 overflow-y-auto h-full">
               {/* Agent system instructions (built-in) */}
               <div className="rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3 space-y-2" data-testid="agent-system-instructions">
                 <div className="flex items-center justify-between">
@@ -359,10 +337,10 @@ export function Settings({
                 </Button>
               </div>
             </div>
-          )}
+          </TabsContent>
 
-          {activeTab === "github" && (
-            <div className="flex-1 min-w-0 px-5 py-4 flex flex-col gap-4 overflow-y-auto">
+          <TabsContent value="github">
+            <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
               {githubStatus.authenticated ? (
                 <div className="space-y-4">
                   <div className="flex items-center gap-3 p-3 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary)">
@@ -403,10 +381,10 @@ export function Settings({
                 <GitHubTokenForm onSubmit={async (t) => { onGitHubTokenSubmit(t); return undefined; }} />
               )}
             </div>
-          )}
+          </TabsContent>
 
-          {activeTab === "git" && (
-            <div className="flex-1 min-w-0 px-5 py-4 flex flex-col gap-4 overflow-y-auto">
+          <TabsContent value="git">
+            <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
               <div className="space-y-4">
                 <p className="text-sm text-(--color-text-secondary)">
                   Git identity used for automatic commits in all sessions.
@@ -451,10 +429,10 @@ export function Settings({
                 </Button>
               </div>
             </div>
-          )}
+          </TabsContent>
 
-          {activeTab === "advanced" && (
-            <div className="flex-1 min-w-0 px-5 py-4 flex flex-col gap-4 overflow-y-auto">
+          <TabsContent value="advanced">
+            <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
               <div className="space-y-3">
                 <h3 className="text-sm font-medium text-(--color-text-primary)">Max Idle Containers</h3>
                 <p className="text-sm text-(--color-text-secondary)">
@@ -600,10 +578,10 @@ export function Settings({
                 </button>
               </div>
             </div>
-          )}
+          </TabsContent>
 
-          {activeTab === "deployments" && (
-            <div className="flex-1 min-w-0 px-5 py-4 flex flex-col gap-4 overflow-y-auto" data-testid="deployments-tab">
+          <TabsContent value="deployments">
+            <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full" data-testid="deployments-tab">
               <div className="space-y-1">
                 <h3 className="text-sm font-medium text-(--color-text-primary)">Automatic Deployments</h3>
                 <p className="text-xs text-(--color-text-secondary)">
@@ -641,10 +619,10 @@ export function Settings({
                 </ol>
               </div>
             </div>
-          )}
+          </TabsContent>
 
-          {activeTab === "secrets" && (
-            <div className="flex-1 min-w-0 px-5 py-4 flex flex-col gap-4 overflow-y-auto" data-testid="secrets-tab">
+          <TabsContent value="secrets">
+            <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full" data-testid="secrets-tab">
               <div className="space-y-1">
                 <h3 className="text-sm font-medium text-(--color-text-primary)">Environment Variables</h3>
                 <p className="text-xs text-(--color-text-secondary)">
@@ -741,9 +719,10 @@ export function Settings({
                 </>
               )}
             </div>
-          )}
+          </TabsContent>
 
-        </div>
-    </Modal>
+        </Tabs>
+      </DialogContent>
+    </Dialog>
   );
 }
