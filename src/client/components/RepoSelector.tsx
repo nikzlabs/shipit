@@ -1,8 +1,8 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: debounce cleanup on unmount
 import { useState, useRef, useEffect, useCallback } from "react";
 import { parseRepoLabel } from "../utils/repo-label.js";
-import { useClickOutside } from "../hooks/useClickOutside.js";
 import { Badge } from "./ui/badge.js";
+import { Popover, PopoverAnchor, PopoverContent } from "./ui/popover.js";
 import type { SessionInfo } from "../../server/shared/types.js";
 
 interface RepoResult {
@@ -34,7 +34,6 @@ export function RepoSelector({
 }: RepoSelectorProps) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -78,9 +77,6 @@ export function RepoSelector({
     };
   }, []);
 
-  const handleClickOutsideClose = useCallback(() => setOpen(false), []);
-  useClickOutside(containerRef, handleClickOutsideClose, open);
-
   const handleSelect = useCallback(
     (repoUrl: string) => {
       onSelect(repoUrl);
@@ -111,36 +107,42 @@ export function RepoSelector({
   const hasResults = filteredSessionRepos.length > 0 || uniqueSearchResults.length > 0;
 
   return (
-    <div ref={containerRef} className="relative w-full max-w-xl">
-      <div className="relative">
-        <input
-          ref={inputRef}
-          type="text"
-          value={open ? query : selectedLabel ?? query}
-          onChange={(e) => handleInputChange(e.target.value)}
-          onFocus={() => setOpen(true)}
-          onKeyDown={handleKeyDown}
-          placeholder="Select a repository..."
-          disabled={disabled}
-          className="w-full px-4 py-2.5 bg-(--color-bg-secondary) border border-(--color-border-secondary) rounded-lg text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus) disabled:opacity-50"
-        />
-        {selectedRepoUrl && !open && (
-          <button
-            onClick={() => {
-              onSelect("");
-              setQuery("");
-              inputRef.current?.focus();
-            }}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-(--color-text-secondary) hover:text-(--color-text-primary) text-lg leading-none"
-            aria-label="Clear selection"
-          >
-            &times;
-          </button>
-        )}
-      </div>
+    <Popover open={open} onOpenChange={setOpen}>
+      <div className="relative w-full max-w-xl">
+        <PopoverAnchor asChild>
+          <div className="relative">
+            <input
+              ref={inputRef}
+              type="text"
+              value={open ? query : selectedLabel ?? query}
+              onChange={(e) => handleInputChange(e.target.value)}
+              onFocus={() => setOpen(true)}
+              onKeyDown={handleKeyDown}
+              placeholder="Select a repository..."
+              disabled={disabled}
+              className="w-full px-4 py-2.5 bg-(--color-bg-secondary) border border-(--color-border-secondary) rounded-lg text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus) disabled:opacity-50"
+            />
+            {selectedRepoUrl && !open && (
+              <button
+                onClick={() => {
+                  onSelect("");
+                  setQuery("");
+                  inputRef.current?.focus();
+                }}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-(--color-text-secondary) hover:text-(--color-text-primary) text-lg leading-none"
+                aria-label="Clear selection"
+              >
+                &times;
+              </button>
+            )}
+          </div>
+        </PopoverAnchor>
 
-      {open && (
-        <div className="absolute z-50 mt-1 w-full bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-lg shadow-xl max-h-64 overflow-y-auto">
+        <PopoverContent
+          className="w-[var(--radix-popover-trigger-width)] max-h-64 overflow-y-auto p-0"
+          onOpenAutoFocus={(e) => e.preventDefault()}
+          align="start"
+        >
           {/* New repo option */}
           <button
             onClick={() => {
@@ -198,8 +200,8 @@ export function RepoSelector({
               No repositories found
             </div>
           )}
-        </div>
-      )}
-    </div>
+        </PopoverContent>
+      </div>
+    </Popover>
   );
 }

@@ -1,6 +1,7 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: bootstrap timer (setTimeout cleanup), URL/route sync (browser navigation is external), session claim (AbortController cleanup)
 import { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from "react";
-import { Modal } from "./components/ui/modal.js";
+import { Dialog, DialogContent } from "./components/ui/dialog.js";
+import { TooltipProvider } from "./components/ui/tooltip.js";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useSessionWebSocket } from "./hooks/useSessionWebSocket.js";
 import { useServerEvents } from "./hooks/useServerEvents.js";
@@ -156,7 +157,6 @@ export default function App() {
 
   const repos = useRepoStore((s) => s.repos);
   const activeRepoUrl = useRepoStore((s) => s.activeRepoUrl);
-  const repoSwitcherOpen = useRepoStore((s) => s.repoSwitcherOpen);
   const addRepoDialogOpen = useRepoStore((s) => s.addRepoDialogOpen);
   const newRepoDialogOpen = useRepoStore((s) => s.newRepoDialogOpen);
   const activeRepoName = useMemo(() => activeRepoUrl ? parseRepoName(activeRepoUrl) : "", [activeRepoUrl]);
@@ -684,6 +684,7 @@ export default function App() {
   }
 
   return (
+    <TooltipProvider delayDuration={300}>
     <div className="flex flex-col h-screen bg-(--color-bg-primary) text-(--color-text-primary)">
       <AuthOverlayContainer
         authUrl={authUrl}
@@ -742,11 +743,13 @@ export default function App() {
       )}
       {showUsageModal && <UsageModal currentSessionUsage={currentSessionUsage} allUsage={allUsageStats} sessions={sessions} onClose={() => useUiStore.getState().setShowUsageModal(false)} modelInfo={modelInfo} contextTokens={contextTokens} turnTokens={turnTokens} />}
       {diffDialogOpen && turnDiff && (
-        <Modal onClose={() => useGitStore.getState().closeDiffDialog()} className="w-[90vw] h-[85vh] max-h-[85vh]! overflow-hidden! flex flex-col">
-          <Suspense fallback={<div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">Loading diff viewer...</div>}>
-            <DiffPanel diff={turnDiff} onClose={() => useGitStore.getState().closeDiffDialog()} commitMessage={diffDialogTitle} onSendComments={handleFileSendComments} />
-          </Suspense>
-        </Modal>
+        <Dialog open onOpenChange={(isOpen) => { if (!isOpen) useGitStore.getState().closeDiffDialog(); }}>
+          <DialogContent className="w-[90vw] h-[85vh] max-h-[85vh]! overflow-hidden! flex flex-col" aria-label="Diff view">
+            <Suspense fallback={<div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">Loading diff viewer...</div>}>
+              <DiffPanel diff={turnDiff} onClose={() => useGitStore.getState().closeDiffDialog()} commitMessage={diffDialogTitle} onSendComments={handleFileSendComments} />
+            </Suspense>
+          </DialogContent>
+        </Dialog>
       )}
 
       <AppLayout
@@ -788,11 +791,8 @@ export default function App() {
           handleSessionResume(sid, navigate);
         }}
         onArchiveSession={async (sid: string) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId && activeRepoUrl) { void handleNewSessionForRepo(activeRepoUrl); } }}
-        onOpenRepoSwitcher={() => useRepoStore.getState().setRepoSwitcherOpen(!repoSwitcherOpen)}
         onNewSession={() => { if (activeRepoUrl) void handleNewSessionForRepo(activeRepoUrl); }}
         onToggleSidebarCollapse={() => useUiStore.getState().setSidebarCollapsed(!sidebarCollapsed)}
-        repoSwitcherOpen={repoSwitcherOpen}
-        onCloseRepoSwitcher={() => useRepoStore.getState().setRepoSwitcherOpen(false)}
         repos={repos}
         onSelectRepo={(url: string) => useRepoStore.getState().setActiveRepoUrl(url)}
         onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)}
@@ -860,5 +860,6 @@ export default function App() {
         />
       )}
     </div>
+    </TooltipProvider>
   );
 }

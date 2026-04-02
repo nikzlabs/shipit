@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { AgentPicker, type AgentOption } from "./AgentPicker.js";
 
 afterEach(cleanup);
@@ -29,36 +30,41 @@ describe("AgentPicker", () => {
     expect(screen.queryByTestId("agent-picker")).not.toBeInTheDocument();
   });
 
-  it("opens the dropdown when clicked", () => {
+  it("opens the dropdown when clicked", async () => {
+    const user = userEvent.setup();
     render(<AgentPicker agents={agents} activeAgentId="claude" onAgentChange={vi.fn()} />);
     expect(screen.queryByTestId("agent-picker-dropdown")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTestId("agent-picker-trigger"));
+    await user.click(screen.getByTestId("agent-picker-trigger"));
     expect(screen.getByTestId("agent-picker-dropdown")).toBeInTheDocument();
   });
 
-  it("shows all agents in the dropdown", () => {
+  it("shows all agents in the dropdown", async () => {
+    const user = userEvent.setup();
     render(<AgentPicker agents={agents} activeAgentId="claude" onAgentChange={vi.fn()} />);
-    fireEvent.click(screen.getByTestId("agent-picker-trigger"));
+    await user.click(screen.getByTestId("agent-picker-trigger"));
     expect(screen.getByTestId("agent-option-claude")).toBeInTheDocument();
     expect(screen.getByTestId("agent-option-codex")).toBeInTheDocument();
   });
 
-  it("calls onAgentChange when an available agent is selected", () => {
+  it("calls onAgentChange when an available agent is selected", async () => {
+    const user = userEvent.setup();
     const onAgentChange = vi.fn();
     render(<AgentPicker agents={agents} activeAgentId="claude" onAgentChange={onAgentChange} />);
-    fireEvent.click(screen.getByTestId("agent-picker-trigger"));
-    fireEvent.click(screen.getByTestId("agent-option-codex"));
+    await user.click(screen.getByTestId("agent-picker-trigger"));
+    await user.click(screen.getByTestId("agent-option-codex"));
     expect(onAgentChange).toHaveBeenCalledWith("codex");
   });
 
-  it("closes the dropdown after selecting an agent", () => {
+  it("closes the dropdown after selecting an agent", async () => {
+    const user = userEvent.setup();
     render(<AgentPicker agents={agents} activeAgentId="claude" onAgentChange={vi.fn()} />);
-    fireEvent.click(screen.getByTestId("agent-picker-trigger"));
-    fireEvent.click(screen.getByTestId("agent-option-codex"));
+    await user.click(screen.getByTestId("agent-picker-trigger"));
+    await user.click(screen.getByTestId("agent-option-codex"));
     expect(screen.queryByTestId("agent-picker-dropdown")).not.toBeInTheDocument();
   });
 
-  it("does not call onAgentChange for uninstalled agents", () => {
+  it("does not call onAgentChange for uninstalled agents", async () => {
+    const user = userEvent.setup();
     const agentsWithUninstalled: AgentOption[] = [
       { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: [] },
       { id: "codex", name: "Codex", installed: true, authConfigured: true, models: [] },
@@ -66,35 +72,38 @@ describe("AgentPicker", () => {
     ];
     const onAgentChange = vi.fn();
     render(<AgentPicker agents={agentsWithUninstalled} activeAgentId="claude" onAgentChange={onAgentChange} />);
-    fireEvent.click(screen.getByTestId("agent-picker-trigger"));
-    fireEvent.click(screen.getByTestId("agent-option-other"));
+    await user.click(screen.getByTestId("agent-picker-trigger"));
+    await user.click(screen.getByTestId("agent-option-other"));
     expect(onAgentChange).not.toHaveBeenCalled();
   });
 
-  it("shows 'not installed' label for uninstalled agents", () => {
+  it("shows 'not installed' label for uninstalled agents", async () => {
+    const user = userEvent.setup();
     const agentsWithUninstalled: AgentOption[] = [
       { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: [] },
       { id: "codex", name: "Codex", installed: true, authConfigured: true, models: [] },
       { id: "other", name: "Other", installed: false, authConfigured: false, models: [] },
     ];
     render(<AgentPicker agents={agentsWithUninstalled} activeAgentId="claude" onAgentChange={vi.fn()} />);
-    fireEvent.click(screen.getByTestId("agent-picker-trigger"));
+    await user.click(screen.getByTestId("agent-picker-trigger"));
     expect(screen.getByTestId("agent-option-other")).toHaveTextContent("not installed");
   });
 
-  it("shows 'needs auth' label for installed but unconfigured agents", () => {
+  it("shows 'needs auth' label for installed but unconfigured agents", async () => {
+    const user = userEvent.setup();
     const agentsNeedAuth: AgentOption[] = [
       { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: [] },
       { id: "codex", name: "Codex", installed: true, authConfigured: false, models: [] },
     ];
     render(<AgentPicker agents={agentsNeedAuth} activeAgentId="claude" onAgentChange={vi.fn()} />);
-    fireEvent.click(screen.getByTestId("agent-picker-trigger"));
+    await user.click(screen.getByTestId("agent-picker-trigger"));
     expect(screen.getByTestId("agent-option-codex")).toHaveTextContent("needs auth");
   });
 
-  it("shows a checkmark next to the active agent", () => {
+  it("shows a checkmark next to the active agent", async () => {
+    const user = userEvent.setup();
     render(<AgentPicker agents={agents} activeAgentId="claude" onAgentChange={vi.fn()} />);
-    fireEvent.click(screen.getByTestId("agent-picker-trigger"));
+    await user.click(screen.getByTestId("agent-picker-trigger"));
     // The active agent option should contain an SVG checkmark
     const activeOption = screen.getByTestId("agent-option-claude");
     expect(activeOption.querySelector("svg")).not.toBeNull();
@@ -108,24 +117,27 @@ describe("AgentPicker", () => {
     expect(screen.getByTestId("agent-picker-trigger")).toBeDisabled();
   });
 
-  it("closes the dropdown on Escape key", () => {
+  it("closes the dropdown on Escape key", async () => {
+    const user = userEvent.setup();
     render(<AgentPicker agents={agents} activeAgentId="claude" onAgentChange={vi.fn()} />);
-    fireEvent.click(screen.getByTestId("agent-picker-trigger"));
+    await user.click(screen.getByTestId("agent-picker-trigger"));
     expect(screen.getByTestId("agent-picker-dropdown")).toBeInTheDocument();
-    fireEvent.keyDown(document, { key: "Escape" });
+    await user.keyboard("{Escape}");
     expect(screen.queryByTestId("agent-picker-dropdown")).not.toBeInTheDocument();
   });
 
-  it("closes the dropdown on outside click", () => {
+  it("closes the dropdown on outside click", async () => {
+    const user = userEvent.setup();
     render(
       <div>
         <div data-testid="outside">Outside</div>
         <AgentPicker agents={agents} activeAgentId="claude" onAgentChange={vi.fn()} />
       </div>,
     );
-    fireEvent.click(screen.getByTestId("agent-picker-trigger"));
+    await user.click(screen.getByTestId("agent-picker-trigger"));
     expect(screen.getByTestId("agent-picker-dropdown")).toBeInTheDocument();
-    fireEvent.mouseDown(screen.getByTestId("outside"));
+    // Radix blocks pointer-events on outside elements, so use pointerDown directly
+    fireEvent.pointerDown(screen.getByTestId("outside"), { button: 0, pointerType: "mouse" });
     expect(screen.queryByTestId("agent-picker-dropdown")).not.toBeInTheDocument();
   });
 
@@ -136,11 +148,12 @@ describe("AgentPicker", () => {
     expect(trigger.querySelector("[data-testid='status-dot-ready']")).not.toBeNull();
   });
 
-  it("has correct aria-expanded attribute", () => {
+  it("has correct aria-expanded attribute", async () => {
+    const user = userEvent.setup();
     render(<AgentPicker agents={agents} activeAgentId="claude" onAgentChange={vi.fn()} />);
     const trigger = screen.getByTestId("agent-picker-trigger");
     expect(trigger).toHaveAttribute("aria-expanded", "false");
-    fireEvent.click(trigger);
+    await user.click(trigger);
     expect(trigger).toHaveAttribute("aria-expanded", "true");
   });
 });

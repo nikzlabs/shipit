@@ -33,7 +33,7 @@ describe("AllSessionsDialog", () => {
       baseSession({ id: "s1", title: "Archived one", archived: true }),
     ];
     render(<AllSessionsDialog {...props} />);
-    expect(screen.getByTitle("Restore session")).toBeTruthy();
+    expect(screen.getByLabelText("Restore session")).toBeTruthy();
   });
 
   it("shows archive button for non-archived sessions", () => {
@@ -42,7 +42,7 @@ describe("AllSessionsDialog", () => {
       baseSession({ id: "s1", title: "Active one" }),
     ];
     render(<AllSessionsDialog {...props} />);
-    expect(screen.getByTitle("Archive session")).toBeTruthy();
+    expect(screen.getByLabelText("Archive session")).toBeTruthy();
   });
 
   it("calls onUnarchive when restore button is clicked", async () => {
@@ -51,7 +51,7 @@ describe("AllSessionsDialog", () => {
       baseSession({ id: "s1", title: "Archived one", archived: true }),
     ];
     render(<AllSessionsDialog {...props} />);
-    fireEvent.click(screen.getByTitle("Restore session"));
+    fireEvent.click(screen.getByLabelText("Restore session"));
     await waitFor(() => {
       expect(props.onUnarchive).toHaveBeenCalledWith("s1");
     });
@@ -63,7 +63,7 @@ describe("AllSessionsDialog", () => {
       baseSession({ id: "s1", title: "Active one" }),
     ];
     render(<AllSessionsDialog {...props} />);
-    fireEvent.click(screen.getByTitle("Archive session"));
+    fireEvent.click(screen.getByLabelText("Archive session"));
     await waitFor(() => {
       expect(props.onArchive).toHaveBeenCalledWith("s1");
     });

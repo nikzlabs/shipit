@@ -1,9 +1,9 @@
 import type { ReactNode, RefObject } from "react";
 import { GearSixIcon, ListIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "./design-tokens.js";
+import { WithTooltip } from "./components/ui/tooltip.js";
 import { ThemePicker } from "./components/ThemePicker.js";
 import { SessionSidebar } from "./components/SessionSidebar.js";
-import { RepoSwitcher } from "./components/RepoSwitcher.js";
 import { ResizeHandle } from "./components/ResizeHandle.js";
 import { ConnectionBanner } from "./components/ConnectionBanner.js";
 import { MobileTabBar } from "./components/MobileTabBar.js";
@@ -57,13 +57,10 @@ interface AppLayoutProps {
   sidebarCollapsed: boolean;
   onResumeSession: (sid: string) => void;
   onArchiveSession: (sid: string) => Promise<void>;
-  onOpenRepoSwitcher: () => void;
   onNewSession: () => void;
   onToggleSidebarCollapse: () => void;
 
   // Repo switcher
-  repoSwitcherOpen: boolean;
-  onCloseRepoSwitcher: () => void;
   repos: RepoInfo[];
   onSelectRepo: (url: string) => void;
   onAddRepo: () => void;
@@ -109,11 +106,8 @@ export function AppLayout({
   sidebarCollapsed,
   onResumeSession,
   onArchiveSession,
-  onOpenRepoSwitcher,
   onNewSession,
   onToggleSidebarCollapse,
-  repoSwitcherOpen,
-  onCloseRepoSwitcher,
   repos,
   onSelectRepo,
   onAddRepo,
@@ -126,9 +120,11 @@ export function AppLayout({
       <header className="flex items-center justify-between px-3 sm:px-6 py-2 sm:py-3 border-b border-(--color-border-primary)">
         <div className="flex items-center gap-2 sm:gap-4 min-w-0">
           {isMobile && (
-            <button onClick={onOpenSessions} className="inline-flex items-center justify-center w-7 h-7 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)" title="Sessions" aria-label="Sessions">
+            <WithTooltip label="Sessions">
+            <button onClick={onOpenSessions} className="inline-flex items-center justify-center w-7 h-7 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)" aria-label="Sessions">
               <ListIcon size={ICON_SIZE.MD} />
             </button>
+            </WithTooltip>
           )}
           <h1 className="text-base sm:text-lg font-semibold tracking-tight shrink-0 flex items-center gap-1.5 cursor-pointer hover:opacity-80 transition-opacity" onClick={onNavigateHome} role="link">
             <img src={LIGHT_THEMES.has(theme) ? "/favicon-light.svg" : "/favicon.svg"} alt="" className="w-5 h-5" />
@@ -137,9 +133,11 @@ export function AppLayout({
         </div>
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
           {dockerMemory && <DockerMemoryBadge stats={dockerMemory} />}
-          <button onClick={onSettingsOpen} className={`inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${hasSystemPrompt || githubAuthenticated ? "text-(--color-accent) hover:text-(--color-accent-hover) hover:bg-(--color-bg-hover)" : "text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"}`} title="Settings" aria-label="Settings">
+          <WithTooltip label="Settings">
+          <button onClick={onSettingsOpen} className={`inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${hasSystemPrompt || githubAuthenticated ? "text-(--color-accent) hover:text-(--color-accent-hover) hover:bg-(--color-bg-hover)" : "text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"}`} aria-label="Settings">
             <GearSixIcon size={ICON_SIZE.SM} />
           </button>
+          </WithTooltip>
           {currentSessionUsage && currentSessionUsage.totalCostUsd > 0 && (
             <button onClick={onUsageBadgeClick} className="hidden sm:inline text-xs px-2 py-0.5 rounded-full bg-(--color-accent-subtle) text-(--color-accent) hover:bg-(--color-accent) hover:text-(--color-accent-text) transition-colors cursor-pointer" title="View usage details">
               {currentSessionUsage.totalCostUsd < 0.01 ? `$${currentSessionUsage.totalCostUsd.toFixed(3)}` : `$${currentSessionUsage.totalCostUsd.toFixed(2)}`}
@@ -160,30 +158,22 @@ export function AppLayout({
         </>
       ) : (
         <div className="flex flex-1 min-h-0">
-          <div className="relative shrink-0">
-            <SessionSidebar
-              sessions={sessions}
-              activeRepoUrl={activeRepoUrl}
-              activeRepoName={activeRepoName}
-              activeRepoStatus={activeRepoStatus}
-              currentSessionId={currentSessionId}
-              onResume={onResumeSession}
-              onArchive={onArchiveSession}
-              onOpenRepoSwitcher={onOpenRepoSwitcher}
-              onNewSession={onNewSession}
-              collapsed={sidebarCollapsed}
-              onToggleCollapse={onToggleSidebarCollapse}
-            />
-            <RepoSwitcher
-              open={repoSwitcherOpen}
-              onClose={onCloseRepoSwitcher}
-              repos={repos}
-              activeRepoUrl={activeRepoUrl}
-              onSelectRepo={onSelectRepo}
-              onAddRepo={onAddRepo}
-              onCreateNew={onCreateNewRepo}
-            />
-          </div>
+          <SessionSidebar
+            sessions={sessions}
+            activeRepoUrl={activeRepoUrl}
+            activeRepoName={activeRepoName}
+            activeRepoStatus={activeRepoStatus}
+            currentSessionId={currentSessionId}
+            onResume={onResumeSession}
+            onArchive={onArchiveSession}
+            onNewSession={onNewSession}
+            collapsed={sidebarCollapsed}
+            onToggleCollapse={onToggleSidebarCollapse}
+            repos={repos}
+            onSelectRepo={onSelectRepo}
+            onAddRepo={onAddRepo}
+            onCreateNewRepo={onCreateNewRepo}
+          />
           <div ref={containerRef} className="flex flex-1 min-h-0 overflow-hidden">
             <div className={`flex flex-col min-w-0 ${showHomeScreen ? "" : "border-r border-(--color-border-primary)"}`} style={{ width: showHomeScreen ? "100%" : `${fraction * 100}%` }}>
               {chatPanel}

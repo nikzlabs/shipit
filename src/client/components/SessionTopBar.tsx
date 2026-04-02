@@ -1,7 +1,12 @@
 import { useState, useRef, useCallback } from "react";
-import { useClickOutside } from "../hooks/useClickOutside.js";
 import { DotsThreeVerticalIcon, DownloadSimpleIcon, PencilSimpleIcon, ArchiveIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "./ui/dropdown-menu.js";
 
 interface SessionTopBarProps {
   title: string;
@@ -13,13 +18,8 @@ interface SessionTopBarProps {
 export function SessionTopBar({ title, onRename, onDownloadChat, onArchive }: SessionTopBarProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editingTitle, setEditingTitle] = useState("");
-  const [menuOpen, setMenuOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
   const editResolvedRef = useRef(false);
-
-  const handleMenuClose = useCallback(() => setMenuOpen(false), []);
-  useClickOutside(menuRef, handleMenuClose, menuOpen);
 
   const startEditing = useCallback(() => {
     setEditingTitle(title);
@@ -77,41 +77,32 @@ export function SessionTopBar({ title, onRename, onDownloadChat, onArchive }: Se
       </div>
 
       {/* Right: overflow menu */}
-      <div ref={menuRef} className="relative shrink-0">
-        <button
-          onClick={() => setMenuOpen(!menuOpen)}
-          className="p-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
-          title="Session actions"
-          aria-label="Session actions"
-        >
-          <DotsThreeVerticalIcon size={ICON_SIZE.SM} weight="bold" />
-        </button>
-
-        {menuOpen && (
-          <div className="absolute right-0 top-full mt-1 w-48 bg-(--color-bg-elevated) border border-(--color-border-primary) rounded-lg shadow-lg z-50 py-1">
+      <div className="shrink-0">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
             <button
-              onClick={() => { setMenuOpen(false); startEditing(); }}
-              className="w-full text-left px-3 py-2 text-xs text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) transition-colors flex items-center gap-2"
+              className="p-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
+              title="Session actions"
+              aria-label="Session actions"
             >
+              <DotsThreeVerticalIcon size={ICON_SIZE.SM} weight="bold" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={startEditing}>
               <PencilSimpleIcon size={ICON_SIZE.SM} />
               Rename
-            </button>
-            <button
-              onClick={() => { setMenuOpen(false); onDownloadChat(); }}
-              className="w-full text-left px-3 py-2 text-xs text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) transition-colors flex items-center gap-2"
-            >
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onDownloadChat}>
               <DownloadSimpleIcon size={ICON_SIZE.SM} />
               Download chat
-            </button>
-            <button
-              onClick={() => { setMenuOpen(false); onArchive(); }}
-              className="w-full text-left px-3 py-2 text-xs text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) transition-colors flex items-center gap-2"
-            >
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onArchive}>
               <ArchiveIcon size={ICON_SIZE.SM} />
               Archive
-            </button>
-          </div>
-        )}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </div>
   );

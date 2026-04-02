@@ -4,10 +4,12 @@ import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, GearSixIcon, G
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
 import { Button } from "./ui/button.js";
+import { WithTooltip } from "./ui/tooltip.js";
+import { RepoSwitcher } from "./RepoSwitcher.js";
 import { PrStateBadge } from "./PrLifecycleCard.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore } from "../stores/pr-store.js";
-import type { SessionInfo } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 400;
@@ -72,10 +74,14 @@ interface SessionSidebarProps {
   currentSessionId: string | undefined;
   onResume: (sessionId: string) => void;
   onArchive: (sessionId: string) => void;
-  onOpenRepoSwitcher: () => void;
   onNewSession: () => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
+  // Repo switcher
+  repos: RepoInfo[];
+  onSelectRepo: (url: string) => void;
+  onAddRepo: () => void;
+  onCreateNewRepo: () => void;
 }
 
 interface SessionItemProps {
@@ -213,26 +219,30 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
 
       <div className="shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
         {isArchived && onRestore && (
+            <WithTooltip label="Restore session">
             <Button
               variant="ghost"
               onClick={(e) => { e.stopPropagation(); onRestore(session.id); }}
               disabled={disabled}
               className="p-1! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-success)"
-              title="Restore session"
+              aria-label="Restore session"
             >
               <ArrowCounterClockwiseIcon size={ICON_SIZE.SM} />
             </Button>
+            </WithTooltip>
           )}
           {!isArchived && onArchive && (
+            <WithTooltip label="Archive session">
             <Button
               variant="ghost"
               onClick={(e) => { e.stopPropagation(); onArchive(session.id); }}
               disabled={disabled}
               className="p-1! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-warning)"
-              title="Archive session"
+              aria-label="Archive session"
             >
               <PhArchiveIcon size={ICON_SIZE.SM} />
             </Button>
+            </WithTooltip>
           )}
         </div>
     </div>
@@ -247,10 +257,13 @@ export function SessionSidebar({
   currentSessionId,
   onResume,
   onArchive,
-  onOpenRepoSwitcher,
   onNewSession,
   collapsed,
   onToggleCollapse,
+  repos,
+  onSelectRepo,
+  onAddRepo,
+  onCreateNewRepo,
 }: SessionSidebarProps) {
   const { width, isDragging, onMouseDown } = useSidebarResize();
 
@@ -263,38 +276,40 @@ export function SessionSidebar({
   if (collapsed) {
     return (
       <div className="flex flex-col w-10 h-full shrink-0 bg-(--color-bg-primary) border-r border-(--color-border-primary) items-center py-2 gap-2">
+        <WithTooltip label="Expand sidebar" side="right">
         <Button
           variant="ghost"
           size="sm"
           onClick={onToggleCollapse}
           className="p-0! w-6 h-6"
-          title="Expand sidebar"
           aria-label="Expand sidebar"
         >
           <SidebarSimpleIcon size={ICON_SIZE.SM} />
         </Button>
+        </WithTooltip>
+        <RepoSwitcher repos={repos} activeRepoUrl={activeRepoUrl} onSelectRepo={onSelectRepo} onAddRepo={onAddRepo} onCreateNew={onCreateNewRepo}>
         <Button
           variant="ghost"
           size="sm"
-          onClick={onOpenRepoSwitcher}
           className="p-0! w-6 h-6 text-(--color-text-secondary) hover:text-(--color-text-primary)"
-          title={activeRepoName || "Select repository"}
           aria-label="Repository"
         >
           <GithubLogoIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0" />
         </Button>
+        </RepoSwitcher>
         <div className="flex-1" />
+        <WithTooltip label="New Session" side="right">
         <Button
           variant="ghost"
           size="sm"
           onClick={onNewSession}
           disabled={!activeRepoUrl || activeRepoStatus === "cloning"}
           className="p-0! w-6 h-6 text-(--color-success) hover:text-(--color-success)"
-          title="New Session"
           aria-label="New Session"
         >
           <PlusIcon size={ICON_SIZE.SM} />
         </Button>
+        </WithTooltip>
       </div>
     );
   }
@@ -304,16 +319,17 @@ export function SessionSidebar({
     <div className="flex flex-col h-full bg-(--color-bg-primary) border-r border-(--color-border-primary) min-h-0" style={{ width }}>
       {/* Active repo header */}
       <div className="flex items-center gap-2 px-3 h-10 border-b border-(--color-border-primary) shrink-0">
+        <WithTooltip label="Collapse sidebar">
         <Button
           variant="ghost"
           size="sm"
           onClick={onToggleCollapse}
           className="p-0! w-6 h-6 text-(--color-text-tertiary)"
-          title="Collapse sidebar"
           aria-label="Collapse sidebar"
         >
           <SidebarSimpleIcon size={ICON_SIZE.SM} />
         </Button>
+        </WithTooltip>
         <GithubLogoIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0" />
         <span className="flex-1 min-w-0 truncate text-xs font-medium text-(--color-text-primary)">
           {activeRepoName || "No repository"}
@@ -321,16 +337,16 @@ export function SessionSidebar({
         {activeRepoStatus === "cloning" && (
           <span className="shrink-0 text-[9px] text-(--color-warning) animate-pulse">cloning</span>
         )}
+        <RepoSwitcher repos={repos} activeRepoUrl={activeRepoUrl} onSelectRepo={onSelectRepo} onAddRepo={onAddRepo} onCreateNew={onCreateNewRepo}>
         <Button
           variant="ghost"
           size="sm"
-          onClick={onOpenRepoSwitcher}
           className="p-0! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
-          title="Change repository"
           aria-label="Change repository"
         >
           <GearSixIcon size={ICON_SIZE.SM} />
         </Button>
+        </RepoSwitcher>
       </div>
 
       {/* Scrollable sessions area */}
