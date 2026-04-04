@@ -35,51 +35,76 @@ ShipIt currently supports multiple repos, but the sidebar shows only one repo's 
 
 ### Option A: Grouped Session List (recommended)
 
-**Concept:** Remove the repo switcher dropdown. Instead, show all sessions grouped by repo in a single scrollable sidebar list.
+**Concept:** Remove the repo switcher dropdown. Instead, show all sessions grouped by repo in a single scrollable sidebar list. Each repo group reuses the same visual slot that the current "Sessions" header occupies — the repo name + icon *replaces* the "Sessions" label, and "View All" moves into the same row.
 
+**Current sidebar layout (single repo):**
 ```
 ┌─────────────────────────┐
-│  ▼ acme/frontend        │  ← repo header (collapsible)
+│ [≡]  🐙 acme/frontend ⚙│  ← repo header (today)
+│ ─────────────────────── │
+│  Sessions     View All  │  ← sticky subheader
 │    ● Fix auth bug       │
 │    ○ Add dark mode      │
-│    + New session         │
-│                         │
-│  ▼ acme/api             │
-│    ● Migrate to v3      │
-│    + New session         │
-│                         │
-│  ▸ acme/shared-lib      │  ← collapsed, no active sessions
-│                         │
-│  ─────────────────────  │
-│  + Add Repository       │
+│    [+ New Session]      │
 └─────────────────────────┘
 ```
 
+**Proposed multi-repo layout:**
+```
+┌─────────────────────────┐
+│ [≡]              [+ Add]│  ← top bar (collapse toggle + add repo)
+│ ─────────────────────── │
+│  🐙 frontend   View All│  ← repo header = replaces "Sessions" row
+│    ● Fix auth bug       │
+│    ○ Add dark mode      │
+│    [+ New Session]      │
+│                         │
+│  🐙 api        View All│  ← second repo header
+│    ● Migrate to v3      │
+│    [+ New Session]      │
+│                         │
+│  🐙 shared-lib ▸       │  ← collapsed, no active sessions
+└─────────────────────────┘
+```
+
+The key insight: the current sidebar already has a sticky "Sessions / View All" subheader inside the scrollable area (line 354-365 in `SessionSidebar.tsx`). In the multi-repo version, each repo group gets its own copy of that row — with the repo name + GitHub icon replacing the "Sessions" text, and "View All" staying in the same position. This means:
+
+- **Single-repo users** see almost the same layout as today — the only difference is the header says `🐙 frontend` instead of `Sessions`.
+- **Multi-repo users** see the pattern repeat for each repo, which reads naturally as a grouped list.
+
 **Behavior:**
-- Each repo gets a collapsible section header showing `owner/repo`.
+- Each repo gets a collapsible section header showing the repo short name + GitHub icon, with "View All" on the right.
+- The top bar loses the repo name (it moves into the group header) and gains an "Add Repository" button.
 - Sections are sorted by most-recently-used session within each repo.
 - Clicking a session activates it (and implicitly its repo) — the file tree, preview, and chat all switch.
-- Repo headers have a context menu: remove repo, copy URL, open on GitHub.
-- "New session" button appears at the bottom of each repo group.
-- Repos with no active sessions are collapsed by default but still visible.
+- Repo headers are clickable to collapse/expand. Chevron indicates state.
+- Repo headers have a context menu (right-click): remove repo, copy URL, open on GitHub.
+- "New session" button appears at the bottom of each repo group (inline, not the full-width primary button).
+- Repos with no active sessions show collapsed by default.
 - Collapse state is persisted to localStorage.
+- "View All" on a repo header opens the AllSessionsDialog filtered to that repo.
 
 **Pros:**
 - Full visibility across all repos at a glance.
 - No mode switching — everything is one list.
 - Minimal backend changes (purely client-side).
 - Natural grouping makes it easy to find sessions.
+- Reuses existing visual pattern (the "Sessions" subheader row), so it feels familiar.
+- Single-repo users see essentially the same UI.
 
 **Cons:**
 - Gets tall with many repos/sessions — needs good collapse UX.
-- Repo headers consume vertical space.
-- Users with 10+ repos might find the list overwhelming.
+- Repo headers consume vertical space (one row per repo).
+- Users with 10+ repos might find the list overwhelming (mitigated by collapse + future search).
 
 **Key changes:**
 - Remove `RepoSwitcher` dropdown component.
-- Refactor `SessionSidebar` to render grouped sections.
-- Remove `activeRepoUrl` from repo-store (or repurpose it as "last used" for default expand).
-- "New session" on home screen still needs a repo picker, but sidebar no longer filters.
+- Replace the top bar repo name with a simpler bar: collapse toggle + "Add Repo" button.
+- Extract a new `RepoGroup` component that renders: repo header row (icon + name + "View All") → session list → inline "+ New Session".
+- Refactor `SessionSidebar` to render `RepoGroup` for each repo.
+- Remove `activeRepoUrl` from repo-store (or repurpose as "last interacted repo" for scroll-into-view).
+- Add `collapsedRepos: Set<string>` to repo-store, persisted to localStorage.
+- "New session" on home screen still needs a repo picker since there's no single active repo context.
 
 ---
 
