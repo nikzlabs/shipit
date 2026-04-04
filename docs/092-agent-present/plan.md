@@ -28,121 +28,137 @@ The agent needs a lightweight way to **present** a single piece of content — a
 3. **Works with existing UI** — should reuse or minimally extend the preview pane, not create a wholly new panel.
 4. **Secure** — presented content must be sandboxed; it cannot access the parent frame, session cookies, or other origins.
 5. **Simple agent interface** — the agent should do something natural (write a file, call a tool) without needing to understand ShipIt internals.
+6. **Ephemeral by default** — presented content is scratch/throwaway. It should not appear in the file tree, trigger file watcher events, or risk being committed to git. If the user wants to keep it, they explicitly ask the agent to save it to the workspace.
+
+---
+
+## Ephemeral vs. persistent
+
+A key design axis: should presented content live in the workspace?
+
+**No.** Most presentations are transient — a quick chart, a diagram to discuss, a mockup to iterate on. Writing them to the workspace creates noise:
+- Clutters the file tree with throwaway files
+- Triggers file watcher events and potential auto-commit
+- User must manually clean up or `.gitignore` them
+- Conceptually wrong: a presentation is an *action*, not a *deliverable*
+
+The right default is **ephemeral**: content exists only for display, outside the workspace. If the user likes what they see, they ask "save this to the project" and the agent copies it into the workspace as a deliberate act.
+
+This means the content needs to live somewhere the session worker can serve it but that is invisible to git and the file tree:
+- **In-memory** (for small inline content sent over WS)
+- **Scratch directory** like `/tmp/present/` or `/shipit/present/` (for multi-file content that needs relative path resolution)
+
+Both are wiped when the container stops — truly ephemeral.
 
 ---
 
 ## Options
 
-### Option A: Magic file convention ("just write and open")
+### Option A: Workspace file convention ("just write and open")
 
-The agent writes a file to the workspace (e.g., `preview.html`) and then uses a hypothetical `open` tool or a special comment/directive to tell ShipIt to display it. The session worker serves the file statically; the client renders it in an iframe.
+The agent writes a file to the workspace and tells ShipIt to display it.
 
 **How it works:**
 
 1. Agent writes file to workspace (e.g., `/workspace/output/chart.html`)
-2. Agent calls a tool: `present("output/chart.html")` — or writes a sentinel file like `.shipit/present`
-3. Session worker has a new `GET /present/*` endpoint that serves files from the workspace with appropriate MIME types
-4. Orchestrator proxies `/present/` requests like it proxies preview requests
-5. Client receives a `present_content` WS message with the file path and loads it in the preview pane iframe
+2. Agent calls `present("output/chart.html")`
+3. Session worker serves the file; client shows it in preview pane
 
 **Pros:**
-- Files are real files in the workspace — user can see them in the file tree, edit them, commit them
-- Multi-file support works naturally (HTML can reference `./style.css`, `./app.js` via relative paths)
+- Multi-file support (relative paths work naturally)
 - Simple mental model: "write a file, show a file"
-- Hot reload is trivial: agent edits the file, file watcher triggers, client refreshes iframe
 
 **Cons:**
-- Requires a new static file server in the session worker
-- Relative asset resolution needs the serving root to be correct
-- Security: serving arbitrary workspace files over HTTP needs sandboxing
+- **Not ephemeral** — files land in the workspace, show in file tree, risk being committed
+- Requires cleanup or `.gitignore` discipline
+- Triggers file watcher noise
 
 **Complexity:** Medium
+**Verdict:** Rejected — violates the ephemeral-by-default constraint
 
 ---
 
-### Option B: Artifact message (inline content over WebSocket)
+### Option B: Inline artifact over WebSocket
 
-The agent emits content directly as a structured message, similar to Claude.ai's artifact system. The content travels over the existing WebSocket as a new message type and is rendered client-side.
+The agent emits content directly as a WS message. No files anywhere — purely in-memory, purely ephemeral.
 
 **How it works:**
 
-1. Agent writes content and signals ShipIt (tool call, special markdown block, or file write)
-2. Session worker sends an `artifact` event via SSE: `{ type: "artifact", content: "...", mimeType: "text/html", title: "Chart" }`
+1. Agent generates content and calls a `present` tool (or emits a structured block)
+2. Session worker sends an `artifact` SSE event: `{ type: "artifact", content: "...", mimeType: "text/html", title: "Chart" }`
 3. Orchestrator relays to client via WS
-4. Client renders in the preview pane using a sandboxed iframe with `srcdoc` (for HTML) or an `<img>` tag (for images), or a markdown renderer (for `.md`)
+4. Client renders in the preview pane using a sandboxed iframe with `srcdoc` (for HTML) or `<img>` (for images/SVG)
 
 **Pros:**
-- Zero HTTP infrastructure — everything flows through the existing SSE/WS pipeline
-- Content is self-contained; no file serving, no proxy routing
-- Easy to implement: one new message type, one new client renderer
-- Content can be ephemeral (not saved to workspace) or persisted — agent's choice
+- **Perfectly ephemeral** — no files created anywhere, content lives only in the message stream
+- Zero HTTP infrastructure — flows through existing SSE/WS pipeline
+- Simplest implementation: one new message type, one client renderer
+- No file serving, no proxy routing, no cleanup
 
 **Cons:**
-- Size limits — very large content (images, complex pages) bloats the WS pipeline
-- No relative asset references — everything must be inline (inline CSS, inline JS, data URIs for images)
-- Multi-file apps don't work; only single self-contained blobs
-- No hot reload — agent must re-send the entire artifact to update it
+- Size limits — large content (images, complex pages) bloats the WS/SSE pipeline
+- No relative asset references — everything must be inline (CSS, JS, data URIs)
+- Multi-file apps don't work; single self-contained blobs only
+- No hot reload — agent must re-send entire artifact to update
 
 **Complexity:** Low
+**Best for:** Single-file artifacts under ~256KB (diagrams, charts, mockups)
 
 ---
 
-### Option C: Hybrid — file-backed artifacts with WS signaling
+### Option C: Scratch directory + WS signaling
 
-Combine A and B: the agent writes files to the workspace, then a lightweight signal tells the client what to display. The session worker serves files; the WS just carries the "show this" pointer.
+The agent writes files to a **scratch directory outside the workspace** (`/tmp/present/`), then a WS signal tells the client what to display. The session worker serves files from the scratch dir. Multi-file support with full ephemerality.
 
 **How it works:**
 
-1. Agent writes files to workspace (single HTML file, or a directory with HTML + CSS + JS)
-2. Agent signals presentation via one of:
-   - A tool call: `present({ path: "output/index.html", title: "Landing Page" })`
-   - Writing a manifest file: `.shipit/present.json` → `{ "path": "output/index.html" }`
-   - A special code fence in chat: ` ```present:output/index.html` `
-3. Session worker's file watcher (or tool handler) picks up the signal and emits a `present` SSE event with just the path + metadata
-4. Session worker serves the file tree under a new `GET /present-files/*` endpoint (static, read-only, workspace-rooted)
-5. Client loads the URL in a sandboxed iframe in the preview pane
-6. File watcher detects changes → client auto-refreshes the iframe
+1. Agent generates content and calls a `present` tool:
+   - For inline content: `present({ content: "<html>...", mimeType: "text/html", title: "Chart" })`
+   - For multi-file: `present({ files: {"index.html": "...", "style.css": "..."}, entry: "index.html", title: "App" })`
+2. Session worker writes files to `/tmp/present/{presentationId}/` (outside workspace, invisible to git/file-tree/file-watcher)
+3. Session worker emits `present_content` SSE event with the presentation ID
+4. Session worker serves from `/tmp/present/` via `GET /present-files/{presentationId}/*`
+5. Orchestrator proxies; client loads in sandboxed iframe
 
 **Pros:**
-- Best of both worlds: real files + instant signaling
-- Multi-file works (relative paths resolve against the serving root)
-- Hot reload via file watcher
-- Small WS messages (just a path, not the content)
-- Files persist in the workspace — visible in file tree, committable
-- Agent can also present data URIs or inline HTML for quick one-offs (fallback to Option B for small content)
+- **Ephemeral** — scratch dir is outside workspace, invisible to git, wiped on container stop
+- Multi-file works (relative paths resolve against the scratch root)
+- Small WS messages (just a pointer, not the content)
+- Supports iterative updates — agent calls `present()` again, new version replaces old
+- Can serve large files without bloating WS pipeline
+- "Save to project" is a clean copy from scratch dir → workspace
 
 **Cons:**
-- Two moving parts (file serving + signaling) vs one
-- Still needs the static file server from Option A
+- Two moving parts (file serving + signaling)
+- Agent must pass content through the tool (can't just `write_file` naturally)
+- Requires a new static file server endpoint on the session worker
 
 **Complexity:** Medium
+**Best for:** Multi-file presentations, large content, iterative refinement
 
 ---
 
-### Option D: Extend the existing preview system with a built-in static server
+### Option D: Built-in static server on a scratch directory
 
-Instead of a separate "present" concept, make the preview pane capable of showing static files without Docker Compose. The session container always runs a minimal static file server on a known port.
+Like Option A's "extend the preview system" idea, but serving from a scratch dir instead of the workspace. The session worker's Fastify instance serves static files on a reserved path — no separate process needed.
 
 **How it works:**
 
-1. Session worker starts a lightweight static server (e.g., `sirv` or built-in Fastify static) on a fixed port (e.g., `9100`) at container start — always on, near-zero overhead
-2. Agent writes files to workspace; the static server serves them immediately
-3. Agent tells the user "open the preview" or triggers it programmatically
-4. Preview proxy routes to port `9100` like any other preview port
-5. Client shows it in the existing PreviewFrame with no changes to the iframe pool, port selector, etc.
+1. Agent writes files via the `present` tool (same as Option C)
+2. Session worker writes to `/tmp/present/` and registers the route on its existing Fastify instance
+3. Preview proxy routes to the session worker's present endpoint
+4. Client shows it in the PreviewFrame as a special "Presentation" port
 
 **Pros:**
-- Minimal new concepts — reuses the entire existing preview pipeline
-- Port selector "just works" — static server shows up as a detected port
-- Multi-file, relative paths, hot reload — all free from existing infrastructure
-- Agent doesn't need a new tool; it writes files and the user opens the preview
-- No new WS message types
+- Ephemeral (scratch dir)
+- Reuses existing preview proxy pipeline
+- No new process — Fastify serves static files on an additional route
+- Multi-file support
 
 **Cons:**
-- Always-on process (though very lightweight — single-digit MB, no CPU when idle)
-- Conflates "app preview" with "agent presentation" — may be confusing when both are active
-- Less explicit — agent can't easily say "look at this specific file"; it's "look at port 9100"
-- Doesn't support non-HTML content natively (images, PDFs need an HTML wrapper)
+- Conflates "app preview" and "agent presentation" in the port selector
+- Less explicit signaling — relies on preview detection rather than a dedicated event
+- No inline-content fast path for small artifacts
 
 **Complexity:** Low-Medium
 
@@ -177,36 +193,57 @@ Rather than using the preview pane, render rich content inline in the chat messa
 
 ## Comparison matrix
 
-| Criterion                  | A: File conv. | B: WS artifact | C: Hybrid | D: Static server | E: Chat inline |
+| Criterion                  | A: Workspace | B: WS inline | C: Scratch+WS | D: Static srv | E: Chat inline |
 |---------------------------|:---:|:---:|:---:|:---:|:---:|
+| **Ephemeral by default**   | **No** | **Yes** | **Yes** | **Yes** | **Yes** |
 | Implementation complexity  | Med | **Low** | Med | Low-Med | Med-High |
 | Multi-file support         | Yes | No | Yes | Yes | No |
-| Hot reload                 | Yes | No | Yes | Yes | No |
-| Instant display            | Yes | **Yes** | Yes | Yes | Yes |
-| No new processes           | Yes | **Yes** | Yes | No | **Yes** |
-| Works with existing UI     | Mostly | Mostly | Yes | **Yes** | Partial |
 | Large content support      | Yes | No | Yes | Yes | No |
-| Agent simplicity           | Good | Good | **Best** | Good | Good |
-| Inline + panel display     | No | No | No | No | **Yes** |
-| No new endpoints needed    | No | **Yes** | No | No | **Yes** |
+| Instant display            | Yes | **Yes** | Yes | Yes | Yes |
+| No new processes           | Yes | **Yes** | Yes | Yes | **Yes** |
+| Works with existing UI     | Mostly | Mostly | Yes | **Yes** | Partial |
+| Agent simplicity           | Good | **Best** | Good | Good | Good |
+| Iterative updates          | Yes | Resend all | Yes | Yes | Resend all |
+| "Save to project" path     | N/A | Copy from msg | **Copy from scratch** | Copy from scratch | Copy from msg |
 
 ---
 
 ## Recommendation
 
-**Option C (Hybrid) as primary, with Option E (chat inline) as a future enhancement.**
+**Two-tier approach: Option B (inline) as the primary path, with Option C (scratch dir) as the upgrade path for complex presentations.**
 
-Rationale:
-- C gives the agent the most natural workflow: write files, present them. It handles everything from a single SVG to a multi-page HTML app.
-- The file-serving endpoint is simple and reusable — it's just static file serving from the workspace.
-- The signaling mechanism (tool or manifest file) is clean and doesn't overload the WS pipeline.
-- Option E is a great complement for small artifacts (inline diagrams in chat) but is higher complexity and can be layered on later.
+### Tier 1: Inline artifacts (Option B) — start here
 
-Option D is a close runner-up — it's simpler by reusing the preview pipeline — but it lacks the explicit "present this" signal, making it harder for the agent to direct the user's attention.
+Most presentations are a single self-contained blob: an SVG diagram, an HTML page with inline CSS/JS, a chart. For these, inline content over WS is the simplest possible implementation:
+
+- Agent calls `present({ content: "...", mimeType: "text/html", title: "Architecture Diagram" })`
+- Content flows through SSE → WS → client renders in preview pane via `srcdoc`
+- No files, no endpoints, no proxy changes
+- Perfectly ephemeral — content lives only in the message stream
+- Implementation: ~1 day (new message type + client renderer)
+
+### Tier 2: Scratch-backed presentations (Option C) — add when needed
+
+When someone needs multi-file support (HTML + CSS + JS), large content (images, complex apps), or iterative refinement with hot reload, add the scratch directory approach:
+
+- Agent calls `present({ files: {...}, entry: "index.html" })`
+- Files written to `/tmp/present/`, served by session worker, proxied to client
+- Still ephemeral — scratch dir is outside workspace
+
+This can be added later without breaking the Tier 1 API — the `present` tool just gains a `files` parameter alongside `content`.
+
+### Future: Chat inline (Option E)
+
+Small artifacts (SVG, chart) rendered inline in the message thread alongside the agent's explanation. Great UX but higher complexity — layer on after Tier 1 proves the concept.
+
+### Why not A or D?
+
+- **A (workspace files):** Not ephemeral. Rejected.
+- **D (static server):** Decent but lacks explicit signaling. The agent can't say "look at this" — it relies on the user noticing a new port. Also conflates preview and presentation.
 
 ---
 
-## Sketch of Option C implementation
+## Implementation sketch — Tier 1 (inline artifacts)
 
 ### New types
 
@@ -215,10 +252,10 @@ Option D is a close runner-up — it's simpler by reusing the preview pipeline �
 interface PresentContentMessage {
   type: "present_content";
   sessionId: string;
-  path: string;           // workspace-relative path (file or directory index)
-  title?: string;         // display title for the preview pane tab
-  mimeType?: string;      // hint; derived from extension if omitted
-  inline?: string;        // optional: small inline content (< 256KB) for Option B fallback
+  presentId: string;       // unique ID for this presentation (for updates/replacement)
+  content: string;          // the content (HTML string, SVG string, data URI, markdown)
+  mimeType: string;         // "text/html", "image/svg+xml", "text/markdown", "image/png"
+  title?: string;           // display title for the preview pane header
 }
 
 interface PresentClearedMessage {
@@ -227,63 +264,124 @@ interface PresentClearedMessage {
 }
 ```
 
-### Session worker: static file endpoint
+### Agent tool
+
+A `present` tool in the agent's tool list (registered in `tool-map.ts`, documented in shipit-docs):
 
 ```
-GET /present-files/*
+present({
+  content: "<html><body><h1>Hello</h1><div id='chart'></div><script>...</script></body></html>",
+  mimeType: "text/html",    // optional, default "text/html"
+  title: "Sales Chart"       // optional
+})
 ```
 
-Serves files from the workspace directory. Read-only. MIME types derived from file extensions. Directory requests serve `index.html` if present.
+The tool handler in the session worker:
+1. Generates a `presentId` (nanoid)
+2. Emits `present_content` via SSE
+3. Returns `{ presentId, status: "presented" }` to the agent
 
-Security headers: `X-Content-Type-Options: nosniff`, `Content-Security-Policy: sandbox allow-scripts`.
-
-### Agent interface
-
-The agent triggers presentation by writing a file and using one of:
-
-1. **Tool call** (preferred): A `present` tool exposed via the agent's tool list:
-   ```
-   present({ path: "output/index.html", title: "Landing Page Mockup" })
-   ```
-
-2. **Manifest file** (zero-tool fallback): Agent writes `.shipit/present.json`:
-   ```json
-   { "path": "output/index.html", "title": "Landing Page Mockup" }
-   ```
-   File watcher detects the write and emits the `present_content` event.
+For images/SVG, the agent can pass inline content directly:
+```
+present({
+  content: "<svg xmlns='...' viewBox='0 0 400 300'>...</svg>",
+  mimeType: "image/svg+xml",
+  title: "Architecture Diagram"
+})
+```
 
 ### Client changes
 
-- **PreviewFrame**: Add a `present` mode alongside the existing `preview` mode. When a `present_content` message arrives, switch the iframe src to the present-files URL. Show a "Presented by agent" badge. Auto-refresh on `files_changed` events that match the presented path.
-- **Preview store**: Track `presentedPath`, `presentedTitle`. Clear on `present_cleared`.
-- **Port selector**: Show "Agent presentation" as a virtual port option when content is being presented.
+- **Preview pane**: When a `present_content` message arrives, switch to "presentation mode":
+  - HTML: render in sandboxed iframe via `srcdoc` attribute
+  - SVG: render in iframe via `srcdoc` (wrapped in minimal HTML) or directly as `<img src="data:image/svg+xml,..."/>`
+  - Markdown: render with existing markdown renderer, display in a styled container
+  - Images: render as `<img>` with data URI
+- **Preview store**: Add `presentation: { presentId, content, mimeType, title } | null`. Clear on `present_cleared` or session switch.
+- **Preview pane header**: Show title, "Presented by agent" badge, "Save to project" button, dismiss button.
+- **"Save to project" action**: Opens a file-save dialog (or prompts agent), copies content to a workspace file. Transitions from ephemeral → persistent.
+- **Port selector**: When presentation is active, show "Presentation: {title}" as the selected option. User can switch back to preview ports, and switch back to presentation.
+
+### Sandboxing
+
+The `srcdoc` iframe gets:
+```html
+<iframe
+  sandbox="allow-scripts"
+  srcdoc="..."
+  style="width:100%;height:100%;border:none"
+/>
+```
+
+`allow-scripts` lets JS run (charts, interactivity). Omitting `allow-same-origin` means the content can't access cookies, storage, or the parent frame. Omitting `allow-top-navigation` prevents redirects. External network requests (CDN, fonts) work by default in sandboxed iframes.
+
+### Size limits
+
+- Inline content via WS: **max 1MB**. Beyond that, the agent gets an error from the tool: "Content too large for inline presentation. Consider simplifying or splitting."
+- Tier 2 (scratch dir) removes this limit by serving files over HTTP.
+
+---
+
+## Implementation sketch — Tier 2 (scratch directory, future)
+
+When Tier 1 proves insufficient for multi-file or large content:
+
+### Extended tool API
+
+```
+present({
+  files: {
+    "index.html": "<!DOCTYPE html>...",
+    "style.css": "body { ... }",
+    "app.js": "document.addEventListener(..."
+  },
+  entry: "index.html",        // which file to load in the iframe
+  title: "Landing Page v2"
+})
+```
+
+### Session worker additions
+
+1. Write files to `/tmp/present/{presentId}/`
+2. Register `GET /present-files/{presentId}/*` route (Fastify static plugin, scoped to the scratch dir)
+3. Emit `present_content` with `url` field instead of `content`
 
 ### Orchestrator proxy
 
-Add a route or extend `preview-proxy.ts`:
-
+Extend `preview-proxy.ts`:
 ```
-GET /present/:sessionId/*  →  container GET /present-files/*
+GET /present/:sessionId/:presentId/*  →  container GET /present-files/{presentId}/*
 ```
 
-Or reuse subdomain routing with a reserved port number (e.g., `{sessionId}--0.localhost` maps to the present-files endpoint).
+### Lifecycle
+
+- Scratch dirs are per-presentation. New `present()` call creates a new dir.
+- Old presentations are cleaned up after N presentations or M minutes (LRU).
+- Container stop wipes `/tmp/` — automatic cleanup.
 
 ---
 
 ## Open questions
 
-1. **Tool vs. manifest vs. both?** — Tools require agent-side support (the tool must be registered). A manifest file works with any agent. Supporting both adds small complexity but maximum flexibility.
-2. **Inline content size limit** — For the Option B fallback path (small inline artifacts), what's the max size to send over WS? 256KB seems reasonable.
-3. **Multiple presentations** — Can the agent present multiple things simultaneously (tabs)? Or is it always single-presentation, latest-wins?
-4. **Interaction with full preview** — When Docker Compose preview is running AND the agent presents a file, how do they coexist? Separate tabs in the port selector? Priority?
-5. **CSP and sandboxing** — Presented HTML needs network access (CDN scripts, Google Fonts) but must not access the parent frame. `sandbox="allow-scripts allow-same-origin"` on the iframe? Or use a null origin?
+1. **Max inline size** — 256KB? 1MB? Need to test WS/SSE backpressure impact at various sizes.
+2. **Multiple presentations** — latest-wins (simple) or tabbed (powerful)? Start with latest-wins, add tabs if users want to compare.
+3. **Interaction with full preview** — presentation and preview are separate "modes" in the preview pane. User can toggle between them. Presentation auto-activates when agent presents; preview stays available via port selector.
+4. **Update semantics** — when agent calls `present()` again, does it replace the current presentation or create a new one? Propose: replace by default, but `presentId` allows targeted updates if needed.
+5. **Chat integration** — should a small thumbnail/link appear in the chat message when the agent presents? Low-effort way to connect the chat flow to the visual output without full Option E.
+6. **"Save to project" UX** — modal with file path input? Or agent-mediated ("save this as `public/chart.html`")? Agent-mediated feels more natural for ShipIt.
 
 ---
 
 ## Key files (to be updated when implemented)
 
-- `src/server/session/session-worker.ts` — new `/present-files/*` endpoint
-- `src/server/orchestrator/preview-proxy.ts` — proxy route for present files
-- `src/server/shared/types/ws-server-messages.ts` — new message types
-- `src/client/components/PreviewFrame.tsx` — present mode rendering
-- `src/client/stores/preview-store.ts` — present state tracking
+### Tier 1
+- `src/server/session/session-worker.ts` — `POST /present` endpoint (tool handler)
+- `src/server/shared/types/ws-server-messages.ts` — `PresentContentMessage`, `PresentClearedMessage`
+- `src/server/session/agents/tool-map.ts` — register `present` tool
+- `src/server/shipit-docs/` — document `present` tool for the agent
+- `src/client/components/PreviewFrame.tsx` — presentation mode rendering
+- `src/client/stores/preview-store.ts` — presentation state
+
+### Tier 2 (future)
+- `src/server/session/session-worker.ts` — `GET /present-files/*` static serving
+- `src/server/orchestrator/preview-proxy.ts` — proxy route for scratch-dir files
