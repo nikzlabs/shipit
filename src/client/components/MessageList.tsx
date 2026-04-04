@@ -10,6 +10,7 @@ import { buildVisualElements } from "./visual-elements.js";
 import { RollbackDropdown, type RollbackMode } from "./RollbackDropdown.js";
 import { RewindDropdown, type RewindMode } from "./RewindDropdown.js";
 import { RocketLaunch } from "./RocketLaunch.js";
+import { useSessionStore } from "../stores/session-store.js";
 
 // Sub-component imports
 import { ToolCallGroup, ToolUseItem } from "./message-tools.js";
@@ -193,7 +194,8 @@ export function MessageList({
     }
   }
 
-  const isEmpty = messages.length === 0 && !isLoading;
+  const historyLoaded = useSessionStore((s) => s.historyLoaded);
+  const isEmpty = messages.length === 0 && !isLoading && historyLoaded;
 
   return (
     <div ref={containerRef} className={isEmpty ? "flex-1" : "flex-1 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-4"} style={isEmpty ? { clipPath: "inset(0 0 -80px 0)" } : undefined}>
