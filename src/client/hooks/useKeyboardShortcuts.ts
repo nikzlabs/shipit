@@ -14,11 +14,15 @@ export function useKeyboardShortcuts(params: {
 }): void {
   const { search, setSearchOpen, setShortcutsOpen, isLoading, searchOpen, shortcutsOpen, settingsOpen, handleInterrupt } = params;
 
-  // Ctrl+F / Cmd+F to toggle search bar
+  // Ctrl+F / Cmd+F to toggle search bar (only when focus is in the chat panel)
+  // When focus is elsewhere (right panel, dialogs, iframes), let the browser's native search work
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        const target = e.target as HTMLElement | null;
+        const inChatPanel = !target || target === document.body || target.closest("[data-chat-panel]");
+        if (!inChatPanel) return;
         e.preventDefault();
         setSearchOpen((prev: boolean) => {
           if (prev) {
