@@ -58,15 +58,17 @@ interface BootstrapResponse {
 export async function loadSessionHistory(sessionId: string): Promise<void> {
   const res = await fetch(`/api/sessions/${sessionId}/history`);
   const data = await res.json() as HistoryResponse;
-  useSessionStore.getState().setMessages(
+  const session = useSessionStore.getState();
+  session.setMessages(
     data.messages.map((m) => ({ ...m, streaming: m.inProgress ?? false } as ChatMessage)),
   );
   if (data.agentRunning) {
-    useSessionStore.getState().setIsLoading(true);
+    session.setIsLoading(true);
   } else {
-    useSessionStore.getState().setIsLoading(false);
-    useSessionStore.getState().setActivity(undefined);
+    session.setIsLoading(false);
+    session.setActivity(undefined);
   }
+  session.setHistoryLoaded(true);
   useGitStore.getState().setCommits(data.commits);
   useFileStore.getState().setTree(data.fileTree);
 
