@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, beforeAll, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { MessageList, parseMessageSegments, type ChatMessage, type ChatMessageImage, type ToolUseBlock, type ToolResultBlock } from "./MessageList.js";
+import { useSessionStore } from "../stores/session-store.js";
 
 // jsdom doesn't implement scrollIntoView
 beforeAll(() => {
@@ -16,12 +17,20 @@ function msg(role: "user" | "assistant", text: string, opts?: { toolUse?: ToolUs
 describe("MessageList", () => {
   describe("empty state", () => {
     it("shows rocket launch animation when there are no messages and not loading", () => {
+      useSessionStore.getState().setHistoryLoaded(true);
       const { container } = render(<MessageList messages={[]} isLoading={false} />);
       expect(container.querySelector(".rocket-scene")).toBeInTheDocument();
     });
 
     it("hides rocket launch animation when loading with no messages", () => {
+      useSessionStore.getState().setHistoryLoaded(true);
       const { container } = render(<MessageList messages={[]} isLoading={true} />);
+      expect(container.querySelector(".rocket-scene")).not.toBeInTheDocument();
+    });
+
+    it("hides rocket launch animation before history is loaded (session switch)", () => {
+      useSessionStore.getState().setHistoryLoaded(false);
+      const { container } = render(<MessageList messages={[]} isLoading={false} />);
       expect(container.querySelector(".rocket-scene")).not.toBeInTheDocument();
     });
   });

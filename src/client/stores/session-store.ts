@@ -18,6 +18,8 @@ interface SessionState {
   pendingWsMessage: Record<string, unknown> | undefined;
   /** Text to prefill into the message input (consumed and cleared by MessageInput). */
   prefillText: string | undefined;
+  /** True once session history has been loaded from the server (prevents rocket flash on session switch). */
+  historyLoaded: boolean;
 
   // Actions
   setSessionId: (id: string | undefined) => void;
@@ -28,6 +30,7 @@ interface SessionState {
   updateLastMessage: (updater: (msg: ChatMessage) => ChatMessage) => void;
   setIsLoading: (loading: boolean) => void;
   setActivity: (activity: StreamingActivity | undefined) => void;
+  setHistoryLoaded: (loaded: boolean) => void;
   setSessions: (
     sessions: SessionInfo[] | ((prev: SessionInfo[]) => SessionInfo[]),
   ) => void;
@@ -70,6 +73,7 @@ const initialResettableState = {
   queuedMessages: [] as { text: string; position: number }[],
   pendingWsMessage: undefined as Record<string, unknown> | undefined,
   prefillText: undefined as string | undefined,
+  historyLoaded: false,
 };
 
 export const useSessionStore = create<SessionState>((set) => ({
@@ -103,6 +107,8 @@ export const useSessionStore = create<SessionState>((set) => ({
   setIsLoading: (isLoading) => set({ isLoading }),
 
   setActivity: (activity) => set({ activity }),
+
+  setHistoryLoaded: (historyLoaded) => set({ historyLoaded }),
 
   setSessions: (sessions) =>
     set((state) => ({
