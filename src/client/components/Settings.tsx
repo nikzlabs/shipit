@@ -8,6 +8,7 @@ import { CodexAuthCard } from "./CodexAuthCard.js";
 import { GitHubTokenForm } from "./GitHubTokenForm.js";
 import { UtilityModelCard } from "./UtilityModelCard.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 
 const MAX_LENGTH = 50_000;
 
@@ -39,6 +40,58 @@ export interface SettingsProps {
   onSecretsSave?: (repoUrl: string, secrets: Record<string, string>) => void;
   onSecretsLoad?: (repoUrl: string) => Promise<Record<string, string>>;
   onClose: () => void;
+}
+
+function ToggleSwitch({ enabled, onToggle, testId }: { enabled: boolean; onToggle: (v: boolean) => void; testId?: string }) {
+  return (
+    <button
+      onClick={() => onToggle(!enabled)}
+      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+        enabled ? "bg-(--color-accent)" : "bg-(--color-bg-hover)"
+      }`}
+      role="switch"
+      aria-checked={enabled}
+      data-testid={testId}
+    >
+      <span
+        className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+          enabled ? "translate-x-4.5" : "translate-x-0.5"
+        }`}
+      />
+    </button>
+  );
+}
+
+function NotificationSettings() {
+  const notifyOnFinish = useSettingsStore((s) => s.notifyOnFinish);
+  const soundOnFinish = useSettingsStore((s) => s.soundOnFinish);
+  const setNotifyOnFinish = useSettingsStore((s) => s.setNotifyOnFinish);
+  const setSoundOnFinish = useSettingsStore((s) => s.setSoundOnFinish);
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-medium text-(--color-text-primary)">Notifications</h3>
+      <p className="text-sm text-(--color-text-secondary)">
+        Get notified when the agent finishes a turn.
+      </p>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between py-1">
+          <div>
+            <span className="text-sm text-(--color-text-primary)">Browser notification</span>
+            <p className="text-xs text-(--color-text-tertiary)">Show a desktop notification when the tab is in the background</p>
+          </div>
+          <ToggleSwitch enabled={notifyOnFinish} onToggle={setNotifyOnFinish} testId="settings-notify-on-finish" />
+        </div>
+        <div className="flex items-center justify-between py-1">
+          <div>
+            <span className="text-sm text-(--color-text-primary)">Sound</span>
+            <p className="text-xs text-(--color-text-tertiary)">Play a chime when the agent finishes</p>
+          </div>
+          <ToggleSwitch enabled={soundOnFinish} onToggle={setSoundOnFinish} testId="settings-sound-on-finish" />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function Settings({
@@ -433,6 +486,10 @@ export function Settings({
 
           <TabsContent value="advanced">
             <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
+              <NotificationSettings />
+
+              <div className="border-t border-(--color-border-secondary)" />
+
               <div className="space-y-3">
                 <h3 className="text-sm font-medium text-(--color-text-primary)">Max Idle Containers</h3>
                 <p className="text-sm text-(--color-text-secondary)">
