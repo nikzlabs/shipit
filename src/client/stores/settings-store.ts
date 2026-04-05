@@ -13,6 +13,7 @@ interface SettingsState {
   agentSystemInstructions: string;
   notifyOnFinish: boolean;
   soundOnFinish: boolean;
+  autoCreatePr: boolean;
 
   setHasSystemPrompt: (has: boolean) => void;
   setSystemPromptContent: (content: string) => void;
@@ -21,6 +22,7 @@ interface SettingsState {
   setAgentSystemInstructions: (text: string) => void;
   setNotifyOnFinish: (enabled: boolean) => void;
   setSoundOnFinish: (enabled: boolean) => void;
+  setAutoCreatePr: (enabled: boolean) => void;
   setPermissionMode: (mode: PermissionMode) => void;
   setGithubStatus: (status: { authenticated: boolean; username?: string; avatarUrl?: string }) => void;
   addPendingFile: (filePath: string) => void;
@@ -53,6 +55,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   agentSystemInstructions: "",
   notifyOnFinish: getSavedNotifyOnFinish(),
   soundOnFinish: getSavedSoundOnFinish(),
+  autoCreatePr: false,
 
   setHasSystemPrompt: (has) => set({ hasSystemPrompt: has }),
 
@@ -73,6 +76,8 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     saveSoundOnFinish(enabled);
     set({ soundOnFinish: enabled });
   },
+
+  setAutoCreatePr: (enabled) => set({ autoCreatePr: enabled }),
 
   setPermissionMode: (mode) => {
     savePermissionMode(mode);

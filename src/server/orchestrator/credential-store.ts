@@ -17,6 +17,7 @@ interface CredentialData {
   utilityModel?: UtilityModelConfig;
   maxIdleContainers?: number;
   agentSystemInstructionsEnabled?: boolean;
+  autoCreatePr?: boolean;
 }
 
 const DEFAULT_CREDENTIALS_DIR = "/credentials";
@@ -135,6 +136,17 @@ export class CredentialStore {
 
   setAgentSystemInstructionsEnabled(enabled: boolean): void {
     this.data.agentSystemInstructionsEnabled = enabled;
+    this.save();
+  }
+
+  // ---- Auto-create PR ----
+
+  getAutoCreatePr(): boolean {
+    return this.data.autoCreatePr ?? false;
+  }
+
+  setAutoCreatePr(enabled: boolean): void {
+    this.data.autoCreatePr = enabled;
     this.save();
   }
 

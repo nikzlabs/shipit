@@ -14,6 +14,7 @@ import type { PrCardState } from "../stores/pr-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 import { Button } from "./ui/button.js";
 import {
   GitBranchIcon,
@@ -341,6 +342,33 @@ function DeploymentStatusRow({ deployments }: { deployments: GitHubDeploymentSta
 
 // ---- Phase renderers ----
 
+function AutoCreatePrToggle() {
+  const autoCreatePr = useSettingsStore((s) => s.autoCreatePr);
+  const handleToggle = async () => {
+    const newValue = !autoCreatePr;
+    useSettingsStore.getState().setAutoCreatePr(newValue);
+    try {
+      await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoCreatePr: newValue }),
+      });
+    } catch (err) {
+      // Revert on failure
+      useSettingsStore.getState().setAutoCreatePr(!newValue);
+      console.error("[pr-card] Failed to toggle auto-create PR:", err);
+    }
+  };
+  return (
+    <ToggleSwitch
+      label="Auto-create PR"
+      enabled={autoCreatePr}
+      onToggle={() => void handleToggle()}
+      title={autoCreatePr ? "Disable auto-create PR for new sessions" : "Enable auto-create PR for new sessions"}
+    />
+  );
+}
+
 function ReadyPhase({ card, sessionId, creating: externalCreating }: { card: PrCardState; sessionId: string; creating?: boolean }) {
   const quickCreate = usePrStore((s) => s.quickCreate);
   const [localCreating, setLocalCreating] = useState(false);
@@ -372,6 +400,11 @@ function ReadyPhase({ card, sessionId, creating: externalCreating }: { card: PrC
             {creating && <CircleNotchIcon size={14} className="animate-spin" />}
             {creating ? "Creating PR..." : "Create PR"}
           </Button>
+          <OverflowMenu>
+            <div className="px-2 py-1">
+              <AutoCreatePrToggle />
+            </div>
+          </OverflowMenu>
         </span>
       )}
     </div>
