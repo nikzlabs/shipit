@@ -34,12 +34,12 @@ function pathContext(docPath: string): string | null {
   return docPath.slice(0, lastSlash + 1);
 }
 
-function sortByStatus(docs: DocEntry[]): DocEntry[] {
+function sortByStatusThenPath(docs: DocEntry[]): DocEntry[] {
   return [...docs].sort((a, b) => {
     const orderA = a.status ? STATUS_CONFIG[a.status]?.order ?? 99 : 99;
     const orderB = b.status ? STATUS_CONFIG[b.status]?.order ?? 99 : 99;
     if (orderA !== orderB) return orderA - orderB;
-    return a.title.localeCompare(b.title);
+    return a.path.localeCompare(b.path);
   });
 }
 
@@ -79,7 +79,7 @@ export function DocsViewer({ files, onFileClick, onRefresh, onReviewFeature }: D
     );
   }
 
-  const sortedTracked = sortByStatus(tracked);
+  const sortedTracked = sortByStatusThenPath(tracked);
   const showTabs = hasTracked && hasUntracked;
 
   return (
@@ -181,7 +181,7 @@ export function DocsViewer({ files, onFileClick, onRefresh, onReviewFeature }: D
                 Other Docs
               </div>
             )}
-            {untracked.map((doc) => (
+            {[...untracked].sort((a, b) => a.path.localeCompare(b.path)).map((doc) => (
               <button
                 key={doc.path}
                 onClick={() => onFileClick(doc.path)}
