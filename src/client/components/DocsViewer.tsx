@@ -34,8 +34,13 @@ function pathContext(docPath: string): string | null {
   return docPath.slice(0, lastSlash + 1);
 }
 
-function sortAlphabetically(docs: DocEntry[]): DocEntry[] {
-  return [...docs].sort((a, b) => a.title.localeCompare(b.title));
+function sortByStatusThenPath(docs: DocEntry[]): DocEntry[] {
+  return [...docs].sort((a, b) => {
+    const orderA = a.status ? STATUS_CONFIG[a.status]?.order ?? 99 : 99;
+    const orderB = b.status ? STATUS_CONFIG[b.status]?.order ?? 99 : 99;
+    if (orderA !== orderB) return orderA - orderB;
+    return a.path.localeCompare(b.path);
+  });
 }
 
 type Tab = "tracked" | "other";
@@ -74,7 +79,7 @@ export function DocsViewer({ files, onFileClick, onRefresh, onReviewFeature }: D
     );
   }
 
-  const sortedTracked = sortAlphabetically(tracked);
+  const sortedTracked = sortByStatusThenPath(tracked);
   const showTabs = hasTracked && hasUntracked;
 
   return (

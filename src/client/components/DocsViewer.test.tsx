@@ -109,22 +109,28 @@ describe("DocsViewer", () => {
       expect(screen.queryByText(/Other/)).not.toBeInTheDocument();
     });
 
-    it("sorts tracked docs alphabetically by title", () => {
+    it("sorts tracked docs by status then alphabetically by path", () => {
       const props = defaultProps();
       props.files = [
-        makeDoc({ path: "d.md", title: "D-Done", status: "done" }),
-        makeDoc({ path: "a.md", title: "A-Planned", status: "planned" }),
-        makeDoc({ path: "c.md", title: "C-Paused", status: "paused" }),
-        makeDoc({ path: "b.md", title: "B-InProgress", status: "in-progress" }),
+        makeDoc({ path: "docs/004-done/plan.md", title: "D-Done", status: "done" }),
+        makeDoc({ path: "docs/001-planned/plan.md", title: "A-Planned", status: "planned" }),
+        makeDoc({ path: "docs/003-paused/plan.md", title: "C-Paused", status: "paused" }),
+        makeDoc({ path: "docs/002-inprog-b/plan.md", title: "B-InProgress", status: "in-progress" }),
+        makeDoc({ path: "docs/005-inprog-a/plan.md", title: "A-InProgress", status: "in-progress" }),
       ];
       render(<DocsViewer {...props} />);
       const items = screen.getAllByRole("button").filter(
         (btn) => !btn.textContent?.includes("Reload") && !btn.textContent?.includes("Tracked") && !btn.textContent?.includes("Other"),
       );
-      expect(items[0].textContent).toContain("A-Planned");
-      expect(items[1].textContent).toContain("B-InProgress");
-      expect(items[2].textContent).toContain("C-Paused");
-      expect(items[3].textContent).toContain("D-Done");
+      // in-progress first, sorted by path
+      expect(items[0].textContent).toContain("B-InProgress");
+      expect(items[1].textContent).toContain("A-InProgress");
+      // then planned
+      expect(items[2].textContent).toContain("A-Planned");
+      // then paused
+      expect(items[3].textContent).toContain("C-Paused");
+      // then done
+      expect(items[4].textContent).toContain("D-Done");
     });
 
     it("shows path context for tracked docs in subdirectories", () => {
