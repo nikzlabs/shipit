@@ -8,6 +8,7 @@ import { getErrorMessage, resolveFileAttachments, resolveUploadRefs, formatFileC
 import { wireAgentListeners } from "./agent-listeners.js";
 import { postTurnCommit } from "./post-turn.js";
 import { buildAgentSystemInstructions } from "../agent-instructions.js";
+import { quickCreatePr } from "../services/github.js";
 /**
  * Save base64 images to the session's uploads directory on the host.
  * Returns a prompt prefix referencing the saved files (container paths).
@@ -242,19 +243,77 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
           if (prStatus) {
             // PR already exists — the poller handles updates via SSE
           } else {
-            // No PR yet — send a "ready" card with diff stats vs base branch
-            const headBranch = session.branch || await git.getCurrentBranch();
-            const { insertions: totalInsertions, deletions: totalDeletions } = await git.diffStatVsBranch("main");
+            // No PR yet — check if auto-create PR is enabled for new sessions
+            const shouldAutoCreate = isNewSession
+              && ctx.credentialStore.getAutoCreatePr()
+              && ctx.githubAuthManager.authenticated;
 
-            emitDone({
-              type: "pr_lifecycle_update",
-              sessionId: capturedSessionId,
-              cardId: `pr-card-${capturedSessionId}`,
-              phase: "ready",
-              headBranch,
-              totalInsertions,
-              totalDeletions,
-            });
+            if (shouldAutoCreate) {
+              // Auto-create PR: emit "creating" phase, then create the PR
+              emitDone({
+                type: "pr_lifecycle_update",
+                sessionId: capturedSessionId,
+                cardId: `pr-card-${capturedSessionId}`,
+                phase: "creating",
+              });
+
+              try {
+                const result = await quickCreatePr(
+                  git,
+                  ctx.githubAuthManager,
+                  ctx.chatHistoryManager,
+                  ctx.generateText,
+                  capturedSessionId,
+                  session.title ?? "",
+                  capturedSessionDir,
+                  session.remoteUrl,
+                );
+
+                // Track the new PR in the poller
+                if (ctx.prStatusPoller && session.remoteUrl) {
+                  ctx.prStatusPoller.trackSession(capturedSessionId, session.remoteUrl);
+                }
+
+                emitDone({
+                  type: "pr_lifecycle_update",
+                  sessionId: capturedSessionId,
+                  cardId: `pr-card-${capturedSessionId}`,
+                  phase: "open",
+                  pr: {
+                    number: result.number,
+                    title: result.title,
+                    url: result.url,
+                    baseBranch: result.baseBranch,
+                    headBranch: result.headBranch,
+                    insertions: result.insertions,
+                    deletions: result.deletions,
+                  },
+                });
+              } catch (err) {
+                console.error("[pr-lifecycle] Auto-create PR failed:", getErrorMessage(err));
+                emitDone({
+                  type: "pr_lifecycle_update",
+                  sessionId: capturedSessionId,
+                  cardId: `pr-card-${capturedSessionId}`,
+                  phase: "error",
+                  errorMessage: getErrorMessage(err),
+                });
+              }
+            } else {
+              // Send a "ready" card with diff stats vs base branch
+              const headBranch = session.branch || await git.getCurrentBranch();
+              const { insertions: totalInsertions, deletions: totalDeletions } = await git.diffStatVsBranch("main");
+
+              emitDone({
+                type: "pr_lifecycle_update",
+                sessionId: capturedSessionId,
+                cardId: `pr-card-${capturedSessionId}`,
+                phase: "ready",
+                headBranch,
+                totalInsertions,
+                totalDeletions,
+              });
+            }
           }
         }
       } catch (err) {

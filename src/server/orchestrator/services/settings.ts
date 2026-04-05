@@ -54,7 +54,8 @@ export async function getGlobalSettings(
   const agents = listAgents(agentRegistry);
   const maxIdleContainers = credentialStore?.getMaxIdleContainers() ?? 5;
   const agentSystemInstructionsEnabled = credentialStore?.getAgentSystemInstructionsEnabled() ?? true;
-  return { gitIdentity, systemPrompt, agents, defaultAgentId, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions: AGENT_SYSTEM_INSTRUCTIONS };
+  const autoCreatePr = credentialStore?.getAutoCreatePr() ?? false;
+  return { gitIdentity, systemPrompt, agents, defaultAgentId, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions: AGENT_SYSTEM_INSTRUCTIONS, autoCreatePr };
 }
 
 // ---- Mutation operations ----
@@ -84,6 +85,7 @@ export async function saveGlobalSettings(
   systemPrompt?: string,
   maxIdleContainers?: number,
   agentSystemInstructionsEnabled?: boolean,
+  autoCreatePr?: boolean,
 ): Promise<GlobalSettings> {
   // Save git identity if provided
   if (gitIdentity) {
@@ -120,6 +122,11 @@ export async function saveGlobalSettings(
   // Save agent system instructions toggle if provided
   if (agentSystemInstructionsEnabled !== undefined) {
     credentialStore.setAgentSystemInstructionsEnabled(agentSystemInstructionsEnabled);
+  }
+
+  // Save auto-create PR toggle if provided
+  if (autoCreatePr !== undefined) {
+    credentialStore.setAutoCreatePr(autoCreatePr);
   }
 
   return getGlobalSettings(agentRegistry, defaultAgentId, workspaceDir, credentialStore);
