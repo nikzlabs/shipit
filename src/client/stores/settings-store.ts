@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { PermissionMode, FileContextRef } from "../../server/shared/types.js";
-import { getSavedPermissionMode, savePermissionMode } from "../utils/local-storage.js";
+import { getSavedPermissionMode, savePermissionMode, getSavedNotifyOnFinish, saveNotifyOnFinish, getSavedSoundOnFinish, saveSoundOnFinish } from "../utils/local-storage.js";
 
 interface SettingsState {
   hasSystemPrompt: boolean;
@@ -11,12 +11,16 @@ interface SettingsState {
   maxIdleContainers: number;
   agentSystemInstructionsEnabled: boolean;
   agentSystemInstructions: string;
+  notifyOnFinish: boolean;
+  soundOnFinish: boolean;
 
   setHasSystemPrompt: (has: boolean) => void;
   setSystemPromptContent: (content: string) => void;
   setMaxIdleContainers: (n: number) => void;
   setAgentSystemInstructionsEnabled: (enabled: boolean) => void;
   setAgentSystemInstructions: (text: string) => void;
+  setNotifyOnFinish: (enabled: boolean) => void;
+  setSoundOnFinish: (enabled: boolean) => void;
   setPermissionMode: (mode: PermissionMode) => void;
   setGithubStatus: (status: { authenticated: boolean; username?: string; avatarUrl?: string }) => void;
   addPendingFile: (filePath: string) => void;
@@ -47,6 +51,8 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   maxIdleContainers: 5,
   agentSystemInstructionsEnabled: true,
   agentSystemInstructions: "",
+  notifyOnFinish: getSavedNotifyOnFinish(),
+  soundOnFinish: getSavedSoundOnFinish(),
 
   setHasSystemPrompt: (has) => set({ hasSystemPrompt: has }),
 
@@ -57,6 +63,16 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   setAgentSystemInstructionsEnabled: (enabled) => set({ agentSystemInstructionsEnabled: enabled }),
 
   setAgentSystemInstructions: (text) => set({ agentSystemInstructions: text }),
+
+  setNotifyOnFinish: (enabled) => {
+    saveNotifyOnFinish(enabled);
+    set({ notifyOnFinish: enabled });
+  },
+
+  setSoundOnFinish: (enabled) => {
+    saveSoundOnFinish(enabled);
+    set({ soundOnFinish: enabled });
+  },
 
   setPermissionMode: (mode) => {
     savePermissionMode(mode);

@@ -5,6 +5,8 @@ const SIDEBAR_COLLAPSED_KEY = "vibe-sidebar-collapsed";
 const AGENT_PREFERENCE_KEY = "vibe-agent-id";
 const MODEL_PREFERENCE_KEY = "vibe-model-id";
 const ACTIVE_REPO_KEY = "vibe-active-repo";
+const NOTIFY_ON_FINISH_KEY = "shipit-notify-on-finish";
+const SOUND_ON_FINISH_KEY = "shipit-sound-on-finish";
 
 export function getSavedPermissionMode(): PermissionMode {
   try {
@@ -99,4 +101,38 @@ export function saveActiveRepo(url: string | undefined): void {
   }
 }
 
-export { PERMISSION_MODE_KEY, SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY };
+export function getSavedNotifyOnFinish(): boolean {
+  try {
+    const saved = localStorage.getItem(NOTIFY_ON_FINISH_KEY);
+    return saved === null ? true : saved === "true";
+  } catch {
+    return true;
+  }
+}
+
+export function saveNotifyOnFinish(enabled: boolean): void {
+  try {
+    localStorage.setItem(NOTIFY_ON_FINISH_KEY, String(enabled));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+export function getSavedSoundOnFinish(): boolean {
+  try {
+    const saved = localStorage.getItem(SOUND_ON_FINISH_KEY);
+    return saved === null ? true : saved === "true";
+  } catch {
+    return true;
+  }
+}
+
+export function saveSoundOnFinish(enabled: boolean): void {
+  try {
+    localStorage.setItem(SOUND_ON_FINISH_KEY, String(enabled));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+export { PERMISSION_MODE_KEY, SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY };
