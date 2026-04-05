@@ -109,7 +109,7 @@ describe("DocsViewer", () => {
       expect(screen.queryByText(/Other/)).not.toBeInTheDocument();
     });
 
-    it("sorts tracked docs by status: in-progress > planned > paused > done", () => {
+    it("sorts tracked docs alphabetically by title", () => {
       const props = defaultProps();
       props.files = [
         makeDoc({ path: "d.md", title: "D-Done", status: "done" }),
@@ -121,8 +121,8 @@ describe("DocsViewer", () => {
       const items = screen.getAllByRole("button").filter(
         (btn) => !btn.textContent?.includes("Reload") && !btn.textContent?.includes("Tracked") && !btn.textContent?.includes("Other"),
       );
-      expect(items[0].textContent).toContain("B-InProgress");
-      expect(items[1].textContent).toContain("A-Planned");
+      expect(items[0].textContent).toContain("A-Planned");
+      expect(items[1].textContent).toContain("B-InProgress");
       expect(items[2].textContent).toContain("C-Paused");
       expect(items[3].textContent).toContain("D-Done");
     });
