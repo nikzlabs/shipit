@@ -152,7 +152,7 @@ export function AppLayout({
       {isMobile ? (
         <>
           <div className="flex flex-col flex-1 min-h-0">
-            {(showHomeScreen && !showNewSessionView) || mobilePanel === "chat" ? <div className="flex flex-col flex-1 min-h-0">{chatPanel}</div> : <div className="flex flex-col flex-1 min-h-0 bg-(--color-bg-secondary)">{rightPanel}</div>}
+            {(showHomeScreen && !showNewSessionView) || mobilePanel === "chat" ? <div data-chat-panel className="flex flex-col flex-1 min-h-0">{chatPanel}</div> : <div className="flex flex-col flex-1 min-h-0 bg-(--color-bg-secondary)">{rightPanel}</div>}
           </div>
           {(!showHomeScreen || showNewSessionView) && <MobileTabBar activePanel={mobilePanel} onChangePanel={onMobilePanelChange} />}
         </>
@@ -175,7 +175,7 @@ export function AppLayout({
             onCreateNewRepo={onCreateNewRepo}
           />
           <div ref={containerRef} className="flex flex-1 min-h-0 overflow-hidden">
-            <div className={`flex flex-col min-w-0 ${showHomeScreen ? "" : "border-r border-(--color-border-primary)"}`} style={{ width: showHomeScreen ? "100%" : `${fraction * 100}%` }}>
+            <div data-chat-panel className={`flex flex-col min-w-0 ${showHomeScreen ? "" : "border-r border-(--color-border-primary)"}`} style={{ width: showHomeScreen ? "100%" : `${fraction * 100}%` }}>
               {chatPanel}
             </div>
             {!showHomeScreen && (
