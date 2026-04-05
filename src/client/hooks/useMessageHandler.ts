@@ -503,6 +503,27 @@ function processMessage(
       terminal.clearEntries();
     }
 
+    if (data.type === "install_status") {
+      const stepStatus = data.status === "complete" || data.status === "skipped"
+        ? "complete" as const
+        : data.status === "error"
+          ? "error" as const
+          : "running" as const;
+      preview.setStartupStep({
+        stepId: "install",
+        status: stepStatus,
+        message: data.message,
+      });
+    }
+
+    if (data.type === "install_log") {
+      terminal.addEntry({
+        source: "install" as "preview",
+        text: data.text,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     if (data.type === "service_list") {
       preview.setServices(
         data.services.map((s) => ({

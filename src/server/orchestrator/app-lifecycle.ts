@@ -514,6 +514,17 @@ function setupServiceManager(
     });
   });
 
+  // Start install and compose stack in parallel — install runs in the agent
+  // container while compose services start in their own containers.
+  const installCommands = shipitConfig.agent.install;
+
+  // Fire install on the agent container (non-blocking, progress via SSE)
+  if (installCommands.length > 0 && runner instanceof ContainerSessionRunner) {
+    void runner.runInstall(installCommands).catch((err: unknown) => {
+      console.error(`[install:${runner.sessionId}] Install failed:`, getErrorMessage(err));
+    });
+  }
+
   // Start the compose stack asynchronously — the full sequence (compose up →
   // network join → IP resolution → event flush) is handled inside mgr.start().
   void (async () => {
