@@ -23,6 +23,7 @@ export interface GlobalSettings {
   maxIdleContainers: number;
   agentSystemInstructionsEnabled: boolean;
   agentSystemInstructions: string;
+  autoCreatePr: boolean;
 }
 
 export interface GitHubStatus {
