@@ -356,7 +356,6 @@ export function MessageInput({
               <PlanModeToggle
                 mode={permissionMode}
                 onChange={onPermissionModeChange}
-                disabled={disabled}
               />
             )}
 

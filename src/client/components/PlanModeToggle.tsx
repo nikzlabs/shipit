@@ -6,11 +6,9 @@ import type { PermissionMode } from "../../server/shared/types.js";
 export function PlanModeToggle({
   mode,
   onChange,
-  disabled,
 }: {
   mode: PermissionMode;
   onChange: (mode: PermissionMode) => void;
-  disabled: boolean;
 }) {
   const isPlan = mode === "plan";
 
@@ -22,10 +20,9 @@ export function PlanModeToggle({
     <WithTooltip label={isPlan ? "Plan mode (read-only)" : "Auto mode"}>
     <button
       onClick={toggle}
-      disabled={disabled}
       aria-label={isPlan ? "Switch to auto mode" : "Switch to plan mode"}
       aria-pressed={isPlan}
-      className={`flex items-center gap-1.5 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+      className={`flex items-center gap-1.5 rounded-lg transition-colors ${
         isPlan
           ? "px-1.5 py-1.5 bg-(--color-accent)/15 text-(--color-accent) hover:bg-(--color-accent)/25"
           : "p-1.5 text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover)"
