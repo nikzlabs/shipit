@@ -258,9 +258,14 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
           if (prStatus) {
             // PR already exists — the poller handles updates via SSE
           } else {
-            // No PR yet — check if auto-create PR is enabled for new sessions
-            const shouldAutoCreate = isNewSession
-              && ctx.credentialStore.getAutoCreatePr()
+            // No PR yet — auto-create if the setting is on and GitHub is
+            // authenticated. The outer `commitHash` truthiness check guarantees
+            // this turn produced a commit (i.e. files actually changed), and
+            // the `prStatus` short-circuit above guarantees we won't double-
+            // create when a PR is already open. So this fires after every
+            // meaningful turn until a PR exists. See doc 099 for the rationale
+            // behind dropping the previous `isNewSession` gate.
+            const shouldAutoCreate = ctx.credentialStore.getAutoCreatePr()
               && ctx.githubAuthManager.authenticated;
 
             if (shouldAutoCreate) {
