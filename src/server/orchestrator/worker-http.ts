@@ -49,6 +49,11 @@ export async function workerPost(baseUrl: string, path: string, body?: unknown):
   });
 }
 
+/** POST install commands to the session worker. Returns immediately; progress streams via SSE. */
+export async function workerInstall(baseUrl: string, commands: string[]): Promise<unknown> {
+  return workerPost(baseUrl, "/install", { commands });
+}
+
 export async function workerGet(baseUrl: string, path: string): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const url = new URL(path, baseUrl);
