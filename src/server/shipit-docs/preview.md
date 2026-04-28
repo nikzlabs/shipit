@@ -7,8 +7,8 @@ automatically as you edit files.
 
 1. ShipIt reads `shipit.yaml` for the compose file path (or auto-detects
    `docker-compose.yml` / `compose.yml` at the workspace root).
-2. If `agent.install` commands are specified, they run first in the agent
-   container.
+2. If `agent.install` commands are specified, they run in the agent container
+   **in parallel** with compose services starting — install does not block previews.
 3. Services defined in docker-compose.yml start as Docker Compose containers.
    Services marked as `auto` (or with `ports`) start automatically.
 4. ShipIt detects when ports are ready and routes browser traffic through a

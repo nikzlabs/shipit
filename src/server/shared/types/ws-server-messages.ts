@@ -220,6 +220,27 @@ export interface WsFullResetComplete {
 }
 
 
+// ---- Install status messages (server → client) ----
+
+/** Server → Client: status update for agent.install execution. */
+export interface WsInstallStatus {
+  type: "install_status";
+  sessionId: string;
+  status: "running" | "complete" | "error" | "skipped";
+  /** Current command being executed. */
+  command?: string;
+  /** Error message on failure. */
+  message?: string;
+}
+
+/** Server → Client: log output from agent.install execution. */
+export interface WsInstallLog {
+  type: "install_log";
+  sessionId: string;
+  text: string;
+  stream: "stdout" | "stderr";
+}
+
 // ---- Compose service messages (server → client) ----
 
 export type ComposeServiceStatus = "stopped" | "starting" | "running" | "error";
@@ -424,4 +445,6 @@ export type WsServerMessage =
   | WsServiceLog
   | WsServiceLogBuffer
   | WsComposeError
-  | WsComposeNotConfigured;
+  | WsComposeNotConfigured
+  | WsInstallStatus
+  | WsInstallLog;

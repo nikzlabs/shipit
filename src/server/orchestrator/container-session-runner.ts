@@ -17,7 +17,7 @@ import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, System
 import { runSystemTurn } from "./session-runner.js";
 import { connectSSE } from "./sse-client.js";
 import type { SSEEvent } from "./sse-client.js";
-import { workerPost, workerGet } from "./worker-http.js";
+import { workerPost, workerGet, workerInstall } from "./worker-http.js";
 import { truncateTerminalBuffer } from "./terminal-buffer.js";
 import { ProxyAgentProcess } from "./proxy-agent-process.js";
 import type { ProxyAgentRunner } from "./proxy-agent-process.js";
@@ -28,7 +28,7 @@ import type { ServiceManager, ManagedService } from "./service-manager.js";
 // ---------------------------------------------------------------------------
 export { connectSSE } from "./sse-client.js";
 export type { SSEEvent } from "./sse-client.js";
-export { workerPost, workerGet } from "./worker-http.js";
+export { workerPost, workerGet, workerInstall } from "./worker-http.js";
 export { truncateTerminalBuffer } from "./terminal-buffer.js";
 export { ProxyAgentProcess } from "./proxy-agent-process.js";
 export type { ProxyAgentRunner } from "./proxy-agent-process.js";
@@ -521,6 +521,43 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     try { await workerPost(this.workerUrl, "/files/unwatch"); } catch { /* container may be gone */ }
   }
 
+  /**
+   * Run agent.install commands on the session worker. Fire-and-forget —
+   * progress streams via SSE events. Skips if .shipit/.install-done marker exists.
+   */
+  async runInstall(commands: string[]): Promise<void> {
+    if (commands.length === 0) return;
+
+    await this._workerReady;
+    if (this._disposed) return;
+
+    this.emitMessage({
+      type: "install_status",
+      sessionId: this.sessionId,
+      status: "running",
+      command: commands[0],
+    });
+
+    try {
+      const result = await workerInstall(this.workerUrl, commands) as { skipped?: boolean; started?: boolean };
+      if (result.skipped) {
+        this.emitMessage({
+          type: "install_status",
+          sessionId: this.sessionId,
+          status: "skipped",
+        });
+      }
+      // If started, progress comes via SSE events (install_log, install_done, install_error)
+    } catch (err) {
+      this.emitMessage({
+        type: "install_status",
+        sessionId: this.sessionId,
+        status: "error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   // --- SSE connection management ---
 
   /** Connect to the worker SSE stream. Returns a promise that resolves once the connection is open. */
@@ -695,6 +732,35 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           void this.handleServiceRequest(requestId, action, name);
           break;
         }
+
+        // --- Install events ---
+
+        case "install_log":
+          this.emitMessage({
+            type: "install_log",
+            sessionId: this.sessionId,
+            text: (data.text as string) ?? "",
+            stream: (data.stream as "stdout" | "stderr") ?? "stdout",
+          });
+          break;
+
+        case "install_done":
+          this.emitMessage({
+            type: "install_status",
+            sessionId: this.sessionId,
+            status: "complete",
+          });
+          break;
+
+        case "install_error":
+          this.emitMessage({
+            type: "install_status",
+            sessionId: this.sessionId,
+            status: "error",
+            command: data.command as string | undefined,
+            message: (data.message as string) ?? "Install failed",
+          });
+          break;
 
         // --- File watcher events ---
 

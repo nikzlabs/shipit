@@ -14,6 +14,9 @@ import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import type { AgentProcess, AgentRunParams, AgentEvent, AgentId } from "./agents/agent-process.js";
 import { TerminalProcess } from "./terminal.js";
 import { FileWatcher } from "./file-watcher.js";
@@ -34,7 +37,8 @@ export interface WorkerSSEEvent {
     | "agent_event" | "agent_done" | "agent_error" | "agent_auth_required" | "agent_log"
     | "terminal_data" | "terminal_exit"
     | "file_changes"
-    | "service_request";
+    | "service_request"
+    | "install_log" | "install_done" | "install_error";
   data: unknown;
 }
 
@@ -91,6 +95,10 @@ export class SessionWorker extends EventEmitter {
   private _pendingServiceRequests = new Map<string, PendingServiceRequest>();
   private _serviceRequestCounter = 0;
   private static readonly SERVICE_REQUEST_TIMEOUT_MS = 60_000;
+
+  // Install state
+  private _installRunning = false;
+  private _installProcess: ChildProcess | null = null;
 
   // Terminal backpressure state
   private _sseBackpressured = new Set<ServerResponse>();
@@ -325,6 +333,103 @@ export class SessionWorker extends EventEmitter {
       }
       return { received: true };
     });
+
+    // --- Install endpoint ---
+
+    app.post<{ Body: { commands: string[] } }>("/install", async (request, reply) => {
+      const { commands } = request.body ?? {};
+      if (!Array.isArray(commands) || commands.length === 0) {
+        return reply.code(400).send({ error: "commands array is required" });
+      }
+
+      if (this._installRunning) {
+        return reply.code(409).send({ error: "Install already running" });
+      }
+
+      // Check marker file — skip if install already completed
+      const markerDir = path.join(this.workspaceDir, ".shipit");
+      const markerFile = path.join(markerDir, ".install-done");
+      if (fs.existsSync(markerFile)) {
+        return { skipped: true, reason: "marker" };
+      }
+
+      // Return immediately — progress streams via SSE
+      this._installRunning = true;
+      void this.runInstallCommands(commands, markerDir, markerFile);
+      return { started: true };
+    });
+  }
+
+  // --- Install command execution ---
+
+  /**
+   * Run install commands sequentially, streaming output via SSE.
+   * Writes a marker file on success to skip redundant re-runs.
+   */
+  private async runInstallCommands(commands: string[], markerDir: string, markerFile: string): Promise<void> {
+    try {
+      for (const cmd of commands) {
+        const exitCode = await this.runSingleInstallCommand(cmd);
+        if (exitCode !== 0) {
+          this.broadcastSSE({
+            type: "install_error",
+            data: { command: cmd, exitCode, message: `Command "${cmd}" exited with code ${exitCode}` },
+          });
+          this._installRunning = false;
+          this._installProcess = null;
+          return;
+        }
+      }
+
+      // All commands succeeded — write marker
+      fs.mkdirSync(markerDir, { recursive: true });
+      fs.writeFileSync(markerFile, new Date().toISOString());
+
+      this.broadcastSSE({ type: "install_done", data: {} });
+    } catch (err) {
+      this.broadcastSSE({
+        type: "install_error",
+        data: { message: getErrorMessage(err) },
+      });
+    } finally {
+      this._installRunning = false;
+      this._installProcess = null;
+    }
+  }
+
+  /**
+   * Run a single install command and return its exit code.
+   * Streams stdout/stderr via SSE.
+   */
+  private runSingleInstallCommand(command: string): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const proc = spawn(command, { shell: true, cwd: this.workspaceDir, stdio: ["ignore", "pipe", "pipe"] });
+      this._installProcess = proc;
+
+      proc.stdout?.on("data", (chunk: Buffer) => {
+        this.broadcastSSE({
+          type: "install_log",
+          data: { text: chunk.toString(), stream: "stdout" },
+        });
+      });
+
+      proc.stderr?.on("data", (chunk: Buffer) => {
+        this.broadcastSSE({
+          type: "install_log",
+          data: { text: chunk.toString(), stream: "stderr" },
+        });
+      });
+
+      proc.on("error", (err) => {
+        this._installProcess = null;
+        reject(err);
+      });
+
+      proc.on("close", (code) => {
+        this._installProcess = null;
+        resolve(code ?? 1);
+      });
+    });
   }
 
   // --- Service request bridge ---
@@ -491,6 +596,11 @@ export class SessionWorker extends EventEmitter {
 
   /** Stop the worker server and clean up. */
   async stop(): Promise<void> {
+    if (this._installProcess) {
+      this._installProcess.kill();
+      this._installProcess = null;
+      this._installRunning = false;
+    }
     if (this.agent) {
       this.agent.kill();
       this.agent = null;
