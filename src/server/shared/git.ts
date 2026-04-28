@@ -1,4 +1,6 @@
 import simpleGit, { type SimpleGit, type LogResult } from "simple-git";
+import fs from "node:fs";
+import path from "node:path";
 
 const DEFAULT_WORKSPACE_DIR = "/workspace";
 
@@ -14,6 +16,15 @@ export interface GitRemote {
   name: string;
   url: string;
 }
+
+export interface RebaseConflictFile {
+  path: string;
+  content: string; // File content with conflict markers
+}
+
+export type RebaseResult =
+  | { status: "clean" }
+  | { status: "conflicts"; conflicts: RebaseConflictFile[] };
 
 export class GitManager {
   private git: SimpleGit;
@@ -286,6 +297,110 @@ export class GitManager {
     } catch {
       return [];
     }
+  }
+
+  /** Fetch from a remote. */
+  async fetch(remote = "origin"): Promise<void> {
+    await this.git.fetch(remote);
+    console.log("[git] Fetched from", remote);
+  }
+
+  /**
+   * Check if `ancestor` is an ancestor of `descendant`.
+   * Returns true if descendant already contains ancestor (i.e. no rebase needed).
+   *
+   * Note: We can't use `merge-base --is-ancestor` via simple-git because simple-git's
+   * `raw()` doesn't properly handle exit code 1 (not-ancestor) vs exit code 0 (is-ancestor).
+   * Instead we compare merge-base output to the ancestor's resolved hash.
+   */
+  async isAncestor(ancestor: string, descendant: string): Promise<boolean> {
+    try {
+      const mergeBaseHash = (await this.git.raw(["merge-base", ancestor, descendant])).trim();
+      const ancestorHash = (await this.git.revparse([ancestor])).trim();
+      return mergeBaseHash === ancestorHash;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Rebase current branch onto a target ref. */
+  async rebase(onto: string): Promise<RebaseResult> {
+    try {
+      await this.git.rebase([onto]);
+      console.log("[git] Rebased onto", onto);
+      return { status: "clean" };
+    } catch (err: unknown) {
+      const status = await this.git.status();
+      if (status.conflicted.length > 0) {
+        const dir = await this.git.revparse(["--show-toplevel"]);
+        const conflicts = status.conflicted.map((file) => ({
+          path: file,
+          content: fs.readFileSync(path.join(dir.trim(), file), "utf-8"),
+        }));
+        return { status: "conflicts", conflicts };
+      }
+      // Other rebase failure — abort and rethrow
+      try {
+        await this.git.rebase(["--abort"]);
+      } catch {
+        // abort may also fail if rebase wasn't properly started
+      }
+      throw err;
+    }
+  }
+
+  /** Continue a rebase after conflicts are resolved. */
+  async rebaseContinue(): Promise<RebaseResult> {
+    try {
+      await this.git.rebase(["--continue"]);
+      console.log("[git] Rebase continued successfully");
+      return { status: "clean" };
+    } catch (err: unknown) {
+      const status = await this.git.status();
+      if (status.conflicted.length > 0) {
+        const dir = await this.git.revparse(["--show-toplevel"]);
+        const conflicts = status.conflicted.map((file) => ({
+          path: file,
+          content: fs.readFileSync(path.join(dir.trim(), file), "utf-8"),
+        }));
+        return { status: "conflicts", conflicts };
+      }
+      throw err;
+    }
+  }
+
+  /** Abort an in-progress rebase. */
+  async rebaseAbort(): Promise<void> {
+    await this.git.rebase(["--abort"]);
+    console.log("[git] Rebase aborted");
+  }
+
+  /** Check if a rebase is in progress. */
+  async isRebaseInProgress(): Promise<boolean> {
+    try {
+      // --absolute-git-dir returns the full path (avoids relative path issues in clones)
+      const gitDir = (await this.git.revparse(["--absolute-git-dir"])).trim();
+      return (
+        fs.existsSync(path.join(gitDir, "rebase-merge")) ||
+        fs.existsSync(path.join(gitDir, "rebase-apply"))
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /** Force push with lease — safe force push that fails if remote has unexpected commits. */
+  async forcePush(remote = "origin", branch?: string): Promise<string> {
+    const currentBranch = branch ?? (await this.getCurrentBranch());
+    await this.git.push(remote, currentBranch, ["--force-with-lease", "--set-upstream"]);
+    const msg = `Force pushed to ${remote}/${currentBranch}`;
+    console.log("[git]", msg);
+    return msg;
+  }
+
+  /** Stage all changes (used after resolving conflicts before rebase --continue). */
+  async stageAll(): Promise<void> {
+    await this.git.add("-A");
   }
 
 }

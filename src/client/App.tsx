@@ -47,6 +47,7 @@ import type { TurnDiffData } from "./components/DiffPanel.js";
 // eslint-disable-next-line no-restricted-syntax -- lazy() named-export pattern
 const DiffPanel = lazy(() => import("./components/DiffPanel.js").then(m => ({ default: m.DiffPanel })));
 import { PrLifecycleCard } from "./components/PrLifecycleCard.js";
+import { RebaseBanner } from "./components/RebaseBanner.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentStatusBar } from "./components/AgentStatusBar.js";
 import type { AgentOption } from "./components/AgentPicker.js";
@@ -671,6 +672,7 @@ export default function App() {
         <>
           <MessageList messages={messages} isLoading={isLoading} searchMatches={search.matches} currentMatch={search.currentMatch} onAnswerQuestion={handleAnswerQuestion} onSendFollowUp={handleSendFollowUp} onRollback={handleRollback} onRewind={handleRewind} />
           {isLoading && <AgentStatusBar activity={activity} />}
+          {wsSessionId && <RebaseBanner sessionId={wsSessionId} />}
           {wsSessionId && <PrLifecycleCard sessionId={wsSessionId} />}
         </>
       )}
