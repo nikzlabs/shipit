@@ -105,10 +105,11 @@ function setupDivergence(
   execSync("git init --bare -b main", { cwd: bareDir, env });
   execSync(`git remote add origin ${bareDir}`, { cwd: sessionDir, env });
 
-  // Push current branch to origin so we have a base.
-  execSync("git checkout -b main", { cwd: sessionDir, env });
+  // The session is already on `main` (git.init() creates it). Add a base
+  // commit with shared.txt so the conflicting case can edit it on both sides,
+  // then push as origin/main.
   fs.writeFileSync(path.join(sessionDir, "shared.txt"), "v1\n");
-  execSync("git add -A && git commit -m 'Base commit'", { cwd: sessionDir, env });
+  execSync("git add -A && git commit -m 'Add shared'", { cwd: sessionDir, env });
   execSync("git push -u origin main", { cwd: sessionDir, env });
 
   // Create feature branch and add a feature commit.
@@ -223,13 +224,12 @@ describe("rebase flow: API + WS events", () => {
     const { sessionId, sessionDir } = await createSession();
 
     // Set up a remote where main equals current HEAD — no divergence.
+    // Session is already on `main` from git.init(); just add a remote and push.
     const env = { ...process.env, HOME: tmpDir };
     const bareDir = path.join(tmpDir, "bare-remote.git");
     fs.mkdirSync(bareDir, { recursive: true });
     execSync("git init --bare -b main", { cwd: bareDir, env });
     execSync(`git remote add origin ${bareDir}`, { cwd: sessionDir, env });
-    // Push current HEAD as main.
-    execSync("git branch -m main", { cwd: sessionDir, env });
     execSync("git push -u origin main", { cwd: sessionDir, env });
 
     const res = await postRebase(sessionId, "main");
