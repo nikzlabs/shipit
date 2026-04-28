@@ -50,19 +50,15 @@ interface AppLayoutProps {
 
   // Sidebar
   sessions: SessionInfo[];
-  activeRepoUrl: string | undefined;
-  activeRepoName: string;
-  activeRepoStatus?: "cloning" | "ready";
   currentSessionId: string | undefined;
   sidebarCollapsed: boolean;
   onResumeSession: (sid: string) => void;
   onArchiveSession: (sid: string) => Promise<void>;
-  onNewSession: () => void;
+  onNewSessionForRepo: (repoUrl: string) => void;
   onToggleSidebarCollapse: () => void;
 
-  // Repo switcher
+  // Repo
   repos: RepoInfo[];
-  onSelectRepo: (url: string) => void;
   onAddRepo: () => void;
   onCreateNewRepo: () => void;
 
@@ -99,17 +95,13 @@ export function AppLayout({
   onTouchStart,
   containerRef,
   sessions,
-  activeRepoUrl,
-  activeRepoName,
-  activeRepoStatus,
   currentSessionId,
   sidebarCollapsed,
   onResumeSession,
   onArchiveSession,
-  onNewSession,
+  onNewSessionForRepo,
   onToggleSidebarCollapse,
   repos,
-  onSelectRepo,
   onAddRepo,
   onCreateNewRepo,
   toast,
@@ -160,17 +152,13 @@ export function AppLayout({
         <div className="flex flex-1 min-h-0">
           <SessionSidebar
             sessions={sessions}
-            activeRepoUrl={activeRepoUrl}
-            activeRepoName={activeRepoName}
-            activeRepoStatus={activeRepoStatus}
             currentSessionId={currentSessionId}
             onResume={onResumeSession}
             onArchive={onArchiveSession}
-            onNewSession={onNewSession}
+            onNewSessionForRepo={onNewSessionForRepo}
             collapsed={sidebarCollapsed}
             onToggleCollapse={onToggleSidebarCollapse}
             repos={repos}
-            onSelectRepo={onSelectRepo}
             onAddRepo={onAddRepo}
             onCreateNewRepo={onCreateNewRepo}
           />
