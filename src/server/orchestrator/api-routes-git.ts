@@ -19,9 +19,8 @@ import {
   gitPush,
   gitPull,
   mergeSession,
-  rebaseOntoBase,
-  forcePushAfterRebase,
   rebaseAbort,
+  runRebaseFlow,
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
@@ -217,7 +216,7 @@ export async function registerGitRoutes(
     },
   );
 
-  // POST /api/sessions/:id/git/rebase — rebase onto base branch
+  // POST /api/sessions/:id/git/rebase — rebase onto base branch (with agent-driven conflict resolution)
   app.post<{ Params: { id: string }; Body: { baseBranch: string } }>(
     "/api/sessions/:id/git/rebase",
     async (request, reply) => {
@@ -228,29 +227,42 @@ export async function registerGitRoutes(
         reply.code(400).send({ error: "baseBranch is required" });
         return;
       }
+
+      const sessionId = request.params.id;
+      const runner = deps.runnerRegistry.get(sessionId);
+      if (!runner) {
+        reply.code(404).send({ error: "No active session runner — start the session first" });
+        return;
+      }
+
       try {
         const git = createGitManager(dir);
-        const result = await rebaseOntoBase(git, baseBranch);
 
-        if (result.status === "rebased") {
-          // Clean rebase — auto force-push if authenticated
-          try {
-            const pushResult = await forcePushAfterRebase(git, deps.githubAuthManager);
-            return { status: "rebased", message: pushResult.message, branch: pushResult.branch };
-          } catch {
-            // Force push failed (e.g. no auth) — rebase still succeeded locally
-            return { status: "rebased", message: "Rebased locally (force push skipped — not authenticated)" };
-          }
-        }
+        // Drive the entire flow asynchronously: emit WS events as it progresses
+        // (rebase_started, rebase_conflicts, rebase_complete) and run the agent
+        // resolution loop on conflicts. The HTTP response only signals that the
+        // flow was started — the client tracks state via WS events.
+        const flowPromise = runRebaseFlow(
+          {
+            git,
+            githubAuthManager: deps.githubAuthManager,
+            runner,
+            sessionManager: deps.sessionManager,
+            chatHistoryManager: deps.chatHistoryManager,
+            agentFactory: deps.agentFactory,
+            sseBroadcast: deps.sseBroadcast,
+          },
+          baseBranch,
+        );
 
-        if (result.status === "conflicts") {
-          return {
-            status: "conflicts",
-            conflicts: result.conflicts.map((c) => ({ path: c.path })),
-          };
-        }
+        // Don't await: respond immediately, but log async failures.
+        flowPromise.catch((err: unknown) => {
+          console.error(`[rebase] flow failed for session ${sessionId}:`, err);
+          // Emit aborted so the UI clears its progress state.
+          runner.emitMessage({ type: "rebase_aborted" });
+        });
 
-        return { status: "up_to_date" };
+        return { status: "started" };
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
@@ -268,8 +280,24 @@ export async function registerGitRoutes(
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
       try {
+        // Kill the agent if it's mid-resolution — otherwise the rebase driver
+        // would resume and try to call `git rebase --continue` against a tree
+        // that's already been aborted.
+        const runner = deps.runnerRegistry.get(request.params.id);
+        const agent = runner?.getAgent();
+        if (agent) {
+          agent.kill();
+          if (runner) {
+            runner.setAgent(null);
+            runner.running = false;
+          }
+        }
+
         const git = createGitManager(dir);
         await rebaseAbort(git);
+        if (runner) {
+          runner.emitMessage({ type: "rebase_aborted" });
+        }
         return { status: "aborted" };
       } catch (err) {
         if (err instanceof ServiceError) {
