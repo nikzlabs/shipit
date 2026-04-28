@@ -286,6 +286,38 @@ export interface WsServiceLogBuffer {
   buffer: string;
 }
 
+// ---- Rebase messages (server → client) ----
+
+/** Server → Client: git push was rejected due to non-fast-forward (branch has diverged). */
+export interface WsGitPushRejected {
+  type: "git_push_rejected";
+  reason: "non_fast_forward";
+  message: string;
+}
+
+/** Server → Client: rebase has started. */
+export interface WsRebaseStarted {
+  type: "rebase_started";
+  baseBranch: string;
+}
+
+/** Server → Client: rebase encountered conflicts. */
+export interface WsRebaseConflicts {
+  type: "rebase_conflicts";
+  conflicts: { path: string }[];
+}
+
+/** Server → Client: rebase completed successfully. */
+export interface WsRebaseComplete {
+  type: "rebase_complete";
+  forcePushed: boolean;
+}
+
+/** Server → Client: rebase was aborted. */
+export interface WsRebaseAborted {
+  type: "rebase_aborted";
+}
+
 /** Server → Client: Docker Compose stack failed to start. */
 export interface WsComposeError {
   type: "compose_error";
@@ -447,4 +479,9 @@ export type WsServerMessage =
   | WsComposeError
   | WsComposeNotConfigured
   | WsInstallStatus
-  | WsInstallLog;
+  | WsInstallLog
+  | WsGitPushRejected
+  | WsRebaseStarted
+  | WsRebaseConflicts
+  | WsRebaseComplete
+  | WsRebaseAborted;

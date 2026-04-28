@@ -1,6 +1,13 @@
 import { create } from "zustand";
 import type { GitCommit } from "../components/GitHistory.js";
 import type { TurnDiffData } from "../components/DiffPanel.js";
+
+export type RebaseStatus = "idle" | "in_progress" | "conflicts" | "resolving";
+
+interface RebaseConflict {
+  path: string;
+}
+
 interface GitState {
   commits: GitCommit[];
   identityNeeded: boolean;
@@ -9,6 +16,9 @@ interface GitState {
   turnDiff: TurnDiffData | null;
   diffDialogOpen: boolean;
   diffDialogTitle: string | undefined;
+  rebaseStatus: RebaseStatus;
+  rebaseConflicts: RebaseConflict[];
+  pushRejected: boolean;
 
   setCommits: (commits: GitCommit[]) => void;
   prependCommit: (commit: GitCommit) => void;
@@ -18,12 +28,17 @@ interface GitState {
   setTurnDiff: (diff: TurnDiffData | null) => void;
   openDiffDialog: (title?: string) => void;
   closeDiffDialog: () => void;
+  setRebaseStatus: (status: RebaseStatus) => void;
+  setRebaseConflicts: (conflicts: RebaseConflict[]) => void;
+  setPushRejected: (rejected: boolean) => void;
   reset: () => void;
 
   fetchLog: (sessionId: string) => Promise<void>;
   fetchDiff: (sessionId: string, from: string, to: string) => Promise<void>;
   fetchDiffVsBranch: (sessionId: string, baseBranch?: string) => Promise<void>;
   submitGitIdentity: (name: string, email: string) => Promise<void>;
+  startRebase: (sessionId: string, baseBranch: string) => Promise<void>;
+  abortRebase: (sessionId: string) => Promise<void>;
 }
 
 const initialState = {
@@ -34,6 +49,9 @@ const initialState = {
   turnDiff: null as TurnDiffData | null,
   diffDialogOpen: false,
   diffDialogTitle: undefined as string | undefined,
+  rebaseStatus: "idle" as RebaseStatus,
+  rebaseConflicts: [] as RebaseConflict[],
+  pushRejected: false,
 };
 
 export const useGitStore = create<GitState>((set) => ({
@@ -55,6 +73,12 @@ export const useGitStore = create<GitState>((set) => ({
   openDiffDialog: (title) => set({ diffDialogOpen: true, diffDialogTitle: title }),
 
   closeDiffDialog: () => set({ diffDialogOpen: false, turnDiff: null, diffDialogTitle: undefined }),
+
+  setRebaseStatus: (status) => set({ rebaseStatus: status }),
+
+  setRebaseConflicts: (conflicts) => set({ rebaseConflicts: conflicts }),
+
+  setPushRejected: (rejected) => set({ pushRejected: rejected }),
 
   reset: () => set(initialState),
 
@@ -96,5 +120,42 @@ export const useGitStore = create<GitState>((set) => ({
     }
     const result = await res.json() as { name: string; email: string };
     set({ identity: result });
+  },
+
+  startRebase: async (sessionId, baseBranch) => {
+    set({ rebaseStatus: "in_progress", pushRejected: false });
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/git/rebase`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ baseBranch }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({ error: "Rebase failed" })) as { error: string };
+        throw new Error(data.error);
+      }
+      const data = await res.json() as { status: string; conflicts?: { path: string }[] };
+      if (data.status === "conflicts") {
+        set({
+          rebaseStatus: "conflicts",
+          rebaseConflicts: data.conflicts ?? [],
+        });
+      } else {
+        // "rebased" or "up_to_date"
+        set({ rebaseStatus: "idle", rebaseConflicts: [] });
+      }
+    } catch {
+      set({ rebaseStatus: "idle" });
+    }
+  },
+
+  abortRebase: async (sessionId) => {
+    try {
+      await fetch(`/api/sessions/${sessionId}/git/rebase/abort`, {
+        method: "POST",
+      });
+    } finally {
+      set({ rebaseStatus: "idle", rebaseConflicts: [] });
+    }
   },
 }));

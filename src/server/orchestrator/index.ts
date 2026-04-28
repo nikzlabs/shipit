@@ -10,6 +10,7 @@ import type { WsClientMessage, WsServerMessage, WsLogEntry } from "../shared/typ
 import { getErrorMessage } from "./validation.js";
 import { getGitIdentity } from "./git-config.js";
 import { pushToOrigin } from "./git-utils.js";
+import { isNonFastForwardError } from "./services/git.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import { registerPreviewProxy } from "./preview-proxy.js";
@@ -501,6 +502,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
               runner.emitMessage({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
             }
           } catch (err) {
+            if (isNonFastForwardError(err)) {
+              // Branch has diverged — emit event so client can offer rebase
+              runner.emitMessage({
+                type: "git_push_rejected",
+                reason: "non_fast_forward",
+                message: "Branch has diverged from remote. Rebase needed to update.",
+              });
+              return;
+            }
             const errMsg = getErrorMessage(err);
             const text = errMsg.includes("workflow")
               ? "Auto-push failed: your GitHub token needs the `workflow` scope to push changes to GitHub Actions workflow files. Update your token at https://github.com/settings/tokens."
