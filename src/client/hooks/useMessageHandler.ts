@@ -17,6 +17,9 @@ import { useTerminalStore } from "../stores/terminal-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { usePrStore } from "../stores/pr-store.js";
+import { useRepoStore } from "../stores/repo-store.js";
+import type { NotifyContext } from "./useNotification.js";
+import { parseRepoLabel } from "../utils/repo-label.js";
 
 /**
  * Stash for queued messages removed from the conversation.
@@ -30,7 +33,7 @@ export function useMessageHandler(params: {
   drainMessages: () => MessageEvent[];
   send: (msg: WsClientMessage) => void;
   terminalRef: RefObject<InteractiveTerminalHandle | null>;
-  notify: (msg: string) => void;
+  notify: (msg: string, context?: NotifyContext) => void;
 }): void {
   const { lastMessage, drainMessages, send, terminalRef, notify } = params;
 
@@ -58,7 +61,7 @@ function processMessage(
   data: WsServerMessage,
   deps: {
     terminalRef: RefObject<InteractiveTerminalHandle | null>;
-    notify: (msg: string) => void;
+    notify: (msg: string, context?: NotifyContext) => void;
   },
 ): void {
     const { terminalRef, notify } = deps;
@@ -69,6 +72,16 @@ function processMessage(
     const terminal = useTerminalStore.getState();
     const settings = useSettingsStore.getState();
     const ui = useUiStore.getState();
+
+    // Build notification context from current session + repo state
+    const buildNotifyContext = (): NotifyContext => {
+      const currentSession = session.sessions.find((s) => s.id === session.sessionId);
+      const repoUrl = currentSession?.remoteUrl ?? useRepoStore.getState().activeRepoUrl;
+      return {
+        sessionName: currentSession?.title,
+        repoLabel: repoUrl ? parseRepoLabel(repoUrl) : undefined,
+      };
+    };
 
     if (data.type === "preview_status") {
       // Discard stale preview_status from a previous session's WS connection.
@@ -119,7 +132,7 @@ function processMessage(
           session.setActivity(activityFromTool(lastTool.name, lastTool.input));
 
           if (toolUseBlocks.some((b) => b.name === "ExitPlanMode")) {
-            notify("The agent has a plan ready for review.");
+            notify("The agent has a plan ready for review.", buildNotifyContext());
           }
         } else if (textBlocks) {
           session.setActivity({ label: "Thinking..." });
@@ -212,7 +225,7 @@ function processMessage(
       if (event.type === "agent_result") {
         session.setIsLoading(false);
         session.setActivity(undefined);
-        notify("The agent has finished responding.");
+        notify("The agent has finished responding.", buildNotifyContext());
         session.setMessages((prev) =>
           prev.map((m) =>
             m.role === "assistant" && m.streaming ? { ...m, streaming: false } : m
