@@ -101,8 +101,12 @@ export function MessageInput({
     });
   }, []);
 
-  // Auto-focus textarea on session change (e.g. "New Session" click, session switch)
-  const prevFocusKeyRef = useRef(focusKey);
+  // Auto-focus textarea on mount and on session change (e.g. "New Session" click,
+  // session switch). The ref is intentionally seeded with `undefined` (not `focusKey`)
+  // so the very first render with a defined focusKey triggers focus — otherwise focus
+  // would be deferred until claimSession() resolves and focusKey transitions from
+  // "new" to the real session ID, which causes a visible delay on "New Session" clicks.
+  const prevFocusKeyRef = useRef<string | undefined>(undefined);
   if (focusKey && focusKey !== prevFocusKeyRef.current) {
     prevFocusKeyRef.current = focusKey;
     // Schedule focus after paint — safe to call during render since it's a microtask
