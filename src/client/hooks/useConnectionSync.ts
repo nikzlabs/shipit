@@ -53,6 +53,11 @@ export function useConnectionSync(params: {
     }
     if (status === "closed" || status === "connecting") {
       historyLoadedRef.current = false;
+      // Reset the store flag so the useMessageHandler guard blocks agent events
+      // until the next loadSessionHistory completes. Without this, a reconnecting
+      // WS would process live events before HTTP history is loaded, causing
+      // duplicated or lost messages.
+      useSessionStore.getState().setHistoryLoaded(false);
     }
   }, [status, send]);
 

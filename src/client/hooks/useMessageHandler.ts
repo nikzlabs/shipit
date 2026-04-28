@@ -96,6 +96,13 @@ function processMessage(
     }
 
     if (data.type === "agent_event") {
+      // Guard: skip agent events until HTTP history is loaded. On WS reconnect,
+      // events arrive immediately while loadSessionHistory() is still in-flight.
+      // Without this guard, events processed before the HTTP response get
+      // overwritten (lost) or events processed after it duplicate HTTP data.
+      // The DB-backed history snapshot is the baseline; live events build on top.
+      if (!session.historyLoaded) return;
+
       const event = data.event;
 
       if (event.type === "agent_assistant") {
