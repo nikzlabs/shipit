@@ -139,6 +139,60 @@ describe("SessionSidebar", () => {
     expect(screen.getByLabelText("Add Repository")).toBeTruthy();
   });
 
+  it("sorts merged sessions to the bottom of a repo group", () => {
+    const t0 = "2024-01-01T00:00:00.000Z";
+    const t1 = "2024-01-02T00:00:00.000Z";
+    const t2 = "2024-01-03T00:00:00.000Z";
+    const t3 = "2024-01-04T00:00:00.000Z";
+    const sessions = [
+      // Most-recently-used overall is merged — should still sink below active sessions.
+      baseSession({
+        id: "s-merged-recent",
+        title: "Merged recent",
+        remoteUrl: repoA.url,
+        lastUsedAt: t3,
+        mergedAt: t3,
+      }),
+      baseSession({
+        id: "s-active-old",
+        title: "Active old",
+        remoteUrl: repoA.url,
+        lastUsedAt: t1,
+      }),
+      baseSession({
+        id: "s-active-new",
+        title: "Active new",
+        remoteUrl: repoA.url,
+        lastUsedAt: t2,
+      }),
+      baseSession({
+        id: "s-merged-old",
+        title: "Merged old",
+        remoteUrl: repoA.url,
+        lastUsedAt: t0,
+        mergedAt: t0,
+      }),
+    ];
+    render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+
+    // Read the rendered titles in document order and confirm:
+    // active sessions (MRU) come before merged sessions (MRU within merged).
+    const expectedOrder = ["Active new", "Active old", "Merged recent", "Merged old"];
+    const renderedTitles = expectedOrder
+      .map((t) => screen.getByText(t))
+      .map((el) => ({
+        title: el.textContent,
+        // compareDocumentPosition is reliable in jsdom for ordering checks.
+        node: el,
+      }));
+    for (let i = 1; i < renderedTitles.length; i++) {
+      const prev = renderedTitles[i - 1].node;
+      const curr = renderedTitles[i].node;
+      // DOCUMENT_POSITION_FOLLOWING (4) means curr comes after prev.
+      expect(prev.compareDocumentPosition(curr) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+  });
+
   it("renders multiple repo groups for multi-repo", () => {
     const sessions = [
       baseSession({ id: "s1", title: "Frontend fix", remoteUrl: repoA.url }),
