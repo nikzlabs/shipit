@@ -3,7 +3,7 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import { checkForUpdates, requestUpdate } from "./services/updates.js";
+import { checkForUpdates, requestRestart, requestUpdate } from "./services/updates.js";
 import { ServiceError } from "./services/types.js";
 import { getErrorMessage } from "./validation.js";
 
@@ -32,6 +32,20 @@ export async function registerUpdateRoutes(app: FastifyInstance): Promise<void> 
         return;
       }
       reply.code(500).send({ error: `Failed to apply update: ${getErrorMessage(err)}` });
+    }
+  });
+
+  // POST /api/updates/restart — restart without pulling updates
+  app.post("/api/updates/restart", async (_request, reply) => {
+    try {
+      await requestRestart();
+      return { status: "restart_requested" };
+    } catch (err) {
+      if (err instanceof ServiceError) {
+        reply.code(err.statusCode).send({ error: err.message });
+        return;
+      }
+      reply.code(500).send({ error: `Failed to request restart: ${getErrorMessage(err)}` });
     }
   });
 }

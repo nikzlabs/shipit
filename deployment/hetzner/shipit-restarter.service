@@ -1,0 +1,9 @@
+[Unit]
+Description=ShipIt restarter (no update)
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/shipit/deployment/hetzner/restart.sh
+StandardOutput=journal
+StandardError=journal
