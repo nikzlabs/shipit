@@ -243,6 +243,81 @@ Small artifacts (SVG, chart) rendered inline in the message thread alongside the
 
 ---
 
+## Multiple presentations
+
+When the agent presents multiple artifacts — across turns or within a single turn — how do they appear?
+
+### Scenarios
+
+| Scenario | Example | Desired behavior |
+|----------|---------|-----------------|
+| **Revision** | Agent presents landing page v1, user gives feedback, agent presents v2 | v2 replaces v1 — same slot, latest wins |
+| **Unrelated, sequential** | Turn 3: DB schema diagram. Turn 7: sales chart | Both accessible — user might want to flip back |
+| **Multiple in one turn** | Agent generates component tree AND data flow chart | Both accessible as peers |
+
+### Design: presentation list with active selection
+
+The preview pane maintains an **ordered list of presentations** for the session, with one shown at a time:
+
+```
+┌─────────────────────────────────────────────┐
+│ ◀ 2/3 ▶  Sales Chart     💾 Save  ✕ Close  │  ← header: nav + title + actions
+├─────────────────────────────────────────────┤
+│                                             │
+│            [rendered content]               │
+│                                             │
+└─────────────────────────────────────────────┘
+```
+
+**Rules:**
+
+1. **New presentation** — appended to the list, auto-selected (user sees it immediately)
+2. **Revision** — agent passes `replaceId` referencing a previous `presentId`. Replaces that entry in-place, no new slot. If omitted, it's a new entry.
+3. **Navigation** — `◀ ▶` arrows or `2/3` indicator let the user flip between presentations. Keyboard shortcuts (←/→) when pane is focused.
+4. **Dismiss** — `✕` removes one entry from the list. When the last one is dismissed, presentation mode exits.
+5. **Clear all** — `present_cleared` message wipes the entire list (e.g., on session switch).
+6. **Cap** — max ~20 presentations per session. Oldest evicted when exceeded (LRU). Prevents unbounded memory growth from long sessions.
+
+### Why not tabs?
+
+Tabs would work but are visually heavy for what's often 1–3 items. The `◀ 2/3 ▶` carousel pattern is lighter, doesn't compete with the port selector, and degrades gracefully: with 1 item, the nav arrows simply don't appear.
+
+### Agent API for revisions
+
+```
+// First presentation — new entry
+present({ content: "...", title: "Schema v1" })
+→ { presentId: "abc123" }
+
+// User gives feedback, agent revises — replace in-place
+present({ content: "...", title: "Schema v2", replaceId: "abc123" })
+→ { presentId: "def456" }
+
+// Separate artifact in the same turn — new entry
+present({ content: "...", title: "Data Flow" })
+→ { presentId: "ghi789" }
+```
+
+The agent gets back the `presentId` from each call, so it can reference previous presentations for updates. If the agent doesn't track IDs (simpler agents, one-shot presentations), every call creates a new entry — fine for most cases.
+
+### Chat integration (lightweight)
+
+When the agent presents, a small **chip** appears inline in the chat message:
+
+```
+I've created a diagram showing the database schema.
+
+  ┌──────────────────────────┐
+  │ 📊 Schema Diagram  [View]│  ← clickable chip, scrolls preview pane into view
+  └──────────────────────────┘
+
+Let me know if you'd like any changes.
+```
+
+This connects the conversation to the visual output without rendering the full artifact inline (which is the heavier Option E). The chip is emitted as part of the tool result display — minimal client work.
+
+---
+
 ## Implementation sketch — Tier 1 (inline artifacts)
 
 ### New types
@@ -252,10 +327,11 @@ Small artifacts (SVG, chart) rendered inline in the message thread alongside the
 interface PresentContentMessage {
   type: "present_content";
   sessionId: string;
-  presentId: string;       // unique ID for this presentation (for updates/replacement)
+  presentId: string;        // unique ID for this presentation
+  replaceId?: string;       // if set, replaces this existing presentation in-place
   content: string;          // the content (HTML string, SVG string, data URI, markdown)
   mimeType: string;         // "text/html", "image/svg+xml", "text/markdown", "image/png"
-  title?: string;           // display title for the preview pane header
+  title?: string;           // display title for the header
 }
 
 interface PresentClearedMessage {
@@ -272,13 +348,14 @@ A `present` tool in the agent's tool list (registered in `tool-map.ts`, document
 present({
   content: "<html><body><h1>Hello</h1><div id='chart'></div><script>...</script></body></html>",
   mimeType: "text/html",    // optional, default "text/html"
-  title: "Sales Chart"       // optional
+  title: "Sales Chart",      // optional
+  replaceId: "abc123"        // optional — replace a previous presentation
 })
 ```
 
 The tool handler in the session worker:
 1. Generates a `presentId` (nanoid)
-2. Emits `present_content` via SSE
+2. Emits `present_content` via SSE (with `replaceId` if provided)
 3. Returns `{ presentId, status: "presented" }` to the agent
 
 For images/SVG, the agent can pass inline content directly:
@@ -292,15 +369,20 @@ present({
 
 ### Client changes
 
-- **Preview pane**: When a `present_content` message arrives, switch to "presentation mode":
-  - HTML: render in sandboxed iframe via `srcdoc` attribute
-  - SVG: render in iframe via `srcdoc` (wrapped in minimal HTML) or directly as `<img src="data:image/svg+xml,..."/>`
-  - Markdown: render with existing markdown renderer, display in a styled container
-  - Images: render as `<img>` with data URI
-- **Preview store**: Add `presentation: { presentId, content, mimeType, title } | null`. Clear on `present_cleared` or session switch.
-- **Preview pane header**: Show title, "Presented by agent" badge, "Save to project" button, dismiss button.
-- **"Save to project" action**: Opens a file-save dialog (or prompts agent), copies content to a workspace file. Transitions from ephemeral → persistent.
-- **Port selector**: When presentation is active, show "Presentation: {title}" as the selected option. User can switch back to preview ports, and switch back to presentation.
+- **Preview pane**: When `present_content` arrives, enter "presentation mode":
+  - HTML → sandboxed iframe via `srcdoc`
+  - SVG → iframe via `srcdoc` (wrapped in minimal HTML) or `<img src="data:image/svg+xml,...">`
+  - Markdown → existing markdown renderer in a styled container
+  - Images → `<img>` with data URI
+- **Preview store**:
+  ```typescript
+  presentations: Array<{ presentId: string; content: string; mimeType: string; title?: string }>;
+  activePresentIndex: number;  // which one is currently shown
+  ```
+  On `present_content`: if `replaceId` matches an existing entry, replace it; otherwise append and set as active. On `present_cleared` or session switch, clear the array.
+- **Presentation header**: `◀ 2/3 ▶` nav, title, "Save to project" button, dismiss button.
+- **"Save to project" action**: Agent-mediated — sends a message like "save this presentation as `public/chart.html`". Agent writes the file to the workspace.
+- **Port selector**: Show "Presentations (3)" as a virtual option when presentations exist. User can switch between preview ports and presentation mode.
 
 ### Sandboxing
 
@@ -363,12 +445,10 @@ GET /present/:sessionId/:presentId/*  →  container GET /present-files/{present
 
 ## Open questions
 
-1. **Max inline size** — 256KB? 1MB? Need to test WS/SSE backpressure impact at various sizes.
-2. **Multiple presentations** — latest-wins (simple) or tabbed (powerful)? Start with latest-wins, add tabs if users want to compare.
-3. **Interaction with full preview** — presentation and preview are separate "modes" in the preview pane. User can toggle between them. Presentation auto-activates when agent presents; preview stays available via port selector.
-4. **Update semantics** — when agent calls `present()` again, does it replace the current presentation or create a new one? Propose: replace by default, but `presentId` allows targeted updates if needed.
-5. **Chat integration** — should a small thumbnail/link appear in the chat message when the agent presents? Low-effort way to connect the chat flow to the visual output without full Option E.
-6. **"Save to project" UX** — modal with file path input? Or agent-mediated ("save this as `public/chart.html`")? Agent-mediated feels more natural for ShipIt.
+1. **Max inline size** — 256KB? 1MB? Need to test WS/SSE backpressure impact at various sizes. Determines when Tier 2 becomes necessary.
+2. **Interaction with full preview** — presentation and preview are separate "modes" in the preview pane. User can toggle between them via the port selector. Presentation auto-activates when agent presents; preview stays available. Need to nail the UX for the mode switch.
+3. **Presentation persistence across reload** — presentations are ephemeral (no files), but should they survive a browser refresh? Options: (a) gone on refresh (truly ephemeral), (b) stored in chat history and replayed on session load. (b) is nicer but increases chat history size.
+4. **CSP and sandboxing** — presented HTML needs network access (CDN scripts, Google Fonts) but must not access the parent frame. `sandbox="allow-scripts"` on the iframe works, but some content may need `allow-same-origin` for APIs. How strict?
 
 ---
 
