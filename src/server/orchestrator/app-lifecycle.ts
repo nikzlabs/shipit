@@ -465,6 +465,16 @@ function setupServiceManager(
     runner.emitMessage({ type: "compose_error", sessionId: runner.sessionId, message: "" });
   }
 
+  // Fire install on the agent container regardless of compose config — projects
+  // without a compose stack (like ShipIt itself) still need their dependencies
+  // installed. Non-blocking; progress streams via SSE.
+  const installCommands = shipitConfig.agent.install;
+  if (installCommands.length > 0 && runner instanceof ContainerSessionRunner) {
+    void runner.runInstall(installCommands).catch((err: unknown) => {
+      console.error(`[install:${runner.sessionId}] Install failed:`, getErrorMessage(err));
+    });
+  }
+
   if (!shipitConfig.compose) {
     composeNotConfigured.add(runner.sessionId);
     runner.emitMessage({ type: "compose_not_configured", sessionId: runner.sessionId });
@@ -523,19 +533,9 @@ function setupServiceManager(
     });
   });
 
-  // Start install and compose stack in parallel — install runs in the agent
-  // container while compose services start in their own containers.
-  const installCommands = shipitConfig.agent.install;
-
-  // Fire install on the agent container (non-blocking, progress via SSE)
-  if (installCommands.length > 0 && runner instanceof ContainerSessionRunner) {
-    void runner.runInstall(installCommands).catch((err: unknown) => {
-      console.error(`[install:${runner.sessionId}] Install failed:`, getErrorMessage(err));
-    });
-  }
-
   // Start the compose stack asynchronously — the full sequence (compose up →
   // network join → IP resolution → event flush) is handled inside mgr.start().
+  // Install was already fired above (runs in parallel with compose).
   void (async () => {
     try {
       await mgr.start();
