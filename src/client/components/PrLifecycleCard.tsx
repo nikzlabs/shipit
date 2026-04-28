@@ -364,7 +364,7 @@ function AutoCreatePrToggle() {
       label="Auto-create PR"
       enabled={autoCreatePr}
       onToggle={() => void handleToggle()}
-      title={autoCreatePr ? "Disable auto-create PR for new sessions" : "Enable auto-create PR for new sessions"}
+      title={autoCreatePr ? "Disable auto-create PR after meaningful turns" : "Enable auto-create PR after every meaningful turn"}
     />
   );
 }
