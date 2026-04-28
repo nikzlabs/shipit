@@ -17,7 +17,7 @@ docker rm -f $(docker ps -aq --filter "label=shipit-parent-session") 2>/dev/null
 docker network prune -f
 
 # Build both images (session-worker is a build-only profile, must be named explicitly)
-docker compose -f "$COMPOSE_FILE" build session-worker shipit
+docker compose -f "$COMPOSE_FILE" build --no-cache --pull session-worker shipit
 
 # Start orchestrator (session-worker containers are spawned on demand)
 docker compose -f "$COMPOSE_FILE" up -d --no-build shipit
