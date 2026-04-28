@@ -13,7 +13,7 @@ export interface DocsViewerProps {
 
 const STATUS_CONFIG: Record<DocStatus, { label: string; variant: BadgeProps["variant"]; order: number }> = {
   "in-progress": { label: "In Progress", variant: "warning", order: 0 },
-  "planned": { label: "Planned", variant: "default", order: 1 },
+  "planned": { label: "Planned", variant: "info", order: 1 },
   "paused": { label: "Paused", variant: "default", order: 2 },
   "done": { label: "Done", variant: "success", order: 3 },
 };
