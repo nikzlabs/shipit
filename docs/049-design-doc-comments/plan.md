@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 ---
 # 049 — Review Comments
 
@@ -983,24 +983,29 @@ function parseMarkdownSections(content: string): MarkdownSection[] {
 
 | File | Change |
 |---|---|
-| `src/server/review-store.ts` | New — `ReviewStore` class, file-based JSON persistence |
-| `src/server/review-store.test.ts` | New — unit tests for ReviewStore |
-| `src/server/services/reviews.ts` | New — service functions for review CRUD + prompt construction |
-| `src/server/orchestrator/api-routes.ts` | Add review HTTP endpoints |
-| `src/server/orchestrator/index.ts` | Instantiate `ReviewStore`, inject into deps |
-| `src/server/shared/types/domain-types.ts` | Add `DocReview`, `ReviewComment`, `FileComment` types |
-| `src/client/components/MarkdownSectionComments.tsx` | New — shared section-anchored comment UI for rendered markdown |
-| `src/client/components/MarkdownSectionComments.test.tsx` | New — component tests |
-| `src/client/components/DocReviewPanel.tsx` | New — wraps `MarkdownSectionComments` with AI review, drift, server persistence |
-| `src/client/components/DocReviewPanel.test.tsx` | New — component tests |
-| `src/client/components/FeaturesPanel.tsx` | Add "Review" button, `onReviewFeature` prop |
-| `src/client/components/MonacoCommentWidgets.ts` | New — shared ViewZone/decoration logic for comments in any Monaco editor |
-| `src/client/components/MonacoCommentWidgets.test.ts` | New — unit tests |
-| `src/client/components/FilePreviewModal.tsx` | Code files: highlight.js → Monaco. Markdown: `marked` → `MarkdownSectionComments`. Both get comment support. |
-| `src/client/components/DiffPanel.tsx` | Enable glyph margin, attach comment widgets to modified editor |
-| `src/client/stores/comment-store.ts` | New — persisted Zustand store for file comments |
-| `src/client/App.tsx` | Wire both comment flows, add review state and send handlers |
-| `src/server/integration_tests/doc-reviews.test.ts` | New — HTTP endpoint integration tests |
+| `src/server/orchestrator/review-store.ts` | `ReviewStore` class, file-based JSON persistence |
+| `src/server/orchestrator/review-store.test.ts` | Unit tests for ReviewStore |
+| `src/server/orchestrator/services/reviews.ts` | Service functions for review CRUD + prompt construction |
+| `src/server/orchestrator/services/reviews.test.ts` | Service-level unit tests (re-anchoring, prompt construction) |
+| `src/server/orchestrator/api-routes-reviews.ts` | Review HTTP endpoints |
+| `src/server/orchestrator/api-routes.ts` | Registers `registerReviewRoutes` |
+| `src/server/orchestrator/app-di.ts` | Instantiate `ReviewStore`, inject into deps |
+| `src/server/orchestrator/integration_tests/doc-reviews.test.ts` | HTTP endpoint integration tests |
+| `src/server/shared/types/domain-types.ts` | `DocReview`, `ReviewComment`, `FileComment`, `LineComment`, `SectionComment` types |
+| `src/client/components/MarkdownSectionComments.tsx` | Shared section-anchored comment UI for rendered markdown |
+| `src/client/components/MarkdownSectionComments.test.tsx` | Component tests |
+| `src/client/components/DocReviewPanel.tsx` | Wraps `MarkdownSectionComments` with AI review, drift, server persistence |
+| `src/client/components/DocReviewPanel.test.tsx` | Component tests (mocks `fetch` for `useApi`) |
+| `src/client/components/DocsViewer.tsx` | "Review" button + `onReviewFeature` prop on each feature row (used in place of `FeaturesPanel`) |
+| `src/client/components/MonacoCommentWidgets.ts` | Shared ViewZone/decoration logic for comments in any Monaco editor |
+| `src/client/components/MonacoCommentWidgets.test.ts` | Unit tests with a fake editor stub |
+| `src/client/components/FilePreviewModal.tsx` | Code files: highlight.js → Monaco. Markdown: `marked` → `MarkdownSectionComments`. Exports `buildFileCommentsPrompt` for testing. |
+| `src/client/components/FilePreviewModal.test.tsx` | Updated — covers Monaco/markdown/image/binary branching |
+| `src/client/components/buildFileCommentsPrompt.test.ts` | Unit tests for the file-comment prompt builder (line + section, multi-file, sort order, snippet boundaries) |
+| `src/client/components/DiffPanel.tsx` | Glyph margin enabled, comment widgets attached to modified editor |
+| `src/client/stores/comment-store.ts` | Persisted Zustand store for file comments |
+| `src/client/stores/comment-store.test.ts` | Store unit tests (add/edit/delete/clear, session isolation, localStorage persistence) |
+| `src/client/App.tsx` | Wires both comment flows, adds review state and send handlers |
 
 ## Scope & Non-Goals
 

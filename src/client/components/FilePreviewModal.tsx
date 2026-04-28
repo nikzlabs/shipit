@@ -60,7 +60,7 @@ function getLanguageFromPath(filePath: string): string {
   return map[ext] ?? "plaintext";
 }
 
-function buildFileCommentsPrompt(comments: FileComment[], fileContents: Map<string, string>): string {
+export function buildFileCommentsPrompt(comments: FileComment[], fileContents: Map<string, string>): string {
   const byFile = new Map<string, FileComment[]>();
   for (const c of comments) {
     if (!byFile.has(c.filePath)) byFile.set(c.filePath, []);
