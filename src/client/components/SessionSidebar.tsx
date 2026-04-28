@@ -302,6 +302,15 @@ function RepoGroup({
       {/* Session list — hidden when collapsed */}
       {!isCollapsed && (
         <div className="flex flex-col gap-0.5">
+          {/* Inline new session button */}
+          <button
+            onClick={onNewSession}
+            disabled={repo.status === "cloning"}
+            className="flex items-center gap-1.5 px-3 py-1 mx-1 text-[11px] text-(--color-text-tertiary) hover:text-(--color-success) transition-colors rounded hover:bg-(--color-bg-hover) disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <PlusIcon size={ICON_SIZE.XS} />
+            New Session
+          </button>
           {sessions.length === 0 ? (
             <p className="text-[10px] text-(--color-text-tertiary) px-3 py-1 text-center">No sessions</p>
           ) : (
@@ -315,15 +324,6 @@ function RepoGroup({
               />
             ))
           )}
-          {/* Inline new session button */}
-          <button
-            onClick={onNewSession}
-            disabled={repo.status === "cloning"}
-            className="flex items-center gap-1.5 px-3 py-1 mx-1 text-[11px] text-(--color-text-tertiary) hover:text-(--color-success) transition-colors rounded hover:bg-(--color-bg-hover) disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <PlusIcon size={ICON_SIZE.XS} />
-            New Session
-          </button>
         </div>
       )}
     </div>
