@@ -243,6 +243,39 @@ Small artifacts (SVG, chart) rendered inline in the message thread alongside the
 
 ---
 
+## UI placement: separate tab, not inside Preview
+
+Presentations get their own **"Present" tab** in the right panel, alongside Preview and Terminal. Not embedded inside the Preview pane.
+
+```
+┌─────────┬──────────────────────────────────┐
+│         │ [Preview] [Present] [Terminal]    │
+│  Chat   │ ┌──────────────────────────────┐ │
+│         │ │ ◀ 2/3 ▶  Sales Chart   💾  ✕ │ │
+│         │ │                              │ │
+│         │ │      [rendered content]      │ │
+│         │ │                              │ │
+│         │ └──────────────────────────────┘ │
+└─────────┴──────────────────────────────────┘
+```
+
+### Why separate?
+
+1. **No conflict with preview** — the killer argument. User is iterating on a live app AND the agent presents a diagram. With a shared pane they'd have to toggle; with separate tabs they coexist. Just click between them.
+2. **Clean conceptual separation** — "Preview" = a running process (dev server, Docker Compose). "Present" = a static artifact the agent generated. Different sources, different lifecycles, different mental models.
+3. **Each tab owns its header** — Preview gets the port selector. Present gets the carousel nav. No competing navigation crammed into one header bar.
+4. **Appears only when needed** — the Present tab is hidden until the first `present_content` message. Users who never see a presentation never see the tab. Zero noise.
+5. **Future-friendly** — natural home for richer content types later (generated PDFs, interactive notebooks, comparison views).
+
+### Behavior
+
+- **Tab appears** on first `present_content` message in the session. Auto-switches to it.
+- **Badge** shows count: `Present (3)` when there are multiple presentations and the tab isn't focused.
+- **Tab hides** when all presentations are dismissed and there's nothing to show.
+- **Session switch** clears presentations and hides the tab.
+
+---
+
 ## Multiple presentations
 
 When the agent presents multiple artifacts — across turns or within a single turn — how do they appear?
@@ -369,20 +402,20 @@ present({
 
 ### Client changes
 
-- **Preview pane**: When `present_content` arrives, enter "presentation mode":
+- **New `PresentPane` component** (`src/client/components/PresentPane.tsx`): a dedicated right-panel tab, peer to `PreviewFrame` and Terminal. Renders content by MIME type:
   - HTML → sandboxed iframe via `srcdoc`
   - SVG → iframe via `srcdoc` (wrapped in minimal HTML) or `<img src="data:image/svg+xml,...">`
   - Markdown → existing markdown renderer in a styled container
   - Images → `<img>` with data URI
-- **Preview store**:
+- **Presentation header**: `◀ 2/3 ▶` carousel nav, title, "Save to project" button, dismiss `✕` button.
+- **Present store** (`src/client/stores/present-store.ts`): new Zustand store, separate from preview-store:
   ```typescript
   presentations: Array<{ presentId: string; content: string; mimeType: string; title?: string }>;
-  activePresentIndex: number;  // which one is currently shown
+  activePresentIndex: number;
   ```
   On `present_content`: if `replaceId` matches an existing entry, replace it; otherwise append and set as active. On `present_cleared` or session switch, clear the array.
-- **Presentation header**: `◀ 2/3 ▶` nav, title, "Save to project" button, dismiss button.
+- **Right panel tabs** (`AppLayout.tsx`): add "Present" tab. Conditionally visible — only rendered when `presentations.length > 0`. Shows badge with count when not focused. Auto-switches to Present tab on first `present_content`.
 - **"Save to project" action**: Agent-mediated — sends a message like "save this presentation as `public/chart.html`". Agent writes the file to the workspace.
-- **Port selector**: Show "Presentations (3)" as a virtual option when presentations exist. User can switch between preview ports and presentation mode.
 
 ### Sandboxing
 
@@ -446,9 +479,9 @@ GET /present/:sessionId/:presentId/*  →  container GET /present-files/{present
 ## Open questions
 
 1. **Max inline size** — 256KB? 1MB? Need to test WS/SSE backpressure impact at various sizes. Determines when Tier 2 becomes necessary.
-2. **Interaction with full preview** — presentation and preview are separate "modes" in the preview pane. User can toggle between them via the port selector. Presentation auto-activates when agent presents; preview stays available. Need to nail the UX for the mode switch.
-3. **Presentation persistence across reload** — presentations are ephemeral (no files), but should they survive a browser refresh? Options: (a) gone on refresh (truly ephemeral), (b) stored in chat history and replayed on session load. (b) is nicer but increases chat history size.
-4. **CSP and sandboxing** — presented HTML needs network access (CDN scripts, Google Fonts) but must not access the parent frame. `sandbox="allow-scripts"` on the iframe works, but some content may need `allow-same-origin` for APIs. How strict?
+2. **Presentation persistence across reload** — presentations are ephemeral (no files), but should they survive a browser refresh? Options: (a) gone on refresh (truly ephemeral), (b) stored in chat history and replayed on session load. (b) is nicer but increases chat history size.
+3. **CSP and sandboxing** — presented HTML needs network access (CDN scripts, Google Fonts) but must not access the parent frame. `sandbox="allow-scripts"` on the iframe works, but some content may need `allow-same-origin` for APIs. How strict?
+4. **Right panel tab ordering** — when Present tab appears dynamically, where does it slot in? Proposal: `[Preview] [Present] [Terminal]` — Present is conceptually closest to Preview.
 
 ---
 
@@ -459,8 +492,9 @@ GET /present/:sessionId/:presentId/*  →  container GET /present-files/{present
 - `src/server/shared/types/ws-server-messages.ts` — `PresentContentMessage`, `PresentClearedMessage`
 - `src/server/session/agents/tool-map.ts` — register `present` tool
 - `src/server/shipit-docs/` — document `present` tool for the agent
-- `src/client/components/PreviewFrame.tsx` — presentation mode rendering
-- `src/client/stores/preview-store.ts` — presentation state
+- `src/client/components/PresentPane.tsx` — **new component**, the Present tab
+- `src/client/stores/present-store.ts` — **new store**, presentation list + active index
+- `src/client/AppLayout.tsx` — add Present tab to right panel, conditional visibility
 
 ### Tier 2 (future)
 - `src/server/session/session-worker.ts` — `GET /present-files/*` static serving
