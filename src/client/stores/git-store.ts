@@ -123,6 +123,11 @@ export const useGitStore = create<GitState>((set) => ({
   },
 
   startRebase: async (sessionId, baseBranch) => {
+    // Optimistically transition to in_progress; WS events drive subsequent
+    // state changes (rebase_started, rebase_conflicts, rebase_complete,
+    // rebase_aborted). The HTTP response only signals that the flow has
+    // started server-side — the actual rebase + agent resolution loop runs
+    // asynchronously and reports progress via WS.
     set({ rebaseStatus: "in_progress", pushRejected: false });
     try {
       const res = await fetch(`/api/sessions/${sessionId}/git/rebase`, {
@@ -134,16 +139,7 @@ export const useGitStore = create<GitState>((set) => ({
         const data = await res.json().catch(() => ({ error: "Rebase failed" })) as { error: string };
         throw new Error(data.error);
       }
-      const data = await res.json() as { status: string; conflicts?: { path: string }[] };
-      if (data.status === "conflicts") {
-        set({
-          rebaseStatus: "conflicts",
-          rebaseConflicts: data.conflicts ?? [],
-        });
-      } else {
-        // "rebased" or "up_to_date"
-        set({ rebaseStatus: "idle", rebaseConflicts: [] });
-      }
+      // Response is { status: "started" }; WS events take over from here.
     } catch {
       set({ rebaseStatus: "idle" });
     }

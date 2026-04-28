@@ -13,7 +13,7 @@ import type { RepoGit } from "./repo-git.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
-import type { AgentId } from "../shared/types.js";
+import type { AgentId, AgentProcess } from "../shared/types.js";
 import type { UsageManager } from "./usage.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionContainerManager } from "./session-container.js";
@@ -80,6 +80,12 @@ export interface ApiDeps {
   reviewStore?: ReviewStore;
   /** Service managers — per-session compose lifecycle (keyed by sessionId). */
   serviceManagers?: Map<string, ServiceManager>;
+  /**
+   * Optional fallback agent factory. Container runners create their own agents
+   * via `runner.createAgent()`; this is only used when the runner has no
+   * factory of its own (in-process tests).
+   */
+  agentFactory?: (agentId: AgentId) => AgentProcess;
 }
 
 /**
