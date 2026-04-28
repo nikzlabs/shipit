@@ -348,6 +348,7 @@ export function SessionSidebar({
   const toggleRepoCollapsed = useRepoStore((s) => s.toggleRepoCollapsed);
 
   // Group sessions by repo URL, sorted MRU within each group.
+  // Merged sessions always sink to the bottom of their group, regardless of recency.
   // Sort repos by most-recently-used session (repos with recent activity first).
   const repoGroups = useMemo(() => {
     const grouped = new Map<string, SessionInfo[]>();
@@ -364,9 +365,14 @@ export function SessionSidebar({
       grouped.get(key)!.push(s);
     }
 
-    // Sort sessions within each group by MRU
+    // Sort sessions within each group: non-merged first (by MRU), then merged (by MRU).
     for (const [, group] of grouped) {
-      group.sort((a, b) => (b.lastUsedAt ?? "").localeCompare(a.lastUsedAt ?? ""));
+      group.sort((a, b) => {
+        const aMerged = a.mergedAt ? 1 : 0;
+        const bMerged = b.mergedAt ? 1 : 0;
+        if (aMerged !== bMerged) return aMerged - bMerged;
+        return (b.lastUsedAt ?? "").localeCompare(a.lastUsedAt ?? "");
+      });
     }
 
     // Build sorted repo list: repos with recent sessions first
