@@ -183,6 +183,26 @@ WS handlers receive a composed context object with three layers. Handlers declar
 
 Handlers that need everything use `FullCtx = ConnectionCtx & RunnerCtx & AppCtx`. Simpler handlers declare only what they need (e.g., terminal handlers need `ConnectionCtx & RunnerCtx` only).
 
+### WebSocket lifecycle MUST NOT affect server behavior
+
+The WebSocket connection is a *transport* between the browser and the orchestrator. It must not be allowed to drive server-side state, agent lifecycle, container lifecycle, or persistence. Disconnects, reconnects, browser crashes, and network blips are all expected and routine — none of them should change what the server is doing.
+
+Concrete rules:
+
+- **Per-connection state is captured at the top of long-running functions**, never inside async callbacks. `runClaudeWithMessage` and `wireAgentListeners` capture `runner`, `capturedSessionId`, `capturedSessionDir` once at entry. Any code in `agent.on("done")`, `agent.on("event")`, `agent.on("error")`, `setTimeout`, `Promise.then`, or recursive calls reads ONLY those captured values, never `ctx.getX()` or `ctx.setX()`.
+
+- **Resolve runners via the registry, not via `ctx.getRunner()`.** `ctx.getRunner()` returns the per-connection `attachedRunner`, which becomes `null` on WS close. Use `ctx.getRunnerRegistry().get(capturedSessionId) ?? ctx.getRunner()` so the resolution survives reconnects. The registry persists across the entire process lifetime.
+
+- **Mutate runner state directly**, not via `ctx.setX(...)`. Inside async closures, prefer `runner.running = false`, `runner.turnSummary = "…"`, `runner.emitMessage(...)`. The ctx setters fall back to a registry lookup as defense-in-depth, but writing `runner.X = …` makes the dependency on the runner explicit.
+
+- **Emit via `runner.emitMessage()`, not `ctx.send()`.** `runner.emitMessage` broadcasts to every attached viewer AND buffers into the turn-event log so reconnecting viewers see post-turn messages. `ctx.send` writes to a single socket and silently drops on closed sockets.
+
+- **Never trigger `runner.dispose()` from a WebSocket lifecycle event.** Disposal happens via the periodic idle enforcer (which respects a 60s grace period after viewer detach and refuses to kill running agents) or from explicit user actions (archive, repo delete, full reset, shutdown). The latter pass `{ force: true }`.
+
+- **Never trigger `agent.kill()`, `terminal.kill()`, `container.destroy()`, etc. from a WebSocket close handler.** The only thing `socket.on("close")` should do is call `detachFromRunner()` (which decrements the viewer count and removes per-connection listeners). Period.
+
+The ctx setters in `index.ts` will throw under `VITEST` and warn in production if they're called when no runner can be resolved. If you see that warning in tests or logs, you've introduced this bug class — fix it by capturing the runner upfront and mutating it directly.
+
 ### Service layer pattern
 
 Three-tier: **Routes/WS handlers → Services → Managers**
