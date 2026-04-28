@@ -10,6 +10,11 @@ type PostTurnCtx = Pick<ConnectionCtx & AppCtx, "createGitManager" | "chatHistor
 /**
  * Auto-commit working tree changes after an agent turn and link the commit to
  * the last assistant message in chat history. Returns the commit hash or null.
+ *
+ * Callers may pass `opts.turnSummary` explicitly. This is required when the
+ * caller cannot rely on `ctx.getTurnSummary()` because the WebSocket has
+ * detached (the ctx getter goes through the per-connection `attachedRunner`,
+ * which is null after disconnect — the queue-drain path is the main case).
  */
 export async function postTurnCommit(
   ctx: PostTurnCtx,
@@ -17,11 +22,14 @@ export async function postTurnCommit(
     sessionDir: string;
     sessionId: string | undefined;
     emit: (msg: WsServerMessage) => void;
+    /** Explicit turn summary; falls back to ctx.getTurnSummary() if omitted. */
+    turnSummary?: string;
   },
 ): Promise<string | null> {
   const git = ctx.createGitManager(opts.sessionDir);
   const parentHash = await git.getHeadHash();
-  const firstLine = ctx.getTurnSummary().split("\n")[0]?.slice(0, 120) || "Agent turn";
+  const summary = opts.turnSummary ?? ctx.getTurnSummary();
+  const firstLine = summary.split("\n")[0]?.slice(0, 120) || "Agent turn";
   const commitHash = await git.autoCommit(firstLine);
   if (!commitHash) return null;
 

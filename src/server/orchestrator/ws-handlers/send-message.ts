@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import type { WsClientMessage, ImageAttachment, FileAttachment, FileContextRef, UploadRef } from "../../shared/types.js";
+import type { WsClientMessage, WsServerMessage, ImageAttachment, FileAttachment, FileContextRef, UploadRef } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, validateImages, resolveFileAttachments, resolveUploadRefs } from "../validation.js";
 import { generateSessionName } from "../session-namer.js";
@@ -311,18 +311,35 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     capturedSessionId,
   });
 
-  const answerRunner = ctx.getRunner();
+  // Resolve runner via the registry so it survives WS disconnect — the per-
+  // connection ctx.getRunner() returns null after the originating socket
+  // closes, which would strand state and route emits to nowhere.
+  const answerRunner =
+    (capturedSessionId
+      ? (ctx.getRunnerRegistry().get(capturedSessionId) ?? null)
+      : null) ?? ctx.getRunner();
   currentAgent.on("done", async (code: number | null) => {
     console.log("[agent] process exited with code", code);
     ctx.broadcastLog("server", `Agent process exited with code ${code}`);
     if (answerRunner) answerRunner.setAgent(null);
+
+    // Emit via the runner so all viewers (including future reconnects via
+    // the buffered turn events) see post-turn messages, not just the
+    // originating WS connection.
+    const emitDone = (msg: WsServerMessage) => {
+      if (answerRunner) answerRunner.emitMessage(msg);
+      else ctx.send(msg);
+    };
 
     try {
       if (capturedSessionDir) {
         await postTurnCommit(ctx, {
           sessionDir: capturedSessionDir,
           sessionId: capturedSessionId,
-          emit: (msg) => ctx.send(msg),
+          emit: emitDone,
+          // Pass the captured runner's summary explicitly — ctx.getTurnSummary()
+          // returns "" after WS disconnect (it routes through attachedRunner).
+          turnSummary: answerRunner?.turnSummary ?? "",
         });
       }
     } catch (err) {

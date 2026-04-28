@@ -53,15 +53,22 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
   const { userText, images, validatedFiles, permissionMode, isNewSession, uploadPaths } = opts;
   let { agentSessionId } = opts;
 
-  const runner = ctx.getRunner();
-  // Clear the turn event buffer for the new turn
-  if (runner) runner.clearTurnEventBuffer();
-
   // Capture the session context at turn start. These values must NOT be read
   // from ctx later because the user may switch sessions while the agent runs,
   // which would change ctx.getActiveAppSessionId() / ctx.getActiveSessionDir().
   const capturedSessionId = ctx.getActiveAppSessionId();
   const capturedSessionDir = ctx.getActiveSessionDir();
+
+  // Resolve the runner via the registry (by session ID) when possible. This
+  // makes the runner reference survive WebSocket disconnects: ctx.getRunner()
+  // returns the per-connection `attachedRunner`, which becomes null when the
+  // browser disconnects, but the registry-backed runner persists. Critical
+  // for queue-drained turns that may finish after the originating WS is gone.
+  const runner =
+    (capturedSessionId ? (ctx.getRunnerRegistry().get(capturedSessionId) ?? null) : null) ??
+    ctx.getRunner();
+  // Clear the turn event buffer for the new turn
+  if (runner) runner.clearTurnEventBuffer();
 
   ctx.setTurnSummary("");
   ctx.setAccumulatedText("");
@@ -173,7 +180,10 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
         const fileResult = await resolveFileAttachments(nextFileRefs, dir);
         if (fileResult.error) {
           emitDone({ type: "error", message: fileResult.error });
-          ctx.setIsClaudeRunning(false);
+          // Use the captured runner directly — ctx.setIsClaudeRunning() goes
+          // through `attachedRunner` which is null after WS disconnect, which
+          // would strand `running=true` and prevent future cleanup.
+          if (runner) runner.running = false;
           return;
         }
         nextValidatedFiles = fileResult.files;
@@ -186,7 +196,8 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
         const uploadResult = await resolveUploadRefs(nextUploadRefs, dir);
         if (uploadResult.error) {
           emitDone({ type: "error", message: uploadResult.error });
-          ctx.setIsClaudeRunning(false);
+          // Use the captured runner directly — see comment above.
+          if (runner) runner.running = false;
           return;
         }
         nextValidatedFiles = [...nextValidatedFiles, ...uploadResult.files];
@@ -225,6 +236,11 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
           sessionDir: capturedSessionDir,
           sessionId: capturedSessionId,
           emit: emitDone,
+          // Pass the captured runner's summary explicitly — ctx.getTurnSummary()
+          // returns "" after WS disconnect because it routes through the
+          // per-connection attachedRunner. Use the captured (registry-backed)
+          // runner so commit messages are correct even for queue-drained turns.
+          turnSummary: runner?.turnSummary ?? "",
         });
       }
     } catch (err) {

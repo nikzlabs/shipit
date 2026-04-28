@@ -43,7 +43,14 @@ export function wireAgentListeners(
   // After disconnect, ctx setters (which go through `attachedRunner`) become no-ops,
   // but the agent continues emitting events. All runner state mutations MUST use
   // this captured reference, not ctx, to ensure state is updated correctly.
-  const runner = ctx.getRunner();
+  //
+  // Resolve via the registry first (by captured session ID) so we still get
+  // the runner even when the originating WS has already disconnected by the
+  // time wireAgentListeners is invoked from a queue-drained recursive turn.
+  const runner =
+    (opts.capturedSessionId
+      ? (ctx.getRunnerRegistry().get(opts.capturedSessionId) ?? null)
+      : null) ?? ctx.getRunner();
   // Helper: emit to all viewers via runner, or fall back to ctx.send
   const emitToViewers = (msg: WsServerMessage) => {
     if (runner) {
