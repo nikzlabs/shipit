@@ -896,6 +896,49 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     }
   }
 
+  /**
+   * Reconcile the local `_isRunning` flag with the worker's actual agent
+   * state. Returns `true` if the agent is genuinely running, `false`
+   * otherwise.
+   *
+   * Without this safety net, a missed `agent_done` SSE event (e.g. due to
+   * an SSE drop at the wrong moment, a container restart, or a /agent/kill
+   * race that bypasses the event broadcast) leaves `_isRunning` stuck
+   * `true` forever. The next `send_message` would then be queued
+   * indefinitely, and the user sees the symptom: "agent starts only
+   * briefly, nothing happens".
+   *
+   * If the worker reports no agent is running but `_isRunning` is true
+   * locally, reset the flag, clear the agent reference, emit a recovery
+   * `session_status` message, and signal idle so the runner is reclaimable.
+   */
+  async verifyRunningState(): Promise<boolean> {
+    if (!this._isRunning) return false;
+    let workerRunning: boolean;
+    try {
+      const status = await workerGet(this.workerUrl, "/agent/status") as { running?: boolean };
+      workerRunning = status.running === true;
+    } catch (err) {
+      // Worker unreachable — keep the local flag and let the SSE reconnect
+      // logic recover. We can't safely declare the agent dead from here.
+      console.warn(`[container-runner:${this.sessionId}] verifyRunningState: worker unreachable, keeping running=true`, err);
+      return this._isRunning;
+    }
+    if (workerRunning) return true;
+    console.warn(`[container-runner:${this.sessionId}] Detected stuck running=true (worker reports no agent). Resetting.`);
+    this._isRunning = false;
+    this._agent = null;
+    this.emitMessage({
+      type: "session_status",
+      sessionId: this.sessionId,
+      running: false,
+      queueLength: this.queueLength,
+      error: "Agent state was out of sync with the worker — reset. You can send a new message.",
+    });
+    this.emit("idle");
+    return false;
+  }
+
   get disposed(): boolean { return this._disposed; }
 
   dispose(opts?: { force?: boolean }): void {

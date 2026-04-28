@@ -352,4 +352,117 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
 
     runner.dispose();
   });
+
+  // ---- verifyRunningState (stuck running flag recovery) ----
+
+  describe("verifyRunningState() stuck-running recovery", () => {
+    it("returns false and resets running=true when worker reports no agent", async () => {
+      // Reproduces the user-visible bug: orchestrator missed `agent_done`
+      // (e.g. SSE drop mid-turn) so `running=true` is stuck. Without
+      // verifyRunningState() the next send_message would queue forever.
+      const runner = new ContainerSessionRunner({
+        sessionId: "test-stuck-running",
+        sessionDir: "/tmp/test",
+        defaultAgentId: "claude",
+        workerUrl,
+      });
+
+      runner.attachViewer();
+      await new Promise((r) => setTimeout(r, 200));
+
+      // Simulate the stuck-running state: orchestrator thinks agent is
+      // running, but the worker has no agent (the terminal SSE event
+      // never arrived).
+      runner.running = true;
+      // Sanity check: worker has no agent active.
+      expect(lastAgent).toBeNull();
+
+      // Listen for the recovery session_status broadcast.
+      const messages: { type: string; running?: boolean; error?: string }[] = [];
+      runner.on("message", (m: { type: string; running?: boolean; error?: string }) => messages.push(m));
+
+      const idlePromise = new Promise<void>((resolve) => {
+        runner.once("idle", () => resolve());
+      });
+
+      const actuallyRunning = await runner.verifyRunningState();
+
+      expect(actuallyRunning).toBe(false);
+      expect(runner.running).toBe(false);
+      expect(runner.getAgent()).toBeNull();
+
+      // Recovery session_status should be emitted to all viewers.
+      const recovery = messages.find((m) => m.type === "session_status" && m.running === false);
+      expect(recovery).toBeDefined();
+      expect(recovery?.error).toMatch(/out of sync/i);
+
+      // Idle event fires so the runner can be reclaimed normally.
+      await idlePromise;
+
+      runner.dispose();
+    });
+
+    it("returns true and preserves state when worker confirms agent is running", async () => {
+      const runner = new ContainerSessionRunner({
+        sessionId: "test-confirmed-running",
+        sessionDir: "/tmp/test",
+        defaultAgentId: "claude",
+        workerUrl,
+      });
+
+      runner.attachViewer();
+      await new Promise((r) => setTimeout(r, 200));
+
+      // Start an agent through the proxy, then check verification agrees.
+      const proxy = runner.createAgent("claude");
+      proxy.run({ prompt: "Still running", cwd: "/workspace" });
+      await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
+
+      runner.running = true;
+
+      const actuallyRunning = await runner.verifyRunningState();
+
+      expect(actuallyRunning).toBe(true);
+      expect(runner.running).toBe(true);
+      expect(runner.getAgent()).toBe(proxy);
+
+      runner.dispose({ force: true });
+    });
+
+    it("returns false immediately without HTTP call when running is already false", async () => {
+      const runner = new ContainerSessionRunner({
+        sessionId: "test-already-idle",
+        sessionDir: "/tmp/test",
+        defaultAgentId: "claude",
+        workerUrl,
+      });
+
+      // No attach — no SSE setup needed; the early-return path skips HTTP.
+      expect(runner.running).toBe(false);
+      const actuallyRunning = await runner.verifyRunningState();
+      expect(actuallyRunning).toBe(false);
+
+      runner.dispose();
+    });
+
+    it("keeps running=true when worker is unreachable (defensive fallback)", async () => {
+      // If we can't reach the worker, we can't safely declare the agent
+      // dead — the SSE reconnect loop should recover instead.
+      const runner = new ContainerSessionRunner({
+        sessionId: "test-unreachable",
+        sessionDir: "/tmp/test",
+        defaultAgentId: "claude",
+        workerUrl: "http://127.0.0.1:1", // unreachable
+      });
+
+      runner.running = true;
+
+      const actuallyRunning = await runner.verifyRunningState();
+
+      expect(actuallyRunning).toBe(true);
+      expect(runner.running).toBe(true);
+
+      runner.dispose({ force: true });
+    });
+  });
 });
