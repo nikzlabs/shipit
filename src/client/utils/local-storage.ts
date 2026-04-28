@@ -135,4 +135,23 @@ export function saveSoundOnFinish(enabled: boolean): void {
   }
 }
 
-export { PERMISSION_MODE_KEY, SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY };
+const COLLAPSED_REPOS_KEY = "shipit-collapsed-repos";
+
+export function getSavedCollapsedRepos(): Set<string> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_REPOS_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw) as string[];
+      return new Set(arr);
+    }
+  } catch { /* ignore */ }
+  return new Set();
+}
+
+export function saveCollapsedRepos(collapsed: Set<string>): void {
+  try {
+    localStorage.setItem(COLLAPSED_REPOS_KEY, JSON.stringify([...collapsed]));
+  } catch { /* ignore */ }
+}
+
+export { PERMISSION_MODE_KEY, SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, COLLAPSED_REPOS_KEY };

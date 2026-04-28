@@ -1,13 +1,15 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: document.body style during drag (DOM sync)
-import { useState, useRef, useEffect, useCallback } from "react";
-import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, GearSixIcon, GithubLogoIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, WrenchIcon } from "@phosphor-icons/react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, GithubLogoIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, WrenchIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
+import { parseRepoName } from "../utils/repo-label.js";
 import { Button } from "./ui/button.js";
 import { WithTooltip } from "./ui/tooltip.js";
 import { RepoSwitcher } from "./RepoSwitcher.js";
 import { PrStateBadge } from "./PrLifecycleCard.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useRepoStore } from "../stores/repo-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
 
@@ -68,18 +70,14 @@ function useSidebarResize() {
 }
 interface SessionSidebarProps {
   sessions: SessionInfo[];
-  activeRepoUrl: string | undefined;
-  activeRepoName: string;
-  activeRepoStatus?: "cloning" | "ready";
   currentSessionId: string | undefined;
   onResume: (sessionId: string) => void;
   onArchive: (sessionId: string) => void;
-  onNewSession: () => void;
+  onNewSessionForRepo: (repoUrl: string) => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
-  // Repo switcher
+  // Repo actions
   repos: RepoInfo[];
-  onSelectRepo: (url: string) => void;
   onAddRepo: () => void;
   onCreateNewRepo: () => void;
 }
@@ -150,9 +148,6 @@ function SessionStatusDot({ sessionId }: { sessionId: string }) {
   if (checks?.state === "failure" && autoFix?.status !== "running") {
     return <span className="shrink-0 text-(--color-error) flex" title={`CI failed ${checks.failed} of ${checks.total}`}><XCircleIcon size={ICON_SIZE.XS} /></span>;
   }
-
-  // Priority 2: Merge conflict / merge error — handled by attention border, but show warning icon
-  // (we reuse the attention condition check inline)
 
   // Priority 3: Auto-fix running
   if (autoFix?.status === "running") {
@@ -249,29 +244,153 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
   );
 }
 
-export function SessionSidebar({
+/** A collapsible group of sessions for a single repo. */
+function RepoGroup({
+  repo,
   sessions,
-  activeRepoUrl,
-  activeRepoName,
-  activeRepoStatus,
   currentSessionId,
+  isCollapsed,
+  onToggleCollapse,
   onResume,
   onArchive,
   onNewSession,
+  onViewAll,
+}: {
+  repo: RepoInfo;
+  sessions: SessionInfo[];
+  currentSessionId: string | undefined;
+  isCollapsed: boolean;
+  onToggleCollapse: () => void;
+  onResume: (id: string) => void;
+  onArchive: (id: string) => void;
+  onNewSession: () => void;
+  onViewAll: () => void;
+}) {
+  const repoName = parseRepoName(repo.url);
+
+  return (
+    <div className="flex flex-col">
+      {/* Repo header row */}
+      <div className="flex items-center gap-1 px-3 py-1.5 sticky top-0 bg-(--color-bg-primary) z-10">
+        <button
+          onClick={onToggleCollapse}
+          className="flex items-center gap-1.5 flex-1 min-w-0 text-left group"
+          aria-label={isCollapsed ? `Expand ${repoName}` : `Collapse ${repoName}`}
+        >
+          {isCollapsed
+            ? <CaretRightIcon size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-tertiary) group-hover:text-(--color-text-secondary)" />
+            : <CaretDownIcon size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-tertiary) group-hover:text-(--color-text-secondary)" />
+          }
+          <GithubLogoIcon size={ICON_SIZE.XS} weight="fill" className="shrink-0 text-(--color-text-secondary)" />
+          <span className="text-xs font-semibold text-(--color-text-secondary) truncate tracking-wide group-hover:text-(--color-text-primary) transition-colors">
+            {repoName}
+          </span>
+          {repo.status === "cloning" && (
+            <span className="shrink-0 text-[9px] text-(--color-warning) animate-pulse">cloning</span>
+          )}
+        </button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onViewAll}
+          className="text-[10px] text-(--color-text-tertiary) hover:text-(--color-text-primary) px-1 py-0.5 shrink-0"
+        >
+          View All
+        </Button>
+      </div>
+
+      {/* Session list — hidden when collapsed */}
+      {!isCollapsed && (
+        <div className="flex flex-col gap-0.5">
+          {sessions.length === 0 ? (
+            <p className="text-[10px] text-(--color-text-tertiary) px-3 py-1 text-center">No sessions</p>
+          ) : (
+            sessions.map((s) => (
+              <SessionItem
+                key={s.id}
+                session={s}
+                isCurrent={s.id === currentSessionId}
+                onResume={onResume}
+                onArchive={onArchive}
+              />
+            ))
+          )}
+          {/* Inline new session button */}
+          <button
+            onClick={onNewSession}
+            disabled={repo.status === "cloning"}
+            className="flex items-center gap-1.5 px-3 py-1 mx-1 text-[11px] text-(--color-text-tertiary) hover:text-(--color-success) transition-colors rounded hover:bg-(--color-bg-hover) disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <PlusIcon size={ICON_SIZE.XS} />
+            New Session
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function SessionSidebar({
+  sessions,
+  currentSessionId,
+  onResume,
+  onArchive,
+  onNewSessionForRepo,
   collapsed,
   onToggleCollapse,
   repos,
-  onSelectRepo,
   onAddRepo,
   onCreateNewRepo,
 }: SessionSidebarProps) {
   const { width, isDragging, onMouseDown } = useSidebarResize();
 
-  // Filter sessions to active repo, sorted most-recently-used first
-  const filteredSessions = (activeRepoUrl
-    ? sessions.filter((s) => s.remoteUrl === activeRepoUrl)
-    : sessions.filter((s) => !s.remoteUrl)
-  ).sort((a, b) => (b.lastUsedAt ?? "").localeCompare(a.lastUsedAt ?? ""));
+  const collapsedRepos = useRepoStore((s) => s.collapsedRepos);
+  const toggleRepoCollapsed = useRepoStore((s) => s.toggleRepoCollapsed);
+
+  // Group sessions by repo URL, sorted MRU within each group.
+  // Sort repos by most-recently-used session (repos with recent activity first).
+  const repoGroups = useMemo(() => {
+    const grouped = new Map<string, SessionInfo[]>();
+
+    // Initialize groups for all known repos
+    for (const repo of repos) {
+      grouped.set(repo.url, []);
+    }
+
+    // Distribute sessions into groups
+    for (const s of sessions) {
+      const key = s.remoteUrl ?? "";
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key)!.push(s);
+    }
+
+    // Sort sessions within each group by MRU
+    for (const [, group] of grouped) {
+      group.sort((a, b) => (b.lastUsedAt ?? "").localeCompare(a.lastUsedAt ?? ""));
+    }
+
+    // Build sorted repo list: repos with recent sessions first
+    const repoOrder = repos.slice().sort((a, b) => {
+      const aLatest = grouped.get(a.url)?.[0]?.lastUsedAt ?? "";
+      const bLatest = grouped.get(b.url)?.[0]?.lastUsedAt ?? "";
+      return bLatest.localeCompare(aLatest);
+    });
+
+    return repoOrder.map((repo) => ({
+      repo,
+      sessions: grouped.get(repo.url) ?? [],
+    }));
+  }, [repos, sessions]);
+
+  const handleViewAll = useCallback((repoUrl: string) => {
+    // Open AllSessionsDialog (it will default to filtering by the current repo)
+    // We set activeRepoUrl so the dialog pre-selects this repo
+    useRepoStore.getState().setActiveRepoUrl(repoUrl);
+    useSessionStore.getState().setAllSessionsDialogOpen(true);
+  }, []);
+
+  // Single repo mode: check if we only have one repo
+  const isSingleRepo = repos.length === 1;
 
   if (collapsed) {
     return (
@@ -287,7 +406,7 @@ export function SessionSidebar({
           <SidebarSimpleIcon size={ICON_SIZE.SM} />
         </Button>
         </WithTooltip>
-        <RepoSwitcher repos={repos} activeRepoUrl={activeRepoUrl} onSelectRepo={onSelectRepo} onAddRepo={onAddRepo} onCreateNew={onCreateNewRepo}>
+        <RepoSwitcher repos={repos} activeRepoUrl={useRepoStore.getState().activeRepoUrl} onSelectRepo={(url) => useRepoStore.getState().setActiveRepoUrl(url)} onAddRepo={onAddRepo} onCreateNew={onCreateNewRepo}>
         <Button
           variant="ghost"
           size="sm"
@@ -302,8 +421,8 @@ export function SessionSidebar({
         <Button
           variant="ghost"
           size="sm"
-          onClick={onNewSession}
-          disabled={!activeRepoUrl || activeRepoStatus === "cloning"}
+          onClick={() => { const url = useRepoStore.getState().activeRepoUrl ?? repos[0]?.url; if (url) onNewSessionForRepo(url); }}
+          disabled={repos.length === 0}
           className="p-0! w-6 h-6 text-(--color-success) hover:text-(--color-success)"
           aria-label="New Session"
         >
@@ -317,7 +436,7 @@ export function SessionSidebar({
   return (
     <div className="flex h-full shrink-0 min-h-0">
     <div className="flex flex-col h-full bg-(--color-bg-primary) border-r border-(--color-border-primary) min-h-0" style={{ width }}>
-      {/* Active repo header */}
+      {/* Top bar */}
       <div className="flex items-center gap-2 px-3 h-10 border-b border-(--color-border-primary) shrink-0">
         <WithTooltip label="Collapse sidebar">
         <Button
@@ -330,66 +449,46 @@ export function SessionSidebar({
           <SidebarSimpleIcon size={ICON_SIZE.SM} />
         </Button>
         </WithTooltip>
-        <GithubLogoIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0" />
-        <span className="flex-1 min-w-0 truncate text-xs font-medium text-(--color-text-primary)">
-          {activeRepoName || "No repository"}
-        </span>
-        {activeRepoStatus === "cloning" && (
-          <span className="shrink-0 text-[9px] text-(--color-warning) animate-pulse">cloning</span>
-        )}
-        <RepoSwitcher repos={repos} activeRepoUrl={activeRepoUrl} onSelectRepo={onSelectRepo} onAddRepo={onAddRepo} onCreateNew={onCreateNewRepo}>
+        <span className="flex-1" />
+        <WithTooltip label="Add Repository">
         <Button
           variant="ghost"
           size="sm"
+          onClick={onAddRepo}
           className="p-0! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
-          aria-label="Change repository"
+          aria-label="Add Repository"
         >
-          <GearSixIcon size={ICON_SIZE.SM} />
+          <PlusIcon size={ICON_SIZE.SM} />
         </Button>
-        </RepoSwitcher>
+        </WithTooltip>
       </div>
 
-      {/* Scrollable sessions area */}
-      <div className="flex-1 overflow-y-auto min-h-0 flex flex-col gap-1">
-        {/* Sessions header */}
-        <div className="flex items-center justify-between px-3 py-2 sticky top-0 bg-(--color-bg-primary) z-10">
-          <span className="text-xs font-semibold text-(--color-text-secondary) tracking-wide">Sessions</span>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => useSessionStore.getState().setAllSessionsDialogOpen(true)}
-            className="text-[10px] text-(--color-text-tertiary) hover:text-(--color-text-primary) px-1 py-0.5"
-          >
-            View All
-          </Button>
-        </div>
-
-        {filteredSessions.length === 0 ? (
-          <p className="text-xs text-(--color-text-tertiary) px-3 py-4 text-center">No sessions yet.</p>
+      {/* Scrollable grouped repo sections */}
+      <div className="flex-1 overflow-y-auto min-h-0 flex flex-col gap-2 py-1">
+        {repos.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-3 px-4 py-8">
+            <p className="text-xs text-(--color-text-tertiary) text-center">No repositories yet.</p>
+            <Button variant="primary" onClick={onAddRepo} className="gap-1.5">
+              <PlusIcon size={14} />
+              Add Repository
+            </Button>
+          </div>
         ) : (
-          filteredSessions.map((s) => (
-            <SessionItem
-              key={s.id}
-              session={s}
-              isCurrent={s.id === currentSessionId}
+          repoGroups.map(({ repo, sessions: repoSessions }) => (
+            <RepoGroup
+              key={repo.url}
+              repo={repo}
+              sessions={repoSessions}
+              currentSessionId={currentSessionId}
+              isCollapsed={!isSingleRepo && collapsedRepos.has(repo.url)}
+              onToggleCollapse={() => toggleRepoCollapsed(repo.url)}
               onResume={onResume}
               onArchive={onArchive}
+              onNewSession={() => onNewSessionForRepo(repo.url)}
+              onViewAll={() => handleViewAll(repo.url)}
             />
           ))
         )}
-      </div>
-
-      {/* New Session button */}
-      <div className="shrink-0 border-t border-(--color-border-primary) px-3 py-3 flex justify-center">
-        <Button
-          variant="primary"
-          onClick={onNewSession}
-          disabled={!activeRepoUrl || activeRepoStatus === "cloning"}
-          className="justify-center gap-2"
-        >
-          <PlusIcon size={14} />
-          New Session
-        </Button>
       </div>
     </div>
     {/* Resize handle — overlaid on top of the border */}

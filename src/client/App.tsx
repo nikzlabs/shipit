@@ -62,7 +62,7 @@ import { useSettingsStore } from "./stores/settings-store.js";
 import { useUiStore } from "./stores/ui-store.js";
 import { useRepoStore } from "./stores/repo-store.js";
 import { resumeSessionInternal, handleSessionResume, resetSessionState } from "./stores/actions/session-actions.js";
-import { parseRepoLabel, parseRepoName, repoLabelToNewPath, parseNewSessionSlug } from "./utils/repo-label.js";
+import { parseRepoLabel, repoLabelToNewPath, parseNewSessionSlug } from "./utils/repo-label.js";
 import { saveModelId } from "./utils/local-storage.js";
 
 export default function App() {
@@ -159,9 +159,6 @@ export default function App() {
   const activeRepoUrl = useRepoStore((s) => s.activeRepoUrl);
   const addRepoDialogOpen = useRepoStore((s) => s.addRepoDialogOpen);
   const newRepoDialogOpen = useRepoStore((s) => s.newRepoDialogOpen);
-  const activeRepoName = useMemo(() => activeRepoUrl ? parseRepoName(activeRepoUrl) : "", [activeRepoUrl]);
-  const activeRepo = useMemo(() => repos.find((r) => r.url === activeRepoUrl), [repos, activeRepoUrl]);
-
   const creatingRepo = useSessionStore((s) => s.creatingRepo);
   const allSessionsDialogOpen = useSessionStore((s) => s.allSessionsDialogOpen);
   const allSessions = useSessionStore((s) => s.allSessions);
@@ -790,9 +787,6 @@ export default function App() {
         onTouchStart={onTouchStart}
         containerRef={containerRef}
         sessions={sessions}
-        activeRepoUrl={activeRepoUrl}
-        activeRepoName={activeRepoName}
-        activeRepoStatus={activeRepo?.status}
         currentSessionId={sessionId}
         sidebarCollapsed={sidebarCollapsed}
         onResumeSession={(sid: string) => {
@@ -800,11 +794,10 @@ export default function App() {
           if (session?.remoteUrl) useRepoStore.getState().setActiveRepoUrl(session.remoteUrl);
           handleSessionResume(sid, navigate);
         }}
-        onArchiveSession={async (sid: string) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId && activeRepoUrl) { void handleNewSessionForRepo(activeRepoUrl); } }}
-        onNewSession={() => { if (activeRepoUrl) void handleNewSessionForRepo(activeRepoUrl); }}
+        onArchiveSession={async (sid: string) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId) { const repoUrl = sessions.find((s) => s.id === sid)?.remoteUrl ?? activeRepoUrl; if (repoUrl) void handleNewSessionForRepo(repoUrl); } }}
+        onNewSessionForRepo={handleNewSessionForRepo}
         onToggleSidebarCollapse={() => useUiStore.getState().setSidebarCollapsed(!sidebarCollapsed)}
         repos={repos}
-        onSelectRepo={(url: string) => useRepoStore.getState().setActiveRepoUrl(url)}
         onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)}
         onCreateNewRepo={() => {
           useRepoStore.getState().setAddRepoDialogOpen(false);

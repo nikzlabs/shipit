@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { RepoInfo } from "../../server/shared/types.js";
-import { getSavedActiveRepo, saveActiveRepo } from "../utils/local-storage.js";
+import { getSavedActiveRepo, saveActiveRepo, getSavedCollapsedRepos, saveCollapsedRepos } from "../utils/local-storage.js";
 
 /** Buffers SSE status updates that arrive before addRepo stores the repo. */
 const pendingStatusUpdates = new Map<string, "cloning" | "ready">();
@@ -10,6 +10,7 @@ interface RepoState {
   activeRepoUrl: string | undefined;
   addRepoDialogOpen: boolean;
   newRepoDialogOpen: boolean;
+  collapsedRepos: Set<string>;
 
   // Actions
   setRepos: (repos: RepoInfo[]) => void;
@@ -18,6 +19,7 @@ interface RepoState {
   setNewRepoDialogOpen: (open: boolean) => void;
   updateRepoStatus: (url: string, status: "cloning" | "ready") => void;
   updateRepoWarmSession: (url: string, sessionId: string) => void;
+  toggleRepoCollapsed: (url: string) => void;
   reset: () => void;
 
   // Async actions
@@ -31,6 +33,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   activeRepoUrl: getSavedActiveRepo(),
   addRepoDialogOpen: false,
   newRepoDialogOpen: false,
+  collapsedRepos: getSavedCollapsedRepos(),
 
   setRepos: (repos) => {
     const { activeRepoUrl } = get();
@@ -70,6 +73,15 @@ export const useRepoStore = create<RepoState>((set, get) => ({
         r.url === url ? { ...r, warmSessionId: sessionId } : r,
       ),
     })),
+
+  toggleRepoCollapsed: (url) =>
+    set((state) => {
+      const next = new Set(state.collapsedRepos);
+      if (next.has(url)) next.delete(url);
+      else next.add(url);
+      saveCollapsedRepos(next);
+      return { collapsedRepos: next };
+    }),
 
   reset: () => set({ repos: [], activeRepoUrl: undefined, addRepoDialogOpen: false, newRepoDialogOpen: false }),
 
