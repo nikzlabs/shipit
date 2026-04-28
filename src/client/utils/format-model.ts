@@ -1,8 +1,8 @@
 /** Human-readable display names for known model aliases/IDs. */
 const MODEL_DISPLAY_NAMES: Record<string, string> = {
   // Claude CLI aliases
-  sonnet: "Sonnet 4.6",
-  opus: "Opus 4.6",
+  sonnet: "Sonnet 4.7",
+  opus: "Opus 4.7",
   haiku: "Haiku 4.5",
   // Codex model IDs
   "gpt-5.4": "GPT-5.4",
