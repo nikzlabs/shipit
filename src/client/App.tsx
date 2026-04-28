@@ -538,13 +538,22 @@ export default function App() {
   );
 
   const handleDocStartSession = useCallback(
-    (doc: DocEntry) => {
+    async (doc: DocEntry) => {
       useFileStore.getState().closePreview();
+
+      const { messages } = useSessionStore.getState();
+      const { activeRepoUrl } = useRepoStore.getState();
+
+      // If the current session already has messages, switch to a fresh session first
+      if (messages.length > 0 && activeRepoUrl) {
+        await handleNewSessionForRepo(activeRepoUrl);
+      }
+
       const text = `Work on: ${doc.title}\n\nPlease read the plan at ${doc.path}, then proceed with the implementation.`;
       useSessionStore.getState().setPrefillText(text);
       useUiStore.getState().setMobilePanel("chat");
     },
-    [],
+    [handleNewSessionForRepo],
   );
 
   const handleReviewFeature = useCallback(
