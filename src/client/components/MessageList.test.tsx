@@ -1122,5 +1122,35 @@ describe("MessageList", () => {
       render(<MessageList messages={messages} isLoading={true} />);
       expect(document.querySelector(".tool-spinner")).not.toBeInTheDocument();
     });
+
+    it("does not show TypingDots when streaming message has a TodoPanel below it", () => {
+      // Avoids showing a redundant inline indicator inside the bubble when
+      // the TodoPanel rendered below the bubble already signals activity
+      // (its in-progress task spinner). The dots otherwise appear awkwardly
+      // wedged between the message text and the Tasks panel.
+      const messages: ChatMessage[] = [
+        {
+          role: "assistant",
+          text: "The review found one really important issue.",
+          toolUse: [
+            {
+              type: "tool_use",
+              id: "todo1",
+              name: "TodoWrite",
+              input: {
+                todos: [
+                  { content: "Fix bug", status: "in_progress", activeForm: "Fixing bug" },
+                ],
+              },
+            },
+          ],
+          streaming: true,
+        },
+      ];
+      render(<MessageList messages={messages} isLoading={true} />);
+      expect(document.querySelector(".typing-dot")).not.toBeInTheDocument();
+      // Sanity check: the TodoPanel still renders
+      expect(document.querySelector("[data-testid='todo-panel']")).toBeInTheDocument();
+    });
   });
 });
