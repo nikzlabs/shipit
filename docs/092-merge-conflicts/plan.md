@@ -98,7 +98,7 @@ if (identity) {
 }
 ```
 
-**Fallback:** If no identity is configured, use `"ShipIt Agent" <agent@shipit.dev>` as a default so rebase never fails due to missing identity.
+**No fallback identity.** If the user hasn't set a git identity, rebase is blocked and the existing `git_identity_required` flow prompts them to set one — same as auto-commit. Using a fake identity would create confusing commit authorship.
 
 ### Phase 2: Rebase Support in GitManager
 
