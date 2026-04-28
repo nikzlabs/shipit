@@ -425,7 +425,7 @@ export function MessageList({
                 );
               })()}
 
-              {msg.streaming && allElements[elIdx + 1]?.kind !== "tool-group" && (
+              {msg.streaming && allElements[elIdx + 1]?.kind !== "tool-group" && !latestTodoTool && (
                 <span className="inline-flex items-center ml-1 align-middle">
                   <TypingDots />
                 </span>
