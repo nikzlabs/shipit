@@ -63,17 +63,23 @@ async function createDivergence(bareDir: string, workDir: string) {
 describe("GitManager: rebase operations", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
+  let origGitEditor: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-rebase-"));
     origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGitEditor = process.env.GIT_EDITOR;
     initGlobalGitConfig(path.join(tmpDir, "credentials"));
     setGitIdentity("Test User", "test@test.com");
+    // Prevent rebase --continue from opening an editor
+    process.env.GIT_EDITOR = "true";
   });
 
   afterEach(() => {
     if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
     else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGitEditor !== undefined) process.env.GIT_EDITOR = origGitEditor;
+    else delete process.env.GIT_EDITOR;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
