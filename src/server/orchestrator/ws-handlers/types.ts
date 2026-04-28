@@ -1,4 +1,4 @@
-import type { WsServerMessage, WsLogEntry, ClaudeContentBlockToolUse } from "../../shared/types.js";
+import type { WsServerMessage, WsLogEntry } from "../../shared/types.js";
 import type { GitManager } from "../../shared/git.js";
 import type { RepoGit } from "../repo-git.js";
 import type { SessionManager } from "../sessions.js";
@@ -10,8 +10,8 @@ import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { RepoStore } from "../repo-store.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
-import type { AgentId, AgentProcess, TerminalProcess } from "../../shared/types.js";
-import type { SessionRunnerInterface, SessionRunnerRegistry, QueuedMessage, ChatMessageGroup } from "../session-runner.js";
+import type { AgentId, AgentProcess } from "../../shared/types.js";
+import type { SessionRunnerInterface, SessionRunnerRegistry, QueuedMessage } from "../session-runner.js";
 
 // Re-export so existing consumers of types.ts don't break
 export type { QueuedMessage };
@@ -48,48 +48,34 @@ export interface ConnectionCtx {
 
 /**
  * Per-session runner delegation.
- * Agent/claude state accessors delegate to the attached SessionRunner.
+ *
+ * The previous incarnation of this interface exposed ~15 setters/getters
+ * that delegated to a per-connection `attachedRunner`. They were a hazard:
+ * after a WS disconnect, `attachedRunner` was null and every setter silently
+ * no-oped. State mutations from async closures vanished.
+ *
+ * The setters are gone. Resolve the runner via `resolveRunner(ctx)` (which
+ * prefers the registry) and mutate `runner.X` directly. See
+ * `docs/095-runner-ctx-simplification/plan.md`.
  */
 export interface RunnerCtx {
-  // Agent management
+  // Agent factory — delegates to runner.createAgent if available.
   agentFactory: (agentId: AgentId) => AgentProcess;
-  getAgent: () => AgentProcess | null;
-  setAgent: (a: AgentProcess | null) => void;
+
+  // Per-connection identifiers — these don't depend on runner state.
   getActiveAgentId: () => AgentId;
   setActiveAgentId: (id: AgentId) => void;
   getSelectedModel: () => string | undefined;
   setSelectedModel: (model: string | undefined) => void;
-  getIsClaudeRunning: () => boolean;
-  setIsClaudeRunning: (v: boolean) => void;
-  getWasInterrupted: () => boolean;
-  setWasInterrupted: (v: boolean) => void;
 
-  // Accumulated turn state
-  getTurnSummary: () => string;
-  setTurnSummary: (s: string) => void;
-  getAccumulatedText: () => string;
-  setAccumulatedText: (s: string) => void;
-  getAccumulatedToolUse: () => ClaudeContentBlockToolUse[];
-  setAccumulatedToolUse: (blocks: ClaudeContentBlockToolUse[]) => void;
-
-  // Per-turn message groups — each tool-result boundary starts a new group
-  getChatMessageGroups: () => ChatMessageGroup[];
-  setChatMessageGroups: (groups: ChatMessageGroup[]) => void;
-  getNeedsNewMessageGroup: () => boolean;
-  setNeedsNewMessageGroup: (v: boolean) => void;
-
-  // Message queue
-  getMessageQueue: () => QueuedMessage[];
-  clearMessageQueue: () => void;
-
-  // Terminal
-  getTerminal: () => TerminalProcess | null;
-  setTerminal: (t: TerminalProcess | null) => void;
-
-  // Runner lifecycle
-  /** Get the runner attached to this connection (if any). */
+  // Runner lookup — the ONLY supported way to access runner state.
+  /** Get the runner attached to this connection (if any). Prefer
+   *  `resolveRunner(ctx)` from `./resolve-runner.ts`, which falls back to
+   *  the registry — that survives WS disconnects, which `getRunner()` does
+   *  not. */
   getRunner: () => SessionRunnerInterface | null;
-  /** Get the app-level runner registry. */
+  /** Get the app-level runner registry. The preferred way to find a runner
+   *  by session ID, including from async closures and post-disconnect code. */
   getRunnerRegistry: () => SessionRunnerRegistry;
   /** Attach this connection to a runner (detaches previous). */
   attachToRunner: (runner: SessionRunnerInterface) => void;

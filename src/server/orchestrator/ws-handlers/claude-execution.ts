@@ -9,6 +9,7 @@ import { wireAgentListeners } from "./agent-listeners.js";
 import { postTurnCommit } from "./post-turn.js";
 import { buildAgentSystemInstructions } from "../agent-instructions.js";
 import { quickCreatePr } from "../services/github.js";
+import { resolveRunner } from "./resolve-runner.js";
 /**
  * Save base64 images to the session's uploads directory on the host.
  * Returns a prompt prefix referencing the saved files (container paths).
@@ -60,25 +61,23 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
   const capturedSessionDir = ctx.getActiveSessionDir();
 
   // Resolve the runner via the registry (by session ID) when possible. This
-  // makes the runner reference survive WebSocket disconnects: ctx.getRunner()
-  // returns the per-connection `attachedRunner`, which becomes null when the
-  // browser disconnects, but the registry-backed runner persists. Critical
-  // for queue-drained turns that may finish after the originating WS is gone.
-  const runner =
-    (capturedSessionId ? (ctx.getRunnerRegistry().get(capturedSessionId) ?? null) : null) ??
-    ctx.getRunner();
-  // Clear the turn event buffer for the new turn
-  if (runner) runner.clearTurnEventBuffer();
+  // makes the runner reference survive WebSocket disconnects — critical for
+  // queue-drained turns that may finish after the originating WS is gone.
+  const runner = resolveRunner(ctx, capturedSessionId);
 
-  ctx.setTurnSummary("");
-  ctx.setAccumulatedText("");
-  ctx.setAccumulatedToolUse([]);
-  ctx.setChatMessageGroups([]);
-  ctx.setNeedsNewMessageGroup(true);
+  // Reset turn-scoped state directly on the runner.
+  if (runner) {
+    runner.clearTurnEventBuffer();
+    runner.turnSummary = "";
+    runner.accumulatedText = "";
+    runner.accumulatedToolUse = [];
+    runner.chatMessageGroups = [];
+    runner.needsNewMessageGroup = true;
+    runner.wasInterrupted = false;
+  }
   let receivedResult = false;
-  ctx.setWasInterrupted(false);
   const currentAgent = ctx.agentFactory(ctx.getActiveAgentId());
-  ctx.setAgent(currentAgent);
+  if (runner) runner.setAgent(currentAgent);
 
   // Notify via SSE for sidebar activity dots
   if (capturedSessionId) {

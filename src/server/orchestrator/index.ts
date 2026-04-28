@@ -592,36 +592,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       };
 
       // ---- Handler context ----
-      // The setters/getters below resolve the runner via `resolveRunner()`,
-      // which prefers `attachedRunner` (per-connection) but falls back to
-      // looking it up in the registry by `sessionId`. This makes the ctx
-      // accessors resilient to WebSocket disconnects: code that runs in
-      // async closures after the WS closes still sees and mutates the right
-      // runner. Without this, `attachedRunner` becomes null on close and
-      // every setter silently no-ops — the bug class fixed in the previous
-      // round of work.
-      //
-      // If the runner can't be found at all (e.g., the session was archived),
-      // `reportDetachedAccess` logs in production and throws under VITEST so
-      // tests fail loudly instead of masking the regression.
-      const reportDetachedAccess = (op: string) => {
-        const msg = `[ws:${sessionId}] ${op} called with no runner — likely a server-side bug (state mutation outside the runner lifetime).`;
-        if (process.env.VITEST) {
-          throw new Error(msg);
-        }
-        console.warn(msg);
-      };
-      const resolveRunner = (): SessionRunnerInterface | null => {
-        if (attachedRunner) return attachedRunner;
-        const r = runnerRegistry.get(sessionId);
-        return r ?? null;
-      };
-      const withRunner = <T,>(op: string, fn: (r: SessionRunnerInterface) => T, fallback: T): T => {
-        const r = resolveRunner();
-        if (r) return fn(r);
-        reportDetachedAccess(op);
-        return fallback;
-      };
+      // RunnerCtx no longer exposes setters that delegate to attachedRunner.
+      // Handlers resolve the runner via `resolveRunner(ctx)` (in
+      // ws-handlers/resolve-runner.ts) and mutate `runner.X` directly. This
+      // makes WS-disconnect-driven bugs structurally impossible — a handler
+      // either has a runner reference (and can mutate it) or doesn't (and
+      // returns/no-ops explicitly). See feature 095.
       const ctx: ConnectionCtx & RunnerCtx & AppCtx & serviceHandlers.ServiceCtx = {
         send, broadcastLog: sessionBroadcastLog, sseBroadcast,
         getActiveDir, getActiveGitManager,
@@ -631,35 +607,19 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         setActiveSessionDir: (dir) => { activeSessionDir = dir; },
         activateSession,
         agentFactory: (agentId: AgentId) => {
-          const r = resolveRunner();
+          const r = attachedRunner ?? runnerRegistry.get(sessionId) ?? null;
           if (r?.createAgent) return r.createAgent(agentId);
           if (agentFactory) return agentFactory(agentId);
           throw new Error("No agent factory available");
         },
-        getAgent: () => resolveRunner()?.getAgent() ?? null,
-        setAgent: (a) => withRunner("setAgent", (r) => { r.setAgent(a); }, undefined),
-        getActiveAgentId: () => resolveRunner()?.agentId ?? perConnectionAgentId,
-        setActiveAgentId: (id) => { perConnectionAgentId = id; const r = resolveRunner(); if (r) r.agentId = id; },
+        getActiveAgentId: () => (attachedRunner ?? runnerRegistry.get(sessionId))?.agentId ?? perConnectionAgentId,
+        setActiveAgentId: (id) => {
+          perConnectionAgentId = id;
+          const r = attachedRunner ?? runnerRegistry.get(sessionId);
+          if (r) r.agentId = id;
+        },
         getSelectedModel: () => selectedModel,
         setSelectedModel: (m) => { selectedModel = m; },
-        getIsClaudeRunning: () => resolveRunner()?.running ?? false,
-        setIsClaudeRunning: (v) => withRunner("setIsClaudeRunning", (r) => { r.running = v; }, undefined),
-        getWasInterrupted: () => resolveRunner()?.wasInterrupted ?? false,
-        setWasInterrupted: (v) => withRunner("setWasInterrupted", (r) => { r.wasInterrupted = v; }, undefined),
-        getTurnSummary: () => resolveRunner()?.turnSummary ?? "",
-        setTurnSummary: (s) => withRunner("setTurnSummary", (r) => { r.turnSummary = s; }, undefined),
-        getAccumulatedText: () => resolveRunner()?.accumulatedText ?? "",
-        setAccumulatedText: (s) => withRunner("setAccumulatedText", (r) => { r.accumulatedText = s; }, undefined),
-        getAccumulatedToolUse: () => resolveRunner()?.accumulatedToolUse ?? [],
-        setAccumulatedToolUse: (blocks) => withRunner("setAccumulatedToolUse", (r) => { r.accumulatedToolUse = blocks; }, undefined),
-        getChatMessageGroups: () => resolveRunner()?.chatMessageGroups ?? [],
-        setChatMessageGroups: (groups) => withRunner("setChatMessageGroups", (r) => { r.chatMessageGroups = groups; }, undefined),
-        getNeedsNewMessageGroup: () => resolveRunner()?.needsNewMessageGroup ?? true,
-        setNeedsNewMessageGroup: (v) => withRunner("setNeedsNewMessageGroup", (r) => { r.needsNewMessageGroup = v; }, undefined),
-        getMessageQueue: () => resolveRunner()?.messageQueue ?? [],
-        clearMessageQueue: () => withRunner("clearMessageQueue", (r) => { r.clearQueue(); }, undefined),
-        getTerminal: () => resolveRunner()?.getTerminal() ?? null,
-        setTerminal: (t) => withRunner("setTerminal", (r) => { r.setTerminal(t); }, undefined),
         clearLogBuffer: () => { clearLogBuffer(); },
         getRunner: () => attachedRunner,
         getRunnerRegistry: () => runnerRegistry,

@@ -1,10 +1,12 @@
 import type { WsClientMessage } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx } from "./types.js";
+import { resolveRunner } from "./resolve-runner.js";
 
 type WsCancelQueuedMessage = Extract<WsClientMessage, { type: "cancel_queued_message" }>;
 
 export function handleCancelQueuedMessage(ctx: ConnectionCtx & RunnerCtx, msg: WsCancelQueuedMessage): void {
-  const queue = ctx.getMessageQueue();
+  const runner = resolveRunner(ctx);
+  const queue = runner?.messageQueue ?? [];
   if (msg.position === "all") {
     queue.length = 0;
   } else {
@@ -20,18 +22,15 @@ export function handleCancelQueuedMessage(ctx: ConnectionCtx & RunnerCtx, msg: W
 }
 
 export function handleInterruptClaude(ctx: ConnectionCtx & RunnerCtx): void {
-  const agent = ctx.getAgent();
-  if (agent) {
-    ctx.setWasInterrupted(true);
+  const runner = resolveRunner(ctx);
+  const agent = runner?.getAgent() ?? null;
+  if (agent && runner) {
+    runner.wasInterrupted = true;
     agent.interrupt();
     ctx.broadcastLog("server", "Claude process interrupted by user");
-    // Emit via runner so all viewers see the interrupt
-    const runner = ctx.getRunner();
-    if (runner) {
-      runner.emitMessage({ type: "claude_interrupted" });
-    } else {
-      ctx.send({ type: "claude_interrupted" });
-    }
+    // Emit via runner so all viewers see the interrupt and reconnects get it
+    // from the buffered turn-event log.
+    runner.emitMessage({ type: "claude_interrupted" });
   } else {
     ctx.send({ type: "error", message: "No active Claude process to interrupt" });
   }

@@ -18,3 +18,15 @@ export const WORKSPACE_SKIP_DIRS = new Set([
   ".cache",
   ".vite",
 ]);
+
+/**
+ * Hidden entries (names starting with `.`) that ARE shown in the file tree
+ * despite the default "skip dotfiles" rule. Skills, env files, and (where
+ * present) project-level Claude config are part of the codebase and should be
+ * editable from the IDE. See docs/096-claude-skills-access/plan.md.
+ */
+export const WORKSPACE_HIDDEN_ALLOWLIST = new Set([
+  ".env",
+  ".env.local",
+  ".claude",
+]);
