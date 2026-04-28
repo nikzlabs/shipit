@@ -18,6 +18,9 @@ const HOST_REPO_DIR = "/opt/shipit";
 /** Trigger file that the systemd path unit watches. */
 const TRIGGER_FILE = `${HOST_REPO_DIR}/.update-requested`;
 
+/** Trigger file for restart-only (no git pull). */
+const RESTART_TRIGGER_FILE = `${HOST_REPO_DIR}/.restart-requested`;
+
 export interface UpdateStatus {
   available: boolean;
   currentCommit: string;
@@ -87,5 +90,17 @@ export async function requestUpdate(): Promise<void> {
     await writeFile(TRIGGER_FILE, new Date().toISOString(), "utf-8");
   } catch (err) {
     throw new ServiceError(500, `Failed to request update: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Write the restart trigger file. The host-side systemd path unit watches for
+ * this file and restarts ShipIt without pulling code updates.
+ */
+export async function requestRestart(): Promise<void> {
+  try {
+    await writeFile(RESTART_TRIGGER_FILE, new Date().toISOString(), "utf-8");
+  } catch (err) {
+    throw new ServiceError(500, `Failed to request restart: ${(err as Error).message}`);
   }
 }

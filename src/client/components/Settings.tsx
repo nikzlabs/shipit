@@ -144,6 +144,7 @@ export function Settings({
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateApplying, setUpdateApplying] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
+  const [restarting, setRestarting] = useState(false);
   const savedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -550,6 +551,29 @@ export function Settings({
                   >
                     {updateChecking ? "Checking..." : "Check for Updates"}
                   </Button>
+                  <Button
+                    variant="secondary"
+                    size="md"
+                    disabled={restarting || updateApplying}
+                    onClick={async () => {
+                      setRestarting(true);
+                      setUpdateError(null);
+                      try {
+                        const res = await fetch("/api/updates/restart", { method: "POST" });
+                        if (!res.ok) {
+                          const body = await res.json().catch(() => ({})) as { error?: string };
+                          throw new Error(body.error ?? `HTTP ${res.status}`);
+                        }
+                      } catch (err) {
+                        setRestarting(false);
+                        setUpdateError((err as Error).message);
+                      }
+                    }}
+                    className="rounded-md"
+                    data-testid="settings-restart"
+                  >
+                    {restarting ? "Restarting..." : "Just Restart"}
+                  </Button>
                   {updateStatus?.available && !updateApplying && (
                     <Button
                       variant="primary"
@@ -578,6 +602,11 @@ export function Settings({
                 {updateApplying && (
                   <p className="text-sm text-(--color-text-secondary)">
                     Updating... ShipIt will restart momentarily. Refresh the page in a few seconds.
+                  </p>
+                )}
+                {restarting && (
+                  <p className="text-sm text-(--color-text-secondary)">
+                    Restarting... ShipIt will be back momentarily. Refresh the page in a few seconds.
                   </p>
                 )}
                 {updateError && (
