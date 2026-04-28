@@ -119,7 +119,7 @@ export async function registerSessionRoutes(
       reply.code(404).send({ error: "Session not found" });
       return;
     }
-    let messages = getChatHistory(deps.chatHistoryManager, request.params.id) as Record<string, unknown>[];
+    const messages = getChatHistory(deps.chatHistoryManager, request.params.id) as Record<string, unknown>[];
 
     let commits: Awaited<ReturnType<typeof getGitLog>> = [];
     let fileTree: Awaited<ReturnType<typeof getFileTree>> = [];
@@ -140,24 +140,12 @@ export async function registerSessionRoutes(
     const runner = deps.runnerRegistry.get(request.params.id);
     const agentRunning = runner?.running ?? false;
 
-    if (agentRunning && runner) {
-      const liveGroups = runner.chatMessageGroups;
-      if (liveGroups.length > 0) {
-        const kept = messages.filter((m) => !m.inProgress);
-        for (const g of liveGroups) {
-          if (g.text || g.toolUse.length > 0) {
-            kept.push({
-              role: "assistant",
-              text: g.text,
-              toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
-              toolResults: g.toolResults?.length ? g.toolResults : undefined,
-              inProgress: true,
-            });
-          }
-        }
-        messages = kept;
-      }
-    }
+    // Don't reconstruct in-progress messages from runner.chatMessageGroups here.
+    // The DB already has in-progress rows persisted at each agent_tool_result
+    // boundary, which is a consistent snapshot. Including chatMessageGroups
+    // would duplicate content that also arrives via the WS live event stream,
+    // causing messages to appear twice (or be overwritten) on reconnect.
+    // The WS listener picks up where the DB snapshot leaves off.
 
     return { messages, commits, fileTree, agentRunning };
   });
