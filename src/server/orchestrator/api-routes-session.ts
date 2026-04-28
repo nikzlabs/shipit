@@ -393,7 +393,9 @@ export async function registerSessionRoutes(
             await deps.containerManager.destroy(repo.warmSessionId);
           }
           const runner = deps.runnerRegistry.get(repo.warmSessionId);
-          if (runner) runner.dispose();
+          // Forced — user is removing the repo, so the warm session is
+          // explicitly being torn down regardless of agent state.
+          if (runner) runner.dispose({ force: true });
           deleteSession(sessionManager, repo.warmSessionId, deps.chatHistoryManager, deps.usageManager);
         }
         removeRepo(deps.repoStore, url);

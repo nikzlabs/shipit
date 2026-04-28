@@ -289,6 +289,27 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     })();
   }, 10_000) : null;
 
+  // ---- Periodic idle container cleanup (every 30s) ----
+  // Runs the idle enforcer on a fixed cadence so cleanup happens regardless
+  // of WebSocket activity. WebSocket close handlers MUST NOT trigger this
+  // synchronously — that would couple WS lifecycle to runner/container
+  // lifecycle and let transient disconnects kill running agents. The
+  // enforcer itself also enforces a grace period (IDLE_GRACE_PERIOD_MS) so
+  // a runner whose viewer just detached is not immediately eligible for
+  // disposal.
+  const idleEnforcementInterval = containerManager ? setInterval(() => {
+    try {
+      enforceIdleContainerLimit();
+    } catch (err) {
+      console.error("[idle-cleanup] periodic enforcement failed:", err);
+    }
+  }, 30_000) : null;
+  // Don't keep the event loop alive just for idle enforcement — let process
+  // shutdown proceed naturally.
+  if (idleEnforcementInterval && typeof idleEnforcementInterval.unref === "function") {
+    idleEnforcementInterval.unref();
+  }
+
   // ---- HTTP API routes ----
   await registerApiRoutes(app, {
     sessionManager,
@@ -769,7 +790,11 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
       socket.on("close", () => {
         console.log(`[ws] session client disconnected: ${sessionId}`);
         detachFromRunner();
-        enforceIdleContainerLimit();
+        // Intentionally do NOT call enforceIdleContainerLimit() here.
+        // WebSocket lifecycle MUST NOT affect runner/container lifecycle —
+        // a transient disconnect (network blip, reload, session switch)
+        // should never kill the agent or destroy the container. Idle
+        // cleanup runs on a periodic timer plus on `runner_idle` events.
       });
     },
   );
@@ -782,6 +807,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
   // Graceful shutdown
   app.addHook("onClose", async () => {
     if (memoryStatsInterval) clearInterval(memoryStatsInterval);
+    if (idleEnforcementInterval) clearInterval(idleEnforcementInterval);
   });
   registerShutdownHook(app, {
     startupTimer, authManager, runnerRegistry,

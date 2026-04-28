@@ -252,6 +252,16 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   readonly viewerCount: number;
   attachViewer(): void;
   detachViewer(): void;
+  /**
+   * Timestamp (Date.now()) of the most recent viewer detach. Used by the idle
+   * enforcer to skip recently-disconnected runners during a grace period —
+   * this prevents transient WebSocket disconnects (network blips, page
+   * reloads) from triggering container disposal.
+   *
+   * Returns 0 when no viewer has ever detached. The value is irrelevant when
+   * `viewerCount > 0` (an active viewer is attached).
+   */
+  readonly lastViewerDetachAt: number;
   buildPreviewStatus(): WsServerMessage;
   /** True once the runner has definitive preview state (e.g. SSE connected to worker).
    *  When false, callers should not send buildPreviewStatus() to clients — let the
@@ -277,7 +287,13 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   // Lifecycle
   onAgentFinished(): void;
   readonly disposed: boolean;
-  dispose(): void;
+  /**
+   * Dispose the runner. By default, this is refused if the agent is currently
+   * running — lifecycle events (idle cleanup, transient WebSocket disconnects)
+   * must never kill a running agent. Pass `{ force: true }` from a shutdown /
+   * full-reset path that explicitly wants to tear down everything.
+   */
+  dispose(opts?: { force?: boolean }): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -397,8 +413,13 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   get detectedPorts(): number[] { return this._detectedPorts; }
   set detectedPorts(ports: number[]) { this._detectedPorts = ports; }
   get viewerCount(): number { return this._viewerCount; }
+  private _lastViewerDetachAt = 0;
+  get lastViewerDetachAt(): number { return this._lastViewerDetachAt; }
   attachViewer(): void { this._viewerCount++; }
-  detachViewer(): void { this._viewerCount = Math.max(0, this._viewerCount - 1); }
+  detachViewer(): void {
+    this._viewerCount = Math.max(0, this._viewerCount - 1);
+    this._lastViewerDetachAt = Date.now();
+  }
   buildPreviewStatus(): WsServerMessage {
     return { type: "preview_status", running: false, port: 5173, url: "http://localhost:5173", sessionId: this.sessionId };
   }
@@ -440,8 +461,17 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   }
 
   get disposed(): boolean { return this._disposed; }
-  dispose(): void {
+  dispose(opts?: { force?: boolean }): void {
     if (this._disposed) return;
+    // Defensive: refuse to dispose a runner whose agent is currently running
+    // unless the caller explicitly opts in (e.g., shutdown). This guarantees
+    // that lifecycle events (idle cleanup, transient disconnects) never kill
+    // a running agent. Callers that need unconditional teardown (shutdown)
+    // pass `{ force: true }`.
+    if (this._isRunning && !opts?.force) {
+      console.log(`[session-runner:${this.sessionId}] dispose() skipped — agent is running`);
+      return;
+    }
     this._disposed = true;
     if (this.agent) { this.agent.kill(); this.agent = null; }
     if (this._terminal) { this._terminal.kill(); this._terminal = null; }
@@ -545,15 +575,19 @@ export class SessionRunnerRegistry {
       .map(([id]) => id);
   }
 
-  /** Dispose a specific runner. */
-  dispose(sessionId: string): void {
-    this.runners.get(sessionId)?.dispose();
+  /**
+   * Dispose a specific runner. Refuses to dispose if the agent is running
+   * (the underlying runner enforces this). Pass `{ force: true }` only from
+   * shutdown / full-reset paths that explicitly need unconditional teardown.
+   */
+  dispose(sessionId: string, opts?: { force?: boolean }): void {
+    this.runners.get(sessionId)?.dispose(opts);
   }
 
-  /** Dispose all runners (for full_reset / shutdown). */
+  /** Dispose all runners (for full_reset / shutdown). Forced — kills running agents. */
   disposeAll(): void {
     for (const runner of this.runners.values()) {
-      runner.dispose();
+      runner.dispose({ force: true });
     }
     this.runners.clear();
   }

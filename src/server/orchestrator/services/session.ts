@@ -353,8 +353,9 @@ export async function archiveSession(
 ): Promise<{ sessions: SessionInfo[] }> {
   const session = sessionManager.get(sessionId);
 
-  // Dispose runner
-  runnerRegistry.dispose(sessionId);
+  // Dispose runner (forced — user explicitly archived this session, so we
+  // tear it down even if an agent is still running)
+  runnerRegistry.dispose(sessionId, { force: true });
 
   // Clean up session workspace directory for repo-backed clones only.
   // Standalone sessions preserve their directory so they can be unarchived.
