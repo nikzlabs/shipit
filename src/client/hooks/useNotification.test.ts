@@ -94,6 +94,24 @@ describe("useNotification", () => {
     vi.unstubAllGlobals();
   });
 
+  it("includes repo label in notification title and session name in body", () => {
+    const mockNotification = vi.fn();
+    vi.stubGlobal("Notification", Object.assign(mockNotification, { permission: "granted", requestPermission: vi.fn() }));
+
+    const { result } = renderHook(() => useNotification());
+    act(() => setHidden(true));
+    act(() => result.current.notify("The agent has finished responding.", {
+      sessionName: "Fix login bug",
+      repoLabel: "acme/app",
+    }));
+
+    expect(mockNotification).toHaveBeenCalledWith("ShipIt · acme/app", {
+      body: "[Fix login bug] The agent has finished responding.",
+    });
+    expect(document.title).toBe("✓ Fix login bug — ShipIt");
+    vi.unstubAllGlobals();
+  });
+
   it("focuses window and closes notification on click", () => {
     const instances: any[] = [];
     const mockNotification = vi.fn().mockImplementation(function (this: any) {

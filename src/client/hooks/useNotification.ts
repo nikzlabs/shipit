@@ -3,7 +3,18 @@ import { useEffect, useRef, useCallback } from "react";
 import { useSettingsStore } from "../stores/settings-store.js";
 
 const DEFAULT_TITLE = "ShipIt";
-const DONE_TITLE = "\u2713 Agent finished \u2014 ShipIt";
+
+function doneTitle(sessionName?: string): string {
+  if (sessionName) return `\u2713 ${sessionName} \u2014 ShipIt`;
+  return "\u2713 Agent finished \u2014 ShipIt";
+}
+
+export interface NotifyContext {
+  /** Session display name / title. */
+  sessionName?: string;
+  /** Repo label, e.g. "owner/repo". */
+  repoLabel?: string;
+}
 
 /**
  * Attempt to play a short notification sound using the Web Audio API.
@@ -69,7 +80,7 @@ export function useNotification() {
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   }, []);
 
-  const notify = useCallback((body: string) => {
+  const notify = useCallback((body: string, context?: NotifyContext) => {
     const { notifyOnFinish, soundOnFinish } = useSettingsStore.getState();
 
     // Sound plays regardless of tab visibility
@@ -80,12 +91,14 @@ export function useNotification() {
     if (!hiddenRef.current) return;
 
     // Tab title change (always, when hidden)
-    document.title = DONE_TITLE;
+    document.title = doneTitle(context?.sessionName);
     titleChangedRef.current = true;
 
-    // Browser notification
+    // Browser notification — include repo and session context
     if (notifyOnFinish && typeof Notification !== "undefined" && Notification.permission === "granted") {
-      const n = new Notification("ShipIt", { body });
+      const title = context?.repoLabel ? `ShipIt · ${context.repoLabel}` : "ShipIt";
+      const fullBody = context?.sessionName ? `[${context.sessionName}] ${body}` : body;
+      const n = new Notification(title, { body: fullBody });
       n.onclick = () => {
         window.focus();
         n.close();
