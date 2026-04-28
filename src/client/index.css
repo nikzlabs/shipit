@@ -314,6 +314,20 @@
   color: currentColor;
 }
 
+/* ── Prose code overrides — ensure proper contrast in light mode ──
+ * Tailwind typography defaults assume dark pre backgrounds, so pre code
+ * text is very light. Override to use our theme-aware syntax colors. */
+.prose :where(pre code):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  color: var(--color-syntax-base);
+}
+.prose :where(code):not(:where(pre code, [class~="not-prose"], [class~="not-prose"] *)) {
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+  padding: 0.125rem 0.3rem;
+  border-radius: 0.25rem;
+  font-size: 0.85em;
+}
+
 /* ── Scrollbar styling (uses theme tokens) ── */
 
 ::-webkit-scrollbar {
