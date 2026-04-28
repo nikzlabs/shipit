@@ -294,6 +294,21 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    * full-reset path that explicitly wants to tear down everything.
    */
   dispose(opts?: { force?: boolean }): void;
+
+  /**
+   * Reconcile the local `running` flag with the actual agent state.
+   *
+   * Returns `true` if the agent is genuinely running, `false` otherwise. If
+   * `running` is true locally but the agent has actually finished (e.g., the
+   * orchestrator missed an `agent_done` SSE event because the connection
+   * dropped, or the container was restarted), this method resets the flag and
+   * emits a `session_status` recovery message.
+   *
+   * This is the safety net that prevents users from getting stuck in a state
+   * where every new message gets queued but the queue never drains. Call it
+   * before consulting `running` in `send_message` / `answer_question` paths.
+   */
+  verifyRunningState(): Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -458,6 +473,16 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     if (!this._isRunning && this._messageQueue.length === 0) {
       this.emit("idle");
     }
+  }
+
+  /**
+   * In-process: events from the agent are delivered synchronously by the
+   * EventEmitter, so the local `_isRunning` flag is always in sync with the
+   * agent's true state. There is no out-of-band channel that could miss
+   * events. Just return the local flag.
+   */
+  async verifyRunningState(): Promise<boolean> {
+    return this._isRunning;
   }
 
   get disposed(): boolean { return this._disposed; }
