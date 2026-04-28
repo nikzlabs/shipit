@@ -347,9 +347,13 @@ export function SessionSidebar({
   const collapsedRepos = useRepoStore((s) => s.collapsedRepos);
   const toggleRepoCollapsed = useRepoStore((s) => s.toggleRepoCollapsed);
 
-  // Group sessions by repo URL, sorted MRU within each group.
-  // Merged sessions always sink to the bottom of their group, regardless of recency.
-  // Sort repos by most-recently-used session (repos with recent activity first).
+  // Group sessions by repo URL with a STABLE sort within each group.
+  // Sessions are intentionally NOT sorted by `lastUsedAt`: that field updates on every
+  // agent event during a turn, which would reshuffle the list under the user's cursor and
+  // cause mis-clicks. Instead:
+  //   - Non-merged sessions sort by `createdAt` desc (newest first) — never changes.
+  //   - Merged sessions sink to the bottom, sorted by `mergedAt` desc (most recently merged first).
+  // Repos are sorted by `addedAt` desc — also stable — so the whole layout stays put.
   const repoGroups = useMemo(() => {
     const grouped = new Map<string, SessionInfo[]>();
 
@@ -365,21 +369,25 @@ export function SessionSidebar({
       grouped.get(key)!.push(s);
     }
 
-    // Sort sessions within each group: non-merged first (by MRU), then merged (by MRU).
+    // Sort sessions within each group: non-merged first (by createdAt desc), then merged
+    // (by mergedAt desc, falling back to createdAt desc if mergedAt is missing).
     for (const [, group] of grouped) {
       group.sort((a, b) => {
         const aMerged = a.mergedAt ? 1 : 0;
         const bMerged = b.mergedAt ? 1 : 0;
         if (aMerged !== bMerged) return aMerged - bMerged;
-        return (b.lastUsedAt ?? "").localeCompare(a.lastUsedAt ?? "");
+        if (aMerged === 1) {
+          const aKey = a.mergedAt ?? a.createdAt ?? "";
+          const bKey = b.mergedAt ?? b.createdAt ?? "";
+          return bKey.localeCompare(aKey);
+        }
+        return (b.createdAt ?? "").localeCompare(a.createdAt ?? "");
       });
     }
 
-    // Build sorted repo list: repos with recent sessions first
+    // Build sorted repo list — stable order, by repo addedAt desc.
     const repoOrder = repos.slice().sort((a, b) => {
-      const aLatest = grouped.get(a.url)?.[0]?.lastUsedAt ?? "";
-      const bLatest = grouped.get(b.url)?.[0]?.lastUsedAt ?? "";
-      return bLatest.localeCompare(aLatest);
+      return (b.addedAt ?? "").localeCompare(a.addedAt ?? "");
     });
 
     return repoOrder.map((repo) => ({

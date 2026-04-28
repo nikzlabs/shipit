@@ -139,7 +139,7 @@ describe("SessionSidebar", () => {
     expect(screen.getByLabelText("Add Repository")).toBeTruthy();
   });
 
-  it("sorts merged sessions to the bottom of a repo group", () => {
+  it("sorts non-merged sessions by createdAt desc, with merged sessions at the bottom", () => {
     const t0 = "2024-01-01T00:00:00.000Z";
     const t1 = "2024-01-02T00:00:00.000Z";
     const t2 = "2024-01-03T00:00:00.000Z";
@@ -150,33 +150,38 @@ describe("SessionSidebar", () => {
         id: "s-merged-recent",
         title: "Merged recent",
         remoteUrl: repoA.url,
+        createdAt: t0,
         lastUsedAt: t3,
         mergedAt: t3,
       }),
+      // Older session, but recently touched — must NOT bubble up.
       baseSession({
         id: "s-active-old",
         title: "Active old",
         remoteUrl: repoA.url,
-        lastUsedAt: t1,
+        createdAt: t1,
+        lastUsedAt: t3,
       }),
+      // Newer session, untouched recently — must stay at top.
       baseSession({
         id: "s-active-new",
         title: "Active new",
         remoteUrl: repoA.url,
-        lastUsedAt: t2,
+        createdAt: t2,
+        lastUsedAt: t0,
       }),
       baseSession({
         id: "s-merged-old",
         title: "Merged old",
         remoteUrl: repoA.url,
+        createdAt: t0,
         lastUsedAt: t0,
         mergedAt: t0,
       }),
     ];
     render(<SessionSidebar {...defaultProps} sessions={sessions} />);
 
-    // Read the rendered titles in document order and confirm:
-    // active sessions (MRU) come before merged sessions (MRU within merged).
+    // Active sessions ordered by createdAt desc, then merged ordered by mergedAt desc.
     const expectedOrder = ["Active new", "Active old", "Merged recent", "Merged old"];
     const renderedTitles = expectedOrder
       .map((t) => screen.getByText(t))
@@ -191,6 +196,35 @@ describe("SessionSidebar", () => {
       // DOCUMENT_POSITION_FOLLOWING (4) means curr comes after prev.
       expect(prev.compareDocumentPosition(curr) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
+  });
+
+  it("does not reorder sessions when lastUsedAt changes", () => {
+    // Regression test: the order must be derived from createdAt (stable), not lastUsedAt
+    // (which updates on every agent event during a turn). Otherwise running agents would
+    // reshuffle the sidebar under the user's cursor.
+    const tOld = "2024-01-01T00:00:00.000Z";
+    const tNew = "2024-01-02T00:00:00.000Z";
+    const tNewer = "2024-01-03T00:00:00.000Z";
+    const sessions = [
+      baseSession({ id: "s-older", title: "Older", remoteUrl: repoA.url, createdAt: tOld, lastUsedAt: tOld }),
+      baseSession({ id: "s-newer", title: "Newer", remoteUrl: repoA.url, createdAt: tNew, lastUsedAt: tOld }),
+    ];
+    const { rerender } = render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+    const newerNode1 = screen.getByText("Newer");
+    const olderNode1 = screen.getByText("Older");
+    expect(newerNode1.compareDocumentPosition(olderNode1) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // Simulate an agent event in the older session bumping its lastUsedAt past the newer one.
+    // With MRU sorting this would reorder; with createdAt sorting the order must stay.
+    const updated = [
+      { ...sessions[0], lastUsedAt: tNewer },
+      sessions[1],
+    ];
+    rerender(<SessionSidebar {...defaultProps} sessions={updated} />);
+
+    const newerNode2 = screen.getByText("Newer");
+    const olderNode2 = screen.getByText("Older");
+    expect(newerNode2.compareDocumentPosition(olderNode2) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("renders multiple repo groups for multi-repo", () => {
