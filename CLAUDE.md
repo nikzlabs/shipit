@@ -193,7 +193,7 @@ Concrete rules:
 
 - **Resolve runners via the registry, not via `ctx.getRunner()`.** `ctx.getRunner()` returns the per-connection `attachedRunner`, which becomes `null` on WS close. Use `ctx.getRunnerRegistry().get(capturedSessionId) ?? ctx.getRunner()` so the resolution survives reconnects. The registry persists across the entire process lifetime.
 
-- **Mutate runner state directly**, not via `ctx.setX(...)`. Inside async closures, prefer `runner.running = false`, `runner.turnSummary = "…"`, `runner.emitMessage(...)`. The ctx setters fall back to a registry lookup as defense-in-depth, but writing `runner.X = …` makes the dependency on the runner explicit.
+- **Mutate runner state directly via `runner.X = …`.** The previous `ctx.setIsClaudeRunning`, `ctx.setTurnSummary`, `ctx.setAccumulatedText`, etc. setters have been deleted (see `docs/095-runner-ctx-simplification/plan.md`). The only way to mutate runner state now is to resolve a runner — via `resolveRunner(ctx)` from `ws-handlers/resolve-runner.ts`, which prefers the registry — and assign directly: `runner.running = false`, `runner.turnSummary = "…"`, `runner.emitMessage(...)`. Reading state works the same way: `runner.running`, not `ctx.getIsClaudeRunning()`.
 
 - **Emit via `runner.emitMessage()`, not `ctx.send()`.** `runner.emitMessage` broadcasts to every attached viewer AND buffers into the turn-event log so reconnecting viewers see post-turn messages. `ctx.send` writes to a single socket and silently drops on closed sockets.
 
@@ -201,7 +201,7 @@ Concrete rules:
 
 - **Never trigger `agent.kill()`, `terminal.kill()`, `container.destroy()`, etc. from a WebSocket close handler.** The only thing `socket.on("close")` should do is call `detachFromRunner()` (which decrements the viewer count and removes per-connection listeners). Period.
 
-The ctx setters in `index.ts` will throw under `VITEST` and warn in production if they're called when no runner can be resolved. If you see that warning in tests or logs, you've introduced this bug class — fix it by capturing the runner upfront and mutating it directly.
+The bug class is now structurally impossible because the silent-no-op setters are gone — there is no `ctx.setIsClaudeRunning(...)` to call. If a future contributor needs to mutate runner state, the type system forces them to obtain a runner reference first, which forces them to think about lifetime. Integration coverage lives in `src/server/orchestrator/integration_tests/ws-disconnect-resilience.test.ts` — those tests should be considered the executable contract for this section.
 
 ### Service layer pattern
 

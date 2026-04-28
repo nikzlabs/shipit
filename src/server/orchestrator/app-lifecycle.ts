@@ -268,7 +268,11 @@ export function buildRunnerFactory(
         runner.setWorkerUrl(sc.workerUrl);
       } catch (err) {
         console.error(`[container] Failed to start container for ${o.sessionId}:`, getErrorMessage(err));
-        runner.dispose();
+        // Forced — container start failed, the runner is unusable and must be
+        // torn down. The agent isn't running on any worker yet, but if some
+        // race ever flipped `_isRunning` (early enqueue, etc.), an unforced
+        // dispose would silently no-op and leak the registry entry.
+        runner.dispose({ force: true });
       }
     })();
 

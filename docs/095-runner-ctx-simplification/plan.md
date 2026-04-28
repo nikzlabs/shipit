@@ -113,8 +113,8 @@ runClaudeWithMessage(ctx, opts) {
 ### Backwards compatibility / risk
 
 - All public WS message types stay identical. This is a pure server-internal refactor.
-- The migration is mechanical. Each step compiles independently, so it can be split across multiple commits.
-- The resilient `withRunner` setters added in the prior round are the safety net during the transition: if any caller is missed, behavior remains correct (fallback through registry) and tests fail loudly under VITEST.
+- The migration is mechanical. Each step compiled independently, so it was split across multiple commits.
+- During the transition the resilient `withRunner` setters added in the prior round acted as a safety net: any missed call site still resolved the runner via the registry, and tests would have failed loudly under `VITEST`. Both the scaffolding and the setters are gone in the final state.
 
 ## Key files
 

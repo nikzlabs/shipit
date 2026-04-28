@@ -328,4 +328,43 @@ describe("Integration: WebSocket disconnect resilience", () => {
     const status = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/status` });
     expect(status.json().running).toBe(false);
   });
+
+  // -------------------------------------------------------------------------
+  // Invariant: an agent error (without a follow-up `done`) clears `running`
+  // so the runner doesn't stay forever-undisposable.
+  //
+  // Some adapter paths emit `error` without `done` — e.g. a spawn failure in
+  // claude.ts before the process is alive, or an `agent_error` SSE event from
+  // the worker that doesn't always pair with `agent_done`. Combined with the
+  // running-guard in `runner.dispose()`, a stuck `running=true` would make
+  // the runner permanently undisposable. This test pins the recovery path.
+  // -------------------------------------------------------------------------
+
+  it("agent error without `done` still clears `running` (runner stays disposable)", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+    const sessionId = client.sessionId;
+
+    client.send({ type: "send_message", text: "go" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.emit("event", { type: "system", subtype: "init", session_id: "err-1" });
+    await drainUntil(client, (m) => m.type === "session_started");
+
+    // Emit `error` WITHOUT a follow-up `done`. Use the EventEmitter's super.emit
+    // so we don't go through the `event`-translation path in FakeClaudeProcess.
+    (claude as unknown as { emit: (n: string, e: Error) => void }).emit(
+      "error",
+      new Error("simulated spawn failure"),
+    );
+    await settle(150);
+
+    // The HTTP status endpoint must reflect running=false even though `done`
+    // never fired. If this fails, the runner is in the stuck state and would
+    // refuse all future cleanup.
+    const status = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/status` });
+    expect(status.statusCode).toBe(200);
+    expect(status.json().running).toBe(false);
+
+    client.close();
+  });
 });
