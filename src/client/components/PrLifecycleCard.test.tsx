@@ -1,5 +1,5 @@
-import { describe, it, expect, afterEach, beforeEach } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
 import { PrLifecycleCard, PrStateBadge } from "./PrLifecycleCard.js";
 import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
@@ -284,6 +284,42 @@ describe("PrLifecycleCard", () => {
 
     fireEvent.click(screen.getByLabelText("More options"));
     expect(screen.getByText("Auto-merge")).toBeInTheDocument();
+  });
+
+  it("resets the 'Merging...' state when the sessionId prop changes", async () => {
+    // Regression: switching sessions while a merge was in flight used to leave
+    // the button stuck on "Merging..." against the new session because the
+    // local React state in MergeButton survived the prop change.
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+    });
+    setCard("s2", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+    });
+
+    // Mock fetch with a never-resolving promise so the merge stays "in flight".
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(() => new Promise(() => {})) as unknown as typeof fetch;
+
+    try {
+      const { rerender } = render(<PrLifecycleCard sessionId="s1" />);
+
+      // Click the merge button to flip merging=true.
+      await act(async () => {
+        fireEvent.click(screen.getByText("Squash and merge"));
+      });
+      expect(screen.getByText("Merging...")).toBeInTheDocument();
+
+      // Switch sessions — the merging state for s1 must not bleed into s2.
+      rerender(<PrLifecycleCard sessionId="s2" />);
+
+      expect(screen.queryByText("Merging...")).toBeNull();
+      expect(screen.getByText("Squash and merge")).toBeInTheDocument();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("hides merge button when auto-merge is enabled", () => {

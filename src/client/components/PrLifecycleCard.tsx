@@ -595,8 +595,13 @@ export function PrLifecycleCard({ sessionId }: { sessionId: string }) {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
   if (!card) return null;
 
+  // Key the inner subtree on sessionId so transient per-session UI state
+  // (e.g. MergeButton's "Merging..." flag, CreatePR's "Creating..." flag,
+  // OpenPhase's "Fixing..." flag) resets when the user switches sessions.
+  // Without this, switching sessions while a merge is in flight leaves the
+  // button stuck on "Merging..." against the new session.
   return (
-    <div className="mx-4 mt-2 rounded-t-xl border border-b-0 border-(--color-border-primary) bg-(--color-bg-secondary)/20 px-4 py-2">
+    <div key={sessionId} className="mx-4 mt-2 rounded-t-xl border border-b-0 border-(--color-border-primary) bg-(--color-bg-secondary)/20 px-4 py-2">
       {(card.phase === "ready" || card.phase === "creating") && <ReadyPhase card={card} sessionId={sessionId} creating={card.phase === "creating"} />}
       {card.phase === "open" && <OpenPhase card={card} sessionId={sessionId} />}
       {card.phase === "merged" && (
