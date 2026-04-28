@@ -289,6 +289,27 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     })();
   }, 10_000) : null;
 
+  // ---- Periodic idle container cleanup (every 30s) ----
+  // Runs the idle enforcer on a fixed cadence so cleanup happens regardless
+  // of WebSocket activity. WebSocket close handlers MUST NOT trigger this
+  // synchronously — that would couple WS lifecycle to runner/container
+  // lifecycle and let transient disconnects kill running agents. The
+  // enforcer itself also enforces a grace period (IDLE_GRACE_PERIOD_MS) so
+  // a runner whose viewer just detached is not immediately eligible for
+  // disposal.
+  const idleEnforcementInterval = containerManager ? setInterval(() => {
+    try {
+      enforceIdleContainerLimit();
+    } catch (err) {
+      console.error("[idle-cleanup] periodic enforcement failed:", err);
+    }
+  }, 30_000) : null;
+  // Don't keep the event loop alive just for idle enforcement — let process
+  // shutdown proceed naturally.
+  if (idleEnforcementInterval && typeof idleEnforcementInterval.unref === "function") {
+    idleEnforcementInterval.unref();
+  }
+
   // ---- HTTP API routes ----
   await registerApiRoutes(app, {
     sessionManager,
@@ -571,6 +592,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       };
 
       // ---- Handler context ----
+      // RunnerCtx no longer exposes setters that delegate to attachedRunner.
+      // Handlers resolve the runner via `resolveRunner(ctx)` (in
+      // ws-handlers/resolve-runner.ts) and mutate `runner.X` directly. This
+      // makes WS-disconnect-driven bugs structurally impossible — a handler
+      // either has a runner reference (and can mutate it) or doesn't (and
+      // returns/no-ops explicitly). See feature 095.
       const ctx: ConnectionCtx & RunnerCtx & AppCtx & serviceHandlers.ServiceCtx = {
         send, broadcastLog: sessionBroadcastLog, sseBroadcast,
         getActiveDir, getActiveGitManager,
@@ -580,34 +607,19 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         setActiveSessionDir: (dir) => { activeSessionDir = dir; },
         activateSession,
         agentFactory: (agentId: AgentId) => {
-          if (attachedRunner?.createAgent) return attachedRunner.createAgent(agentId);
+          const r = attachedRunner ?? runnerRegistry.get(sessionId) ?? null;
+          if (r?.createAgent) return r.createAgent(agentId);
           if (agentFactory) return agentFactory(agentId);
           throw new Error("No agent factory available");
         },
-        getAgent: () => attachedRunner?.getAgent() ?? null,
-        setAgent: (a) => { if (attachedRunner) attachedRunner.setAgent(a); },
-        getActiveAgentId: () => attachedRunner?.agentId ?? perConnectionAgentId,
-        setActiveAgentId: (id) => { perConnectionAgentId = id; if (attachedRunner) attachedRunner.agentId = id; },
+        getActiveAgentId: () => (attachedRunner ?? runnerRegistry.get(sessionId))?.agentId ?? perConnectionAgentId,
+        setActiveAgentId: (id) => {
+          perConnectionAgentId = id;
+          const r = attachedRunner ?? runnerRegistry.get(sessionId);
+          if (r) r.agentId = id;
+        },
         getSelectedModel: () => selectedModel,
         setSelectedModel: (m) => { selectedModel = m; },
-        getIsClaudeRunning: () => attachedRunner?.running ?? false,
-        setIsClaudeRunning: (v) => { if (attachedRunner) attachedRunner.running = v; },
-        getWasInterrupted: () => attachedRunner?.wasInterrupted ?? false,
-        setWasInterrupted: (v) => { if (attachedRunner) attachedRunner.wasInterrupted = v; },
-        getTurnSummary: () => attachedRunner?.turnSummary ?? "",
-        setTurnSummary: (s) => { if (attachedRunner) attachedRunner.turnSummary = s; },
-        getAccumulatedText: () => attachedRunner?.accumulatedText ?? "",
-        setAccumulatedText: (s) => { if (attachedRunner) attachedRunner.accumulatedText = s; },
-        getAccumulatedToolUse: () => attachedRunner?.accumulatedToolUse ?? [],
-        setAccumulatedToolUse: (blocks) => { if (attachedRunner) attachedRunner.accumulatedToolUse = blocks; },
-        getChatMessageGroups: () => attachedRunner?.chatMessageGroups ?? [],
-        setChatMessageGroups: (groups) => { if (attachedRunner) attachedRunner.chatMessageGroups = groups; },
-        getNeedsNewMessageGroup: () => attachedRunner?.needsNewMessageGroup ?? true,
-        setNeedsNewMessageGroup: (v) => { if (attachedRunner) attachedRunner.needsNewMessageGroup = v; },
-        getMessageQueue: () => attachedRunner?.messageQueue ?? [],
-        clearMessageQueue: () => { if (attachedRunner) attachedRunner.clearQueue(); },
-        getTerminal: () => attachedRunner?.getTerminal() ?? null,
-        setTerminal: (t) => { if (attachedRunner) attachedRunner.setTerminal(t); },
         clearLogBuffer: () => { clearLogBuffer(); },
         getRunner: () => attachedRunner,
         getRunnerRegistry: () => runnerRegistry,
@@ -769,7 +781,11 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
       socket.on("close", () => {
         console.log(`[ws] session client disconnected: ${sessionId}`);
         detachFromRunner();
-        enforceIdleContainerLimit();
+        // Intentionally do NOT call enforceIdleContainerLimit() here.
+        // WebSocket lifecycle MUST NOT affect runner/container lifecycle —
+        // a transient disconnect (network blip, reload, session switch)
+        // should never kill the agent or destroy the container. Idle
+        // cleanup runs on a periodic timer plus on `runner_idle` events.
       });
     },
   );
@@ -782,6 +798,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
   // Graceful shutdown
   app.addHook("onClose", async () => {
     if (memoryStatsInterval) clearInterval(memoryStatsInterval);
+    if (idleEnforcementInterval) clearInterval(idleEnforcementInterval);
   });
   registerShutdownHook(app, {
     startupTimer, authManager, runnerRegistry,

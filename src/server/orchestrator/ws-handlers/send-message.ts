@@ -1,11 +1,12 @@
 import fs from "node:fs/promises";
-import type { WsClientMessage, ImageAttachment, FileAttachment, FileContextRef, UploadRef } from "../../shared/types.js";
+import type { WsClientMessage, WsServerMessage, ImageAttachment, FileAttachment, FileContextRef, UploadRef } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, validateImages, resolveFileAttachments, resolveUploadRefs } from "../validation.js";
 import { generateSessionName } from "../session-namer.js";
 import { wireAgentListeners } from "./agent-listeners.js";
 import { runClaudeWithMessage } from "./claude-execution.js";
 import { postTurnCommit } from "./post-turn.js";
+import { resolveRunner } from "./resolve-runner.js";
 
 // Re-export all public symbols from sub-modules for backwards compatibility
 export { CONTEXT_WINDOW_TOKENS, wireAgentListeners, extractToolResults } from "./agent-listeners.js";
@@ -43,19 +44,21 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
     }
   }
 
-  // If Claude is already processing, queue this message and return
-  if (ctx.getIsClaudeRunning()) {
-    ctx.getMessageQueue().push({ text: msg.text, images: msg.images, files: msg.files, uploads: msg.uploads, permissionMode: msg.permissionMode });
+  // If Claude is already processing, queue this message and return.
+  // Resolve runner via registry — survives WS disconnect.
+  const runnerForQueue = resolveRunner(ctx);
+  if (runnerForQueue?.running) {
+    runnerForQueue.messageQueue.push({ text: msg.text, images: msg.images, files: msg.files, uploads: msg.uploads, permissionMode: msg.permissionMode });
     ctx.send({
       type: "message_queued",
-      position: ctx.getMessageQueue().length,
+      position: runnerForQueue.messageQueue.length,
       text: msg.text,
     });
     return;
   }
 
   // Kill any stale process (safety net — normally null if not running)
-  const staleAgent = ctx.getAgent();
+  const staleAgent = runnerForQueue?.getAgent() ?? null;
   if (staleAgent) {
     staleAgent.kill();
   }
@@ -102,10 +105,15 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
   let agentSessionId: string | undefined;
   if (effectiveSessionId) {
     // Resuming an existing session
-    // Clear the queue when switching to a different session
-    if (ctx.getActiveAppSessionId() && effectiveSessionId !== ctx.getActiveAppSessionId() && ctx.getMessageQueue().length > 0) {
-      ctx.clearMessageQueue();
-      ctx.send({ type: "queue_updated", queue: [] });
+    // Clear the queue when switching to a different session.
+    // Look up the OUTGOING session's runner so its queue isn't stranded.
+    const previousSessionId = ctx.getActiveAppSessionId();
+    if (previousSessionId && effectiveSessionId !== previousSessionId) {
+      const previousRunner = ctx.getRunnerRegistry().get(previousSessionId);
+      if (previousRunner && previousRunner.messageQueue.length > 0) {
+        previousRunner.clearQueue();
+        ctx.send({ type: "queue_updated", queue: [] });
+      }
     }
     await ctx.activateSession(effectiveSessionId);
     const session = ctx.sessionManager.get(effectiveSessionId);
@@ -234,7 +242,10 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
   // Collect all upload paths for chat history (so hydrateUploads can detect sent uploads)
   const uploadPaths = uploadRefs?.map((u) => u.path);
 
-  ctx.setIsClaudeRunning(true);
+  // Mark the runner as running. Resolve via registry so this stays correct
+  // even if the WS disconnects between handler entry and `await` resumption.
+  const turnRunner = resolveRunner(ctx);
+  if (turnRunner) turnRunner.running = true;
   await runClaudeWithMessage(ctx, {
     userText,
     images: allImages,
@@ -255,7 +266,9 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     return;
   }
 
-  const existingAgent = ctx.getAgent();
+  // Resolve the runner from the registry first so it survives WS disconnect.
+  const runnerEarly = resolveRunner(ctx);
+  const existingAgent = runnerEarly?.getAgent() ?? null;
   if (existingAgent) {
     // Claude is still running — write answer to stdin (it may be blocking on input)
     existingAgent.writeStdin(`${answerText  }\n`);
@@ -287,13 +300,19 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
   const capturedSessionId = ctx.getActiveAppSessionId();
   const capturedSessionDir = ctx.getActiveSessionDir();
 
-  ctx.setTurnSummary("");
-  ctx.setAccumulatedText("");
-  ctx.setAccumulatedToolUse([]);
-  ctx.setChatMessageGroups([]);
-  ctx.setNeedsNewMessageGroup(true);
+  // Resolve runner via the registry so it survives WS disconnect.
+  const answerRunner = resolveRunner(ctx, capturedSessionId);
+
+  // Reset turn-scoped state directly on the runner.
+  if (answerRunner) {
+    answerRunner.turnSummary = "";
+    answerRunner.accumulatedText = "";
+    answerRunner.accumulatedToolUse = [];
+    answerRunner.chatMessageGroups = [];
+    answerRunner.needsNewMessageGroup = true;
+  }
   const currentAgent = ctx.agentFactory(ctx.getActiveAgentId());
-  ctx.setAgent(currentAgent);
+  if (answerRunner) answerRunner.setAgent(currentAgent);
 
   const persistUserMessage = (sessionId: string) => {
     ctx.chatHistoryManager.append(sessionId, { role: "user", text: answerText });
@@ -310,19 +329,28 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     fallbackTitle: answerText.slice(0, 80) || "Answer",
     capturedSessionId,
   });
-
-  const answerRunner = ctx.getRunner();
   currentAgent.on("done", async (code: number | null) => {
     console.log("[agent] process exited with code", code);
     ctx.broadcastLog("server", `Agent process exited with code ${code}`);
     if (answerRunner) answerRunner.setAgent(null);
+
+    // Emit via the runner so all viewers (including future reconnects via
+    // the buffered turn events) see post-turn messages, not just the
+    // originating WS connection.
+    const emitDone = (msg: WsServerMessage) => {
+      if (answerRunner) answerRunner.emitMessage(msg);
+      else ctx.send(msg);
+    };
 
     try {
       if (capturedSessionDir) {
         await postTurnCommit(ctx, {
           sessionDir: capturedSessionDir,
           sessionId: capturedSessionId,
-          emit: (msg) => ctx.send(msg),
+          emit: emitDone,
+          // Pass the captured runner's summary explicitly — ctx.getTurnSummary()
+          // returns "" after WS disconnect (it routes through attachedRunner).
+          turnSummary: answerRunner?.turnSummary ?? "",
         });
       }
     } catch (err) {

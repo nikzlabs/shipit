@@ -16,7 +16,7 @@ describe("SessionRunner", () => {
     expect(runner.running).toBe(false);
     runner.running = true;
     expect(runner.running).toBe(true);
-    runner.dispose();
+    runner.dispose({ force: true });
   });
 
   it("manages message queue", () => {
@@ -130,7 +130,7 @@ describe("SessionRunner", () => {
     runner.sendSystemMessage("fix ci");
     expect(runner.queueLength).toBe(1);
     expect(runner.dequeue()?.text).toBe("fix ci");
-    runner.dispose();
+    runner.dispose({ force: true });
   });
 
   it("sendSystemMessage starts agent turn when idle with deps set", () => {
@@ -154,7 +154,7 @@ describe("SessionRunner", () => {
     expect(runner.queueLength).toBe(0);
     expect(runner.running).toBe(true);
     expect(fakeAgent.run).toHaveBeenCalledWith(expect.objectContaining({ prompt: "fix ci" }));
-    runner.dispose();
+    runner.dispose({ force: true });
   });
 
   it("sendSystemMessage falls back to enqueue when idle with no deps", () => {
@@ -212,6 +212,49 @@ describe("SessionRunner", () => {
     expect(runner.disposed).toBe(true);
     expect(disposedSpy).toHaveBeenCalled();
   });
+
+  it("dispose() refuses to kill a running agent", () => {
+    // Lifecycle events (idle cleanup, transient WS disconnects) must never
+    // kill a running agent. dispose() is a no-op while running unless forced.
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    const fakeAgent = { kill: vi.fn() } as any;
+    runner.setAgent(fakeAgent);
+    runner.running = true;
+
+    runner.dispose();
+
+    expect(fakeAgent.kill).not.toHaveBeenCalled();
+    expect(runner.disposed).toBe(false);
+
+    // force: true must override the protection so shutdown / explicit
+    // archive paths still work.
+    runner.dispose({ force: true });
+    expect(fakeAgent.kill).toHaveBeenCalled();
+    expect(runner.disposed).toBe(true);
+  });
+
+  it("detachViewer records the timestamp for grace-period checks", () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    expect(runner.lastViewerDetachAt).toBe(0);
+
+    runner.attachViewer();
+    expect(runner.lastViewerDetachAt).toBe(0); // unchanged on attach
+
+    const before = Date.now();
+    runner.detachViewer();
+    const after = Date.now();
+    expect(runner.lastViewerDetachAt).toBeGreaterThanOrEqual(before);
+    expect(runner.lastViewerDetachAt).toBeLessThanOrEqual(after);
+    runner.dispose();
+  });
 });
 
 describe("SessionRunnerRegistry", () => {
@@ -234,7 +277,7 @@ describe("SessionRunnerRegistry", () => {
     r1.running = true;
 
     expect(registry.listActive()).toEqual(["s1"]);
-    r1.dispose();
+    r1.dispose({ force: true });
     r2.dispose();
   });
 

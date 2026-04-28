@@ -240,6 +240,16 @@ Handlers receive a `ctx` object combining three interfaces (see `ws-handlers/typ
 | `thread-handlers.ts` | `fork_thread`, `switch_thread` |
 | `misc-handlers.ts` | `interrupt_claude`, `set_agent`, `cancel_queued_message`, `init_preview_config`, `diff_comment`, `clear_logs` |
 
+### Critical rule: WebSocket lifecycle MUST NOT affect server behavior
+
+WS disconnects and reconnects are routine. They MUST NOT stop agents, dispose runners, destroy containers, or corrupt persisted state. Concretely:
+
+- **`socket.on("close")` only calls `detachFromRunner()`.** It must NOT call `enforceIdleContainerLimit()`, `runner.dispose()`, `agent.kill()`, `containerManager.destroy()`, or anything that affects state. Idle cleanup runs on a periodic timer with a 60s grace period (see `app-lifecycle.ts: createIdleEnforcer`, `IDLE_GRACE_PERIOD_MS`).
+- **`runner.dispose()` refuses to kill running agents** unless `{ force: true }` is passed. The only callers passing `force` are explicit user actions (archive, repo delete, full reset) and shutdown.
+- **Inside async closures (`agent.on("event"|"done"|"error")`, `setTimeout`, `Promise.then`, recursive turns), capture `runner` / `capturedSessionId` / `capturedSessionDir` ONCE at function entry.** Never call `ctx.getRunner()` inside those closures — it returns the per-connection `attachedRunner`, which becomes null after disconnect. Mutate `runner.X` directly and emit via `runner.emitMessage()` (which broadcasts to all viewers AND buffers for reconnects), not `ctx.send()`.
+- **Resolve runners via the registry**: use `resolveRunner(ctx)` from `ws-handlers/resolve-runner.ts` (or `ctx.getRunnerRegistry().get(capturedSessionId)`). The registry survives WS disconnects; `attachedRunner` doesn't.
+- **`RunnerCtx` no longer exposes `setIsClaudeRunning`, `setTurnSummary`, etc.** They were a hazard — silent no-ops after disconnect. The only way to mutate runner state is `runner.X = …` on a resolved runner. See `docs/095-runner-ctx-simplification/plan.md`.
+
 ## SSE Broadcast (`/api/events`)
 
 The orchestrator maintains a Server-Sent Events endpoint for global push to all connected clients. Events include:

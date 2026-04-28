@@ -103,6 +103,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   // Viewer tracking
   private _viewerCount = 0;
+  private _lastViewerDetachAt = 0;
 
   // Per-session detected ports
   private _detectedPorts: number[] = [];
@@ -366,6 +367,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   // --- Viewer management ---
 
   get viewerCount(): number { return this._viewerCount; }
+  get lastViewerDetachAt(): number { return this._lastViewerDetachAt; }
 
   private _workerResourcesStarted = false;
 
@@ -385,6 +387,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   detachViewer(): void {
     this._viewerCount = Math.max(0, this._viewerCount - 1);
+    this._lastViewerDetachAt = Date.now();
     // Don't stop worker resources or SSE — the container keeps running and
     // the viewer may reattach quickly (session switching). Cleanup happens
     // in dispose() when the runner is actually torn down.
@@ -895,8 +898,17 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get disposed(): boolean { return this._disposed; }
 
-  dispose(): void {
+  dispose(opts?: { force?: boolean }): void {
     if (this._disposed) return;
+    // Defensive: refuse to dispose a runner whose agent is currently running
+    // unless the caller explicitly forces it. This guarantees that lifecycle
+    // events (idle cleanup, transient WebSocket disconnects) never kill a
+    // running agent on the worker. Shutdown / full-reset paths pass
+    // `{ force: true }` to override.
+    if (this._isRunning && !opts?.force) {
+      console.log(`[container-runner:${this.sessionId}] dispose() skipped — agent is running`);
+      return;
+    }
     this._disposed = true;
 
     // Kill agent on worker (fire and forget)

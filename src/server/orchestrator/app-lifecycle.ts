@@ -229,7 +229,9 @@ export function buildRunnerFactory(
           runner.setWorkerUrl(sc.workerUrl);
         } catch (err) {
           console.error(`[container] Failed to start container for ${o.sessionId}:`, getErrorMessage(err));
-          runner.dispose();
+          // Forced — container start failed, the runner is unusable and must
+          // be torn down. The agent isn't actually running on a worker yet.
+          runner.dispose({ force: true });
         }
       })();
 
@@ -266,7 +268,11 @@ export function buildRunnerFactory(
         runner.setWorkerUrl(sc.workerUrl);
       } catch (err) {
         console.error(`[container] Failed to start container for ${o.sessionId}:`, getErrorMessage(err));
-        runner.dispose();
+        // Forced — container start failed, the runner is unusable and must be
+        // torn down. The agent isn't running on any worker yet, but if some
+        // race ever flipped `_isRunning` (early enqueue, etc.), an unforced
+        // dispose would silently no-op and leak the registry entry.
+        runner.dispose({ force: true });
       }
     })();
 
@@ -284,9 +290,29 @@ export interface IdleEnforcementDeps {
 }
 
 /**
+ * Grace period after a viewer detaches before the runner becomes eligible for
+ * idle cleanup. Protects against transient WebSocket disconnects (network
+ * blips, page reloads, session switches) — a runner whose last viewer just
+ * detached is kept around for this window so a quick reconnect doesn't pay
+ * the cost of a fresh container start.
+ */
+export const IDLE_GRACE_PERIOD_MS = 60_000;
+
+/**
  * Create the `enforceIdleContainerLimit` function. When more containers are
  * idle than the configured limit, stop the oldest excess containers and
  * dispose their runners.
+ *
+ * Important invariants:
+ *  - Never disposes a runner whose agent is currently running (`runner.running`).
+ *  - Never disposes a runner that lost its last viewer within the grace
+ *    period — protects against transient WebSocket disconnects.
+ *  - Runner disposal is TOCTOU-safe: state is re-checked at dispose time, and
+ *    `runner.dispose()` itself refuses to run while the agent is active.
+ *
+ * This function MUST NOT be called synchronously from a WebSocket close
+ * handler. WebSocket lifecycle is independent from runner/container
+ * lifecycle. Schedule via the periodic timer instead.
  */
 export function createIdleEnforcer(
   enforceDeps: IdleEnforcementDeps,
@@ -296,20 +322,39 @@ export function createIdleEnforcer(
   return () => {
     if (!containerManager) return;
     const maxIdle = credentialStore.getMaxIdleContainers();
+    const now = Date.now();
     const idleSessionIds: string[] = [];
 
     for (const sc of containerManager.getAll()) {
       if (containerManager.isStandby(sc.sessionId)) continue;
       const runner = runnerRegistry.get(sc.sessionId);
-      if (!runner || (runner.viewerCount === 0 && !runner.running)) {
+      if (!runner) {
+        // Container exists without a runner — orphaned. Eligible for cleanup.
         idleSessionIds.push(sc.sessionId);
+        continue;
       }
+      if (runner.running) continue;
+      if (runner.viewerCount > 0) continue;
+      // Skip runners whose last viewer detach was within the grace period —
+      // a transient disconnect must never lead to disposal.
+      if (runner.lastViewerDetachAt > 0 && now - runner.lastViewerDetachAt < IDLE_GRACE_PERIOD_MS) {
+        continue;
+      }
+      idleSessionIds.push(sc.sessionId);
     }
 
     if (idleSessionIds.length > maxIdle) {
       // Map insertion order = oldest first; slice from the front to keep the newest.
       const excess = idleSessionIds.slice(0, idleSessionIds.length - maxIdle);
       for (const sid of excess) {
+        // TOCTOU re-check: between the scan and now, the runner may have
+        // become active (new viewer attached, agent started). Dispose only
+        // if it is still safe to do so. `runner.dispose()` also enforces
+        // this at the runner level (defense in depth).
+        const runner = runnerRegistry.get(sid);
+        if (runner && (runner.running || runner.viewerCount > 0)) {
+          continue;
+        }
         console.log(`[idle-cleanup] Stopping idle container for session ${sid}`);
         containerManager.destroy(sid).catch((err: unknown) => {
           console.error(`[idle-cleanup] Failed to destroy container ${sid}:`, getErrorMessage(err));
@@ -1057,7 +1102,9 @@ export function setupContainerHealthMonitoring(
         running: false,
         error: `Session container exited unexpectedly${error ? `: ${error}` : ""}`,
       });
-      runner.dispose();
+      // Forced — the underlying container is gone, so the agent process is
+      // already dead. We must tear down the runner to release resources.
+      runner.dispose({ force: true });
     }
   });
 }
