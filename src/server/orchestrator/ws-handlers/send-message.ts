@@ -48,13 +48,24 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
   // Resolve runner via registry — survives WS disconnect.
   const runnerForQueue = resolveRunner(ctx);
   if (runnerForQueue?.running) {
-    runnerForQueue.messageQueue.push({ text: msg.text, images: msg.images, files: msg.files, uploads: msg.uploads, permissionMode: msg.permissionMode });
-    ctx.send({
-      type: "message_queued",
-      position: runnerForQueue.messageQueue.length,
-      text: msg.text,
-    });
-    return;
+    // Verify with the worker that an agent is actually running. The local
+    // `running` flag can get stranded `true` if the orchestrator missed a
+    // terminal SSE event (drop mid-turn, container restart, /agent/kill
+    // race). Without this check, the new message would be queued forever
+    // and the user sees: "agent starts briefly, nothing happens".
+    const actuallyRunning = await runnerForQueue.verifyRunningState();
+    if (actuallyRunning) {
+      runnerForQueue.messageQueue.push({ text: msg.text, images: msg.images, files: msg.files, uploads: msg.uploads, permissionMode: msg.permissionMode });
+      ctx.send({
+        type: "message_queued",
+        position: runnerForQueue.messageQueue.length,
+        text: msg.text,
+      });
+      return;
+    }
+    // Worker reports no agent — verifyRunningState already reset the flag
+    // and emitted a recovery `session_status`. Fall through to start a new
+    // turn for this message.
   }
 
   // Kill any stale process (safety net — normally null if not running)
