@@ -14,7 +14,7 @@ Today, ShipIt sessions push to feature branches and open PRs. But if the base br
 1. **Push succeeds but PR has conflicts** — GitHub shows "This branch has conflicts that must be resolved." The user must leave ShipIt to fix this.
 2. **Push fails (non-fast-forward)** — `git push` rejects because remote has diverged. The auto-push silently fails (logs error, no user-visible feedback).
 3. **No rebase capability** — GitManager has `merge()` but no `rebase()`. Even if we detected conflicts, there's no way to resolve them.
-4. **Agent can't commit during rebase** — The agent inside the session container doesn't have a git identity configured, so `git rebase --continue` would fail even if conflicts were resolved.
+4. **No git identity in containers** — Session containers don't have `user.name`/`user.email` configured, so `git rebase --continue` (which creates commits) would fail even if conflicts were resolved.
 
 ## Design
 
@@ -60,9 +60,9 @@ Force push (`--force-with-lease`) replaces the old feature branch on the remote.
       └──────────┘  └──────────┬───────────┘
                                ▼
                     ┌───────────────────────┐
-                    │ Agent resolves files   │  (Claude edits conflicted files)
-                    │ git add + rebase       │
-                    │ --continue             │
+                    │ Agent edits files      │  (Claude resolves conflict markers)
+                    │ Orchestrator: git add  │
+                    │ + rebase --continue    │
                     └──────────┬────────────┘
                                ▼
                         ┌────────────┐
@@ -72,7 +72,7 @@ Force push (`--force-with-lease`) replaces the old feature branch on the remote.
 
 ### Phase 1: Git Identity for the Agent
 
-**Problem:** The agent inside session containers runs `git commit` (via Claude Code) but currently relies on the orchestrator's auto-commit. During rebase conflict resolution, the agent needs to run `git rebase --continue` which creates commits — this requires `user.name` and `user.email` to be set in the container.
+**Problem:** The agent inside session containers can run `git commit` (via Claude Code's bash tool), and the orchestrator runs `git rebase --continue` on the session directory which creates commits. Both require `user.name` and `user.email` to be configured in the container's git environment.
 
 **Solution:** Propagate the git identity into session containers at startup.
 
@@ -209,16 +209,19 @@ export async function gitForcePush(
 
 ### Phase 4: Orchestrator Rebase Flow
 
+The orchestrator owns the rebase lifecycle. It runs `git rebase`, and if conflicts arise, delegates resolution to the agent. The agent resolves files and stages them, then the orchestrator calls `git rebase --continue`. This keeps git plumbing on the orchestrator side (consistent with how auto-commit works) while leveraging the agent's code understanding for conflict resolution.
+
 New service function in `services/git.ts`:
 
 ```typescript
 /**
  * Rebase the session's branch onto the latest base branch.
- * Fetches upstream, attempts rebase, handles conflicts or force-pushes on success.
+ * Fetches upstream, attempts rebase. On clean rebase, force-pushes immediately.
+ * On conflicts, returns them for agent resolution (caller is responsible for
+ * the resolve → continue → force-push loop).
  */
 export async function rebaseOntoBase(
   git: GitManager,
-  githubAuthManager: GitHubAuthManager,
   baseBranch: string,
 ): Promise<RebaseFlowResult> {
   // 1. Fetch latest from remote
@@ -238,18 +241,30 @@ export async function rebaseOntoBase(
   const result = await git.rebase(baseRef);
 
   if (result.status === "clean") {
-    // 5a. Rebase succeeded — force push
-    const pushResult = await gitForcePush(git, githubAuthManager);
-    return { status: "rebased_and_pushed", message: pushResult.message };
+    return { status: "rebased", baseRef };
   }
 
-  // 5b. Conflicts — return them for resolution
+  // 5. Conflicts — return them (caller will delegate to agent, then continue)
   return {
     status: "conflicts",
     conflicts: result.conflicts,
-    baseBranch,
     baseRef,
   };
+}
+```
+
+Force push is a separate step, called by the orchestrator after rebase completes (clean or after agent resolution):
+
+```typescript
+/** Force push after a successful rebase. Requires GitHub auth. */
+export async function forcePushAfterRebase(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+): Promise<{ success: boolean; message: string; branch: string }> {
+  if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
+  const message = await git.forcePush();
+  const branch = await git.getCurrentBranch();
+  return { success: true, message, branch };
 }
 ```
 
@@ -259,16 +274,11 @@ export async function rebaseOntoBase(
 
 ```
 Request:  { baseBranch: string }
-Response: { status: "up_to_date" | "rebased_and_pushed" | "conflicts",
+Response: { status: "up_to_date" | "rebased" | "conflicts",
             conflicts?: ConflictFile[], message?: string }
 ```
 
-**`POST /api/sessions/:id/git/rebase/continue`** — Continue after conflict resolution.
-
-```
-Request:  { resolvedFiles: string[] }   // files that were edited and staged
-Response: { status: "clean" | "conflicts", ... }
-```
+On `"rebased"` response, the orchestrator automatically force-pushes (no separate client call needed).
 
 **`POST /api/sessions/:id/git/rebase/abort`** — Abort rebase, restore previous state.
 
@@ -276,36 +286,46 @@ Response: { status: "clean" | "conflicts", ... }
 Response: { status: "aborted" }
 ```
 
-**`POST /api/sessions/:id/git/force-push`** — Force push current branch.
+Note: no `/rebase/continue` endpoint. The orchestrator manages the continue loop internally after the agent resolves conflicts (see Phase 6). The client doesn't need to drive individual rebase steps.
+
+### Phase 6: Agent-Driven Conflict Resolution (Chat-Visible)
+
+When rebase hits conflicts, the orchestrator delegates resolution to the agent. The resolution is **visible in chat** as a compact message group — the user can see what the agent decided, but it doesn't dominate the conversation.
+
+**Orchestrator-driven loop:**
+
+1. Orchestrator calls `git.rebase(baseRef)` → gets conflicts
+2. Emits `rebase_started` WS event
+3. Sends the agent a message with conflict context (see below)
+4. Agent edits conflicted files to resolve markers
+5. Orchestrator detects resolution (file watcher or agent turn completion), stages files, calls `git.rebaseContinue()`
+6. If more conflicts (multi-commit rebase), repeat from step 3
+7. Once rebase completes, orchestrator force-pushes and emits `rebase_complete`
+
+**Agent prompt:**
 
 ```
-Response: { success: boolean, message: string, branch: string }
+Rebasing onto {baseBranch} — {n} conflict(s) to resolve:
+{for each file: "- {path}"}
+
+Each file has standard git conflict markers. Edit them to produce the correct
+merged result. Don't run any git commands — just edit the files.
 ```
 
-### Phase 6: Agent-Driven Conflict Resolution
+The agent edits files via its normal tools. The orchestrator handles all git plumbing (`git add`, `git rebase --continue`, `git push --force-with-lease`).
 
-When rebase hits conflicts, the orchestrator can delegate resolution to the Claude agent in the session container. The agent already has full filesystem access and can edit files.
+**Chat output:** The agent's resolution appears as a single compact message group:
 
-**Flow:**
+> Rebasing onto `main` — 3 conflicts resolved
+> - `src/api.ts` — kept both: new endpoint from main + your route changes
+> - `src/config.ts` — took ours: your new config keys supersede the upstream defaults
+> - `package.json` — merged dependency versions
 
-1. Orchestrator detects conflicts from `git rebase` output
-2. Sends a system message to the agent with conflict context:
-   ```
-   The branch needs to be rebased onto {baseBranch} but there are merge conflicts
-   in the following files: {conflictList}.
-
-   The files contain standard git conflict markers (<<<<<<< HEAD, =======, >>>>>>>).
-   Please resolve each conflict by editing the files to produce the correct merged result,
-   then run `git add <file>` for each resolved file and `git rebase --continue`.
-   ```
-3. Agent edits files, removes conflict markers, stages changes, continues rebase
-4. If more conflicts arise (multi-commit rebase), agent repeats
-5. Once rebase completes, orchestrator force-pushes
-
-**Advantages of agent-driven resolution:**
-- Agent understands the codebase and can make intelligent merge decisions
-- No new UI needed — resolution happens in the chat flow
-- Works for complex conflicts (not just "take ours/theirs")
+**Why chat-visible:**
+- Resolution is a meaningful decision about the user's code — hiding it undermines trust
+- User can review and rollback if they disagree
+- Consistent with how everything else the agent does is visible
+- Kept compact (one message group, not a multi-turn saga) to avoid cluttering the conversation
 
 ### Phase 7: Auto-Detect Divergence
 
@@ -341,8 +361,8 @@ interface GitStore {
   pushRejected: boolean;
 
   startRebase: (baseBranch: string) => Promise<void>;
-  continueRebase: () => Promise<void>;
   abortRebase: () => Promise<void>;
+  // No continueRebase — orchestrator manages the resolve loop internally
 }
 ```
 
@@ -354,7 +374,7 @@ interface GitStore {
 
 3. **Conflict list** (if manual resolution is needed) — Shows conflicted files in the sidebar. Clicking a file opens the diff view with conflict markers highlighted.
 
-In practice, Phase 6 (agent-driven resolution) means the user rarely sees conflicts directly — the agent resolves them in chat. The UI is a fallback and status indicator.
+The agent resolves conflicts in chat (Phase 6). These UI components show status and provide manual triggers — the user doesn't need to interact with conflicts directly unless they want to abort.
 
 ### WS Message Types
 
@@ -401,21 +421,20 @@ Each commit in the rebase may produce conflicts. The agent loop must handle repe
 `--force-with-lease` is safe: it only succeeds if the remote ref matches what we last fetched. If someone else pushed to the branch (shouldn't happen for ShipIt branches), the force push fails and we surface the error.
 
 ### No GitHub auth
-Rebase is a local operation and works without GitHub auth. Force push requires auth. If auth is missing, rebase locally and defer push.
+Rebase is a local operation and works without GitHub auth. Force push requires auth. If auth is missing, the rebase still completes locally — the branch is updated — but force push is skipped. The next time auto-push runs (after auth is configured), it will use `--force-with-lease` if the local branch has been rebased.
 
 ### Session container restart during rebase
 If the container restarts mid-rebase, `isRebaseInProgress()` detects the state on reconnect. The orchestrator can either abort (safe) or resume.
 
 ## Implementation Order
 
-1. **Git identity propagation** (Phase 1) — prerequisite for everything
-2. **GitManager rebase methods** (Phase 2) — core primitives
-3. **Force push** (Phase 3) — needed after rebase
-4. **Orchestrator rebase service** (Phase 4) — ties it together
-5. **API endpoints** (Phase 5) — expose to client
-6. **Auto-detect divergence** (Phase 7) — trigger the flow
-7. **Agent-driven resolution** (Phase 6) — the smart path
-8. **Client UI** (Phase 8) — status display and manual trigger
+1. **Git identity propagation** (Phase 1) — prerequisite for agent commits
+2. **GitManager rebase + force push** (Phases 2–3) — core primitives
+3. **Orchestrator rebase service** (Phase 4) — orchestrates fetch → rebase → force push
+4. **Agent-driven resolution** (Phase 6) — conflict resolve loop, chat-visible output
+5. **API endpoints** (Phase 5) — expose rebase trigger + abort to client
+6. **Auto-detect divergence** (Phase 7) — trigger rebase from failed auto-push
+7. **Client UI** (Phase 8) — status display, manual trigger, abort button
 
 ## Key Files
 
@@ -423,10 +442,11 @@ If the container restarts mid-rebase, `isRebaseInProgress()` detects the state o
 |---|---|
 | `src/server/shared/git.ts` | `rebase()`, `rebaseContinue()`, `rebaseAbort()`, `isRebaseInProgress()`, `forcePush()`, `isAncestor()`, `fetch()` |
 | `src/server/shared/types/ws-server-messages.ts` | `WsGitPushRejected`, `WsRebaseStarted`, `WsRebaseConflicts`, `WsRebaseComplete`, `WsRebaseAborted` |
-| `src/server/orchestrator/services/git.ts` | `rebaseOntoBase()`, `gitForcePush()` |
-| `src/server/orchestrator/api-routes-git.ts` | Rebase endpoints (start, continue, abort, force-push) |
+| `src/server/orchestrator/services/git.ts` | `rebaseOntoBase()`, `forcePushAfterRebase()` |
+| `src/server/orchestrator/api-routes-git.ts` | Rebase endpoints (start, abort) |
+| `src/server/orchestrator/ws-handlers/` | Rebase conflict resolution loop, agent message injection |
 | `src/server/orchestrator/ws-handlers/post-turn.ts` | Detect non-fast-forward push failures |
-| `src/server/orchestrator/git-config.ts` | Default agent identity fallback |
+| `src/server/orchestrator/git-config.ts` | `getGitIdentity()` used to propagate identity to containers |
 | `src/server/session/session-worker.ts` | Accept and apply git identity config |
 | `src/server/orchestrator/container-session-runner.ts` | Pass git identity to container |
 | `src/client/stores/git-store.ts` | Rebase state, conflict tracking |
