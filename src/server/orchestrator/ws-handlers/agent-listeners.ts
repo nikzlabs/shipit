@@ -2,6 +2,7 @@ import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import type { ToolResultEntry } from "../session-runner.js";
+import { resolveRunner } from "./resolve-runner.js";
 
 /** Full handler context — send-message handlers need all three sub-contexts. */
 type FullCtx = ConnectionCtx & RunnerCtx & AppCtx;
@@ -40,10 +41,11 @@ export function wireAgentListeners(
   },
 ): void {
   // Capture runner at wire time — this direct reference survives WS disconnects.
-  // After disconnect, ctx setters (which go through `attachedRunner`) become no-ops,
-  // but the agent continues emitting events. All runner state mutations MUST use
-  // this captured reference, not ctx, to ensure state is updated correctly.
-  const runner = ctx.getRunner();
+  // `resolveRunner` prefers the registry (keyed by the captured session ID),
+  // so the runner is correct even when the originating WS has already
+  // disconnected by the time this is invoked from a queue-drained recursive
+  // turn. Mutate this captured reference directly throughout the listeners.
+  const runner = resolveRunner(ctx, opts.capturedSessionId);
   // Helper: emit to all viewers via runner, or fall back to ctx.send
   const emitToViewers = (msg: WsServerMessage) => {
     if (runner) {
@@ -255,6 +257,26 @@ export function wireAgentListeners(
         isError: true,
       });
     }
-    if (runner) runner.setAgent(null);
+    // Clear runner state so a stuck `running=true` doesn't make this runner
+    // permanently undisposable. Some adapter paths emit `error` without a
+    // follow-up `done` (e.g. spawn failure in claude.ts:94, agent_error SSE
+    // event from the worker without a subsequent agent_done) — without this
+    // reset, `runner.dispose()`'s running-guard would refuse forever.
+    // Setting running=false also lets the periodic idle enforcer reclaim the
+    // session normally. Emit `idle` if appropriate so post-cleanup proceeds.
+    if (runner) {
+      runner.setAgent(null);
+      runner.running = false;
+      if (turnSessionId) {
+        emitToViewers({
+          type: "session_status",
+          sessionId: turnSessionId,
+          running: false,
+          queueLength: runner.queueLength,
+          error: `Agent process error: ${err.message}`,
+        });
+      }
+      runner.onAgentFinished();
+    }
   });
 }

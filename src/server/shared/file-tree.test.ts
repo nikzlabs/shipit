@@ -134,6 +134,26 @@ describe("scanFileTree", () => {
     expect(names).toContain("index.ts");
   });
 
+  it("shows .claude/ in the tree (skills are part of the codebase)", async () => {
+    // See docs/096-claude-skills-access/plan.md — `.claude/skills/` files are
+    // editable artifacts that ship with the project; they must be visible in
+    // the IDE file panel just like any other source file.
+    fs.mkdirSync(path.join(tmpDir, ".claude", "skills", "my-skill"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".claude", "skills", "my-skill", "SKILL.md"), "# my skill");
+    fs.writeFileSync(path.join(tmpDir, "index.ts"), "");
+
+    const tree = await scanFileTree(tmpDir);
+    const names = tree.map((n) => n.name);
+    expect(names).toContain(".claude");
+    expect(names).toContain("index.ts");
+
+    // Recursively walk into .claude — SKILL.md should be discoverable.
+    const claude = tree.find((n) => n.name === ".claude");
+    expect(claude?.type).toBe("directory");
+    const skills = (claude as { children?: { name: string }[] }).children?.find((c) => c.name === "skills");
+    expect(skills).toBeTruthy();
+  });
+
   it("sorts directories alphabetically and files alphabetically", async () => {
     fs.mkdirSync(path.join(tmpDir, "zebra"));
     fs.mkdirSync(path.join(tmpDir, "alpha"));

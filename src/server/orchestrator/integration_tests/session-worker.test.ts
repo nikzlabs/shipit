@@ -430,9 +430,11 @@ describe("Integration: Session Worker IPC", () => {
     // Viewer management
     expect(runner.viewerCount).toBe(0);
 
-    // Lifecycle
+    // Lifecycle — running=true in this test, so force-dispose to bypass the
+    // running-agent guard (this test only verifies state-management plumbing,
+    // not the lifecycle invariant).
     expect(runner.disposed).toBe(false);
-    runner.dispose();
+    runner.dispose({ force: true });
     expect(runner.disposed).toBe(true);
   });
 

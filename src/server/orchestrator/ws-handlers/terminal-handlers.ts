@@ -1,6 +1,7 @@
 import type { WsClientMessage } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx } from "./types.js";
 import type { ContainerSessionRunner } from "../container-session-runner.js";
+import { resolveRunner } from "./resolve-runner.js";
 
 type WsTerminalStart = Extract<WsClientMessage, { type: "terminal_start" }>;
 type WsTerminalInput = Extract<WsClientMessage, { type: "terminal_input" }>;
@@ -11,7 +12,7 @@ function isContainerRunner(runner: unknown): runner is ContainerSessionRunner {
 }
 
 export async function handleTerminalStart(ctx: ConnectionCtx & RunnerCtx, msg: WsTerminalStart): Promise<void> {
-  const runner = ctx.getRunner();
+  const runner = resolveRunner(ctx);
   if (!runner) return;
 
   if (!isContainerRunner(runner)) {
@@ -30,15 +31,15 @@ export async function handleTerminalStart(ctx: ConnectionCtx & RunnerCtx, msg: W
   }
 }
 
-export async function handleTerminalInput(ctx: RunnerCtx, msg: WsTerminalInput): Promise<void> {
-  const runner = ctx.getRunner();
+export async function handleTerminalInput(ctx: ConnectionCtx & RunnerCtx, msg: WsTerminalInput): Promise<void> {
+  const runner = resolveRunner(ctx);
   if (!runner || !isContainerRunner(runner)) return;
 
   await runner.writeTerminalOnWorker(msg.data);
 }
 
-export async function handleTerminalResize(ctx: RunnerCtx, msg: WsTerminalResize): Promise<void> {
-  const runner = ctx.getRunner();
+export async function handleTerminalResize(ctx: ConnectionCtx & RunnerCtx, msg: WsTerminalResize): Promise<void> {
+  const runner = resolveRunner(ctx);
   if (!runner || !isContainerRunner(runner)) return;
 
   const cols = typeof msg.cols === "number" ? Math.max(1, Math.min(500, msg.cols)) : 80;
@@ -49,7 +50,7 @@ export async function handleTerminalResize(ctx: RunnerCtx, msg: WsTerminalResize
 export function handleClearLogs(ctx: ConnectionCtx & RunnerCtx): void {
   ctx.clearLogBuffer();
   // Also clear the runner's terminal output buffer
-  const runner = ctx.getRunner();
+  const runner = resolveRunner(ctx);
   if (runner) {
     runner.clearTerminalOutputBuffer();
   }

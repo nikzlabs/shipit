@@ -9,6 +9,7 @@ import { wireAgentListeners } from "./agent-listeners.js";
 import { postTurnCommit } from "./post-turn.js";
 import { buildAgentSystemInstructions } from "../agent-instructions.js";
 import { quickCreatePr } from "../services/github.js";
+import { resolveRunner } from "./resolve-runner.js";
 /**
  * Save base64 images to the session's uploads directory on the host.
  * Returns a prompt prefix referencing the saved files (container paths).
@@ -53,25 +54,30 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
   const { userText, images, validatedFiles, permissionMode, isNewSession, uploadPaths } = opts;
   let { agentSessionId } = opts;
 
-  const runner = ctx.getRunner();
-  // Clear the turn event buffer for the new turn
-  if (runner) runner.clearTurnEventBuffer();
-
   // Capture the session context at turn start. These values must NOT be read
   // from ctx later because the user may switch sessions while the agent runs,
   // which would change ctx.getActiveAppSessionId() / ctx.getActiveSessionDir().
   const capturedSessionId = ctx.getActiveAppSessionId();
   const capturedSessionDir = ctx.getActiveSessionDir();
 
-  ctx.setTurnSummary("");
-  ctx.setAccumulatedText("");
-  ctx.setAccumulatedToolUse([]);
-  ctx.setChatMessageGroups([]);
-  ctx.setNeedsNewMessageGroup(true);
+  // Resolve the runner via the registry (by session ID) when possible. This
+  // makes the runner reference survive WebSocket disconnects — critical for
+  // queue-drained turns that may finish after the originating WS is gone.
+  const runner = resolveRunner(ctx, capturedSessionId);
+
+  // Reset turn-scoped state directly on the runner.
+  if (runner) {
+    runner.clearTurnEventBuffer();
+    runner.turnSummary = "";
+    runner.accumulatedText = "";
+    runner.accumulatedToolUse = [];
+    runner.chatMessageGroups = [];
+    runner.needsNewMessageGroup = true;
+    runner.wasInterrupted = false;
+  }
   let receivedResult = false;
-  ctx.setWasInterrupted(false);
   const currentAgent = ctx.agentFactory(ctx.getActiveAgentId());
-  ctx.setAgent(currentAgent);
+  if (runner) runner.setAgent(currentAgent);
 
   // Notify via SSE for sidebar activity dots
   if (capturedSessionId) {
@@ -173,7 +179,10 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
         const fileResult = await resolveFileAttachments(nextFileRefs, dir);
         if (fileResult.error) {
           emitDone({ type: "error", message: fileResult.error });
-          ctx.setIsClaudeRunning(false);
+          // Use the captured runner directly — ctx.setIsClaudeRunning() goes
+          // through `attachedRunner` which is null after WS disconnect, which
+          // would strand `running=true` and prevent future cleanup.
+          if (runner) runner.running = false;
           return;
         }
         nextValidatedFiles = fileResult.files;
@@ -186,7 +195,8 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
         const uploadResult = await resolveUploadRefs(nextUploadRefs, dir);
         if (uploadResult.error) {
           emitDone({ type: "error", message: uploadResult.error });
-          ctx.setIsClaudeRunning(false);
+          // Use the captured runner directly — see comment above.
+          if (runner) runner.running = false;
           return;
         }
         nextValidatedFiles = [...nextValidatedFiles, ...uploadResult.files];
@@ -225,6 +235,11 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
           sessionDir: capturedSessionDir,
           sessionId: capturedSessionId,
           emit: emitDone,
+          // Pass the captured runner's summary explicitly — ctx.getTurnSummary()
+          // returns "" after WS disconnect because it routes through the
+          // per-connection attachedRunner. Use the captured (registry-backed)
+          // runner so commit messages are correct even for queue-drained turns.
+          turnSummary: runner?.turnSummary ?? "",
         });
       }
     } catch (err) {
