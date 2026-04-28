@@ -147,6 +147,12 @@ export function buildEnv(
     `WORKER_PORT=${workerPort}`,
     "WORKER_MODE=session",
     "HOME=/root",
+    // Point git inside the container at the same global config the orchestrator
+    // uses. The credentials directory is mounted at /credentials, and the
+    // orchestrator writes user.name/user.email there via initGlobalGitConfig().
+    // This way, any git operation inside the container (agent bash, rebase --continue,
+    // etc.) inherits the user's configured identity automatically.
+    "GIT_CONFIG_GLOBAL=/credentials/.gitconfig",
   ];
 
   // Point npm/yarn/pnpm caches at the shared per-repo cache mount so

@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 ---
 # 092 — Merge Conflicts: Rebase, Force Push, and Agent Git Identity
 

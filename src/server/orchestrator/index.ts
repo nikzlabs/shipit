@@ -319,6 +319,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     secretStore,
     reviewStore,
     serviceManagers,
+    agentFactory,
   });
 
   // ---- Preview reverse proxy (container mode) ----
