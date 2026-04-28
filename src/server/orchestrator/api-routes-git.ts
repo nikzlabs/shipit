@@ -19,6 +19,9 @@ import {
   gitPush,
   gitPull,
   mergeSession,
+  rebaseOntoBase,
+  forcePushAfterRebase,
+  rebaseAbort,
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
@@ -210,6 +213,70 @@ export async function registerGitRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to merge: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/git/rebase — rebase onto base branch
+  app.post<{ Params: { id: string }; Body: { baseBranch: string } }>(
+    "/api/sessions/:id/git/rebase",
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      const baseBranch = request.body?.baseBranch;
+      if (!baseBranch) {
+        reply.code(400).send({ error: "baseBranch is required" });
+        return;
+      }
+      try {
+        const git = createGitManager(dir);
+        const result = await rebaseOntoBase(git, baseBranch);
+
+        if (result.status === "rebased") {
+          // Clean rebase — auto force-push if authenticated
+          try {
+            const pushResult = await forcePushAfterRebase(git, deps.githubAuthManager);
+            return { status: "rebased", message: pushResult.message, branch: pushResult.branch };
+          } catch {
+            // Force push failed (e.g. no auth) — rebase still succeeded locally
+            return { status: "rebased", message: "Rebased locally (force push skipped — not authenticated)" };
+          }
+        }
+
+        if (result.status === "conflicts") {
+          return {
+            status: "conflicts",
+            conflicts: result.conflicts.map((c) => ({ path: c.path })),
+          };
+        }
+
+        return { status: "up_to_date" };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Rebase failed: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/git/rebase/abort — abort an in-progress rebase
+  app.post<{ Params: { id: string } }>(
+    "/api/sessions/:id/git/rebase/abort",
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      try {
+        const git = createGitManager(dir);
+        await rebaseAbort(git);
+        return { status: "aborted" };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Rebase abort failed: ${getErrorMessage(err)}` });
       }
     },
   );

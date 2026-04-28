@@ -7,6 +7,7 @@ import type { FastifyInstance } from "fastify";
 import type { GitManager } from "../shared/git.js";
 import simpleGit from "simple-git";
 import { generateBranchPrefix, repoUrlToHash, pushToOrigin } from "./git-utils.js";
+import { isNonFastForwardError } from "./services/git.js";
 import { SessionContainerManager } from "./session-container.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import type { SessionRunnerFactory, SessionRunnerInterface } from "./session-runner.js";
@@ -389,7 +390,15 @@ export function createRunnerRegistry(
                 runner.emitMessage({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
               }
             } catch (err) {
-              console.error("[system-turn] auto-push failed:", getErrorMessage(err));
+              if (isNonFastForwardError(err)) {
+                runner.emitMessage({
+                  type: "git_push_rejected",
+                  reason: "non_fast_forward",
+                  message: "Branch has diverged from remote. Rebase needed to update.",
+                });
+              } else {
+                console.error("[system-turn] auto-push failed:", getErrorMessage(err));
+              }
             }
           }, autoPushDebounceMs));
         },

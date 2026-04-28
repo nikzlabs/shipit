@@ -1,14 +1,22 @@
 /**
  * Git services — reads (log, diff, remotes, branches) and mutations
- * (rollback, reject, remote, push, pull).
+ * (rollback, reject, remote, push, pull, rebase, force-push).
  */
 
 import type { SessionManager } from "../sessions.js";
 import type { GitManager } from "../../shared/git.js";
+import type { RebaseConflictFile } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { FileDiff } from "../../shared/types.js";
 import { scanFileTree } from "../../shared/file-tree.js";
 import { ServiceError } from "./types.js";
+
+// ---- Rebase types ----
+
+export type RebaseFlowResult =
+  | { status: "up_to_date" }
+  | { status: "rebased"; baseRef: string }
+  | { status: "conflicts"; conflicts: RebaseConflictFile[]; baseRef: string };
 
 // ---- Read operations ----
 
@@ -264,4 +272,72 @@ export async function gitPull(
   const b = branch || undefined;
   const message = await git.pull(r, b);
   return { success: true, message };
+}
+
+// ---- Rebase operations ----
+
+/**
+ * Rebase the session's branch onto the latest base branch.
+ * Fetches upstream, attempts rebase. On clean rebase, returns "rebased".
+ * On conflicts, returns them for agent resolution.
+ */
+export async function rebaseOntoBase(
+  git: GitManager,
+  baseBranch: string,
+): Promise<RebaseFlowResult> {
+  // 1. Fetch latest from remote
+  await git.fetch("origin");
+
+  // 2. Resolve the base branch ref
+  const baseRef = await git.resolveBaseBranchRef(baseBranch);
+  if (!baseRef) throw new ServiceError(400, `Cannot resolve base branch: ${baseBranch}`);
+
+  // 3. Check if rebase is needed
+  const isUpToDate = await git.isAncestor(baseRef, "HEAD");
+  if (isUpToDate) {
+    return { status: "up_to_date" };
+  }
+
+  // 4. Attempt rebase
+  const result = await git.rebase(baseRef);
+
+  if (result.status === "clean") {
+    return { status: "rebased", baseRef };
+  }
+
+  // 5. Conflicts — return them (caller will delegate to agent, then continue)
+  return {
+    status: "conflicts",
+    conflicts: result.conflicts,
+    baseRef,
+  };
+}
+
+/** Force push after a successful rebase. Requires GitHub auth. */
+export async function forcePushAfterRebase(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+): Promise<{ success: boolean; message: string; branch: string }> {
+  if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
+  const message = await git.forcePush();
+  const branch = await git.getCurrentBranch();
+  return { success: true, message, branch };
+}
+
+/** Abort an in-progress rebase. */
+export async function rebaseAbort(git: GitManager): Promise<void> {
+  await git.rebaseAbort();
+}
+
+/**
+ * Check if a git push error is a non-fast-forward rejection (branch has diverged).
+ */
+export function isNonFastForwardError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    msg.includes("non-fast-forward") ||
+    msg.includes("[rejected]") ||
+    msg.includes("failed to push some refs") ||
+    msg.includes("Updates were rejected because the tip of your current branch is behind")
+  );
 }

@@ -330,6 +330,30 @@ function processMessage(
       git.setIdentityNeeded(true);
     }
 
+    if (data.type === "git_push_rejected") {
+      git.setPushRejected(true);
+    }
+
+    if (data.type === "rebase_started") {
+      git.setRebaseStatus("in_progress");
+    }
+
+    if (data.type === "rebase_conflicts") {
+      git.setRebaseStatus("conflicts");
+      git.setRebaseConflicts(data.conflicts);
+    }
+
+    if (data.type === "rebase_complete") {
+      git.setRebaseStatus("idle");
+      git.setRebaseConflicts([]);
+      git.setPushRejected(false);
+    }
+
+    if (data.type === "rebase_aborted") {
+      git.setRebaseStatus("idle");
+      git.setRebaseConflicts([]);
+    }
+
     // session_list is now delivered via SSE (useServerEvents hook)
 
     if (data.type === "session_started") {
