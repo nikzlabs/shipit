@@ -55,6 +55,7 @@ interface UiState {
   settingsOpen: boolean;
   settingsTab: SettingsTab;
   sidebarCollapsed: boolean;
+  mobileSidebarOpen: boolean;
   toast: ToastData | null;
   bootstrapLoaded: boolean;
   dockerMemory: DockerMemoryStats | null;
@@ -78,6 +79,7 @@ interface UiState {
   setSettingsOpen: (open: boolean) => void;
   setSettingsTab: (tab: SettingsTab) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
+  setMobileSidebarOpen: (open: boolean) => void;
   setToast: (toast: ToastData | null) => void;
   setDockerMemory: (stats: DockerMemoryStats | null) => void;
   setBootstrapLoaded: (loaded: boolean) => void;
@@ -103,6 +105,7 @@ const initialState = {
   settingsOpen: false,
   settingsTab: undefined as SettingsTab,
   sidebarCollapsed: getSavedSidebarCollapsed(),
+  mobileSidebarOpen: false,
   toast: null as ToastData | null,
   bootstrapLoaded: false,
   dockerMemory: null as DockerMemoryStats | null,
@@ -159,6 +162,8 @@ export const useUiStore = create<UiState>((set, get) => ({
     saveSidebarCollapsed(collapsed);
     set({ sidebarCollapsed: collapsed });
   },
+
+  setMobileSidebarOpen: (mobileSidebarOpen) => set({ mobileSidebarOpen }),
 
   setToast: (toast) => set({ toast }),
 
