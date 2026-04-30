@@ -30,7 +30,6 @@ import { AuthOverlayContainer } from "./AuthOverlay.js";
 import { Settings } from "./components/Settings.js";
 import { AppLayout } from "./AppLayout.js";
 import { DocsViewer } from "./components/DocsViewer.js";
-import { DocReviewPanel } from "./components/DocReviewPanel.js";
 import { FileTree } from "./components/FileTree.js";
 import { FilePreviewModal } from "./components/FilePreviewModal.js";
 import { TerminalPanel } from "./components/TerminalPanel.js";
@@ -198,7 +197,6 @@ export default function App() {
   const isMobile = useIsMobile();
   const [searchOpen, setSearchOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [reviewingDoc, setReviewingDoc] = useState<{ doc: DocEntry; content: string } | null>(null);
   // Derive the repo URL from the /{slug}/new URL pattern (replaces useState)
   const newSessionRepoUrl = useMemo(() => {
     if (!newSessionRepoSlug) return undefined;
@@ -566,31 +564,6 @@ export default function App() {
     [handleNewSessionForRepo],
   );
 
-  const handleReviewFeature = useCallback(
-    async (doc: DocEntry) => {
-      const sid = useSessionStore.getState().sessionId;
-      if (!sid) return;
-      try {
-        const res = await fetch(`/api/sessions/${sid}/files/content?path=${encodeURIComponent(doc.path)}`);
-        if (!res.ok) return;
-        const data = await res.json() as { content: string };
-        setReviewingDoc({ doc, content: data.content });
-      } catch (err) {
-        console.error("[review] Failed to load doc content:", err);
-      }
-    },
-    [],
-  );
-
-  const handleReviewSendComments = useCallback(
-    (feature: DocEntry, prompt: string) => {
-      setReviewingDoc(null);
-      // Send the prompt to the current session
-      send({ type: "send_message", text: prompt });
-    },
-    [send],
-  );
-
   const handleFileSendComments = useCallback(
     (prompt: string) => {
       useFileStore.getState().closePreview();
@@ -644,11 +617,7 @@ export default function App() {
           <PreviewFrame preview={previewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} onSendCrashToAgent={handleSendComposeErrorToAgent} onSendComposeHintToAgent={handleSendComposeHintToAgent} />
         </div>
         {rightTab === "docs" ? (
-          reviewingDoc ? (
-            <DocReviewPanel feature={reviewingDoc.doc} content={reviewingDoc.content} onSendComments={handleReviewSendComments} onClose={() => setReviewingDoc(null)} />
-          ) : (
-            <DocsViewer files={docFiles} onFileClick={(f) => { const doc = docFiles.find((d) => d.path === f); handleOpenDoc(f, doc); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} onReviewFeature={handleReviewFeature} />
-          )
+          <DocsViewer files={docFiles} onFileClick={(f) => { const doc = docFiles.find((d) => d.path === f); handleOpenDoc(f, doc); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} />
         ) : rightTab === "terminal" ? (
           <TerminalPanel entries={logEntries} onClear={() => { useTerminalStore.getState().clearEntries(); send({ type: "clear_logs" }); }} terminalMode={terminalMode} onTerminalModeChange={(m) => useTerminalStore.getState().setMode(m)} sessionId={wsSessionId} onReconnectWs={reconnect} shellContent={
             (shellStarted || terminalMode === "shell") ? (

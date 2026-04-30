@@ -129,6 +129,47 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN upload_paths TEXT");
   },
+  // Migration 7: unified review surface (112) — drop the legacy per-feature
+  // doc_reviews tables and replace them with a per-(session, file) schema
+  // that handles both markdown section comments and code line comments.
+  (db) => {
+    db.exec(`
+      DROP TABLE IF EXISTS review_comments;
+      DROP TABLE IF EXISTS doc_reviews;
+
+      CREATE TABLE IF NOT EXISTS file_reviews (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        file_type TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'draft',
+        doc_snapshot_hash TEXT NOT NULL DEFAULT '',
+        section_headings TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        sent_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_file_reviews_session_file
+        ON file_reviews(session_id, file_path);
+      CREATE INDEX IF NOT EXISTS idx_file_reviews_draft
+        ON file_reviews(session_id, file_path, status);
+
+      CREATE TABLE IF NOT EXISTS file_review_comments (
+        id TEXT PRIMARY KEY,
+        review_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        line INTEGER,
+        section_heading TEXT,
+        section_index INTEGER,
+        text TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'human',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (review_id) REFERENCES file_reviews(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_file_review_comments_review
+        ON file_review_comments(review_id);
+    `);
+  },
 ];
 
 export class DatabaseManager {
@@ -167,8 +208,8 @@ export class DatabaseManager {
       this.db.prepare("DELETE FROM sessions").run();
       this.db.prepare("DELETE FROM repos").run();
       this.db.prepare("DELETE FROM secrets").run();
-      this.db.prepare("DELETE FROM review_comments").run();
-      this.db.prepare("DELETE FROM doc_reviews").run();
+      this.db.prepare("DELETE FROM file_review_comments").run();
+      this.db.prepare("DELETE FROM file_reviews").run();
     })();
   }
 

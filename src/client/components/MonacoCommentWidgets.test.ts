@@ -132,13 +132,14 @@ describe("MonacoCommentWidgets", () => {
         onDeleteComment: vi.fn(),
       },
     );
+    // Section-kind entries are filtered out by the widget regardless of
+    // any extra fields. We pass a minimal section shape that satisfies
+    // the LineCommentLike supertype.
     manager.setComments([
       {
         id: "s1",
         kind: "section",
         filePath: "doc.md",
-        sectionHeading: "## H",
-        sectionIndex: 0,
         text: "x",
       },
     ]);

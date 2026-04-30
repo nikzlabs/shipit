@@ -1,12 +1,20 @@
 /**
- * Review services — CRUD for design doc reviews, prompt construction,
- * AI review, and re-anchoring logic.
+ * Review services — server-persisted, per-(session, file) reviews.
+ *
+ * Backs the unified review surface (docs/112-unified-review-surface):
+ * markdown files get section-anchored comments, code files get line-anchored
+ * comments, and both share the same draft/sent/history lifecycle.
  */
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { ReviewStore } from "../review-store.js";
-import type { DocReview, ReviewComment, ReviewCommentSource } from "../../shared/types.js";
+import type { FileReviewStore } from "../review-store.js";
+import type {
+  FileReview,
+  FileReviewType,
+  ReviewComment,
+  ReviewCommentSource,
+} from "../../shared/types.js";
 import { ServiceError } from "./types.js";
 
 // ---- Section parsing (shared utility) ----
@@ -39,27 +47,51 @@ export function parseMarkdownSections(content: string): MarkdownSection[] {
   return sections;
 }
 
-// ---- Re-anchoring ----
+// ---- Re-anchoring (markdown only) ----
 
+interface ReanchoredSplit {
+  anchored: ReviewComment[];
+  orphaned: ReviewComment[];
+}
+
+/**
+ * Walk a list of review comments and route each section-anchored comment
+ * either to the new section it now belongs to (heading match) or to the
+ * orphaned bucket if its section no longer exists. Line comments and
+ * preamble comments are always anchored.
+ */
 export function reanchorComments(
   comments: ReviewComment[],
   currentHeadings: string[],
-): { anchored: ReviewComment[]; orphaned: ReviewComment[] } {
-  const currentSet = new Map(currentHeadings.map((h, i) => [h, i]));
+): ReanchoredSplit {
+  const headingIndex = new Map(currentHeadings.map((h, i) => [h, i]));
   const anchored: ReviewComment[] = [];
   const orphaned: ReviewComment[] = [];
 
   for (const comment of comments) {
+    if (comment.kind === "line") {
+      anchored.push(comment);
+      continue;
+    }
     if (comment.sectionHeading === "") {
       anchored.push({ ...comment, sectionIndex: 0 });
-    } else if (currentSet.has(comment.sectionHeading)) {
-      anchored.push({ ...comment, sectionIndex: currentSet.get(comment.sectionHeading)! });
+    } else if (headingIndex.has(comment.sectionHeading)) {
+      anchored.push({ ...comment, sectionIndex: headingIndex.get(comment.sectionHeading)! });
     } else {
       orphaned.push(comment);
     }
   }
 
   return { anchored, orphaned };
+}
+
+// ---- File-type detection ----
+
+const MARKDOWN_EXTS = new Set(["md", "mdx", "markdown"]);
+
+export function detectFileReviewType(filePath: string): FileReviewType {
+  const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+  return MARKDOWN_EXTS.has(ext) ? "markdown" : "code";
 }
 
 // ---- Hash utility ----
@@ -69,44 +101,74 @@ async function hashContent(content: string): Promise<string> {
   return createHash("sha256").update(content).digest("hex");
 }
 
+// ---- Filesystem helpers ----
+
+async function readFileSafe(workspaceDir: string, filePath: string): Promise<string | null> {
+  const fullPath = path.resolve(workspaceDir, filePath);
+  // Defend against path traversal: must remain inside workspace.
+  if (!fullPath.startsWith(path.resolve(workspaceDir))) {
+    throw new ServiceError(400, "Invalid file path");
+  }
+  try {
+    return await fs.readFile(fullPath, "utf-8");
+  } catch {
+    return null;
+  }
+}
+
 // ---- CRUD service functions ----
 
-/** List all reviews for a feature. */
-export function listReviews(reviewStore: ReviewStore, featureId: string): DocReview[] {
-  return reviewStore.listReviews(featureId);
+/** List all reviews (drafts + sent) for a (session, file) pair, newest first. */
+export function listFileReviews(
+  reviewStore: FileReviewStore,
+  sessionId: string,
+  filePath: string,
+): FileReview[] {
+  return reviewStore.listReviews(sessionId, filePath);
 }
 
-/** Get current draft review for a feature. */
-export function getDraftReview(reviewStore: ReviewStore, featureId: string): DocReview | null {
-  return reviewStore.getDraft(featureId);
+/** Get the current draft review for a (session, file), or null. */
+export function getDraftReview(
+  reviewStore: FileReviewStore,
+  sessionId: string,
+  filePath: string,
+): FileReview | null {
+  return reviewStore.getDraft(sessionId, filePath);
 }
 
-/** Create a new draft review for a feature. */
-export async function createDraftReview(
-  reviewStore: ReviewStore,
-  featureId: string,
-  planPath: string,
+/**
+ * Ensure a draft exists for the (session, file). Creates one if none exists,
+ * snapshotting the current file content. Returns the existing draft otherwise.
+ */
+export async function ensureDraftReview(
+  reviewStore: FileReviewStore,
+  sessionId: string,
+  filePath: string,
   workspaceDir: string,
-): Promise<DocReview> {
-  const fullPath = path.resolve(workspaceDir, planPath);
-  let content: string;
-  try {
-    content = await fs.readFile(fullPath, "utf-8");
-  } catch {
-    throw new ServiceError(404, "Plan file not found");
+): Promise<FileReview> {
+  const existing = reviewStore.getDraft(sessionId, filePath);
+  if (existing) return existing;
+
+  const fileType = detectFileReviewType(filePath);
+  const content = await readFileSafe(workspaceDir, filePath);
+  if (content === null) {
+    throw new ServiceError(404, "File not found");
   }
 
   const hash = await hashContent(content);
-  const sections = parseMarkdownSections(content);
-  const headings = sections.map((s) => s.heading).filter((h) => h !== "");
+  let headings: string[] = [];
+  if (fileType === "markdown") {
+    headings = parseMarkdownSections(content)
+      .map((s) => s.heading)
+      .filter((h) => h !== "");
+  }
 
-  return reviewStore.createDraft(featureId, planPath, hash, headings);
+  return reviewStore.createDraft(sessionId, filePath, fileType, hash, headings);
 }
 
-/** Add a comment to a draft review. */
-export function addReviewComment(
-  reviewStore: ReviewStore,
-  featureId: string,
+/** Add a section-anchored comment to a draft review. */
+export function addSectionComment(
+  reviewStore: FileReviewStore,
   reviewId: string,
   sectionHeading: string,
   sectionIndex: number,
@@ -116,20 +178,49 @@ export function addReviewComment(
   if (!text.trim()) {
     throw new ServiceError(400, "Comment text cannot be empty");
   }
-  const review = reviewStore.getReview(featureId, reviewId);
+  const review = reviewStore.getReview(reviewId);
   if (!review) {
     throw new ServiceError(404, "Review not found");
   }
   if (review.status !== "draft") {
     throw new ServiceError(400, "Cannot add comments to a sent review");
   }
-  return reviewStore.addComment(featureId, reviewId, { sectionHeading, sectionIndex, text, source });
+  if (review.fileType !== "markdown") {
+    throw new ServiceError(400, "Section comments are only valid on markdown files");
+  }
+  return reviewStore.addSectionComment(reviewId, sectionHeading, sectionIndex, text, source);
+}
+
+/** Add a line-anchored comment to a draft review. */
+export function addLineComment(
+  reviewStore: FileReviewStore,
+  reviewId: string,
+  line: number,
+  text: string,
+  source: ReviewCommentSource = "human",
+): ReviewComment {
+  if (!text.trim()) {
+    throw new ServiceError(400, "Comment text cannot be empty");
+  }
+  if (!Number.isInteger(line) || line < 1) {
+    throw new ServiceError(400, "Line must be a positive integer");
+  }
+  const review = reviewStore.getReview(reviewId);
+  if (!review) {
+    throw new ServiceError(404, "Review not found");
+  }
+  if (review.status !== "draft") {
+    throw new ServiceError(400, "Cannot add comments to a sent review");
+  }
+  if (review.fileType !== "code") {
+    throw new ServiceError(400, "Line comments are only valid on code files");
+  }
+  return reviewStore.addLineComment(reviewId, line, text, source);
 }
 
 /** Update a comment's text. */
 export function updateReviewComment(
-  reviewStore: ReviewStore,
-  featureId: string,
+  reviewStore: FileReviewStore,
   reviewId: string,
   commentId: string,
   text: string,
@@ -137,55 +228,77 @@ export function updateReviewComment(
   if (!text.trim()) {
     throw new ServiceError(400, "Comment text cannot be empty");
   }
-  const review = reviewStore.getReview(featureId, reviewId);
+  const review = reviewStore.getReview(reviewId);
   if (!review) {
     throw new ServiceError(404, "Review not found");
   }
-  reviewStore.updateComment(featureId, reviewId, commentId, text);
+  if (review.status !== "draft") {
+    throw new ServiceError(400, "Cannot edit a sent review");
+  }
+  reviewStore.updateComment(reviewId, commentId, text);
 }
 
 /** Delete a comment from a review. */
 export function deleteReviewComment(
-  reviewStore: ReviewStore,
-  featureId: string,
+  reviewStore: FileReviewStore,
   reviewId: string,
   commentId: string,
 ): void {
-  const review = reviewStore.getReview(featureId, reviewId);
+  const review = reviewStore.getReview(reviewId);
   if (!review) {
     throw new ServiceError(404, "Review not found");
   }
-  reviewStore.deleteComment(featureId, reviewId, commentId);
+  if (review.status !== "draft") {
+    throw new ServiceError(400, "Cannot edit a sent review");
+  }
+  reviewStore.deleteComment(reviewId, commentId);
 }
 
-/** Delete a draft review. */
-export function deleteDraftReview(
-  reviewStore: ReviewStore,
-  featureId: string,
-  reviewId: string,
-): void {
-  const review = reviewStore.getReview(featureId, reviewId);
+/** Delete a draft review entirely. */
+export function deleteDraftReview(reviewStore: FileReviewStore, reviewId: string): void {
+  const review = reviewStore.getReview(reviewId);
   if (!review) {
     throw new ServiceError(404, "Review not found");
   }
   if (review.status !== "draft") {
     throw new ServiceError(400, "Cannot delete a sent review");
   }
-  reviewStore.deleteDraft(featureId, reviewId);
+  reviewStore.deleteDraft(reviewId);
 }
 
 // ---- Prompt construction ----
 
+interface SectionGroup {
+  heading: string;
+  comments: ReviewComment[];
+}
+
 export function buildReviewPrompt(
-  planPath: string,
+  filePath: string,
+  fileType: FileReviewType,
+  comments: ReviewComment[],
+  fileContent: string,
+  currentHeadings: string[],
+): string {
+  if (fileType === "markdown") {
+    return buildMarkdownPrompt(filePath, comments, currentHeadings);
+  }
+  return buildCodePrompt(filePath, comments, fileContent);
+}
+
+function buildMarkdownPrompt(
+  filePath: string,
   comments: ReviewComment[],
   currentHeadings: string[],
 ): string {
   const currentSet = new Set(currentHeadings);
-
   const anchored: ReviewComment[] = [];
   const orphaned: ReviewComment[] = [];
   for (const c of comments) {
+    if (c.kind !== "section") {
+      anchored.push(c);
+      continue;
+    }
     if (c.sectionHeading === "" || currentSet.has(c.sectionHeading)) {
       anchored.push(c);
     } else {
@@ -195,16 +308,18 @@ export function buildReviewPrompt(
 
   const grouped = new Map<string, ReviewComment[]>();
   for (const comment of anchored) {
+    if (comment.kind !== "section") continue;
     const key = comment.sectionHeading || "(Introduction)";
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key)!.push(comment);
   }
+  const groups: SectionGroup[] = Array.from(grouped, ([heading, cs]) => ({ heading, comments: cs }));
 
-  let prompt = `I've reviewed the design doc at ${planPath} and have the following feedback:\n\n`;
+  let prompt = `I've reviewed ${filePath} and have the following feedback:\n\n`;
 
-  for (const [heading, sectionComments] of grouped) {
-    prompt += `### ${heading}\n\n`;
-    for (const c of sectionComments) {
+  for (const group of groups) {
+    prompt += `### ${group.heading}\n\n`;
+    for (const c of group.comments) {
       prompt += `- ${c.text}\n`;
     }
     prompt += "\n";
@@ -215,26 +330,59 @@ export function buildReviewPrompt(
     prompt += `The following comments reference sections that no longer exist in the document. `;
     prompt += `The feedback may still be relevant — consider whether it applies elsewhere.\n\n`;
     for (const c of orphaned) {
+      if (c.kind !== "section") continue;
       prompt += `- (was: ${c.sectionHeading}) ${c.text}\n`;
     }
     prompt += "\n";
   }
 
-  prompt += "Please read the design doc, address each piece of feedback ";
-  prompt += "by updating the plan, and explain what you changed.";
-
+  prompt += `Please read ${filePath}, address each piece of feedback by `;
+  prompt += "updating the file, and explain what you changed.";
   return prompt;
 }
 
-/** Send a review — marks it as sent and returns the constructed prompt. */
+function buildCodePrompt(
+  filePath: string,
+  comments: ReviewComment[],
+  fileContent: string,
+): string {
+  const lines = fileContent.split("\n");
+  const lineComments = comments
+    .filter((c): c is Extract<ReviewComment, { kind: "line" }> => c.kind === "line")
+    .sort((a, b) => a.line - b.line);
+
+  let prompt = `I have the following comments on ${filePath}:\n\n`;
+
+  for (const comment of lineComments) {
+    const start = Math.max(0, comment.line - 3);
+    const end = Math.min(lines.length, comment.line + 2);
+    const snippet = lines.slice(start, end)
+      .map((l, i) => {
+        const lineNum = start + i + 1;
+        const marker = lineNum === comment.line ? "→" : " ";
+        return `${marker} ${lineNum} │ ${l}`;
+      })
+      .join("\n");
+
+    prompt += `**${filePath}:${comment.line}**\n`;
+    prompt += `\`\`\`\n${snippet}\n\`\`\`\n`;
+    prompt += `Comment: ${comment.text}\n\n`;
+  }
+
+  prompt += "Please address each comment.";
+  return prompt;
+}
+
+/**
+ * Send a review — marks it sent and returns the constructed prompt.
+ * Reads the file from disk to get current content/headings for the prompt.
+ */
 export async function sendReview(
-  reviewStore: ReviewStore,
-  featureId: string,
+  reviewStore: FileReviewStore,
   reviewId: string,
-  sessionId: string,
   workspaceDir: string,
-): Promise<{ prompt: string }> {
-  const review = reviewStore.getReview(featureId, reviewId);
+): Promise<{ prompt: string; review: FileReview }> {
+  const review = reviewStore.getReview(reviewId);
   if (!review) {
     throw new ServiceError(404, "Review not found");
   }
@@ -245,22 +393,24 @@ export async function sendReview(
     throw new ServiceError(400, "Cannot send a review with no comments");
   }
 
-  // Read current doc to get current headings for prompt construction
-  const fullPath = path.resolve(workspaceDir, review.planPath);
-  let currentHeadings: string[] = [];
-  try {
-    const content = await fs.readFile(fullPath, "utf-8");
-    const sections = parseMarkdownSections(content);
-    currentHeadings = sections.map((s) => s.heading).filter((h) => h !== "");
-  } catch {
-    // Doc may have been deleted — use stored headings as fallback
-    currentHeadings = review.sectionHeadings;
+  const content = (await readFileSafe(workspaceDir, review.filePath)) ?? "";
+  let currentHeadings: string[] = review.sectionHeadings;
+  if (review.fileType === "markdown" && content) {
+    currentHeadings = parseMarkdownSections(content)
+      .map((s) => s.heading)
+      .filter((h) => h !== "");
   }
 
-  const prompt = buildReviewPrompt(review.planPath, review.comments, currentHeadings);
-  reviewStore.markSent(featureId, reviewId, sessionId);
-
-  return { prompt };
+  const prompt = buildReviewPrompt(
+    review.filePath,
+    review.fileType,
+    review.comments,
+    content,
+    currentHeadings,
+  );
+  reviewStore.markSent(reviewId);
+  const updated = reviewStore.getReview(reviewId);
+  return { prompt, review: updated ?? review };
 }
 
 // ---- AI Review ----
@@ -291,37 +441,40 @@ Focus on:
 
 Be specific and actionable. Do not repeat what the document already says.`;
 
+/**
+ * Generate AI review comments for a markdown draft. Currently only supported
+ * for markdown files — code AI review is gated until we know the output is
+ * useful (see plan §"Decisions and open questions").
+ */
 export async function generateAiReview(
-  reviewStore: ReviewStore,
-  featureId: string,
+  reviewStore: FileReviewStore,
   reviewId: string,
   workspaceDir: string,
   generateText: (prompt: string, cwd: string) => Promise<string>,
 ): Promise<ReviewComment[]> {
-  const review = reviewStore.getReview(featureId, reviewId);
+  const review = reviewStore.getReview(reviewId);
   if (!review) {
     throw new ServiceError(404, "Review not found");
   }
   if (review.status !== "draft") {
     throw new ServiceError(400, "Cannot add AI review to a sent review");
   }
+  if (review.fileType !== "markdown") {
+    throw new ServiceError(400, "AI Review is only available for markdown files");
+  }
 
-  const fullPath = path.resolve(workspaceDir, review.planPath);
-  let content: string;
-  try {
-    content = await fs.readFile(fullPath, "utf-8");
-  } catch {
-    throw new ServiceError(404, "Plan file not found");
+  const content = await readFileSafe(workspaceDir, review.filePath);
+  if (content === null) {
+    throw new ServiceError(404, "File not found");
   }
 
   const sections = parseMarkdownSections(content);
   const prompt = AI_REVIEW_PROMPT_TEMPLATE
-    .replace("{planPath}", review.planPath)
+    .replace("{planPath}", review.filePath)
     .replace("{content}", content);
 
   const aiResponse = await generateText(prompt, workspaceDir);
 
-  // Parse JSON from the AI response
   const jsonMatch = /\[[\s\S]*\]/.exec(aiResponse);
   if (!jsonMatch) {
     return [];
@@ -338,12 +491,13 @@ export async function generateAiReview(
   for (const item of parsed) {
     if (!item.sectionHeading || !item.text) continue;
     const sectionIndex = sections.findIndex((s) => s.heading === item.sectionHeading);
-    const comment = reviewStore.addComment(featureId, reviewId, {
-      sectionHeading: item.sectionHeading,
-      sectionIndex: sectionIndex >= 0 ? sectionIndex : 0,
-      text: item.text,
-      source: "ai",
-    });
+    const comment = reviewStore.addSectionComment(
+      reviewId,
+      item.sectionHeading,
+      sectionIndex >= 0 ? sectionIndex : 0,
+      item.text,
+      "ai",
+    );
     newComments.push(comment);
   }
 

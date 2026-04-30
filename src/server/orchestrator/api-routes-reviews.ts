@@ -1,16 +1,22 @@
 /**
- * Review comment API routes.
- * Handles: design doc review CRUD, AI review, send review.
+ * File review API routes (unified review surface, docs/112).
+ *
+ * All reviews are scoped to a (session, file path) pair. Markdown files get
+ * section-anchored comments, code files get line-anchored comments. The send
+ * action constructs a structured prompt server-side and returns it; the
+ * client dispatches it via the existing `send_message` flow.
  */
 
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
+import { resolveSessionDir } from "./api-routes.js";
 
 import {
-  listReviews,
+  listFileReviews,
   getDraftReview,
-  createDraftReview,
-  addReviewComment,
+  ensureDraftReview,
+  addLineComment,
+  addSectionComment,
   updateReviewComment,
   deleteReviewComment,
   deleteDraftReview,
@@ -20,23 +26,47 @@ import {
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
 
+type Source = "human" | "ai";
+
 export async function registerReviewRoutes(
   app: FastifyInstance,
   deps: ApiDeps,
 ): Promise<void> {
-  // GET /api/features/:featureId/reviews — list all reviews
-  app.get<{ Params: { featureId: string } }>(
-    "/api/features/:featureId/reviews",
-    async (request) => {
-      return { reviews: listReviews(deps.reviewStore!, request.params.featureId) };
+  // ----------------------------------------------------------------
+  // List reviews for a (session, file)
+  // ----------------------------------------------------------------
+  app.get<{
+    Params: { sessionId: string };
+    Querystring: { filePath?: string };
+  }>(
+    "/api/sessions/:sessionId/file-reviews",
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const filePath = request.query.filePath;
+      if (!filePath) {
+        reply.code(400).send({ error: "filePath is required" });
+        return;
+      }
+      return { reviews: listFileReviews(deps.reviewStore!, sessionId, filePath) };
     },
   );
 
-  // GET /api/features/:featureId/reviews/draft — get current draft
-  app.get<{ Params: { featureId: string } }>(
-    "/api/features/:featureId/reviews/draft",
+  // ----------------------------------------------------------------
+  // Get current draft (without creating one)
+  // ----------------------------------------------------------------
+  app.get<{
+    Params: { sessionId: string };
+    Querystring: { filePath?: string };
+  }>(
+    "/api/sessions/:sessionId/file-reviews/draft",
     async (request, reply) => {
-      const draft = getDraftReview(deps.reviewStore!, request.params.featureId);
+      const { sessionId } = request.params;
+      const filePath = request.query.filePath;
+      if (!filePath) {
+        reply.code(400).send({ error: "filePath is required" });
+        return;
+      }
+      const draft = getDraftReview(deps.reviewStore!, sessionId, filePath);
       if (!draft) {
         reply.code(404).send({ error: "No draft review found" });
         return;
@@ -45,44 +75,66 @@ export async function registerReviewRoutes(
     },
   );
 
-  // POST /api/features/:featureId/reviews — create a new draft
-  app.post<{ Params: { featureId: string }; Body: { planPath: string } }>(
-    "/api/features/:featureId/reviews",
+  // ----------------------------------------------------------------
+  // Ensure draft (create if none, else return existing)
+  // ----------------------------------------------------------------
+  app.post<{
+    Params: { sessionId: string };
+    Body: { filePath: string };
+  }>(
+    "/api/sessions/:sessionId/file-reviews/draft",
     async (request, reply) => {
+      const { sessionId } = request.params;
+      const { filePath } = request.body;
+      if (!filePath) {
+        reply.code(400).send({ error: "filePath is required" });
+        return;
+      }
+      const dir = resolveSessionDir(deps.sessionManager, sessionId, reply);
+      if (!dir) return;
       try {
-        return await createDraftReview(
-          deps.reviewStore!,
-          request.params.featureId,
-          request.body.planPath,
-          deps.workspaceDir,
-        );
+        return await ensureDraftReview(deps.reviewStore!, sessionId, filePath, dir);
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
           return;
         }
-        reply.code(500).send({ error: `Failed to create draft: ${getErrorMessage(err)}` });
+        reply.code(500).send({ error: `Failed to ensure draft: ${getErrorMessage(err)}` });
       }
     },
   );
 
-  // POST /api/features/:featureId/reviews/:reviewId/comments — add comment
+  // ----------------------------------------------------------------
+  // Add a comment (body discriminates line vs section)
+  // ----------------------------------------------------------------
   app.post<{
-    Params: { featureId: string; reviewId: string };
-    Body: { sectionHeading: string; sectionIndex: number; text: string; source?: string };
+    Params: { sessionId: string; reviewId: string };
+    Body:
+      | { kind: "line"; line: number; text: string; source?: Source }
+      | { kind: "section"; sectionHeading: string; sectionIndex: number; text: string; source?: Source };
   }>(
-    "/api/features/:featureId/reviews/:reviewId/comments",
+    "/api/sessions/:sessionId/file-reviews/:reviewId/comments",
     async (request, reply) => {
       try {
-        const { sectionHeading, sectionIndex, text, source } = request.body;
-        const comment = addReviewComment(
+        const body = request.body;
+        const source: Source = body.source ?? "human";
+        if (body.kind === "line") {
+          const comment = addLineComment(
+            deps.reviewStore!,
+            request.params.reviewId,
+            body.line,
+            body.text,
+            source,
+          );
+          return comment;
+        }
+        const comment = addSectionComment(
           deps.reviewStore!,
-          request.params.featureId,
           request.params.reviewId,
-          sectionHeading,
-          sectionIndex,
-          text,
-          (source as "human" | "ai") ?? "human",
+          body.sectionHeading,
+          body.sectionIndex,
+          body.text,
+          source,
         );
         return comment;
       } catch (err) {
@@ -95,17 +147,18 @@ export async function registerReviewRoutes(
     },
   );
 
-  // PATCH /api/features/:featureId/reviews/:reviewId/comments/:commentId — update comment
+  // ----------------------------------------------------------------
+  // Update a comment
+  // ----------------------------------------------------------------
   app.patch<{
-    Params: { featureId: string; reviewId: string; commentId: string };
+    Params: { sessionId: string; reviewId: string; commentId: string };
     Body: { text: string };
   }>(
-    "/api/features/:featureId/reviews/:reviewId/comments/:commentId",
+    "/api/sessions/:sessionId/file-reviews/:reviewId/comments/:commentId",
     async (request, reply) => {
       try {
         updateReviewComment(
           deps.reviewStore!,
-          request.params.featureId,
           request.params.reviewId,
           request.params.commentId,
           request.body.text,
@@ -121,16 +174,17 @@ export async function registerReviewRoutes(
     },
   );
 
-  // DELETE /api/features/:featureId/reviews/:reviewId/comments/:commentId — delete comment
+  // ----------------------------------------------------------------
+  // Delete a comment
+  // ----------------------------------------------------------------
   app.delete<{
-    Params: { featureId: string; reviewId: string; commentId: string };
+    Params: { sessionId: string; reviewId: string; commentId: string };
   }>(
-    "/api/features/:featureId/reviews/:reviewId/comments/:commentId",
+    "/api/sessions/:sessionId/file-reviews/:reviewId/comments/:commentId",
     async (request, reply) => {
       try {
         deleteReviewComment(
           deps.reviewStore!,
-          request.params.featureId,
           request.params.reviewId,
           request.params.commentId,
         );
@@ -145,21 +199,18 @@ export async function registerReviewRoutes(
     },
   );
 
-  // POST /api/features/:featureId/reviews/:reviewId/send — mark as sent
+  // ----------------------------------------------------------------
+  // Send a review (mark sent + return prompt)
+  // ----------------------------------------------------------------
   app.post<{
-    Params: { featureId: string; reviewId: string };
-    Body: { sessionId: string };
+    Params: { sessionId: string; reviewId: string };
   }>(
-    "/api/features/:featureId/reviews/:reviewId/send",
+    "/api/sessions/:sessionId/file-reviews/:reviewId/send",
     async (request, reply) => {
+      const dir = resolveSessionDir(deps.sessionManager, request.params.sessionId, reply);
+      if (!dir) return;
       try {
-        return await sendReview(
-          deps.reviewStore!,
-          request.params.featureId,
-          request.params.reviewId,
-          request.body.sessionId,
-          deps.workspaceDir,
-        );
+        return await sendReview(deps.reviewStore!, request.params.reviewId, dir);
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
@@ -170,18 +221,16 @@ export async function registerReviewRoutes(
     },
   );
 
-  // DELETE /api/features/:featureId/reviews/:reviewId — delete draft
+  // ----------------------------------------------------------------
+  // Delete a draft (e.g., on close-without-saving)
+  // ----------------------------------------------------------------
   app.delete<{
-    Params: { featureId: string; reviewId: string };
+    Params: { sessionId: string; reviewId: string };
   }>(
-    "/api/features/:featureId/reviews/:reviewId",
+    "/api/sessions/:sessionId/file-reviews/:reviewId",
     async (request, reply) => {
       try {
-        deleteDraftReview(
-          deps.reviewStore!,
-          request.params.featureId,
-          request.params.reviewId,
-        );
+        deleteDraftReview(deps.reviewStore!, request.params.reviewId);
         return { ok: true };
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -193,18 +242,21 @@ export async function registerReviewRoutes(
     },
   );
 
-  // POST /api/features/:featureId/reviews/:reviewId/ai-review — trigger AI review
+  // ----------------------------------------------------------------
+  // AI Review (markdown only)
+  // ----------------------------------------------------------------
   app.post<{
-    Params: { featureId: string; reviewId: string };
+    Params: { sessionId: string; reviewId: string };
   }>(
-    "/api/features/:featureId/reviews/:reviewId/ai-review",
+    "/api/sessions/:sessionId/file-reviews/:reviewId/ai-review",
     async (request, reply) => {
+      const dir = resolveSessionDir(deps.sessionManager, request.params.sessionId, reply);
+      if (!dir) return;
       try {
         const comments = await generateAiReview(
           deps.reviewStore!,
-          request.params.featureId,
           request.params.reviewId,
-          deps.workspaceDir,
+          dir,
           deps.generateText,
         );
         return { comments };

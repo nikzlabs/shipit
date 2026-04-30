@@ -10,7 +10,7 @@ import { RepoStore } from "./repo-store.js";
 import { ChatHistoryManager } from "./chat-history.js";
 import { UsageManager } from "./usage.js";
 import { SecretStore } from "./secret-store.js";
-import { ReviewStore } from "./review-store.js";
+import { FileReviewStore } from "./review-store.js";
 import { CredentialStore } from "./credential-store.js";
 import { initGlobalGitConfig } from "./git-config.js";
 import { SessionContainerManager } from "./session-container.js";
@@ -125,7 +125,7 @@ export interface ManagerSet {
   generateText: (prompt: string, cwd: string) => Promise<string>;
   isTestMode: boolean;
   secretStore: SecretStore;
-  reviewStore: ReviewStore;
+  reviewStore: FileReviewStore;
 }
 
 /**
@@ -218,8 +218,8 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // ---- Secret store ----
   const secretStore = new SecretStore(databaseManager);
 
-  // ---- Review store ----
-  const reviewStore = new ReviewStore(databaseManager);
+  // ---- File review store ----
+  const reviewStore = new FileReviewStore(databaseManager);
 
   // ---- Text generation (AI-powered features) ----
   // Tests inject a stub. In production, agentFactory is unavailable (agents

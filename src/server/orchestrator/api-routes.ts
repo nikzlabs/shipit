@@ -36,7 +36,7 @@ import { registerSecretsRoutes } from "./api-routes-secrets.js";
 import { registerReviewRoutes } from "./api-routes-reviews.js";
 import { registerUpdateRoutes } from "./api-routes-updates.js";
 import type { SecretStore } from "./secret-store.js";
-import type { ReviewStore } from "./review-store.js";
+import type { FileReviewStore } from "./review-store.js";
 
 /**
  * Dependencies needed by API routes. A subset of AppDeps — only the
@@ -77,8 +77,8 @@ export interface ApiDeps {
   databaseManager?: DatabaseManager;
   /** Secret store — per-repo env var secrets for preview containers. */
   secretStore?: SecretStore;
-  /** Review store — design doc review comments persistence. */
-  reviewStore?: ReviewStore;
+  /** File review store — unified review surface persistence (per session/file). */
+  reviewStore?: FileReviewStore;
   /** Service managers — per-session compose lifecycle (keyed by sessionId). */
   serviceManagers?: Map<string, ServiceManager>;
   /**
