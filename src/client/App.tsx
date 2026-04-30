@@ -158,6 +158,7 @@ export default function App() {
   const turnTokens = useUiStore((s) => s.turnTokens);
   const settingsOpen = useUiStore((s) => s.settingsOpen);
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
+  const mobileSidebarOpen = useUiStore((s) => s.mobileSidebarOpen);
   const toast = useUiStore((s) => s.toast);
   const dockerMemory = useUiStore((s) => s.dockerMemory);
 
@@ -750,7 +751,7 @@ export default function App() {
         githubAuthenticated={githubStatus.authenticated}
         dockerMemory={dockerMemory}
         onNavigateHome={() => navigate("/")}
-        onOpenSessions={() => useSessionStore.getState().setAllSessionsDialogOpen(true)}
+        onOpenSessions={() => useUiStore.getState().setMobileSidebarOpen(true)}
         showConnectionBanner={!showNewSessionView && !!wsSessionId}
         connectionStatus={status}
         reconnectAttempt={reconnectAttempt}
@@ -770,6 +771,8 @@ export default function App() {
         sessions={sessions}
         currentSessionId={sessionId}
         sidebarCollapsed={sidebarCollapsed}
+        mobileSidebarOpen={mobileSidebarOpen}
+        onCloseMobileSidebar={() => useUiStore.getState().setMobileSidebarOpen(false)}
         onResumeSession={(sid: string) => {
           const session = sessions.find((s) => s.id === sid);
           if (session?.remoteUrl) useRepoStore.getState().setActiveRepoUrl(session.remoteUrl);

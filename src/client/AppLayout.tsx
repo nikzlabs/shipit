@@ -50,6 +50,8 @@ interface AppLayoutProps {
   sessions: SessionInfo[];
   currentSessionId: string | undefined;
   sidebarCollapsed: boolean;
+  mobileSidebarOpen: boolean;
+  onCloseMobileSidebar: () => void;
   onResumeSession: (sid: string) => void;
   onArchiveSession: (sid: string) => Promise<void>;
   onNewSessionForRepo: (repoUrl: string) => void;
@@ -93,6 +95,8 @@ export function AppLayout({
   sessions,
   currentSessionId,
   sidebarCollapsed,
+  mobileSidebarOpen,
+  onCloseMobileSidebar,
   onResumeSession,
   onArchiveSession,
   onNewSessionForRepo,
@@ -143,6 +147,34 @@ export function AppLayout({
             {(showHomeScreen && !showNewSessionView) || mobilePanel === "chat" ? <div data-chat-panel className="flex flex-col flex-1 min-h-0">{chatPanel}</div> : <div className="flex flex-col flex-1 min-h-0 bg-(--color-bg-secondary)">{rightPanel}</div>}
           </div>
           {(!showHomeScreen || showNewSessionView) && <MobileTabBar activePanel={mobilePanel} onChangePanel={onMobilePanelChange} />}
+          {mobileSidebarOpen && (
+            <div className="fixed inset-0 z-40 flex" role="dialog" aria-label="Sessions">
+              {/* Backdrop — tap to close */}
+              <button
+                type="button"
+                aria-label="Close sessions"
+                onClick={onCloseMobileSidebar}
+                className="absolute inset-0 bg-(--color-bg-overlay)"
+              />
+              {/* Drawer — full width on phones */}
+              <div className="relative flex h-full w-full max-w-sm bg-(--color-bg-primary) shadow-xl animate-in slide-in-from-left">
+                <SessionSidebar
+                  sessions={sessions}
+                  currentSessionId={currentSessionId}
+                  onResume={(sid) => { onResumeSession(sid); onCloseMobileSidebar(); }}
+                  onArchive={onArchiveSession}
+                  onNewSessionForRepo={(url) => { onNewSessionForRepo(url); onCloseMobileSidebar(); }}
+                  collapsed={false}
+                  onToggleCollapse={onCloseMobileSidebar}
+                  repos={repos}
+                  onAddRepo={() => { onAddRepo(); onCloseMobileSidebar(); }}
+                  onCreateNewRepo={() => { onCreateNewRepo(); onCloseMobileSidebar(); }}
+                  mobile
+                  onClose={onCloseMobileSidebar}
+                />
+              </div>
+            </div>
+          )}
         </>
       ) : (
         <div className="flex flex-1 min-h-0">

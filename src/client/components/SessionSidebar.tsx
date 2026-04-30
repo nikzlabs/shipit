@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: document.body style during drag (DOM sync)
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, GithubLogoIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, WrenchIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
+import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, GithubLogoIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, WrenchIcon, CaretRightIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
 import { parseRepoName } from "../utils/repo-label.js";
@@ -80,6 +80,10 @@ interface SessionSidebarProps {
   repos: RepoInfo[];
   onAddRepo: () => void;
   onCreateNewRepo: () => void;
+  // Mobile drawer mode: full-width, no resize handle, no collapsed variant.
+  // Top-bar collapse button is replaced with a close (X) button that calls onClose.
+  mobile?: boolean;
+  onClose?: () => void;
 }
 
 interface SessionItemProps {
@@ -346,6 +350,8 @@ export function SessionSidebar({
   repos,
   onAddRepo,
   onCreateNewRepo,
+  mobile = false,
+  onClose,
 }: SessionSidebarProps) {
   const { width, isDragging, onMouseDown } = useSidebarResize();
 
@@ -406,12 +412,14 @@ export function SessionSidebar({
     // We set activeRepoUrl so the dialog pre-selects this repo
     useRepoStore.getState().setActiveRepoUrl(repoUrl);
     useSessionStore.getState().setAllSessionsDialogOpen(true);
-  }, []);
+    // Mobile drawer: close it so the dialog isn't stacked on top
+    if (mobile) onClose?.();
+  }, [mobile, onClose]);
 
   // Single repo mode: check if we only have one repo
   const isSingleRepo = repos.length === 1;
 
-  if (collapsed) {
+  if (collapsed && !mobile) {
     return (
       <div className="flex flex-col w-10 h-full shrink-0 bg-(--color-bg-primary) border-r border-(--color-border-primary) items-center py-2 gap-2">
         <WithTooltip label="Expand sidebar" side="right">
@@ -454,20 +462,37 @@ export function SessionSidebar({
 
   return (
     <div className="flex h-full shrink-0 min-h-0">
-    <div className="flex flex-col h-full bg-(--color-bg-primary) border-r border-(--color-border-primary) min-h-0" style={{ width }}>
+    <div
+      className={`flex flex-col h-full bg-(--color-bg-primary) ${mobile ? "" : "border-r border-(--color-border-primary)"} min-h-0`}
+      style={mobile ? { width: "100%" } : { width }}
+    >
       {/* Top bar */}
       <div className="flex items-center gap-2 px-3 h-10 border-b border-(--color-border-primary) shrink-0">
-        <WithTooltip label="Collapse sidebar">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onToggleCollapse}
-          className="p-0! w-6 h-6 text-(--color-text-tertiary)"
-          aria-label="Collapse sidebar"
-        >
-          <SidebarSimpleIcon size={ICON_SIZE.SM} />
-        </Button>
-        </WithTooltip>
+        {mobile ? (
+          <WithTooltip label="Close">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            className="p-0! w-6 h-6 text-(--color-text-tertiary)"
+            aria-label="Close sidebar"
+          >
+            <XIcon size={ICON_SIZE.SM} />
+          </Button>
+          </WithTooltip>
+        ) : (
+          <WithTooltip label="Collapse sidebar">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onToggleCollapse}
+            className="p-0! w-6 h-6 text-(--color-text-tertiary)"
+            aria-label="Collapse sidebar"
+          >
+            <SidebarSimpleIcon size={ICON_SIZE.SM} />
+          </Button>
+          </WithTooltip>
+        )}
         <span className="flex-1" />
         <RepoSwitcher
           repos={repos}
@@ -515,11 +540,13 @@ export function SessionSidebar({
         )}
       </div>
     </div>
-    {/* Resize handle — overlaid on top of the border */}
-    <div
-      onMouseDown={onMouseDown}
-      className={`resize-handle shrink-0 -ml-2 ${isDragging ? "resize-handle--active" : ""}`}
-    />
+    {/* Resize handle — desktop only; overlaid on top of the border */}
+    {!mobile && (
+      <div
+        onMouseDown={onMouseDown}
+        className={`resize-handle shrink-0 -ml-2 ${isDragging ? "resize-handle--active" : ""}`}
+      />
+    )}
     </div>
   );
 }
