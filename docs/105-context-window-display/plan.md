@@ -39,7 +39,7 @@ A compact "context dial" component near the composer footer in `MessageInput.tsx
   - Cumulative graph (sparkline) of input tokens per turn.
   - Top 3 contributors (longest tool results, biggest attachments) with file paths.
   - Cost split: input $X, output $Y, cache savings $Z.
-- "Run /compact" shortcut button at the bottom of the popover (sends a `compact` request to the agent).
+- When the dial is yellow/red, the popover shows a hint: *"Type `/compact` in the composer to summarize history and free up context."* No button — `/compact` is a slash command the user types in chat (per CLAUDE.md §5: user-driven tasks happen in chat, not via quick-action buttons).
 
 ### Cost computation
 
@@ -61,14 +61,17 @@ The dial re-targets the new model's window immediately. Historic usage is comput
 - New store slice in `session-store.ts`: `turnUsage: Record<sessionId, TurnUsage[]>`.
 - New component: `src/client/components/ContextDial.tsx` (the compact + popover combo).
 - Mount in `MessageInput.tsx` between the model picker and send button.
-- Add a "Compact context" action to the agent that triggers a server-side compact (Claude Code CLI supports `/compact`). New WS client message `compact_context { sessionId }`.
 
-### Compact flow
+### Compaction is user-typed, not button-driven
 
-1. User clicks "Compact context" in dial popover.
-2. Client sends `compact_context` WS message.
-3. Handler in `ws-handlers/misc-handlers.ts` calls `agent.sendInput("/compact\n")` (Claude Code CLI behavior).
-4. CLI replaces in-context history with a summary, emits a normal turn. UI shows a "context compacted" pill above the next message group.
+Claude Code already accepts `/compact` as a chat input. The composer routes slash-prefixed messages straight to the agent. This feature does **not** add a button or WS message to invoke compaction — that would be a shell-shaped affordance (CLAUDE.md §5). Instead:
+
+1. User types `/compact` in the composer.
+2. The composer (existing path) sends it to the agent like any other message.
+3. CLI replaces in-context history with a summary, emits a normal turn.
+4. The dial detects the drop in token usage on the next `turn_usage_update` and shows a small "context compacted" pill above the next message group.
+
+The dial's job is purely to **inform**: it surfaces enough state for the user to decide whether to run `/compact`, and the chat composer is where they act on that decision.
 
 ## Tests
 
@@ -77,7 +80,7 @@ The dial re-targets the new model's window immediately. Historic usage is comput
 1. Two completed turns → `turn_usage_update` emitted for each → store contains 2 entries.
 2. Aggregation matches `UsageManager.getCumulativeUsage`.
 3. Reload session → usage persisted in chat history.
-4. `compact_context` message → agent receives `/compact` input.
+4. After a turn whose input tokens drop sharply (a `/compact` user message), the dial reflects the lower value and the "context compacted" pill renders above the next group.
 
 Component test for `ContextDial.tsx`: dial color transitions at 70/90% thresholds.
 
@@ -89,15 +92,13 @@ Component test for `ContextDial.tsx`: dial color transitions at 70/90% threshold
 | `src/shared/agent-registry.ts` | Add `MODEL_CONTEXT_WINDOWS` constant |
 | `src/server/orchestrator/usage.ts` | Per-turn breakdown API |
 | `src/server/orchestrator/ws-handlers/post-turn.ts` | Attach usage; emit `turn_usage_update` |
-| `src/server/orchestrator/ws-handlers/misc-handlers.ts` | Handle `compact_context` message |
 | `src/shared/types/ws-server-messages.ts` | `turn_usage_update` |
-| `src/shared/types/ws-client-messages.ts` | `compact_context` |
 | `src/client/components/ContextDial.tsx` | New component |
 | `src/client/components/MessageInput.tsx` | Mount the dial |
 | `src/client/stores/session-store.ts` | `turnUsage` slice |
 
 ## Future extensions
 
-- **Auto-compact** — a setting to compact automatically at 90% with a confirmation toast.
+- **Auto-compact** — a setting that, on reaching 90%, has the agent itself proactively run a compaction during its next turn (agent-driven, not a UI button).
 - **Per-attachment size warning** — flag pasted text > N tokens at composer time.
 - **Cost budgets** — per-session or per-day budget cap with a soft block.
