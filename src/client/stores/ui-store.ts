@@ -14,6 +14,8 @@ import {
   saveAgentId,
   getSavedSidebarCollapsed,
   saveSidebarCollapsed,
+  getSavedRightTab,
+  saveRightTab,
 } from "../utils/local-storage.js";
 
 type RightTab =
@@ -86,7 +88,7 @@ interface UiState {
 }
 
 const initialState = {
-  rightTab: "preview" as RightTab,
+  rightTab: getSavedRightTab() as RightTab,
   mobilePanel: "chat" as MobilePanel,
   showTemplates: false,
   templates: [] as TemplateInfo[],
@@ -109,7 +111,10 @@ const initialState = {
 export const useUiStore = create<UiState>((set, get) => ({
   ...initialState,
 
-  setRightTab: (rightTab) => set({ rightTab }),
+  setRightTab: (rightTab) => {
+    saveRightTab(rightTab);
+    set({ rightTab });
+  },
 
   setMobilePanel: (mobilePanel) => set({ mobilePanel }),
 
@@ -169,7 +174,7 @@ export const useUiStore = create<UiState>((set, get) => ({
       modelInfo: null,
       contextTokens: 0,
       turnTokens: [],
-      rightTab: "preview",
+      // rightTab intentionally preserved across session switches (persisted to localStorage)
     }),
 
   fetchUsageStats: async (sessionId) => {

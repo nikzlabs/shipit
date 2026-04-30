@@ -1,6 +1,7 @@
 import type { AgentId } from "../../server/shared/types.js";
 
 const SIDEBAR_COLLAPSED_KEY = "vibe-sidebar-collapsed";
+const RIGHT_TAB_KEY = "shipit-right-tab";
 const AGENT_PREFERENCE_KEY = "vibe-agent-id";
 const MODEL_PREFERENCE_KEY = "vibe-model-id";
 const ACTIVE_REPO_KEY = "vibe-active-repo";
@@ -19,6 +20,29 @@ export function getSavedSidebarCollapsed(): boolean {
 export function saveSidebarCollapsed(collapsed: boolean): void {
   try {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+const VALID_RIGHT_TABS = ["preview", "docs", "files", "terminal", "history", "services"] as const;
+export type SavedRightTab = typeof VALID_RIGHT_TABS[number];
+
+export function getSavedRightTab(): SavedRightTab {
+  try {
+    const saved = localStorage.getItem(RIGHT_TAB_KEY);
+    if (saved && (VALID_RIGHT_TABS as readonly string[]).includes(saved)) {
+      return saved as SavedRightTab;
+    }
+  } catch {
+    // localStorage may be unavailable
+  }
+  return "preview";
+}
+
+export function saveRightTab(tab: SavedRightTab): void {
+  try {
+    localStorage.setItem(RIGHT_TAB_KEY, tab);
   } catch {
     // localStorage may be unavailable
   }
@@ -172,4 +196,4 @@ export function saveDevicePresetId(presetId: string | null): void {
   } catch { /* ignore */ }
 }
 
-export { SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, SHOW_SESSION_COST_KEY, COLLAPSED_REPOS_KEY, DEVICE_PRESET_KEY };
+export { SIDEBAR_COLLAPSED_KEY, RIGHT_TAB_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, SHOW_SESSION_COST_KEY, COLLAPSED_REPOS_KEY, DEVICE_PRESET_KEY };
