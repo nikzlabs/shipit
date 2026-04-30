@@ -168,12 +168,24 @@ export function MessageList({
     return () => container.removeEventListener("scroll", handleScroll);
   }, []);
 
-  // Auto-scroll to bottom only if user hasn't scrolled up
+  // Auto-scroll to bottom only if user hasn't scrolled up.
+  // Skip while the user has an active selection inside the message list —
+  // otherwise streaming tokens trigger scrollIntoView on every render and
+  // continuously cancel the in-progress text selection.
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
-    if (autoScrollRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: "instant" });
+    if (!autoScrollRef.current) return;
+    const sel = typeof window !== "undefined" ? window.getSelection() : null;
+    if (
+      sel &&
+      !sel.isCollapsed &&
+      containerRef.current &&
+      sel.anchorNode &&
+      containerRef.current.contains(sel.anchorNode)
+    ) {
+      return;
     }
+    bottomRef.current?.scrollIntoView({ behavior: "instant" });
   }, [messages, isLoading]);
 
   // Scroll to the current search match when it changes
