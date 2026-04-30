@@ -3,15 +3,51 @@ import { render, screen, cleanup, fireEvent, act } from "@testing-library/react"
 import { PrLifecycleCard, PrStateBadge } from "./PrLifecycleCard.js";
 import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
+import { useGitStore } from "../stores/git-store.js";
+import { useSessionStore } from "../stores/session-store.js";
+import type { PrMergeableState } from "../../server/shared/types.js";
 
 beforeEach(() => {
   usePrStore.setState({
     statusBySession: {},
     cardBySession: {},
   });
+  // Reset stores that the merge-conflict UI reads (rebaseStatus, agent running).
+  // Without this, leftover state from a prior test (e.g. rebaseStatus = "in_progress")
+  // would suppress the conflict UI and produce confusing test failures.
+  useGitStore.getState().reset();
+  useSessionStore.setState({ activeRunnerSessions: new Set<string>() });
 });
 
 afterEach(cleanup);
+
+// ---- Helpers for merge-conflict tests ----
+
+/**
+ * Seed a minimal `statusBySession` entry with the given mergeable value.
+ * The PR card reads `mergeable` directly from this slice, not from `cardBySession`.
+ */
+function setMergeable(sessionId: string, mergeable: PrMergeableState) {
+  usePrStore.setState((s) => ({
+    statusBySession: {
+      ...s.statusBySession,
+      [sessionId]: {
+        sessionId,
+        prNumber: 1,
+        prUrl: "https://github.com/o/r/pull/1",
+        prTitle: "Test PR",
+        prState: "open",
+        baseBranch: "main",
+        headBranch: "feature",
+        insertions: 10,
+        deletions: 5,
+        checks: { state: "success", total: 1, passed: 1, failed: 0, pending: 0 },
+        mergeable,
+        autoMergeEnabled: false,
+      },
+    },
+  }));
+}
 
 // ---- Helpers ----
 
@@ -42,7 +78,7 @@ function setStatus(sessionId: string, prState: "open" | "merged", checksState?: 
           failed: 0,
           pending: 0,
         },
-        mergeable: true,
+        mergeable: "mergeable",
         autoMergeEnabled: false,
       },
     },
@@ -437,6 +473,135 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByText(/Branch has no commits/)).toBeInTheDocument();
     expect(screen.getByText("Retry")).toBeInTheDocument();
   });
+
+  // ---- 113: Inline merge-conflict UI ----
+
+  describe("merge-conflict UI", () => {
+    it("hides the merge button when GitHub reports the PR as conflicting", () => {
+      setCard("s1", {
+        ...openPrCard,
+        checks: { state: "success", total: 1, passed: 1, failed: 0, pending: 0 },
+      });
+      setMergeable("s1", "conflicting");
+
+      render(<PrLifecycleCard sessionId="s1" />);
+
+      expect(screen.queryByText("Squash and merge")).toBeNull();
+    });
+
+    it("keeps the merge button visible when mergeability is unknown (avoid post-push flicker)", () => {
+      // GitHub returns UNKNOWN briefly after each push while it computes
+      // mergeability. Gating the button on this state would flicker it
+      // off-on every push — worse UX than letting an occasional click
+      // fail with the existing 405 toast.
+      setCard("s1", {
+        ...openPrCard,
+        checks: { state: "success", total: 1, passed: 1, failed: 0, pending: 0 },
+      });
+      setMergeable("s1", "unknown");
+
+      render(<PrLifecycleCard sessionId="s1" />);
+
+      expect(screen.getByText("Squash and merge")).toBeInTheDocument();
+    });
+
+    it("renders the conflict indicator and Resolve conflicts button when conflicting", () => {
+      setCard("s1", {
+        ...openPrCard,
+        checks: { state: "success", total: 1, passed: 1, failed: 0, pending: 0 },
+      });
+      setMergeable("s1", "conflicting");
+
+      render(<PrLifecycleCard sessionId="s1" />);
+
+      expect(screen.getByText("Merge conflicts")).toBeInTheDocument();
+      expect(screen.getByText("Resolve conflicts")).toBeInTheDocument();
+    });
+
+    it("hides the conflict UI when a rebase is already in progress", () => {
+      // RebaseBanner takes over the surface during the rebase. The PR card
+      // shouldn't double-render the same affordance.
+      setCard("s1", {
+        ...openPrCard,
+        checks: { state: "success", total: 1, passed: 1, failed: 0, pending: 0 },
+      });
+      setMergeable("s1", "conflicting");
+      useGitStore.setState({ rebaseStatus: "in_progress" });
+
+      render(<PrLifecycleCard sessionId="s1" />);
+
+      expect(screen.queryByText("Merge conflicts")).toBeNull();
+      expect(screen.queryByText("Resolve conflicts")).toBeNull();
+    });
+
+    it("disables the Resolve conflicts button while the agent is in a turn", () => {
+      setCard("s1", {
+        ...openPrCard,
+        checks: { state: "success", total: 1, passed: 1, failed: 0, pending: 0 },
+      });
+      setMergeable("s1", "conflicting");
+      useSessionStore.setState({ activeRunnerSessions: new Set(["s1"]) });
+
+      render(<PrLifecycleCard sessionId="s1" />);
+
+      const button = screen.getByText("Resolve conflicts").closest("button");
+      expect(button).toBeDisabled();
+    });
+
+    it("calls startRebase with the PR's base branch on click — no confirmation, no chat prefill", async () => {
+      // The exception to "chat is the input surface" lives here: clicking
+      // fires the rebase driver directly. There is no toast, no chat box
+      // mutation, no second confirmation step.
+      setCard("s1", {
+        ...openPrCard,
+        pr: {
+          number: 42,
+          title: "Add feature",
+          url: "https://github.com/o/r/pull/42",
+          baseBranch: "develop",
+          headBranch: "feature-branch",
+          insertions: 100,
+          deletions: 20,
+        },
+        checks: { state: "success", total: 1, passed: 1, failed: 0, pending: 0 },
+      });
+      setMergeable("s1", "conflicting");
+
+      const startRebase = vi.fn().mockResolvedValue(undefined);
+      useGitStore.setState({ startRebase });
+
+      render(<PrLifecycleCard sessionId="s1" />);
+
+      await act(async () => {
+        fireEvent.click(screen.getByText("Resolve conflicts"));
+      });
+
+      expect(startRebase).toHaveBeenCalledTimes(1);
+      expect(startRebase).toHaveBeenCalledWith("s1", "develop");
+    });
+
+    it("does not call startRebase if the agent is running when clicked", async () => {
+      // Disabled buttons don't fire onClick by default in the DOM, but the
+      // handler is also defensively guarded — verify both layers hold.
+      setCard("s1", {
+        ...openPrCard,
+        checks: { state: "success", total: 1, passed: 1, failed: 0, pending: 0 },
+      });
+      setMergeable("s1", "conflicting");
+      useSessionStore.setState({ activeRunnerSessions: new Set(["s1"]) });
+
+      const startRebase = vi.fn().mockResolvedValue(undefined);
+      useGitStore.setState({ startRebase });
+
+      render(<PrLifecycleCard sessionId="s1" />);
+
+      await act(async () => {
+        fireEvent.click(screen.getByText("Resolve conflicts"));
+      });
+
+      expect(startRebase).not.toHaveBeenCalled();
+    });
+  });
 });
 
 // ---- PrStateBadge ----
@@ -485,7 +650,7 @@ describe("PrStateBadge", () => {
           insertions: 10,
           deletions: 5,
           checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 },
-          mergeable: false,
+          mergeable: "unknown",
           autoMergeEnabled: false,
         },
       },

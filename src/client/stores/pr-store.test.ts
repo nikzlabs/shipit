@@ -31,7 +31,7 @@ function makePrStatus(overrides: Partial<PrStatusSummary> = {}): PrStatusSummary
     insertions: 10,
     deletions: 5,
     checks: { state: "success", total: 1, passed: 1, failed: 0, pending: 0 },
-    mergeable: true,
+    mergeable: "mergeable",
     autoMergeEnabled: false,
     ...overrides,
   };

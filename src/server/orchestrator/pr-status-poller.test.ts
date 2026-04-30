@@ -77,7 +77,7 @@ describe("parsePrNode", () => {
       insertions: 100,
       deletions: 20,
       checks: { state: "success", total: 2, passed: 2, failed: 0, pending: 0 },
-      mergeable: true,
+      mergeable: "mergeable",
       autoMergeEnabled: false,
     });
   });
@@ -146,10 +146,28 @@ describe("parsePrNode", () => {
     expect(result.autoMergeEnabled).toBe(true);
   });
 
-  it("detects not-mergeable PR", () => {
+  it("maps GraphQL MERGEABLE to \"mergeable\"", () => {
+    const node = makeGraphQLPrNode({ mergeable: "MERGEABLE" });
+    const result = parsePrNode(node as never, "session-1");
+    expect(result.mergeable).toBe("mergeable");
+  });
+
+  it("maps GraphQL CONFLICTING to \"conflicting\"", () => {
     const node = makeGraphQLPrNode({ mergeable: "CONFLICTING" });
     const result = parsePrNode(node as never, "session-1");
-    expect(result.mergeable).toBe(false);
+    expect(result.mergeable).toBe("conflicting");
+  });
+
+  it("maps GraphQL UNKNOWN to \"unknown\"", () => {
+    const node = makeGraphQLPrNode({ mergeable: "UNKNOWN" });
+    const result = parsePrNode(node as never, "session-1");
+    expect(result.mergeable).toBe("unknown");
+  });
+
+  it("maps unexpected GraphQL values to \"unknown\" (defensive)", () => {
+    const node = makeGraphQLPrNode({ mergeable: "SOMETHING_NEW" });
+    const result = parsePrNode(node as never, "session-1");
+    expect(result.mergeable).toBe("unknown");
   });
 
   it("handles StatusContext nodes (legacy status API)", () => {

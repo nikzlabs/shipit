@@ -115,9 +115,9 @@ function useAttentionInfo(sessionId: string): string | null {
     return "CI checks failed";
   }
 
-  // Priority 2: Merge conflicts (mergeable can be boolean | undefined, so === false is intentional)
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare
-  if (prState === "open" && mergeable === false) {
+  // Priority 2: Merge conflicts. Only "conflicting" raises attention — "unknown"
+  // is the transient post-push computation window and shouldn't flag the session.
+  if (prState === "open" && mergeable === "conflicting") {
     return "PR has merge conflicts";
   }
 
