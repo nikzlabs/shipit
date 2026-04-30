@@ -243,6 +243,8 @@ After Claude's turn completes (agent_finished + git_committed), if the session h
 
 This replaces the post-push toast and the PR creation modal. Auto-push continues to work independently — the branch may already be on the remote by the time the user sees the card.
 
+When the global `autoCreatePr` setting is on (toggleable from the ready card's overflow menu), the server skips the `phase: "ready"` step and goes straight to `creating` → `open`, creating the PR for the user. This fires after **every** meaningful turn (i.e. any turn whose post-turn auto-commit produced a non-empty commit) until a PR exists for the branch — see [099-auto-pr-on-meaningful-turn](../099-auto-pr-on-meaningful-turn/plan.md).
+
 #### How the card evolves
 
 The card message has a stable ID. State transitions:

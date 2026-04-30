@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 ---
 
 # 099 — Auto-Create PR After Meaningful Turn
