@@ -1,9 +1,16 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { SessionSidebar } from "./SessionSidebar.js";
+import { useSessionStore } from "../stores/session-store.js";
+import { usePrStore, type PrCardState } from "../stores/pr-store.js";
 import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  // Reset cross-test state so SessionStatusDot tests don't leak into others.
+  useSessionStore.setState({ activeRunnerSessions: new Set<string>() });
+  usePrStore.setState({ cardBySession: {}, statusBySession: {} });
+});
 
 const baseSession = (overrides: Partial<SessionInfo> = {}): SessionInfo => ({
   id: "sess-1",
@@ -229,6 +236,56 @@ describe("SessionSidebar", () => {
     const newerNode2 = screen.getByText("Newer");
     const olderNode2 = screen.getByText("Older");
     expect(newerNode2.compareDocumentPosition(olderNode2) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  describe("SessionStatusDot priority", () => {
+    const failingChecks: PrCardState = {
+      cardId: "card-1",
+      phase: "open",
+      checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
+    };
+
+    it("shows the agent-running indicator when CI failed but the agent is currently working", () => {
+      // The agent may already be addressing the failure (e.g. user followed up on a CI break);
+      // surfacing a stale 'CI failed' icon while it works misrepresents the session state.
+      usePrStore.setState({ cardBySession: { "s1": failingChecks } });
+      useSessionStore.setState({ activeRunnerSessions: new Set(["s1"]) });
+
+      const sessions = [baseSession({ id: "s1", title: "Working session", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" />);
+
+      expect(screen.getByTitle("Agent running")).toBeTruthy();
+      expect(screen.queryByTitle(/CI failed/)).toBeNull();
+    });
+
+    it("shows the CI-failed indicator when CI failed and the agent is idle", () => {
+      usePrStore.setState({ cardBySession: { "s1": failingChecks } });
+      useSessionStore.setState({ activeRunnerSessions: new Set<string>() });
+
+      const sessions = [baseSession({ id: "s1", title: "Idle session", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" />);
+
+      expect(screen.getByTitle("CI failed 2 of 3")).toBeTruthy();
+      expect(screen.queryByTitle("Agent running")).toBeNull();
+    });
+
+    it("shows the auto-fix indicator (not agent-running) when auto-fix is in progress", () => {
+      // Auto-fix is a more specific kind of agent activity — keep the wrench icon
+      // so the user sees that ShipIt is automatically remediating the CI break.
+      const card: PrCardState = {
+        ...failingChecks,
+        autoFix: { enabled: true, status: "running", attemptCount: 1, maxAttempts: 3 },
+      };
+      usePrStore.setState({ cardBySession: { "s1": card } });
+      useSessionStore.setState({ activeRunnerSessions: new Set(["s1"]) });
+
+      const sessions = [baseSession({ id: "s1", title: "Auto-fixing session", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" />);
+
+      expect(screen.getByTitle("Auto-fix running")).toBeTruthy();
+      expect(screen.queryByTitle("Agent running")).toBeNull();
+      expect(screen.queryByTitle(/CI failed/)).toBeNull();
+    });
   });
 
   it("renders multiple repo groups for multi-repo", () => {

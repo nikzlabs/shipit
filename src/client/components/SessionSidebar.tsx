@@ -144,32 +144,34 @@ function SessionStatusDot({ sessionId }: { sessionId: string }) {
   const checks = card?.checks;
   const autoFix = card?.autoFix;
 
-  // Priority 1: CI failed + needs manual fix (auto-fix not running)
-  if (checks?.state === "failure" && autoFix?.status !== "running") {
-    return <span className="shrink-0 text-(--color-error) flex" title={`CI failed ${checks.failed} of ${checks.total}`}><XCircleIcon size={ICON_SIZE.XS} /></span>;
-  }
-
-  // Priority 3: Auto-fix running
+  // Priority 1: Auto-fix running (a specific form of agent activity)
   if (autoFix?.status === "running") {
     return <span className="shrink-0 text-(--color-autofix) flex" title="Auto-fix running"><WrenchIcon size={ICON_SIZE.XS} className="animate-spin" /></span>;
   }
 
-  // Priority 4: Agent running
+  // Priority 2: Agent running — takes precedence over CI status; the agent
+  // may already be addressing the failure, so don't surface a stale CI-failed
+  // indicator while it's working.
   if (isAgentRunning) {
     return <span className="w-2 h-2 rounded-full bg-(--color-success) animate-pulse shrink-0" title="Agent running" />;
   }
 
-  // Priority 5: CI pending
+  // Priority 3: CI failed (auto-fix not running and agent idle, both checked above)
+  if (checks?.state === "failure") {
+    return <span className="shrink-0 text-(--color-error) flex" title={`CI failed ${checks.failed} of ${checks.total}`}><XCircleIcon size={ICON_SIZE.XS} /></span>;
+  }
+
+  // Priority 4: CI pending
   if (checks?.state === "pending") {
     return <span className="shrink-0 text-(--color-warning) flex" title={`CI running ${checks.passed}/${checks.total}`}><CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" /></span>;
   }
 
-  // Priority 6: CI passed
+  // Priority 5: CI passed
   if (checks?.state === "success") {
     return <span className="shrink-0 text-(--color-success) flex" title={`CI passed ${checks.total}/${checks.total}`}><CheckCircleIcon size={ICON_SIZE.XS} /></span>;
   }
 
-  // Priority 7: idle / no data
+  // Priority 6: idle / no data
   return null;
 }
 
