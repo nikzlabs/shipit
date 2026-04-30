@@ -164,6 +164,40 @@ describe("createIdleEnforcer", () => {
     expect(registry.get("fresh")?.disposed).toBe(false);
   });
 
+  it("grace-period boundary: a runner detached IDLE_GRACE_PERIOD_MS - 1 ms ago is skipped, +1 ms is disposed", () => {
+    // Pins the exact grace-period semantics so future drift to the constant
+    // (or to the comparison operator) is caught immediately.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+
+    const containers = [{ sessionId: "edge" }];
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const cm = makeContainerManager({ containers, destroy });
+
+    const r = registry.getOrCreate("edge", "/tmp/edge", "claude" as AgentId);
+    r.attachViewer();
+    r.detachViewer();
+
+    // Tick 1: advance to JUST inside the grace period — runner must be skipped.
+    vi.advanceTimersByTime(IDLE_GRACE_PERIOD_MS - 1);
+    createIdleEnforcer({
+      containerManager: cm,
+      credentialStore: makeCredentialStore(0),
+      runnerRegistry: registry,
+    })();
+    expect(destroy).not.toHaveBeenCalled();
+    expect(registry.get("edge")?.disposed).toBe(false);
+
+    // Tick 2: advance JUST past the grace period — now disposable.
+    vi.advanceTimersByTime(2);
+    createIdleEnforcer({
+      containerManager: cm,
+      credentialStore: makeCredentialStore(0),
+      runnerRegistry: registry,
+    })();
+    expect(destroy).toHaveBeenCalledWith("edge");
+  });
+
   it("re-checks runner state at dispose time (TOCTOU defense)", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));

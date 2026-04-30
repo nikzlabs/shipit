@@ -367,4 +367,222 @@ describe("Integration: WebSocket disconnect resilience", () => {
 
     client.close();
   });
+
+  // -------------------------------------------------------------------------
+  // Invariant: a WS reconnect AFTER the runner was disposed (idle cleanup
+  // window expired) must spawn a fresh runner. Pins the registry-recreation
+  // path that fires when getOrCreate() finds the session ID gone.
+  // -------------------------------------------------------------------------
+
+  it("WS reconnect after idle cleanup spawns a fresh runner and a new turn works", async () => {
+    const client1 = await TestClient.connect(port);
+    await client1.receive();
+    const sessionId = client1.sessionId;
+
+    // Run a turn to completion so running=false at WS close.
+    client1.send({ type: "send_message", text: "first turn" });
+    const turn1 = await waitForClaude(() => lastClaude);
+    turn1.emit("event", { type: "system", subtype: "init", session_id: "agent-c1" });
+    await drainUntil(client1, (m) => m.type === "session_started");
+    turn1.finish("agent-c1");
+    await settle(150);
+
+    // Disconnect.
+    client1.close();
+    await settle();
+
+    // Simulate idle cleanup completing — production fires this from the
+    // periodic enforcer once IDLE_GRACE_PERIOD_MS elapses since the last
+    // viewer detach. The test endpoint short-circuits the timer.
+    const dispose = await app.inject({
+      method: "POST",
+      url: `/api/_test/dispose-runner/${sessionId}`,
+    });
+    expect(dispose.statusCode).toBe(200);
+
+    // Confirm the runner is gone from the registry.
+    const stateGone = await app.inject({ method: "GET", url: `/api/_test/runner/${sessionId}` });
+    expect(stateGone.statusCode).toBe(404);
+
+    // Reconnect to the same session ID. The WS handler must call
+    // runnerRegistry.getOrCreate() since `get()` returns undefined.
+    const client2 = await TestClient.connect(port, sessionId);
+    await settle(50);
+
+    // The runner must exist again.
+    const stateBack = await app.inject({ method: "GET", url: `/api/_test/runner/${sessionId}` });
+    expect(stateBack.statusCode).toBe(200);
+    expect(stateBack.json().disposed).toBe(false);
+    expect(stateBack.json().viewerCount).toBe(1);
+
+    // Drive a new turn end-to-end on the freshly spawned runner.
+    client2.send({ type: "send_message", text: "second turn" });
+    const turn2 = await waitForClaude(() => lastClaude, turn1);
+    expect(turn2.runCalled).toBe(true);
+    expect(turn2.lastPrompt).toContain("second turn");
+    turn2.emit("event", { type: "system", subtype: "init", session_id: "agent-c2" });
+    turn2.finish("agent-c2");
+    await settle(150);
+
+    const status = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/status` });
+    expect(status.json().running).toBe(false);
+
+    client2.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // Invariant: multi-viewer support — two WS connections to the same session
+  // both receive runner.emitMessage() broadcasts; closing one viewer doesn't
+  // affect the other; the grace-period timer only starts after the LAST
+  // viewer detaches.
+  // -------------------------------------------------------------------------
+
+  it("two viewers on one session both receive broadcasts; grace period waits for last detach", async () => {
+    const clientA = await TestClient.connect(port);
+    await clientA.receive();
+    const sessionId = clientA.sessionId;
+
+    // Second viewer attaches to the SAME session.
+    const clientB = await TestClient.connect(port, sessionId);
+    await settle(30);
+
+    // Both viewers attached.
+    const state2 = await app.inject({ method: "GET", url: `/api/_test/runner/${sessionId}` });
+    expect(state2.json().viewerCount).toBe(2);
+    expect(state2.json().lastViewerDetachAt).toBe(0);
+
+    // Send a message — both clients should observe the broadcast events.
+    clientA.send({ type: "send_message", text: "shared turn" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.emit("event", { type: "system", subtype: "init", session_id: "agent-mv1" });
+
+    // Both clients receive session_started (broadcast via runner.emitMessage).
+    const a = await drainUntil(clientA, (m) => m.type === "session_started");
+    const b = await drainUntil(clientB, (m) => m.type === "session_started");
+    expect(a).toBeTruthy();
+    expect(b).toBeTruthy();
+    expect((a as AnyMsg).session.id).toBe((b as AnyMsg).session.id);
+
+    // Detach ONE viewer. The runner stays alive, viewerCount drops to 1, and
+    // the grace-period timer is NOT armed (only fires when the last viewer goes).
+    clientB.close();
+    await settle(50);
+
+    const state1 = await app.inject({ method: "GET", url: `/api/_test/runner/${sessionId}` });
+    expect(state1.json().viewerCount).toBe(1);
+    expect(state1.json().lastViewerDetachAt).toBe(0);
+    expect(state1.json().disposed).toBe(false);
+
+    // Other viewer still works — finish the turn and assert running clears.
+    claude.finish("agent-mv1");
+    await settle(150);
+
+    const status = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/status` });
+    expect(status.json().running).toBe(false);
+
+    // Detach the LAST viewer — grace period timer arms.
+    clientA.close();
+    await settle(50);
+    const stateGone = await app.inject({ method: "GET", url: `/api/_test/runner/${sessionId}` });
+    expect(stateGone.json().viewerCount).toBe(0);
+    expect(stateGone.json().lastViewerDetachAt).toBeGreaterThan(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Invariant: archive (force-dispose) of a session whose agent is currently
+  // running does kill the agent and tear down the runner. This is the user-
+  // initiated counterpart to lifecycle-driven dispose, which must NOT kill
+  // running agents. Production caller: services/session.ts:archiveSession().
+  // -------------------------------------------------------------------------
+
+  it("archiving a session with a running agent force-disposes the runner", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+    const sessionId = client.sessionId;
+
+    // Start a turn and DON'T finish it — agent is still running.
+    client.send({ type: "send_message", text: "long-running" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.emit("event", { type: "system", subtype: "init", session_id: "agent-arc-1" });
+    await drainUntil(client, (m) => m.type === "session_started");
+
+    // Pre-condition: runner is registered, agent is running.
+    const before = await app.inject({ method: "GET", url: `/api/_test/runner/${sessionId}` });
+    expect(before.json().running).toBe(true);
+
+    // Archive the session — DELETE /api/sessions/:id triggers archiveSession()
+    // which calls runnerRegistry.dispose(sessionId, { force: true }).
+    const archive = await app.inject({ method: "DELETE", url: `/api/sessions/${sessionId}` });
+    expect(archive.statusCode).toBe(200);
+    await settle(50);
+
+    // Runner is disposed and gone from the registry.
+    const after = await app.inject({ method: "GET", url: `/api/_test/runner/${sessionId}` });
+    expect(after.statusCode).toBe(404);
+
+    // Forced disposal kills the agent process.
+    expect(claude.killed).toBe(true);
+
+    client.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // Invariant: post-turn commit message is correct even when the WS closed
+  // before the agent finished. The commit message is derived from the
+  // captured runner's `turnSummary`, NOT from `ctx.getTurnSummary()` (which
+  // routes through the per-connection attachedRunner and returns "" after
+  // disconnect). Pins the round-2 fix for the silent-mutation bug.
+  // -------------------------------------------------------------------------
+
+  it("post-turn commit message uses captured runner.turnSummary after WS disconnect", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+    const sessionId = client.sessionId;
+
+    client.send({ type: "send_message", text: "commit me" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.emit("event", { type: "system", subtype: "init", session_id: "agent-pt-1" });
+    const sessionMsg = await drainUntil(client, (m) => m.type === "session_started");
+    const sessionDir = (sessionMsg as AnyMsg).session.workspaceDir as string;
+
+    // Emit the assistant text BEFORE WS close so it's captured into
+    // runner.turnSummary while the connection is still alive. Then add a
+    // file change so auto-commit produces a real commit (no commit otherwise
+    // and we'd have nothing to assert on).
+    claude.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "Created important.txt for you" }] },
+    });
+    fs.writeFileSync(path.join(sessionDir, "important.txt"), "hello");
+
+    // Close the WS BEFORE the agent finishes — the post-turn commit fires
+    // from inside the agent.on("done") closure, after the originating socket
+    // is gone.
+    client.close();
+    await settle();
+
+    // Drive the agent to completion. The "done" handler runs postTurnCommit()
+    // with `runner.turnSummary` captured at turn start.
+    claude.finish("agent-pt-1");
+    await settle(300);
+
+    // Reconnect and read history — the chat-history entry must be linked to
+    // a commit whose message starts with the assistant text.
+    const client2 = await TestClient.connect(port, sessionId);
+    await settle(50);
+
+    const historyRes = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    expect(historyRes.statusCode).toBe(200);
+    const history = historyRes.json();
+    const commitMsgs = history.messages.filter((m: AnyMsg) => m.commitHash);
+    expect(commitMsgs.length).toBeGreaterThan(0);
+
+    // Read the commit message via git log — most reliable cross-check.
+    const { GitManager } = await import("../../shared/git.js");
+    const git = new GitManager(sessionDir);
+    const log = await git.log(1);
+    expect(log[0]?.message).toContain("Created important.txt for you");
+
+    client2.close();
+  });
 });

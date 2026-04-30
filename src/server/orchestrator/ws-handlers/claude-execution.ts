@@ -37,6 +37,16 @@ function saveImagesToUploadsDir(images: ImageAttachment[], workspaceDir: string)
 type FullCtx = ConnectionCtx & RunnerCtx & AppCtx;
 
 /**
+ * Mark the captured runner as stopped. Centralizes the `if (runner) runner.running = false`
+ * pattern so adding a new error/exit path doesn't drift from the existing
+ * ones. Always safe to call — no-op when the runner reference is null
+ * (which can happen if the registry entry was disposed mid-turn).
+ */
+function stopRunner(runner: { running: boolean } | null): void {
+  if (runner) runner.running = false;
+}
+
+/**
  * Core Claude execution logic. Shared between send_message and
  * home_send_with_repo handlers. Session state (activeAppSessionId,
  * activeSessionDir) must already be set before calling this.
@@ -155,7 +165,7 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
     // Process the message queue FIRST so the client clears queued visual state
     // immediately, before the (potentially slow) post-turn git commit work.
     // Use runner directly (not ctx) so this works even after WS disconnect.
-    if (runner) runner.running = false;
+    stopRunner(runner);
     const messageQueue = runner?.messageQueue ?? [];
     if ((runner?.wasInterrupted ?? false) && messageQueue.length > 0) {
       if (runner) runner.clearQueue();
@@ -182,7 +192,7 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
           // Use the captured runner directly — ctx.setIsClaudeRunning() goes
           // through `attachedRunner` which is null after WS disconnect, which
           // would strand `running=true` and prevent future cleanup.
-          if (runner) runner.running = false;
+          stopRunner(runner);
           return;
         }
         nextValidatedFiles = fileResult.files;
@@ -196,7 +206,7 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
         if (uploadResult.error) {
           emitDone({ type: "error", message: uploadResult.error });
           // Use the captured runner directly — see comment above.
-          if (runner) runner.running = false;
+          stopRunner(runner);
           return;
         }
         nextValidatedFiles = [...nextValidatedFiles, ...uploadResult.files];
@@ -222,7 +232,7 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
         });
       } catch (err) {
         console.error("[queue] Error processing queued message:", getErrorMessage(err));
-        if (runner) runner.running = false;
+        stopRunner(runner);
       }
     }
 

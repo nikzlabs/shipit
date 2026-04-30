@@ -439,10 +439,26 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   get viewerCount(): number { return this._viewerCount; }
   private _lastViewerDetachAt = 0;
   get lastViewerDetachAt(): number { return this._lastViewerDetachAt; }
-  attachViewer(): void { this._viewerCount++; }
+  attachViewer(): void {
+    this._viewerCount++;
+    // Clear the detach timestamp on any attach — a viewer is back, and the
+    // grace period only matters when no viewers are attached. If viewers
+    // come and go later, the timestamp will be re-armed only when the LAST
+    // one detaches (see detachViewer() below).
+    this._lastViewerDetachAt = 0;
+  }
   detachViewer(): void {
     this._viewerCount = Math.max(0, this._viewerCount - 1);
-    this._lastViewerDetachAt = Date.now();
+    // Arm the grace-period timer ONLY when the last viewer detaches AND it's
+    // not already armed. Two safety properties:
+    //   1. Multi-viewer: detaching one of several viewers does not start the
+    //      grace period — the runner is still actively viewed.
+    //   2. Defensive: a stray double-detach (e.g. test or buggy caller) when
+    //      count is already 0 doesn't reset an existing timer, so the grace
+    //      period can't be extended by repeated detach calls.
+    if (this._viewerCount === 0 && this._lastViewerDetachAt === 0) {
+      this._lastViewerDetachAt = Date.now();
+    }
   }
   buildPreviewStatus(): WsServerMessage {
     return { type: "preview_status", running: false, port: 5173, url: "http://localhost:5173", sessionId: this.sessionId };

@@ -36,10 +36,26 @@ export function wireAgentListeners(
     isNewSession: boolean;
     persistUserMessage: (sessionId: string) => void;
     fallbackTitle?: string;
-    /** Session ID captured at turn start — immune to session switches. */
+    /**
+     * Session ID captured at turn start — immune to session switches. Always
+     * set in production: both `runClaudeWithMessage` and `handleAnswerQuestion`
+     * capture this from `ctx.getActiveAppSessionId()`, which is the URL-
+     * derived session ID on the per-session WS route. Marked optional only
+     * for ergonomics in the rare test that wires listeners directly.
+     */
     capturedSessionId?: string;
   },
 ): void {
+  if (!opts.capturedSessionId) {
+    // The previous fallback in the agent_init branch called
+    // `setActiveAppSessionId(event.sessionId)` — but `event.sessionId` is the
+    // Claude CLI's internal session_id (e.g. `agent-init-1`), not an app
+    // session UUID. Setting it as the active app session is always wrong.
+    // Per-session WS handlers always pass capturedSessionId, so reaching
+    // this state means the call site is buggy — fail loudly rather than
+    // silently mis-routing the session.
+    throw new Error("wireAgentListeners requires opts.capturedSessionId — per-session WS routes always set it");
+  }
   // Capture runner at wire time — this direct reference survives WS disconnects.
   // `resolveRunner` prefers the registry (keyed by the captured session ID),
   // so the runner is correct even when the originating WS has already
@@ -63,25 +79,17 @@ export function wireAgentListeners(
     emitToViewers({ type: "agent_event", event });
 
     if (event.type === "agent_init") {
-      // Use the session ID captured at turn start — immune to session switches
-      const turnSessionId = opts.capturedSessionId;
-      if (turnSessionId) {
-        ctx.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
-        const session = ctx.sessionManager.get(turnSessionId);
-        if (session) {
-          emitToViewers({ type: "session_started", session });
-          ctx.sseBroadcast("session_started", { session });
-        }
-        if (opts.isNewSession) {
-          opts.persistUserMessage(turnSessionId);
-        }
-      } else {
-        const title = opts.fallbackTitle ?? "New session";
-        const session = ctx.sessionManager.track(event.sessionId, title);
-        ctx.setActiveAppSessionId(event.sessionId);
+      // Use the session ID captured at turn start — immune to session switches.
+      // Guaranteed non-null by the assert at function entry.
+      const turnSessionId = opts.capturedSessionId!;
+      ctx.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
+      const session = ctx.sessionManager.get(turnSessionId);
+      if (session) {
         emitToViewers({ type: "session_started", session });
         ctx.sseBroadcast("session_started", { session });
-        opts.persistUserMessage(event.sessionId);
+      }
+      if (opts.isNewSession) {
+        opts.persistUserMessage(turnSessionId);
       }
 
       if (event.model) {

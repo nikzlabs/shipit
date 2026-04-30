@@ -255,6 +255,46 @@ describe("SessionRunner", () => {
     expect(runner.lastViewerDetachAt).toBeLessThanOrEqual(after);
     runner.dispose();
   });
+
+  it("grace-period timer arms only on LAST detach, never on intermediate detach", async () => {
+    // The timestamp is only meaningful when viewerCount === 0 (the idle
+    // enforcer never reads it otherwise). Setting it on a 2→1 detach would
+    // be a misleading lie. This test pins the multi-viewer semantics.
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    runner.attachViewer();
+    runner.attachViewer();
+    expect(runner.viewerCount).toBe(2);
+    expect(runner.lastViewerDetachAt).toBe(0);
+
+    // Detach one — runner is still actively viewed, no grace period.
+    runner.detachViewer();
+    expect(runner.viewerCount).toBe(1);
+    expect(runner.lastViewerDetachAt).toBe(0);
+
+    // Detach the LAST viewer — NOW the grace timer arms.
+    runner.detachViewer();
+    expect(runner.viewerCount).toBe(0);
+    const firstZero = runner.lastViewerDetachAt;
+    expect(firstZero).toBeGreaterThan(0);
+
+    // Defensive: a stray extra detach when count is already 0 must not
+    // reset the timer. Without this, a buggy caller could extend the grace
+    // period indefinitely.
+    await new Promise((r) => setTimeout(r, 5));
+    runner.detachViewer();
+    expect(runner.lastViewerDetachAt).toBe(firstZero);
+
+    // Re-attach clears so the next 1→0 transition starts a fresh clock.
+    runner.attachViewer();
+    expect(runner.lastViewerDetachAt).toBe(0);
+    runner.detachViewer();
+    expect(runner.lastViewerDetachAt).toBeGreaterThanOrEqual(firstZero);
+    runner.dispose();
+  });
 });
 
 describe("SessionRunnerRegistry", () => {

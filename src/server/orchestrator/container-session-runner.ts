@@ -387,6 +387,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   attachViewer(): void {
     this._viewerCount++;
+    // Clear the detach timestamp on any attach — a viewer is back, and the
+    // grace period only matters when no viewers are attached. If viewers
+    // come and go later, the timestamp will be re-armed only when the LAST
+    // one detaches (see detachViewer() below).
+    this._lastViewerDetachAt = 0;
     console.log(`[container-runner:${this.sessionId}] attachViewer (count=${this._viewerCount}, disposed=${this._disposed})`);
     if (!this._workerResourcesStarted && !this._disposed) {
       this._workerResourcesStarted = true;
@@ -401,7 +406,16 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   detachViewer(): void {
     this._viewerCount = Math.max(0, this._viewerCount - 1);
-    this._lastViewerDetachAt = Date.now();
+    // Arm the grace-period timer ONLY when the last viewer detaches AND it's
+    // not already armed. Two safety properties:
+    //   1. Multi-viewer: detaching one of several viewers does not start the
+    //      grace period — the runner is still actively viewed.
+    //   2. Defensive: a stray double-detach (e.g. test or buggy caller) when
+    //      count is already 0 doesn't reset an existing timer, so the grace
+    //      period can't be extended by repeated detach calls.
+    if (this._viewerCount === 0 && this._lastViewerDetachAt === 0) {
+      this._lastViewerDetachAt = Date.now();
+    }
     // Don't stop worker resources or SSE — the container keeps running and
     // the viewer may reattach quickly (session switching). Cleanup happens
     // in dispose() when the runner is actually torn down.
