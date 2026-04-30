@@ -4,6 +4,7 @@ import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { useSessionStore } from "../stores/session-store.js";
 import { MarkdownContent } from "./message-markdown.js";
 
 interface PlanApprovalProps {
@@ -19,7 +20,11 @@ export function PlanApproval({ onSend, disabled, planContent }: PlanApprovalProp
 
   const handleAccept = useCallback(() => {
     if (disabled || submitted) return;
-    useSettingsStore.getState().setPermissionMode("auto");
+    // Switch this session out of plan mode so the follow-up message runs in
+    // auto mode. Scope to the current session only — toggling plan mode here
+    // must not affect other sessions.
+    const sid = useSessionStore.getState().sessionId;
+    useSettingsStore.getState().setPermissionMode(sid, "auto");
     setSubmitted("accepted");
     onSend("Execute the plan you just described.");
   }, [disabled, submitted, onSend]);

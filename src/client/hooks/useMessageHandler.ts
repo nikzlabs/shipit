@@ -8,7 +8,7 @@ import type {
   WsChatHistoryMessage,
   AgentContentBlock, WsClientMessage,
 } from "../../server/shared/types.js";
-import { PERMISSION_MODE_KEY, SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY } from "../utils/local-storage.js";
+import { SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY } from "../utils/local-storage.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useFileStore } from "../stores/file-store.js";
@@ -514,7 +514,6 @@ function processMessage(
     if (data.type === "full_reset_complete") {
       try {
         localStorage.removeItem("shipit-theme");
-        localStorage.removeItem(PERMISSION_MODE_KEY);
         localStorage.removeItem(SIDEBAR_COLLAPSED_KEY);
         localStorage.removeItem(AGENT_PREFERENCE_KEY);
         localStorage.removeItem("vibe-panel-split");
