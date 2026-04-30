@@ -164,10 +164,15 @@ describe("Integration: Context window usage (105)", () => {
     expect(u1.turn.inputTokens).toBe(5_000);
     lastClaude.emit("done", 0);
 
-    // Turn 2
+    // Turn 2 — pass the previous Claude instance to waitForClaude so it
+    // waits for the NEW process. Otherwise it returns immediately on the
+    // turn-1 instance (still runCalled=true) and we end up emitting events
+    // on a finished process while the real second-turn handleSendMessage
+    // runs after this test ends and the db has been closed.
+    const turn1Claude = lastClaude;
     await new Promise((r) => setTimeout(r, 50));
     client.send({ type: "send_message", text: "second" });
-    await waitForClaude(() => lastClaude);
+    await waitForClaude(() => lastClaude, turn1Claude);
     lastClaude.emit("event", {
       type: "system",
       subtype: "init",
