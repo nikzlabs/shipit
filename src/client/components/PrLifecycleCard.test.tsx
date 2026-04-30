@@ -251,6 +251,21 @@ describe("PrLifecycleCard", () => {
     expect(screen.queryByText("Squash and merge")).toBeNull();
   });
 
+  it("does not render merge button when checks status is undefined (poller hasn't run yet)", () => {
+    // After PR creation, the card transitions to "open" before the poller has
+    // delivered any check status. The merge button must stay hidden during
+    // this gap — otherwise the user could merge before workflows register.
+    setCard("s1", {
+      ...openPrCard,
+      // No `checks` field — simulates the moment between quick-create
+      // returning and the first SSE pr_status update arriving.
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    expect(screen.queryByText("Squash and merge")).toBeNull();
+  });
+
   it("does not render merge button when CI has failed", () => {
     setCard("s1", {
       ...openPrCard,
