@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { ChatMessage } from "../components/MessageList.js";
 import type { StreamingActivity } from "../components/StreamingIndicator.js";
-import type { SessionInfo } from "../../server/shared/types.js";
+import type { SessionInfo, TurnUsage } from "../../server/shared/types.js";
 
 interface SessionState {
   sessionId: string | undefined;
@@ -20,6 +20,14 @@ interface SessionState {
   prefillText: string | undefined;
   /** True once session history has been loaded from the server (prevents rocket flash on session switch). */
   historyLoaded: boolean;
+  /**
+   * Per-turn usage history keyed by session ID. Populated from
+   * `turn_usage_update` WS messages and from `chat_history` reloads (where
+   * `turnUsage` is attached to the last message of each turn). Used by
+   * the context-dial UI to render the running context size and per-turn
+   * breakdown without losing data on session switches.
+   */
+  turnUsage: Record<string, TurnUsage[]>;
 
   // Actions
   setSessionId: (id: string | undefined) => void;
@@ -49,6 +57,12 @@ interface SessionState {
   ) => void;
   setPendingWsMessage: (message: Record<string, unknown> | undefined) => void;
   setPrefillText: (text: string | undefined) => void;
+  /** Append a per-turn usage record for the given session. */
+  appendTurnUsage: (sessionId: string, turn: TurnUsage) => void;
+  /** Replace the per-turn usage history for a session (e.g. on chat_history hydrate). */
+  setTurnUsageForSession: (sessionId: string, turns: TurnUsage[]) => void;
+  /** Drop a session's per-turn usage (e.g. on archive). */
+  clearTurnUsageForSession: (sessionId: string) => void;
   reset: () => void;
 
   // All sessions dialog
@@ -76,12 +90,15 @@ const initialResettableState = {
   historyLoaded: false,
 };
 
+const initialTurnUsage: Record<string, TurnUsage[]> = {};
+
 export const useSessionStore = create<SessionState>((set) => ({
   sessionId: undefined,
   ...initialResettableState,
   sessions: [] as SessionInfo[],
   authUrl: null,
   activeRunnerSessions: new Set<string>(),
+  turnUsage: initialTurnUsage,
   allSessions: [] as SessionInfo[],
   allSessionsDialogOpen: false,
 
@@ -139,6 +156,29 @@ export const useSessionStore = create<SessionState>((set) => ({
 
   setPrefillText: (prefillText) => set({ prefillText }),
 
+  appendTurnUsage: (sessionId, turn) =>
+    set((state) => ({
+      turnUsage: {
+        ...state.turnUsage,
+        [sessionId]: [...(state.turnUsage[sessionId] ?? []), turn],
+      },
+    })),
+
+  setTurnUsageForSession: (sessionId, turns) =>
+    set((state) => ({
+      turnUsage: { ...state.turnUsage, [sessionId]: turns },
+    })),
+
+  clearTurnUsageForSession: (sessionId) =>
+    set((state) => {
+      if (!(sessionId in state.turnUsage)) return state;
+      // Destructure-and-rest to drop the entry without mutating the original
+      // and without `delete` on a dynamic key (lint: no-dynamic-delete).
+      const { [sessionId]: _omit, ...rest } = state.turnUsage;
+      void _omit;
+      return { turnUsage: rest };
+    }),
+
   reset: () => set(initialResettableState),
 
   setAllSessionsDialogOpen: (allSessionsDialogOpen) => set({ allSessionsDialogOpen }),
@@ -179,12 +219,18 @@ export const useSessionStore = create<SessionState>((set) => ({
       throw new Error(err.error ?? `Failed to archive session (${res.status})`);
     }
     const result = await res.json() as { sessions: SessionInfo[] };
-    set((state) => ({
-      sessions: result.sessions,
-      allSessions: state.allSessions.map((s) =>
-        s.id === sessionId ? { ...s, archived: true } : s,
-      ),
-    }));
+    set((state) => {
+      // Destructure-and-rest to drop the entry without dynamic delete.
+      const { [sessionId]: _omit, ...rest } = state.turnUsage;
+      void _omit;
+      return {
+        sessions: result.sessions,
+        allSessions: state.allSessions.map((s) =>
+          s.id === sessionId ? { ...s, archived: true } : s,
+        ),
+        turnUsage: rest,
+      };
+    });
   },
 
   renameSession: async (sessionId, title) => {

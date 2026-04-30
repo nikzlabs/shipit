@@ -6,7 +6,7 @@ import { PlusIcon, StopIcon, ArrowUpIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { PlanModeToggle } from "./PlanModeToggle.js";
 import { ModelAgentSelector } from "./ModelAgentSelector.js";
-import { ContextMeterIcon } from "./ContextMeterIcon.js";
+import { ContextDial } from "./ContextDial.js";
 import { FileAttachmentChips } from "./FileAttachmentChips.js";
 import { FileUploadChips } from "./FileUploadChips.js";
 import { FileAutoComplete } from "./FileAutoComplete.js";
@@ -393,9 +393,12 @@ export function MessageInput({
               </WithTooltip>
             )}
 
-            {/* Context meter */}
-            {modelInfo && contextTokens > 0 && (
-              <ContextMeterIcon modelInfo={modelInfo} contextTokens={contextTokens} />
+            {/* Context dial — per-turn breakdown popover (105) */}
+            {(modelInfo ?? contextTokens > 0) && (
+              <ContextDialMount
+                modelInfo={modelInfo ?? null}
+                contextTokensFallback={contextTokens}
+              />
             )}
 
             {/* Model / agent selector */}
@@ -450,5 +453,36 @@ export function MessageInput({
       )}
       </Popover>
     </div>
+  );
+}
+
+/** Stable empty fallback so the zustand selector never returns a fresh array. */
+const EMPTY_TURN_USAGE: never[] = [];
+
+/**
+ * Pulls the per-turn usage history for the active session out of the session
+ * store and feeds it to `ContextDial`. Kept as a tiny inner component so the
+ * subscription cost only attaches when the dial is mounted.
+ */
+function ContextDialMount({
+  modelInfo,
+  contextTokensFallback,
+}: {
+  modelInfo: ModelInfo | null;
+  contextTokensFallback: number;
+}) {
+  // Two separate selector subscriptions, each returning a stable reference,
+  // so React's `useSyncExternalStore` snapshot stays cached across renders.
+  // (Combining into one object would create a fresh object every render.)
+  const sessionId = useSessionStore((s) => s.sessionId);
+  const turnUsage = useSessionStore((s) =>
+    sessionId ? s.turnUsage[sessionId] ?? EMPTY_TURN_USAGE : EMPTY_TURN_USAGE,
+  );
+  return (
+    <ContextDial
+      modelInfo={modelInfo}
+      turnUsage={turnUsage}
+      contextTokensOverride={turnUsage.length > 0 ? undefined : contextTokensFallback}
+    />
   );
 }

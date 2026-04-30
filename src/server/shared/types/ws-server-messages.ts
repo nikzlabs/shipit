@@ -11,7 +11,7 @@ import type {
   WsPrLifecycleUpdate,
 } from "./github-types.js";
 import type { WsTerminalOutput, WsTerminalExit, WsTerminalReconnecting, WsLogEntry, WsClearLogs } from "./terminal-types.js";
-import type { WsUsageStats, WsUsageUpdate } from "./usage-types.js";
+import type { WsUsageStats, WsUsageUpdate, WsTurnUsageUpdate } from "./usage-types.js";
 
 export interface WsClaudeEvent {
   type: "claude_event";
@@ -451,6 +451,7 @@ export type WsServerMessage =
   | WsLogEntry
   | WsUsageStats
   | WsUsageUpdate
+  | WsTurnUsageUpdate
   | WsTemplateApplied
   | WsGlobalSettings
   | WsFilesChanged

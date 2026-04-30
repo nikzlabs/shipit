@@ -1,4 +1,4 @@
-import type { UsageTurn, SessionUsage, UsageStats } from "../shared/types.js";
+import type { UsageTurn, SessionUsage, UsageStats, TurnUsage } from "../shared/types.js";
 import type { DatabaseManager } from "../shared/database.js";
 
 interface UsageRow {
@@ -8,7 +8,21 @@ interface UsageRow {
   duration_ms: number;
   input_tokens: number | null;
   output_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_create_tokens: number | null;
+  model: string | null;
   created_at: string;
+}
+
+/** Inputs for a single recorded turn. */
+export interface RecordedTurn {
+  costUsd: number;
+  durationMs: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheRead?: number;
+  cacheCreate?: number;
+  model?: string;
 }
 
 export class UsageManager {
@@ -22,8 +36,12 @@ export class UsageManager {
   constructor(dbManager: DatabaseManager) {
     this.db = dbManager.db;
     this.stmtInsert = this.db.prepare(`
-      INSERT INTO usage_turns (session_id, cost_usd, duration_ms, input_tokens, output_tokens)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO usage_turns (
+        session_id, cost_usd, duration_ms,
+        input_tokens, output_tokens,
+        cache_read_tokens, cache_create_tokens, model
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this.stmtSessionUsage = this.db.prepare(`
       SELECT SUM(cost_usd) as total_cost, SUM(duration_ms) as total_duration, COUNT(*) as turn_count
@@ -42,9 +60,32 @@ export class UsageManager {
     );
   }
 
-  /** Record a turn's cost, duration, and optional token counts. */
-  record(sessionId: string, costUsd: number, durationMs: number, inputTokens?: number, outputTokens?: number): void {
-    this.stmtInsert.run(sessionId, costUsd, durationMs, inputTokens ?? null, outputTokens ?? null);
+  /**
+   * Record a turn's cost, duration, optional token counts (input/output),
+   * cache breakdown, and the model that produced the turn.
+   *
+   * Backwards-compatible with the previous positional signature so existing
+   * callers continue to work; new fields can be supplied via the trailing
+   * `extra` object.
+   */
+  record(
+    sessionId: string,
+    costUsd: number,
+    durationMs: number,
+    inputTokens?: number,
+    outputTokens?: number,
+    extra?: { cacheRead?: number; cacheCreate?: number; model?: string },
+  ): void {
+    this.stmtInsert.run(
+      sessionId,
+      costUsd,
+      durationMs,
+      inputTokens ?? null,
+      outputTokens ?? null,
+      extra?.cacheRead ?? null,
+      extra?.cacheCreate ?? null,
+      extra?.model ?? null,
+    );
   }
 
   /** Get aggregated usage for a single session. */
@@ -78,6 +119,32 @@ export class UsageManager {
   getSessionTurns(sessionId: string): UsageTurn[] {
     const rows = this.stmtSessionTurns.all(sessionId) as UsageRow[];
     return rows.map((r) => this.fromRow(r));
+  }
+
+  /**
+   * Get per-turn breakdown shaped for the context-dial UI (105). Skips turns
+   * that lack token data — those entries can't meaningfully populate the
+   * dial.
+   */
+  getPerTurnUsage(sessionId: string): TurnUsage[] {
+    const rows = this.stmtSessionTurns.all(sessionId) as UsageRow[];
+    const out: TurnUsage[] = [];
+    for (const r of rows) {
+      // The dial needs at least one of input/output tokens to be useful.
+      if (r.input_tokens === null && r.output_tokens === null) continue;
+      const turn: TurnUsage = {
+        inputTokens: r.input_tokens ?? 0,
+        outputTokens: r.output_tokens ?? 0,
+        costUsd: r.cost_usd,
+        durationMs: r.duration_ms,
+        timestamp: r.created_at,
+      };
+      if (r.cache_read_tokens !== null) turn.cacheRead = r.cache_read_tokens;
+      if (r.cache_create_tokens !== null) turn.cacheCreate = r.cache_create_tokens;
+      if (r.model !== null) turn.model = r.model;
+      out.push(turn);
+    }
+    return out;
   }
 
   /** Get aggregated usage across all sessions. */
@@ -125,6 +192,9 @@ export class UsageManager {
     };
     if (row.input_tokens !== null) turn.inputTokens = row.input_tokens;
     if (row.output_tokens !== null) turn.outputTokens = row.output_tokens;
+    if (row.cache_read_tokens !== null) turn.cacheRead = row.cache_read_tokens;
+    if (row.cache_create_tokens !== null) turn.cacheCreate = row.cache_create_tokens;
+    if (row.model !== null) turn.model = row.model;
     return turn;
   }
 }
