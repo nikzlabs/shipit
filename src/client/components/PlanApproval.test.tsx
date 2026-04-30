@@ -1,11 +1,20 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { PlanApproval } from "./PlanApproval.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { useSessionStore } from "../stores/session-store.js";
+
+beforeEach(() => {
+  // Most tests assume we're "inside" a session — set a default session id.
+  useSessionStore.getState().setSessionId("test-session");
+  useSettingsStore.getState().setPermissionMode("test-session", "plan");
+});
 
 afterEach(() => {
   cleanup();
-  useSettingsStore.getState().setPermissionMode("plan");
+  useSessionStore.getState().setSessionId(undefined);
+  // Reset the store's per-session map and default by writing fresh values.
+  useSettingsStore.setState({ permissionMode: "auto", permissionModeBySession: {} });
 });
 
 describe("PlanApproval", () => {
@@ -34,13 +43,27 @@ describe("PlanApproval", () => {
   describe("accept flow", () => {
     it("calls onSend with execute text and switches permission mode to auto", () => {
       const onSend = vi.fn();
-      useSettingsStore.getState().setPermissionMode("plan");
+      useSettingsStore.getState().setPermissionMode("test-session", "plan");
       render(<PlanApproval onSend={onSend} disabled={false} />);
 
       fireEvent.click(screen.getByTestId("accept-plan"));
 
       expect(onSend).toHaveBeenCalledWith("Execute the plan you just described.");
-      expect(useSettingsStore.getState().permissionMode).toBe("auto");
+      expect(useSettingsStore.getState().getPermissionMode("test-session")).toBe("auto");
+    });
+
+    it("only updates the current session's permission mode, not other sessions", () => {
+      // Two sessions both in plan mode. Accepting the plan in session A must
+      // not flip session B out of plan mode.
+      useSettingsStore.getState().setPermissionMode("session-a", "plan");
+      useSettingsStore.getState().setPermissionMode("session-b", "plan");
+      useSessionStore.getState().setSessionId("session-a");
+
+      render(<PlanApproval onSend={vi.fn()} disabled={false} />);
+      fireEvent.click(screen.getByTestId("accept-plan"));
+
+      expect(useSettingsStore.getState().getPermissionMode("session-a")).toBe("auto");
+      expect(useSettingsStore.getState().getPermissionMode("session-b")).toBe("plan");
     });
 
     it("shows accepted confirmation after clicking accept", () => {
@@ -67,7 +90,7 @@ describe("PlanApproval", () => {
 
     it("calls onSend with feedback text without changing permission mode", () => {
       const onSend = vi.fn();
-      useSettingsStore.getState().setPermissionMode("plan");
+      useSettingsStore.getState().setPermissionMode("test-session", "plan");
       render(<PlanApproval onSend={onSend} disabled={false} />);
 
       fireEvent.click(screen.getByTestId("suggest-changes"));
@@ -75,7 +98,7 @@ describe("PlanApproval", () => {
       fireEvent.click(screen.getByTestId("send-feedback"));
 
       expect(onSend).toHaveBeenCalledWith("Add error handling");
-      expect(useSettingsStore.getState().permissionMode).toBe("plan");
+      expect(useSettingsStore.getState().getPermissionMode("test-session")).toBe("plan");
     });
 
     it("submits feedback on Enter key", () => {
