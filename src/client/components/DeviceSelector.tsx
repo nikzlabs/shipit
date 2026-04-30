@@ -12,6 +12,11 @@ import {
 import { Button } from "./ui/button.js";
 import { DEVICE_PRESETS, type DevicePreset } from "./device-presets.js";
 
+/** Minimum allowed value for a custom viewport dimension (px). */
+export const CUSTOM_SIZE_MIN = 100;
+/** Maximum allowed value for a custom viewport dimension (px). */
+export const CUSTOM_SIZE_MAX = 2560;
+
 export interface DeviceSelectorProps {
   /** Currently active preset, or null when "Responsive" (fill panel). */
   activePreset: DevicePreset | null;
@@ -57,11 +62,17 @@ export function DeviceSelector({
     ? activePreset.label
     : "Responsive";
 
+  const parsedWidth = Math.round(Number(customWidthInput));
+  const parsedHeight = Math.round(Number(customHeightInput));
+  const widthValid =
+    Number.isFinite(parsedWidth) && parsedWidth >= CUSTOM_SIZE_MIN && parsedWidth <= CUSTOM_SIZE_MAX;
+  const heightValid =
+    Number.isFinite(parsedHeight) && parsedHeight >= CUSTOM_SIZE_MIN && parsedHeight <= CUSTOM_SIZE_MAX;
+  const customValid = widthValid && heightValid;
+
   const submitCustom = () => {
-    const w = Math.round(Number(customWidthInput));
-    const h = Math.round(Number(customHeightInput));
-    if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
-      onCustomSize(w, h);
+    if (customValid) {
+      onCustomSize(parsedWidth, parsedHeight);
       setOpen(false);
     }
   };
@@ -127,48 +138,60 @@ export function DeviceSelector({
           <DropdownMenuSeparator />
           <DropdownMenuLabel>Custom</DropdownMenuLabel>
           <div
-            className="px-3 py-2 flex items-center gap-1.5"
+            className="px-3 py-2 flex flex-col gap-1"
             // Prevent dropdown from closing when interacting with the inputs
             onKeyDown={(e) => e.stopPropagation()}
             onPointerDown={(e) => e.stopPropagation()}
           >
-            <input
-              type="number"
-              min={1}
-              aria-label="Custom width"
-              value={customWidthInput}
-              onChange={(e) => setCustomWidthInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  submitCustom();
-                }
-              }}
-              className="w-16 px-1.5 py-0.5 rounded bg-(--color-bg-secondary) border border-(--color-border-secondary) text-xs text-(--color-text-primary) tabular-nums focus:outline-none focus:border-(--color-accent)"
-            />
-            <span className="text-(--color-text-tertiary) text-xs">×</span>
-            <input
-              type="number"
-              min={1}
-              aria-label="Custom height"
-              value={customHeightInput}
-              onChange={(e) => setCustomHeightInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  submitCustom();
-                }
-              }}
-              className="w-16 px-1.5 py-0.5 rounded bg-(--color-bg-secondary) border border-(--color-border-secondary) text-xs text-(--color-text-primary) tabular-nums focus:outline-none focus:border-(--color-accent)"
-            />
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={submitCustom}
-              title="Apply custom size"
-            >
-              Apply
-            </Button>
+            <div className="flex items-center gap-1.5">
+              <input
+                type="number"
+                min={CUSTOM_SIZE_MIN}
+                max={CUSTOM_SIZE_MAX}
+                aria-label="Custom width"
+                aria-invalid={!widthValid}
+                value={customWidthInput}
+                onChange={(e) => setCustomWidthInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    submitCustom();
+                  }
+                }}
+                className={`w-16 px-1.5 py-0.5 rounded bg-(--color-bg-secondary) border text-xs text-(--color-text-primary) tabular-nums focus:outline-none ${widthValid ? "border-(--color-border-secondary) focus:border-(--color-accent)" : "border-(--color-error) focus:border-(--color-error)"}`}
+              />
+              <span className="text-(--color-text-tertiary) text-xs">×</span>
+              <input
+                type="number"
+                min={CUSTOM_SIZE_MIN}
+                max={CUSTOM_SIZE_MAX}
+                aria-label="Custom height"
+                aria-invalid={!heightValid}
+                value={customHeightInput}
+                onChange={(e) => setCustomHeightInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    submitCustom();
+                  }
+                }}
+                className={`w-16 px-1.5 py-0.5 rounded bg-(--color-bg-secondary) border text-xs text-(--color-text-primary) tabular-nums focus:outline-none ${heightValid ? "border-(--color-border-secondary) focus:border-(--color-accent)" : "border-(--color-error) focus:border-(--color-error)"}`}
+              />
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={submitCustom}
+                disabled={!customValid}
+                title={customValid ? "Apply custom size" : `Width and height must be between ${CUSTOM_SIZE_MIN} and ${CUSTOM_SIZE_MAX}`}
+              >
+                Apply
+              </Button>
+            </div>
+            {!customValid && (
+              <span className="text-[10px] text-(--color-error)">
+                Must be {CUSTOM_SIZE_MIN}–{CUSTOM_SIZE_MAX} px
+              </span>
+            )}
           </div>
         </DropdownMenuContent>
       </DropdownMenu>

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DeviceSelector } from "./DeviceSelector.js";
 import { DEVICE_PRESETS, findPresetById } from "./device-presets.js";
@@ -114,15 +114,63 @@ describe("DeviceSelector", () => {
     expect(onCustomSize).toHaveBeenCalledWith(500, 900);
   });
 
-  it("ignores invalid custom size", async () => {
+  it("ignores invalid custom size (empty)", async () => {
     const user = userEvent.setup();
     const onCustomSize = vi.fn();
     render(<DeviceSelector {...baseProps} onCustomSize={onCustomSize} />);
     await user.click(screen.getByLabelText("Select device viewport"));
     const widthInput = screen.getByLabelText("Custom width") as HTMLInputElement;
     await user.clear(widthInput);
-    await user.click(screen.getByTitle("Apply custom size"));
+    const applyBtn = screen.getByRole("button", { name: "Apply" });
+    expect(applyBtn).toBeDisabled();
+    await user.click(applyBtn);
     expect(onCustomSize).not.toHaveBeenCalled();
+  });
+
+  it("rejects custom size below minimum", async () => {
+    const user = userEvent.setup();
+    const onCustomSize = vi.fn();
+    render(<DeviceSelector {...baseProps} onCustomSize={onCustomSize} />);
+    await user.click(screen.getByLabelText("Select device viewport"));
+    const widthInput = screen.getByLabelText("Custom width") as HTMLInputElement;
+    await user.clear(widthInput);
+    await user.type(widthInput, "50");
+    expect(widthInput).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText(/Must be 100–2560 px/)).toBeInTheDocument();
+    const applyBtn = screen.getByRole("button", { name: "Apply" });
+    expect(applyBtn).toBeDisabled();
+    await user.click(applyBtn);
+    expect(onCustomSize).not.toHaveBeenCalled();
+  });
+
+  it("rejects custom size above maximum", async () => {
+    const user = userEvent.setup();
+    const onCustomSize = vi.fn();
+    render(<DeviceSelector {...baseProps} onCustomSize={onCustomSize} />);
+    await user.click(screen.getByLabelText("Select device viewport"));
+    const heightInput = screen.getByLabelText("Custom height") as HTMLInputElement;
+    await user.clear(heightInput);
+    await user.type(heightInput, "9999");
+    expect(heightInput).toHaveAttribute("aria-invalid", "true");
+    const applyBtn = screen.getByRole("button", { name: "Apply" });
+    expect(applyBtn).toBeDisabled();
+    await user.click(applyBtn);
+    expect(onCustomSize).not.toHaveBeenCalled();
+  });
+
+  it("accepts custom size at the boundaries", async () => {
+    const user = userEvent.setup();
+    const onCustomSize = vi.fn();
+    render(<DeviceSelector {...baseProps} onCustomSize={onCustomSize} />);
+    await user.click(screen.getByLabelText("Select device viewport"));
+    const widthInput = screen.getByLabelText("Custom width") as HTMLInputElement;
+    const heightInput = screen.getByLabelText("Custom height") as HTMLInputElement;
+    await user.clear(widthInput);
+    await user.type(widthInput, "100");
+    await user.clear(heightInput);
+    await user.type(heightInput, "2560");
+    await user.click(screen.getByTitle("Apply custom size"));
+    expect(onCustomSize).toHaveBeenCalledWith(100, 2560);
   });
 
   it("renders preset dimensions in the menu", async () => {
@@ -131,5 +179,35 @@ describe("DeviceSelector", () => {
     await user.click(screen.getByLabelText("Select device viewport"));
     expect(screen.getByText("390×844")).toBeInTheDocument();
     expect(screen.getByText("768×1024")).toBeInTheDocument();
+  });
+
+  it("closes dropdown when clicking outside", async () => {
+    const user = userEvent.setup();
+    render(
+      <div>
+        <DeviceSelector {...baseProps} />
+        <button data-testid="outside">outside</button>
+      </div>,
+    );
+    await user.click(screen.getByLabelText("Select device viewport"));
+    expect(screen.getByText("Phones")).toBeInTheDocument();
+    // Radix listens for pointerdown outside the menu to close it.
+    // userEvent.click won't fire on elements with pointer-events: none (Radix's
+    // outside-overlay), so we dispatch the pointerdown directly.
+    fireEvent.pointerDown(screen.getByTestId("outside"));
+    await waitFor(() => {
+      expect(screen.queryByText("Phones")).not.toBeInTheDocument();
+    });
+  });
+
+  it("closes dropdown when Escape is pressed", async () => {
+    const user = userEvent.setup();
+    render(<DeviceSelector {...baseProps} />);
+    await user.click(screen.getByLabelText("Select device viewport"));
+    expect(screen.getByText("Phones")).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByText("Phones")).not.toBeInTheDocument();
+    });
   });
 });

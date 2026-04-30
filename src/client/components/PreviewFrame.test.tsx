@@ -477,6 +477,53 @@ describe("PreviewFrame", () => {
     expect(usePreviewStore.getState().isLandscape).toBe(false);
   });
 
+  it("scales the iframe down when the container is smaller than the device", async () => {
+    // Mock HTMLDivElement clientWidth/clientHeight so the device-frame measurement
+    // sees a 400×400 panel. iPad Air is 820×1180, so scale should be < 1.
+    const widthSpy = vi.spyOn(HTMLDivElement.prototype, "clientWidth", "get").mockReturnValue(400);
+    const heightSpy = vi.spyOn(HTMLDivElement.prototype, "clientHeight", "get").mockReturnValue(400);
+    try {
+      const preset = findPresetById("ipad-air")!;
+      usePreviewStore.setState({ devicePreset: preset, isLandscape: false, customSize: null });
+      const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+      render(<PreviewFrame preview={preview} {...defaultProps} />);
+      const iframe = await screen.findByTitle("Live Preview");
+      // Expected scale: min(1, (400-32)/820, (400-32)/1180) = 368/1180 ≈ 0.312
+      const transform = iframe.style.transform;
+      const match = /scale\(([^)]+)\)/.exec(transform);
+      expect(match).not.toBeNull();
+      const scale = Number(match![1]);
+      expect(scale).toBeGreaterThan(0);
+      expect(scale).toBeLessThan(1);
+      // Header should show the scaled-down percentage
+      const expectedPercent = Math.round(Math.min(1, 368 / 820, 368 / 1180) * 100);
+      expect(screen.getByText(new RegExp(`\\(${expectedPercent}%\\)`))).toBeInTheDocument();
+    } finally {
+      widthSpy.mockRestore();
+      heightSpy.mockRestore();
+    }
+  });
+
+  it("does not scale below 1.0 when container is larger than device", async () => {
+    const widthSpy = vi.spyOn(HTMLDivElement.prototype, "clientWidth", "get").mockReturnValue(2000);
+    const heightSpy = vi.spyOn(HTMLDivElement.prototype, "clientHeight", "get").mockReturnValue(2000);
+    try {
+      const preset = findPresetById("iphone-se")!;
+      usePreviewStore.setState({ devicePreset: preset, isLandscape: false, customSize: null });
+      const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+      render(<PreviewFrame preview={preview} {...defaultProps} />);
+      const iframe = await screen.findByTitle("Live Preview");
+      const match = /scale\(([^)]+)\)/.exec(iframe.style.transform);
+      expect(match).not.toBeNull();
+      expect(Number(match![1])).toBe(1);
+      // No "(NN%)" indicator when scale is 1
+      expect(screen.queryByText(/\(\d+%\)/)).not.toBeInTheDocument();
+    } finally {
+      widthSpy.mockRestore();
+      heightSpy.mockRestore();
+    }
+  });
+
 });
 
 describe("formatErrorForMessage", () => {

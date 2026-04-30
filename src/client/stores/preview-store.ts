@@ -274,7 +274,17 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
 
   reset: () => {
     resetDedupState();
-    set({ ...initialState, sessionSnapshots: {} });
+    saveDevicePresetId(null);
+    set({
+      ...initialState,
+      // Always start fresh on reset — don't preserve the device preset from
+      // localStorage, since reset() is invoked on full-state teardown
+      // (logout, full reset, archive).
+      devicePreset: null,
+      isLandscape: false,
+      customSize: null,
+      sessionSnapshots: {},
+    });
   },
 }));
 
