@@ -116,9 +116,19 @@ export interface WsPrStatus {
       pending: number;
     };
     autoMergeEnabled: boolean;
-    mergeable: boolean;
+    mergeable: PrMergeableState;
   } | null;
 }
+
+/**
+ * GitHub-reported mergeability for a PR.
+ *
+ * Mirrors the `MergeableState` enum from GitHub's GraphQL API. Treated as a
+ * tri-state because `"unknown"` is meaningfully distinct from `"conflicting"`:
+ * GitHub returns `UNKNOWN` for a brief window after each push while it
+ * computes mergeability, and we don't want to gate UI on that transient state.
+ */
+export type PrMergeableState = "mergeable" | "conflicting" | "unknown";
 
 export interface WsMergePrResult {
   type: "merge_pr_result";
@@ -192,7 +202,7 @@ export interface PrStatusSummary {
     /** Per-check failure details (populated when state is "failure"). */
     failedChecks?: { name: string; summary: string }[];
   };
-  mergeable: boolean;
+  mergeable: PrMergeableState;
   autoMergeEnabled: boolean;
   /** Auto-fix state — present when auto-fix has been interacted with. */
   autoFix?: {

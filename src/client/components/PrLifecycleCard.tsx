@@ -166,6 +166,71 @@ function CiIndicator({ checks }: { checks: PrCardState["checks"] }) {
   );
 }
 
+/**
+ * MergeConflictIndicator — surfaces GitHub's `CONFLICTING` mergeable state.
+ *
+ * Renders a warning-tone label next to the CI indicator when the PR cannot
+ * be merged because the base branch has diverged. Only shown when the
+ * GitHub poller has explicitly observed `"conflicting"` — `"unknown"` is
+ * treated as neutral to avoid flicker after a push (see OpenPhase comment).
+ */
+function MergeConflictIndicator() {
+  return (
+    <span
+      className="h-6 text-(--color-warning) text-xs flex items-center gap-1 shrink-0"
+      title="Branch has merge conflicts with the base branch. Use Resolve conflicts to rebase and let the agent fix them."
+    >
+      <WarningIcon size={ICON_SIZE.SM} /> Merge conflicts
+    </span>
+  );
+}
+
+/**
+ * ResolveConflictsButton — one-click trigger for the rebase driver.
+ *
+ * Per docs/113-pr-mergeable-state, this is a deliberate exception to the
+ * "chat is the input surface" principle: clicking immediately fires the
+ * rebase flow (which spawns its own agent turn for conflict resolution)
+ * with no chat prefill or confirmation step. The button is disabled while
+ * the agent is in another turn — we don't queue actions whose
+ * preconditions might change before they run.
+ */
+function ResolveConflictsButton({ sessionId, baseBranch }: { sessionId: string; baseBranch: string }) {
+  const startRebase = useGitStore((s) => s.startRebase);
+  const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
+  const [starting, setStarting] = useState(false);
+
+  const handleClick = async () => {
+    if (isAgentRunning || starting) return;
+    setStarting(true);
+    try {
+      await startRebase(sessionId, baseBranch);
+    } finally {
+      // Clear the local "starting" flag once the request returns. Subsequent
+      // UI state (in-progress, conflicts, resolving) is driven by WS events
+      // and rendered by RebaseBanner — see Phase 5 visibility coordination.
+      setStarting(false);
+    }
+  };
+
+  const title = isAgentRunning
+    ? "Wait for the agent to finish before resolving conflicts"
+    : "Rebase onto the base branch and let the agent resolve conflicts";
+
+  return (
+    <Button
+      variant="secondary"
+      size="sm"
+      disabled={isAgentRunning || starting}
+      title={title}
+      onClick={handleClick}
+      className="shrink-0 h-6"
+    >
+      {starting ? "Starting..." : "Resolve conflicts"}
+    </Button>
+  );
+}
+
 function FailedChecksList({ checks }: { checks: PrCardState["checks"] }) {
   const failedChecks = checks?.failedChecks;
   if (!failedChecks || failedChecks.length === 0) return null;
@@ -389,6 +454,8 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
   const fixCI = usePrStore((s) => s.fixCI);
   const setToast = useUiStore((s) => s.setToast);
   const deployments = usePrStore((s) => s.statusBySession[sessionId]?.deployments);
+  const mergeable = usePrStore((s) => s.statusBySession[sessionId]?.mergeable);
+  const rebaseStatus = useGitStore((s) => s.rebaseStatus);
   const [fixingCI, setFixingCI] = useState(false);
   const openDiff = useOpenPrDiff(pr?.baseBranch);
   if (!pr) return null;
@@ -404,10 +471,21 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
   // undefined as "none" would let the merge button appear in the gap between
   // PR creation and the first poll, before pending workflows have registered.
   const isCiNone = card.checks?.state === "none";
-  const canMerge = isCiPassed || isCiNone;
+  const isConflicting = mergeable === "conflicting";
+  // Merge button visibility: gate on CI state AND on GitHub-reported
+  // mergeability. Don't gate on `mergeable === "unknown"` — that's the brief
+  // window after each push while GitHub computes mergeability, and gating
+  // would flicker the button off-on every push. The cost of a stale click
+  // during that window is bounded (the merge attempt fails with a toast).
+  const canMerge = (isCiPassed || isCiNone) && !isConflicting;
   const showFixButton = isCiFailed && !isAutoFixRunning && (!autoFix?.enabled || isAutoFixExhausted);
   const showMergeButton = canMerge && !autoMerge?.enabled;
   const showAutoMergeToggle = !isCiFailed || isCiPassed;
+  // The inline conflict UI yields to the RebaseBanner once a rebase is
+  // active — RebaseBanner is the surface for the in-flight flow. The
+  // indicator and Resolve button reappear if the rebase aborts back to
+  // the conflict state.
+  const showConflictUi = isConflicting && rebaseStatus === "idle";
 
   const handleFixCI = async () => {
     setFixingCI(true);
@@ -426,6 +504,10 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
         <span className="ml-auto shrink-0 flex items-center gap-3">
           <DiffStats ins={pr.insertions} del={pr.deletions} onClick={openDiff} />
           <CiIndicator checks={card.checks} />
+          {showConflictUi && <MergeConflictIndicator />}
+          {showConflictUi && (
+            <ResolveConflictsButton sessionId={sessionId} baseBranch={pr.baseBranch} />
+          )}
           {showMergeButton && (
             <MergeButton sessionId={sessionId} autoMerge={autoMerge} />
           )}

@@ -218,7 +218,10 @@ export function parsePrNode(
       pending,
       failedChecks: failedChecks.length > 0 ? failedChecks : undefined,
     },
-    mergeable: node.mergeable === "MERGEABLE",
+    mergeable:
+      node.mergeable === "MERGEABLE" ? "mergeable" :
+      node.mergeable === "CONFLICTING" ? "conflicting" :
+      "unknown",
     autoMergeEnabled: node.autoMergeRequest !== null,
     deployments,
   };
@@ -725,7 +728,9 @@ export class PrStatusPoller {
       insertions: pr.additions,
       deletions: pr.deletions,
       checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 },
-      mergeable: false,
+      // PR is merged/closed — mergeability is moot. Use "unknown" since we
+      // didn't actually query GraphQL for it.
+      mergeable: "unknown",
       autoMergeEnabled: false,
     };
 
@@ -754,7 +759,7 @@ export class PrStatusPoller {
     // Only merge when CI passes
     if (summary.checks.state !== "success") return;
 
-    if (!summary.mergeable) {
+    if (summary.mergeable === "conflicting") {
       mergeState.error = {
         code: "no_branch_protection",
         message: "PR has merge conflicts",
@@ -763,6 +768,10 @@ export class PrStatusPoller {
       this.broadcastSessionStatus(sessionId);
       return;
     }
+
+    // "unknown" — GitHub hasn't computed mergeability yet. Wait for the next
+    // poller tick rather than racing into a merge attempt that would fail.
+    if (summary.mergeable !== "mergeable") return;
 
     // Attempt the merge via REST API
     const result = await this.githubAuth.mergePullRequest(
