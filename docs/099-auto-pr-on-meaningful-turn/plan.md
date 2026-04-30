@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 ---
 
 # 099 — Auto-Create PR After Meaningful Turn
@@ -44,20 +44,13 @@ Once a PR exists for the branch, `claude-execution.ts:257` short-circuits the au
 
 That is the entire server-side change. Everything else (the "creating" → "open" lifecycle card phases, error handling, PR description generation, push-then-create via `quickCreatePr`) is already wired up.
 
-### Toggle copy
+### Toggle UI
 
-Update `PrLifecycleCard.tsx`:
+The toggle lives in **Settings → GitHub → Pull Requests** (`PullRequestSettings` in `Settings.tsx`), shown when GitHub is authenticated. It uses the optimistic-set-then-PUT-with-revert pattern against `PUT /api/settings`, surfacing a toast on failure via `useUiStore.setToast`.
 
-```diff
-- title={autoCreatePr
--   ? "Disable auto-create PR for new sessions"
--   : "Enable auto-create PR for new sessions"}
-+ title={autoCreatePr
-+   ? "Disable auto-create PR after meaningful turns"
-+   : "Enable auto-create PR after every meaningful turn"}
-```
+It used to live in the overflow menu of the PR lifecycle card's **ready** phase, but that location was effectively undiscoverable: the ready phase only renders for sessions without a PR, and when auto-create is on the ready phase is transient (it flips immediately to "creating" → "open"), so a user who had already turned the setting on could never see the toggle to turn it back off. Moving to a permanent global Settings location resolves that.
 
-The `AutoCreatePrToggle` lives in the overflow menu of the **ready** phase. After the change, when the toggle is on, the ready phase will be transient — it appears for a tick before transitioning to "creating" → "open". That is the desired UX.
+When the toggle is on, the ready phase is still transient — it appears for a tick before transitioning to "creating" → "open". That is the desired UX.
 
 ### Race with auto-push
 
@@ -98,7 +91,8 @@ Add an integration test `pr-auto-create-on-turn.test.ts` covering:
 | File | Change |
 |---|---|
 | `src/server/orchestrator/ws-handlers/claude-execution.ts` | Drop `isNewSession &&` from `shouldAutoCreate` |
-| `src/client/components/PrLifecycleCard.tsx` | Update `AutoCreatePrToggle` title copy |
+| `src/client/components/Settings.tsx` | Add `PullRequestSettings` (Auto-create PR toggle) inside the GitHub tab's authenticated branch |
+| `src/client/components/PrLifecycleCard.tsx` | Remove the now-superseded `AutoCreatePrToggle` and the surrounding `<OverflowMenu>` from `ReadyPhase` |
 | `src/server/orchestrator/integration_tests/pr-auto-create-on-turn.test.ts` | New integration test file |
 | `docs/064-pr-lifecycle-flow/plan.md` | Cross-link from the auto-create section to this doc |
 
