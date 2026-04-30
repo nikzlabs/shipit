@@ -302,15 +302,18 @@ function RepoGroup({
       {/* Session list — hidden when collapsed */}
       {!isCollapsed && (
         <div className="flex flex-col gap-0.5">
-          {/* Inline new session button */}
-          <button
-            onClick={onNewSession}
-            disabled={repo.status === "cloning"}
-            className="flex items-center gap-1.5 px-3 py-1 mx-1 text-[11px] text-(--color-text-tertiary) hover:text-(--color-success) transition-colors rounded hover:bg-(--color-bg-hover) disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <PlusIcon size={ICON_SIZE.XS} />
-            New Session
-          </button>
+          {/* New session button — big primary, like before the multi-repo refactor */}
+          <div className="px-3 py-2 flex justify-center">
+            <Button
+              variant="primary"
+              onClick={onNewSession}
+              disabled={repo.status === "cloning"}
+              className="w-full justify-center gap-2"
+            >
+              <PlusIcon size={ICON_SIZE.SM} />
+              New Session
+            </Button>
+          </div>
           {sessions.length === 0 ? (
             <p className="text-[10px] text-(--color-text-tertiary) px-3 py-1 text-center">No sessions</p>
           ) : (
