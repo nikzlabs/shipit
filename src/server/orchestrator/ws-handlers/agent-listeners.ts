@@ -1,14 +1,18 @@
-import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse } from "../../shared/types.js";
+import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage } from "../../shared/types.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import type { ToolResultEntry } from "../session-runner.js";
 import { resolveRunner } from "./resolve-runner.js";
+import { getContextWindowForModel, DEFAULT_CONTEXT_WINDOW_TOKENS } from "../../shared/agent-registry.js";
 
 /** Full handler context — send-message handlers need all three sub-contexts. */
 type FullCtx = ConnectionCtx & RunnerCtx & AppCtx;
 
-/** Context window size in tokens (same across all current model families). */
-export const CONTEXT_WINDOW_TOKENS = 200_000;
+/**
+ * Default context window in tokens. Kept as a re-export for legacy call
+ * sites; per-model windows are resolved via `getContextWindowForModel`.
+ */
+export const CONTEXT_WINDOW_TOKENS = DEFAULT_CONTEXT_WINDOW_TOKENS;
 
 /** Extract tool result entries from an agent_tool_result event. */
 export function extractToolResults(event: AgentEvent): ToolResultEntry[] {
@@ -62,6 +66,11 @@ export function wireAgentListeners(
   // disconnected by the time this is invoked from a queue-drained recursive
   // turn. Mutate this captured reference directly throughout the listeners.
   const runner = resolveRunner(ctx, opts.capturedSessionId);
+  // Capture the model used for this turn — sourced from `agent_init` (what the
+  // CLI actually picked) or falls back to the user-selected model. Used on
+  // `agent_result` to attach the model to per-turn usage so the dial can
+  // re-target context window when the user switches models mid-session.
+  let turnModel: string | undefined = ctx.getSelectedModel();
   // Helper: emit to all viewers via runner, or fall back to ctx.send
   const emitToViewers = (msg: WsServerMessage) => {
     if (runner) {
@@ -93,10 +102,11 @@ export function wireAgentListeners(
       }
 
       if (event.model) {
+        turnModel = event.model;
         emitToViewers({
           type: "model_info",
           model: event.model,
-          contextWindowTokens: CONTEXT_WINDOW_TOKENS,
+          contextWindowTokens: getContextWindowForModel(event.model),
         });
       }
     }
@@ -188,6 +198,22 @@ export function wireAgentListeners(
       }
 
       const usageSessionId = turnSessionId ?? event.sessionId;
+      // Build the per-turn usage record once — reused for the WS emit and for
+      // persistence in chat history.
+      let perTurnUsage: TurnUsage | undefined;
+      if (event.tokens?.input !== undefined || event.tokens?.output !== undefined || event.cost?.totalUsd !== undefined) {
+        perTurnUsage = {
+          inputTokens: event.tokens?.input ?? 0,
+          outputTokens: event.tokens?.output ?? 0,
+          costUsd: event.cost?.totalUsd ?? 0,
+          durationMs: event.durationMs,
+          timestamp: new Date().toISOString(),
+        };
+        if (event.tokens?.cacheRead !== undefined) perTurnUsage.cacheRead = event.tokens.cacheRead;
+        if (event.tokens?.cacheWrite !== undefined) perTurnUsage.cacheCreate = event.tokens.cacheWrite;
+        if (turnModel) perTurnUsage.model = turnModel;
+      }
+
       if (event.cost?.totalUsd !== undefined) {
         ctx.usageManager.record(
           usageSessionId,
@@ -195,6 +221,11 @@ export function wireAgentListeners(
           event.durationMs ?? 0,
           event.tokens?.input,
           event.tokens?.output,
+          {
+            cacheRead: event.tokens?.cacheRead,
+            cacheCreate: event.tokens?.cacheWrite,
+            model: turnModel,
+          },
         );
         const sessionUsage = ctx.usageManager.getSessionUsage(usageSessionId);
         if (sessionUsage) {
@@ -209,20 +240,40 @@ export function wireAgentListeners(
             lastTurnOutputTokens: event.tokens?.output,
             cumulativeInputTokens: tokenTotals?.cumulativeInputTokens,
           });
+          if (perTurnUsage) {
+            emitToViewers({
+              type: "turn_usage_update",
+              sessionId: sessionUsage.sessionId,
+              turn: perTurnUsage,
+              totalCostUsd: sessionUsage.totalCostUsd,
+              turnCount: sessionUsage.turnCount,
+            });
+          }
         }
+      } else if (perTurnUsage) {
+        // Tokens but no cost — still notify the dial.
+        emitToViewers({
+          type: "turn_usage_update",
+          sessionId: usageSessionId,
+          turn: perTurnUsage,
+          totalCostUsd: 0,
+          turnCount: 0,
+        });
       }
 
       // Persist each message group as a separate assistant entry so that
       // reloaded chat history shows the same message boundaries as live streaming.
+      // Attach per-turn usage to the *last* group so reloads can repopulate
+      // the context dial without needing the usage_turns table.
       const groups = runner?.chatMessageGroups ?? [];
-      const finalMessages = groups
-        .filter((g) => g.text || g.toolUse.length > 0)
-        .map((g) => ({
-          role: "assistant" as const,
-          text: g.text,
-          toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
-          toolResults: g.toolResults?.length ? g.toolResults : undefined,
-        }));
+      const persistableGroups = groups.filter((g) => g.text || g.toolUse.length > 0);
+      const finalMessages = persistableGroups.map((g, idx) => ({
+        role: "assistant" as const,
+        text: g.text,
+        toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
+        toolResults: g.toolResults?.length ? g.toolResults : undefined,
+        turnUsage: idx === persistableGroups.length - 1 ? perTurnUsage : undefined,
+      }));
       ctx.chatHistoryManager.replaceInProgress(usageSessionId, finalMessages);
       ctx.chatHistoryManager.finalizeInProgress(usageSessionId);
       if (runner) runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;

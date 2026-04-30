@@ -170,6 +170,14 @@ const MIGRATIONS: Migration[] = [
         ON file_review_comments(review_id);
     `);
   },
+  // Migration 8: add per-turn cache tokens and model to usage_turns and a
+  // serialized turn-usage blob to messages for the context-dial UI (105).
+  (db) => {
+    db.exec("ALTER TABLE usage_turns ADD COLUMN cache_read_tokens INTEGER");
+    db.exec("ALTER TABLE usage_turns ADD COLUMN cache_create_tokens INTEGER");
+    db.exec("ALTER TABLE usage_turns ADD COLUMN model TEXT");
+    db.exec("ALTER TABLE messages ADD COLUMN turn_usage TEXT");
+  },
 ];
 
 export class DatabaseManager {

@@ -200,6 +200,8 @@ export interface DockerMemoryStats {
 
 // ---- Chat history message (shared data type) ----
 
+import type { TurnUsage } from "./usage-types.js";
+
 export interface WsChatHistoryMessage {
   role: "user" | "assistant";
   text: string;
@@ -233,4 +235,6 @@ export interface WsChatHistoryMessage {
   parentCommitHash?: string;
   /** Upload paths consumed by this message (for hydration of pending vs sent state). */
   uploadPaths?: string[];
+  /** Per-turn usage for the agent turn that produced this message — only on the last group of a turn. */
+  turnUsage?: TurnUsage;
 }

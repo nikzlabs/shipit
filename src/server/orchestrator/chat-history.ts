@@ -1,4 +1,5 @@
 import type { DatabaseManager } from "../shared/database.js";
+import type { TurnUsage } from "../shared/types.js";
 
 /**
  * A single persisted chat message.
@@ -39,6 +40,13 @@ export interface PersistedMessage {
   parentCommitHash?: string;
   /** Upload paths consumed by this message (for hydration of pending vs sent state). */
   uploadPaths?: string[];
+  /**
+   * Per-turn token/cost usage for the agent turn that produced this message.
+   * Attached only to the *last* assistant message of a turn; intermediate
+   * message groups within the same turn leave this undefined. Used by the
+   * context-dial UI on session reload (105).
+   */
+  turnUsage?: TurnUsage;
 }
 
 interface MessageRow {
@@ -55,18 +63,20 @@ interface MessageRow {
   in_progress: number;
   tool_results: string | null;
   upload_paths: string | null;
+  turn_usage: string | null;
   created_at: string;
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage)
 `;
 
 const UPDATE_SQL = `
   UPDATE messages SET role=@role, content=@content, tool_use=@tool_use, images=@images,
     files=@files, is_error=@is_error, commit_hash=@commit_hash, parent_commit_hash=@parent_commit_hash,
-    in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths
+    in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths,
+    turn_usage=@turn_usage
   WHERE id = @id
 `;
 
@@ -105,6 +115,7 @@ export class ChatHistoryManager {
       in_progress: msg.inProgress ? 1 : 0,
       tool_results: msg.toolResults ? JSON.stringify(msg.toolResults) : null,
       upload_paths: msg.uploadPaths ? JSON.stringify(msg.uploadPaths) : null,
+      turn_usage: msg.turnUsage ? JSON.stringify(msg.turnUsage) : null,
     };
   }
 
@@ -122,6 +133,7 @@ export class ChatHistoryManager {
     if (row.commit_hash) msg.commitHash = row.commit_hash;
     if (row.parent_commit_hash) msg.parentCommitHash = row.parent_commit_hash;
     if (row.upload_paths) msg.uploadPaths = JSON.parse(row.upload_paths) as string[];
+    if (row.turn_usage) msg.turnUsage = JSON.parse(row.turn_usage) as PersistedMessage["turnUsage"];
     return msg;
   }
 
