@@ -33,6 +33,12 @@ describe("MessageList", () => {
       const { container } = render(<MessageList messages={[]} isLoading={false} />);
       expect(container.querySelector(".rocket-scene")).not.toBeInTheDocument();
     });
+
+    it("shows rocket launch animation immediately for a new session, even before history loads", () => {
+      useSessionStore.getState().setHistoryLoaded(false);
+      const { container } = render(<MessageList messages={[]} isLoading={false} isNewSession />);
+      expect(container.querySelector(".rocket-scene")).toBeInTheDocument();
+    });
   });
 
   describe("message rendering", () => {
