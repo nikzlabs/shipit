@@ -154,4 +154,24 @@ export function saveCollapsedRepos(collapsed: Set<string>): void {
   } catch { /* ignore */ }
 }
 
-export { PERMISSION_MODE_KEY, SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, COLLAPSED_REPOS_KEY };
+const DEVICE_PRESET_KEY = "shipit:devicePreset";
+
+export function getSavedDevicePresetId(): string | null {
+  try {
+    return localStorage.getItem(DEVICE_PRESET_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function saveDevicePresetId(presetId: string | null): void {
+  try {
+    if (presetId) {
+      localStorage.setItem(DEVICE_PRESET_KEY, presetId);
+    } else {
+      localStorage.removeItem(DEVICE_PRESET_KEY);
+    }
+  } catch { /* ignore */ }
+}
+
+export { PERMISSION_MODE_KEY, SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, COLLAPSED_REPOS_KEY, DEVICE_PRESET_KEY };

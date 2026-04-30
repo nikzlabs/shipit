@@ -1,5 +1,8 @@
 import { create } from "zustand";
 import type { PreviewStatus } from "../components/PreviewFrame.js";
+import type { DevicePreset } from "../components/device-presets.js";
+import { findPresetById } from "../components/device-presets.js";
+import { getSavedDevicePresetId, saveDevicePresetId } from "../utils/local-storage.js";
 import type { ComposeServiceStatus, ComposeServicePreviewMode } from "../../server/shared/types/ws-server-messages.js";
 
 // ---- Compose service state ----
@@ -65,6 +68,13 @@ interface PreviewState {
   /** True when no compose file is configured in shipit.yaml. */
   composeNotConfigured: boolean;
 
+  /** Active device preset for viewport sizing. null = "Responsive" (fill panel). */
+  devicePreset: DevicePreset | null;
+  /** True when the active preset is rotated to landscape (swap width/height). */
+  isLandscape: boolean;
+  /** Custom user-entered viewport size (separate from named presets). */
+  customSize: { width: number; height: number } | null;
+
   /** Saved preview state per session, keyed by sessionId. */
   sessionSnapshots: Record<string, SessionPreviewSnapshot>;
 
@@ -85,6 +95,12 @@ interface PreviewState {
   updateService: (update: ManagedServiceState) => void;
   setComposeError: (error: string | null) => void;
   setComposeNotConfigured: (value: boolean) => void;
+  /** Set the active device preset (or null to return to "Responsive"). Persists to localStorage. */
+  setDevicePreset: (preset: DevicePreset | null) => void;
+  /** Swap width and height on the active preset. */
+  toggleLandscape: () => void;
+  /** Set a custom viewport size; selecting null clears it. */
+  setCustomSize: (size: { width: number; height: number } | null) => void;
   /** Save current top-level state into sessionSnapshots[sessionId]. */
   snapshotSession: (sessionId: string) => void;
   /** Restore from snapshot if exists, otherwise reset to defaults. */
@@ -147,6 +163,9 @@ const initialSessionState: SessionPreviewSnapshot = {
 const initialState = {
   ...initialSessionState,
   autoFixEnabled: false,
+  devicePreset: findPresetById(getSavedDevicePresetId()),
+  isLandscape: false,
+  customSize: null as { width: number; height: number } | null,
   sessionSnapshots: {} as Record<string, SessionPreviewSnapshot>,
 };
 
@@ -199,6 +218,16 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
 
   setComposeNotConfigured: (composeNotConfigured) => set({ composeNotConfigured }),
 
+  setDevicePreset: (devicePreset) => {
+    saveDevicePresetId(devicePreset?.id ?? null);
+    // Switching to a named preset clears any pending custom size.
+    set({ devicePreset, customSize: devicePreset?.category === "custom" ? get().customSize : null });
+  },
+
+  toggleLandscape: () => set((state) => ({ isLandscape: !state.isLandscape })),
+
+  setCustomSize: (customSize) => set({ customSize }),
+
   setServices: (services) => set({ services, composeError: null, composeNotConfigured: false }),
 
   updateService: (update) =>
@@ -248,3 +277,6 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     set({ ...initialState, sessionSnapshots: {} });
   },
 }));
+
+// Re-export DevicePreset type for convenience so consumers don't need to know the source.
+export type { DevicePreset } from "../components/device-presets.js";
