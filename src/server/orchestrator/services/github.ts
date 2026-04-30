@@ -107,7 +107,10 @@ export async function getPrStatus(
     deletions: stats.deletions,
     checks,
     autoMergeEnabled: false,
-    mergeable: true,
+    // One-shot fetch: we don't query GraphQL's `mergeable` field here. The
+    // poller will fill in the real value on its next tick. Default to
+    // "unknown" so the UI doesn't gate behavior on a placeholder.
+    mergeable: "unknown",
   };
 }
 
