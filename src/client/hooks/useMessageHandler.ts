@@ -411,6 +411,14 @@ function processMessage(
         commitHash: m.commitHash, parentCommitHash: m.parentCommitHash, uploadPaths: m.uploadPaths,
       }));
       session.setMessages(loaded);
+
+      // Rehydrate per-turn usage history from the persisted chat history.
+      // `turnUsage` is attached to the *last* message group of each turn, so
+      // collecting all non-undefined entries reconstructs the per-turn series.
+      const reloadedUsage = data.messages
+        .map((m) => m.turnUsage)
+        .filter((u): u is NonNullable<typeof u> => u !== undefined);
+      session.setTurnUsageForSession(data.sessionId, reloadedUsage);
     }
 
     if (data.type === "template_applied") {
@@ -456,6 +464,11 @@ function processMessage(
           },
         ]);
       }
+    }
+
+    if (data.type === "turn_usage_update") {
+      // Append to the per-session turn-usage history powering the context dial.
+      session.appendTurnUsage(data.sessionId, data.turn);
     }
 
     if (data.type === "system_user_message") {
