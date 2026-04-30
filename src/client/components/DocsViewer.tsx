@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Badge } from "./ui/badge.js";
 import type { BadgeProps } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
-import type { DocEntry, DocStatus } from "../../server/shared/types.js";
+import type { DocEntry, DocPriority, DocStatus } from "../../server/shared/types.js";
 
 export interface DocsViewerProps {
   files: DocEntry[];
@@ -18,8 +18,28 @@ const STATUS_CONFIG: Record<DocStatus, { label: string; variant: BadgeProps["var
   "done": { label: "Done", variant: "success", order: 3 },
 };
 
+const PRIORITY_CONFIG: Record<DocPriority, { label: string; variant: BadgeProps["variant"]; order: number }> = {
+  high: { label: "High", variant: "error", order: 0 },
+  medium: { label: "Med", variant: "warning", order: 1 },
+  low: { label: "Low", variant: "default", order: 2 },
+};
+
+/** Sort key for priority. Unset priorities sort after all set priorities. */
+function priorityOrder(priority: DocPriority | undefined): number {
+  return priority ? PRIORITY_CONFIG[priority].order : 99;
+}
+
 function StatusBadge({ status }: { status: DocStatus }) {
   const config = STATUS_CONFIG[status] ?? STATUS_CONFIG.planned;
+  return (
+    <Badge variant={config.variant} className="text-[11px]">
+      {config.label}
+    </Badge>
+  );
+}
+
+function PriorityBadge({ priority }: { priority: DocPriority }) {
+  const config = PRIORITY_CONFIG[priority];
   return (
     <Badge variant={config.variant} className="text-[11px]">
       {config.label}
@@ -39,6 +59,15 @@ function sortByStatusThenPath(docs: DocEntry[]): DocEntry[] {
     const orderA = a.status ? STATUS_CONFIG[a.status]?.order ?? 99 : 99;
     const orderB = b.status ? STATUS_CONFIG[b.status]?.order ?? 99 : 99;
     if (orderA !== orderB) return orderA - orderB;
+    // Within the planned bucket, sort by priority (high → medium → low → unset),
+    // then by path *descending* so the most recently added planned items
+    // (highest NNN- prefix) bubble up within each priority tier.
+    if (a.status === "planned" && b.status === "planned") {
+      const pA = priorityOrder(a.priority);
+      const pB = priorityOrder(b.priority);
+      if (pA !== pB) return pA - pB;
+      return b.path.localeCompare(a.path);
+    }
     return a.path.localeCompare(b.path);
   });
 }
@@ -166,6 +195,9 @@ export function DocsViewer({ files, onFileClick, onRefresh, onReviewFeature }: D
                       >
                         Review
                       </Button>
+                    )}
+                    {doc.status === "planned" && doc.priority && (
+                      <PriorityBadge priority={doc.priority} />
                     )}
                     {doc.status && <StatusBadge status={doc.status} />}
                   </div>
