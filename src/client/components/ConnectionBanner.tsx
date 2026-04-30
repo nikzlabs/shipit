@@ -1,21 +1,24 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: setTimeout for disconnect delay with cleanup (timer-based side effect)
 import { useEffect, useRef, useState } from "react";
+import { CheckCircleIcon, CircleNotchIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import { ICON_SIZE } from "../design-tokens.js";
 import type { WsStatus } from "../hooks/useWebSocket.js";
-import { Banner } from "./ui/banner.js";
 
 /** Grace period before showing the disconnect banner (ms). */
 const DISCONNECT_DELAY_MS = 1500;
 
 /**
- * ConnectionBanner — full-width banner shown when the WebSocket connection
- * is lost, reconnecting, or has just been restored. Provides clear visual
- * feedback so users know their messages won't be delivered until the
- * connection is restored.
+ * ConnectionBanner — compact inline status pill rendered inside the top bar
+ * when the WebSocket connection is lost, reconnecting, or just restored.
+ *
+ * Designed to sit absolutely-positioned in the center of the header so its
+ * appearance/disappearance does NOT shift surrounding layout. Brief reconnect
+ * blips no longer push panels around.
  *
  * States:
  *   - "open" with no recent reconnection → hidden
- *   - "open" immediately after reconnection → green "Reconnected" banner (auto-hides)
- *   - "connecting" / "closed" after grace period → yellow/red banner
+ *   - "open" immediately after reconnection → green "Reconnected" pill (auto-hides)
+ *   - "connecting" / "closed" after grace period → yellow/red pill
  *   - First page load (never connected) → hidden
  */
 export function ConnectionBanner({
@@ -61,9 +64,13 @@ export function ConnectionBanner({
   // Success flash — briefly shown after reconnection
   if (status === "open" && showReconnected) {
     return (
-      <Banner role="status" variant="success">
-        Reconnected
-      </Banner>
+      <div
+        role="status"
+        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap bg-(--color-success-subtle) text-(--color-success) shadow-sm"
+      >
+        <CheckCircleIcon size={ICON_SIZE.XS} weight="fill" />
+        <span>Reconnected</span>
+      </div>
     );
   }
 
@@ -72,11 +79,19 @@ export function ConnectionBanner({
   const isConnecting = status === "connecting";
 
   return (
-    <Banner
+    <div
       role="alert"
-      variant={isConnecting ? "warning" : "error"}
-      className="flex items-center justify-center gap-3"
+      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap shadow-sm ${
+        isConnecting
+          ? "bg-(--color-warning-subtle) text-(--color-warning)"
+          : "bg-(--color-error-subtle) text-(--color-error)"
+      }`}
     >
+      {isConnecting ? (
+        <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
+      ) : (
+        <WarningCircleIcon size={ICON_SIZE.XS} weight="fill" />
+      )}
       <span>
         {isConnecting
           ? "Reconnecting to server..."
@@ -85,11 +100,11 @@ export function ConnectionBanner({
       {!isConnecting && onReconnect && (
         <button
           onClick={onReconnect}
-          className="px-2 py-0.5 rounded text-xs font-medium bg-(--color-error)/20 hover:bg-(--color-error)/30 text-(--color-error) transition-colors"
+          className="ml-0.5 px-1.5 py-0.5 rounded text-xs font-medium bg-(--color-error)/20 hover:bg-(--color-error)/30 text-(--color-error) transition-colors"
         >
           Reconnect now
         </button>
       )}
-    </Banner>
+    </div>
   );
 }
