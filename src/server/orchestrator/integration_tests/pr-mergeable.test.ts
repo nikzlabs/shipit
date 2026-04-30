@@ -19,6 +19,7 @@ import { GitManager } from "../../shared/git.js";
 import { PrStatusPoller } from "../pr-status-poller.js";
 import {
   StubGitHubAuthManager,
+  createTestCredentialStore,
   createTestDatabaseManager,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
@@ -72,6 +73,11 @@ beforeEach(async () => {
   githubAuth = new StubGitHubAuthManager();
   sseBroadcast = vi.fn() as typeof sseBroadcast;
 
+  // Side effect: points GIT_CONFIG_GLOBAL at a test-scoped file and sets
+  // user.name/user.email so `git commit` works on stock CI runners that
+  // have no global git identity configured.
+  createTestCredentialStore(tmpDir);
+
   sessionId = crypto.randomUUID();
   sessionDir = path.join(tmpDir, "sessions", sessionId);
   fs.mkdirSync(sessionDir, { recursive: true });
@@ -103,9 +109,12 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  prStatusPoller.destroy();
-  dbManager.close();
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  // Defensive: if beforeEach threw partway through, some of these may be
+  // unset. Tear down whatever did get created so the real error surfaces
+  // instead of a cascading "cannot read properties of undefined".
+  prStatusPoller?.destroy();
+  dbManager?.close();
+  if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
 /**
