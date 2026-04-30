@@ -6,6 +6,7 @@ const MODEL_PREFERENCE_KEY = "vibe-model-id";
 const ACTIVE_REPO_KEY = "vibe-active-repo";
 const NOTIFY_ON_FINISH_KEY = "shipit-notify-on-finish";
 const SOUND_ON_FINISH_KEY = "shipit-sound-on-finish";
+const SHOW_SESSION_COST_KEY = "shipit-show-session-cost";
 
 export function getSavedSidebarCollapsed(): boolean {
   try {
@@ -115,6 +116,23 @@ export function saveSoundOnFinish(enabled: boolean): void {
   }
 }
 
+export function getSavedShowSessionCost(): boolean {
+  try {
+    const saved = localStorage.getItem(SHOW_SESSION_COST_KEY);
+    return saved === null ? true : saved === "true";
+  } catch {
+    return true;
+  }
+}
+
+export function saveShowSessionCost(enabled: boolean): void {
+  try {
+    localStorage.setItem(SHOW_SESSION_COST_KEY, String(enabled));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
 const COLLAPSED_REPOS_KEY = "shipit-collapsed-repos";
 
 export function getSavedCollapsedRepos(): Set<string> {
@@ -154,4 +172,4 @@ export function saveDevicePresetId(presetId: string | null): void {
   } catch { /* ignore */ }
 }
 
-export { SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, COLLAPSED_REPOS_KEY, DEVICE_PRESET_KEY };
+export { SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, SHOW_SESSION_COST_KEY, COLLAPSED_REPOS_KEY, DEVICE_PRESET_KEY };

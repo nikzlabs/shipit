@@ -1,6 +1,7 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: consume prefill text from external store on mount
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useSessionStore } from "../stores/session-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 import { PlusIcon, StopIcon, ArrowUpIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { PlanModeToggle } from "./PlanModeToggle.js";
@@ -39,6 +40,8 @@ export function MessageInput({
   modelInfo,
   contextTokens = 0,
   hasActiveSession = false,
+  sessionCostUsd = null,
+  onCostBadgeClick,
   focusKey,
   hasPrCard = false,
 }: {
@@ -65,11 +68,20 @@ export function MessageInput({
   modelInfo?: ModelInfo | null;
   contextTokens?: number;
   hasActiveSession?: boolean;
+  /**
+   * Total session cost in USD. Rendered as a clickable badge in the toolbar
+   * when > 0 and the user hasn't disabled the badge in settings. `null` while
+   * the first usage_update for the session is pending.
+   */
+  sessionCostUsd?: number | null;
+  /** Click handler for the cost badge — typically opens the usage modal. */
+  onCostBadgeClick?: () => void;
   /** Changed value triggers textarea focus (e.g. session ID or route change). */
   focusKey?: string;
   /** When true, only round bottom corners (PR card provides the top). */
   hasPrCard?: boolean;
 }) {
+  const showSessionCost = useSettingsStore((s) => s.showSessionCost);
   const [text, setText] = useState("");
   const [isDragging, setIsDragging] = useState(false);
   const [showAutoComplete, setShowAutoComplete] = useState(false);
@@ -366,6 +378,20 @@ export function MessageInput({
 
             {/* Spacer */}
             <div className="flex-1" />
+
+            {/* Session cost badge — only when enabled in settings and we have a non-zero cost */}
+            {showSessionCost && sessionCostUsd !== null && sessionCostUsd > 0 && (
+              <WithTooltip label="View usage details">
+              <button
+                onClick={onCostBadgeClick}
+                className="inline-flex items-center text-xs px-2 py-0.5 mr-1 rounded-full bg-(--color-accent-subtle) text-(--color-accent) hover:bg-(--color-accent) hover:text-(--color-accent-text) transition-colors cursor-pointer"
+                aria-label="Session cost"
+                data-testid="session-cost-badge"
+              >
+                {sessionCostUsd < 0.01 ? `$${sessionCostUsd.toFixed(3)}` : `$${sessionCostUsd.toFixed(2)}`}
+              </button>
+              </WithTooltip>
+            )}
 
             {/* Context meter */}
             {modelInfo && contextTokens > 0 && (

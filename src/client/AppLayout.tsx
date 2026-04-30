@@ -20,9 +20,7 @@ interface AppLayoutProps {
   onSettingsOpen: () => void;
   hasSystemPrompt: boolean;
   githubAuthenticated: boolean;
-  currentSessionUsage: { totalCostUsd: number } | null;
   dockerMemory: DockerMemoryStats | null;
-  onUsageBadgeClick: () => void;
   onNavigateHome: () => void;
   onOpenSessions: () => void;
 
@@ -73,9 +71,7 @@ export function AppLayout({
   onSettingsOpen,
   hasSystemPrompt,
   githubAuthenticated,
-  currentSessionUsage,
   dockerMemory,
-  onUsageBadgeClick,
   onNavigateHome,
   onOpenSessions,
   showConnectionBanner,
@@ -137,11 +133,6 @@ export function AppLayout({
             <GearSixIcon size={ICON_SIZE.SM} />
           </button>
           </WithTooltip>
-          {currentSessionUsage && currentSessionUsage.totalCostUsd > 0 && (
-            <button onClick={onUsageBadgeClick} className="hidden sm:inline text-xs px-2 py-0.5 rounded-full bg-(--color-accent-subtle) text-(--color-accent) hover:bg-(--color-accent) hover:text-(--color-accent-text) transition-colors cursor-pointer" title="View usage details">
-              {currentSessionUsage.totalCostUsd < 0.01 ? `$${currentSessionUsage.totalCostUsd.toFixed(3)}` : `$${currentSessionUsage.totalCostUsd.toFixed(2)}`}
-            </button>
-          )}
           <ThemePicker theme={theme} onSelectTheme={onSelectTheme} />
         </div>
       </header>
