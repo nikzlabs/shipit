@@ -2,6 +2,46 @@
 
 ShipIt is a browser-based IDE for vibe coding — chat with Claude, it writes code, you see results live. Powered by Claude Code CLI and your Claude subscription.
 
+## Product principles
+
+These are the design principles that govern what ShipIt is. They override convenience, override "what other tools do," and override "this is how the underlying platform works." When a feature proposal conflicts with one of these, the proposal is wrong.
+
+### 1. ShipIt is the surface. The user does not leave it.
+
+The whole point of ShipIt is that you build, review, ship, and debug software inside one chat-shaped IDE. Anything the user needs to do their job should be visible **inside** ShipIt. Sending the user to a different tab — to read a PR, look at CI logs, check a deploy, view a diff, browse commits — is a failure of the product, not a feature.
+
+Concretely: PRs, CI status, deploy status, file diffs, commit history, conversation history, terminal output, preview, and merge conflicts all surface inline. They do not require a GitHub tab, a hosting provider tab, a CI tab, or a local terminal.
+
+### 2. Inline beats link-out. Always.
+
+When designing any feature, the question is "can this be rendered inside ShipIt?" — not "should we link to the upstream UI?" If the upstream system has the data, ShipIt fetches it and renders it. Links to GitHub, the cloud provider, etc. are **escape hatches** for edge cases, not the primary UX. They live in overflow menus, not on the happy path.
+
+Examples of this principle in action:
+- The PR lifecycle card renders status, checks, comments, and review state inline. The "View on GitHub" link exists but is secondary.
+- Diffs render in a Monaco panel inside the app; we never bounce the user to GitHub's diff viewer.
+- Deploy status is part of the PR card, not "click here to see your hosting dashboard."
+- CI failures fetch the failing job's log and surface it so the agent (and the user) can act on it without leaving the chat.
+
+### 3. External tabs are reserved for things ShipIt does not own.
+
+The legitimate reasons to open a new browser tab are narrow:
+- **OAuth and auth flows** — Anthropic, GitHub, etc. own their login screens.
+- **Account / billing pages** — upstream provider billing, repo creation and settings pages on GitHub.
+- **External documentation** the user explicitly clicks through to.
+
+That's the list. "The PR was created so let's open it" is **not** on the list — the PR card already shows everything the user wants to know about the PR. Opening a tab to GitHub means the user is now reading and acting on that data outside ShipIt, which means the next thing they do (re-request review, leave a comment, push a fixup) also happens outside ShipIt. The cycle has to start somewhere; we keep it inside.
+
+### 4. If we don't render it inline yet, that's a backlog item, not a license to link out.
+
+When a piece of upstream data isn't yet surfaced inline, the answer is "build the inline view," not "punt to a GitHub tab." The link-out is a temporary acknowledgment that we haven't built it yet — it's not the design.
+
+### Corollary: how to evaluate proposals
+
+Before writing the design, answer:
+1. Does this require the user to open a tab outside ShipIt to be useful? If yes, redesign — or justify why this falls in the narrow set of legitimate exceptions in §3.
+2. Does this assume the user has GitHub or another upstream tool open in another window? If yes, the data needs to come into ShipIt instead.
+3. Is the link-out the primary affordance, or an escape hatch behind an overflow menu? If primary, redesign.
+
 ## Runtime
 
 ShipIt always runs inside Docker containers — there is no local/bare-metal mode. The orchestrator runs in a container and spawns session worker containers.
