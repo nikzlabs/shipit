@@ -25,6 +25,8 @@ const defaultProps = {
   terminalMode: "logs" as const,
   onTerminalModeChange: () => {},
   shellContent: null,
+  sessionId: undefined,
+  onReconnectWs: () => {},
 };
 
 describe("TerminalPanel", () => {

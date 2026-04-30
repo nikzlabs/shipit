@@ -26,6 +26,7 @@ import type { ServiceManager } from "./service-manager.js";
 import { ServiceError } from "./services/index.js";
 
 import { registerBootstrapRoutes } from "./api-routes-bootstrap.js";
+import { registerContainerRoutes } from "./api-routes-container.js";
 import { registerFileRoutes } from "./api-routes-files.js";
 import { registerGitRoutes } from "./api-routes-git.js";
 import { registerSessionRoutes } from "./api-routes-session.js";
@@ -130,6 +131,7 @@ export async function registerApiRoutes(
   await registerFileRoutes(app, deps);
   await registerGitRoutes(app, deps);
   await registerSessionRoutes(app, deps);
+  await registerContainerRoutes(app, deps);
   await registerPreviewRoutes(app, deps);
   await registerGitHubRoutes(app, deps);
   if (deps.reviewStore) {
