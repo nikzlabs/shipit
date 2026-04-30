@@ -109,7 +109,7 @@ export function AppLayout({
 }: AppLayoutProps) {
   return (
     <>
-      <header className="flex items-center justify-between px-3 sm:px-6 py-2 sm:py-3 border-b border-(--color-border-primary)">
+      <header className="relative flex items-center justify-between px-3 sm:px-6 py-2 sm:py-3 border-b border-(--color-border-primary)">
         <div className="flex items-center gap-2 sm:gap-4 min-w-0">
           {isMobile && (
             <WithTooltip label="Sessions">
@@ -123,6 +123,13 @@ export function AppLayout({
             ShipIt
           </h1>
         </div>
+        {showConnectionBanner && (
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-[60vw] pointer-events-none flex justify-center">
+            <div className="pointer-events-auto">
+              <ConnectionBanner status={connectionStatus} reconnectAttempt={reconnectAttempt} onReconnect={onReconnect} />
+            </div>
+          </div>
+        )}
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
           {dockerMemory && <DockerMemoryBadge stats={dockerMemory} />}
           <WithTooltip label="Settings">
@@ -138,8 +145,6 @@ export function AppLayout({
           <ThemePicker theme={theme} onSelectTheme={onSelectTheme} />
         </div>
       </header>
-
-      {showConnectionBanner && <ConnectionBanner status={connectionStatus} reconnectAttempt={reconnectAttempt} onReconnect={onReconnect} />}
 
       {isMobile ? (
         <>
