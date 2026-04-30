@@ -8,7 +8,6 @@ export interface DocsViewerProps {
   files: DocEntry[];
   onFileClick: (path: string) => void;
   onRefresh: () => void;
-  onReviewFeature?: (doc: DocEntry) => void;
 }
 
 const STATUS_CONFIG: Record<DocStatus, { label: string; variant: BadgeProps["variant"]; order: number }> = {
@@ -74,7 +73,7 @@ function sortByStatusThenPath(docs: DocEntry[]): DocEntry[] {
 
 type Tab = "tracked" | "other";
 
-export function DocsViewer({ files, onFileClick, onRefresh, onReviewFeature }: DocsViewerProps) {
+export function DocsViewer({ files, onFileClick, onRefresh }: DocsViewerProps) {
   const tracked = files.filter((f) => f.status !== undefined);
   const untracked = files.filter((f) => f.status === undefined);
   const hasTracked = tracked.length > 0;
@@ -183,19 +182,6 @@ export function DocsViewer({ files, onFileClick, onRefresh, onReviewFeature }: D
                     )}
                   </button>
                   <div className="flex items-center gap-2 shrink-0">
-                    {onReviewFeature && doc.status && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onReviewFeature(doc);
-                        }}
-                        className="opacity-0 group-hover/row:opacity-100 transition-opacity text-xs"
-                      >
-                        Review
-                      </Button>
-                    )}
                     {doc.status === "planned" && doc.priority && (
                       <PriorityBadge priority={doc.priority} />
                     )}

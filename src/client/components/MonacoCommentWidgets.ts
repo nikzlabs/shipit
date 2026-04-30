@@ -1,19 +1,40 @@
 /**
  * MonacoCommentWidgets — adds comment UI to any Monaco editor instance.
  *
- * Used by FilePreviewModal (code files) and DiffPanel (modified side).
- * Renders:
+ * Used by FilePreviewModal (code files, server-persisted via the unified
+ * file-review store) and DiffPanel (modified side, client-side via the
+ * legacy comment-store). Renders:
  * - Glyph margin `+` affordance on hover
  * - Comment input ViewZone below a line
  * - Comment card ViewZones for saved comments
+ *
+ * Accepts a minimal `LineCommentLike` shape so the same widget works with
+ * either store. Callers are responsible for filtering to comments that
+ * belong on the current editor before passing them in.
  */
 
 import type * as monaco from "monaco-editor";
-import type { FileComment } from "../../server/shared/types.js";
+
+/**
+ * Minimal shape of comments the widget consumes. The widget filters to
+ * `kind === "line"` internally, so callers can pass mixed arrays (e.g. the
+ * union `FileComment[]` from the legacy comment-store, or a pre-filtered
+ * `ReviewComment[]` line-only list).
+ */
+export interface LineCommentLike {
+  id: string;
+  /** Discriminator. Non-"line" entries are filtered out by the widget. */
+  kind: "line" | "section";
+  /** Required when `kind === "line"`. */
+  line?: number;
+  text: string;
+  /** Present on legacy diff-panel comments; absent on per-file review comments. */
+  filePath?: string;
+}
 
 export interface CommentWidgetManager {
   /** Render existing comments as ViewZones + decorations */
-  setComments(comments: FileComment[]): void;
+  setComments(comments: LineCommentLike[]): void;
   /** Show the "add comment" input below a line */
   openCommentInput(line: number): void;
   /** Clean up all ViewZones and decorations */
@@ -76,7 +97,7 @@ export function createCommentWidgetManager(
   }
 
   function createCommentCard(
-    comment: FileComment,
+    comment: LineCommentLike,
     afterLineNumber: number,
   ): void {
     const domNode = document.createElement("div");
@@ -277,19 +298,25 @@ export function createCommentWidgetManager(
   // Enable glyph margin
   editor.updateOptions({ glyphMargin: true });
 
-  let currentComments: FileComment[] = [];
+  let currentComments: LineCommentLike[] = [];
 
   const manager: CommentWidgetManager = {
-    setComments(comments: FileComment[]) {
+    setComments(comments: LineCommentLike[]) {
       currentComments = comments;
       clearAllZones();
       clearDecorations();
 
-      const lineComments = comments.filter((c) => c.kind === "line" && c.filePath === options.filePath);
+      // Filter to line comments. Legacy callers (DiffPanel) pass the full
+      // session comment list, so we still match on filePath when present.
+      const lineComments = comments.filter(
+        (c): c is LineCommentLike & { kind: "line"; line: number } =>
+          c.kind === "line" &&
+          typeof c.line === "number" &&
+          (c.filePath === undefined || c.filePath === options.filePath),
+      );
       const newDecorations: monaco.editor.IModelDeltaDecoration[] = [];
 
       for (const comment of lineComments) {
-        if (comment.kind !== "line") continue;
         createCommentCard(comment, comment.line);
 
         // Add glyph decoration for lines with comments

@@ -1,17 +1,17 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: Escape keydown listener (browser API subscription with cleanup), useRef: Monaco editor ref
-import { useMemo, useEffect, useRef, useCallback } from "react";
-import { XIcon, PaperPlaneTiltIcon } from "@phosphor-icons/react";
+// eslint-disable-next-line no-restricted-imports -- useEffect: editor lifecycle, draft load on open, useRef: Monaco editor ref
+import { useMemo, useEffect, useRef, useCallback, useState } from "react";
+import { XIcon, PaperPlaneTiltIcon, RobotIcon, CaretDownIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { Button } from "./ui/button.js";
 import { MarkdownSectionComments } from "./MarkdownSectionComments.js";
 import type { SectionCommentData } from "./MarkdownSectionComments.js";
-import { useCommentStore } from "../stores/comment-store.js";
+import { useFileReviewStore } from "../stores/file-review-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { createCommentWidgetManager } from "./MonacoCommentWidgets.js";
-import type { CommentWidgetManager } from "./MonacoCommentWidgets.js";
+import type { CommentWidgetManager, LineCommentLike } from "./MonacoCommentWidgets.js";
 import type { FilePreviewType } from "../utils/file-preview-type.js";
-import type { FileComment } from "../../server/shared/types.js";
+import type { ReviewComment, FileReview } from "../../server/shared/types.js";
 import type * as MonacoEditor from "monaco-editor";
 
 export interface FilePreviewAction {
@@ -26,6 +26,11 @@ export interface FilePreviewModalProps {
   fileType: FilePreviewType;
   actions?: FilePreviewAction[];
   onClose: () => void;
+  /**
+   * Called after the user clicks Send. Receives the prompt the server already
+   * built from the (now-sent) review. Caller dispatches the prompt via the
+   * existing `send_message` flow.
+   */
   onSendComments?: (prompt: string) => void;
 }
 
@@ -60,77 +65,34 @@ function getLanguageFromPath(filePath: string): string {
   return map[ext] ?? "plaintext";
 }
 
-export function buildFileCommentsPrompt(comments: FileComment[], fileContents: Map<string, string>): string {
-  const byFile = new Map<string, FileComment[]>();
-  for (const c of comments) {
-    if (!byFile.has(c.filePath)) byFile.set(c.filePath, []);
-    byFile.get(c.filePath)!.push(c);
-  }
-
-  let prompt = "I have the following comments on the code:\n\n";
-
-  for (const [filePath, fileComments] of byFile) {
-    const lines = (fileContents.get(filePath) ?? "").split("\n");
-
-    const lineComments = fileComments
-      .filter((c): c is FileComment & { kind: "line" } => c.kind === "line")
-      .sort((a, b) => a.line - b.line);
-
-    for (const comment of lineComments) {
-      const start = Math.max(0, comment.line - 3);
-      const end = Math.min(lines.length, comment.line + 2);
-      const snippet = lines.slice(start, end)
-        .map((l, i) => {
-          const lineNum = start + i + 1;
-          const marker = lineNum === comment.line ? "\u2192" : " ";
-          return `${marker} ${lineNum} \u2502 ${l}`;
-        })
-        .join("\n");
-
-      prompt += `**${filePath}:${comment.line}**\n`;
-      prompt += `\`\`\`\n${snippet}\n\`\`\`\n`;
-      prompt += `Comment: ${comment.text}\n\n`;
-    }
-
-    const sectionComments = fileComments
-      .filter((c): c is FileComment & { kind: "section" } => c.kind === "section")
-      .sort((a, b) => a.sectionIndex - b.sectionIndex);
-
-    for (const comment of sectionComments) {
-      const heading = comment.sectionHeading || "(Introduction)";
-      prompt += `**${filePath} \u2192 ${heading}**\n`;
-      prompt += `Comment: ${comment.text}\n\n`;
-    }
-  }
-
-  prompt += "Please address each comment.";
-  return prompt;
-}
+// ---------- Code editor with line comments ----------
 
 function CodeEditor({
   filePath,
   content,
   sessionId,
+  comments,
 }: {
   filePath: string;
   content: string;
   sessionId: string;
+  comments: ReviewComment[];
 }) {
   const editorRef = useRef<HTMLDivElement>(null);
   const managerRef = useRef<CommentWidgetManager | null>(null);
-  const monacoRef = useRef<typeof MonacoEditor | null>(null);
   const editorInstanceRef = useRef<MonacoEditor.editor.IStandaloneCodeEditor | null>(null);
 
-  const sessionComments = useCommentStore((s) => s.commentsBySession[sessionId]);
-  const commentsForFile = useMemo(
-    () => (sessionComments ?? []).filter((c) => c.filePath === filePath),
-    [sessionComments, filePath],
-  );
-  const addLineComment = useCommentStore((s) => s.addLineComment);
-  const editComment = useCommentStore((s) => s.editComment);
-  const deleteComment = useCommentStore((s) => s.deleteComment);
+  const addLineComment = useFileReviewStore((s) => s.addLineComment);
+  const editComment = useFileReviewStore((s) => s.editComment);
+  const deleteComment = useFileReviewStore((s) => s.deleteComment);
 
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
+  const lineComments = useMemo<LineCommentLike[]>(() => {
+    return comments
+      .filter((c): c is Extract<ReviewComment, { kind: "line" }> => c.kind === "line")
+      .map((c) => ({ id: c.id, kind: "line", line: c.line, text: c.text }));
+  }, [comments]);
+
+  // eslint-disable-next-line no-restricted-syntax -- Monaco lifecycle (createEditor + cleanup)
   useEffect(() => {
     if (!editorRef.current) return;
     let disposed = false;
@@ -138,7 +100,6 @@ function CodeEditor({
     // eslint-disable-next-line no-restricted-syntax -- dynamic import for code splitting
     void import("monaco-editor").then((monaco) => {
       if (disposed || !editorRef.current) return;
-      monacoRef.current = monaco;
 
       const editor = monaco.editor.create(editorRef.current, {
         value: content,
@@ -158,12 +119,18 @@ function CodeEditor({
 
       managerRef.current = createCommentWidgetManager(editor, {
         filePath,
-        onAddComment: (line, text) => addLineComment(sessionId, filePath, line, text),
-        onEditComment: (id, text) => editComment(sessionId, id, text),
-        onDeleteComment: (id) => deleteComment(sessionId, id),
+        onAddComment: (line, text) => {
+          void addLineComment(sessionId, filePath, line, text);
+        },
+        onEditComment: (id, text) => {
+          void editComment(sessionId, filePath, id, text);
+        },
+        onDeleteComment: (id) => {
+          void deleteComment(sessionId, filePath, id);
+        },
       });
 
-      managerRef.current.setComments(useCommentStore.getState().getCommentsForFile(sessionId, filePath));
+      managerRef.current.setComments(lineComments);
     });
 
     return () => {
@@ -173,160 +140,298 @@ function CodeEditor({
       editorInstanceRef.current?.dispose();
       editorInstanceRef.current = null;
     };
+    // The lineComments dep is intentionally omitted: we sync via the
+    // separate effect below to avoid tearing down the editor on every change.
   }, [filePath, content, sessionId, addLineComment, editComment, deleteComment]);
 
-  // Sync comments changes
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
+  // Sync comments without rebuilding the editor.
+  // eslint-disable-next-line no-restricted-syntax -- syncing widget state with store updates
   useEffect(() => {
-    managerRef.current?.setComments(commentsForFile);
-  }, [commentsForFile]);
+    managerRef.current?.setComments(lineComments);
+  }, [lineComments]);
 
   return <div ref={editorRef} className="h-full w-full" />;
 }
+
+// ---------- Markdown viewer with section comments ----------
 
 function MarkdownViewer({
   filePath,
   content,
   sessionId,
+  comments,
 }: {
   filePath: string;
   content: string;
   sessionId: string;
+  comments: ReviewComment[];
 }) {
-  const sessionComments = useCommentStore((s) => s.commentsBySession[sessionId]);
-  const commentsForFile = useMemo(
-    () => (sessionComments ?? []).filter((c) => c.filePath === filePath),
-    [sessionComments, filePath],
-  );
-  const addSectionComment = useCommentStore((s) => s.addSectionComment);
-  const editComment = useCommentStore((s) => s.editComment);
-  const deleteComment = useCommentStore((s) => s.deleteComment);
+  const addSectionComment = useFileReviewStore((s) => s.addSectionComment);
+  const editComment = useFileReviewStore((s) => s.editComment);
+  const deleteComment = useFileReviewStore((s) => s.deleteComment);
 
   const sectionComments: SectionCommentData[] = useMemo(() => {
-    return commentsForFile
-      .filter((c) => c.kind === "section")
+    return comments
+      .filter((c): c is Extract<ReviewComment, { kind: "section" }> => c.kind === "section")
       .map((c) => ({
         id: c.id,
-        sectionHeading: c.kind === "section" ? c.sectionHeading : "",
-        sectionIndex: c.kind === "section" ? c.sectionIndex : 0,
+        sectionHeading: c.sectionHeading,
+        sectionIndex: c.sectionIndex,
         text: c.text,
+        source: c.source,
       }));
-  }, [commentsForFile]);
+  }, [comments]);
 
-  const handleAddComment = useCallback(
+  const handleAdd = useCallback(
     (sectionHeading: string, sectionIndex: number, text: string) => {
-      addSectionComment(sessionId, filePath, sectionHeading, sectionIndex, text);
+      void addSectionComment(sessionId, filePath, sectionHeading, sectionIndex, text);
     },
     [sessionId, filePath, addSectionComment],
   );
 
-  const handleEditComment = useCallback(
+  const handleEdit = useCallback(
     (commentId: string, text: string) => {
-      editComment(sessionId, commentId, text);
+      void editComment(sessionId, filePath, commentId, text);
     },
-    [sessionId, editComment],
+    [sessionId, filePath, editComment],
   );
 
-  const handleDeleteComment = useCallback(
+  const handleDelete = useCallback(
     (commentId: string) => {
-      deleteComment(sessionId, commentId);
+      void deleteComment(sessionId, filePath, commentId);
     },
-    [sessionId, deleteComment],
+    [sessionId, filePath, deleteComment],
   );
 
   return (
     <MarkdownSectionComments
       content={content}
       comments={sectionComments}
-      onAddComment={handleAddComment}
-      onEditComment={handleEditComment}
-      onDeleteComment={handleDeleteComment}
+      onAddComment={handleAdd}
+      onEditComment={handleEdit}
+      onDeleteComment={handleDelete}
     />
   );
 }
 
-export function FilePreviewModal({ filePath, content, fileType, actions, onClose, onSendComments }: FilePreviewModalProps) {
-  const sessionId = useSessionStore((s) => s.sessionId) ?? "";
-  const sessionComments = useCommentStore((s) => s.commentsBySession[sessionId]);
-  const allComments = sessionComments ?? [];
-  const commentCount = allComments.length;
-  const clearComments = useCommentStore((s) => s.clearComments);
+// ---------- Past reviews disclosure ----------
 
-  const handleSendComments = useCallback(() => {
-    if (commentCount === 0 || !onSendComments) return;
+function PastReviews({ history }: { history: FileReview[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const [openId, setOpenId] = useState<string | null>(null);
 
-    const fileContents = new Map<string, string>();
-    if (content) fileContents.set(filePath, content);
-
-    const prompt = buildFileCommentsPrompt(allComments, fileContents);
-    onSendComments(prompt);
-    clearComments(sessionId);
-  }, [commentCount, onSendComments, allComments, filePath, content, clearComments, sessionId]);
+  if (history.length === 0) return null;
 
   return (
-    <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
-      <DialogContent className="w-[90vw] max-w-4xl h-[85vh] flex flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-(--color-border-secondary) shrink-0">
-        <DialogTitle className="text-sm font-medium text-(--color-text-primary) truncate" title={filePath}>{filePath}</DialogTitle>
-        <div className="flex items-center gap-2 shrink-0 ml-4">
-          {actions?.map((action) => (
-            <Button
-              key={action.label}
-              variant={action.variant === "primary" ? "primary" : "secondary"}
-              size="sm"
-              onClick={action.onClick}
-            >
-              {action.label}
-            </Button>
+    <div className="text-xs">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-1 text-(--color-text-secondary) hover:text-(--color-text-primary) cursor-pointer"
+      >
+        <CaretDownIcon
+          size={ICON_SIZE.XS}
+          className={`transition-transform ${expanded ? "" : "-rotate-90"}`}
+        />
+        Past reviews ({history.length})
+      </button>
+      {expanded && (
+        <div className="mt-2 space-y-1">
+          {history.map((review) => (
+            <div key={review.id}>
+              <button
+                onClick={() => setOpenId(openId === review.id ? null : review.id)}
+                className="flex items-center gap-2 w-full text-left px-2 py-1 rounded hover:bg-(--color-bg-hover) cursor-pointer"
+              >
+                <span className="text-(--color-text-secondary)">
+                  {review.sentAt ? new Date(review.sentAt).toLocaleDateString() : "—"}
+                </span>
+                <span className="text-(--color-text-tertiary)">
+                  {review.comments.length} comment{review.comments.length !== 1 ? "s" : ""}
+                </span>
+              </button>
+              {openId === review.id && (
+                <div className="ml-4 mt-1 mb-2 space-y-1">
+                  {review.comments.map((c) => (
+                    <div
+                      key={c.id}
+                      className={`text-xs p-2 rounded border-l-2 ${
+                        c.source === "ai"
+                          ? "border-l-purple-400 bg-purple-950/20"
+                          : "border-l-blue-400 bg-blue-950/20"
+                      }`}
+                    >
+                      <span className="text-(--color-text-tertiary)">
+                        {c.kind === "section"
+                          ? `${c.sectionHeading || "(Intro)"}: `
+                          : `Line ${c.line}: `}
+                      </span>
+                      <span className="text-(--color-text-secondary)">{c.text}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           ))}
-          <button
-            onClick={onClose}
-            className="p-1 rounded hover:bg-(--color-bg-hover) text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors"
-            aria-label="Close"
-          >
-            <XIcon size={ICON_SIZE.MD} />
-          </button>
-        </div>
-      </div>
-
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto p-6">
-        {content === null ? (
-          <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
-            Loading...
-          </div>
-        ) : fileType === "markdown" ? (
-          <MarkdownViewer filePath={filePath} content={content} sessionId={sessionId} />
-        ) : fileType === "image" ? (
-          <div className="flex items-center justify-center h-full">
-            <img
-              src={content}
-              alt={filePath}
-              className="max-w-full max-h-full object-contain rounded-lg"
-            />
-          </div>
-        ) : fileType === "binary" ? (
-          <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
-            Binary file — cannot display.
-          </div>
-        ) : (
-          <CodeEditor filePath={filePath} content={content} sessionId={sessionId} />
-        )}
-      </div>
-
-      {/* Comment footer */}
-      {onSendComments && commentCount > 0 && (
-        <div className="flex items-center justify-between px-6 py-3 border-t border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0">
-          <span className="text-xs text-(--color-text-secondary)">
-            {commentCount} comment{commentCount !== 1 ? "s" : ""}
-          </span>
-          <Button variant="primary" size="sm" onClick={handleSendComments}>
-            <PaperPlaneTiltIcon size={ICON_SIZE.SM} className="mr-1" />
-            Send {commentCount} comment{commentCount !== 1 ? "s" : ""}
-          </Button>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------- Main modal ----------
+
+const EMPTY_HISTORY: FileReview[] = [];
+
+export function FilePreviewModal({
+  filePath,
+  content,
+  fileType,
+  actions,
+  onClose,
+  onSendComments,
+}: FilePreviewModalProps) {
+  const sessionId = useSessionStore((s) => s.sessionId) ?? "";
+
+  // Selectors return stable references across renders so Zustand doesn't
+  // treat each render as a state change (infinite-loop footgun).
+  const key = sessionId ? `${sessionId}::${filePath}` : null;
+  const draft = useFileReviewStore((s) => (key ? s.draftByKey[key] ?? null : null));
+  const history = useFileReviewStore((s) =>
+    key ? s.historyByKey[key] ?? EMPTY_HISTORY : EMPTY_HISTORY,
+  );
+  const aiLoading = useFileReviewStore((s) =>
+    key ? s.aiLoadingByKey[key] ?? false : false,
+  );
+  const load = useFileReviewStore((s) => s.load);
+  const aiReview = useFileReviewStore((s) => s.aiReview);
+  const sendDraft = useFileReviewStore((s) => s.sendDraft);
+  const discardEmptyDraft = useFileReviewStore((s) => s.discardEmptyDraft);
+
+  const reviewable = fileType === "markdown" || fileType === "code";
+
+  // Load draft + history when the modal opens for a reviewable file.
+  // eslint-disable-next-line no-restricted-syntax -- one-shot fetch tied to (session, file) identity
+  useEffect(() => {
+    if (!sessionId || !reviewable || content === null) return;
+    void load(sessionId, filePath);
+  }, [sessionId, filePath, reviewable, content, load]);
+
+  const commentCount = draft?.comments.length ?? 0;
+  const showAiReview = reviewable && fileType === "markdown" && !!sessionId && content !== null;
+  const canSend = !!onSendComments && commentCount > 0;
+
+  const handleClose = useCallback(() => {
+    if (sessionId && reviewable && draft?.comments.length === 0) {
+      void discardEmptyDraft(sessionId, filePath);
+    }
+    onClose();
+  }, [sessionId, reviewable, draft, filePath, discardEmptyDraft, onClose]);
+
+  const handleAiReview = useCallback(() => {
+    if (!sessionId) return;
+    void aiReview(sessionId, filePath);
+  }, [sessionId, filePath, aiReview]);
+
+  const handleSend = useCallback(async () => {
+    if (!sessionId || !onSendComments) return;
+    const prompt = await sendDraft(sessionId, filePath);
+    if (prompt) onSendComments(prompt);
+  }, [sessionId, filePath, sendDraft, onSendComments]);
+
+  const comments = draft?.comments ?? [];
+
+  return (
+    <Dialog open onOpenChange={(isOpen) => { if (!isOpen) handleClose(); }}>
+      <DialogContent className="w-[90vw] max-w-4xl h-[85vh] flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-(--color-border-secondary) shrink-0">
+          <DialogTitle className="text-sm font-medium text-(--color-text-primary) truncate" title={filePath}>
+            {filePath}
+          </DialogTitle>
+          <div className="flex items-center gap-2 shrink-0 ml-4">
+            {showAiReview && (
+              <Button variant="secondary" size="sm" onClick={handleAiReview} disabled={aiLoading}>
+                <RobotIcon size={ICON_SIZE.SM} className="mr-1" />
+                {aiLoading ? "Reviewing..." : "AI Review"}
+              </Button>
+            )}
+            {actions?.map((action) => (
+              <Button
+                key={action.label}
+                variant={action.variant === "primary" ? "primary" : "secondary"}
+                size="sm"
+                onClick={action.onClick}
+              >
+                {action.label}
+              </Button>
+            ))}
+            <button
+              onClick={handleClose}
+              className="p-1 rounded hover:bg-(--color-bg-hover) text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors"
+              aria-label="Close"
+            >
+              <XIcon size={ICON_SIZE.MD} />
+            </button>
+          </div>
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-6">
+          {content === null ? (
+            <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
+              Loading...
+            </div>
+          ) : fileType === "markdown" ? (
+            <MarkdownViewer
+              filePath={filePath}
+              content={content}
+              sessionId={sessionId}
+              comments={comments}
+            />
+          ) : fileType === "image" ? (
+            <div className="flex items-center justify-center h-full">
+              <img
+                src={content}
+                alt={filePath}
+                className="max-w-full max-h-full object-contain rounded-lg"
+              />
+            </div>
+          ) : fileType === "binary" ? (
+            <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
+              Binary file — cannot display.
+            </div>
+          ) : (
+            <CodeEditor
+              filePath={filePath}
+              content={content}
+              sessionId={sessionId}
+              comments={comments}
+            />
+          )}
+        </div>
+
+        {/* Footer — review controls */}
+        {reviewable && content !== null && (commentCount > 0 || history.length > 0) && (
+          <div className="flex items-center justify-between px-6 py-3 border-t border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0 gap-4">
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="text-xs text-(--color-text-secondary) whitespace-nowrap">
+                {commentCount > 0
+                  ? `${commentCount} comment${commentCount !== 1 ? "s" : ""} — draft`
+                  : "no draft comments"}
+              </span>
+              <PastReviews history={history} />
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <Button variant="ghost" size="sm" onClick={handleClose}>
+                Cancel
+              </Button>
+              <Button variant="primary" size="sm" onClick={handleSend} disabled={!canSend}>
+                <PaperPlaneTiltIcon size={ICON_SIZE.SM} className="mr-1" />
+                Send {commentCount > 0 ? `${commentCount} comment${commentCount !== 1 ? "s" : ""}` : "Comments"}
+              </Button>
+            </div>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );

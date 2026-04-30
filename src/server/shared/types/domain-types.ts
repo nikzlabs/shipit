@@ -116,36 +116,59 @@ export interface FileDiff {
   newContent: string;
 }
 
-// ---- Review comment types ----
+// ---- Review comment types (unified surface, server-persisted per session/file) ----
 
 export type ReviewCommentSource = "human" | "ai";
 
-export interface ReviewComment {
+export type ReviewStatus = "draft" | "sent";
+
+export type FileReviewType = "code" | "markdown";
+
+/** A line-anchored comment inside a code file review. */
+export interface LineReviewComment {
   id: string;
+  kind: "line";
+  line: number;
+  text: string;
+  source: ReviewCommentSource;
+}
+
+/** A section-anchored comment inside a markdown file review. */
+export interface SectionReviewComment {
+  id: string;
+  kind: "section";
   sectionHeading: string;
   sectionIndex: number;
   text: string;
   source: ReviewCommentSource;
 }
 
-export type ReviewStatus = "draft" | "sent";
+export type ReviewComment = LineReviewComment | SectionReviewComment;
 
-export interface DocReview {
+/**
+ * A review of a single file inside one session. Drafts collect comments
+ * from the user (and optionally from AI Review); sending freezes the
+ * draft and dispatches a structured prompt to the agent.
+ */
+export interface FileReview {
   id: string;
-  featureId: string;
-  planPath: string;
+  sessionId: string;
+  filePath: string;
+  fileType: FileReviewType;
   status: ReviewStatus;
   comments: ReviewComment[];
+  /** SHA-256 of the file content at the time the draft was created. */
   docSnapshotHash: string;
+  /** For markdown reviews, ordered list of `## ` headings at snapshot time. */
   sectionHeadings: string[];
   createdAt: string;
   updatedAt: string;
   sentAt?: string;
-  sentToSessionId?: string;
 }
 
-// ---- File comment types (client-side) ----
+// ---- Legacy client-side file comment types (DiffPanel only) ----
 
+/** Line-anchored comment used by DiffPanel for per-staged-change feedback. */
 export interface LineComment {
   id: string;
   kind: "line";
@@ -154,6 +177,7 @@ export interface LineComment {
   text: string;
 }
 
+/** Section-anchored comment kept only for legacy data shape compatibility. */
 export interface SectionComment {
   id: string;
   kind: "section";
