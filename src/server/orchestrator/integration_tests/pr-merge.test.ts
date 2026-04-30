@@ -139,6 +139,97 @@ describe("POST /api/sessions/:id/pr/auto-merge", () => {
   });
 });
 
+// ---- POST /api/sessions/:id/pr/merge ----
+
+describe("POST /api/sessions/:id/pr/merge — CI-not-ready guard", () => {
+  beforeEach(async () => {
+    sessionManager.setBranch(sessionId, "shipit/test-feature");
+    sessionManager.setRemoteUrl(sessionId, "https://github.com/test-user/test-repo.git");
+    await githubAuth.setToken("test-token");
+  });
+
+  it("blocks merge when poller is tracking the session but has no status yet", async () => {
+    // Tracking starts the poller. Default _graphqlResult is null, so pollRepo
+    // exits early before populating any status — exactly the race window
+    // where a user clicks Merge after creating a PR but before the first
+    // successful poll.
+    prStatusPoller.trackSession(sessionId, "https://github.com/test-user/test-repo.git");
+
+    expect(prStatusPoller.getStatus(sessionId)).toBeUndefined();
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr/merge`,
+      headers: { "Content-Type": "application/json" },
+      payload: JSON.stringify({ method: "squash" }),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      success: false,
+      message: "Waiting for CI checks to start",
+    });
+  });
+
+  it("blocks merge when checks are pending with zero total", async () => {
+    githubAuth.setGraphqlResult({
+      data: {
+        repository: {
+          pullRequests: {
+            nodes: [{
+              number: 42,
+              title: "Test PR",
+              url: "https://github.com/test-user/test-repo/pull/42",
+              state: "OPEN",
+              mergeable: "MERGEABLE",
+              autoMergeRequest: null,
+              headRefName: "shipit/test-feature",
+              baseRefName: "main",
+              additions: 10,
+              deletions: 5,
+              commits: {
+                nodes: [{
+                  commit: {
+                    oid: "abc123",
+                    statusCheckRollup: { state: "PENDING", contexts: { nodes: [] } },
+                  },
+                }],
+              },
+            }],
+          },
+        },
+      },
+    });
+
+    prStatusPoller.trackSession(sessionId, "https://github.com/test-user/test-repo.git");
+
+    // Wait for the immediate poll to populate state
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Force-mutate the cached status to simulate "workflows exist but no checks reported".
+    // (The poller's checkRepoHasWorkflows path requires getSharedRepoDir; bypass that
+    // here by asserting on the merge endpoint's "pending && total === 0" branch directly.)
+    const status = prStatusPoller.getStatus(sessionId);
+    if (status) {
+      status.checks.state = "pending";
+      status.checks.total = 0;
+    }
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr/merge`,
+      headers: { "Content-Type": "application/json" },
+      payload: JSON.stringify({ method: "squash" }),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      success: false,
+      message: "Waiting for CI checks to start",
+    });
+  });
+});
+
 // ---- POST /api/sessions/:id/pr/merge-method ----
 
 describe("POST /api/sessions/:id/pr/merge-method", () => {
