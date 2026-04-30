@@ -426,7 +426,11 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
   const isAutoFixExhausted = autoFix?.status === "exhausted";
   const isCiFailed = card.checks?.state === "failure";
   const isCiPassed = card.checks?.state === "success";
-  const isCiNone = !card.checks || card.checks.state === "none";
+  // "none" must come from the poller explicitly — undefined means we haven't
+  // heard from the poller yet, so we don't know whether CI exists. Treating
+  // undefined as "none" would let the merge button appear in the gap between
+  // PR creation and the first poll, before pending workflows have registered.
+  const isCiNone = card.checks?.state === "none";
   const canMerge = isCiPassed || isCiNone;
   const showFixButton = isCiFailed && !isAutoFixRunning && (!autoFix?.enabled || isAutoFixExhausted);
   const showMergeButton = canMerge && !autoMerge?.enabled;
