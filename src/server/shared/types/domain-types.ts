@@ -56,11 +56,22 @@ export interface RepoInfo {
 
 export type DocStatus = "planned" | "in-progress" | "done" | "paused";
 
+/**
+ * Priority hint for `planned` docs — used to answer "which planned feature is
+ * up next?" Ignored for any other status. Optional; absence means "unset".
+ */
+export type DocPriority = "high" | "medium" | "low";
+
 export interface DocEntry {
   /** Relative path from workspace root, e.g. "docs/001-websocket-protocol/plan.md". */
   path: string;
   /** Status from YAML frontmatter, if present. Undefined for plain docs. */
   status?: DocStatus;
+  /**
+   * Priority from YAML frontmatter, only surfaced when `status === "planned"`.
+   * Drives sort order in the docs viewer; otherwise advisory.
+   */
+  priority?: DocPriority;
   /** Human-readable title. Derived from frontmatter `title:` field, or from filename. */
   title: string;
 }

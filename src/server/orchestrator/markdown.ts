@@ -2,10 +2,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { WORKSPACE_SKIP_DIRS } from "../shared/fs-constants.js";
-import type { DocEntry, DocStatus } from "../shared/types.js";
+import type { DocEntry, DocPriority, DocStatus } from "../shared/types.js";
 
 /** Valid doc statuses. */
 const VALID_STATUSES = new Set<DocStatus>(["planned", "in-progress", "done", "paused"]);
+
+/** Valid doc priorities. Only meaningful when status === "planned". */
+const VALID_PRIORITIES = new Set<DocPriority>(["high", "medium", "low"]);
 
 /** Frontmatter regex — matches `---\n...\n---` at start of file. */
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---/;
@@ -36,9 +39,15 @@ export function parseStatusFromFrontmatter(content: string): DocStatus | undefin
 }
 
 /**
- * Parse both status and title from frontmatter in a single extraction.
+ * Parse status, priority, and title from frontmatter in a single extraction.
+ *
+ * `priority` is only returned when `status === "planned"` — it's a sort hint
+ * for picking the next thing to work on, so it's meaningless on
+ * in-progress/done/paused docs and we drop it there to prevent drift.
  */
-function parseFrontmatterFields(content: string): { status?: DocStatus; title?: string } {
+function parseFrontmatterFields(
+  content: string,
+): { status?: DocStatus; priority?: DocPriority; title?: string } {
   const fm = extractFrontmatter(content);
   if (!fm) return {};
 
@@ -51,13 +60,24 @@ function parseFrontmatterFields(content: string): { status?: DocStatus; title?: 
     }
   }
 
+  let priority: DocPriority | undefined;
+  if (status === "planned") {
+    const priorityMatch = /^priority:\s*(.+)$/m.exec(fm);
+    if (priorityMatch) {
+      const raw = priorityMatch[1].trim().toLowerCase();
+      if (VALID_PRIORITIES.has(raw as DocPriority)) {
+        priority = raw as DocPriority;
+      }
+    }
+  }
+
   let title: string | undefined;
   const titleMatch = /^title:\s*(.+)$/m.exec(fm);
   if (titleMatch) {
     title = titleMatch[1].trim();
   }
 
-  return { status, title };
+  return { status, priority, title };
 }
 
 /** Generic filenames where the parent directory name is more meaningful. */
@@ -110,6 +130,7 @@ export async function findMarkdownFiles(dir: string, prefix = ""): Promise<DocEn
       results.push(...await findMarkdownFiles(path.join(dir, entry.name), relativePath));
     } else if (entry.name.endsWith(".md")) {
       let status: DocStatus | undefined;
+      let priority: DocPriority | undefined;
       let title: string | undefined;
 
       try {
@@ -120,6 +141,7 @@ export async function findMarkdownFiles(dir: string, prefix = ""): Promise<DocEn
           const content = buf.toString("utf-8", 0, bytesRead);
           const fields = parseFrontmatterFields(content);
           status = fields.status;
+          priority = fields.priority;
           title = fields.title;
         } finally {
           await handle.close();
@@ -128,7 +150,12 @@ export async function findMarkdownFiles(dir: string, prefix = ""): Promise<DocEn
         // Can't read file — skip frontmatter parsing
       }
 
-      results.push({ path: relativePath, status, title: title ?? titleFromPath(relativePath) });
+      results.push({
+        path: relativePath,
+        status,
+        priority,
+        title: title ?? titleFromPath(relativePath),
+      });
     }
   }
 
