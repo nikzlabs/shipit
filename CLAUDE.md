@@ -35,12 +35,34 @@ That's the list. "The PR was created so let's open it" is **not** on the list �
 
 When a piece of upstream data isn't yet surfaced inline, the answer is "build the inline view," not "punt to a GitHub tab." The link-out is a temporary acknowledgment that we haven't built it yet — it's not the design.
 
+### 5. Chat is the input surface. The agent is the actor.
+
+ShipIt's input is a conversation. The user describes intent; the agent runs the commands, edits the files, reads the logs, runs the tests. We deliberately do **not** give the user shell-shaped affordances — quick-action button rows, command palettes that execute shell, hotkey-bound task runners, "click to run npm test" buttons. Those belong to terminal-shaped IDEs. In ShipIt, they aren't a feature gap; they're a category mistake that nudges the product back toward the CLI wrapper it's trying to replace.
+
+The existing primitives already cover the legitimate needs:
+
+| Need | Primitive |
+|---|---|
+| Recurring user-driven task ("run the tests", "regenerate types") | Ask the agent in chat. |
+| Long-running services (dev server, Prisma Studio, log tailer) | Declare in `docker-compose.yml` with `x-shipit-preview: auto`. |
+| One-time setup on a new session (`npm install`, codegen) | `agent.install` in `shipit.yaml`. |
+| Ad-hoc shell access for debugging or exploration | The existing terminal panel. |
+
+If a proposal is "let the user click a button to run a shell command," it almost certainly maps onto one of those four. Build on the existing primitive instead of adding a fifth surface.
+
+The user is not without agency: they navigate, review, instruct, accept, roll back, branch, merge. They just don't *operate* the box. Operating the box is what they hired the agent for.
+
+### Corollary: "saves an LLM round-trip" is not a feature.
+
+Spending a turn to run a routine command is the cost of chat-shaped UX, and that cost is intentional. It keeps the agent in the loop, keeps the chat history complete, and keeps the user's mental model consistent. Optimizing the round-trip away with a button erodes the product's identity for a marginal latency win.
+
 ### Corollary: how to evaluate proposals
 
 Before writing the design, answer:
 1. Does this require the user to open a tab outside ShipIt to be useful? If yes, redesign — or justify why this falls in the narrow set of legitimate exceptions in §3.
 2. Does this assume the user has GitHub or another upstream tool open in another window? If yes, the data needs to come into ShipIt instead.
 3. Is the link-out the primary affordance, or an escape hatch behind an overflow menu? If primary, redesign.
+4. Does this give the user a shell-shaped affordance (button, palette, hotkey) to run a command the agent could run? If yes, the proposal is solving a problem ShipIt doesn't have — see §5.
 
 ## Runtime
 
