@@ -65,9 +65,12 @@ The product principles in `CLAUDE.md` apply directly:
 1. **One review surface.** A single panel handles all file-attached
    comments, regardless of file type or where the user opened the file
    from.
-2. **Server-persisted by default.** Comments survive session switches,
-   browser changes, and `localStorage` resets. Pulling out a phone to
-   continue a review on a desktop should Just Work.
+2. **Server-persisted within the session.** Comments survive browser
+   changes, device changes, and `localStorage` resets. Pulling out a
+   phone to continue the same session on a desktop should Just Work.
+   Comments do not follow the user across session switches — a session
+   is the unit of work, and a review belongs to the session it was
+   written in.
 3. **A real lifecycle.** Drafts and sent reviews are first-class. The
    user can tell what they've already sent, what's still pending, and
    what was reviewed before.
@@ -144,26 +147,27 @@ comment widget instead of a markdown renderer.
 
 ### Comment scope and persistence
 
-A review draft lives at the granularity of `(repo, file path)` and is
-persisted server-side. Opening the same file from any session attached
-to the same repo loads the same draft. This is the simplest rule that
-covers the use cases we have today:
+A review draft lives at the granularity of `(session, file path)` and
+is persisted server-side. Opening the same file inside the session
+where the comments were written loads the draft back; opening the same
+file in a different session starts fresh.
 
-- Reviewing a feature plan across multiple sessions (today: feature
-  review panel) — works, because the draft follows the file.
-- Jotting notes on a code file during one session of work (today: file
-  preview modal in `localStorage`) — works, because the draft is still
-  available where the user left it. If the user wants a clean slate they
-  can clear the draft, which is one click.
-- Switching browser or device — works, because the draft is server-side.
+This rule mirrors how the rest of ShipIt scopes work — chat history,
+diffs, queued prompts, the agent's running turn — and matches the
+mental model that a session is one continuous slice of work. A comment
+left during a session belongs to that session's review, not to the
+file in the abstract. If the user later switches sessions to pick up
+the same line of work, that's a session-history concern, not something
+the review surface tries to solve.
 
 When the user sends a review, that draft is frozen as a "sent" review
-and a fresh empty draft is started for the next pass. Sent reviews are
-preserved as history (see below) and never overwritten.
+and a fresh empty draft is started for the next pass within the same
+session. Sent reviews are preserved as history (see below) and never
+overwritten.
 
 Empty drafts auto-cleanup when the user closes the panel without typing,
 matching today's feature review panel behavior, so the database doesn't
-fill up with empty `(repo, file)` rows just from people skimming files.
+fill up with empty rows just from people skimming files.
 
 ### Lifecycle: draft → sent → history
 
@@ -174,12 +178,14 @@ Three states, exposed clearly in the UI:
 - **Sent.** The user clicked Send Comments. The review is frozen, the
   prompt was dispatched to the agent, and a new empty draft was created.
   The just-sent review appears at the top of "Past reviews."
-- **History.** All previously-sent reviews for this file, with
-  timestamps, comment counts, and the ability to expand and re-read
-  individual comments. Read-only.
+- **History.** All previously-sent reviews on this file *within the
+  current session*, with timestamps, comment counts, and the ability
+  to expand and re-read individual comments. Read-only. Reviews from
+  other sessions don't appear here — that view, if we want it later,
+  is a different feature.
 
-This matches today's feature review panel for plans, and extends the
-same lifecycle to every file.
+This matches today's feature review panel lifecycle for plans, and
+extends the same shape to every file.
 
 ### AI Review, generalized
 
@@ -223,11 +229,17 @@ Things this doc commits to:
 1. **One panel.** The file preview is the surface; the feature review
    panel as a separate route is removed.
 2. **Server-side persistence.** No `localStorage` for comments.
-3. **Draft scope is (repo, file).** Not session-scoped, not
-   feature-scoped, not branch-scoped.
+3. **Draft scope is (session, file).** Comments belong to the session
+   they were written in. Not repo-scoped, not feature-scoped, not
+   branch-scoped.
 4. **Lifecycle = draft → sent → history.** Same shape across all files.
+   History is per-session, per-file.
 5. **The "Review" button in the docs pane is removed.** Click the doc
    to review it.
+6. **Existing comments are dropped on rollout.** No migration. The
+   `localStorage` store is cleared on first load after the change, and
+   server-side feature reviews from `049-design-doc-comments` are not
+   ported into the new schema. Users start with an empty review surface.
 
 Things to settle in detailed design (not in this doc):
 
@@ -238,28 +250,29 @@ Things to settle in detailed design (not in this doc):
    GitHub anchors to a specific commit; we don't have that grain
    naturally. Likely answer: best-effort line tracking, with an
    "outdated" indicator when the surrounding text has shifted enough.
-3. **History scope.** Per-file is the obvious default. Optionally also
-   "all reviews on this feature" (i.e., aggregating across files in a
-   `docs/NNN-*/` directory) as a convenience view for plans. Not
-   required for v1.
+3. **Cross-session history view.** Some users will want to see "all
+   reviews on this file across all sessions" eventually. Not in v1;
+   noted here so we don't paint ourselves into a corner that makes it
+   hard to add later.
 4. **Visibility once we add multi-user repos.** Today this is single-user
    so the question is moot; flagging it for the eventual sharing design.
 
 ## Migration
 
-Two existing data sources need handling:
+There is no migration. On rollout:
 
-- **`localStorage` file comments.** On first load after the change, the
-  client offers a one-shot migration of existing local comments into
-  server-side drafts (scoped to the user's current repo). After
-  migration the local store is cleared. Users who never had comments
-  see nothing. Users who had comments see them in the new panel,
-  unchanged.
-- **Server-side feature reviews from `049-design-doc-comments`.**
-  These are already in the right shape (drafts and sent reviews keyed
-  by feature ID). The migration re-keys them from feature ID to
-  `(repo, plan-file-path)`, which is a deterministic mapping
-  (`feature ID = parent dir of plan.md`). No data loss.
+- The `localStorage` file-comment store is cleared on first load. Any
+  unsent local notes are lost.
+- Server-side feature reviews stored under
+  `049-design-doc-comments` are not ported. Their endpoints can be
+  removed once the unified surface ships.
+
+Both stores are scratchpad-shaped — they hold unsent drafts and
+recently-sent reviews that have already been delivered to the agent as
+prompts and are visible in chat history. Dropping them does not lose
+information that the user couldn't already get from the chat record.
+Skipping the migration keeps the rollout simple and avoids carrying two
+data shapes during a transition window.
 
 ## Risks
 
@@ -268,6 +281,10 @@ Two existing data sources need handling:
   `localStorage` modal. The good news is that "click the file to leave
   comments" is exactly what the modal already does — the change makes
   more reach, not less, so existing muscle memory keeps working.
+- **Loss of in-flight notes on rollout.** Because there's no migration,
+  a user who happens to have an unsent draft in `localStorage` at
+  rollout time loses it. Mitigation: a release note. The blast radius
+  is small — drafts are short-lived by their nature.
 - **Server load from drafts.** Empty-draft auto-cleanup mitigates this.
   Bounded comment count per draft (some sane cap) is reasonable and can
   be tuned.
