@@ -128,7 +128,15 @@ export default function App() {
   const importSearchResults = usePrStore((s) => s.importSearchResults);
   const hasPrCard = usePrStore((s) => wsSessionId ? !!s.cardBySession[wsSessionId] : false);
 
-  const permissionMode = useSettingsStore((s) => s.permissionMode);
+  // Permission mode is keyed per-session (with a fallback to the pre-session
+  // default). This subscription recomputes whenever wsSessionId or any
+  // settings-store field changes, so toggling plan mode in one session never
+  // leaks into the toggle/Accept-button state of another session.
+  const permissionMode = useSettingsStore((s) =>
+    wsSessionId && wsSessionId in s.permissionModeBySession
+      ? s.permissionModeBySession[wsSessionId]
+      : s.permissionMode,
+  );
   const pendingFiles = useSettingsStore((s) => s.pendingFiles);
   const githubStatus = useSettingsStore((s) => s.githubStatus);
   const hasSystemPrompt = useSettingsStore((s) => s.hasSystemPrompt);
@@ -330,7 +338,10 @@ export default function App() {
           sessionId: currentSessionId,
           files: settings.pendingFiles.length > 0 ? settings.pendingFiles : undefined,
           uploads: uploadRefs.length > 0 ? uploadRefs : undefined,
-          permissionMode: settings.permissionMode !== "auto" ? settings.permissionMode : undefined,
+          permissionMode: (() => {
+            const pm = settings.getPermissionMode(currentSessionId);
+            return pm !== "auto" ? pm : undefined;
+          })(),
         });
       } else {
         // No session — can't send without one (sessions are created via claim-session)
@@ -360,8 +371,9 @@ export default function App() {
       session.setMessages((prev) => [...prev, { role: "user", text }]);
       session.setIsLoading(true);
       session.setActivity({ label: "Thinking..." });
-      const pm = useSettingsStore.getState().permissionMode;
-      send({ type: "send_message", text, sessionId: useSessionStore.getState().sessionId, permissionMode: pm !== "auto" ? pm : undefined });
+      const sid = useSessionStore.getState().sessionId;
+      const pm = useSettingsStore.getState().getPermissionMode(sid);
+      send({ type: "send_message", text, sessionId: sid, permissionMode: pm !== "auto" ? pm : undefined });
     },
     [send, requestPermission],
   );
@@ -404,7 +416,7 @@ export default function App() {
       session.setMessages((prev) => [...prev, { role: "user", text }]);
       session.setIsLoading(true);
       session.setActivity({ label: "Thinking..." });
-      const pm = useSettingsStore.getState().permissionMode;
+      const pm = useSettingsStore.getState().getPermissionMode(session.sessionId);
       send({ type: "send_message", text, sessionId: session.sessionId, permissionMode: pm !== "auto" ? pm : undefined });
     },
     [send],
@@ -677,7 +689,7 @@ export default function App() {
         </>
       )}
       {!showHomeScreen && !showNewSessionView && queuedMessages.length > 0 && <QueueIndicator queue={queuedMessages} onCancel={(pos) => send({ type: "cancel_queued_message", position: pos })} />}
-      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_claude" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} uploads={uploads} allUploads={sessionUploads} onUploadFiles={(files) => void uploadFiles(files)} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} onModelChange={handleModelChange} modelInfo={modelInfo} contextTokens={contextTokens} hasActiveSession={!showNewSessionView && !!sessionId} focusKey={wsSessionId ?? (showNewSessionView ? "new" : undefined)} hasPrCard={hasPrCard} />}
+      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_claude" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(useSessionStore.getState().sessionId, m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} uploads={uploads} allUploads={sessionUploads} onUploadFiles={(files) => void uploadFiles(files)} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} onModelChange={handleModelChange} modelInfo={modelInfo} contextTokens={contextTokens} hasActiveSession={!showNewSessionView && !!sessionId} focusKey={wsSessionId ?? (showNewSessionView ? "new" : undefined)} hasPrCard={hasPrCard} />}
     </>
   );
 

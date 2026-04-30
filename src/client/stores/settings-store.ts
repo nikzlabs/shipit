@@ -1,11 +1,23 @@
 import { create } from "zustand";
 import type { PermissionMode, FileContextRef } from "../../server/shared/types.js";
-import { getSavedPermissionMode, savePermissionMode, getSavedNotifyOnFinish, saveNotifyOnFinish, getSavedSoundOnFinish, saveSoundOnFinish } from "../utils/local-storage.js";
+import { getSavedNotifyOnFinish, saveNotifyOnFinish, getSavedSoundOnFinish, saveSoundOnFinish } from "../utils/local-storage.js";
 
 interface SettingsState {
   hasSystemPrompt: boolean;
   systemPromptContent: string;
+  /**
+   * Default permission mode used by the pre-session (new-session) view and
+   * as a fallback for any session that hasn't made an explicit choice yet.
+   * Plan mode is a per-conversation choice, so this is intentionally NOT
+   * persisted to localStorage — it resets to "auto" on page reload.
+   */
   permissionMode: PermissionMode;
+  /**
+   * Per-session permission mode overrides. Keyed by session id. A session
+   * without an entry inherits `permissionMode`. This map is what prevents
+   * plan-mode state from leaking between sessions.
+   */
+  permissionModeBySession: Record<string, PermissionMode>;
   githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
   pendingFiles: FileContextRef[];
   maxIdleContainers: number;
@@ -23,7 +35,14 @@ interface SettingsState {
   setNotifyOnFinish: (enabled: boolean) => void;
   setSoundOnFinish: (enabled: boolean) => void;
   setAutoCreatePr: (enabled: boolean) => void;
-  setPermissionMode: (mode: PermissionMode) => void;
+  /**
+   * Update the permission mode. When `sessionId` is provided, the change is
+   * scoped to that session only. When `sessionId` is undefined (e.g. on the
+   * pre-session new-session view), the default mode is updated.
+   */
+  setPermissionMode: (sessionId: string | undefined, mode: PermissionMode) => void;
+  /** Resolve the effective permission mode for a session (or the default). */
+  getPermissionMode: (sessionId: string | undefined) => PermissionMode;
   setGithubStatus: (status: { authenticated: boolean; username?: string; avatarUrl?: string }) => void;
   addPendingFile: (filePath: string) => void;
   removePendingFile: (index: number) => void;
@@ -44,10 +63,11 @@ interface SettingsState {
   gitHubLogout: () => Promise<void>;
 }
 
-export const useSettingsStore = create<SettingsState>((set) => ({
+export const useSettingsStore = create<SettingsState>((set, get) => ({
   hasSystemPrompt: false,
   systemPromptContent: "",
-  permissionMode: getSavedPermissionMode(),
+  permissionMode: "auto",
+  permissionModeBySession: {},
   githubStatus: { authenticated: false },
   pendingFiles: [],
   maxIdleContainers: 5,
@@ -79,9 +99,22 @@ export const useSettingsStore = create<SettingsState>((set) => ({
 
   setAutoCreatePr: (enabled) => set({ autoCreatePr: enabled }),
 
-  setPermissionMode: (mode) => {
-    savePermissionMode(mode);
-    set({ permissionMode: mode });
+  setPermissionMode: (sessionId, mode) => {
+    if (sessionId) {
+      set((state) => ({
+        permissionModeBySession: { ...state.permissionModeBySession, [sessionId]: mode },
+      }));
+    } else {
+      set({ permissionMode: mode });
+    }
+  },
+
+  getPermissionMode: (sessionId) => {
+    const state = get();
+    if (sessionId && sessionId in state.permissionModeBySession) {
+      return state.permissionModeBySession[sessionId];
+    }
+    return state.permissionMode;
   },
 
   setGithubStatus: (status) => set({ githubStatus: status }),

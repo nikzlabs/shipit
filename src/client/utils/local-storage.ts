@@ -1,31 +1,11 @@
-import type { PermissionMode, AgentId } from "../../server/shared/types.js";
+import type { AgentId } from "../../server/shared/types.js";
 
-const PERMISSION_MODE_KEY = "vibe-permission-mode";
 const SIDEBAR_COLLAPSED_KEY = "vibe-sidebar-collapsed";
 const AGENT_PREFERENCE_KEY = "vibe-agent-id";
 const MODEL_PREFERENCE_KEY = "vibe-model-id";
 const ACTIVE_REPO_KEY = "vibe-active-repo";
 const NOTIFY_ON_FINISH_KEY = "shipit-notify-on-finish";
 const SOUND_ON_FINISH_KEY = "shipit-sound-on-finish";
-
-export function getSavedPermissionMode(): PermissionMode {
-  try {
-    const saved = localStorage.getItem(PERMISSION_MODE_KEY);
-    if (saved === "plan") return "plan";
-    if (saved === "auto" || saved === "normal") return "auto";
-  } catch {
-    // localStorage may be unavailable
-  }
-  return "auto";
-}
-
-export function savePermissionMode(mode: PermissionMode): void {
-  try {
-    localStorage.setItem(PERMISSION_MODE_KEY, mode);
-  } catch {
-    // localStorage may be unavailable
-  }
-}
 
 export function getSavedSidebarCollapsed(): boolean {
   try {
@@ -174,4 +154,4 @@ export function saveDevicePresetId(presetId: string | null): void {
   } catch { /* ignore */ }
 }
 
-export { PERMISSION_MODE_KEY, SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, COLLAPSED_REPOS_KEY, DEVICE_PRESET_KEY };
+export { SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, COLLAPSED_REPOS_KEY, DEVICE_PRESET_KEY };
