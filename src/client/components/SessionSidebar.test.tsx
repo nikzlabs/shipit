@@ -134,9 +134,13 @@ describe("SessionSidebar", () => {
     expect(screen.getByText("No sessions")).toBeTruthy();
   });
 
-  it("shows Add Repository button in the top bar", () => {
+  it("shows Repository switcher in the top bar", () => {
     render(<SessionSidebar {...defaultProps} />);
-    expect(screen.getByLabelText("Add Repository")).toBeTruthy();
+    // The expanded sidebar exposes a Repository switcher in the top bar — this
+    // dropdown houses "Add Repository" as one of its items, replacing the old
+    // standalone "+" button (which was easy to mis-click when intending to start
+    // a new session).
+    expect(screen.getByLabelText("Repository")).toBeTruthy();
   });
 
   it("sorts non-merged sessions by createdAt desc, with merged sessions at the bottom", () => {
