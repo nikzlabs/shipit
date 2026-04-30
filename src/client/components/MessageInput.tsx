@@ -343,12 +343,13 @@ export function MessageInput({
 
           {/* Toolbar row — below textarea */}
           <div className="flex items-center gap-1 px-2 pb-2">
-            {/* Add files button */}
+            {/* Add files button — always enabled. Files attached before a
+                session is ready are buffered by useFileUpload and uploaded
+                once sessionId resolves. */}
             <WithTooltip label="Add files">
             <button
               onClick={handleAttachClick}
-              disabled={disabled}
-              className="flex items-center justify-center shrink-0 rounded-lg p-1.5 text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex items-center justify-center shrink-0 rounded-lg p-1.5 text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors"
               aria-label="Add files"
             >
               <PlusIcon size={ICON_SIZE.SM} />
