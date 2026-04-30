@@ -94,6 +94,53 @@ function NotificationSettings() {
   );
 }
 
+/**
+ * Pull-request automation settings (currently just auto-create PR).
+ * Rendered inside the GitHub tab when the user is authenticated — without a
+ * GitHub token the server-side gate (`githubAuthManager.authenticated` in
+ * `claude-execution.ts`) means toggling this on is a no-op.
+ *
+ * Mirrors the optimistic-set-then-PUT-with-revert pattern that previously
+ * lived in `PrLifecycleCard.tsx`'s `AutoCreatePrToggle`. Surfaces a toast on
+ * failure (the inline toggle's silent console-only failure made sense next to
+ * a busy PR card; in a quiet Settings dialog a visible error is better).
+ */
+function PullRequestSettings() {
+  const autoCreatePr = useSettingsStore((s) => s.autoCreatePr);
+
+  const handleToggle = async (v: boolean) => {
+    useSettingsStore.getState().setAutoCreatePr(v);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoCreatePr: v }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      // Revert the optimistic update and surface the failure.
+      useSettingsStore.getState().setAutoCreatePr(!v);
+      useUiStore.getState().setToast({ message: "Failed to update auto-create PR setting" });
+      console.error("[settings] toggle autoCreatePr failed:", err);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-medium text-(--color-text-primary)">Pull Requests</h3>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between py-1 gap-4">
+          <div>
+            <span className="text-sm text-(--color-text-primary)">Auto-create PR after every meaningful turn</span>
+            <p className="text-xs text-(--color-text-tertiary)">When the agent finishes a turn that changes files, ShipIt opens a pull request automatically.</p>
+          </div>
+          <ToggleSwitch enabled={autoCreatePr} onToggle={(v) => void handleToggle(v)} testId="settings-auto-create-pr" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Settings({
   initialContent,
   onSaveInstructions,
@@ -430,6 +477,10 @@ export function Settings({
                   >
                     {disconnecting ? "Disconnecting..." : confirmingLogout ? "Click again to disconnect" : "Disconnect"}
                   </button>
+
+                  <div className="border-t border-(--color-border-secondary)" />
+
+                  <PullRequestSettings />
                 </div>
               ) : (
                 <GitHubTokenForm onSubmit={async (t) => { onGitHubTokenSubmit(t); return undefined; }} />
