@@ -14,25 +14,49 @@ import {
   FakeClaudeProcess,
   createTestCredentialStore,
   createTestDatabaseManager,
+  createTestSession,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { GitHubAuthManager } from "../github-auth.js";
 import { CredentialStore } from "../credential-store.js";
-import type { DocReview, ReviewComment } from "../../shared/types.js";
+import type { FileReview, ReviewComment } from "../../shared/types.js";
 
-describe("Integration: Doc Review HTTP Endpoints", () => {
+describe("Integration: File Review HTTP Endpoints", () => {
   let app: FastifyInstance;
   let tmpDir: string;
   let dbManager: DatabaseManager;
   let credentialStore: CredentialStore;
+  let sessionManager: SessionManager;
+  let sessionId: string;
+  let sessionDir: string;
   const featureId = "012-deployment";
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-doc-reviews-"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-file-reviews-"));
+    sessionManager = new SessionManager(dbManager);
 
-    // Create docs directory with a plan.md
-    const docsDir = path.join(tmpDir, "docs", featureId);
+    credentialStore = createTestCredentialStore(tmpDir);
+
+    app = await buildApp({
+      createGitManager: (dir: string) => new GitManager(dir),
+      sessionManager,
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
+      agentFactory: () => new FakeClaudeProcess() as unknown as never,
+      credentialStore,
+      databaseManager: dbManager,
+      workspaceDir: tmpDir,
+      serveStatic: false,
+    });
+
+    // Create a session, since the new API is per-session and validates session dirs.
+    const created = await createTestSession(sessionManager, tmpDir);
+    sessionId = created.sessionId;
+    sessionDir = created.sessionDir;
+
+    // Place a plan inside the session workspace (sessions are git-initialized).
+    const docsDir = path.join(sessionDir, "docs", featureId);
     fs.mkdirSync(docsDir, { recursive: true });
     fs.writeFileSync(
       path.join(docsDir, "plan.md"),
@@ -52,18 +76,12 @@ Unit and integration tests.
 `,
     );
 
-    credentialStore = createTestCredentialStore(tmpDir);
-
-    app = await buildApp({
-      createGitManager: (dir: string) => new GitManager(dir),
-      sessionManager: new SessionManager(dbManager),
-      authManager: new StubAuthManager() as unknown as AuthManager,
-      githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
-      agentFactory: () => new FakeClaudeProcess() as any,
-      credentialStore,
-      workspaceDir: tmpDir,
-      serveStatic: false,
-    });
+    // Place a code file too
+    fs.mkdirSync(path.join(sessionDir, "src"), { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionDir, "src", "api.ts"),
+      "export function hello() {\n  return 'world';\n}\n",
+    );
   });
 
   afterEach(async () => {
@@ -76,244 +94,372 @@ Unit and integration tests.
   });
 
   const planPath = `docs/${featureId}/plan.md`;
+  const codePath = "src/api.ts";
 
-  it("POST /api/features/:featureId/reviews creates a draft", async () => {
+  // ----------------------------------------------------------------
+  // Ensure draft (markdown)
+  // ----------------------------------------------------------------
+
+  it("POST /file-reviews/draft creates a markdown draft snapshotting headings", async () => {
     const res = await app.inject({
       method: "POST",
-      url: `/api/features/${featureId}/reviews`,
-      payload: { planPath },
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: planPath },
     });
     expect(res.statusCode).toBe(200);
-    const body = res.json() as DocReview;
+    const body = res.json() as FileReview;
     expect(body.status).toBe("draft");
-    expect(body.featureId).toBe(featureId);
-    expect(body.planPath).toBe(planPath);
+    expect(body.fileType).toBe("markdown");
+    expect(body.sessionId).toBe(sessionId);
+    expect(body.filePath).toBe(planPath);
     expect(body.sectionHeadings).toContain("## Summary");
     expect(body.sectionHeadings).toContain("## Architecture");
     expect(body.sectionHeadings).toContain("## Testing");
     expect(body.comments).toHaveLength(0);
   });
 
-  it("GET /api/features/:featureId/reviews/draft returns existing draft", async () => {
-    // Create draft
-    await app.inject({
-      method: "POST",
-      url: `/api/features/${featureId}/reviews`,
-      payload: { planPath },
-    });
-
+  it("POST /file-reviews/draft creates a code draft with empty headings", async () => {
     const res = await app.inject({
-      method: "GET",
-      url: `/api/features/${featureId}/reviews/draft`,
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: codePath },
     });
     expect(res.statusCode).toBe(200);
-    const body = res.json() as DocReview;
-    expect(body.status).toBe("draft");
+    const body = res.json() as FileReview;
+    expect(body.fileType).toBe("code");
+    expect(body.sectionHeadings).toEqual([]);
   });
 
-  it("GET /api/features/:featureId/reviews/draft returns 404 when no draft", async () => {
+  it("POST /file-reviews/draft is idempotent — returns the same draft on repeat calls", async () => {
+    const first = (await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: planPath },
+    })).json() as FileReview;
+
+    const second = (await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: planPath },
+    })).json() as FileReview;
+
+    expect(second.id).toBe(first.id);
+  });
+
+  // ----------------------------------------------------------------
+  // Get / not-found
+  // ----------------------------------------------------------------
+
+  it("GET /file-reviews/draft returns existing draft", async () => {
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: planPath },
+    });
+
     const res = await app.inject({
       method: "GET",
-      url: `/api/features/${featureId}/reviews/draft`,
+      url: `/api/sessions/${sessionId}/file-reviews/draft?filePath=${encodeURIComponent(planPath)}`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect((res.json() as FileReview).status).toBe("draft");
+  });
+
+  it("GET /file-reviews/draft returns 404 when no draft", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${sessionId}/file-reviews/draft?filePath=${encodeURIComponent(planPath)}`,
     });
     expect(res.statusCode).toBe(404);
   });
 
-  it("POST .../comments adds a comment to a draft", async () => {
+  // ----------------------------------------------------------------
+  // Add section comment (markdown)
+  // ----------------------------------------------------------------
+
+  it("POST /comments adds a section comment to a markdown draft", async () => {
     const draft = (await app.inject({
       method: "POST",
-      url: `/api/features/${featureId}/reviews`,
-      payload: { planPath },
-    })).json() as DocReview;
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: planPath },
+    })).json() as FileReview;
 
     const res = await app.inject({
       method: "POST",
-      url: `/api/features/${featureId}/reviews/${draft.id}/comments`,
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments`,
       payload: {
+        kind: "section",
         sectionHeading: "## Architecture",
-        sectionIndex: 2,
+        sectionIndex: 1,
         text: "Consider a registry pattern",
-        source: "human",
       },
     });
     expect(res.statusCode).toBe(200);
     const comment = res.json() as ReviewComment;
+    expect(comment.kind).toBe("section");
     expect(comment.text).toBe("Consider a registry pattern");
     expect(comment.source).toBe("human");
-    expect(comment.sectionHeading).toBe("## Architecture");
   });
 
-  it("POST .../comments validates empty text", async () => {
+  // ----------------------------------------------------------------
+  // Add line comment (code)
+  // ----------------------------------------------------------------
+
+  it("POST /comments adds a line comment to a code draft", async () => {
     const draft = (await app.inject({
       method: "POST",
-      url: `/api/features/${featureId}/reviews`,
-      payload: { planPath },
-    })).json() as DocReview;
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: codePath },
+    })).json() as FileReview;
 
     const res = await app.inject({
       method: "POST",
-      url: `/api/features/${featureId}/reviews/${draft.id}/comments`,
-      payload: {
-        sectionHeading: "## Summary",
-        sectionIndex: 1,
-        text: "   ",
-      },
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments`,
+      payload: { kind: "line", line: 2, text: "Why hardcode 'world'?" },
+    });
+    expect(res.statusCode).toBe(200);
+    const comment = res.json() as ReviewComment;
+    expect(comment.kind).toBe("line");
+    if (comment.kind !== "line") throw new Error("expected line");
+    expect(comment.line).toBe(2);
+  });
+
+  it("POST /comments rejects line comment on a markdown review", async () => {
+    const draft = (await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: planPath },
+    })).json() as FileReview;
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments`,
+      payload: { kind: "line", line: 1, text: "no" },
     });
     expect(res.statusCode).toBe(400);
   });
 
-  it("PATCH .../comments/:commentId updates comment text", async () => {
+  it("POST /comments rejects section comment on a code review", async () => {
     const draft = (await app.inject({
       method: "POST",
-      url: `/api/features/${featureId}/reviews`,
-      payload: { planPath },
-    })).json() as DocReview;
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: codePath },
+    })).json() as FileReview;
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments`,
+      payload: { kind: "section", sectionHeading: "## fake", sectionIndex: 0, text: "x" },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("POST /comments validates empty text", async () => {
+    const draft = (await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: planPath },
+    })).json() as FileReview;
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments`,
+      payload: { kind: "section", sectionHeading: "## Summary", sectionIndex: 0, text: "  " },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  // ----------------------------------------------------------------
+  // PATCH / DELETE comment
+  // ----------------------------------------------------------------
+
+  it("PATCH /comments/:id updates comment text", async () => {
+    const draft = (await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: planPath },
+    })).json() as FileReview;
 
     const comment = (await app.inject({
       method: "POST",
-      url: `/api/features/${featureId}/reviews/${draft.id}/comments`,
-      payload: { sectionHeading: "## Summary", sectionIndex: 1, text: "Original" },
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments`,
+      payload: { kind: "section", sectionHeading: "## Summary", sectionIndex: 0, text: "Original" },
     })).json() as ReviewComment;
 
     const res = await app.inject({
       method: "PATCH",
-      url: `/api/features/${featureId}/reviews/${draft.id}/comments/${comment.id}`,
-      payload: { text: "Updated text" },
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments/${comment.id}`,
+      payload: { text: "Updated" },
     });
     expect(res.statusCode).toBe(200);
 
-    // Verify
     const draftRes = (await app.inject({
       method: "GET",
-      url: `/api/features/${featureId}/reviews/draft`,
-    })).json() as DocReview;
-    expect(draftRes.comments[0].text).toBe("Updated text");
+      url: `/api/sessions/${sessionId}/file-reviews/draft?filePath=${encodeURIComponent(planPath)}`,
+    })).json() as FileReview;
+    expect(draftRes.comments[0].text).toBe("Updated");
   });
 
-  it("DELETE .../comments/:commentId removes comment", async () => {
+  it("DELETE /comments/:id removes comment", async () => {
     const draft = (await app.inject({
       method: "POST",
-      url: `/api/features/${featureId}/reviews`,
-      payload: { planPath },
-    })).json() as DocReview;
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: planPath },
+    })).json() as FileReview;
 
     const comment = (await app.inject({
       method: "POST",
-      url: `/api/features/${featureId}/reviews/${draft.id}/comments`,
-      payload: { sectionHeading: "## Summary", sectionIndex: 1, text: "Delete me" },
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments`,
+      payload: { kind: "section", sectionHeading: "## Summary", sectionIndex: 0, text: "Delete me" },
     })).json() as ReviewComment;
 
     const res = await app.inject({
       method: "DELETE",
-      url: `/api/features/${featureId}/reviews/${draft.id}/comments/${comment.id}`,
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments/${comment.id}`,
     });
     expect(res.statusCode).toBe(200);
 
     const draftRes = (await app.inject({
       method: "GET",
-      url: `/api/features/${featureId}/reviews/draft`,
-    })).json() as DocReview;
+      url: `/api/sessions/${sessionId}/file-reviews/draft?filePath=${encodeURIComponent(planPath)}`,
+    })).json() as FileReview;
     expect(draftRes.comments).toHaveLength(0);
   });
 
-  it("POST .../send marks review as sent and returns prompt", async () => {
+  // ----------------------------------------------------------------
+  // Send (markdown)
+  // ----------------------------------------------------------------
+
+  it("POST /send marks markdown review as sent and returns a section-grouped prompt", async () => {
     const draft = (await app.inject({
       method: "POST",
-      url: `/api/features/${featureId}/reviews`,
-      payload: { planPath },
-    })).json() as DocReview;
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: planPath },
+    })).json() as FileReview;
 
     await app.inject({
       method: "POST",
-      url: `/api/features/${featureId}/reviews/${draft.id}/comments`,
-      payload: { sectionHeading: "## Architecture", sectionIndex: 2, text: "Add Netlify support" },
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments`,
+      payload: { kind: "section", sectionHeading: "## Architecture", sectionIndex: 1, text: "Add Netlify support" },
     });
 
     const res = await app.inject({
       method: "POST",
-      url: `/api/features/${featureId}/reviews/${draft.id}/send`,
-      payload: { sessionId: "test-session-123" },
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/send`,
     });
     expect(res.statusCode).toBe(200);
-    const body = res.json() as { prompt: string };
+    const body = res.json() as { prompt: string; review: FileReview };
     expect(body.prompt).toContain("Add Netlify support");
     expect(body.prompt).toContain("## Architecture");
+    expect(body.prompt).toContain(planPath);
+    expect(body.review.status).toBe("sent");
 
-    // Verify it's no longer a draft
+    // Draft is gone
     const draftRes = await app.inject({
       method: "GET",
-      url: `/api/features/${featureId}/reviews/draft`,
+      url: `/api/sessions/${sessionId}/file-reviews/draft?filePath=${encodeURIComponent(planPath)}`,
     });
     expect(draftRes.statusCode).toBe(404);
   });
 
-  it("POST .../send rejects review with no comments", async () => {
+  // ----------------------------------------------------------------
+  // Send (code)
+  // ----------------------------------------------------------------
+
+  it("POST /send returns a snippet-based prompt for code reviews", async () => {
     const draft = (await app.inject({
       method: "POST",
-      url: `/api/features/${featureId}/reviews`,
-      payload: { planPath },
-    })).json() as DocReview;
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: codePath },
+    })).json() as FileReview;
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments`,
+      payload: { kind: "line", line: 2, text: "Hardcoded value" },
+    });
 
     const res = await app.inject({
       method: "POST",
-      url: `/api/features/${featureId}/reviews/${draft.id}/send`,
-      payload: { sessionId: "test-session-123" },
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/send`,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { prompt: string; review: FileReview };
+    expect(body.prompt).toContain(codePath);
+    expect(body.prompt).toContain("Hardcoded value");
+    expect(body.prompt).toContain(":2");
+  });
+
+  it("POST /send rejects review with no comments", async () => {
+    const draft = (await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: planPath },
+    })).json() as FileReview;
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/send`,
     });
     expect(res.statusCode).toBe(400);
   });
 
-  it("GET /api/features/:featureId/reviews lists all reviews", async () => {
-    // Create and send a review
-    const draft = (await app.inject({
-      method: "POST",
-      url: `/api/features/${featureId}/reviews`,
-      payload: { planPath },
-    })).json() as DocReview;
+  // ----------------------------------------------------------------
+  // List
+  // ----------------------------------------------------------------
 
+  it("GET /file-reviews lists all reviews for a (session, file)", async () => {
+    const first = (await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: planPath },
+    })).json() as FileReview;
     await app.inject({
       method: "POST",
-      url: `/api/features/${featureId}/reviews/${draft.id}/comments`,
-      payload: { sectionHeading: "## Summary", sectionIndex: 1, text: "Good" },
+      url: `/api/sessions/${sessionId}/file-reviews/${first.id}/comments`,
+      payload: { kind: "section", sectionHeading: "## Summary", sectionIndex: 0, text: "Good" },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/${first.id}/send`,
     });
 
+    // Start a fresh draft
     await app.inject({
       method: "POST",
-      url: `/api/features/${featureId}/reviews/${draft.id}/send`,
-      payload: { sessionId: "s1" },
-    });
-
-    // Create a new draft
-    await app.inject({
-      method: "POST",
-      url: `/api/features/${featureId}/reviews`,
-      payload: { planPath },
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: planPath },
     });
 
     const res = await app.inject({
       method: "GET",
-      url: `/api/features/${featureId}/reviews`,
+      url: `/api/sessions/${sessionId}/file-reviews?filePath=${encodeURIComponent(planPath)}`,
     });
     expect(res.statusCode).toBe(200);
-    const body = res.json() as { reviews: DocReview[] };
+    const body = res.json() as { reviews: FileReview[] };
     expect(body.reviews).toHaveLength(2);
   });
 
-  it("DELETE /api/features/:featureId/reviews/:reviewId deletes a draft", async () => {
+  // ----------------------------------------------------------------
+  // Delete draft
+  // ----------------------------------------------------------------
+
+  it("DELETE /file-reviews/:reviewId deletes an empty draft", async () => {
     const draft = (await app.inject({
       method: "POST",
-      url: `/api/features/${featureId}/reviews`,
-      payload: { planPath },
-    })).json() as DocReview;
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: planPath },
+    })).json() as FileReview;
 
     const res = await app.inject({
       method: "DELETE",
-      url: `/api/features/${featureId}/reviews/${draft.id}`,
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}`,
     });
     expect(res.statusCode).toBe(200);
 
     const draftRes = await app.inject({
       method: "GET",
-      url: `/api/features/${featureId}/reviews/draft`,
+      url: `/api/sessions/${sessionId}/file-reviews/draft?filePath=${encodeURIComponent(planPath)}`,
     });
     expect(draftRes.statusCode).toBe(404);
   });

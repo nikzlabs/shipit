@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 ---
 
 # 112 — Unified Review Surface
@@ -317,3 +317,62 @@ data shapes during a transition window.
 - **Compatible with `017-diff-review-panel`.** Diff review remains the
   surface for comments on a staged change; this doc is about the
   durable file surface.
+
+## Implementation
+
+The unified review surface is wired end-to-end. Comments left on any
+file inside the file preview modal are server-persisted, scoped to the
+`(session, file)` pair, support a real draft → sent → history lifecycle,
+and offer AI Review on markdown files. The standalone "Review" button
+on docs rows is gone — clicking the doc opens the same surface.
+
+### Schema
+
+A single new pair of tables (migration 7) replaces the per-feature
+`doc_reviews` / `review_comments` tables from `049`:
+
+- `file_reviews(id, session_id, file_path, file_type, status, doc_snapshot_hash, section_headings, created_at, updated_at, sent_at)`
+- `file_review_comments(id, review_id, kind, line, section_heading, section_index, text, source, created_at)` — `kind` discriminates line vs. section comments so both code and markdown reviews share storage.
+
+Drafts are unique per `(session, file)`. Sending freezes the draft and a
+fresh one is created on next open.
+
+### Server
+
+| File | Role |
+|---|---|
+| `src/server/orchestrator/review-store.ts` | `FileReviewStore` — CRUD over `file_reviews` and `file_review_comments`. Exports a backwards-compat `ReviewStore` alias. |
+| `src/server/orchestrator/services/reviews.ts` | Service layer: ensure-draft, add line/section comment, edit/delete, send (returns prompt), AI Review (markdown only). Holds `parseMarkdownSections`, `reanchorComments`, `buildReviewPrompt` (handles both file types). |
+| `src/server/orchestrator/api-routes-reviews.ts` | HTTP routes under `/api/sessions/:sessionId/file-reviews`. |
+| `src/server/shared/database.ts` | Migration 7 drops the old tables and creates the new schema. `clearAll` updated. |
+| `src/server/shared/types/domain-types.ts` | `FileReview`, `ReviewComment` (line/section discriminated union), `FileReviewType`. |
+
+### Client
+
+| File | Role |
+|---|---|
+| `src/client/stores/file-review-store.ts` | Zustand store. Talks to the new HTTP API via `fetch`. Exposes `load`, `addLineComment`, `addSectionComment`, `editComment`, `deleteComment`, `sendDraft`, `aiReview`, `discardEmptyDraft`. Keys state by `(sessionId, filePath)`. |
+| `src/client/components/FilePreviewModal.tsx` | The unified surface. On open: ensures a draft exists. Header carries AI Review (markdown only) + Send. Footer surfaces draft status, comment count, and a "Past reviews" disclosure. Closing without comments tidies up the empty draft. |
+| `src/client/components/MonacoCommentWidgets.ts` | Now accepts a `LineCommentLike` shape so both the new file-review store (no `filePath`) and the legacy `comment-store` (has `filePath`) work with the same widget. |
+| `src/client/components/DocsViewer.tsx` | "Review" button removed — clicking the doc opens the unified modal instead. |
+| `src/client/App.tsx` | `reviewingDoc` state, `handleReviewFeature`, `handleReviewSendComments` deleted; `DocReviewPanel` import removed. The existing `handleFileSendComments` already routes the modal's prompt through `send_message`. |
+
+### What stays separate
+
+- **DiffPanel comments** keep using the existing client `comment-store`
+  (localStorage). Per the plan, diff-anchored review (commenting on a
+  staged change) is a different surface and out of scope.
+- The legacy `comment-store` is no longer touched by `FilePreviewModal`.
+
+### Tests
+
+- `src/server/orchestrator/review-store.test.ts` — store CRUD + lifecycle.
+- `src/server/orchestrator/services/reviews.test.ts` — section parsing, re-anchoring, code + markdown prompt construction, file-type detection.
+- `src/server/orchestrator/integration_tests/doc-reviews.test.ts` — full HTTP loop against `buildApp()` with a real session and both file types.
+- `src/client/stores/file-review-store.test.ts` — fakes `fetch` to cover load / add / edit / delete / send / AI / discardEmptyDraft / session-file isolation.
+- `src/client/components/FilePreviewModal.test.tsx`, `MonacoCommentWidgets.test.ts` — updated for the new types.
+
+### Removed
+
+- `src/client/components/DocReviewPanel.tsx` and its test.
+- `src/client/components/buildFileCommentsPrompt.test.ts` — prompt construction lives server-side now.
