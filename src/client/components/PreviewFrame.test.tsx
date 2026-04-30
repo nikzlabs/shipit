@@ -3,11 +3,20 @@ import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { PreviewFrame, formatErrorForMessage, type PreviewStatus } from "./PreviewFrame.js";
 import { usePreviewStore } from "../stores/preview-store.js";
+import { findPresetById } from "./device-presets.js";
 import type { PreviewError } from "../hooks/usePreviewErrors.js";
+
+// jsdom doesn't implement ResizeObserver — provide a no-op stub for the device-frame measurement effect.
+class ResizeObserverStub {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+}
 
 // Mock fetch so the URL-reachability poll resolves immediately in tests
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response()));
+  vi.stubGlobal("ResizeObserver", ResizeObserverStub);
   usePreviewStore.getState().reset();
 });
 
@@ -392,6 +401,127 @@ describe("PreviewFrame", () => {
     render(<PreviewFrame preview={null} sessionId="session-a" {...defaultProps} />);
     expect(screen.getByText("Starting dev server...")).toBeInTheDocument();
     expect(screen.queryByTitle("Live Preview")).not.toBeInTheDocument();
+  });
+
+  // ---- Device frame / mobile preview tests ----
+
+  it("does not render device selector when preview is not running", () => {
+    render(<PreviewFrame preview={null} sessionId="session-a" {...defaultProps} />);
+    expect(screen.queryByLabelText("Select device viewport")).not.toBeInTheDocument();
+  });
+
+  it("renders device selector when preview is running", () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    expect(screen.getByLabelText("Select device viewport")).toBeInTheDocument();
+  });
+
+  it("applies explicit width/height to the iframe when a preset is active", async () => {
+    const preset = findPresetById("iphone-14")!;
+    usePreviewStore.setState({ devicePreset: preset, isLandscape: false, customSize: null });
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = await screen.findByTitle("Live Preview");
+    expect(iframe.style.width).toBe("390px");
+    expect(iframe.style.height).toBe("844px");
+  });
+
+  it("swaps width and height when isLandscape is true", async () => {
+    const preset = findPresetById("iphone-14")!;
+    usePreviewStore.setState({ devicePreset: preset, isLandscape: true, customSize: null });
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = await screen.findByTitle("Live Preview");
+    expect(iframe.style.width).toBe("844px");
+    expect(iframe.style.height).toBe("390px");
+  });
+
+  it("shows dimension label when a preset is active", async () => {
+    const preset = findPresetById("iphone-14")!;
+    usePreviewStore.setState({ devicePreset: preset, isLandscape: false, customSize: null });
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    expect(screen.getByText(/390×844/)).toBeInTheDocument();
+  });
+
+  it("does not show dimension label when responsive is active", () => {
+    usePreviewStore.setState({ devicePreset: null, isLandscape: false, customSize: null });
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    expect(screen.queryByText(/×\d+/)).not.toBeInTheDocument();
+  });
+
+  it("does not constrain iframe size when no preset is active", async () => {
+    usePreviewStore.setState({ devicePreset: null, isLandscape: false, customSize: null });
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = await screen.findByTitle("Live Preview");
+    // No inline width/height when responsive
+    expect(iframe.style.width).toBe("");
+    expect(iframe.style.height).toBe("");
+  });
+
+  it("setDevicePreset updates store state", () => {
+    const preset = findPresetById("ipad-mini")!;
+    usePreviewStore.getState().setDevicePreset(preset);
+    expect(usePreviewStore.getState().devicePreset?.id).toBe("ipad-mini");
+    usePreviewStore.getState().setDevicePreset(null);
+    expect(usePreviewStore.getState().devicePreset).toBeNull();
+  });
+
+  it("toggleLandscape flips the isLandscape flag", () => {
+    expect(usePreviewStore.getState().isLandscape).toBe(false);
+    usePreviewStore.getState().toggleLandscape();
+    expect(usePreviewStore.getState().isLandscape).toBe(true);
+    usePreviewStore.getState().toggleLandscape();
+    expect(usePreviewStore.getState().isLandscape).toBe(false);
+  });
+
+  it("scales the iframe down when the container is smaller than the device", async () => {
+    // Mock HTMLDivElement clientWidth/clientHeight so the device-frame measurement
+    // sees a 400×400 panel. iPad Air is 820×1180, so scale should be < 1.
+    const widthSpy = vi.spyOn(HTMLDivElement.prototype, "clientWidth", "get").mockReturnValue(400);
+    const heightSpy = vi.spyOn(HTMLDivElement.prototype, "clientHeight", "get").mockReturnValue(400);
+    try {
+      const preset = findPresetById("ipad-air")!;
+      usePreviewStore.setState({ devicePreset: preset, isLandscape: false, customSize: null });
+      const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+      render(<PreviewFrame preview={preview} {...defaultProps} />);
+      const iframe = await screen.findByTitle("Live Preview");
+      // Expected scale: min(1, (400-32)/820, (400-32)/1180) = 368/1180 ≈ 0.312
+      const transform = iframe.style.transform;
+      const match = /scale\(([^)]+)\)/.exec(transform);
+      expect(match).not.toBeNull();
+      const scale = Number(match![1]);
+      expect(scale).toBeGreaterThan(0);
+      expect(scale).toBeLessThan(1);
+      // Header should show the scaled-down percentage
+      const expectedPercent = Math.round(Math.min(1, 368 / 820, 368 / 1180) * 100);
+      expect(screen.getByText(new RegExp(`\\(${expectedPercent}%\\)`))).toBeInTheDocument();
+    } finally {
+      widthSpy.mockRestore();
+      heightSpy.mockRestore();
+    }
+  });
+
+  it("does not scale below 1.0 when container is larger than device", async () => {
+    const widthSpy = vi.spyOn(HTMLDivElement.prototype, "clientWidth", "get").mockReturnValue(2000);
+    const heightSpy = vi.spyOn(HTMLDivElement.prototype, "clientHeight", "get").mockReturnValue(2000);
+    try {
+      const preset = findPresetById("iphone-se")!;
+      usePreviewStore.setState({ devicePreset: preset, isLandscape: false, customSize: null });
+      const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+      render(<PreviewFrame preview={preview} {...defaultProps} />);
+      const iframe = await screen.findByTitle("Live Preview");
+      const match = /scale\(([^)]+)\)/.exec(iframe.style.transform);
+      expect(match).not.toBeNull();
+      expect(Number(match![1])).toBe(1);
+      // No "(NN%)" indicator when scale is 1
+      expect(screen.queryByText(/\(\d+%\)/)).not.toBeInTheDocument();
+    } finally {
+      widthSpy.mockRestore();
+      heightSpy.mockRestore();
+    }
   });
 
 });
