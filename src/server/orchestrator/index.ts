@@ -361,6 +361,46 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         return { sessionId: appSessionId, sessionDir, workspaceDir };
       },
     );
+
+    // Test-only: simulate idle cleanup. Production triggers this via the
+    // periodic timer + IDLE_GRACE_PERIOD_MS check inside createIdleEnforcer.
+    // Tests want the same outcome (registry entry gone, runner disposed)
+    // without waiting on real timers.
+    app.post<{ Params: { sessionId: string } }>(
+      "/api/_test/dispose-runner/:sessionId",
+      async (request, reply) => {
+        const { sessionId } = request.params;
+        const runner = runnerRegistry.get(sessionId);
+        if (!runner) {
+          reply.code(404);
+          return { error: "Runner not found" };
+        }
+        runnerRegistry.dispose(sessionId, { force: true });
+        return { ok: true };
+      },
+    );
+
+    // Test-only: read runner state from the registry. Lets tests assert on
+    // viewerCount, running, lastViewerDetachAt without coupling to the WS
+    // protocol.
+    app.get<{ Params: { sessionId: string } }>(
+      "/api/_test/runner/:sessionId",
+      async (request, reply) => {
+        const { sessionId } = request.params;
+        const runner = runnerRegistry.get(sessionId);
+        if (!runner) {
+          reply.code(404);
+          return { error: "Runner not found" };
+        }
+        return {
+          viewerCount: runner.viewerCount,
+          running: runner.running,
+          lastViewerDetachAt: runner.lastViewerDetachAt,
+          disposed: runner.disposed,
+          queueLength: runner.queueLength,
+        };
+      },
+    );
   }
 
   // Serve the built client files from dist/client/
