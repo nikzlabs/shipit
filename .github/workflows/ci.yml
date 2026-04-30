@@ -7,6 +7,12 @@ on:
       - 'docs/**'
       - '**.md'
 
+# Belt-and-suspenders: force any JavaScript actions still on Node.js 20 to
+# run on Node.js 24. Our actions are pinned at v5 (which already use Node 24),
+# but this guards against transitive uses by composite actions.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   check:
     name: Lint, Type Check & Build
