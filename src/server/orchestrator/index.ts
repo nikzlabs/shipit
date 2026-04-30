@@ -237,19 +237,20 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     };
     sseClients.add(client);
 
-    // Send initial state snapshot so the client has data immediately
+    // Send initial state snapshot so the client has data immediately.
+    //
+    // Ordering matters: the sidebar's "needs attention" indicator is derived
+    // from PR/CI status and active-runner state. If we sent `session_list`
+    // first, the client would render sidebar items with no PR card data,
+    // briefly fall through to the "Waiting for your input" attention reason,
+    // and then clear the indicator a tick later when `pr_status` arrived.
+    // Send the supporting state (PR status, active runners) before the
+    // session list so the very first render of each `SessionItem` already
+    // sees its CI/agent state and computes the right attention reason.
     const sessions = sessionManager.list();
-    client.write(`event: session_list\ndata: ${JSON.stringify({ sessions })}\n\n`);
-    const repos = repoStore.list();
-    client.write(`event: repo_list\ndata: ${JSON.stringify({ repos })}\n\n`);
 
-    const agents = agentRegistry.list().map((a) => ({
-      id: a.id, name: a.name, installed: a.installed,
-      authConfigured: a.authConfigured, models: a.capabilities.models,
-    }));
-    client.write(`event: agent_list\ndata: ${JSON.stringify({ agents, defaultAgentId })}\n\n`);
-
-    // Send active runner sessions so sidebar dots are correct on connect
+    // Active runner sessions so sidebar dots and the "agent running" branch
+    // of useAttentionInfo are correct on first paint.
     const activeRunnerSessions: string[] = [];
     for (const session of sessions) {
       const runner = runnerRegistry.get(session.id);
@@ -259,11 +260,23 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       client.write(`event: active_runners\ndata: ${JSON.stringify({ sessionIds: activeRunnerSessions })}\n\n`);
     }
 
-    // Send current PR statuses so inline cards and sidebar icons are correct on connect
+    // Current PR statuses so inline cards and sidebar icons are correct on
+    // connect — must precede session_list to avoid a one-frame flash of the
+    // attention indicator on sessions whose CI is still running.
     const prStatuses = prStatusPoller.getAllStatuses();
     if (prStatuses.length > 0) {
       client.write(`event: pr_status\ndata: ${JSON.stringify({ updates: prStatuses })}\n\n`);
     }
+
+    client.write(`event: session_list\ndata: ${JSON.stringify({ sessions })}\n\n`);
+    const repos = repoStore.list();
+    client.write(`event: repo_list\ndata: ${JSON.stringify({ repos })}\n\n`);
+
+    const agents = agentRegistry.list().map((a) => ({
+      id: a.id, name: a.name, installed: a.installed,
+      authConfigured: a.authConfigured, models: a.capabilities.models,
+    }));
+    client.write(`event: agent_list\ndata: ${JSON.stringify({ agents, defaultAgentId })}\n\n`);
 
     // Send current Docker memory stats on connect
     if (dockerForStats) {
