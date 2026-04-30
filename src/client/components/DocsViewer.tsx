@@ -131,20 +131,20 @@ export function DocsViewer({ files, onFileClick, onRefresh }: DocsViewerProps) {
         <div className="flex border-b border-(--color-border-secondary)">
           <button
             onClick={() => setUserTab("tracked")}
-            className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+            className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer border-b-2 ${
               activeTab === "tracked"
-                ? "text-(--color-text-primary) border-b-2 border-(--color-accent)"
-                : "text-(--color-text-tertiary) hover:text-(--color-text-secondary)"
+                ? "text-(--color-text-primary) border-(--color-accent)"
+                : "text-(--color-text-tertiary) border-transparent hover:text-(--color-text-secondary)"
             }`}
           >
             Tracked ({tracked.length})
           </button>
           <button
             onClick={() => setUserTab("other")}
-            className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+            className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer border-b-2 ${
               activeTab === "other"
-                ? "text-(--color-text-primary) border-b-2 border-(--color-accent)"
-                : "text-(--color-text-tertiary) hover:text-(--color-text-secondary)"
+                ? "text-(--color-text-primary) border-(--color-accent)"
+                : "text-(--color-text-tertiary) border-transparent hover:text-(--color-text-secondary)"
             }`}
           >
             Other ({untracked.length})
