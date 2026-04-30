@@ -638,7 +638,7 @@ export default function App() {
             <DocsViewer files={docFiles} onFileClick={(f) => { const doc = docFiles.find((d) => d.path === f); handleOpenDoc(f, doc); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} onReviewFeature={handleReviewFeature} />
           )
         ) : rightTab === "terminal" ? (
-          <TerminalPanel entries={logEntries} onClear={() => { useTerminalStore.getState().clearEntries(); send({ type: "clear_logs" }); }} terminalMode={terminalMode} onTerminalModeChange={(m) => useTerminalStore.getState().setMode(m)} shellContent={
+          <TerminalPanel entries={logEntries} onClear={() => { useTerminalStore.getState().clearEntries(); send({ type: "clear_logs" }); }} terminalMode={terminalMode} onTerminalModeChange={(m) => useTerminalStore.getState().setMode(m)} sessionId={wsSessionId} onReconnectWs={reconnect} shellContent={
             (shellStarted || terminalMode === "shell") ? (
               <InteractiveTerminal ref={terminalRef} onInput={(d) => send({ type: "terminal_input", data: d })} onResize={(cols, rows) => send({ type: "terminal_resize", cols, rows })} onStart={(cols, rows) => { send({ type: "terminal_start", cols, rows }); useTerminalStore.getState().setShellStarted(true); }} />
             ) : null
