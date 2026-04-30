@@ -245,6 +245,15 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   // Remote terminal support (container mode)
   readonly supportsRemoteTerminal?: boolean;
 
+  /**
+   * Timestamp (Date.now()) of the most recent SSE event from the worker.
+   * Container-only — direct runners don't have an SSE stream and may
+   * omit this property entirely. Used by the container health endpoint
+   * to surface "events stale 47s" when the SSE channel is broken even
+   * though the container is otherwise fine.
+   */
+  readonly lastSseEventAt?: number;
+
   // Agent factory (container mode — returns a proxy that delegates to the worker)
   createAgent?(agentId: AgentId): AgentProcess;
 

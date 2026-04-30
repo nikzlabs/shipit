@@ -5,7 +5,24 @@
 
 import http from "node:http";
 
-export async function workerPost(baseUrl: string, path: string, body?: unknown): Promise<unknown> {
+export interface WorkerHttpOpts {
+  /**
+   * Request timeout in milliseconds. When set, both connect and idle-read
+   * are bounded; on timeout the request is aborted and the promise rejects
+   * with `Error("worker request timed out")`. Default: no timeout (Node's
+   * built-in socket idle timeout applies).
+   *
+   * Use a short timeout (e.g. 3000ms) for health probes so a wedged worker
+   * doesn't make the orchestrator hang on aggregation requests.
+   */
+  timeoutMs?: number;
+}
+
+function newTimeoutError(): Error {
+  return new Error("worker request timed out");
+}
+
+export async function workerPost(baseUrl: string, path: string, body?: unknown, opts?: WorkerHttpOpts): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const url = new URL(path, baseUrl);
     const payload = body !== undefined ? JSON.stringify(body) : undefined;
@@ -22,6 +39,7 @@ export async function workerPost(baseUrl: string, path: string, body?: unknown):
         path: url.pathname,
         method: "POST",
         headers,
+        ...(opts?.timeoutMs ? { timeout: opts.timeoutMs } : {}),
       },
       (res) => {
         let data = "";
@@ -42,6 +60,12 @@ export async function workerPost(baseUrl: string, path: string, body?: unknown):
         res.on("error", reject);
       },
     );
+
+    if (opts?.timeoutMs) {
+      req.on("timeout", () => {
+        req.destroy(newTimeoutError());
+      });
+    }
 
     req.on("error", reject);
     if (payload) req.write(payload);
@@ -54,7 +78,7 @@ export async function workerInstall(baseUrl: string, commands: string[]): Promis
   return workerPost(baseUrl, "/install", { commands });
 }
 
-export async function workerGet(baseUrl: string, path: string): Promise<unknown> {
+export async function workerGet(baseUrl: string, path: string, opts?: WorkerHttpOpts): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const url = new URL(path, baseUrl);
 
@@ -64,6 +88,7 @@ export async function workerGet(baseUrl: string, path: string): Promise<unknown>
         port: url.port,
         path: url.pathname,
         method: "GET",
+        ...(opts?.timeoutMs ? { timeout: opts.timeoutMs } : {}),
       },
       (res) => {
         let data = "";
@@ -84,6 +109,12 @@ export async function workerGet(baseUrl: string, path: string): Promise<unknown>
         res.on("error", reject);
       },
     );
+
+    if (opts?.timeoutMs) {
+      req.on("timeout", () => {
+        req.destroy(newTimeoutError());
+      });
+    }
 
     req.on("error", reject);
     req.end();

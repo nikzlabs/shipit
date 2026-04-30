@@ -108,6 +108,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   // Per-session detected ports
   private _detectedPorts: number[] = [];
 
+  /**
+   * Timestamp (Date.now()) of the most recent SSE event from the worker.
+   * Used by the container health endpoint to surface "last event 47s ago"
+   * so the user can tell when the SSE stream has stalled even if the
+   * container itself is still running.
+   */
+  private _lastSseEventAt = 0;
+
   // Compose service management
   private _serviceManager: ServiceManager | null = null;
   private _serviceManagerListeners: (() => void)[] = [];
@@ -272,6 +280,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get detectedPorts(): number[] { return this._detectedPorts; }
   set detectedPorts(ports: number[]) { this._detectedPorts = ports; }
+
+  /** Timestamp of the most recent SSE event from the worker, or 0 if none yet. */
+  get lastSseEventAt(): number { return this._lastSseEventAt; }
+
+  /** Worker URL (read-only — used by the container health endpoint). */
+  getWorkerUrl(): string { return this.workerUrl; }
 
   /** Collect ports from all running auto-preview services. */
   private buildDetectedPortsFromServices(mgr: ServiceManager): number[] {
@@ -468,8 +482,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   /** Kill the agent running on the worker. */
-  async killAgentOnWorker(): Promise<void> {
-    await workerPost(this.workerUrl, "/agent/kill");
+  async killAgentOnWorker(opts?: { timeoutMs?: number }): Promise<void> {
+    await workerPost(this.workerUrl, "/agent/kill", undefined, opts);
     this._agent = null;
   }
 
@@ -679,6 +693,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private handleSSEEvent(event: SSEEvent): void {
     try {
       const data = JSON.parse(event.data) as Record<string, unknown>;
+      this._lastSseEventAt = Date.now();
 
       switch (event.type) {
         // --- Agent events ---

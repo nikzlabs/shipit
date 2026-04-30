@@ -1,6 +1,7 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: scroll event listener + DOM scrollIntoView (browser API subscription + DOM sync)
 import { useEffect, useRef, useMemo } from "react";
 import { Button } from "./ui/button.js";
+import { SessionHealthStrip } from "./SessionHealthStrip.js";
 import { useTerminalStore } from "../stores/terminal-store.js";
 
 export type LogSource = "stderr" | "stdout" | "server" | "preview" | "install";
@@ -23,6 +24,18 @@ export interface TerminalPanelProps {
   onTerminalModeChange: (mode: TerminalMode) => void;
   /** Render prop for the shell sub-tab content (InteractiveTerminal). */
   shellContent: React.ReactNode;
+  /**
+   * Active session ID, used by the health strip to poll
+   * `/api/sessions/:id/container/health`. When undefined, the strip
+   * renders a placeholder.
+   */
+  sessionId: string | undefined;
+  /**
+   * Called by the health strip after a successful container restart so
+   * the per-session WebSocket re-handshakes and a fresh container is
+   * created via the runner factory.
+   */
+  onReconnectWs: () => void;
 }
 
 const SOURCE_COLORS: Record<LogEntry["source"], string> = {
@@ -60,7 +73,7 @@ const FILTER_COLORS: Record<LogSource, { active: string; inactive: string }> = {
   install: { active: "bg-(--color-success-subtle) text-(--color-success)", inactive: "text-(--color-text-secondary) hover:text-(--color-success)" },
 };
 
-export function TerminalPanel({ entries, onClear, terminalMode, onTerminalModeChange, shellContent }: TerminalPanelProps) {
+export function TerminalPanel({ entries, onClear, terminalMode, onTerminalModeChange, shellContent, sessionId, onReconnectWs }: TerminalPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
@@ -98,6 +111,9 @@ export function TerminalPanel({ entries, onClear, terminalMode, onTerminalModeCh
 
   return (
     <div className="flex flex-col h-full">
+      {/* Session health strip — diagnostics + recovery actions */}
+      <SessionHealthStrip sessionId={sessionId} onReconnectWs={onReconnectWs} />
+
       {/* Header with sub-tab switcher */}
       <div className="flex items-center justify-between px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs text-(--color-text-secondary)">
         <div className="flex items-center gap-2">

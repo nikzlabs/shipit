@@ -214,6 +214,19 @@ export interface WsClaudeInterrupted {
   type: "claude_interrupted";
 }
 
+/**
+ * Server → Client: the session's container is being restarted.
+ *
+ * Emitted at the start of `POST /api/sessions/:id/container/restart`
+ * before the runner is disposed. The client shows a "Restarting…"
+ * overlay until its WebSocket reconnects, at which point the runner
+ * factory creates a fresh container.
+ */
+export interface WsContainerRestarting {
+  type: "container_restarting";
+  sessionId: string;
+}
+
 /** Server → Client: full reset completed successfully. */
 export interface WsFullResetComplete {
   type: "full_reset_complete";
@@ -457,6 +470,7 @@ export type WsServerMessage =
   | WsQueueUpdated
   | WsAgentListMessage
   | WsClaudeInterrupted
+  | WsContainerRestarting
   | WsFullResetComplete
   | WsClearLogs
   | WsTurnDiff
