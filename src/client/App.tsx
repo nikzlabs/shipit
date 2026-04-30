@@ -682,7 +682,7 @@ export default function App() {
         <HomeScreen onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)} hasRepos={repos.length > 0} />
       ) : (
         <>
-          <MessageList messages={messages} isLoading={isLoading} searchMatches={search.matches} currentMatch={search.currentMatch} onAnswerQuestion={handleAnswerQuestion} onSendFollowUp={handleSendFollowUp} onRollback={handleRollback} onRewind={handleRewind} />
+          <MessageList messages={messages} isLoading={isLoading} searchMatches={search.matches} currentMatch={search.currentMatch} onAnswerQuestion={handleAnswerQuestion} onSendFollowUp={handleSendFollowUp} onRollback={handleRollback} onRewind={handleRewind} isNewSession={showNewSessionView} />
           {isLoading && <AgentStatusBar activity={activity} />}
           {wsSessionId && <RebaseBanner sessionId={wsSessionId} />}
           {wsSessionId && <PrLifecycleCard sessionId={wsSessionId} />}
