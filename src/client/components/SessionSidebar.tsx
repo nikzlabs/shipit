@@ -464,17 +464,22 @@ export function SessionSidebar({
         </Button>
         </WithTooltip>
         <span className="flex-1" />
-        <WithTooltip label="Add Repository">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onAddRepo}
-          className="p-0! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
-          aria-label="Add Repository"
+        <RepoSwitcher
+          repos={repos}
+          activeRepoUrl={useRepoStore.getState().activeRepoUrl}
+          onSelectRepo={(url) => useRepoStore.getState().setActiveRepoUrl(url)}
+          onAddRepo={onAddRepo}
+          onCreateNew={onCreateNewRepo}
         >
-          <PlusIcon size={ICON_SIZE.SM} />
-        </Button>
-        </WithTooltip>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="p-0! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
+            aria-label="Repository"
+          >
+            <GithubLogoIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0" />
+          </Button>
+        </RepoSwitcher>
       </div>
 
       {/* Scrollable grouped repo sections */}
