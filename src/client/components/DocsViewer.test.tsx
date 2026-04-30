@@ -109,7 +109,7 @@ describe("DocsViewer", () => {
       expect(screen.queryByText(/Other/)).not.toBeInTheDocument();
     });
 
-    it("sorts tracked docs by status then alphabetically by path", () => {
+    it("sorts tracked docs by status, planned by priority then descending path", () => {
       const props = defaultProps();
       props.files = [
         makeDoc({ path: "docs/004-done/plan.md", title: "D-Done", status: "done" }),
@@ -122,7 +122,7 @@ describe("DocsViewer", () => {
       const items = screen.getAllByRole("button").filter(
         (btn) => !btn.textContent?.includes("Reload") && !btn.textContent?.includes("Tracked") && !btn.textContent?.includes("Other"),
       );
-      // in-progress first, sorted by path
+      // in-progress first, sorted alphabetically by path (no priority)
       expect(items[0].textContent).toContain("B-InProgress");
       expect(items[1].textContent).toContain("A-InProgress");
       // then planned
@@ -131,6 +131,60 @@ describe("DocsViewer", () => {
       expect(items[3].textContent).toContain("C-Paused");
       // then done
       expect(items[4].textContent).toContain("D-Done");
+    });
+
+    it("sorts planned docs by priority bucket, ties broken by reverse path order", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({ path: "docs/001-low/plan.md", title: "Z-Low", status: "planned", priority: "low" }),
+        makeDoc({ path: "docs/002-unset/plan.md", title: "Y-Unset", status: "planned" }),
+        makeDoc({ path: "docs/003-high-old/plan.md", title: "C-HighOld", status: "planned", priority: "high" }),
+        makeDoc({ path: "docs/004-med/plan.md", title: "B-Med", status: "planned", priority: "medium" }),
+        makeDoc({ path: "docs/005-high-new/plan.md", title: "A-HighNew", status: "planned", priority: "high" }),
+      ];
+      render(<DocsViewer {...props} />);
+      const items = screen.getAllByRole("button").filter(
+        (btn) => !btn.textContent?.includes("Reload"),
+      );
+      // high (newer path first), then medium, then low, then unset
+      expect(items[0].textContent).toContain("A-HighNew");
+      expect(items[1].textContent).toContain("C-HighOld");
+      expect(items[2].textContent).toContain("B-Med");
+      expect(items[3].textContent).toContain("Z-Low");
+      expect(items[4].textContent).toContain("Y-Unset");
+    });
+
+    it("renders a priority badge for planned docs that have one", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({ path: "docs/001/plan.md", title: "Alpha", status: "planned", priority: "high" }),
+        makeDoc({ path: "docs/002/plan.md", title: "Bravo", status: "planned", priority: "medium" }),
+        makeDoc({ path: "docs/003/plan.md", title: "Charlie", status: "planned", priority: "low" }),
+        makeDoc({ path: "docs/004/plan.md", title: "Delta", status: "planned" }),
+      ];
+      render(<DocsViewer {...props} />);
+      expect(screen.getByText("High")).toBeInTheDocument();
+      expect(screen.getByText("Med")).toBeInTheDocument();
+      expect(screen.getByText("Low")).toBeInTheDocument();
+      // Delta has no priority — its title still renders, but no extra badge text.
+      expect(screen.getByText("Delta")).toBeInTheDocument();
+    });
+
+    it("does not render a priority badge for non-planned docs", () => {
+      const props = defaultProps();
+      // Defensive: even if the field somehow leaks through, the UI shouldn't show it
+      // when status !== "planned".
+      props.files = [
+        makeDoc({
+          path: "docs/001/plan.md",
+          title: "Finished Feature",
+          status: "done",
+          priority: "high",
+        }),
+      ];
+      render(<DocsViewer {...props} />);
+      expect(screen.getByText("Done")).toBeInTheDocument();
+      expect(screen.queryByText("High")).not.toBeInTheDocument();
     });
 
     it("shows path context for tracked docs in subdirectories", () => {
