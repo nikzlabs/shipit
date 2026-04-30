@@ -2,47 +2,47 @@
 
 ## Store & data layer
 
-- [ ] Define `DevicePreset` interface and `DEVICE_PRESETS` constant array (presets table from plan)
-- [ ] Add `devicePreset`, `isLandscape`, `customSize` state to `preview-store.ts`
-- [ ] Add `setDevicePreset`, `toggleLandscape`, `setCustomSize` actions
-- [ ] Persist selected preset ID to `localStorage` (`shipit:devicePreset`), restore on load
-- [ ] Add `reset()` handling — clear device state on session reset
+- [x] Define `DevicePreset` interface and `DEVICE_PRESETS` constant array (presets table from plan)
+- [x] Add `devicePreset`, `isLandscape`, `customSize` state to `preview-store.ts`
+- [x] Add `setDevicePreset`, `toggleLandscape`, `setCustomSize` actions
+- [x] Persist selected preset ID to `localStorage` (`shipit:devicePreset`), restore on load
+- [x] Add `reset()` handling — clear device state on session reset
 
 ## DeviceSelector component
 
-- [ ] Create `src/client/components/DeviceSelector.tsx`
-- [ ] Dropdown trigger showing current preset label (or "Responsive")
-- [ ] Dropdown menu grouped by category: Responsive, Phones, Tablets, Custom
-- [ ] Show dimensions next to each preset label (e.g., `375 × 667`)
-- [ ] Checkmark on active preset
-- [ ] Custom size inputs — two number fields with `×` separator
-- [ ] Validate custom size inputs (min 100, max 2560)
-- [ ] Rotate button — visible only when a fixed-size preset is active
-- [ ] Close dropdown on outside click and Escape key
-- [ ] Keyboard navigation within dropdown (arrow keys, Enter)
+- [x] Create `src/client/components/DeviceSelector.tsx`
+- [x] Dropdown trigger showing current preset label (or "Responsive")
+- [x] Dropdown menu grouped by category: Responsive, Phones, Tablets, Custom
+- [x] Show dimensions next to each preset label (e.g., `375 × 667`)
+- [x] Checkmark on active preset
+- [x] Custom size inputs — two number fields with `×` separator
+- [x] Validate custom size inputs (min 100, max 2560)
+- [x] Rotate button — visible only when a fixed-size preset is active
+- [x] Close dropdown on outside click and Escape key (provided by Radix `DropdownMenu`)
+- [x] Keyboard navigation within dropdown (arrow keys, Enter) (provided by Radix `DropdownMenu`)
 
 ## PreviewFrame changes
 
-- [ ] Import and render `DeviceSelector` in preview header bar (after port indicator)
-- [ ] Show dimension label in header when a fixed preset is active (e.g., `390 × 844`)
-- [ ] Wrap iframe in device frame container `div`
-- [ ] When preset active: set explicit `width`/`height` on iframe, center in container
-- [ ] When preset active: change container background to `bg-gray-800`
-- [ ] Add subtle border/outline around constrained iframe
-- [ ] Implement scale-to-fit: `transform: scale()` when device size exceeds panel
-- [ ] Use `ResizeObserver` to recalculate scale on panel resize
-- [ ] Show scale percentage label when scale < 100% (e.g., "67%")
-- [ ] When "Responsive" selected: iframe fills panel as before (no regression)
+- [x] Import and render `DeviceSelector` in preview header bar (after port indicator)
+- [x] Show dimension label in header when a fixed preset is active (e.g., `390 × 844`)
+- [x] Wrap iframe in device frame container `div`
+- [x] When preset active: set explicit `width`/`height` on iframe, center in container
+- [x] When preset active: change container background to `bg-gray-800` (using `--color-bg-tertiary` token)
+- [x] Add subtle border/outline around constrained iframe
+- [x] Implement scale-to-fit: `transform: scale()` when device size exceeds panel
+- [x] Use `ResizeObserver` to recalculate scale on panel resize
+- [x] Show scale percentage label when scale < 100% (e.g., "67%")
+- [x] When "Responsive" selected: iframe fills panel as before (no regression)
 
 ## Tests
 
-- [ ] `DeviceSelector.test.tsx` — renders with "Responsive" default
-- [ ] `DeviceSelector.test.tsx` — selecting a preset calls `onSelectPreset`
-- [ ] `DeviceSelector.test.tsx` — rotate button swaps orientation
-- [ ] `DeviceSelector.test.tsx` — custom size inputs call `onCustomSize`
-- [ ] `DeviceSelector.test.tsx` — dropdown closes on outside click
-- [ ] `PreviewFrame.test.tsx` — iframe has explicit dimensions when preset active
-- [ ] `PreviewFrame.test.tsx` — iframe fills container when "Responsive"
-- [ ] `PreviewFrame.test.tsx` — scale factor computed correctly for small container
-- [ ] Store tests — `setDevicePreset`, `toggleLandscape`, `setCustomSize` update state
-- [ ] Store tests — localStorage persistence round-trips correctly
+- [x] `DeviceSelector.test.tsx` — renders with "Responsive" default
+- [x] `DeviceSelector.test.tsx` — selecting a preset calls `onSelectPreset`
+- [x] `DeviceSelector.test.tsx` — rotate button swaps orientation
+- [x] `DeviceSelector.test.tsx` — custom size inputs call `onCustomSize`
+- [x] `DeviceSelector.test.tsx` — dropdown closes on outside click (and Escape)
+- [x] `PreviewFrame.test.tsx` — iframe has explicit dimensions when preset active
+- [x] `PreviewFrame.test.tsx` — iframe fills container when "Responsive"
+- [x] `PreviewFrame.test.tsx` — scale factor computed correctly for small container
+- [x] Store tests — `setDevicePreset`, `toggleLandscape`, `setCustomSize` update state
+- [x] Store tests — localStorage persistence round-trips correctly

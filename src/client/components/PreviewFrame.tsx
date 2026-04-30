@@ -1,5 +1,5 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: poll external preview server URL until ready with cancellation (external system sync)
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useLayoutEffect } from "react";
 import { WarningIcon, CircleNotchIcon, ArrowClockwiseIcon, ArrowSquareOutIcon, CaretDownIcon, CheckIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import {
@@ -14,6 +14,7 @@ import type { PreviewError } from "../hooks/usePreviewErrors.js";
 import { usePreviewStore } from "../stores/preview-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { StartupSteps } from "./StartupSteps.js";
+import { DeviceSelector } from "./DeviceSelector.js";
 
 /** Maps known Docker/Compose error patterns to user-facing remediation hints. */
 function getComposeErrorHint(error: string): string | null {
@@ -140,9 +141,21 @@ export function PreviewFrame({
   const autoFixEnabled = usePreviewStore((s) => s.autoFixEnabled);
   const autoFixRetries = usePreviewStore((s) => s.autoFixRetries);
   const onToggleAutoFix = usePreviewStore((s) => s.toggleAutoFix);
+  const devicePreset = usePreviewStore((s) => s.devicePreset);
+  const isLandscape = usePreviewStore((s) => s.isLandscape);
+  const customSize = usePreviewStore((s) => s.customSize);
+  const setDevicePreset = usePreviewStore((s) => s.setDevicePreset);
+  const toggleLandscape = usePreviewStore((s) => s.toggleLandscape);
+  const setCustomSize = usePreviewStore((s) => s.setCustomSize);
   const [refreshKey, setRefreshKey] = useState(0);
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
   const [portSelectorOpen, setPortSelectorOpen] = useState(false);
+
+  // ---- Device frame measurement ----
+  // When a preset is active, we resize the iframe to the preset width/height
+  // and scale it down with `transform: scale()` if it doesn't fit the panel.
+  const deviceContainerRef = useRef<HTMLDivElement | null>(null);
+  const [deviceContainerSize, setDeviceContainerSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
 
   // Compute active port early so hooks can reference it (0 when not running)
   const activePort = preview?.running ? (selectedPort ?? preview.port) : 0;
@@ -312,6 +325,19 @@ export function PreviewFrame({
   // Remember the last port label so the top bar doesn't flash "Preview" during session switch
   const lastPortLabel = useRef<string | null>(null);
 
+  // Observe device container size to compute scale-to-fit when a preset is active.
+  useLayoutEffect(() => {
+    const el = deviceContainerRef.current;
+    if (!el) return;
+    const update = () => {
+      setDeviceContainerSize({ width: el.clientWidth, height: el.clientHeight });
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [devicePreset, isLandscape, customSize]);
+
   // ---- Determine overlay content (replaces early returns) ----
   // By computing overlay content instead of returning early, we keep a single
   // DOM tree so the iframe element is never destroyed/recreated.
@@ -355,6 +381,25 @@ export function PreviewFrame({
       default: return "info";
     }
   };
+
+  // ---- Device frame metrics ----
+  // Only applied when a preset (or custom size) is active. Otherwise the iframe fills the panel.
+  const DEVICE_PADDING = 16;
+  const activeSize = devicePreset
+    ? (devicePreset.category === "custom" && customSize
+      ? { width: customSize.width, height: customSize.height }
+      : { width: devicePreset.width, height: devicePreset.height })
+    : null;
+  const deviceWidth = activeSize ? (isLandscape ? activeSize.height : activeSize.width) : 0;
+  const deviceHeight = activeSize ? (isLandscape ? activeSize.width : activeSize.height) : 0;
+  const deviceScale = (() => {
+    if (!activeSize || deviceContainerSize.width === 0 || deviceContainerSize.height === 0) return 1;
+    const availableWidth = Math.max(0, deviceContainerSize.width - DEVICE_PADDING * 2);
+    const availableHeight = Math.max(0, deviceContainerSize.height - DEVICE_PADDING * 2);
+    return Math.min(1, availableWidth / deviceWidth, availableHeight / deviceHeight);
+  })();
+  const deviceScalePercent = Math.round(deviceScale * 100);
+  const deviceFrameActive = !!activeSize;
   const activeStatus = allPorts.find(p => p.port === activePort)?.status ?? (isRunning ? "running" : "stopped");
 
   const hasErrors = errors.length > 0;
@@ -494,6 +539,39 @@ export function PreviewFrame({
               {portLabel ? portLabel : <span className="text-(--color-text-tertiary)">Preview</span>}
             </>
           )}
+          {isRunning && (
+            <>
+              <span className="text-(--color-border-secondary)">|</span>
+              <DeviceSelector
+                activePreset={devicePreset}
+                isLandscape={isLandscape}
+                customSize={customSize}
+                onSelectPreset={(preset) => {
+                  setDevicePreset(preset);
+                  if (!preset) setCustomSize(null);
+                }}
+                onToggleLandscape={toggleLandscape}
+                onCustomSize={(width, height) => {
+                  setCustomSize({ width, height });
+                  setDevicePreset({
+                    id: "custom",
+                    label: `${width}×${height}`,
+                    width,
+                    height,
+                    category: "custom",
+                  });
+                }}
+              />
+              {deviceFrameActive && (
+                <span className="text-(--color-text-tertiary) tabular-nums">
+                  {deviceWidth}×{deviceHeight}
+                  {deviceScale < 1 && (
+                    <span className="ml-1 text-(--color-text-tertiary)">({deviceScalePercent}%)</span>
+                  )}
+                </span>
+              )}
+            </>
+          )}
         </span>
         <div className="flex items-center gap-2">
           {hasErrors && (
@@ -545,20 +623,41 @@ export function PreviewFrame({
       </div>
 
       {/* Main content area — iframe pool, one per (session, port) */}
-      <div className="flex-1 relative">
+      <div
+        ref={deviceContainerRef}
+        className={`flex-1 relative ${deviceFrameActive ? "bg-(--color-bg-tertiary) overflow-hidden" : ""}`}
+      >
         {/* Persistent iframes — each (session, port) gets its own iframe, hidden via CSS when not active */}
         {slotOrder.map((key) => {
           const slot = slots.get(key);
           if (!slot) return null;
           const isActive = key === activeSlotKey;
           const hidden = !isActive || hideIframe;
+          // When a device preset is active, give the active iframe explicit dimensions
+          // and center it in the panel with a scale transform.
+          const useDeviceFrame = isActive && deviceFrameActive;
+          const deviceFrameStyle: React.CSSProperties | undefined = useDeviceFrame
+            ? {
+              width: `${deviceWidth}px`,
+              height: `${deviceHeight}px`,
+              left: "50%",
+              top: "50%",
+              transform: `translate(-50%, -50%) scale(${deviceScale})`,
+              transformOrigin: "center center",
+            }
+            : undefined;
           return (
             <iframe
               key={key}
               ref={(el) => { iframeRefs.current.set(key, el); }}
               src={slot.url}
               title={isActive ? "Live Preview" : "Background Preview"}
-              className={`absolute inset-0 w-full h-full ${hidden ? "invisible" : ""} ${isActive && hasErrors && errorPanelOpen ? "max-h-[60%]" : ""}`}
+              style={deviceFrameStyle}
+              className={
+                useDeviceFrame
+                  ? `absolute bg-white rounded-md shadow-2xl border border-(--color-border-secondary) ${hidden ? "invisible" : ""}`
+                  : `absolute inset-0 w-full h-full ${hidden ? "invisible" : ""} ${isActive && hasErrors && errorPanelOpen ? "max-h-[60%]" : ""}`
+              }
               {...(!slot.containerMode && { sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-modals" })}
             />
           );
