@@ -53,9 +53,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _sseConnected: Promise<void> | null = null;
   private _resolveSseConnected: (() => void) | null = null;
 
-  /** Optional callback to load secrets for this session's repo. */
-  private _secretsLoader: (() => Promise<Record<string, string>>) | null = null;
-
   // Agent state (mirrored locally for synchronous access by HandlerContext)
   private _agent: ProxyAgentProcess | null = null;
   private _agentId: AgentId;
@@ -157,11 +154,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   setWorkerUrl(url: string): void {
     this.workerUrl = url;
     this._resolveWorkerReady();
-  }
-
-  /** Set the secrets loader callback (called before preview start). */
-  setSecretsLoader(loader: () => Promise<Record<string, string>>): void {
-    this._secretsLoader = loader;
   }
 
   // --- Agent state (same interface as SessionRunner) ---

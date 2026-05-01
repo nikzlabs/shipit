@@ -178,6 +178,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeWarnings, composeNotConfigured, containerManager,
+    secretStore,
   });
   registryHolder.ref = runnerRegistry;
 

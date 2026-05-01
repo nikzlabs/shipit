@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in-progress
 ---
 
 # 087 — Reusable Preview Secrets
@@ -436,15 +436,47 @@ This is a fundamental constraint: **you can't give secrets to code while hiding 
 
 ## Implementation phases
 
-### Phase 1: Docker secrets injection + auto-load
-- Parse `x-shipit-secrets` (simple string form only) from compose file
-- Create `secret-resolver.ts` — resolve values, write per-secret files to orchestrator storage
-- Generate compose override with `secrets:` top-level + per-service `secrets:` references
-- Inject entrypoint wrapper into compose override
-- Auto-load from `SecretStore` on session activation
-- On `PUT /api/secrets`: rewrite secret files, run `docker compose up -d` to apply
-- Delete old `pushSecretsToPreview` HTTP flow
-- **Depends on:** 086 compose infrastructure
+### Phase 1: env-file injection + auto-load (shipped)
+
+Phase 1 ships `env_file:`-based delivery rather than the Docker-secrets +
+entrypoint-wrapper variant from the security section below. Reasoning:
+
+- The end-to-end secrets-pipeline goal — declare-once, auto-load,
+  per-service scoping, reconcile on edit — is fully met by env files.
+- Docker-secrets-by-`file:` requires the secret files to be readable by the
+  Docker daemon, which is on the host. ShipIt runs the orchestrator inside
+  a container, so the daemon's filesystem and the orchestrator's filesystem
+  are different — wiring up a host-shared secrets directory cleanly needs
+  Dockerfile + compose-mount changes that are out of scope for Phase 1.
+- The security tradeoff (agent can read `.shipit/.env.<svc>` from the
+  workspace) is documented under "Security" below. The trust model is
+  unchanged from the pre-086 baseline: the agent has always been able to
+  exfiltrate secrets through the code it writes, so file-readability is
+  not the limiting factor.
+- Promoting to Docker secrets is a follow-up that touches Dockerfile,
+  compose-generator override, and the entrypoint script, but does not
+  change the public surface (compose extension, API routes, SecretStore).
+
+What shipped in Phase 1:
+
+- ✅ Parse `x-shipit-secrets` (simple string form; object form forward-compat)
+- ✅ `secret-resolver.ts` — resolves values from `SecretStore`, writes
+  `.shipit/.env.<service>` files, reports per-service missing entries
+- ✅ Compose override emits `env_file: [.shipit/.env.<service>]` per service
+  with declared secrets
+- ✅ Auto-load from `SecretStore` on session activation
+- ✅ `PUT /api/secrets` rewrites env files and runs `docker compose up -d`
+  for every active session backed by the repo (compose recreates affected
+  containers)
+- ✅ Stale `.shipit/.env.<svc>` files are swept on every reconcile
+- ✅ Tests: parsing, resolver scoping, ServiceManager env-file write +
+  refresh, override env_file emission
+
+Deferred to a follow-up (still tracked in this doc and the checklist):
+
+- Docker secrets `secrets:` block + entrypoint wrapper (security upgrade)
+- `secrets-entrypoint.sh` baked into the orchestrator Docker image
+- **Depends on:** 086 compose infrastructure ✅ (done)
 
 ### Phase 2: Extended syntax + validation
 - Object form with `description`, `required`, `source`

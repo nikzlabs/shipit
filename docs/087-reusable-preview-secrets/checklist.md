@@ -1,22 +1,25 @@
 # 087 — Reusable Preview Secrets Checklist
 
-## Phase 1: Docker secrets injection + auto-load (depends on 086)
-- [ ] Parse `x-shipit-secrets` (string form) from compose file in compose-generator
-- [ ] Create `secret-resolver.ts` — resolve values, write per-secret files to orchestrator storage
-- [ ] Create `secrets-entrypoint.sh` — POSIX shell wrapper exporting `/run/secrets/shipit-*` as env vars
-- [ ] Bake entrypoint script into orchestrator Docker images
-- [ ] Generate compose override with `secrets:` top-level + per-service references
-- [ ] Inject entrypoint wrapper into compose override (preserve user entrypoint if set)
-- [ ] Auto-load from `SecretStore` on session activation
-- [ ] On `PUT /api/secrets`: rewrite secret files, run `docker compose up -d`
-- [ ] Remove `pushSecretsToPreview()` and preview worker `/secrets` endpoint
-- [ ] Test: new session with saved secrets → services start with correct env vars
-- [ ] Test: save new secret → compose recreates affected containers
-- [ ] Test: service only sees its own declared secrets
-- [ ] Test: agent container cannot read service secrets
+## Phase 1: env-file injection + auto-load (shipped, depends on 086)
+- [x] Parse `x-shipit-secrets` (string form) from compose file in compose-generator
+- [x] Create `secret-resolver.ts` — resolve values from `SecretStore`, write per-service env files
+- [x] Generate compose override with `env_file: [.shipit/.env.<service>]` per service
+- [x] Auto-load from `SecretStore` on session activation (wired in `setupServiceManager`)
+- [x] On `PUT /api/secrets`: rewrite env files, run `docker compose up -d` for every active session backed by the repo
+- [x] Sweep stale `.shipit/.env.<svc>` files on every reconcile
+- [x] Remove `pushSecretsToPreview()` (already gone) and unused `setSecretsLoader()` skeleton on `ContainerSessionRunner`
+- [x] Test: parsing of `x-shipit-secrets` string form (and object-form forward-compat)
+- [x] Test: resolver writes per-service env files with correct scoping
+- [x] Test: ServiceManager writes env files on `start()` and `refreshSecrets()`
+- [x] Test: override emits `env_file:` only for services with declared secrets
 
-## Pre-086 stopgap (optional, can ship immediately)
-- [ ] Wire `setSecretsLoader` in `app-lifecycle.ts` → `buildRunnerFactory()`
+## Phase 1 follow-up: Docker-secrets security upgrade
+- [ ] Create `secrets-entrypoint.sh` — POSIX shell wrapper exporting `/run/secrets/shipit-*` as env vars
+- [ ] Bake entrypoint script into orchestrator Docker images (`Dockerfile.dev`, `Dockerfile.prod`)
+- [ ] Mount a host-shared secrets directory readable by the Docker daemon
+- [ ] Generate compose override with `secrets:` top-level + per-service references (replace env_file)
+- [ ] Inject entrypoint wrapper into compose override (preserve user entrypoint if set)
+- [ ] Test: agent container cannot read service secrets from the workspace
 
 ## Phase 2: Extended syntax + validation
 - [ ] Add `SecretEntry` / `SecretRequirement` types to `domain-types.ts`

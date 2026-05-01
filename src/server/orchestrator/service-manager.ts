@@ -24,7 +24,9 @@ import {
   generateComposeOverride,
   writeComposeOverride,
   type ComposeOverrideOptions,
+  type ComposeService,
 } from "./compose-generator.js";
+import { resolveSecrets, writePerServiceEnvFiles } from "./secret-resolver.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -69,6 +71,16 @@ export interface ServiceManagerOptions {
   stackName?: string;
   /** Called during start() to join the agent container to the compose network. */
   networkJoinFn?: (networkName: string) => Promise<void>;
+  /**
+   * Loads user-saved secrets for the session's repo (from SecretStore).
+   *
+   * Called once before each compose start/reconcile so secret values reach
+   * compose services via per-service env files (`.shipit/.env.<service>`).
+   * Returning an empty object is fine — services with declared
+   * `x-shipit-secrets` whose values aren't configured simply get an empty env
+   * file (Phase 2 surfaces this as a missing-secrets warning).
+   */
+  secretsLoader?: () => Promise<Record<string, string>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +117,11 @@ export class ServiceManager extends EventEmitter {
   private readonly workspaceSubpath?: string;
   private readonly stackName?: string;
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
+  private secretsLoader?: () => Promise<Record<string, string>>;
+  /** Names of secrets declared in `x-shipit-secrets` across all services. */
+  private declaredSecretNames: string[] = [];
+  /** Service-name → list of declared secrets that have no user-saved value. */
+  private missingSecretsByService: Record<string, string[]> = {};
   private _startupComplete = false;
   /** Error message if the compose stack failed to start. */
   startError: string | null = null;
@@ -121,6 +138,26 @@ export class ServiceManager extends EventEmitter {
     this.workspaceSubpath = opts.workspaceSubpath;
     this.stackName = opts.stackName;
     this.networkJoinFn = opts.networkJoinFn;
+    this.secretsLoader = opts.secretsLoader;
+  }
+
+  /**
+   * Update or replace the secrets loader. Called when the session's remoteUrl
+   * changes (e.g. after warm-session graduation) so subsequent reconciles read
+   * the right slice of SecretStore.
+   */
+  setSecretsLoader(loader: () => Promise<Record<string, string>>): void {
+    this.secretsLoader = loader;
+  }
+
+  /** Names of secrets declared in `x-shipit-secrets` across all services. */
+  getDeclaredSecretNames(): string[] {
+    return [...this.declaredSecretNames];
+  }
+
+  /** Missing required secrets by service (empty until Phase 2). */
+  getMissingSecretsByService(): Record<string, string[]> {
+    return { ...this.missingSecretsByService };
   }
 
   /** Whether the compose stack has been started. */
@@ -184,6 +221,12 @@ export class ServiceManager extends EventEmitter {
         status: "stopped",
       });
     }
+
+    // Resolve secrets BEFORE generating the override — the override references
+    // per-service env files via `env_file:` and compose detects the file at
+    // `up` time. We always sync the env files (even when no secrets are
+    // declared) so stale files from a previous compose definition are cleared.
+    await this.syncSecrets(parsedServices);
 
     // Generate override
     const overrideOpts: ComposeOverrideOptions = {
@@ -388,9 +431,67 @@ export class ServiceManager extends EventEmitter {
     this._started = false;
   }
 
+  /**
+   * Refresh secret env files and apply them to the running stack.
+   *
+   * Called when the user saves secrets via `PUT /api/secrets`. Re-parses the
+   * compose file (in case it changed), rewrites `.shipit/.env.<service>`
+   * files, and runs `docker compose up -d` so compose detects the env
+   * changes and recreates affected containers. Safe to call when the stack
+   * isn't started — env files are written but no compose call happens.
+   */
+  async refreshSecrets(): Promise<void> {
+    let parsedServices: ComposeService[];
+    try {
+      const composePath = path.join(this.workspaceDir, this.composeConfig.file);
+      parsedServices = parseComposeFile(composePath, {
+        dockerSocket: this.composeConfig.dockerSocket,
+      });
+    } catch {
+      // Compose file missing or invalid — there's nothing to apply secrets to.
+      return;
+    }
+    await this.syncSecrets(parsedServices);
+    if (!this._started) return;
+    // Re-run `up -d` for the auto services so compose recreates containers
+    // whose env_file content changed. Manual services aren't restarted —
+    // they're only running if the user explicitly started them.
+    const autoNames = [...this.services.values()]
+      .filter(s => s.preview === "auto")
+      .map(s => s.name);
+    try {
+      await this.composeUp(autoNames);
+      await this.pollStatus();
+    } catch (err) {
+      console.warn(`[compose:${this.sessionId}] refreshSecrets compose up failed:`, (err as Error).message);
+    }
+  }
+
   // -----------------------------------------------------------------------
   // Private helpers
   // -----------------------------------------------------------------------
+
+  /**
+   * Resolve secrets and write per-service env files. Always runs (even when
+   * no secrets are declared) so stale `.env.<svc>` files are swept.
+   */
+  private async syncSecrets(parsedServices: ComposeService[]): Promise<void> {
+    let userSecrets: Record<string, string> = {};
+    if (this.secretsLoader) {
+      try {
+        userSecrets = await this.secretsLoader();
+      } catch (err) {
+        console.warn(`[compose:${this.sessionId}] secretsLoader failed:`, (err as Error).message);
+      }
+    }
+    const resolution = resolveSecrets({ services: parsedServices, userSecrets });
+    this.declaredSecretNames = resolution.declaredNames;
+    this.missingSecretsByService = resolution.missingByService;
+    writePerServiceEnvFiles({
+      workspaceDir: this.workspaceDir,
+      perServiceEnv: resolution.perServiceEnv,
+    });
+  }
 
   /**
    * Query `docker compose ps --format json` and update service statuses
