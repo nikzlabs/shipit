@@ -64,6 +64,7 @@ import { useRepoStore } from "./stores/repo-store.js";
 import { resumeSessionInternal, handleSessionResume, resetSessionState } from "./stores/actions/session-actions.js";
 import { parseRepoLabel, repoLabelToNewPath, parseNewSessionSlug } from "./utils/repo-label.js";
 import { saveModelId } from "./utils/local-storage.js";
+import { siblingsOf, orderSiblingsForTabs, siblingTabLabel } from "./utils/doc-paths.js";
 
 export default function App() {
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
@@ -573,6 +574,26 @@ export default function App() {
     [send],
   );
 
+  const handleSwitchSibling = useCallback(
+    (path: string) => {
+      const doc = useFileStore.getState().docFiles.find((d) => d.path === path);
+      handleOpenDoc(path, doc);
+    },
+    [handleOpenDoc],
+  );
+
+  // Sibling tabs for the preview modal: only computed for markdown previews
+  // (the tab strip is meaningful for docs, not arbitrary code/binary files).
+  const previewSiblings = useMemo(() => {
+    if (!previewFile || previewType !== "markdown") return undefined;
+    const inDir = siblingsOf(previewFile, docFiles);
+    if (inDir.length < 2) return undefined;
+    return orderSiblingsForTabs(inDir).map((d) => ({
+      path: d.path,
+      label: siblingTabLabel(d.path),
+    }));
+  }, [previewFile, previewType, docFiles]);
+
   const handleUsageBadgeClick = useCallback(() => {
     useUiStore.getState().setShowUsageModal(true);
     const sid = useSessionStore.getState().sessionId;
@@ -700,6 +721,8 @@ export default function App() {
           content={previewContent}
           fileType={previewType}
           actions={previewActions}
+          siblings={previewSiblings}
+          onSwitchSibling={handleSwitchSibling}
           onClose={() => useFileStore.getState().closePreview()}
           onSendComments={handleFileSendComments}
         />
