@@ -3,25 +3,33 @@
  * Handles: loading and saving per-repo environment variable secrets.
  *
  * Secrets are stored in the orchestrator's SQLite database (SecretStore),
- * keyed by repo URL.
+ * keyed by repo URL. After a save, the orchestrator rewrites
+ * `.shipit/.env.<service>` files for every active session backed by that
+ * repo and runs `docker compose up -d` so compose recreates the affected
+ * containers with the new env values.
  */
 
 import type { FastifyInstance } from "fastify";
 import type { SecretStore } from "./secret-store.js";
-import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
+import type { ServiceManager } from "./service-manager.js";
+import { getErrorMessage } from "./validation.js";
 
 export interface SecretsDeps {
   secretStore: SecretStore;
-  runnerRegistry: SessionRunnerRegistry;
   sessionManager: SessionManager;
+  /**
+   * Per-session ServiceManager registry (compose stacks). Used after a save
+   * to push the new env to every active session for the repo.
+   */
+  serviceManagers: Map<string, ServiceManager>;
 }
 
 export async function registerSecretsRoutes(
   app: FastifyInstance,
   deps: SecretsDeps,
 ): Promise<void> {
-  const { secretStore } = deps;
+  const { secretStore, sessionManager, serviceManagers } = deps;
 
   // GET /api/secrets?repoUrl=... — load secrets for a repo
   app.get<{ Querystring: { repoUrl?: string } }>(
@@ -55,10 +63,26 @@ export async function registerSecretsRoutes(
         }
       }
 
-      // Save to database
+      // Save to database first — the source of truth.
       secretStore.saveSecrets(repoUrl, secrets);
 
-      // TODO: Push secrets to compose services via .shipit/.env
+      // Push secrets to every active session backed by this repo. Each
+      // session's ServiceManager rewrites its per-service `.shipit/.env.<svc>`
+      // files and runs `docker compose up -d` so compose recreates containers
+      // whose env file content changed. Fire-and-forget per session — a failure
+      // in one session shouldn't block the API response or the others.
+      const sessions = sessionManager.findAllByRemoteUrl(repoUrl);
+      for (const session of sessions) {
+        const mgr = serviceManagers.get(session.id);
+        if (!mgr) continue;
+        mgr.refreshSecrets().catch((err: unknown) => {
+          console.warn(
+            `[secrets] refresh failed for session ${session.id}:`,
+            getErrorMessage(err),
+          );
+        });
+      }
+
       return { saved: true };
     },
   );

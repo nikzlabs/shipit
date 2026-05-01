@@ -341,3 +341,149 @@ describe("writeComposeOverride", () => {
     expect(fs.existsSync(path.join(dir, ".shipit"))).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// x-shipit-secrets parsing & override env_file injection (Phase 1, feature 087)
+// ---------------------------------------------------------------------------
+
+describe("x-shipit-secrets parsing", () => {
+  let tmpDir: string;
+
+  function setup() {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "compose-secrets-"));
+    return tmpDir;
+  }
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function writeCompose(dir: string, content: string): string {
+    const p = path.join(dir, "docker-compose.yml");
+    fs.writeFileSync(p, content);
+    return p;
+  }
+
+  it("parses string-form x-shipit-secrets", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    x-shipit-secrets:
+      - STRIPE_KEY
+  api:
+    image: node:20
+    x-shipit-secrets:
+      - DATABASE_URL
+      - REDIS_URL
+`);
+    const services = parseComposeFile(p, { dockerSocket: false });
+    const web = services.find(s => s.name === "web");
+    const api = services.find(s => s.name === "api");
+    expect(web?.secrets).toEqual(["STRIPE_KEY"]);
+    expect(api?.secrets).toEqual(["DATABASE_URL", "REDIS_URL"]);
+  });
+
+  it("leaves secrets undefined for services that don't declare any", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+`);
+    const services = parseComposeFile(p, { dockerSocket: false });
+    expect(services[0].secrets).toBeUndefined();
+  });
+
+  it("rejects non-list x-shipit-secrets", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    x-shipit-secrets:
+      not: a list
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false }))
+      .toThrow(ComposeValidationError);
+  });
+
+  it("rejects invalid env var names", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    x-shipit-secrets:
+      - "1bad-name"
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false }))
+      .toThrow("not a valid env var name");
+  });
+
+  it("accepts object-form entries with a name (Phase 2 forward-compat)", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    x-shipit-secrets:
+      - name: DATABASE_URL
+        description: PostgreSQL connection string
+        required: true
+`);
+    const services = parseComposeFile(p, { dockerSocket: false });
+    expect(services[0].secrets).toEqual(["DATABASE_URL"]);
+  });
+
+  it("silently skips object entries without a name", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    x-shipit-secrets:
+      - description: missing name field
+      - VALID_NAME
+`);
+    const services = parseComposeFile(p, { dockerSocket: false });
+    expect(services[0].secrets).toEqual(["VALID_NAME"]);
+  });
+});
+
+describe("generateComposeOverride env_file injection", () => {
+  const baseOpts = {
+    sessionId: "test-session-123",
+    composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+  };
+
+  it("adds env_file reference for services with declared secrets", () => {
+    const override = generateComposeOverride(
+      [{ name: "api", secrets: ["DATABASE_URL"] }],
+      baseOpts,
+    );
+    expect(override).toContain("env_file:");
+    expect(override).toContain(".shipit/.env.api");
+  });
+
+  it("does not add env_file for services without secrets", () => {
+    const override = generateComposeOverride(
+      [{ name: "redis" }],
+      baseOpts,
+    );
+    expect(override).not.toContain("env_file:");
+  });
+
+  it("scopes env_file per service", () => {
+    const override = generateComposeOverride(
+      [
+        { name: "web", secrets: ["STRIPE_KEY"] },
+        { name: "api", secrets: ["DATABASE_URL"] },
+      ],
+      baseOpts,
+    );
+    expect(override).toContain(".shipit/.env.web");
+    expect(override).toContain(".shipit/.env.api");
+  });
+});
