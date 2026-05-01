@@ -23,6 +23,8 @@ import { formatErrorForMessage } from "./components/PreviewFrame.js";
 import { SessionTopBar } from "./components/SessionTopBar.js";
 import { MessageInput } from "./components/MessageInput.js";
 import { MessageList } from "./components/MessageList.js";
+import { MessageAttachmentRow } from "./components/MessageAttachmentRow.js";
+import { RocketLaunch } from "./components/RocketLaunch.js";
 import { PreviewFrame } from "./components/PreviewFrame.js";
 import { usePreviewErrors, type PreviewError } from "./hooks/usePreviewErrors.js";
 import { GitHistory } from "./components/GitHistory.js";
@@ -95,6 +97,7 @@ export default function App() {
   const sessions = useSessionStore((s) => s.sessions);
   const authUrl = useSessionStore((s) => s.authUrl);
   const queuedMessages = useSessionStore((s) => s.queuedMessages);
+  const historyLoaded = useSessionStore((s) => s.historyLoaded);
 
   const {
     uploads, uploadFiles, removeUpload, retryUpload,
@@ -628,6 +631,11 @@ export default function App() {
   const detectedPorts = previewStatus?.detectedPorts ?? [];
   const showNewSessionView = isNewSessionRoute && !urlSessionId;
   const showHomeScreen = !showNewSessionView && (!sessionId || (showTemplates && messages.length === 0 && !isLoading));
+  // Empty-state rocket: no messages yet, not mid-turn. We gate on historyLoaded
+  // so we don't briefly flash the rocket on session switches before history
+  // arrives — except for a brand-new-session route, where there's no history to
+  // load and the rocket should appear the moment the route mounts.
+  const showRocket = messages.length === 0 && !isLoading && (historyLoaded || showNewSessionView);
 
   // ── Right panel ──
   const rightPanel = (
@@ -681,15 +689,25 @@ export default function App() {
       {showHomeScreen ? (
         <HomeScreen onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)} hasRepos={repos.length > 0} />
       ) : (
-        <>
-          <MessageList messages={messages} isLoading={isLoading} searchMatches={search.matches} currentMatch={search.currentMatch} onAnswerQuestion={handleAnswerQuestion} onSendFollowUp={handleSendFollowUp} onRollback={handleRollback} onRewind={handleRewind} isNewSession={showNewSessionView} />
+        // Wrapping the message list + bottom-stack (status bar / attachments / rebase / PR card) in a single
+        // flex-1 container gives the rocket overlay stable bounds. Anything that grows here (e.g. attachments
+        // appearing) just shrinks MessageList inside the wrapper — the wrapper itself, and so the rocket
+        // anchored to its bottom, stays put.
+        <div className="flex-1 min-h-0 flex flex-col relative isolate">
+          {showRocket && (
+            <div className="absolute inset-0 pointer-events-none overflow-hidden" style={{ clipPath: "inset(0 0 -80px 0)", zIndex: -1 }}>
+              <RocketLaunch />
+            </div>
+          )}
+          <MessageList messages={messages} isLoading={isLoading} searchMatches={search.matches} currentMatch={search.currentMatch} onAnswerQuestion={handleAnswerQuestion} onSendFollowUp={handleSendFollowUp} onRollback={handleRollback} onRewind={handleRewind} />
           {isLoading && <AgentStatusBar activity={activity} />}
+          <MessageAttachmentRow pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} uploads={uploads} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} />
           {wsSessionId && <RebaseBanner sessionId={wsSessionId} />}
           {wsSessionId && <PrLifecycleCard sessionId={wsSessionId} />}
-        </>
+        </div>
       )}
       {!showHomeScreen && !showNewSessionView && queuedMessages.length > 0 && <QueueIndicator queue={queuedMessages} onCancel={(pos) => send({ type: "cancel_queued_message", position: pos })} />}
-      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_claude" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(useSessionStore.getState().sessionId, m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} uploads={uploads} allUploads={sessionUploads} onUploadFiles={(files) => void uploadFiles(files)} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} onModelChange={handleModelChange} modelInfo={modelInfo} contextTokens={contextTokens} hasActiveSession={!showNewSessionView && !!sessionId} sessionCostUsd={currentSessionUsage?.totalCostUsd ?? null} onCostBadgeClick={handleUsageBadgeClick} focusKey={wsSessionId ?? (showNewSessionView ? "new" : undefined)} hasPrCard={hasPrCard} />}
+      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_claude" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(useSessionStore.getState().sessionId, m)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} allUploads={sessionUploads} onUploadFiles={(files) => void uploadFiles(files)} agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} onModelChange={handleModelChange} modelInfo={modelInfo} contextTokens={contextTokens} hasActiveSession={!showNewSessionView && !!sessionId} sessionCostUsd={currentSessionUsage?.totalCostUsd ?? null} onCostBadgeClick={handleUsageBadgeClick} focusKey={wsSessionId ?? (showNewSessionView ? "new" : undefined)} hasPrCard={hasPrCard} />}
     </>
   );
 
