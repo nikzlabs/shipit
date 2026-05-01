@@ -674,6 +674,12 @@ export function createPrStatusPoller(
     },
   });
 
+  // Seed in-memory `lastKnown` from persisted PR snapshots so archived
+  // sessions show their PR badge / link on the All Sessions dialog after a
+  // restart. Must run before `trackSession()` so active sessions don't
+  // overwrite their persisted snapshot until a fresh poll arrives.
+  prStatusPoller.loadPersisted();
+
   // Auto-track sessions with remoteUrl so PR status survives server restart
   for (const session of sessionManager.list()) {
     if (session.remoteUrl) {

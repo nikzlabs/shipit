@@ -158,6 +158,82 @@ describe("SessionManager", () => {
     });
   });
 
+  describe("PR status snapshot", () => {
+    function makeStatus(overrides: Partial<{
+      sessionId: string;
+      prNumber: number;
+      prState: "open" | "merged" | "closed";
+    }> = {}) {
+      return {
+        sessionId: overrides.sessionId ?? "sess-1",
+        prNumber: overrides.prNumber ?? 42,
+        prUrl: "https://github.com/o/r/pull/42",
+        prTitle: "Add thing",
+        prState: overrides.prState ?? "open",
+        baseBranch: "main",
+        headBranch: "shipit/feature",
+        insertions: 10,
+        deletions: 2,
+        checks: { state: "success" as const, total: 1, passed: 1, failed: 0, pending: 0 },
+        mergeable: "mergeable" as const,
+        autoMergeEnabled: false,
+      };
+    }
+
+    it("persists and retrieves a PR status snapshot", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.setPrStatus("sess-1", makeStatus());
+
+      const all = mgr.getAllPrStatuses();
+      expect(all).toHaveLength(1);
+      expect(all[0]).toMatchObject({ sessionId: "sess-1", prNumber: 42, prState: "open" });
+    });
+
+    it("retains the snapshot after archiving", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.setPrStatus("sess-1", makeStatus({ prState: "merged" }));
+
+      mgr.archive("sess-1");
+
+      // Active list excludes archived sessions, but the snapshot survives
+      expect(mgr.list()).toHaveLength(0);
+      const all = mgr.getAllPrStatuses();
+      expect(all).toHaveLength(1);
+      expect(all[0]).toMatchObject({ sessionId: "sess-1", prState: "merged" });
+    });
+
+    it("clears the snapshot when set to null", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.setPrStatus("sess-1", makeStatus());
+      mgr.setPrStatus("sess-1", null);
+
+      expect(mgr.getAllPrStatuses()).toEqual([]);
+    });
+
+    it("survives a manager restart (DB round-trip)", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.setPrStatus("sess-1", makeStatus({ prState: "merged" }));
+
+      const mgr2 = new SessionManager(dbManager);
+      const all = mgr2.getAllPrStatuses();
+      expect(all).toHaveLength(1);
+      expect(all[0]).toMatchObject({ sessionId: "sess-1", prState: "merged" });
+    });
+
+    it("ignores corrupt JSON without crashing", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      // Bypass the typed setter to inject malformed JSON
+      dbManager.db.prepare("UPDATE sessions SET pr_status = ? WHERE id = ?").run("{not-json", "sess-1");
+      expect(() => mgr.getAllPrStatuses()).not.toThrow();
+      expect(mgr.getAllPrStatuses()).toEqual([]);
+    });
+  });
+
   describe("session deletion cascade", () => {
     it("deleteSession cascades to chat history and usage", () => {
       const sessions = new SessionManager(dbManager);

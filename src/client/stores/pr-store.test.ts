@@ -85,5 +85,26 @@ describe("pr-store", () => {
       usePrStore.getState().applyPrStatusUpdates([makePrStatus({ prState: "merged" })]);
       expect(usePrStore.getState().cardBySession.s1?.phase).toBe("merged");
     });
+
+    it("clears status and card for sessions in `removals`", () => {
+      usePrStore.getState().applyPrStatusUpdates([makePrStatus({ prState: "merged" })]);
+      expect(usePrStore.getState().statusBySession.s1).toBeDefined();
+      expect(usePrStore.getState().cardBySession.s1).toBeDefined();
+
+      usePrStore.getState().applyPrStatusUpdates([], ["s1"]);
+
+      expect(usePrStore.getState().statusBySession.s1).toBeUndefined();
+      expect(usePrStore.getState().cardBySession.s1).toBeUndefined();
+    });
+
+    it("applies removals before updates so an unarchive followed by a fresh PR works", () => {
+      usePrStore.getState().applyPrStatusUpdates([makePrStatus({ prNumber: 1 })]);
+      // Server clears the old PR and immediately broadcasts a new one for the same sessionId
+      usePrStore.getState().applyPrStatusUpdates(
+        [makePrStatus({ prNumber: 2 })],
+        ["s1"],
+      );
+      expect(usePrStore.getState().statusBySession.s1?.prNumber).toBe(2);
+    });
   });
 });

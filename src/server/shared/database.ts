@@ -178,6 +178,12 @@ const MIGRATIONS: Migration[] = [
     db.exec("ALTER TABLE usage_turns ADD COLUMN model TEXT");
     db.exec("ALTER TABLE messages ADD COLUMN turn_usage TEXT");
   },
+  // Migration 9: persisted PR status snapshot per session so archived sessions
+  // retain their PR badge / link / state across server restarts. Stored as a
+  // JSON blob of PrStatusSummary; written by the poller on each update.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN pr_status TEXT");
+  },
 ];
 
 export class DatabaseManager {

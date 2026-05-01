@@ -378,6 +378,38 @@ export class PrStatusPoller {
     }
   }
 
+  /**
+   * Seed in-memory `lastKnown` from persisted snapshots so archived sessions
+   * appear in `getAllStatuses()` immediately after server restart. Called
+   * once during app startup, before any clients connect.
+   */
+  loadPersisted(): void {
+    const persisted = this.sessionManager.getAllPrStatuses();
+    for (const snapshot of persisted) {
+      // Strip runtime-only state — autoFix / autoMerge live in their own maps
+      // and shouldn't leak in via persisted JSON.
+      const clean: PrStatusSummary = { ...snapshot };
+      delete clean.autoFix;
+      delete clean.autoMerge;
+      this.lastKnown.set(snapshot.sessionId, clean);
+      if (clean.prState === "merged" || clean.prState === "closed") {
+        this.mergedSessions.add(snapshot.sessionId);
+      }
+    }
+  }
+
+  /**
+   * Clear the persisted PR snapshot for a session (on unarchive, when a fresh
+   * branch is created and the previous PR no longer applies). Broadcasts a
+   * removal so connected clients drop their cached PR status / card.
+   */
+  clearPersisted(sessionId: string): void {
+    this.lastKnown.delete(sessionId);
+    this.mergedSessions.delete(sessionId);
+    this.sessionManager.setPrStatus(sessionId, null);
+    this.sseBroadcast("pr_status", { updates: [], removals: [sessionId] });
+  }
+
   /** Get the current PR status for a session. */
   getStatus(sessionId: string): PrStatusSummary | undefined {
     return this.lastKnown.get(sessionId);
@@ -667,6 +699,7 @@ export class PrStatusPoller {
         // Only include in broadcast if something changed
         if (!prev || !prStatusEqual(prev, summary)) {
           this.lastKnown.set(session.id, summary);
+          this.sessionManager.setPrStatus(session.id, summary);
           updates.push(withAutomation);
         }
       } else {
@@ -675,6 +708,7 @@ export class PrStatusPoller {
         if (prev) {
           const mergedSummary: PrStatusSummary = { ...prev, prState: "merged" };
           this.lastKnown.set(session.id, mergedSummary);
+          this.sessionManager.setPrStatus(session.id, mergedSummary);
           this.mergedSessions.add(session.id);
           this.lastPrNodes.delete(session.id);
           updates.push(mergedSummary);
@@ -735,6 +769,7 @@ export class PrStatusPoller {
     };
 
     this.lastKnown.set(sessionId, summary);
+    this.sessionManager.setPrStatus(sessionId, summary);
     this.mergedSessions.add(sessionId);
     this.sseBroadcast("pr_status", { updates: [summary] });
 
