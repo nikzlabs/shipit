@@ -102,8 +102,11 @@ export function useServerEvents(): void {
     });
 
     es.addEventListener("pr_status", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as { updates: PrStatusSummary[] };
-      usePrStore.getState().applyPrStatusUpdates(data.updates);
+      const data = JSON.parse(e.data as string) as {
+        updates: PrStatusSummary[];
+        removals?: string[];
+      };
+      usePrStore.getState().applyPrStatusUpdates(data.updates, data.removals);
     });
 
     es.addEventListener("docker_memory", (e: MessageEvent) => {

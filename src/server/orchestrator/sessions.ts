@@ -1,5 +1,6 @@
 import type { SessionInfo } from "../shared/types.js";
 import type { DatabaseManager } from "../shared/database.js";
+import type { PrStatusSummary } from "../shared/types/github-types.js";
 
 interface SessionRow {
   id: string;
@@ -17,6 +18,7 @@ interface SessionRow {
   branch_renamed: number;
   merged_at: string | null;
   model: string | null;
+  pr_status: string | null;
 }
 
 export class SessionManager {
@@ -228,5 +230,36 @@ export class SessionManager {
   /** Store the selected model for a session. */
   setModel(id: string, model: string): void {
     this.db.prepare("UPDATE sessions SET model = ? WHERE id = ?").run(model, id);
+  }
+
+  /**
+   * Persist the PR status snapshot for a session. Stored as JSON so archived
+   * sessions can keep their PR badge / number / URL across server restarts.
+   * Pass `null` to clear the snapshot (e.g., on unarchive when the session
+   * starts a fresh branch).
+   */
+  setPrStatus(id: string, status: PrStatusSummary | null): void {
+    const json = status === null ? null : JSON.stringify(status);
+    this.db.prepare("UPDATE sessions SET pr_status = ? WHERE id = ?").run(json, id);
+  }
+
+  /**
+   * Load every persisted PR status snapshot, including archived sessions.
+   * Used by the PR poller to seed in-memory `lastKnown` on startup so SSE
+   * consumers see PR badges for archived sessions immediately after restart.
+   */
+  getAllPrStatuses(): PrStatusSummary[] {
+    const rows = this.db.prepare(
+      "SELECT pr_status FROM sessions WHERE pr_status IS NOT NULL",
+    ).all() as { pr_status: string }[];
+    const out: PrStatusSummary[] = [];
+    for (const row of rows) {
+      try {
+        out.push(JSON.parse(row.pr_status) as PrStatusSummary);
+      } catch {
+        // Corrupt/legacy JSON — skip rather than crash startup.
+      }
+    }
+    return out;
   }
 }

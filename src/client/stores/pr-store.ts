@@ -73,8 +73,12 @@ interface PrState {
   importSearchResults: ImportSearchResult[];
 
   // SSE-driven actions
-  /** Bulk update from pr_status SSE event. */
-  applyPrStatusUpdates: (updates: PrStatusSummary[]) => void;
+  /**
+   * Bulk update from pr_status SSE event. `removals` contains session IDs
+   * whose PR snapshot was cleared on the server (e.g., on unarchive — the
+   * session starts a fresh branch, so the previous PR no longer applies).
+   */
+  applyPrStatusUpdates: (updates: PrStatusSummary[], removals?: string[]) => void;
   /** Update inline card from pr_lifecycle_update WS message. */
   updateCard: (sessionId: string, card: PrCardState) => void;
   /** Set card to "creating" phase. */
@@ -120,10 +124,19 @@ export const usePrStore = create<PrState>((set, get) => ({
 
   // ---- SSE-driven actions ----
 
-  applyPrStatusUpdates: (updates) => {
+  applyPrStatusUpdates: (updates, removals) => {
     set((state) => {
       const nextStatus = { ...state.statusBySession };
       const nextCards = { ...state.cardBySession };
+
+      if (removals) {
+        for (const sessionId of removals) {
+          // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+          delete nextStatus[sessionId];
+          // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+          delete nextCards[sessionId];
+        }
+      }
 
       for (const update of updates) {
         nextStatus[update.sessionId] = update;
