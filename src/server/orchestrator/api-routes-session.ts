@@ -190,6 +190,10 @@ export async function registerSessionRoutes(
           deps.repoStore,
           request.params.id,
         );
+        // Clear the persisted PR snapshot — unarchive starts a fresh branch,
+        // so the previous PR no longer applies. Also drops the stale row from
+        // the SSE `getAllStatuses()` snapshot for new clients.
+        deps.prStatusPoller?.clearPersisted(request.params.id);
         deps.sseBroadcast("session_list", { sessions: result.sessions });
         return result;
       } catch (err) {

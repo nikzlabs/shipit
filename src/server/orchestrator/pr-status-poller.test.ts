@@ -48,6 +48,8 @@ function makeSessionManager(sessions: { id: string; branch?: string; remoteUrl?:
       remoteUrl: s.remoteUrl,
     })),
     get: (id: string) => sessions.find((s) => s.id === id) as never,
+    setPrStatus: vi.fn(),
+    getAllPrStatuses: vi.fn().mockReturnValue([]),
   } as unknown as SessionManager;
 }
 
@@ -404,6 +406,109 @@ describe("PrStatusPoller", () => {
 
     const lastCall = sseBroadcast.mock.calls[1] as [string, { updates: { sessionId: string; prState: string }[] }];
     expect(lastCall[1].updates[0]).toMatchObject({ sessionId: "s1", prState: "merged" });
+  });
+
+  describe("PR snapshot persistence", () => {
+    it("writes PR status to SessionManager on each update", async () => {
+      const graphqlResult = {
+        data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+      };
+      githubAuth = makeGitHubAuth(graphqlResult);
+      sessionManager = makeSessionManager([
+        { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+      ]);
+
+      poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+      poller.trackSession("s1", "https://github.com/owner/repo");
+
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(sessionManager.setPrStatus).toHaveBeenCalledWith(
+        "s1",
+        expect.objectContaining({ sessionId: "s1", prNumber: 42, prState: "open" }),
+      );
+    });
+
+    it("loadPersisted seeds lastKnown so archived sessions appear in getAllStatuses", () => {
+      const persisted = [
+        {
+          sessionId: "archived-1",
+          prNumber: 7,
+          prUrl: "https://github.com/o/r/pull/7",
+          prTitle: "Old work",
+          prState: "merged" as const,
+          baseBranch: "main",
+          headBranch: "shipit/old",
+          insertions: 5,
+          deletions: 1,
+          checks: { state: "success" as const, total: 1, passed: 1, failed: 0, pending: 0 },
+          mergeable: "unknown" as const,
+          autoMergeEnabled: false,
+        },
+      ];
+      githubAuth = makeGitHubAuth();
+      sessionManager = {
+        list: () => [],
+        get: () => undefined,
+        setPrStatus: vi.fn(),
+        getAllPrStatuses: vi.fn().mockReturnValue(persisted),
+      } as unknown as SessionManager;
+
+      poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+      poller.loadPersisted();
+
+      const all = poller.getAllStatuses();
+      expect(all).toHaveLength(1);
+      expect(all[0]).toMatchObject({ sessionId: "archived-1", prState: "merged" });
+    });
+
+    it("loadPersisted strips runtime-only autoFix/autoMerge fields", () => {
+      const persistedWithRuntime = [{
+        sessionId: "s1",
+        prNumber: 1,
+        prUrl: "u",
+        prTitle: "t",
+        prState: "open" as const,
+        baseBranch: "main",
+        headBranch: "h",
+        insertions: 0,
+        deletions: 0,
+        checks: { state: "none" as const, total: 0, passed: 0, failed: 0, pending: 0 },
+        mergeable: "unknown" as const,
+        autoMergeEnabled: false,
+        // These should NOT survive into runtime — they live in their own maps
+        autoFix: { enabled: true, status: "running" as const, attemptCount: 1, maxAttempts: 3 },
+        autoMerge: { enabled: true, mergeMethod: "squash" as const },
+      }];
+      githubAuth = makeGitHubAuth();
+      sessionManager = {
+        list: () => [],
+        get: () => undefined,
+        setPrStatus: vi.fn(),
+        getAllPrStatuses: vi.fn().mockReturnValue(persistedWithRuntime),
+      } as unknown as SessionManager;
+
+      poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+      poller.loadPersisted();
+
+      const all = poller.getAllStatuses();
+      expect(all[0].autoFix).toBeUndefined();
+      expect(all[0].autoMerge).toBeUndefined();
+    });
+
+    it("clearPersisted broadcasts a removal and clears from SessionManager", () => {
+      githubAuth = makeGitHubAuth();
+      sessionManager = makeSessionManager([]);
+      poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+
+      poller.clearPersisted("s-archived");
+
+      expect(sessionManager.setPrStatus).toHaveBeenCalledWith("s-archived", null);
+      expect(sseBroadcast).toHaveBeenCalledWith(
+        "pr_status",
+        expect.objectContaining({ updates: [], removals: ["s-archived"] }),
+      );
+    });
   });
 
   it("getAllStatuses returns current state", async () => {
