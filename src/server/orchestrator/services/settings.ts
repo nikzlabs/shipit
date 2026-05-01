@@ -204,9 +204,11 @@ export function clearApiKey(): void {
 
 // ---- Utility model ----
 
-const VALID_PROVIDERS: UtilityModelProvider[] = ["openai-compatible", "anthropic"];
+const VALID_PROVIDERS: UtilityModelProvider[] = ["openai-compatible", "anthropic", "claude-cli"];
 
-/** Set the utility model configuration. apiKey is optional when updating — if omitted, the existing key is reused. */
+/** Set the utility model configuration. apiKey is optional when updating — if omitted,
+ *  the existing key is reused. The `claude-cli` provider does not require an apiKey
+ *  at all (it uses the locally installed Claude Code CLI's OAuth credentials). */
 export function setUtilityModel(
   credentialStore: CredentialStore,
   provider: string,
@@ -217,12 +219,24 @@ export function setUtilityModel(
   if (!VALID_PROVIDERS.includes(provider as UtilityModelProvider)) {
     throw new ServiceError(400, `Invalid provider: ${provider}. Must be one of: ${VALID_PROVIDERS.join(", ")}`);
   }
+
+  const trimmedModel = typeof model === "string" ? model.trim() : "";
+  if (!trimmedModel) throw new ServiceError(400, "Model cannot be empty");
+
+  // claude-cli uses local OAuth — no API key, no base URL.
+  if (provider === "claude-cli") {
+    const config: UtilityModelConfig = {
+      provider: "claude-cli",
+      model: trimmedModel,
+    };
+    credentialStore.setUtilityModel(config);
+    return { provider: config.provider, model: config.model };
+  }
+
   const trimmedKey = typeof apiKey === "string" ? apiKey.trim() : "";
   const existingConfig = credentialStore.getUtilityModel();
   const resolvedKey = trimmedKey || existingConfig?.apiKey?.trim() || "";
   if (!resolvedKey) throw new ServiceError(400, "API key cannot be empty");
-  const trimmedModel = typeof model === "string" ? model.trim() : "";
-  if (!trimmedModel) throw new ServiceError(400, "Model cannot be empty");
 
   let trimmedBaseUrl: string | undefined;
   if (provider === "openai-compatible") {

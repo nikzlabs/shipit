@@ -2,7 +2,7 @@
 import { useState, useEffect } from "react";
 import { useApi } from "../hooks/useApi.js";
 
-type Provider = "openai-compatible" | "anthropic";
+type Provider = "openai-compatible" | "anthropic" | "claude-cli";
 
 interface UtilityModelStatus {
   configured: boolean;
@@ -14,6 +14,13 @@ interface UtilityModelStatus {
 const DEFAULT_MODELS: Record<Provider, string> = {
   "openai-compatible": "gpt-4o-mini",
   "anthropic": "claude-haiku-4-5-20251001",
+  "claude-cli": "haiku",
+};
+
+const PROVIDER_LABELS: Record<Provider, string> = {
+  "openai-compatible": "OpenAI-compatible",
+  "anthropic": "Anthropic",
+  "claude-cli": "Claude Code CLI (local)",
 };
 
 export function UtilityModelCard() {
@@ -39,7 +46,7 @@ export function UtilityModelCard() {
     try {
       const result = await api.put<UtilityModelStatus>("/api/settings/utility-model", {
         provider,
-        ...(apiKey.trim() ? { apiKey } : {}),
+        ...(provider !== "claude-cli" && apiKey.trim() ? { apiKey } : {}),
         model: model || DEFAULT_MODELS[provider],
         ...(provider === "openai-compatible" ? { baseUrl } : {}),
       });
@@ -86,7 +93,7 @@ export function UtilityModelCard() {
         {status.configured ? (
           <div className="space-y-2">
             <div className="text-xs text-(--color-text-secondary)">
-              <span className="capitalize">{status.provider === "openai-compatible" ? "OpenAI-compatible" : "Anthropic"}</span>
+              <span>{PROVIDER_LABELS[status.provider ?? "openai-compatible"]}</span>
               {" / "}
               <span className="font-mono">{status.model}</span>
             </div>
@@ -130,15 +137,21 @@ export function UtilityModelCard() {
             const p = e.target.value as Provider;
             setProvider(p);
             setModel("");
-            if (p === "anthropic") setBaseUrl("");
-            else setBaseUrl("https://api.openai.com/v1");
+            if (p === "openai-compatible") setBaseUrl("https://api.openai.com/v1");
+            else setBaseUrl("");
           }}
           className="w-full px-3 py-2 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) text-(--color-text-primary) text-sm focus:outline-none focus:border-(--color-border-focus)"
           data-testid="utility-model-provider"
         >
           <option value="openai-compatible">OpenAI-compatible</option>
           <option value="anthropic">Anthropic</option>
+          <option value="claude-cli">Claude Code CLI (local)</option>
         </select>
+        {provider === "claude-cli" && (
+          <p className="text-[10px] text-(--color-text-tertiary) mt-1">
+            Uses the local Claude Code CLI installed in this container — same login as the coding agent. No API key needed.
+          </p>
+        )}
       </div>
 
       {provider === "openai-compatible" && (
@@ -156,21 +169,23 @@ export function UtilityModelCard() {
         </div>
       )}
 
-      <div>
-        <label className="block text-xs font-medium text-(--color-text-secondary) mb-1">API Key</label>
-        <input
-          type="password"
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-          placeholder={status.configured ? "Leave blank to keep existing key" : "sk-..."}
-          className="w-full px-3 py-2 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) text-(--color-text-primary) text-sm focus:outline-none focus:border-(--color-border-focus)"
-          autoComplete="off"
-          data-testid="utility-model-api-key"
-        />
-        {status.configured && !apiKey.trim() && (
-          <p className="text-[10px] text-(--color-text-tertiary) mt-1">Existing API key will be kept.</p>
-        )}
-      </div>
+      {provider !== "claude-cli" && (
+        <div>
+          <label className="block text-xs font-medium text-(--color-text-secondary) mb-1">API Key</label>
+          <input
+            type="password"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder={status.configured ? "Leave blank to keep existing key" : "sk-..."}
+            className="w-full px-3 py-2 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) text-(--color-text-primary) text-sm focus:outline-none focus:border-(--color-border-focus)"
+            autoComplete="off"
+            data-testid="utility-model-api-key"
+          />
+          {status.configured && !apiKey.trim() && status.provider === provider && (
+            <p className="text-[10px] text-(--color-text-tertiary) mt-1">Existing API key will be kept.</p>
+          )}
+        </div>
+      )}
 
       <div>
         <label className="block text-xs font-medium text-(--color-text-secondary) mb-1">Model</label>
@@ -189,7 +204,7 @@ export function UtilityModelCard() {
       <div className="flex gap-2">
         <button
           onClick={handleSave}
-          disabled={(!apiKey.trim() && !status.configured) || saving}
+          disabled={(provider !== "claude-cli" && !apiKey.trim() && !(status.configured && status.provider === provider)) || saving}
           className="flex-1 px-3 py-2 text-sm rounded-lg bg-(--color-accent) text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
           data-testid="utility-model-save"
         >

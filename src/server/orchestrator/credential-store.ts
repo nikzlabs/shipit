@@ -2,11 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { getErrorMessage } from "../shared/utils.js";
 
-export type UtilityModelProvider = "openai-compatible" | "anthropic";
+export type UtilityModelProvider = "openai-compatible" | "anthropic" | "claude-cli";
 
 export interface UtilityModelConfig {
   provider: UtilityModelProvider;
-  apiKey: string;
+  /** API key for hosted providers. Not required (and ignored) for `claude-cli`,
+   *  which uses the OAuth credentials of the locally installed Claude Code CLI. */
+  apiKey?: string;
   model: string;
   baseUrl?: string;
 }
@@ -101,9 +103,10 @@ export class CredentialStore {
 
   getUtilityModel(): UtilityModelConfig | null {
     const m = this.data.utilityModel;
-    if (m && typeof m.apiKey === "string" && m.apiKey.trim()) {
-      return m;
-    }
+    if (!m) return null;
+    // claude-cli uses the local Claude Code CLI's OAuth — no API key needed.
+    if (m.provider === "claude-cli") return m;
+    if (typeof m.apiKey === "string" && m.apiKey.trim()) return m;
     return null;
   }
 
