@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import type { UtilityModelConfig } from "./credential-store.js";
 
 export interface SessionName {
@@ -25,9 +26,17 @@ export async function generateSessionName(
   const prompt = PROMPT_TEMPLATE.replace("{MESSAGE}", truncated);
 
   try {
-    const text = config.provider === "anthropic"
-      ? await callAnthropic(config, prompt)
-      : await callOpenAICompatible(config, prompt);
+    let text: string | null;
+    switch (config.provider) {
+      case "anthropic":
+        text = await callAnthropic(config, prompt);
+        break;
+      case "claude-cli":
+        text = await callClaudeCli(prompt);
+        break;
+      default:
+        text = await callOpenAICompatible(config, prompt);
+    }
 
     if (!text) return null;
 
@@ -59,6 +68,10 @@ export async function generateSessionName(
 }
 
 async function callOpenAICompatible(config: UtilityModelConfig, prompt: string): Promise<string | null> {
+  if (!config.apiKey) {
+    console.warn("[session-namer] OpenAI-compatible provider requires an apiKey");
+    return null;
+  }
   const baseUrl = (config.baseUrl ?? "https://api.openai.com/v1").replace(/\/+$/, "");
 
   for (const tokenParam of ["max_completion_tokens", "max_tokens"] as const) {
@@ -104,6 +117,10 @@ async function callOpenAICompatible(config: UtilityModelConfig, prompt: string):
 }
 
 async function callAnthropic(config: UtilityModelConfig, prompt: string): Promise<string | null> {
+  if (!config.apiKey) {
+    console.warn("[session-namer] Anthropic provider requires an apiKey");
+    return null;
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15_000);
 
@@ -131,4 +148,68 @@ async function callAnthropic(config: UtilityModelConfig, prompt: string): Promis
 
   const body = await res.json() as { content?: { type: string; text?: string }[] };
   return body.content?.find((b) => b.type === "text")?.text ?? null;
+}
+
+/**
+ * Invoke the locally installed Claude Code CLI in non-interactive mode.
+ *
+ * Uses the same OAuth credentials the agent uses (mounted at /root/.claude
+ * via the credentials volume), so no separate API key is required.
+ *
+ * Implementation notes — these were the cause of the previous "fails silently
+ * in containers" bug:
+ *   - `stdio: ["ignore", "pipe", "pipe"]` is critical. With piped (but unwritten)
+ *     stdin the CLI prints `Warning: no stdin data received in 3s, proceeding
+ *     without it` to stderr after waiting 3 seconds, which ate ~20% of our
+ *     15s timeout budget for no reason.
+ *   - HOME is forced to /root so the CLI finds /root/.claude (the symlink to
+ *     the shared /credentials/.claude volume).
+ *   - We do NOT pass --resume or any session flag — this is a one-shot prompt.
+ */
+function callClaudeCli(prompt: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: string | null): void => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    try {
+      const child = execFile(
+        "claude",
+        ["-p", prompt, "--output-format", "text"],
+        {
+          timeout: 15_000,
+          cwd: "/tmp",
+          env: { ...process.env, HOME: process.env.HOME ?? "/root" },
+          maxBuffer: 1024 * 1024,
+        },
+        (error, stdout, stderr) => {
+          if (error) {
+            const stderrTail = typeof stderr === "string" ? stderr.slice(-200).trim() : "";
+            console.warn(
+              "[session-namer] Claude CLI failed:",
+              error.message,
+              stderrTail ? `stderr=${stderrTail}` : "",
+            );
+            finish(null);
+            return;
+          }
+          finish(typeof stdout === "string" ? stdout : null);
+        },
+      );
+
+      // Detach stdin so the CLI doesn't sit waiting for piped input.
+      child.stdin?.end();
+
+      child.on("error", (err) => {
+        console.warn("[session-namer] Claude CLI spawn error:", err.message);
+        finish(null);
+      });
+    } catch (err) {
+      console.warn("[session-namer] Claude CLI exception:", err instanceof Error ? err.message : err);
+      finish(null);
+    }
+  });
 }
