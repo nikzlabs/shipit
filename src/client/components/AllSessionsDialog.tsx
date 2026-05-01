@@ -154,7 +154,7 @@ export function AllSessionsDialog({
 
         {/* Session list */}
         <div className="px-4 pb-3 max-md:flex-1 max-md:min-h-0">
-          <div className="max-h-80 max-md:max-h-full overflow-y-auto rounded-md border border-(--color-border-secondary) flex flex-col gap-1 py-1">
+          <div className="h-80 max-md:h-full overflow-y-auto rounded-md border border-(--color-border-secondary) flex flex-col gap-1 py-1">
             {filtered.length === 0 ? (
               <p className="px-3 py-6 text-center text-xs text-(--color-text-secondary)">
                 {sessions.length === 0
