@@ -226,7 +226,16 @@ export default function App() {
     handleInterrupt: () => send({ type: "interrupt_claude" }),
   });
 
-  useConnectionSync({ status, send, onSessionConnect: (sid: string) => { void useFileStore.getState().hydrateUploads(sid); } });
+  useConnectionSync({ status, send, onSessionConnect: (sid: string) => {
+    void useFileStore.getState().hydrateUploads(sid);
+    // Re-fetch docs if the docs tab is currently active. loadSessionHistory()
+    // populates the file tree and commit log but not docs, so without this a
+    // session switch leaves the DocsViewer stuck on "No docs found" until the
+    // user clicks Refresh.
+    if (useUiStore.getState().rightTab === "docs") {
+      void useFileStore.getState().fetchDocs(sid).catch(() => {});
+    }
+  } });
 
   // Delayed spinner for bootstrap loading gate — only show after 1s
   const [showBootstrapSpinner, setShowBootstrapSpinner] = useState(false);
