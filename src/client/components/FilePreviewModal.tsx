@@ -20,11 +20,30 @@ export interface FilePreviewAction {
   variant?: "primary" | "default";
 }
 
+export interface FilePreviewSibling {
+  /** Full file path (matches the modal's `filePath` when this tab is active). */
+  path: string;
+  /** Short label shown in the tab strip (e.g. "Plan", "Checklist"). */
+  label: string;
+}
+
 export interface FilePreviewModalProps {
   filePath: string;
   content: string | null;
   fileType: FilePreviewType;
   actions?: FilePreviewAction[];
+  /**
+   * Optional sibling docs in the same directory. When more than one is
+   * provided, the modal renders a tab strip in the header. The active tab is
+   * the entry whose `path` equals `filePath`.
+   */
+  siblings?: FilePreviewSibling[];
+  /**
+   * Called when the user clicks a sibling tab. The caller is expected to
+   * load the new file (e.g. via `openPreview`) — the modal stays open and
+   * its content swaps via the parent-driven `filePath`/`content` props.
+   */
+  onSwitchSibling?: (path: string) => void;
   onClose: () => void;
   /**
    * Called after the user clicks Send. Receives the prompt the server already
@@ -287,6 +306,8 @@ export function FilePreviewModal({
   content,
   fileType,
   actions,
+  siblings,
+  onSwitchSibling,
   onClose,
   onSendComments,
 }: FilePreviewModalProps) {
@@ -327,6 +348,19 @@ export function FilePreviewModal({
     onClose();
   }, [sessionId, reviewable, draft, filePath, discardEmptyDraft, onClose]);
 
+  const handleSwitchSibling = useCallback(
+    (nextPath: string) => {
+      if (nextPath === filePath || !onSwitchSibling) return;
+      // Discard an empty draft on the outgoing tab so it doesn't linger,
+      // mirroring the close-without-comments behavior.
+      if (sessionId && reviewable && draft?.comments.length === 0) {
+        void discardEmptyDraft(sessionId, filePath);
+      }
+      onSwitchSibling(nextPath);
+    },
+    [filePath, onSwitchSibling, sessionId, reviewable, draft, discardEmptyDraft],
+  );
+
   const handleAiReview = useCallback(() => {
     if (!sessionId) return;
     void aiReview(sessionId, filePath);
@@ -339,40 +373,65 @@ export function FilePreviewModal({
   }, [sessionId, filePath, sendDraft, onSendComments]);
 
   const comments = draft?.comments ?? [];
+  const showSiblingTabs = !!siblings && siblings.length > 1;
 
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) handleClose(); }}>
       <DialogContent className="w-[90vw] max-w-4xl h-[85vh] flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-(--color-border-secondary) shrink-0">
-          <DialogTitle className="text-sm font-medium text-(--color-text-primary) truncate" title={filePath}>
-            {filePath}
-          </DialogTitle>
-          <div className="flex items-center gap-2 shrink-0 ml-4">
-            {showAiReview && (
-              <Button variant="secondary" size="sm" onClick={handleAiReview} disabled={aiLoading}>
-                <RobotIcon size={ICON_SIZE.SM} className="mr-1" />
-                {aiLoading ? "Reviewing..." : "AI Review"}
-              </Button>
-            )}
-            {actions?.map((action) => (
-              <Button
-                key={action.label}
-                variant={action.variant === "primary" ? "primary" : "secondary"}
-                size="sm"
-                onClick={action.onClick}
+        <div className="border-b border-(--color-border-secondary) shrink-0">
+          <div className="flex items-center justify-between px-6 py-4">
+            <DialogTitle className="text-sm font-medium text-(--color-text-primary) truncate" title={filePath}>
+              {filePath}
+            </DialogTitle>
+            <div className="flex items-center gap-2 shrink-0 ml-4">
+              {showAiReview && (
+                <Button variant="secondary" size="sm" onClick={handleAiReview} disabled={aiLoading}>
+                  <RobotIcon size={ICON_SIZE.SM} className="mr-1" />
+                  {aiLoading ? "Reviewing..." : "AI Review"}
+                </Button>
+              )}
+              {actions?.map((action) => (
+                <Button
+                  key={action.label}
+                  variant={action.variant === "primary" ? "primary" : "secondary"}
+                  size="sm"
+                  onClick={action.onClick}
+                >
+                  {action.label}
+                </Button>
+              ))}
+              <button
+                onClick={handleClose}
+                className="p-1 rounded hover:bg-(--color-bg-hover) text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors"
+                aria-label="Close"
               >
-                {action.label}
-              </Button>
-            ))}
-            <button
-              onClick={handleClose}
-              className="p-1 rounded hover:bg-(--color-bg-hover) text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors"
-              aria-label="Close"
-            >
-              <XIcon size={ICON_SIZE.MD} />
-            </button>
+                <XIcon size={ICON_SIZE.MD} />
+              </button>
+            </div>
           </div>
+          {showSiblingTabs && siblings && (
+            <div className="flex px-4" role="tablist" aria-label="Related docs">
+              {siblings.map((sib) => {
+                const active = sib.path === filePath;
+                return (
+                  <button
+                    key={sib.path}
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => handleSwitchSibling(sib.path)}
+                    className={`px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer border-b-2 -mb-px ${
+                      active
+                        ? "text-(--color-text-primary) border-(--color-accent)"
+                        : "text-(--color-text-tertiary) border-transparent hover:text-(--color-text-secondary)"
+                    }`}
+                  >
+                    {sib.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Content */}

@@ -3,6 +3,7 @@ import { Badge } from "./ui/badge.js";
 import type { BadgeProps } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import type { DocEntry, DocPriority, DocStatus } from "../../server/shared/types.js";
+import { hasTrackedSibling } from "../utils/doc-paths.js";
 
 export interface DocsViewerProps {
   files: DocEntry[];
@@ -75,7 +76,12 @@ type Tab = "tracked" | "other";
 
 export function DocsViewer({ files, onFileClick, onRefresh }: DocsViewerProps) {
   const tracked = files.filter((f) => f.status !== undefined);
-  const untracked = files.filter((f) => f.status === undefined);
+  // Hide untracked siblings (e.g. `checklist.md`) when a tracked plan exists
+  // in the same directory — they're now reachable via the modal's sibling
+  // tabs, so listing them separately is redundant noise.
+  const untracked = files.filter(
+    (f) => f.status === undefined && !hasTrackedSibling(f.path, files),
+  );
   const hasTracked = tracked.length > 0;
   const hasUntracked = untracked.length > 0;
 
