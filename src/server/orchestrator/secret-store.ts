@@ -2,9 +2,10 @@
  * SecretStore — per-repo secrets stored in SQLite.
  *
  * Secrets are key-value pairs (environment variables) associated with a repo
- * URL. They are pushed to the preview container's worker via PUT /secrets and
- * injected into the dev server's process.env. Claude (session container) never
- * sees them.
+ * URL. The orchestrator resolves them against `x-shipit-secrets` declarations
+ * in the user's docker-compose.yml and writes per-service env files
+ * (`.shipit/.env.<service>`) referenced by the compose override via
+ * `env_file:`. See feature 087 for the full pipeline.
  *
  * Follows the same structural pattern as DeploymentStore: SQLite via
  * DatabaseManager, class wrapping prepared statements.

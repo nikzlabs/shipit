@@ -30,6 +30,7 @@ import type { UsageManager } from "./usage.js";
 import type { AuthManager } from "./auth.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { CredentialStore } from "./credential-store.js";
+import type { SecretStore } from "./secret-store.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { AgentId, AgentProcess, WsLogEntry } from "../shared/types.js";
@@ -387,6 +388,12 @@ export interface RunnerRegistryDeps {
   composeNotConfigured: Set<string>;
   /** Container manager for connecting agent containers to compose networks. */
   containerManager: SessionContainerManager | null;
+  /**
+   * Per-repo secret store. Used to auto-load secrets into compose services on
+   * session activation — wired into ServiceManager via its `secretsLoader`
+   * callback. Optional so test setups without secrets still work.
+   */
+  secretStore?: SecretStore;
 }
 
 /**
@@ -400,6 +407,7 @@ export function createRunnerRegistry(
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeWarnings, composeNotConfigured, containerManager,
+    secretStore,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -456,7 +464,7 @@ export function createRunnerRegistry(
       });
 
       // Set up compose ServiceManager if the session has a compose config
-      const setupDeps = { sessionManager, serviceManagers, composeWarnings, composeNotConfigured, containerManager };
+      const setupDeps = { sessionManager, serviceManagers, composeWarnings, composeNotConfigured, containerManager, secretStore };
       setupServiceManager(runner, setupDeps);
 
       // Allow re-setup when config files change (e.g. old-format migrated to new)
@@ -481,9 +489,10 @@ function setupServiceManager(
     composeWarnings: Map<string, string>;
     composeNotConfigured: Set<string>;
     containerManager: SessionContainerManager | null;
+    secretStore?: SecretStore;
   },
 ): void {
-  const { sessionManager, serviceManagers, composeWarnings, composeNotConfigured, containerManager } = deps;
+  const { sessionManager, serviceManagers, composeWarnings, composeNotConfigured, containerManager, secretStore } = deps;
   const session = sessionManager.get(runner.sessionId);
   const workspaceDir = session?.workspaceDir ?? runner.sessionDir;
 
@@ -534,6 +543,21 @@ function setupServiceManager(
   const wsVolume = process.env.WORKSPACE_VOLUME;
   const wsSubpath = wsVolume ? workspaceDir.replace(/^\/workspace\//, "") : undefined;
 
+  // Secrets loader — resolves to the user-saved secrets for this session's
+  // repo. Each session activation reads the latest values from the database,
+  // so secrets edited while the session was idle are picked up on next start.
+  // Sessions without a remoteUrl (e.g. brand-new local-only ones) get an
+  // empty record — services that declare `x-shipit-secrets` will start with
+  // those env vars unset until the user configures them.
+  const secretsLoader = secretStore
+    ? async () => {
+        const s = sessionManager.get(runner.sessionId);
+        const remoteUrl = s?.remoteUrl;
+        if (!remoteUrl) return {};
+        return secretStore.loadSecrets(remoteUrl);
+      }
+    : undefined;
+
   const mgr = new ServiceManager({
     sessionId: runner.sessionId,
     workspaceDir,
@@ -541,6 +565,7 @@ function setupServiceManager(
     workspaceVolume: wsVolume,
     workspaceSubpath: wsSubpath,
     stackName: process.env.DOCKER_STACK,
+    secretsLoader,
     networkJoinFn: containerManager
       ? async (networkName: string) => {
           // Connect agent container to compose network

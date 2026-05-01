@@ -28,6 +28,12 @@ export interface ComposeService {
   profiles?: string[];
   /** Raw volume entries from the compose file (for rewriting in override). */
   volumes?: unknown[];
+  /**
+   * Secret env-var names the service needs (from `x-shipit-secrets` in compose).
+   * Phase 1: only the simple string form is supported. Object form (with
+   * `description`, `required`, `agent`, `source`) is reserved for later phases.
+   */
+  secrets?: string[];
 }
 
 export interface ComposeOverrideOptions {
@@ -131,10 +137,59 @@ export function parseComposeFile(
     // Preserve raw volumes for rewriting in override
     const volumes = Array.isArray(svc.volumes) ? (svc.volumes as unknown[]) : undefined;
 
-    result.push({ name, ports, shipitPreview, profiles, volumes });
+    // Extract x-shipit-secrets — Phase 1 supports the simple string form only.
+    // The object form (`{ name, description, required, agent, source }`) is
+    // reserved for later phases. Unknown shapes are tolerated (skipped) so a
+    // future schema upgrade in user files doesn't break older orchestrators.
+    const secrets = parseSecretEntries(name, svc["x-shipit-secrets"]);
+
+    result.push({ name, ports, shipitPreview, profiles, volumes, secrets });
   }
 
   return result;
+}
+
+/**
+ * Parse `x-shipit-secrets` for a service.
+ *
+ * Phase 1 accepts strings (env var name) and ignores object entries with a
+ * warning — those become first-class once Phase 2 lands. Returns `undefined`
+ * if no recognized entries were found, so the override can omit `env_file:`
+ * for services that don't declare any secrets.
+ */
+function parseSecretEntries(serviceName: string, raw: unknown): string[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw)) {
+    throw new ComposeValidationError(
+      `Service \`${serviceName}\`: \`x-shipit-secrets\` must be a list.`,
+    );
+  }
+  const names: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry === "string") {
+      const trimmed = entry.trim();
+      if (!trimmed) continue;
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) {
+        throw new ComposeValidationError(
+          `Service \`${serviceName}\`: \`x-shipit-secrets\` entry \`${trimmed}\` ` +
+          `is not a valid env var name.`,
+        );
+      }
+      names.push(trimmed);
+    } else if (entry && typeof entry === "object") {
+      // Object form (Phase 2+): { name, description, required, agent, source }
+      const obj = entry as Record<string, unknown>;
+      const n = obj.name;
+      if (typeof n === "string" && n.trim()) {
+        const trimmed = n.trim();
+        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) {
+          names.push(trimmed);
+        }
+      }
+      // Silently skip if no usable name — extended fields land in later phases.
+    }
+  }
+  return names.length > 0 ? names : undefined;
 }
 
 /**
@@ -344,6 +399,13 @@ export function generateComposeOverride(
     // share the same workspace as the agent container.
     if (svc.volumes && opts.workspaceVolume) {
       entry.volumes = rewriteVolumes(svc.volumes, opts);
+    }
+
+    // Inject the per-service secrets env file if the service declared any
+    // secrets via `x-shipit-secrets`. The orchestrator writes the file before
+    // running `docker compose up` (see secret-resolver.ts).
+    if (svc.secrets && svc.secrets.length > 0) {
+      entry.env_file = [`.shipit/.env.${svc.name}`];
     }
 
     overrideServices[svc.name] = entry;

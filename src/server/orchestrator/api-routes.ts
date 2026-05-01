@@ -138,10 +138,14 @@ export async function registerApiRoutes(
     await registerReviewRoutes(app, deps);
   }
   if (deps.secretStore) {
+    // serviceManagers is always available in production; we default to an
+    // empty Map so test setups without compose can still mount the route.
+    const serviceManagers: Map<string, ServiceManager> =
+      deps.serviceManagers ?? new Map<string, ServiceManager>();
     await registerSecretsRoutes(app, {
       secretStore: deps.secretStore,
-      runnerRegistry: deps.runnerRegistry,
       sessionManager: deps.sessionManager,
+      serviceManagers,
     });
   }
   await registerUpdateRoutes(app);
