@@ -13,6 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { ComposeConfig } from "../shared/shipit-config.js";
+import type { SecretRequirement } from "../shared/types/domain-types.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -30,10 +31,23 @@ export interface ComposeService {
   volumes?: unknown[];
   /**
    * Secret env-var names the service needs (from `x-shipit-secrets` in compose).
-   * Phase 1: only the simple string form is supported. Object form (with
-   * `description`, `required`, `agent`, `source`) is reserved for later phases.
+   *
+   * Names only — kept for backward compatibility and ergonomic checks like
+   * `svc.secrets?.length`. The full per-entry metadata (`description`,
+   * `required`, `agent`, `source`) lives on `secretRequirements`.
+   *
+   * Invariant: `secrets` and `secretRequirements` are produced from the same
+   * parser pass, so `secrets[i] === secretRequirements[i].name` for every i.
    */
   secrets?: string[];
+  /**
+   * Full secret declarations as parsed from `x-shipit-secrets` (Phase 2+).
+   * Always present when `secrets` is, with the same length and ordering.
+   * Each entry carries the optional `description`, `required`, `agent`, and
+   * `source` fields from the object form (or empty defaults for the string
+   * shorthand).
+   */
+  secretRequirements?: SecretRequirement[];
 }
 
 export interface ComposeOverrideOptions {
@@ -54,6 +68,33 @@ export interface ComposeOverrideOptions {
   workspaceSubpath?: string;
   /** Docker stack name (e.g. "shipit-dev") — added as a label for cleanup filtering. */
   stackName?: string;
+  /**
+   * Phase 1 follow-up: when present, generate Docker-secrets-style
+   * delivery instead of `env_file:`. The `secrets:` map at the top-level
+   * uses the file paths from `dockerSecrets.filePathFor(name)`, and each
+   * service that declared secrets gets a `secrets:` list referencing the
+   * `shipit-<NAME>` aliases plus an `entrypoint:` override that runs the
+   * wrapper script before the original command.
+   */
+  dockerSecrets?: {
+    /** Secret names that have a value (from `writeIsolatedSecretFiles`). */
+    secretNames: string[];
+    /**
+     * Map of service name → secret names that service consumes (subset of
+     * `secretNames`). Each service's compose entry references only the
+     * secrets it declared, preserving per-service scoping.
+     */
+    perService: Record<string, string[]>;
+    /** Returns the compose-side `file:` path for a given secret name. */
+    filePathFor: (name: string) => string;
+    /**
+     * Workspace-relative path to the entrypoint wrapper script
+     * (`secrets-entrypoint.sh`), e.g. `.shipit/secrets-entrypoint.sh`.
+     * The override mounts it into each service container at
+     * `/shipit/secrets-entrypoint.sh` and sets it as the entrypoint.
+     */
+    entrypointWorkspacePath: string;
+  };
 }
 
 export class ComposeValidationError extends Error {
@@ -137,34 +178,51 @@ export function parseComposeFile(
     // Preserve raw volumes for rewriting in override
     const volumes = Array.isArray(svc.volumes) ? (svc.volumes as unknown[]) : undefined;
 
-    // Extract x-shipit-secrets — Phase 1 supports the simple string form only.
-    // The object form (`{ name, description, required, agent, source }`) is
-    // reserved for later phases. Unknown shapes are tolerated (skipped) so a
-    // future schema upgrade in user files doesn't break older orchestrators.
-    const secrets = parseSecretEntries(name, svc["x-shipit-secrets"]);
+    // Extract x-shipit-secrets — accepts both the simple string form
+    // (`STRIPE_KEY`) and the object form (`{ name, description, required,
+    // agent, source }`). Unknown shapes (entry without a name, or a name
+    // that fails validation) are silently skipped so a future schema upgrade
+    // in user files doesn't break older orchestrators.
+    const requirements = parseSecretEntries(name, svc["x-shipit-secrets"]);
+    const secrets = requirements?.map((r) => r.name);
 
-    result.push({ name, ports, shipitPreview, profiles, volumes, secrets });
+    result.push({
+      name,
+      ports,
+      shipitPreview,
+      profiles,
+      volumes,
+      secrets,
+      secretRequirements: requirements,
+    });
   }
 
   return result;
 }
 
 /**
- * Parse `x-shipit-secrets` for a service.
+ * Parse `x-shipit-secrets` for a service into a list of `SecretRequirement`s.
  *
- * Phase 1 accepts strings (env var name) and ignores object entries with a
- * warning — those become first-class once Phase 2 lands. Returns `undefined`
- * if no recognized entries were found, so the override can omit `env_file:`
- * for services that don't declare any secrets.
+ * Both forms are accepted:
+ *   - Strings — sugar for `{ name: <string> }` with no other metadata.
+ *   - Objects — full `SecretRequirement`. `name` is required; other fields
+ *     (`description`, `required`, `agent`, `source`) are copied verbatim
+ *     when present and well-typed. Unknown extra keys are ignored.
+ *
+ * Returns `undefined` if no recognized entries were found, so the override
+ * can omit `env_file:` for services that don't declare any secrets.
  */
-function parseSecretEntries(serviceName: string, raw: unknown): string[] | undefined {
+function parseSecretEntries(
+  serviceName: string,
+  raw: unknown,
+): SecretRequirement[] | undefined {
   if (raw === undefined || raw === null) return undefined;
   if (!Array.isArray(raw)) {
     throw new ComposeValidationError(
       `Service \`${serviceName}\`: \`x-shipit-secrets\` must be a list.`,
     );
   }
-  const names: string[] = [];
+  const requirements: SecretRequirement[] = [];
   for (const entry of raw) {
     if (typeof entry === "string") {
       const trimmed = entry.trim();
@@ -175,21 +233,33 @@ function parseSecretEntries(serviceName: string, raw: unknown): string[] | undef
           `is not a valid env var name.`,
         );
       }
-      names.push(trimmed);
+      requirements.push({ name: trimmed });
     } else if (entry && typeof entry === "object") {
-      // Object form (Phase 2+): { name, description, required, agent, source }
+      // Object form: { name, description, required, agent, source }
       const obj = entry as Record<string, unknown>;
       const n = obj.name;
-      if (typeof n === "string" && n.trim()) {
-        const trimmed = n.trim();
-        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) {
-          names.push(trimmed);
-        }
+      if (typeof n !== "string") continue;
+      const trimmed = n.trim();
+      if (!trimmed || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) continue;
+
+      const req: SecretRequirement = { name: trimmed };
+      if (typeof obj.description === "string" && obj.description.trim()) {
+        req.description = obj.description.trim();
       }
-      // Silently skip if no usable name — extended fields land in later phases.
+      if (obj.required === true) {
+        req.required = true;
+      }
+      if (obj.agent === true) {
+        req.agent = true;
+      }
+      if (typeof obj.source === "string" && obj.source.trim()) {
+        req.source = obj.source.trim();
+      }
+      requirements.push(req);
     }
+    // Anything else (numbers, booleans, nulls inside the list) silently skipped.
   }
-  return names.length > 0 ? names : undefined;
+  return requirements.length > 0 ? requirements : undefined;
 }
 
 /**
@@ -401,10 +471,41 @@ export function generateComposeOverride(
       entry.volumes = rewriteVolumes(svc.volumes, opts);
     }
 
-    // Inject the per-service secrets env file if the service declared any
-    // secrets via `x-shipit-secrets`. The orchestrator writes the file before
-    // running `docker compose up` (see secret-resolver.ts).
-    if (svc.secrets && svc.secrets.length > 0) {
+    // Phase 1 follow-up: Docker-secrets mode. When `dockerSecrets` is
+    // present we emit `secrets:` references + an entrypoint hijack. Falls
+    // back to per-service env_file otherwise.
+    const ds = opts.dockerSecrets;
+    if (ds && svc.secrets && svc.secrets.length > 0) {
+      const consumed = (ds.perService[svc.name] ?? []).filter((n) => ds.secretNames.includes(n));
+      if (consumed.length > 0) {
+        entry.secrets = consumed.map((n) => `shipit-${n}`);
+        // Mount the entrypoint wrapper read-only into the container. We
+        // reuse the workspace-volume mount (the wrapper is copied into
+        // .shipit/) so this works on both volume-backed and bind-mount
+        // setups without changing the host bind path.
+        const existingVolumes = (entry.volumes as unknown[] | undefined) ?? [];
+        const wrapperMount: Record<string, unknown> = opts.workspaceVolume
+          ? {
+            type: "volume",
+            source: "shipit-workspace",
+            target: "/shipit/secrets-entrypoint.sh",
+            read_only: true,
+            volume: { subpath: opts.workspaceSubpath
+              ? `${opts.workspaceSubpath}/${ds.entrypointWorkspacePath}`
+              : ds.entrypointWorkspacePath },
+          }
+          : { type: "bind", source: `./${ds.entrypointWorkspacePath}`, target: "/shipit/secrets-entrypoint.sh", read_only: true };
+        entry.volumes = [...existingVolumes, wrapperMount];
+        // Override the entrypoint to the wrapper. The wrapper exec's
+        // "$@" so the user's command runs unchanged. We don't touch
+        // `command:` here — leaving it unset means compose merges the
+        // user's compose-file value, which is what we want.
+        entry.entrypoint = ["/shipit/secrets-entrypoint.sh"];
+      }
+    } else if (svc.secrets && svc.secrets.length > 0) {
+      // Inject the per-service secrets env file if the service declared any
+      // secrets via `x-shipit-secrets`. The orchestrator writes the file before
+      // running `docker compose up` (see secret-resolver.ts).
       entry.env_file = [`.shipit/.env.${svc.name}`];
     }
 
@@ -419,6 +520,20 @@ export function generateComposeOverride(
       },
     },
   };
+
+  // Phase 1 follow-up: top-level `secrets:` block listing every secret
+  // name with a `file:` reference. The path is host-side (the Docker
+  // daemon reads it), so the orchestrator pre-resolves it via
+  // `filePathFor()` to handle the orchestrator-in-container case.
+  if (opts.dockerSecrets && opts.dockerSecrets.secretNames.length > 0) {
+    const secretsBlock: Record<string, { file: string }> = {};
+    for (const name of opts.dockerSecrets.secretNames) {
+      secretsBlock[`shipit-${name}`] = {
+        file: opts.dockerSecrets.filePathFor(name),
+      };
+    }
+    override.secrets = secretsBlock;
+  }
 
   // When using a workspace volume, declare it as external so compose doesn't
   // try to create it (it's managed by the orchestrator).

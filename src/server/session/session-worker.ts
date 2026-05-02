@@ -96,6 +96,11 @@ export class SessionWorker extends EventEmitter {
   private _serviceRequestCounter = 0;
   private static readonly SERVICE_REQUEST_TIMEOUT_MS = 60_000;
 
+  // Phase 3 (087): names of secrets currently injected into process.env by
+  // the orchestrator. Tracked so we can `delete process.env[name]` for keys
+  // that are no longer marked `agent: true` after a compose-file edit.
+  private _injectedSecretNames = new Set<string>();
+
   // Install state
   private _installRunning = false;
   private _installProcess: ChildProcess | null = null;
@@ -332,6 +337,65 @@ export class SessionWorker extends EventEmitter {
         pending.resolve(result ?? { ok: true });
       }
       return { received: true };
+    });
+
+    // --- Secrets endpoint (087 Phase 3) ---
+    //
+    // Push the full set of `agent: true` secret values to this worker.
+    // The orchestrator calls this:
+    //   1. Once after the compose stack starts and `agent: true` entries
+    //      are resolved (initial bootstrap), and
+    //   2. Whenever the user saves new values via PUT /api/secrets, or the
+    //      compose file changes the set of `agent: true` declarations.
+    //
+    // We replace the full set on every call (not patch) so a name that's
+    // dropped from `x-shipit-secrets` (or has `agent: true` removed) gets
+    // its env var unset, instead of lingering.
+    //
+    // Subsequent agent processes spawned via /agent/start inherit the
+    // updated process.env (the worker passes its own env into the child
+    // via the agent factory). An already-running agent does NOT see the
+    // change — secret updates take effect on the next agent turn.
+    app.put<{ Body: { secrets: Record<string, string> } }>("/secrets", async (request, reply) => {
+      const { secrets } = request.body ?? {};
+      if (!secrets || typeof secrets !== "object" || Array.isArray(secrets)) {
+        return reply.code(400).send({ error: "secrets must be an object" });
+      }
+
+      // Validate shape — keys are env var names, values are strings.
+      for (const [k, v] of Object.entries(secrets)) {
+        if (typeof v !== "string") {
+          return reply.code(400).send({
+            error: `Secret ${k} must be a string (got ${typeof v})`,
+          });
+        }
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) {
+          return reply.code(400).send({
+            error: `Secret name ${k} is not a valid env var identifier`,
+          });
+        }
+      }
+
+      // Drop names that were previously injected but are no longer present.
+      // This catches both "user removed the value" and "compose file no
+      // longer marks this name as agent: true". The dynamic-key delete is
+      // intentional — the worker has to mutate process.env by name to
+      // surface secrets to spawned children. The set has already been
+      // validated against the env-var-name regex above so injection is bounded.
+      for (const name of this._injectedSecretNames) {
+        if (!(name in secrets)) {
+          // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- intentional process.env mutation
+          delete process.env[name];
+        }
+      }
+
+      // Set / overwrite the new values.
+      for (const [name, value] of Object.entries(secrets)) {
+        process.env[name] = value;
+      }
+
+      this._injectedSecretNames = new Set(Object.keys(secrets));
+      return { applied: this._injectedSecretNames.size };
     });
 
     // --- Install endpoint ---

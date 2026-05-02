@@ -8,6 +8,7 @@ import { CodexAuthCard } from "./CodexAuthCard.js";
 import { GitHubTokenForm } from "./GitHubTokenForm.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { usePreviewStore, type DeclaredSecretState } from "../stores/preview-store.js";
 
 const MAX_LENGTH = 50_000;
 
@@ -124,6 +125,355 @@ function NotificationSettings() {
  * failure (the inline toggle's silent console-only failure made sense next to
  * a busy PR card; in a quiet Settings dialog a visible error is better).
  */
+// ---------------------------------------------------------------------------
+// Secrets tab (087-reusable-preview-secrets, Phase 5 UI polish)
+// ---------------------------------------------------------------------------
+
+/**
+ * Helper labels for `source: platform:*` declared secrets.
+ * Mirrors `PLATFORM_SOURCES` on the server — kept in sync manually.
+ */
+const PLATFORM_SOURCE_LABELS: Record<string, string> = {
+  "platform:claude_oauth": "Claude OAuth",
+  "platform:github_token": "GitHub token",
+};
+
+interface SecretsTabProps {
+  repoUrl?: string;
+  onSecretsSave?: (repoUrl: string, secrets: Record<string, string>) => void;
+  onSecretsLoad?: (repoUrl: string) => Promise<Record<string, string>>;
+}
+
+/**
+ * Settings → Secrets tab. Renders three sections:
+ *
+ *   1. **Declared secrets** — from `x-shipit-secrets` in the active repo's
+ *      compose file (live via the `secrets_status` WS message). Shows the
+ *      description, required indicator, consumer-service chips, and an
+ *      `agent`/`platform` badge when applicable. Platform-sourced rows are
+ *      read-only.
+ *   2. **Custom secrets** — env vars the user has saved but no compose
+ *      service declared. They aren't injected anywhere (declaring them is
+ *      the wiring), but we keep them visible so the user can clean up
+ *      stale leftovers.
+ *   3. A "+ Add custom variable" affordance for ad-hoc env vars.
+ *
+ * The Save button writes the union of declared values + custom entries
+ * back to the repo's secret store via `PUT /api/secrets`.
+ */
+function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTabProps) {
+  // Live snapshot of declared secrets from the running compose stack.
+  const declared = usePreviewStore((s) => s.secrets.declared);
+  const missingByService = usePreviewStore((s) => s.secrets.missingByService);
+
+  // User-saved values. Keyed by env var name. Loaded once when the tab opens.
+  const [values, setValues] = useState<Record<string, string>>({});
+  // Custom (user-added) entries that aren't in `declared`. Stored as an
+  // ordered list so adding a new row keeps it in place; merged with `values`
+  // on save.
+  const [customRows, setCustomRows] = useState<{ key: string; value: string }[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const loadedRef = useRef(false);
+
+  // Lazy-load on first render. Subsequent re-renders skip.
+  if (!loadedRef.current && repoUrl && onSecretsLoad) {
+    loadedRef.current = true;
+    // eslint-disable-next-line no-restricted-syntax -- fire-and-forget in render
+    void onSecretsLoad(repoUrl).then((secrets) => {
+      setValues(secrets);
+      setLoaded(true);
+    }).catch(() => {
+      setLoaded(true);
+    });
+  }
+
+  // Once the declared list loads, pull anything not declared into the custom
+  // rows so the user can see and edit existing-but-undeclared values.
+  // Re-runs whenever `declared` or `values` shape changes.
+  const declaredNames = new Set(declared.map((d) => d.name));
+  const inferredCustomRows = Object.entries(values)
+    .filter(([k]) => !declaredNames.has(k))
+    .map(([key, value]) => ({ key, value }));
+  // Use the inferred rows as the source of truth on first render, then let
+  // the user mutate via setCustomRows. We compare lengths as a cheap
+  // freshness check — declared changes can demote rows from declared to
+  // custom.
+  const customRowsToShow = customRows.length > 0 ? customRows : inferredCustomRows;
+
+  function setDeclaredValue(name: string, value: string) {
+    setValues((v) => ({ ...v, [name]: value }));
+    setSaved(false);
+  }
+
+  function setCustomKey(idx: number, key: string) {
+    setCustomRows((rows) => {
+      const base = rows.length > 0 ? rows : inferredCustomRows;
+      const next = [...base];
+      next[idx] = { ...next[idx], key };
+      return next;
+    });
+    setSaved(false);
+  }
+
+  function setCustomValue(idx: number, value: string) {
+    setCustomRows((rows) => {
+      const base = rows.length > 0 ? rows : inferredCustomRows;
+      const next = [...base];
+      next[idx] = { ...next[idx], value };
+      return next;
+    });
+    setSaved(false);
+  }
+
+  function removeCustomRow(idx: number) {
+    setCustomRows((rows) => {
+      const base = rows.length > 0 ? rows : inferredCustomRows;
+      return base.filter((_, i) => i !== idx);
+    });
+    setSaved(false);
+  }
+
+  function addCustomRow() {
+    setCustomRows((rows) => {
+      const base = rows.length > 0 ? rows : inferredCustomRows;
+      return [...base, { key: "", value: "" }];
+    });
+    setSaved(false);
+  }
+
+  function save() {
+    if (!repoUrl || !onSecretsSave) return;
+    setSaving(true);
+    const out: Record<string, string> = {};
+    // Declared values first (those are guaranteed-unique names).
+    for (const d of declared) {
+      // Skip platform-sourced rows — they're not user-configurable.
+      if (d.source?.startsWith("platform:")) continue;
+      const v = values[d.name];
+      if (typeof v === "string") out[d.name] = v;
+    }
+    // Custom rows (user-keyed), with empty-key / duplicate-key guards.
+    for (const row of customRowsToShow) {
+      const k = row.key.trim();
+      if (!k) continue;
+      out[k] = row.value;
+    }
+    onSecretsSave(repoUrl, out);
+    setTimeout(() => {
+      setSaving(false);
+      setSaved(true);
+    }, 500);
+  }
+
+  if (!loaded) {
+    return <p className="text-sm text-(--color-text-tertiary)">Loading...</p>;
+  }
+
+  return (
+    <>
+      {/* Declared secrets (from x-shipit-secrets). Hidden when the repo's
+          compose file declares nothing — the tab shrinks to the custom-only
+          legacy form. */}
+      {declared.length > 0 && (
+        <section className="space-y-2" data-testid="secrets-declared-section">
+          <header className="space-y-1">
+            <h4 className="text-xs font-medium uppercase tracking-wide text-(--color-text-secondary)">
+              Declared by your compose file
+            </h4>
+            <p className="text-xs text-(--color-text-tertiary)">
+              From <code className="px-1 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary)">x-shipit-secrets</code>.
+              Each value is injected only into the services that listed it.
+            </p>
+          </header>
+          <div className="space-y-3">
+            {declared.map((d) => (
+              <DeclaredSecretRow
+                key={d.name}
+                requirement={d}
+                value={values[d.name] ?? ""}
+                missing={missingByService}
+                onChange={(v) => setDeclaredValue(d.name, v)}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Custom (undeclared) secrets — user-added values not referenced by
+          any compose service. Always shown so users can clean up stale
+          leftovers. */}
+      <section className="space-y-2" data-testid="secrets-custom-section">
+        <header className="space-y-1">
+          <h4 className="text-xs font-medium uppercase tracking-wide text-(--color-text-secondary)">
+            Custom variables
+          </h4>
+          <p className="text-xs text-(--color-text-tertiary)">
+            Stored for this repo but not yet referenced by any compose service.
+            Add them to <code className="px-1 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary)">x-shipit-secrets</code> in your compose file to inject them.
+          </p>
+        </header>
+        <div className="space-y-2">
+          {customRowsToShow.map((row, idx) => (
+            <div key={idx} className="flex items-center gap-2">
+              <input
+                type="text"
+                value={row.key}
+                onChange={(e) => setCustomKey(idx, e.target.value)}
+                placeholder="KEY"
+                className="flex-1 rounded-md bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus) font-mono"
+                data-testid={`secret-key-${idx}`}
+              />
+              <input
+                type="password"
+                value={row.value}
+                onChange={(e) => setCustomValue(idx, e.target.value)}
+                placeholder="value"
+                className="flex-1 rounded-md bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus) font-mono"
+                data-testid={`secret-value-${idx}`}
+              />
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => removeCustomRow(idx)}
+                className="text-(--color-text-tertiary) hover:text-(--color-error) shrink-0"
+                aria-label="Remove secret"
+                data-testid={`secret-remove-${idx}`}
+              >
+                &times;
+              </Button>
+            </div>
+          ))}
+        </div>
+        <button
+          onClick={addCustomRow}
+          className="text-xs text-(--color-text-link) hover:text-(--color-accent) transition-colors self-start"
+          data-testid="secret-add"
+        >
+          + Add variable
+        </button>
+      </section>
+
+      <div className="flex justify-end mt-2">
+        <Button
+          variant="primary"
+          size="md"
+          disabled={saving}
+          onClick={save}
+          className="rounded-md"
+          data-testid="secrets-save"
+        >
+          {saving ? "Saving..." : saved ? "Saved" : "Save"}
+        </Button>
+      </div>
+    </>
+  );
+}
+
+/**
+ * One row in the declared-secrets section. Read-only for `source: platform:*`
+ * entries (the user can't edit a forwarded credential — it's pulled from
+ * orchestrator state). Otherwise, an editable password input scoped to the
+ * declared name.
+ */
+function DeclaredSecretRow({
+  requirement,
+  value,
+  missing,
+  onChange,
+}: {
+  requirement: DeclaredSecretState;
+  value: string;
+  missing: Record<string, string[]>;
+  onChange: (v: string) => void;
+}) {
+  const isPlatform = requirement.source?.startsWith("platform:");
+  const platformLabel = requirement.source ? PLATFORM_SOURCE_LABELS[requirement.source] : null;
+  // A name is "missing" when it's required AND any service that consumes it
+  // has it on its missing list (which means no value resolved). Optional
+  // missing values don't surface as a problem.
+  const isMissing =
+    requirement.required &&
+    requirement.services.some((svc) => (missing[svc] ?? []).includes(requirement.name));
+
+  return (
+    <div
+      className="rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary)/50 p-3 space-y-2"
+      data-testid={`secret-declared-${requirement.name}`}
+    >
+      <div className="flex items-start gap-2 flex-wrap">
+        <code className="font-mono text-sm text-(--color-text-primary) break-all">
+          {requirement.name}
+        </code>
+        {requirement.required && (
+          <span
+            className={`text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded ${
+              isMissing
+                ? "bg-(--color-warning)/20 text-(--color-warning)"
+                : "bg-(--color-bg-hover) text-(--color-text-secondary)"
+            }`}
+            data-testid={`secret-required-${requirement.name}`}
+          >
+            Required
+          </span>
+        )}
+        {requirement.agent && (
+          <span
+            className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-(--color-accent)/15 text-(--color-accent)"
+            title="Also injected into the agent container"
+            data-testid={`secret-agent-${requirement.name}`}
+          >
+            Agent
+          </span>
+        )}
+        {isPlatform && (
+          <span
+            className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-(--color-bg-hover) text-(--color-text-secondary)"
+            title={`Resolved from ${platformLabel ?? requirement.source}`}
+            data-testid={`secret-platform-${requirement.name}`}
+          >
+            Platform
+          </span>
+        )}
+      </div>
+
+      {requirement.description && (
+        <p className="text-xs text-(--color-text-secondary)">{requirement.description}</p>
+      )}
+
+      <div className="flex items-center gap-2 text-[11px] text-(--color-text-tertiary) flex-wrap">
+        <span>Used by:</span>
+        {requirement.services.map((svc) => (
+          <span
+            key={svc}
+            className="px-1.5 py-0.5 rounded bg-(--color-bg-hover) text-(--color-text-secondary)"
+          >
+            {svc}
+          </span>
+        ))}
+      </div>
+
+      {isPlatform ? (
+        <div className="text-xs text-(--color-text-tertiary) italic">
+          {platformLabel
+            ? `Provided automatically from your ${platformLabel}.`
+            : `Provided automatically (${requirement.source}).`}
+        </div>
+      ) : (
+        <input
+          type="password"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={requirement.required ? "Required — set a value" : "value (optional)"}
+          className="w-full rounded-md bg-(--color-bg-primary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus) font-mono"
+          data-testid={`secret-value-${requirement.name}`}
+        />
+      )}
+    </div>
+  );
+}
+
 function PullRequestSettings() {
   const autoCreatePr = useSettingsStore((s) => s.autoCreatePr);
 
@@ -200,10 +550,6 @@ export function Settings({
   const [idleContainers, setIdleContainers] = useState(maxIdleContainers);
   const [idleContainersSaved, setIdleContainersSaved] = useState(false);
   const [instructionsExpanded, setInstructionsExpanded] = useState(false);
-  const [secretEntries, setSecretEntries] = useState<{ key: string; value: string }[]>([]);
-  const [secretsLoaded, setSecretsLoaded] = useState(false);
-  const [secretsSaving, setSecretsSaving] = useState(false);
-  const [secretsSaved, setSecretsSaved] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<{
     available: boolean; behindBy: number; commitMessages: string[]; currentCommit: string;
   } | null>(null);
@@ -214,19 +560,6 @@ export function Settings({
   const savedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Load secrets when secrets tab is opened
-  const secretsLoadedRef = useRef(false);
-  if (activeTab === "secrets" && !secretsLoadedRef.current && repoUrl && onSecretsLoad) {
-    secretsLoadedRef.current = true;
-    // eslint-disable-next-line no-restricted-syntax -- fire-and-forget in sync render context
-    void onSecretsLoad(repoUrl).then((secrets) => {
-      const entries = Object.entries(secrets).map(([key, value]) => ({ key, value }));
-      setSecretEntries(entries);
-      setSecretsLoaded(true);
-    }).catch(() => {
-      setSecretsLoaded(true);
-    });
-  }
 
   // Sync local git identity state when props change (e.g. fetched from server)
   const prevGitIdentityRef = useRef(gitIdentity);
@@ -782,98 +1115,14 @@ export function Settings({
               <div className="space-y-1">
                 <h3 className="text-sm font-medium text-(--color-text-primary)">Environment Variables</h3>
                 <p className="text-xs text-(--color-text-secondary)">
-                  Secrets are injected into the preview container only. Claude never sees them.
+                  Secrets are injected into the services that declare them in <code className="px-1 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary)">x-shipit-secrets</code>. The agent only sees values you explicitly mark with <code className="px-1 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary)">agent: true</code>.
                 </p>
               </div>
-
-              {!secretsLoaded ? (
-                <p className="text-sm text-(--color-text-tertiary)">Loading...</p>
-              ) : (
-                <>
-                  <div className="space-y-2">
-                    {secretEntries.map((entry, idx) => (
-                      <div key={idx} className="flex items-center gap-2">
-                        <input
-                          type="text"
-                          value={entry.key}
-                          onChange={(e) => {
-                            const next = [...secretEntries];
-                            next[idx] = { ...next[idx], key: e.target.value };
-                            setSecretEntries(next);
-                            setSecretsSaved(false);
-                          }}
-                          placeholder="KEY"
-                          className="flex-1 rounded-md bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus) font-mono"
-                          data-testid={`secret-key-${idx}`}
-                        />
-                        <input
-                          type="password"
-                          value={entry.value}
-                          onChange={(e) => {
-                            const next = [...secretEntries];
-                            next[idx] = { ...next[idx], value: e.target.value };
-                            setSecretEntries(next);
-                            setSecretsSaved(false);
-                          }}
-                          placeholder="value"
-                          className="flex-1 rounded-md bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus) font-mono"
-                          data-testid={`secret-value-${idx}`}
-                        />
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => {
-                            setSecretEntries(secretEntries.filter((_, i) => i !== idx));
-                            setSecretsSaved(false);
-                          }}
-                          className="text-(--color-text-tertiary) hover:text-(--color-error) shrink-0"
-                          aria-label="Remove secret"
-                          data-testid={`secret-remove-${idx}`}
-                        >
-                          &times;
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-
-                  <button
-                    onClick={() => {
-                      setSecretEntries([...secretEntries, { key: "", value: "" }]);
-                      setSecretsSaved(false);
-                    }}
-                    className="text-xs text-(--color-text-link) hover:text-(--color-accent) transition-colors self-start"
-                    data-testid="secret-add"
-                  >
-                    + Add variable
-                  </button>
-
-                  <div className="flex justify-end mt-2">
-                    <Button
-                      variant="primary"
-                      size="md"
-                      disabled={secretsSaving}
-                      onClick={() => {
-                        if (!repoUrl || !onSecretsSave) return;
-                        setSecretsSaving(true);
-                        const secrets: Record<string, string> = {};
-                        for (const entry of secretEntries) {
-                          const k = entry.key.trim();
-                          if (k) secrets[k] = entry.value;
-                        }
-                        onSecretsSave(repoUrl, secrets);
-                        setTimeout(() => {
-                          setSecretsSaving(false);
-                          setSecretsSaved(true);
-                        }, 500);
-                      }}
-                      className="rounded-md"
-                      data-testid="secrets-save"
-                    >
-                      {secretsSaving ? "Saving..." : secretsSaved ? "Saved" : "Save"}
-                    </Button>
-                  </div>
-                </>
-              )}
+              <SecretsTab
+                repoUrl={repoUrl}
+                onSecretsSave={onSecretsSave}
+                onSecretsLoad={onSecretsLoad}
+              />
             </div>
           </TabsContent>
 

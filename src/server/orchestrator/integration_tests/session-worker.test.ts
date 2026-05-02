@@ -539,4 +539,74 @@ describe("Integration: Session Worker IPC", () => {
 
     runner.dispose();
   });
+
+  // ---- Secrets endpoint (087 Phase 3) ----
+
+  it("PUT /secrets injects values into process.env and returns count", async () => {
+    const res = await worker.getApp().inject({
+      method: "PUT",
+      url: "/secrets",
+      payload: { secrets: { TEST_DB_URL: "postgres://x", TEST_REDIS: "redis://y" } },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ applied: 2 });
+    expect(process.env.TEST_DB_URL).toBe("postgres://x");
+    expect(process.env.TEST_REDIS).toBe("redis://y");
+
+    // Cleanup so the test doesn't leak env vars into siblings.
+    delete process.env.TEST_DB_URL;
+    delete process.env.TEST_REDIS;
+  });
+
+  it("PUT /secrets unsets keys that disappear from a subsequent push", async () => {
+    await worker.getApp().inject({
+      method: "PUT",
+      url: "/secrets",
+      payload: { secrets: { TEST_OLD_KEY: "v1", TEST_KEEP: "v2" } },
+    });
+    expect(process.env.TEST_OLD_KEY).toBe("v1");
+
+    // Second push without TEST_OLD_KEY — the worker should drop it.
+    const res = await worker.getApp().inject({
+      method: "PUT",
+      url: "/secrets",
+      payload: { secrets: { TEST_KEEP: "v2-new" } },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(process.env.TEST_OLD_KEY).toBeUndefined();
+    expect(process.env.TEST_KEEP).toBe("v2-new");
+
+    // Final push with empty body clears everything we tracked.
+    await worker.getApp().inject({ method: "PUT", url: "/secrets", payload: { secrets: {} } });
+    expect(process.env.TEST_KEEP).toBeUndefined();
+  });
+
+  it("PUT /secrets rejects invalid env var names", async () => {
+    const res = await worker.getApp().inject({
+      method: "PUT",
+      url: "/secrets",
+      payload: { secrets: { "1bad": "v" } },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain("not a valid env var");
+  });
+
+  it("PUT /secrets rejects non-string values", async () => {
+    const res = await worker.getApp().inject({
+      method: "PUT",
+      url: "/secrets",
+      payload: { secrets: { GOOD_NAME: 42 } },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain("must be a string");
+  });
+
+  it("PUT /secrets rejects non-object body", async () => {
+    const res = await worker.getApp().inject({
+      method: "PUT",
+      url: "/secrets",
+      payload: { secrets: ["not", "an", "object"] },
+    });
+    expect(res.statusCode).toBe(400);
+  });
 });

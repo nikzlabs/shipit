@@ -189,6 +189,57 @@ export interface SectionComment {
 
 export type FileComment = LineComment | SectionComment;
 
+// ---- Secret declaration types (087-reusable-preview-secrets) ----
+
+/**
+ * A secret declaration entry from `x-shipit-secrets` in docker-compose.yml.
+ * Two surface forms are accepted; both normalize to `SecretRequirement` once
+ * parsed.
+ *
+ *   x-shipit-secrets:
+ *     - STRIPE_KEY                      # string shorthand
+ *     - name: DATABASE_URL              # object form
+ *       description: Postgres URL
+ *       required: true
+ *       agent: true
+ *       source: platform:claude_oauth
+ */
+export type SecretEntry = string | SecretRequirement;
+
+export interface SecretRequirement {
+  /**
+   * Env var name to inject into the service. Must match
+   * `^[A-Za-z_][A-Za-z0-9_]*$`.
+   */
+  name: string;
+  /**
+   * Human-readable description shown to the user in the secrets UI when
+   * prompted to configure a value. Free-form text.
+   */
+  description?: string;
+  /**
+   * If true, the service will not run successfully without a value. Drives
+   * the `secrets_missing` warning UI and surfaces in the secrets panel as a
+   * required-marker.
+   */
+  required?: boolean;
+  /**
+   * If true, this secret is also injected into the agent container (via
+   * `--env-file .shipit/.env.agent`). Used for connection strings the agent
+   * needs when running migrations / codegen / tests against the running
+   * stack. (Phase 3.)
+   */
+  agent?: boolean;
+  /**
+   * Resolve the value from a platform source instead of user-saved secrets.
+   * Recognized values:
+   *   - "platform:claude_oauth" — Claude OAuth token from AuthManager
+   *   - "platform:github_token" — GitHub token from GitHubAuthManager
+   * Unknown sources fall through to user-saved secrets. (Phase 4.)
+   */
+  source?: string;
+}
+
 // ---- Docker memory stats ----
 
 export interface DockerMemoryStats {

@@ -124,6 +124,17 @@ export class GitHubAuthManager extends EventEmitter {
   }
 
   /**
+   * Get the raw GitHub PAT for forwarding into compose services. Used by the
+   * platform credential provider for `source: platform:github_token`. Most
+   * callers should prefer task-specific helpers (e.g. `createPullRequest`)
+   * that use the token internally — this getter exists only for the secrets
+   * pipeline. Returns `null` if no token is configured.
+   */
+  getToken(): string | null {
+    return this._token;
+  }
+
+  /**
    * Configure git credential helper and user identity in a workspace repo
    * so that push/pull work with the stored token.
    * @param targetDir - Optional directory to configure. Defaults to the instance's workspaceDir.

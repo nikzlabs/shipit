@@ -14,44 +14,55 @@
 - [x] Test: override emits `env_file:` only for services with declared secrets
 
 ## Phase 1 follow-up: Docker-secrets security upgrade
-- [ ] Create `secrets-entrypoint.sh` — POSIX shell wrapper exporting `/run/secrets/shipit-*` as env vars
-- [ ] Bake entrypoint script into orchestrator Docker images (`Dockerfile.dev`, `Dockerfile.prod`)
-- [ ] Mount a host-shared secrets directory readable by the Docker daemon
-- [ ] Generate compose override with `secrets:` top-level + per-service references (replace env_file)
-- [ ] Inject entrypoint wrapper into compose override (preserve user entrypoint if set)
-- [ ] Test: agent container cannot read service secrets from the workspace
+- [x] Create `secrets-entrypoint.sh` — POSIX shell wrapper exporting `/run/secrets/shipit-*` as env vars
+- [x] Bake entrypoint script into orchestrator Docker images (`Dockerfile.dev`, `Dockerfile.prod`)
+- [x] Add `writeIsolatedSecretFiles()` + `composeSecretFilePath()` to secret-resolver
+- [x] Generate compose override with `secrets:` top-level + per-service references (replace env_file)
+- [x] Inject entrypoint wrapper into compose override (preserve user entrypoint if set)
+- [x] Plumb `dockerSecretsConfig` through ServiceManager + opt-in via `SHIPIT_SECRETS_INTERNAL_DIR` env vars
+- [x] Test: writeIsolatedSecretFiles writes per-secret files with 0600 mode + sweeps stale entries
+- [x] Test: ServiceManager Docker-secrets mode writes outside workspace + skips env_file emission
+- [x] Test: ServiceManager sweeps leftover `.env.<svc>` files when switching to Docker-secrets mode
 
 ## Phase 2: Extended syntax + validation
-- [ ] Add `SecretEntry` / `SecretRequirement` types to `domain-types.ts`
-- [ ] Parse object form (`name`, `description`, `required`, `agent`, `source`)
-- [ ] Validate required secrets on compose start
-- [ ] Add `secrets_missing` WS message type
-- [ ] Emit `secrets_missing` when required secrets are absent
-- [ ] Client: "Configure secrets" banner on `secrets_missing`
-- [ ] Client: show secret descriptions from compose file
-- [ ] Update `src/server/shipit-docs/shipit-yaml.md` with `x-shipit-secrets` docs
-- [ ] Create `src/server/shipit-docs/secrets.md` agent-facing docs
+- [x] Add `SecretEntry` / `SecretRequirement` types to `domain-types.ts`
+- [x] Parse object form (`name`, `description`, `required`, `agent`, `source`)
+- [x] Validate required secrets on compose start (surfaces via `missingRequiredByService`)
+- [x] Add `secrets_status` WS message type (carries declared/missing/agentNames)
+- [x] Emit `secrets_status` whenever syncSecrets runs (start/reconcile/refresh)
+- [x] Client: "Configure secrets" banner on missing required secrets in PreviewFrame
+- [x] Client: show secret descriptions from compose file
+- [x] Update `src/server/shipit-docs/compose.md` with `x-shipit-secrets` pointer
+- [x] Create `src/server/shipit-docs/secrets.md` agent-facing docs
 
 ## Phase 3: Agent injection
-- [ ] Collect `agent: true` entries from `x-shipit-secrets` across all services
-- [ ] Write `.env.agent` to orchestrator storage (not workspace volume)
-- [ ] Pass `--env-file` on agent container creation
-- [ ] Runtime secret updates via session worker `/secrets` endpoint
-- [ ] Client: agent scope indicator in secrets panel
-- [ ] Test: `agent: true` secret available in agent container
-- [ ] Test: non-agent secret NOT in agent container
+- [x] Collect `agent: true` entries from `x-shipit-secrets` across all services
+- [x] Write `.shipit/.env.agent` to workspace (and remove when no agent: true entries remain)
+- [x] Push agent values into the worker via `PUT /secrets` HTTP endpoint
+- [x] Worker `/secrets` endpoint replaces process.env on every call (drops removed names)
+- [x] Client: agent badge in declared-secrets panel
+- [x] Test: `agent: true` secret appears in `agentValues` + agentEnv
+- [x] Test: non-agent secret NOT in agentEnv
+- [x] Test: worker /secrets endpoint validates input + injects + drops keys
 
 ## Phase 4: Platform credential forwarding
-- [ ] Add platform credential lookup to `credential-store.ts`
-- [ ] Implement `platform:claude_oauth` resolution via `AuthManager`
-- [ ] Implement `platform:github_token` resolution via `GitHubAuthManager`
-- [ ] Integrate platform sources into `secret-resolver.ts`
-- [ ] Client: read-only platform credential display
-- [ ] Test: inner ShipIt compose service receives outer Claude OAuth token
-- [ ] Test: inner ShipIt compose service receives outer GitHub token
+- [x] Create `platform-credentials.ts` with `PlatformCredentialProvider` interface
+- [x] Implement `platform:claude_oauth` resolution (ANTHROPIC_API_KEY → .credentials.json fallback)
+- [x] Implement `platform:github_token` resolution via GitHubAuthManager
+- [x] Add `getToken()` getter on GitHubAuthManager for the platform pipeline
+- [x] Integrate platform sources into `secret-resolver.ts` (platform value wins, falls back to user secret)
+- [x] Wire provider through app-lifecycle / index → ServiceManager
+- [x] Client: read-only platform credential rows in Settings → Secrets
+- [x] Test: platform sources resolve correctly + fall back to user values when empty
+- [x] Test: unknown sources return null without breaking
+- [x] Test: malformed credentials.json handled gracefully
 
 ## Phase 5: UI polish
-- [ ] Per-service scope display
-- [ ] Required/optional indicators with description tooltips
-- [ ] Undeclared (custom) secrets section
-- [ ] Missing secrets banner in preview panel with configure link
+- [x] Per-service scope display (chips for each consumer service)
+- [x] Required indicators (with warning style when missing)
+- [x] Agent badge for `agent: true` declarations
+- [x] Platform badge for `source: platform:*` declarations (with helpful "Provided automatically" copy)
+- [x] Description display below each declared secret name
+- [x] Custom (undeclared) secrets section — for ad-hoc env vars not yet in any compose service
+- [x] Missing secrets banner in preview panel with one-click "Configure" button
+- [x] Tests: declared section, required indicator, agent/platform badges, description display, save excludes platform rows
