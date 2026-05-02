@@ -135,6 +135,19 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
     }
   }, [api]);
 
+  // Reset all per-session UI state when the active session changes. Without
+  // this, an "actionError" or "isRestarting" overlay from a previous session
+  // bleeds into the next one (the component is mounted once in TerminalPanel
+  // without a key prop, so React reuses the same instance across switches).
+  // eslint-disable-next-line no-restricted-syntax -- resetting derived UI state on prop change
+  useEffect(() => {
+    setHealth(null);
+    setError(null);
+    setActionError(null);
+    setIsRestarting(false);
+    setIsKilling(false);
+  }, [sessionId]);
+
   // Poll on mount and every POLL_INTERVAL_MS while a session is selected.
   // eslint-disable-next-line no-restricted-syntax -- existing usage pattern: polling external state
   useEffect(() => {
