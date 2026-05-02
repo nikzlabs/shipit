@@ -400,10 +400,22 @@ export class SessionWorker extends EventEmitter {
   /**
    * Run a single install command and return its exit code.
    * Streams stdout/stderr via SSE.
+   *
+   * Forces `NODE_ENV=development` so devDependencies (tsc, vitest, eslint, etc.)
+   * are installed — the agent needs them to typecheck, test, and lint. The prod
+   * session-worker image sets `NODE_ENV=production` at the container level,
+   * which would otherwise cause `npm install` to skip devDependencies. Users can
+   * still override by prefixing their install command (e.g. `NODE_ENV=production
+   * npm install --omit=dev`); shell prefixes win over the spawned env.
    */
   private runSingleInstallCommand(command: string): Promise<number> {
     return new Promise((resolve, reject) => {
-      const proc = spawn(command, { shell: true, cwd: this.workspaceDir, stdio: ["ignore", "pipe", "pipe"] });
+      const proc = spawn(command, {
+        shell: true,
+        cwd: this.workspaceDir,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, NODE_ENV: "development" },
+      });
       this._installProcess = proc;
 
       proc.stdout?.on("data", (chunk: Buffer) => {
