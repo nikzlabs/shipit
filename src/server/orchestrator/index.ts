@@ -456,6 +456,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         prefix: "/",
         wildcard: false,
       });
+      // Digital Asset Links — must be served from the exact origin Chrome
+      // verifies for the Android TWA wrapper. Explicit route bypasses
+      // @fastify/static's default dotfile handling and the SPA fallback.
+      app.get("/.well-known/assetlinks.json", (_req, reply) => {
+        reply
+          .type("application/json")
+          .sendFile(".well-known/assetlinks.json", clientDir);
+      });
       // SPA fallback — serve index.html for non-file routes
       app.setNotFoundHandler((_req, reply) => {
         reply.sendFile("index.html", clientDir);
