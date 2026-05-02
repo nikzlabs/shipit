@@ -125,6 +125,28 @@ export class ServiceManager extends EventEmitter {
   private _startupComplete = false;
   /** Error message if the compose stack failed to start. */
   startError: string | null = null;
+  /**
+   * Set to `true` once `stop()` has been called. Guards retry callbacks so
+   * they don't fire after the manager has been torn down. Reset to `false`
+   * at the top of `start()` (which is also the path `reconcile()` takes).
+   */
+  private _disposed = false;
+
+  // --- Install-running retry gate ---
+  /**
+   * While `true`, services that exit non-zero are restarted with backoff
+   * instead of being marked `error`. Set by the orchestrator around the
+   * `agent.install` window so a dev server that loses a race with install
+   * (deps still extracting) recovers automatically rather than latching to
+   * `error`. See `setInstallRunning`.
+   */
+  private _installRunning = false;
+  /** Per-service backoff timer for retry-while-installing. */
+  private retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Per-service retry attempt counter (drives exponential backoff). */
+  private retryAttempts = new Map<string, number>();
+  /** Backoff schedule: 1s, 2s, 4s, 8s, capped at 10s. */
+  private static readonly RETRY_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 10_000];
 
   constructor(opts: ServiceManagerOptions) {
     super();
@@ -148,6 +170,33 @@ export class ServiceManager extends EventEmitter {
    */
   setSecretsLoader(loader: () => Promise<Record<string, string>>): void {
     this.secretsLoader = loader;
+  }
+
+  /**
+   * Toggle the install-in-progress gate.
+   *
+   * While `true`, services that exit non-zero are restarted with exponential
+   * backoff instead of being marked `error`. This handles the cold-start case
+   * where the agent is running `npm install` (or similar) into a bind-mounted
+   * `node_modules` while a compose service tries to use it — the service may
+   * fail until install completes, and we want it to recover automatically.
+   *
+   * When toggled from `true` → `false` we make one explicit pass over every
+   * service currently in `error` or pending-retry state and restart it, so a
+   * service that gave up just before install finished gets one more chance.
+   */
+  setInstallRunning(running: boolean): void {
+    if (this._installRunning === running) return;
+    const wasRunning = this._installRunning;
+    this._installRunning = running;
+    if (wasRunning && !running) {
+      this.flushPostInstallRetries();
+    }
+  }
+
+  /** Whether the install-running gate is currently active. */
+  get installRunning(): boolean {
+    return this._installRunning;
   }
 
   /** Names of secrets declared in `x-shipit-secrets` across all services. */
@@ -195,6 +244,7 @@ export class ServiceManager extends EventEmitter {
    * 3. Start auto services via `docker compose up -d`
    */
   async start(): Promise<void> {
+    this._disposed = false;
     // Kill any stale compose containers left over from a previous orchestrator
     // run (e.g. ShipIt restart). Uses label filter — no compose files needed.
     try {
@@ -397,6 +447,7 @@ export class ServiceManager extends EventEmitter {
     for (const [, proc] of this.logProcesses) proc.kill();
     this.logProcesses.clear();
     this.stopPolling();
+    this.cancelAllRetries();
 
     this.services.clear();
     this.logBuffers.clear();
@@ -410,7 +461,9 @@ export class ServiceManager extends EventEmitter {
    * Tear down the entire compose stack.
    */
   async stop(): Promise<void> {
+    this._disposed = true;
     this.stopPolling();
+    this.cancelAllRetries();
 
     // Kill all log streaming processes
     for (const [name, proc] of this.logProcesses) {
@@ -545,10 +598,19 @@ export class ServiceManager extends EventEmitter {
       if (!svc) continue;
       const prev = svc.status;
       if (state === "running") {
+        // Service recovered — clear any pending retry state
+        this.clearRetryState(name);
         if (prev !== "running") this.updateServiceStatus(name, "running");
       } else if (state === "exited" || state === "dead") {
         if (exitCode === 0) {
+          this.clearRetryState(name);
           if (prev !== "stopped") this.updateServiceStatus(name, "stopped");
+        } else if (this._installRunning && svc.preview === "auto") {
+          // Install is still extracting deps into the bind-mounted workspace.
+          // Don't latch to `error` — schedule a retry with backoff so the
+          // service can come up once install finishes. Manual services are
+          // user-initiated and not retried automatically.
+          this.scheduleRetryWhileInstalling(name, exitCode);
         } else {
           this.updateServiceStatus(name, "error", `Exited with code ${exitCode}`);
         }
@@ -556,6 +618,114 @@ export class ServiceManager extends EventEmitter {
         if (prev !== "starting") this.updateServiceStatus(name, "starting");
       }
     }
+  }
+
+  /**
+   * Schedule a retry for a service that exited non-zero while
+   * `agent.install` is still in flight. Uses exponential backoff capped at
+   * 10s. The service is held in `starting` state (not `error`) so the user
+   * sees a benign "still coming up" rather than a failure.
+   */
+  private scheduleRetryWhileInstalling(name: string, exitCode: number): void {
+    if (this._disposed) return;
+    // If a retry is already pending, leave it in place.
+    if (this.retryTimers.has(name)) return;
+
+    const attempt = (this.retryAttempts.get(name) ?? 0);
+    const delayIdx = Math.min(attempt, ServiceManager.RETRY_BACKOFF_MS.length - 1);
+    const delay = ServiceManager.RETRY_BACKOFF_MS[delayIdx];
+    this.retryAttempts.set(name, attempt + 1);
+
+    console.log(
+      `[compose:${this.sessionId}] ${name} exited ${exitCode} while install in progress — retry #${attempt + 1} in ${delay}ms`,
+    );
+
+    // Reflect "still coming up" to the UI rather than `error`.
+    this.updateServiceStatus(name, "starting");
+
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(name);
+      void this.runRetryNow(name);
+    }, delay);
+    this.retryTimers.set(name, timer);
+  }
+
+  /** Run a single restart attempt for a service in retry-backoff. */
+  private async runRetryNow(name: string): Promise<void> {
+    if (this._disposed) return;
+    const svc = this.services.get(name);
+    if (!svc) return;
+    try {
+      await this.composeUpService(name);
+      // Status is updated by the next pollStatus pass (periodic poller).
+      // Trigger a poll now so we don't wait up to pollIntervalMs to learn
+      // whether the retry succeeded.
+      await this.pollStatus();
+    } catch (err) {
+      // Compose itself failed — treat as a normal exit and schedule another
+      // retry if install is still running.
+      const msg = (err as Error).message;
+      if (this._installRunning) {
+        this.scheduleRetryWhileInstalling(name, -1);
+      } else {
+        this.updateServiceStatus(name, "error", msg);
+      }
+    }
+  }
+
+  /**
+   * Called when `setInstallRunning(false)` is invoked. Cancels pending
+   * backoff timers and triggers one explicit restart for every service
+   * currently in `error` or pending-retry state, so a service that crashed
+   * just before install finished still recovers.
+   */
+  private flushPostInstallRetries(): void {
+    if (this._disposed) return;
+
+    const targets = new Set<string>();
+
+    // Cancel pending backoff timers — we'll restart immediately.
+    for (const [name, timer] of this.retryTimers) {
+      clearTimeout(timer);
+      targets.add(name);
+    }
+    this.retryTimers.clear();
+
+    // Also cover services that latched to `error` before install started OR
+    // before the retry path was reached (e.g. stack-level start failure).
+    for (const svc of this.services.values()) {
+      if (svc.preview === "auto" && svc.status === "error") {
+        targets.add(svc.name);
+      }
+    }
+
+    if (targets.size === 0) return;
+    console.log(
+      `[compose:${this.sessionId}] install finished — restarting ${targets.size} service(s): ${[...targets].join(", ")}`,
+    );
+
+    for (const name of targets) {
+      this.retryAttempts.delete(name);
+      this.updateServiceStatus(name, "starting");
+      void this.runRetryNow(name);
+    }
+  }
+
+  /** Clear any retry state for a service that has recovered or stopped cleanly. */
+  private clearRetryState(name: string): void {
+    const timer = this.retryTimers.get(name);
+    if (timer) {
+      clearTimeout(timer);
+      this.retryTimers.delete(name);
+    }
+    this.retryAttempts.delete(name);
+  }
+
+  /** Cancel all pending retries — used during stop()/reconcile(). */
+  private cancelAllRetries(): void {
+    for (const timer of this.retryTimers.values()) clearTimeout(timer);
+    this.retryTimers.clear();
+    this.retryAttempts.clear();
   }
 
   /**
