@@ -76,7 +76,6 @@ Add to `CredentialStore` (already persists JSON to disk, survives resets):
 interface CredentialData {
   agentEnv?: Record<string, string>;
   githubToken?: string;
-  utilityModel?: UtilityModelConfig;
   maxIdleContainers?: number;             // NEW
 }
 
