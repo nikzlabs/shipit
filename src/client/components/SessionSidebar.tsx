@@ -55,15 +55,18 @@ function useSidebarResize() {
     document.addEventListener("mouseup", onMouseUp);
   }, []);
 
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
+  // Disable text selection while dragging the sidebar handle.
+  // Cleanup runs on isDragging→false AND on unmount, so a mid-drag unmount
+  // can't leave userSelect: none stuck on <body> and block selection app-wide.
+  // eslint-disable-next-line no-restricted-syntax -- DOM sync during drag
   useEffect(() => {
-    if (isDragging) {
-      document.body.style.userSelect = "none";
-      document.body.style.cursor = "col-resize";
-    } else {
+    if (!isDragging) return;
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+    return () => {
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
-    }
+    };
   }, [isDragging]);
 
   return { width, isDragging, onMouseDown };

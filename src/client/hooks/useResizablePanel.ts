@@ -137,16 +137,19 @@ export function useResizablePanel(
     [minFraction, storageKey]
   );
 
-  // Disable text selection while dragging
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
+  // Disable text selection while dragging.
+  // The cleanup runs on isDragging→false AND on unmount, so a mid-drag unmount
+  // (session switch, mobile drawer close) cannot leave userSelect: none welded
+  // to <body> — which would block text selection across the entire app.
+  // eslint-disable-next-line no-restricted-syntax -- DOM sync during drag
   useEffect(() => {
-    if (isDragging) {
-      document.body.style.userSelect = "none";
-      document.body.style.cursor = "col-resize";
-    } else {
+    if (!isDragging) return;
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+    return () => {
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
-    }
+    };
   }, [isDragging]);
 
   return { fraction, isDragging, onMouseDown, onTouchStart, containerRef };
