@@ -1,6 +1,6 @@
 import type { ClaudeEvent } from "./claude-types.js";
 import type { AgentId, AgentEvent } from "./agent-types.js";
-import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, WsChatHistoryMessage, FileDiff, RepoInfo } from "./domain-types.js";
+import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, WsChatHistoryMessage, FileDiff, RepoInfo, SecretRequirement } from "./domain-types.js";
 import type {
   WsGitHubStatus,
   WsGitHubPushResult,
@@ -344,6 +344,35 @@ export interface WsComposeNotConfigured {
   sessionId: string;
 }
 
+/**
+ * Server → Client: declared secrets and missing-required report for a session.
+ *
+ * Emitted whenever `ServiceManager.syncSecrets()` runs (compose start,
+ * reconcile, secret save). The client uses this to:
+ *   - Show a "Configure secrets to run this project" banner in the preview
+ *     panel when `missingRequired.length > 0`.
+ *   - Render the secrets panel with declared-vs-undeclared distinction and
+ *     show per-secret descriptions, required indicators, and consumer
+ *     service chips.
+ *
+ * `missingByService` includes both required and optional missing values;
+ * `missingRequired` is the union of just the required-and-missing names.
+ * The banner only fires on `missingRequired`.
+ */
+export interface WsSecretsStatus {
+  type: "secrets_status";
+  sessionId: string;
+  /** All declared secrets across all services, de-duplicated by name. */
+  declared: (SecretRequirement & { services: string[] })[];
+  /** Service name → secret names declared but not present (required + optional). */
+  missingByService: Record<string, string[]>;
+  /**
+   * De-duplicated list of names whose `required: true` flag is set but no
+   * value was found. Empty list = no banner.
+   */
+  missingRequired: string[];
+}
+
 // ---- Session runner messages (server → client) ----
 
 /** Server → Client: current runtime state of a session. */
@@ -493,6 +522,7 @@ export type WsServerMessage =
   | WsServiceLogBuffer
   | WsComposeError
   | WsComposeNotConfigured
+  | WsSecretsStatus
   | WsInstallStatus
   | WsInstallLog
   | WsGitPushRejected

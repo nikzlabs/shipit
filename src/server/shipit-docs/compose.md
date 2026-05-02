@@ -86,6 +86,27 @@ services:
 When omitted, the default is `auto` if the service has `ports`, `manual`
 otherwise. The `x-` prefix means Docker Compose ignores it.
 
+## `x-shipit-secrets`
+
+Declare which env vars (API keys, connection strings, tokens) each service
+needs. The user configures values once in **Settings → Secrets**;
+ShipIt auto-injects them into every session for the repo:
+
+```yaml
+services:
+  api:
+    image: node:20
+    x-shipit-secrets:
+      - STRIPE_SECRET_KEY            # string shorthand
+      - name: DATABASE_URL           # object form with metadata
+        description: PostgreSQL URL
+        required: true
+```
+
+Required secrets that lack values surface as a "Configure secrets" banner
+above the preview. See [secrets.md](secrets.md) for the full reference
+(extended syntax, `required`, `agent`, `source`, security model).
+
 ## Examples
 
 ### Node.js (Vite)

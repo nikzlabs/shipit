@@ -9,6 +9,7 @@ platform capabilities.
 | [environment.md](environment.md) | Container layout, paths, auto-git, hot reload |
 | [shipit-yaml.md](shipit-yaml.md) | Full `shipit.yaml` config reference |
 | [preview.md](preview.md) | Preview system — port detection, HMR, browser tools |
+| [secrets.md](secrets.md) | Per-service env var declaration via `x-shipit-secrets` |
 | [deployment.md](deployment.md) | Deploy targets (Vercel, Cloudflare) |
 | [github.md](github.md) | Branches, PRs, auto-push, CI |
 | [design-docs.md](design-docs.md) | Feature docs — frontmatter format, status values, structure |

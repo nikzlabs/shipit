@@ -17,11 +17,11 @@ import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, System
 import { runSystemTurn } from "./session-runner.js";
 import { connectSSE } from "./sse-client.js";
 import type { SSEEvent } from "./sse-client.js";
-import { workerPost, workerGet, workerInstall } from "./worker-http.js";
+import { workerPost, workerGet, workerInstall, workerPushAgentSecrets } from "./worker-http.js";
 import { truncateTerminalBuffer } from "./terminal-buffer.js";
 import { ProxyAgentProcess } from "./proxy-agent-process.js";
 import type { ProxyAgentRunner } from "./proxy-agent-process.js";
-import type { ServiceManager, ManagedService } from "./service-manager.js";
+import type { ServiceManager, ManagedService, SecretsStatusInternalSnapshot } from "./service-manager.js";
 
 // ---------------------------------------------------------------------------
 // Barrel re-exports for backwards compatibility
@@ -352,15 +352,51 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this.emitMessage(this.buildPreviewStatus());
     };
 
+    const onSecretsStatus = (snapshot: SecretsStatusInternalSnapshot) => {
+      this.emitMessage({
+        type: "secrets_status",
+        sessionId: this.sessionId,
+        declared: snapshot.declared,
+        missingByService: snapshot.missingByService,
+        missingRequired: snapshot.missingRequired,
+      } as WsServerMessage);
+
+      // Phase 3: also push the resolved `agent: true` values into the
+      // session worker's process.env so the next agent turn (and any
+      // bash/test/codegen commands it spawns) can read them. Fire-and-forget;
+      // the worker may not be up yet on the very first compose start, in
+      // which case we skip. The worker's `_workerReady` promise covers the
+      // legitimate "container booting" case — past that, transient failures
+      // are logged but never block the user-facing save.
+      void this.tryPushAgentSecrets(snapshot.agentValues);
+    };
+
     mgr.on("service_status", onStatus);
     mgr.on("service_log", onLog);
     mgr.on("stack_ready", onReady);
+    mgr.on("secrets_status", onSecretsStatus);
 
     this._serviceManagerListeners = [
       () => mgr.off("service_status", onStatus),
       () => mgr.off("service_log", onLog),
       () => mgr.off("stack_ready", onReady),
+      () => mgr.off("secrets_status", onSecretsStatus),
     ];
+
+    // Replay current secrets snapshot on attach so a viewer that connects
+    // after `syncSecrets()` already ran still sees the banner / panel state.
+    // Also covers the bootstrap case: ServiceManager.start() emits
+    // `secrets_status` synchronously inside `syncSecrets()`, which can fire
+    // BEFORE the runner attached, so the snapshot is the only way to push
+    // initial agent values into the worker.
+    const snap = mgr.getSecretsSnapshot();
+    if (
+      snap.declared.length > 0
+      || snap.missingRequired.length > 0
+      || snap.agentNames.length > 0
+    ) {
+      onSecretsStatus(snap);
+    }
   }
 
   /** Detach and clean up the current ServiceManager. */
@@ -609,6 +645,39 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       const r = this._resolveInstallComplete;
       this._resolveInstallComplete = null;
       r();
+    }
+  }
+
+  /**
+   * Push the full set of `agent: true` secret values to the worker's
+   * `process.env`. Phase 3 (087).
+   *
+   * Awaits `_workerReady` so the call doesn't race container startup, then
+   * fire-and-forgets — a transient HTTP failure is logged but never blocks
+   * the user-facing save. The worker REPLACES (not patches) its tracked
+   * set on every call, so a name removed from `agentValues` since the last
+   * push is unset on the next call.
+   *
+   * Empty `agentValues` triggers a push with `{}` — that explicitly clears
+   * any previously-injected names from process.env.
+   */
+  private async tryPushAgentSecrets(agentValues: Record<string, string>): Promise<void> {
+    if (this._disposed) return;
+    try {
+      await this._workerReady;
+    } catch {
+      return; // worker never came up — nothing to push
+    }
+    if (this._disposed) return;
+    try {
+      await workerPushAgentSecrets(this.workerUrl, agentValues);
+    } catch (err) {
+      // Non-fatal — secrets just won't be present in this turn's env. The
+      // next compose reconcile / refreshSecrets() retries.
+      console.warn(
+        `[runner:${this.sessionId}] pushAgentSecrets failed:`,
+        err instanceof Error ? err.message : String(err),
+      );
     }
   }
 

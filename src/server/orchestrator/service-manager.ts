@@ -26,7 +26,16 @@ import {
   type ComposeOverrideOptions,
   type ComposeService,
 } from "./compose-generator.js";
-import { resolveSecrets, writePerServiceEnvFiles } from "./secret-resolver.js";
+import fs from "node:fs";
+import {
+  resolveSecrets,
+  writePerServiceEnvFiles,
+  writeAgentEnvFile,
+  writeIsolatedSecretFiles,
+  composeSecretFilePath,
+  type DeclaredSecret,
+} from "./secret-resolver.js";
+import type { PlatformCredentialProvider } from "./platform-credentials.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -81,17 +90,88 @@ export interface ServiceManagerOptions {
    * file (Phase 2 surfaces this as a missing-secrets warning).
    */
   secretsLoader?: () => Promise<Record<string, string>>;
+  /**
+   * Resolves `source: platform:*` entries against orchestrator-level
+   * credentials (Claude OAuth, GitHub token). When omitted, those entries
+   * fall through to the user-secrets lookup like any other declaration —
+   * which usually means "missing".
+   */
+  platformCredentials?: PlatformCredentialProvider;
+  /**
+   * Phase 1 follow-up — Docker-secrets isolation. When configured, secret
+   * values are written to per-secret files outside the workspace volume and
+   * referenced from the compose override via `secrets: { file: ... }` instead
+   * of `env_file:`. The agent container can no longer read service secrets
+   * from the workspace.
+   *
+   * Required pieces:
+   *   - `internalDir`: orchestrator's view of the per-session secrets root.
+   *     Files are written here.
+   *   - `hostDir`: optional override of the path used in compose `file:`
+   *     references. Required when the orchestrator runs in a container
+   *     (the Docker daemon reads paths from the host's filesystem). Omit
+   *     for orchestrator-on-host setups.
+   *   - `entrypointSourcePath`: orchestrator path to the
+   *     `secrets-entrypoint.sh` baked into the image. Copied into
+   *     `.shipit/secrets-entrypoint.sh` at compose-start so service
+   *     containers can mount it.
+   *
+   * When omitted, the manager falls back to the env-file mode (Phase 1
+   * baseline).
+   */
+  dockerSecretsConfig?: {
+    internalDir: string;
+    hostDir?: string;
+    entrypointSourcePath: string;
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
 
+export interface SecretsStatusSnapshot {
+  /** All declared secrets across all services, de-duplicated by name. */
+  declared: DeclaredSecret[];
+  /** Service-name → list of declared secrets that have no value (required + optional). */
+  missingByService: Record<string, string[]>;
+  /** Names of required secrets that have no value, de-duplicated. */
+  missingRequired: string[];
+  /**
+   * Names of secrets marked `agent: true` that have a resolved value.
+   * Used by the runner to push them into the agent container's process.env.
+   * Values themselves are exposed via {@link agentValues} on the snapshot
+   * the runner consumes — kept off this public type to avoid leaking
+   * secret values into telemetry / logs.
+   */
+  agentNames: string[];
+}
+
+/**
+ * Internal snapshot variant carried over the EventEmitter — same as
+ * {@link SecretsStatusSnapshot} plus the resolved `agent: true` values that
+ * subscribers (the runner) need to push into the agent container.
+ *
+ * Kept as a separate type so the public-facing snapshot doesn't include
+ * raw secret values.
+ */
+export interface SecretsStatusInternalSnapshot extends SecretsStatusSnapshot {
+  /** Resolved key-value pairs for `agent: true` entries. */
+  agentValues: Record<string, string>;
+}
+
 export interface ServiceManagerEvents {
   service_status: (service: ManagedService) => void;
   service_log: (serviceName: string, text: string) => void;
   stack_ready: () => void;
   stack_error: (error: Error) => void;
+  /**
+   * Emitted after each `syncSecrets()` pass (compose start, reconcile,
+   * `refreshSecrets()`). Carries the full declared/missing/required snapshot
+   * + the resolved `agent: true` values so the runner can push them into
+   * the agent container without a follow-up call.
+   */
+  secrets_status: (snapshot: SecretsStatusInternalSnapshot) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,10 +198,35 @@ export class ServiceManager extends EventEmitter {
   private readonly stackName?: string;
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
   private secretsLoader?: () => Promise<Record<string, string>>;
+  private platformCredentials?: PlatformCredentialProvider;
+  private dockerSecretsConfig?: {
+    internalDir: string;
+    hostDir?: string;
+    entrypointSourcePath: string;
+  };
+  /**
+   * Per-secret file references for the most recent compose override. Built
+   * inside `syncSecrets()` and consumed by `generateComposeOverride()`.
+   * Only set when Docker-secrets mode is active.
+   */
+  private dockerSecretsBuild?: {
+    secretNames: string[];
+    perService: Record<string, string[]>;
+    filePathFor: (name: string) => string;
+    entrypointWorkspacePath: string;
+  };
   /** Names of secrets declared in `x-shipit-secrets` across all services. */
   private declaredSecretNames: string[] = [];
   /** Service-name → list of declared secrets that have no user-saved value. */
   private missingSecretsByService: Record<string, string[]> = {};
+  /** Latest secrets snapshot emitted via `secrets_status`. */
+  private secretsSnapshot: SecretsStatusInternalSnapshot = {
+    declared: [],
+    missingByService: {},
+    missingRequired: [],
+    agentNames: [],
+    agentValues: {},
+  };
   private _startupComplete = false;
   /** Error message if the compose stack failed to start. */
   startError: string | null = null;
@@ -161,6 +266,8 @@ export class ServiceManager extends EventEmitter {
     this.stackName = opts.stackName;
     this.networkJoinFn = opts.networkJoinFn;
     this.secretsLoader = opts.secretsLoader;
+    this.platformCredentials = opts.platformCredentials;
+    this.dockerSecretsConfig = opts.dockerSecretsConfig;
   }
 
   /**
@@ -204,9 +311,26 @@ export class ServiceManager extends EventEmitter {
     return [...this.declaredSecretNames];
   }
 
-  /** Missing required secrets by service (empty until Phase 2). */
+  /** Missing secrets (required + optional) by service. */
   getMissingSecretsByService(): Record<string, string[]> {
     return { ...this.missingSecretsByService };
+  }
+
+  /**
+   * Latest secrets snapshot — declared requirements + per-service missing +
+   * de-duplicated required-and-missing names + resolved agent values.
+   * Returned as a defensive copy so callers can't mutate manager state.
+   */
+  getSecretsSnapshot(): SecretsStatusInternalSnapshot {
+    return {
+      declared: this.secretsSnapshot.declared.map((d) => ({ ...d, services: [...d.services] })),
+      missingByService: Object.fromEntries(
+        Object.entries(this.secretsSnapshot.missingByService).map(([k, v]) => [k, [...v]]),
+      ),
+      missingRequired: [...this.secretsSnapshot.missingRequired],
+      agentNames: [...this.secretsSnapshot.agentNames],
+      agentValues: { ...this.secretsSnapshot.agentValues },
+    };
   }
 
   /** Whether the compose stack has been started. */
@@ -285,6 +409,7 @@ export class ServiceManager extends EventEmitter {
       workspaceVolume: this.workspaceVolume,
       workspaceSubpath: this.workspaceSubpath,
       stackName: this.stackName,
+      ...(this.dockerSecretsBuild ? { dockerSecrets: this.dockerSecretsBuild } : {}),
     };
     const overrideContent = generateComposeOverride(parsedServices, overrideOpts);
     writeComposeOverride(this.workspaceDir, overrideContent);
@@ -505,6 +630,26 @@ export class ServiceManager extends EventEmitter {
       return;
     }
     await this.syncSecrets(parsedServices);
+
+    // In Docker-secrets mode the override file references which secrets each
+    // service consumes — so a change to the set of declared secrets (or to
+    // `agent: true` flags) requires regenerating the override. In env-file
+    // mode, the override only references the env file PATH, so the file
+    // content can change without regenerating. We always regenerate when
+    // Docker-secrets mode is active to be safe.
+    if (this.dockerSecretsBuild) {
+      const overrideOpts: ComposeOverrideOptions = {
+        sessionId: this.sessionId,
+        composeConfig: this.composeConfig,
+        ...(this.workspaceVolume ? { workspaceVolume: this.workspaceVolume } : {}),
+        ...(this.workspaceSubpath ? { workspaceSubpath: this.workspaceSubpath } : {}),
+        ...(this.stackName ? { stackName: this.stackName } : {}),
+        dockerSecrets: this.dockerSecretsBuild,
+      };
+      const overrideContent = generateComposeOverride(parsedServices, overrideOpts);
+      writeComposeOverride(this.workspaceDir, overrideContent);
+    }
+
     if (!this._started) return;
     // Re-run `up -d` for the auto services so compose recreates containers
     // whose env_file content changed. Manual services aren't restarted —
@@ -527,6 +672,11 @@ export class ServiceManager extends EventEmitter {
   /**
    * Resolve secrets and write per-service env files. Always runs (even when
    * no secrets are declared) so stale `.env.<svc>` files are swept.
+   *
+   * Also publishes the latest snapshot via `secrets_status` so subscribers
+   * (the runner → WS → client) can render the secrets banner / panel without
+   * polling. Emitted on every call regardless of whether the snapshot
+   * changed — listeners are cheap, debouncing is the consumer's concern.
    */
   private async syncSecrets(parsedServices: ComposeService[]): Promise<void> {
     let userSecrets: Record<string, string> = {};
@@ -537,13 +687,135 @@ export class ServiceManager extends EventEmitter {
         console.warn(`[compose:${this.sessionId}] secretsLoader failed:`, (err as Error).message);
       }
     }
-    const resolution = resolveSecrets({ services: parsedServices, userSecrets });
+    const resolution = resolveSecrets({
+      services: parsedServices,
+      userSecrets,
+      platformCredentials: this.platformCredentials,
+    });
     this.declaredSecretNames = resolution.declaredNames;
     this.missingSecretsByService = resolution.missingByService;
-    writePerServiceEnvFiles({
+
+    // De-duplicate required-and-missing across services. Same secret name
+    // declared `required: true` by multiple services collapses to one entry
+    // in the banner — duplicate entries would produce duplicate UI rows.
+    const missingRequired = [
+      ...new Set(Object.values(resolution.missingRequiredByService).flat()),
+    ].sort();
+    this.secretsSnapshot = {
+      declared: resolution.declared,
+      missingByService: resolution.missingByService,
+      missingRequired,
+      agentNames: Object.keys(resolution.agentValues).sort(),
+      agentValues: resolution.agentValues,
+    };
+    this.emit("secrets_status", this.getSecretsSnapshot());
+
+    if (this.dockerSecretsConfig) {
+      // Phase 1 follow-up: Docker-secrets mode. Write per-secret files to
+      // the orchestrator-private directory and build the override metadata.
+      // Sweep any leftover .env.<svc> files so the agent can't read stale
+      // values from a previous reconcile.
+      this.applyDockerSecretsMode(resolution);
+    } else {
+      writePerServiceEnvFiles({
+        workspaceDir: this.workspaceDir,
+        perServiceEnv: resolution.perServiceEnv,
+      });
+    }
+
+    // Phase 3: also write the agent env file. Empty body removes the file.
+    writeAgentEnvFile({
       workspaceDir: this.workspaceDir,
-      perServiceEnv: resolution.perServiceEnv,
+      body: resolution.agentEnv,
     });
+  }
+
+  /**
+   * Phase 1 follow-up: write per-secret files outside the workspace and
+   * stage compose-override metadata.
+   *
+   * Steps:
+   *   1. De-duplicate values across services (one file per unique name).
+   *   2. Write to `dockerSecretsConfig.internalDir/<sessionId>/<NAME>`.
+   *   3. Build per-service references (each service only references the
+   *      secrets it declared — scoping is preserved at the compose layer).
+   *   4. Copy the entrypoint wrapper into `.shipit/secrets-entrypoint.sh`
+   *      so compose can mount it into service containers.
+   *   5. Sweep any stale `.shipit/.env.<svc>` files from a prior
+   *      env-file-mode run.
+   */
+  private applyDockerSecretsMode(resolution: ReturnType<typeof resolveSecrets>): void {
+    const cfg = this.dockerSecretsConfig;
+    if (!cfg) return;
+
+    // Collapse per-service values to a single name → value map. The same
+    // name appearing under multiple services has the same value (it's the
+    // same user-saved secret), so this is safe.
+    const collapsed: Record<string, string> = {};
+    for (const map of Object.values(resolution.perServiceValues)) {
+      for (const [name, value] of Object.entries(map)) {
+        collapsed[name] = value;
+      }
+    }
+
+    const { written } = writeIsolatedSecretFiles({
+      rootDir: cfg.internalDir,
+      sessionId: this.sessionId,
+      values: collapsed,
+    });
+
+    // Stage compose override metadata.
+    const perService: Record<string, string[]> = {};
+    for (const [svcName, values] of Object.entries(resolution.perServiceValues)) {
+      const names = Object.keys(values);
+      if (names.length > 0) perService[svcName] = names;
+    }
+
+    // Copy the entrypoint wrapper into the workspace `.shipit/` directory
+    // so it's visible from the workspace volume that compose mounts into
+    // service containers. We refresh on every reconcile in case the
+    // baked-in script changed.
+    const shipitDir = path.join(this.workspaceDir, ".shipit");
+    fs.mkdirSync(shipitDir, { recursive: true });
+    const wrapperDest = path.join(shipitDir, "secrets-entrypoint.sh");
+    try {
+      fs.copyFileSync(cfg.entrypointSourcePath, wrapperDest);
+      fs.chmodSync(wrapperDest, 0o755);
+    } catch (err) {
+      console.warn(
+        `[compose:${this.sessionId}] failed to copy entrypoint wrapper:`,
+        (err as Error).message,
+      );
+    }
+
+    this.dockerSecretsBuild = {
+      secretNames: written,
+      perService,
+      filePathFor: (name) => composeSecretFilePath({
+        rootDir: cfg.internalDir,
+        ...(cfg.hostDir ? { hostDir: cfg.hostDir } : {}),
+        sessionId: this.sessionId,
+        name,
+      }),
+      entrypointWorkspacePath: ".shipit/secrets-entrypoint.sh",
+    };
+
+    // Sweep any leftover env-file-mode `.shipit/.env.<svc>` files so the
+    // agent can't read stale plaintext values.
+    let existing: string[] = [];
+    try {
+      existing = fs.readdirSync(shipitDir);
+    } catch {
+      existing = [];
+    }
+    for (const entry of existing) {
+      if (!entry.startsWith(".env.") || entry === ".env.agent") continue;
+      try {
+        fs.unlinkSync(path.join(shipitDir, entry));
+      } catch {
+        // best-effort
+      }
+    }
   }
 
   /**

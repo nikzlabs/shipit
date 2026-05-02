@@ -627,6 +627,14 @@ function processMessage(
       preview.setComposeNotConfigured(true);
     }
 
+    if (data.type === "secrets_status") {
+      preview.setSecrets({
+        declared: data.declared,
+        missingByService: data.missingByService,
+        missingRequired: data.missingRequired,
+      });
+    }
+
     if (data.type === "service_log") {
       terminal.addEntry({ source: "preview", text: `[${data.name}] ${data.text}`, timestamp: new Date().toISOString() });
     }

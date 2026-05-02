@@ -21,6 +21,7 @@ import { getErrorMessage } from "./validation.js";
 import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
 import { deleteSession, markMergedAndPruneExcess } from "./services/session.js";
 import { ServiceManager } from "./service-manager.js";
+import type { PlatformCredentialProvider } from "./platform-credentials.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
@@ -394,6 +395,23 @@ export interface RunnerRegistryDeps {
    * callback. Optional so test setups without secrets still work.
    */
   secretStore?: SecretStore;
+  /**
+   * Provider for `source: platform:*` entries in `x-shipit-secrets`
+   * (087 Phase 4). When present, ServiceManager forwards Claude OAuth /
+   * GitHub tokens into compose services that declare them. Optional so
+   * tests / non-auth setups still work.
+   */
+  platformCredentials?: PlatformCredentialProvider;
+  /**
+   * Phase 1 follow-up — when set, ServiceManager uses Docker-secrets
+   * isolation instead of env files. See `ServiceManagerOptions.dockerSecretsConfig`
+   * for field semantics.
+   */
+  dockerSecretsConfig?: {
+    internalDir: string;
+    hostDir?: string;
+    entrypointSourcePath: string;
+  };
 }
 
 /**
@@ -407,7 +425,7 @@ export function createRunnerRegistry(
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeWarnings, composeNotConfigured, containerManager,
-    secretStore,
+    secretStore, platformCredentials, dockerSecretsConfig,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -464,7 +482,16 @@ export function createRunnerRegistry(
       });
 
       // Set up compose ServiceManager if the session has a compose config
-      const setupDeps = { sessionManager, serviceManagers, composeWarnings, composeNotConfigured, containerManager, secretStore };
+      const setupDeps = {
+        sessionManager,
+        serviceManagers,
+        composeWarnings,
+        composeNotConfigured,
+        containerManager,
+        secretStore,
+        platformCredentials,
+        dockerSecretsConfig,
+      };
       setupServiceManager(runner, setupDeps);
 
       // Allow re-setup when config files change (e.g. old-format migrated to new)
@@ -490,9 +517,20 @@ function setupServiceManager(
     composeNotConfigured: Set<string>;
     containerManager: SessionContainerManager | null;
     secretStore?: SecretStore;
+    platformCredentials?: PlatformCredentialProvider;
+    dockerSecretsConfig?: { internalDir: string; hostDir?: string; entrypointSourcePath: string };
   },
 ): void {
-  const { sessionManager, serviceManagers, composeWarnings, composeNotConfigured, containerManager, secretStore } = deps;
+  const {
+    sessionManager,
+    serviceManagers,
+    composeWarnings,
+    composeNotConfigured,
+    containerManager,
+    secretStore,
+    platformCredentials,
+    dockerSecretsConfig,
+  } = deps;
   const session = sessionManager.get(runner.sessionId);
   const workspaceDir = session?.workspaceDir ?? runner.sessionDir;
 
@@ -572,6 +610,8 @@ function setupServiceManager(
     workspaceSubpath: wsSubpath,
     stackName: process.env.DOCKER_STACK,
     secretsLoader,
+    platformCredentials,
+    ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     networkJoinFn: containerManager
       ? async (networkName: string) => {
           // Connect agent container to compose network

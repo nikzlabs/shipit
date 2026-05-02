@@ -22,6 +22,7 @@ import * as rewindHandlers from "./ws-handlers/rewind-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
 import * as serviceHandlers from "./ws-handlers/service-handlers.js";
 import type { ServiceManager } from "./service-manager.js";
+import { createPlatformCredentialProvider } from "./platform-credentials.js";
 import { registerApiRoutes } from "./api-routes.js";
 import type { GitManager } from "../shared/git.js";
 
@@ -173,12 +174,41 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
   };
 
+  // Platform credential provider (087 Phase 4) — forwards Claude OAuth /
+  // GitHub tokens into compose services that declare `source: platform:*`
+  // entries in `x-shipit-secrets`. Built once and shared across all
+  // ServiceManagers so token rotation in AuthManager / GitHubAuthManager is
+  // picked up on the next compose reconcile without restart.
+  const platformCredentials = createPlatformCredentialProvider({
+    authManager, githubAuthManager,
+  });
+
+  // Docker-secrets isolation (087 Phase 1 follow-up) — opt-in via env vars.
+  // When `SHIPIT_SECRETS_INTERNAL_DIR` is set, ServiceManager writes secret
+  // values to per-secret files under that directory and references them
+  // from compose via `secrets: { file: ... }` instead of `env_file:`. The
+  // agent container's workspace doesn't see the values.
+  //
+  // `SHIPIT_SECRETS_HOST_DIR` is the path the Docker daemon (host-side) sees
+  // for the same directory — required when the orchestrator runs inside a
+  // container, since `file:` references are resolved by the daemon, not the
+  // orchestrator. Omit for orchestrator-on-host setups.
+  const dockerSecretsConfig = process.env.SHIPIT_SECRETS_INTERNAL_DIR
+    ? {
+      internalDir: process.env.SHIPIT_SECRETS_INTERNAL_DIR,
+      ...(process.env.SHIPIT_SECRETS_HOST_DIR ? { hostDir: process.env.SHIPIT_SECRETS_HOST_DIR } : {}),
+      entrypointSourcePath: process.env.SHIPIT_SECRETS_ENTRYPOINT
+        ?? "/usr/local/share/shipit/secrets-entrypoint.sh",
+    }
+    : undefined;
+
   const runnerRegistry = createRunnerRegistry({
     effectiveRunnerFactory, sessionManager, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeWarnings, composeNotConfigured, containerManager,
-    secretStore,
+    secretStore, platformCredentials,
+    ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
   });
   registryHolder.ref = runnerRegistry;
 

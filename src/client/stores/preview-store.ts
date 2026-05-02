@@ -4,6 +4,7 @@ import type { DevicePreset } from "../components/device-presets.js";
 import { findPresetById } from "../components/device-presets.js";
 import { getSavedDevicePresetId, saveDevicePresetId } from "../utils/local-storage.js";
 import type { ComposeServiceStatus, ComposeServicePreviewMode } from "../../server/shared/types/ws-server-messages.js";
+import type { SecretRequirement } from "../../server/shared/types/domain-types.js";
 
 // ---- Compose service state ----
 
@@ -14,6 +15,29 @@ export interface ManagedServiceState {
   preview: ComposeServicePreviewMode;
   error?: string;
 }
+
+// ---- Secrets state (087-reusable-preview-secrets, Phase 2) ----
+
+/** A declared secret aggregated across all services that referenced it. */
+export type DeclaredSecretState = SecretRequirement & { services: string[] };
+
+/**
+ * Snapshot of declared secrets for the current session — driven by the
+ * `secrets_status` WS message. The Settings panel uses `declared` to render
+ * descriptions / required indicators / consumer chips. The preview panel
+ * uses `missingRequired` to show a "Configure secrets" banner.
+ */
+export interface SecretsState {
+  declared: DeclaredSecretState[];
+  missingByService: Record<string, string[]>;
+  missingRequired: string[];
+}
+
+const emptySecretsState: SecretsState = {
+  declared: [],
+  missingByService: {},
+  missingRequired: [],
+};
 
 export interface StartupStep {
   stepId: "fetch" | "install" | "dev_server";
@@ -51,6 +75,7 @@ export interface SessionPreviewSnapshot {
   services: ManagedServiceState[];
   composeError: string | null;
   composeNotConfigured: boolean;
+  secrets: SecretsState;
 }
 
 interface PreviewState {
@@ -67,6 +92,12 @@ interface PreviewState {
   composeError: string | null;
   /** True when no compose file is configured in shipit.yaml. */
   composeNotConfigured: boolean;
+  /**
+   * Declared secrets + missing-required snapshot (from `secrets_status` WS
+   * message). Drives the secrets banner in the preview panel and the
+   * declared-secrets section in the Settings → Secrets tab.
+   */
+  secrets: SecretsState;
 
   /** Active device preset for viewport sizing. null = "Responsive" (fill panel). */
   devicePreset: DevicePreset | null;
@@ -95,6 +126,8 @@ interface PreviewState {
   updateService: (update: ManagedServiceState) => void;
   setComposeError: (error: string | null) => void;
   setComposeNotConfigured: (value: boolean) => void;
+  /** Replace the secrets snapshot (from `secrets_status` WS message). */
+  setSecrets: (secrets: SecretsState) => void;
   /** Set the active device preset (or null to return to "Responsive"). Persists to localStorage. */
   setDevicePreset: (preset: DevicePreset | null) => void;
   /** Swap width and height on the active preset. */
@@ -158,6 +191,7 @@ const initialSessionState: SessionPreviewSnapshot = {
   services: [],
   composeError: null,
   composeNotConfigured: false,
+  secrets: emptySecretsState,
 };
 
 const initialState = {
@@ -230,6 +264,8 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
 
   setServices: (services) => set({ services, composeError: null, composeNotConfigured: false }),
 
+  setSecrets: (secrets) => set({ secrets }),
+
   updateService: (update) =>
     set((state) => {
       const existing = state.services.find(s => s.name === update.name);
@@ -256,6 +292,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
           services: state.services,
           composeError: state.composeError,
           composeNotConfigured: state.composeNotConfigured,
+          secrets: state.secrets,
         },
       },
     })),
