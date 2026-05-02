@@ -16,8 +16,14 @@ const shortcutGroups: ShortcutGroup[] = [
   {
     title: "General",
     shortcuts: [
-      { keys: ["?"], description: "Toggle this help overlay" },
+      { keys: ["Ctrl", "/"], description: "Toggle this help overlay" },
       { keys: ["Esc"], description: "Close overlay / search bar" },
+    ],
+  },
+  {
+    title: "Sessions",
+    shortcuts: [
+      { keys: ["Ctrl", "Shift", "O"], description: "New session" },
     ],
   },
   {
@@ -59,7 +65,8 @@ export function KeyboardShortcutsOverlay({ onClose }: { onClose: () => void }) {
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" || e.key === "?") {
+      const isModSlash = (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key === "/";
+      if (e.key === "Escape" || e.key === "?" || isModSlash) {
         e.preventDefault();
         onClose();
       }
@@ -119,7 +126,7 @@ export function KeyboardShortcutsOverlay({ onClose }: { onClose: () => void }) {
         ))}
 
         <p className="text-xs text-(--color-text-tertiary) text-center pt-2 border-t border-(--color-border-primary)">
-          Press <kbd className="px-1 py-0.5 text-xs font-mono rounded bg-(--color-bg-tertiary) border border-(--color-border-secondary) text-(--color-text-primary)">?</kbd> to toggle this overlay
+          Press <kbd className="px-1 py-0.5 text-xs font-mono rounded bg-(--color-bg-tertiary) border border-(--color-border-secondary) text-(--color-text-primary)">Ctrl</kbd> + <kbd className="px-1 py-0.5 text-xs font-mono rounded bg-(--color-bg-tertiary) border border-(--color-border-secondary) text-(--color-text-primary)">/</kbd> to toggle this overlay
         </p>
       </div>
     </div>
