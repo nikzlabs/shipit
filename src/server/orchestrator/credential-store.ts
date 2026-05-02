@@ -2,21 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { getErrorMessage } from "../shared/utils.js";
 
-export type UtilityModelProvider = "openai-compatible" | "anthropic" | "claude-cli";
-
-export interface UtilityModelConfig {
-  provider: UtilityModelProvider;
-  /** API key for hosted providers. Not required (and ignored) for `claude-cli`,
-   *  which uses the OAuth credentials of the locally installed Claude Code CLI. */
-  apiKey?: string;
-  model: string;
-  baseUrl?: string;
-}
-
 interface CredentialData {
   agentEnv?: Record<string, string>;
   githubToken?: string;
-  utilityModel?: UtilityModelConfig;
   maxIdleContainers?: number;
   agentSystemInstructionsEnabled?: boolean;
   autoCreatePr?: boolean;
@@ -96,27 +84,6 @@ export class CredentialStore {
 
   clearGithubToken(): void {
     delete this.data.githubToken;
-    this.save();
-  }
-
-  // ---- Utility model ----
-
-  getUtilityModel(): UtilityModelConfig | null {
-    const m = this.data.utilityModel;
-    if (!m) return null;
-    // claude-cli uses the local Claude Code CLI's OAuth — no API key needed.
-    if (m.provider === "claude-cli") return m;
-    if (typeof m.apiKey === "string" && m.apiKey.trim()) return m;
-    return null;
-  }
-
-  setUtilityModel(config: UtilityModelConfig): void {
-    this.data.utilityModel = config;
-    this.save();
-  }
-
-  clearUtilityModel(): void {
-    delete this.data.utilityModel;
     this.save();
   }
 

@@ -6,7 +6,6 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs.js";
 import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
 import { CodexAuthCard } from "./CodexAuthCard.js";
 import { GitHubTokenForm } from "./GitHubTokenForm.js";
-import { UtilityModelCard } from "./UtilityModelCard.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 
@@ -356,10 +355,6 @@ export function Settings({
                   />
                 </div>
               )}
-
-              <div className="pt-2 border-t border-(--color-border-secondary)">
-                <UtilityModelCard />
-              </div>
             </div>
           </TabsContent>
 

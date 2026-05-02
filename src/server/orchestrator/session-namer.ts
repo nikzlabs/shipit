@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import type { UtilityModelConfig } from "./credential-store.js";
 
 export interface SessionName {
   slug: string;
@@ -15,29 +14,20 @@ User message: "{MESSAGE}"
 Respond with ONLY valid JSON, no markdown fences: {"slug": "...", "title": "..."}`;
 
 /**
- * Call a utility model API to generate a session title and branch-friendly
- * slug from the user's first message. Returns null on failure.
+ * Generate a session title and branch-friendly slug from the user's first message.
+ *
+ * Shells out to the locally installed Claude Code CLI (`claude -p`) using the same
+ * OAuth credentials as the coding agent — no separate API key is needed. Returns
+ * `null` on any failure (network error, parse error, CLI missing/unauthenticated).
+ * Callers must treat `null` as "skip the rename" rather than retry, so naming is
+ * silently best-effort and never blocks session graduation.
  */
-export async function generateSessionName(
-  userMessage: string,
-  config: UtilityModelConfig,
-): Promise<SessionName | null> {
+export async function generateSessionName(userMessage: string): Promise<SessionName | null> {
   const truncated = userMessage.slice(0, 200);
   const prompt = PROMPT_TEMPLATE.replace("{MESSAGE}", truncated);
 
   try {
-    let text: string | null;
-    switch (config.provider) {
-      case "anthropic":
-        text = await callAnthropic(config, prompt);
-        break;
-      case "claude-cli":
-        text = await callClaudeCli(prompt);
-        break;
-      default:
-        text = await callOpenAICompatible(config, prompt);
-    }
-
+    const text = await callClaudeCli(prompt);
     if (!text) return null;
 
     const jsonMatch = /\{[^}]*"slug"\s*:\s*"[^"]*"[^}]*"title"\s*:\s*"[^"]*"[^}]*\}/.exec(text);
@@ -58,96 +48,9 @@ export async function generateSessionName(
     console.warn("[session-namer] Invalid parsed result:", parsed);
     return null;
   } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
-      console.warn("[session-namer] Request timed out");
-    } else {
-      console.warn("[session-namer] Error:", err instanceof Error ? err.message : err);
-    }
+    console.warn("[session-namer] Error:", err instanceof Error ? err.message : err);
     return null;
   }
-}
-
-async function callOpenAICompatible(config: UtilityModelConfig, prompt: string): Promise<string | null> {
-  if (!config.apiKey) {
-    console.warn("[session-namer] OpenAI-compatible provider requires an apiKey");
-    return null;
-  }
-  const baseUrl = (config.baseUrl ?? "https://api.openai.com/v1").replace(/\/+$/, "");
-
-  for (const tokenParam of ["max_completion_tokens", "max_tokens"] as const) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15_000);
-
-    const res = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${config.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: config.model,
-        [tokenParam]: 128,
-        messages: [{ role: "user", content: prompt }],
-      }),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeout);
-
-    if (res.status === 400) {
-      const body = await res.text().catch(() => "");
-      if (body.includes("max_tokens") || body.includes("max_completion_tokens")) {
-        continue; // try the other parameter
-      }
-      console.warn("[session-namer] OpenAI-compatible API error:", 400, body);
-      return null;
-    }
-
-    if (!res.ok) {
-      console.warn("[session-namer] OpenAI-compatible API error:", res.status, await res.text().catch(() => ""));
-      return null;
-    }
-
-    const body = await res.json() as { choices?: { message?: { content?: string } }[] };
-    return body.choices?.[0]?.message?.content ?? null;
-  }
-
-  console.warn("[session-namer] Both max_completion_tokens and max_tokens rejected by model:", config.model);
-  return null;
-}
-
-async function callAnthropic(config: UtilityModelConfig, prompt: string): Promise<string | null> {
-  if (!config.apiKey) {
-    console.warn("[session-namer] Anthropic provider requires an apiKey");
-    return null;
-  }
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15_000);
-
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "x-api-key": config.apiKey,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: config.model,
-      max_tokens: 128,
-      messages: [{ role: "user", content: prompt }],
-    }),
-    signal: controller.signal,
-  });
-
-  clearTimeout(timeout);
-
-  if (!res.ok) {
-    console.warn("[session-namer] Anthropic API error:", res.status, await res.text().catch(() => ""));
-    return null;
-  }
-
-  const body = await res.json() as { content?: { type: string; text?: string }[] };
-  return body.content?.find((b) => b.type === "text")?.text ?? null;
 }
 
 /**

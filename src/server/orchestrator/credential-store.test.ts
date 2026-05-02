@@ -100,62 +100,6 @@ describe("CredentialStore", () => {
     });
   });
 
-  // ---- Utility model ----
-
-  describe("utilityModel", () => {
-    it("returns null when not configured", () => {
-      const store = new CredentialStore(createTmpDir());
-      expect(store.getUtilityModel()).toBeNull();
-    });
-
-    it("anthropic config requires apiKey to be returned", () => {
-      const dir = createTmpDir();
-      const store = new CredentialStore(dir);
-      store.setUtilityModel({ provider: "anthropic", apiKey: "sk-ant-abc", model: "claude-haiku-4-5-20251001" });
-
-      const result = store.getUtilityModel();
-      expect(result?.provider).toBe("anthropic");
-      expect(result?.apiKey).toBe("sk-ant-abc");
-    });
-
-    it("anthropic config with empty apiKey returns null", () => {
-      const dir = createTmpDir();
-      fs.writeFileSync(
-        path.join(dir, "shipit-credentials.json"),
-        JSON.stringify({ utilityModel: { provider: "anthropic", apiKey: "", model: "claude-haiku-4-5-20251001" } }),
-      );
-      const store = new CredentialStore(dir);
-      expect(store.getUtilityModel()).toBeNull();
-    });
-
-    it("claude-cli config does NOT require apiKey", () => {
-      const dir = createTmpDir();
-      const store = new CredentialStore(dir);
-      store.setUtilityModel({ provider: "claude-cli", model: "haiku" });
-
-      const result = store.getUtilityModel();
-      expect(result?.provider).toBe("claude-cli");
-      expect(result?.model).toBe("haiku");
-      expect(result?.apiKey).toBeUndefined();
-    });
-
-    it("claude-cli config persists across instances without an apiKey", () => {
-      const dir = createTmpDir();
-      new CredentialStore(dir).setUtilityModel({ provider: "claude-cli", model: "haiku" });
-
-      const store2 = new CredentialStore(dir);
-      expect(store2.getUtilityModel()).toEqual({ provider: "claude-cli", model: "haiku" });
-    });
-
-    it("clearUtilityModel removes config", () => {
-      const dir = createTmpDir();
-      const store = new CredentialStore(dir);
-      store.setUtilityModel({ provider: "claude-cli", model: "haiku" });
-      store.clearUtilityModel();
-      expect(store.getUtilityModel()).toBeNull();
-    });
-  });
-
   // ---- Cross-concern ----
 
   describe("mixed credentials", () => {

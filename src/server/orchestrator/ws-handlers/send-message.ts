@@ -139,9 +139,10 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
       // Set a placeholder title immediately (replaced async by AI-generated name below)
       ctx.sessionManager.rename(effectiveSessionId, userText.slice(0, 60) || "New session");
 
-      // Generate session name from the message text
-      const utilityModel = ctx.credentialStore.getUtilityModel();
-      if (utilityModel && session.workspaceDir) {
+      // Generate session name from the message text. Uses the local Claude Code
+      // CLI's OAuth credentials — always available, so no opt-in required. If the
+      // CLI call fails we silently fall through (see finalizeBranchRenamed below).
+      if (session.workspaceDir) {
         // Helper: mark branch as renamed and emit PR "ready" card
         const finalizeBranchRenamed = async () => {
           ctx.sessionManager.setBranchRenamed(effectiveSessionId, true);
@@ -168,7 +169,7 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
         };
 
         // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget session naming
-        generateSessionName(userText, utilityModel).then(async (nameResult) => {
+        generateSessionName(userText).then(async (nameResult) => {
           if (!nameResult) {
             await finalizeBranchRenamed();
             return;
@@ -200,7 +201,8 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
           await finalizeBranchRenamed();
         });
       } else {
-        // No utility model configured — unblock PR card immediately
+        // No workspace directory yet (shouldn't normally happen for a graduating
+        // warm session) — unblock PR card immediately so the UI doesn't hang.
         ctx.sessionManager.setBranchRenamed(effectiveSessionId, true);
       }
 
