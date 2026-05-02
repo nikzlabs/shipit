@@ -2,4 +2,4 @@ agent:
   memory: 3072
   cpu: 2.0
   pids: 2048
-  install: NODE_ENV=development npm install
+  install: npm install
