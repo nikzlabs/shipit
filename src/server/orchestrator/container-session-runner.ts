@@ -545,14 +545,32 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   /**
-   * Run agent.install commands on the session worker. Fire-and-forget —
-   * progress streams via SSE events. Skips if .shipit/.install-done marker exists.
+   * Resolver for the in-flight install promise — fulfilled when the worker
+   * SSE stream delivers `install_done` or `install_error`, or when the
+   * worker reports the install was skipped (marker present).
+   */
+  private _installComplete: Promise<void> | null = null;
+  private _resolveInstallComplete: (() => void) | null = null;
+
+  /**
+   * Run agent.install commands on the session worker. Returns a promise that
+   * resolves when the install is fully complete — success, error, or skipped.
+   * Progress streams via SSE events to attached viewers.
+   *
+   * The returned promise is what the orchestrator awaits to bracket the
+   * `ServiceManager.setInstallRunning(true|false)` window so dev servers
+   * that race install (deps still extracting) get retried instead of
+   * latching to `error`.
    */
   async runInstall(commands: string[]): Promise<void> {
     if (commands.length === 0) return;
 
     await this._workerReady;
     if (this._disposed) return;
+
+    this._installComplete = new Promise<void>((resolve) => {
+      this._resolveInstallComplete = resolve;
+    });
 
     this.emitMessage({
       type: "install_status",
@@ -569,8 +587,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           sessionId: this.sessionId,
           status: "skipped",
         });
+        this.signalInstallComplete();
+        return;
       }
-      // If started, progress comes via SSE events (install_log, install_done, install_error)
+      // Started — wait for SSE-delivered install_done / install_error.
+      await this._installComplete;
     } catch (err) {
       this.emitMessage({
         type: "install_status",
@@ -578,6 +599,16 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         status: "error",
         message: err instanceof Error ? err.message : String(err),
       });
+      this.signalInstallComplete();
+    }
+  }
+
+  /** Resolve the in-flight install promise (idempotent). */
+  private signalInstallComplete(): void {
+    if (this._resolveInstallComplete) {
+      const r = this._resolveInstallComplete;
+      this._resolveInstallComplete = null;
+      r();
     }
   }
 
@@ -774,6 +805,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
             sessionId: this.sessionId,
             status: "complete",
           });
+          this.signalInstallComplete();
           break;
 
         case "install_error":
@@ -784,6 +816,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
             command: data.command as string | undefined,
             message: (data.message as string) ?? "Install failed",
           });
+          this.signalInstallComplete();
           break;
 
         // --- File watcher events ---
@@ -988,6 +1021,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this.clearServiceManager();
     this.disconnectEventStream();
     this.clearPushTimer();
+    // Resolve any awaiters of in-flight install so they don't leak.
+    this.signalInstallComplete();
     this._messageQueue.length = 0;
     this._turnEventBuffer = [];
     this._isRunning = false;
