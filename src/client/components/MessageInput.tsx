@@ -118,16 +118,23 @@ export function MessageInput({
   // Guard against iframe focus theft: when the textarea is focused and an iframe
   // (e.g. preview loading) steals focus, the textarea fires a blur event with no
   // relatedTarget (cross-origin iframes don't expose it). Reclaim focus in that case
-  // unless the user intentionally clicked another element in the main document.
+  // ONLY — never reclaim when activeElement is <body>, because that's the normal
+  // result of the user mousedown-ing on a non-focusable element (e.g. chat text)
+  // to start a text selection. Reclaiming on body-blur would refocus the textarea
+  // mid-drag and cancel the in-progress selection — see issue: text in conversation
+  // wasn't selectable while the textarea was focused.
   const handleBlur = useCallback((e: React.FocusEvent<HTMLTextAreaElement>) => {
-    // relatedTarget is set when focus moves to another element in the same document
-    // (e.g. a button click). When an iframe steals focus, relatedTarget is null.
+    // relatedTarget is set when focus moves to another focusable element in the
+    // same document (e.g. a button click). When an iframe steals focus, or when
+    // mousedown happens on a non-focusable element, relatedTarget is null — we
+    // need the activeElement check below to disambiguate those two cases.
     if (e.relatedTarget) return;
     requestAnimationFrame(() => {
-      // If activeElement is body or an iframe, the textarea lost focus to something
-      // outside the main document — reclaim it.
+      // Only reclaim if focus actually went to an iframe. Body becoming the
+      // active element means the user clicked outside any focusable widget
+      // (typically to start a text selection); leave focus alone there.
       const active = document.activeElement;
-      if (!active || active === document.body || active.tagName === "IFRAME") {
+      if (active?.tagName === "IFRAME") {
         textareaRef.current?.focus();
       }
     });
