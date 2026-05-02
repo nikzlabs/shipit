@@ -88,12 +88,17 @@ export class ClaudeAdapter
         return {
           type: "agent_assistant",
           content: raw.message.content,
+          // Preserve parent_tool_use_id from nested subagent events so the
+          // client can render the subagent's work under its parent Task tool
+          // (109 — subagent transparency).
+          parentToolUseId: raw.parent_tool_use_id,
         };
 
       case "user":
         return {
           type: "agent_tool_result",
           content: raw.message.content,
+          parentToolUseId: raw.parent_tool_use_id,
         };
 
       case "result":

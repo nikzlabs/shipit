@@ -1,9 +1,31 @@
 import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage } from "../../shared/types.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
-import type { ToolResultEntry } from "../session-runner.js";
+import type { ChatMessageGroup, ToolResultEntry } from "../session-runner.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { getContextWindowForModel, DEFAULT_CONTEXT_WINDOW_TOKENS } from "../../shared/agent-registry.js";
+
+/**
+ * Find the chat message group that contains the given tool_use id (either in
+ * its top-level toolUse list, or — for nested subagents — in a subagentEvent's
+ * toolUse list). Used to attach subagent events to the correct group so they
+ * render under the parent Task tool. (109 — subagent transparency)
+ */
+function findGroupContainingTool(
+  groups: ChatMessageGroup[],
+  toolUseId: string,
+): ChatMessageGroup | undefined {
+  // Iterate newest-first since subagent events typically reference a recent tool.
+  for (let i = groups.length - 1; i >= 0; i--) {
+    const g = groups[i];
+    if (g.toolUse.some((t) => t.id === toolUseId)) return g;
+    // Also handle nested subagents-of-subagents: look inside existing subagentEvents.
+    for (const ev of g.subagentEvents ?? []) {
+      if (ev.kind === "assistant" && ev.toolUse.some((t) => t.id === toolUseId)) return g;
+    }
+  }
+  return undefined;
+}
 
 /** Full handler context — send-message handlers need all three sub-contexts. */
 type FullCtx = ConnectionCtx & RunnerCtx & AppCtx;
@@ -116,13 +138,32 @@ export function wireAgentListeners(
         .filter((b): b is ClaudeContentBlockText => b.type === "text")
         .map((b) => b.text)
         .join("");
+
+      const toolBlocks = (event.content ?? [])
+        .filter((b): b is ClaudeContentBlockToolUse => b.type === "tool_use");
+
+      // Subagent (Task) events carry parentToolUseId. Route them under the
+      // group that contains the parent Task tool, *not* into the main flow —
+      // otherwise nested tool calls would corrupt the parent conversation.
+      // (109 — subagent transparency)
+      if (event.parentToolUseId && runner) {
+        const groups = runner.chatMessageGroups;
+        const parentGroup = findGroupContainingTool(groups, event.parentToolUseId);
+        if (parentGroup) {
+          parentGroup.subagentEvents = [
+            ...(parentGroup.subagentEvents ?? []),
+            { kind: "assistant", parentToolUseId: event.parentToolUseId, text, toolUse: toolBlocks },
+          ];
+          runner.chatMessageGroups = groups;
+        }
+        return;
+      }
+
       if (text && runner) {
         runner.turnSummary = text;
         runner.accumulatedText += text;
       }
 
-      const toolBlocks = (event.content ?? [])
-        .filter((b): b is ClaudeContentBlockToolUse => b.type === "tool_use");
       if (toolBlocks.length > 0 && runner) {
         runner.accumulatedToolUse = [...runner.accumulatedToolUse, ...toolBlocks];
       }
@@ -158,10 +199,26 @@ export function wireAgentListeners(
     // Mark a message-group boundary when tool results arrive so the
     // next agent_assistant starts a new chat history entry.
     if (event.type === "agent_tool_result") {
+      const toolResults = extractToolResults(event);
+
+      // Subagent tool_result events: attach to the parent group's subagentEvents
+      // and do NOT split the main message group. (109 — subagent transparency)
+      if (event.parentToolUseId && runner && toolResults.length > 0) {
+        const groups = runner.chatMessageGroups;
+        const parentGroup = findGroupContainingTool(groups, event.parentToolUseId);
+        if (parentGroup) {
+          parentGroup.subagentEvents = [
+            ...(parentGroup.subagentEvents ?? []),
+            { kind: "tool_result", parentToolUseId: event.parentToolUseId, toolResults },
+          ];
+          runner.chatMessageGroups = groups;
+        }
+        return;
+      }
+
       if (runner) runner.needsNewMessageGroup = true;
 
       // Attach tool results to the current message group
-      const toolResults = extractToolResults(event);
       if (toolResults.length > 0 && runner) {
         const groups = runner.chatMessageGroups;
         if (groups.length > 0) {
@@ -182,6 +239,7 @@ export function wireAgentListeners(
             text: g.text,
             toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
             toolResults: g.toolResults?.length ? g.toolResults : undefined,
+            subagentEvents: g.subagentEvents?.length ? g.subagentEvents : undefined,
             inProgress: true,
           }));
         ctx.chatHistoryManager.replaceInProgress(usageSessionId, inProgressMessages);
@@ -272,6 +330,7 @@ export function wireAgentListeners(
         text: g.text,
         toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
         toolResults: g.toolResults?.length ? g.toolResults : undefined,
+        subagentEvents: g.subagentEvents?.length ? g.subagentEvents : undefined,
         turnUsage: idx === persistableGroups.length - 1 ? perTurnUsage : undefined,
       }));
       ctx.chatHistoryManager.replaceInProgress(usageSessionId, finalMessages);

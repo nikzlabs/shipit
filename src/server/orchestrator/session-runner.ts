@@ -21,10 +21,35 @@ export interface ToolResultEntry {
   isError?: boolean;
 }
 
+/**
+ * A single event emitted by a subagent (Claude's Task tool). Preserves the
+ * parent-child link so the client can render subagent activity as a nested
+ * tree under the parent Task call rather than flattening it into the main
+ * conversation. (109 — subagent transparency)
+ */
+export type SubagentEvent =
+  | {
+      kind: "assistant";
+      parentToolUseId: string;
+      text: string;
+      toolUse: ClaudeContentBlockToolUse[];
+    }
+  | {
+      kind: "tool_result";
+      parentToolUseId: string;
+      toolResults: ToolResultEntry[];
+    };
+
 export interface ChatMessageGroup {
   text: string;
   toolUse: ClaudeContentBlockToolUse[];
   toolResults?: ToolResultEntry[];
+  /**
+   * Events emitted by subagents whose parent Task tool lives in this group's
+   * `toolUse`. Stored as a flat ordered list; the client groups them by
+   * parentToolUseId for rendering.
+   */
+  subagentEvents?: SubagentEvent[];
 }
 
 export interface QueuedMessage {
