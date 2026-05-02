@@ -184,6 +184,13 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN pr_status TEXT");
   },
+  // Migration 10: subagent events column for Task-tool transparency (109).
+  // Stores a JSON-serialized array of SubagentEvent entries (assistant +
+  // tool_result events from spawned subagents) so reloading chat history
+  // shows the same nested tree as live streaming.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN subagent_events TEXT");
+  },
 ];
 
 export class DatabaseManager {

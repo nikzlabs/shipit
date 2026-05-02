@@ -27,6 +27,13 @@ export interface ClaudeAssistantEvent {
   message: {
     content: ClaudeContentBlock[];
   };
+  /**
+   * When the Claude CLI emits this event from a subagent (Task tool), this is
+   * the tool_use id of the parent Task call. Top-level assistant events do not
+   * have this field. Used by the orchestrator to render subagent calls as a
+   * nested tree (109 — subagent transparency).
+   */
+  parent_tool_use_id?: string;
 }
 
 export interface ClaudeUserEvent {
@@ -34,6 +41,8 @@ export interface ClaudeUserEvent {
   message: {
     content: unknown[];
   };
+  /** See ClaudeAssistantEvent.parent_tool_use_id. */
+  parent_tool_use_id?: string;
 }
 
 export interface ClaudeResultEvent {

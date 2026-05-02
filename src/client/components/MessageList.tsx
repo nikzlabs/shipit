@@ -15,6 +15,7 @@ import { ToolCallGroup, ToolUseItem } from "./message-tools.js";
 import { parseMessageSegments, MarkdownContent, MarkdownTooltip, CodeBlock } from "./message-markdown.js";
 import { getSegmentMatches, HighlightedText } from "./message-highlighting.js";
 import { MessageFileAttachments, MessageImages } from "./message-media.js";
+import { SubagentCall } from "./SubagentCall.js";
 
 // ── Type exports (kept here as the canonical location for backward compat) ──
 
@@ -30,6 +31,24 @@ export interface ToolResultBlock {
   content: string;
   isError?: boolean;
 }
+
+/**
+ * A single nested event emitted by a subagent (Claude's Task tool). Each entry
+ * carries `parentToolUseId` linking it back to a tool_use block in the parent
+ * message's `toolUse` list. Used for subagent transparency (109).
+ */
+export type SubagentEvent =
+  | {
+      kind: "assistant";
+      parentToolUseId: string;
+      text: string;
+      toolUse: ToolUseBlock[];
+    }
+  | {
+      kind: "tool_result";
+      parentToolUseId: string;
+      toolResults: ToolResultBlock[];
+    };
 
 export interface ChatMessageImage {
   data: string;      // base64-encoded image data
@@ -67,6 +86,12 @@ export interface ChatMessage {
   uploadPaths?: string[];
   /** When true, this message was rolled back and should appear dimmed. */
   rolledBack?: boolean;
+  /**
+   * Events emitted by subagents (Claude's Task tool) under any tool in this
+   * message's `toolUse`. The renderer groups these by `parentToolUseId` and
+   * displays them as a nested tree under the parent Task call (109).
+   */
+  subagentEvents?: SubagentEvent[];
 }
 
 export interface TextSegment {
@@ -216,24 +241,20 @@ export function MessageList({
           );
         }
 
-        // ── Subagent: standalone Task/Skill element with left border ──
+        // ── Subagent: standalone Task/Skill/Agent element with left border ──
         if (el.kind === "subagent") {
           const tool = el.tool;
+          const parentMsg = messages[el.messageIndex];
           if (tool.name === "Task") {
-            const description = (tool.input.description as string) ?? "Running task...";
-            const prompt = typeof tool.input.prompt === "string" ? tool.input.prompt : "";
+            // Full transparency view — prompt, work timeline, final report (109)
             return (
-              <div key={tool.id} data-testid="subagent-task" className="border-l-2 border-(--color-success)/40 pl-3 space-y-1">
-                <div className="flex items-center gap-2 text-sm">
-                  <span className="font-semibold text-(--color-success)">Subagent:</span>
-                  <span className="text-(--color-text-primary)">{description}</span>
-                </div>
-                {prompt && (
-                  <MarkdownTooltip content={prompt}>
-                    <div className="text-xs text-(--color-text-secondary) font-mono whitespace-pre-wrap overflow-hidden max-h-15 leading-5">{prompt}</div>
-                  </MarkdownTooltip>
-                )}
-              </div>
+              <SubagentCall
+                key={tool.id}
+                tool={tool}
+                subagentEvents={parentMsg?.subagentEvents}
+                parentToolResults={parentMsg?.toolResults}
+                isStreaming={el.streaming}
+              />
             );
           }
           if (tool.name === "Agent") {

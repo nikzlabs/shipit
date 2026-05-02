@@ -202,6 +202,33 @@ export interface DockerMemoryStats {
 
 import type { TurnUsage } from "./usage-types.js";
 
+/**
+ * A single nested event emitted by a subagent (Claude's Task tool). The
+ * `parentToolUseId` links it back to a tool_use block in the parent message's
+ * `toolUse` list. Used for subagent transparency (109).
+ */
+export type WsSubagentEvent =
+  | {
+      kind: "assistant";
+      parentToolUseId: string;
+      text: string;
+      toolUse: {
+        type: "tool_use";
+        id: string;
+        name: string;
+        input: Record<string, unknown>;
+      }[];
+    }
+  | {
+      kind: "tool_result";
+      parentToolUseId: string;
+      toolResults: {
+        toolUseId: string;
+        content: string;
+        isError?: boolean;
+      }[];
+    };
+
 export interface WsChatHistoryMessage {
   role: "user" | "assistant";
   text: string;
@@ -237,4 +264,10 @@ export interface WsChatHistoryMessage {
   uploadPaths?: string[];
   /** Per-turn usage for the agent turn that produced this message — only on the last group of a turn. */
   turnUsage?: TurnUsage;
+  /**
+   * Events emitted by subagents (Claude's Task tool) under any tool in this
+   * message's `toolUse`. The client groups these by `parentToolUseId` and
+   * renders them as a nested tree (109 — subagent transparency).
+   */
+  subagentEvents?: WsSubagentEvent[];
 }

@@ -127,7 +127,15 @@ function processMessage(
         const toolUseBlocks = (event.content ?? [])
           .filter((b: AgentContentBlock): b is { type: "tool_use"; id: string; name: string; input: Record<string, unknown> } => b.type === "tool_use");
 
-        if (toolUseBlocks.length > 0) {
+        // Subagent events (Task tool nested events) — attach to the parent
+        // message's `subagentEvents` instead of the main message stream so the
+        // SubagentCall renderer can show a nested tree (109 — subagent
+        // transparency).
+        const parentToolUseId = (event as { parentToolUseId?: string }).parentToolUseId;
+        if (parentToolUseId) {
+          session.setActivity({ label: "Subagent working..." });
+          session.setMessages((prev) => attachSubagentAssistant(prev, parentToolUseId, textBlocks, toolUseBlocks));
+        } else if (toolUseBlocks.length > 0) {
           const lastTool = toolUseBlocks[toolUseBlocks.length - 1];
           session.setActivity(activityFromTool(lastTool.name, lastTool.input));
 
@@ -138,7 +146,7 @@ function processMessage(
           session.setActivity({ label: "Thinking..." });
         }
 
-        if (textBlocks || toolUseBlocks.length > 0) {
+        if (!parentToolUseId && (textBlocks || toolUseBlocks.length > 0)) {
           session.setMessages((prev) => {
             const last = prev[prev.length - 1];
             const canMerge = last?.role === "assistant" && last.streaming
@@ -207,7 +215,13 @@ function processMessage(
           }
         }
 
-        if (results.length > 0) {
+        // Subagent tool_result — attach to the parent message's
+        // `subagentEvents` instead of `toolResults` so it shows up under the
+        // SubagentCall's "work" timeline (109 — subagent transparency).
+        const parentToolUseId = (event as { parentToolUseId?: string }).parentToolUseId;
+        if (parentToolUseId && results.length > 0) {
+          session.setMessages((prev) => attachSubagentToolResult(prev, parentToolUseId, results));
+        } else if (results.length > 0) {
           session.setMessages((prev) => {
             const last = prev[prev.length - 1];
             if (last?.role === "assistant") {
@@ -409,6 +423,9 @@ function processMessage(
       const loaded: ChatMessage[] = data.messages.map((m: WsChatHistoryMessage) => ({
         role: m.role, text: m.text, toolUse: m.toolUse, toolResults: m.toolResults, images: m.images, files: m.files, isError: m.isError, streaming: false,
         commitHash: m.commitHash, parentCommitHash: m.parentCommitHash, uploadPaths: m.uploadPaths,
+        // Preserve subagent events on history reload so the nested-tree view
+        // re-renders identically to live streaming. (109)
+        subagentEvents: m.subagentEvents as ChatMessage["subagentEvents"],
       }));
       session.setMessages(loaded);
 
@@ -656,4 +673,73 @@ function processMessage(
 
     // session_agent_started/finished, repo_status, repo_warm_ready, repo_list
     // are now delivered via SSE (useServerEvents hook)
+}
+
+// ---------------------------------------------------------------------------
+// Subagent event helpers (109 — subagent transparency)
+// ---------------------------------------------------------------------------
+
+/**
+ * Append a subagent assistant event (text + tool calls) to the
+ * `subagentEvents` of whichever message in `messages` contains the parent
+ * Task tool. Falls back to no-op if the parent isn't found (e.g. the parent
+ * was evicted from history). Returns a new messages array.
+ */
+function attachSubagentAssistant(
+  messages: ChatMessage[],
+  parentToolUseId: string,
+  text: string,
+  toolUse: { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }[],
+): ChatMessage[] {
+  const idx = findMessageIndexWithTool(messages, parentToolUseId);
+  if (idx === -1) return messages;
+  const parent = messages[idx];
+  const next = [...messages];
+  next[idx] = {
+    ...parent,
+    subagentEvents: [
+      ...(parent.subagentEvents ?? []),
+      { kind: "assistant", parentToolUseId, text, toolUse },
+    ],
+  };
+  return next;
+}
+
+/**
+ * Append a subagent tool_result event to the `subagentEvents` of whichever
+ * message in `messages` contains the parent Task tool.
+ */
+function attachSubagentToolResult(
+  messages: ChatMessage[],
+  parentToolUseId: string,
+  toolResults: ToolResultBlock[],
+): ChatMessage[] {
+  const idx = findMessageIndexWithTool(messages, parentToolUseId);
+  if (idx === -1) return messages;
+  const parent = messages[idx];
+  const next = [...messages];
+  next[idx] = {
+    ...parent,
+    subagentEvents: [
+      ...(parent.subagentEvents ?? []),
+      { kind: "tool_result", parentToolUseId, toolResults },
+    ],
+  };
+  return next;
+}
+
+/**
+ * Find the index of the message whose `toolUse` (or any subagent's nested
+ * tool_use) contains the given id. Searches newest-first since subagent
+ * events typically reference recent activity. Returns -1 if not found.
+ */
+function findMessageIndexWithTool(messages: ChatMessage[], toolUseId: string): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.toolUse?.some((t) => t.id === toolUseId)) return i;
+    for (const ev of m.subagentEvents ?? []) {
+      if (ev.kind === "assistant" && ev.toolUse.some((t) => t.id === toolUseId)) return i;
+    }
+  }
+  return -1;
 }

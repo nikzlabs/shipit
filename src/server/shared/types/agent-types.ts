@@ -41,12 +41,22 @@ export interface AgentInitEvent {
 export interface AgentAssistantEvent {
   type: "agent_assistant";
   content: AgentContentBlock[];
+  /**
+   * When the agent emits this event from inside a subagent (e.g. Claude's Task
+   * tool), this is the tool_use id of the parent Task call. Top-level
+   * assistant events leave this undefined. The client uses it to render the
+   * subagent's work as a nested tree under the parent Task tool call rather
+   * than flattening it into the main conversation. (109 — subagent transparency)
+   */
+  parentToolUseId?: string;
 }
 
 /** Tool results flowing back to the agent. */
 export interface AgentToolResultEvent {
   type: "agent_tool_result";
   content: unknown[];
+  /** See AgentAssistantEvent.parentToolUseId. */
+  parentToolUseId?: string;
 }
 
 /** Final result of a turn. */
