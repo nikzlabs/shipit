@@ -26,6 +26,11 @@ describe("KeyboardShortcutsOverlay", () => {
     expect(screen.getByText("General")).toBeInTheDocument();
   });
 
+  it("renders Sessions group", () => {
+    render(<KeyboardShortcutsOverlay onClose={vi.fn()} />);
+    expect(screen.getByText("Sessions")).toBeInTheDocument();
+  });
+
   it("renders Chat group", () => {
     render(<KeyboardShortcutsOverlay onClose={vi.fn()} />);
     expect(screen.getByText("Chat")).toBeInTheDocument();
@@ -40,6 +45,11 @@ describe("KeyboardShortcutsOverlay", () => {
   it("shows toggle help overlay shortcut", () => {
     render(<KeyboardShortcutsOverlay onClose={vi.fn()} />);
     expect(screen.getByText("Toggle this help overlay")).toBeInTheDocument();
+  });
+
+  it("shows new session shortcut", () => {
+    render(<KeyboardShortcutsOverlay onClose={vi.fn()} />);
+    expect(screen.getByText("New session")).toBeInTheDocument();
   });
 
   it("shows send message shortcut", () => {
@@ -74,6 +84,20 @@ describe("KeyboardShortcutsOverlay", () => {
     const onClose = vi.fn();
     render(<KeyboardShortcutsOverlay onClose={onClose} />);
     fireEvent.keyDown(window, { key: "?" });
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("calls onClose when Ctrl+/ is pressed", () => {
+    const onClose = vi.fn();
+    render(<KeyboardShortcutsOverlay onClose={onClose} />);
+    fireEvent.keyDown(window, { key: "/", ctrlKey: true });
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("calls onClose when Cmd+/ is pressed", () => {
+    const onClose = vi.fn();
+    render(<KeyboardShortcutsOverlay onClose={onClose} />);
+    fireEvent.keyDown(window, { key: "/", metaKey: true });
     expect(onClose).toHaveBeenCalledOnce();
   });
 
