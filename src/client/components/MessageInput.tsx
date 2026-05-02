@@ -7,12 +7,10 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { PlanModeToggle } from "./PlanModeToggle.js";
 import { ModelAgentSelector } from "./ModelAgentSelector.js";
 import { ContextDial } from "./ContextDial.js";
-import { FileAttachmentChips } from "./FileAttachmentChips.js";
-import { FileUploadChips } from "./FileUploadChips.js";
 import { FileAutoComplete } from "./FileAutoComplete.js";
 import { Popover, PopoverAnchor } from "./ui/popover.js";
 import { WithTooltip } from "./ui/tooltip.js";
-import type { PermissionMode, FileContextRef, FileTreeNode, AgentId } from "../../server/shared/types.js";
+import type { PermissionMode, FileTreeNode, AgentId } from "../../server/shared/types.js";
 import type { UploadItem } from "../hooks/useFileUpload.js";
 import type { AgentOption } from "./AgentPicker.js";
 import type { ModelInfo } from "./StatusBar.js";
@@ -24,15 +22,10 @@ export function MessageInput({
   onInterrupt,
   permissionMode = "auto",
   onPermissionModeChange,
-  pendingFiles = [],
-  onRemoveFile,
   onAddFile,
   fileTree = [],
-  uploads = [],
   allUploads,
   onUploadFiles,
-  onRemoveUpload,
-  onRetryUpload,
   agents = [],
   activeAgentId = "claude",
   onAgentChange,
@@ -51,16 +44,11 @@ export function MessageInput({
   onInterrupt?: () => void;
   permissionMode?: PermissionMode;
   onPermissionModeChange?: (mode: PermissionMode) => void;
-  pendingFiles?: FileContextRef[];
-  onRemoveFile?: (index: number) => void;
   onAddFile?: (filePath: string) => void;
   fileTree?: FileTreeNode[];
-  uploads?: UploadItem[];
   /** All session uploads — for @-autocomplete (persists across sends). */
   allUploads?: UploadItem[];
   onUploadFiles?: (files: File[]) => void;
-  onRemoveUpload?: (index: number) => void;
-  onRetryUpload?: (index: number) => void;
   agents?: AgentOption[];
   activeAgentId?: AgentId;
   onAgentChange?: (agentId: AgentId) => void;
@@ -311,20 +299,6 @@ export function MessageInput({
         </div>
       )}
 
-      {/* File attachment chips */}
-      {pendingFiles.length > 0 && onRemoveFile && (
-        <div className="mb-2">
-          <FileAttachmentChips files={pendingFiles} onRemove={onRemoveFile} />
-        </div>
-      )}
-
-      {/* Upload chips */}
-      {uploads.length > 0 && onRemoveUpload && onRetryUpload && (
-        <div className="mb-2">
-          <FileUploadChips uploads={uploads} onRemove={onRemoveUpload} onRetry={onRetryUpload} />
-        </div>
-      )}
-
       <Popover open={showAutoComplete} modal={false}>
       <PopoverAnchor asChild>
       <div className="relative">
@@ -448,7 +422,7 @@ export function MessageInput({
           fileTree={fileTree}
           onSelect={handleAutoCompleteSelect}
           onDismiss={handleAutoCompleteDismiss}
-          uploadPaths={(allUploads ?? uploads).filter((u) => u.status === "ready" && u.path).map((u) => u.path!)}
+          uploadPaths={(allUploads ?? []).filter((u) => u.status === "ready" && u.path).map((u) => u.path!)}
         />
       )}
       </Popover>

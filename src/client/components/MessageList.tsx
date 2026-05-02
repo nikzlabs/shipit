@@ -9,8 +9,6 @@ import type { SearchMatch } from "../hooks/useSearch.js";
 import { buildVisualElements } from "./visual-elements.js";
 import { RollbackDropdown, type RollbackMode } from "./RollbackDropdown.js";
 import { RewindDropdown, type RewindMode } from "./RewindDropdown.js";
-import { RocketLaunch } from "./RocketLaunch.js";
-import { useSessionStore } from "../stores/session-store.js";
 
 // Sub-component imports
 import { ToolCallGroup, ToolUseItem } from "./message-tools.js";
@@ -105,7 +103,6 @@ export function MessageList({
   onSendFollowUp,
   onRollback,
   onRewind,
-  isNewSession = false,
 }: {
   messages: ChatMessage[];
   isLoading: boolean;
@@ -115,9 +112,6 @@ export function MessageList({
   onSendFollowUp?: (text: string) => void;
   onRollback?: (messageIndex: number, mode: RollbackMode, parentCommitHash: string) => void;
   onRewind?: (messageIndex: number, mode: RewindMode) => void;
-  /** True when on the /{slug}/new route — show the rocket immediately, since
-   * there's no history to wait for. */
-  isNewSession?: boolean;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -210,17 +204,8 @@ export function MessageList({
     }
   }
 
-  const historyLoaded = useSessionStore((s) => s.historyLoaded);
-  // For a brand-new session there's no history to load, so don't gate on
-  // historyLoaded — the rocket appears the moment the route mounts.
-  const isEmpty = messages.length === 0 && !isLoading && (historyLoaded || isNewSession);
-
   return (
-    <div ref={containerRef} className={isEmpty ? "flex-1" : "flex-1 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-4"} style={isEmpty ? { clipPath: "inset(0 0 -80px 0)" } : undefined}>
-      {isEmpty && (
-        <RocketLaunch />
-      )}
-
+    <div ref={containerRef} className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-4">
       {buildVisualElements(messages).map((el, elIdx, allElements) => {
         // ── Tool-group: grouped tool calls from consecutive assistant messages ──
         if (el.kind === "tool-group") {
