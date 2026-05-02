@@ -107,4 +107,31 @@ describe("useApi", () => {
       body: undefined,
     }));
   });
+
+  it("post() omits Content-Type header when no body is provided", async () => {
+    // Fastify's JSON parser rejects requests advertising
+    // Content-Type: application/json with an empty body
+    // (FST_ERR_CTP_EMPTY_JSON_BODY → HTTP 400). Body-less POSTs must not
+    // claim to be sending JSON.
+    mockFetch(200, { ok: true });
+    const { result } = renderHook(() => useApi());
+
+    await result.current.post("/api/action");
+
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const headers = (call?.[1] as RequestInit | undefined)?.headers as Record<string, string>;
+    expect(headers["Content-Type"]).toBeUndefined();
+    expect(headers.Accept).toBe("application/json");
+  });
+
+  it("post() includes Content-Type header when a body is provided", async () => {
+    mockFetch(200, { ok: true });
+    const { result } = renderHook(() => useApi());
+
+    await result.current.post("/api/action", { foo: 1 });
+
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const headers = (call?.[1] as RequestInit | undefined)?.headers as Record<string, string>;
+    expect(headers["Content-Type"]).toBe("application/json");
+  });
 });

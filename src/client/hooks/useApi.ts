@@ -58,13 +58,18 @@ export function useApi(): UseApiReturn {
   }, []);
 
   const post = useCallback(async <T>(path: string, body?: unknown): Promise<T> => {
+    // Only advertise a JSON content-type when we're actually sending a JSON
+    // body. Otherwise Fastify's JSON parser sees Content-Type: application/json
+    // with a zero-length body and rejects with FST_ERR_CTP_EMPTY_JSON_BODY
+    // (HTTP 400) before the route handler ever runs. This matters for routes
+    // like /agent/kill and /container/restart which take no body.
+    const hasBody = body !== undefined;
+    const headers: Record<string, string> = { "Accept": "application/json" };
+    if (hasBody) headers["Content-Type"] = "application/json";
     const res = await fetch(path, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-      },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      headers,
+      body: hasBody ? JSON.stringify(body) : undefined,
     });
     return handleResponse<T>(res);
   }, []);
