@@ -47,6 +47,13 @@ VOLUME /credentials
 
 ENV NODE_ENV=production
 
+# Bake in the secrets entrypoint wrapper (087-reusable-preview-secrets,
+# Phase 1 follow-up). Mounted into compose service containers at
+# `/shipit/secrets-entrypoint.sh` so they can pick up Docker secrets as env
+# vars without modifying user code.
+COPY docker/secrets-entrypoint.sh /usr/local/share/shipit/secrets-entrypoint.sh
+RUN chmod 0755 /usr/local/share/shipit/secrets-entrypoint.sh
+
 EXPOSE 3000 5173
 
 CMD ["node", "--import", "tsx", "src/server/orchestrator/index.ts"]

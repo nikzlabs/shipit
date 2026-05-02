@@ -3,10 +3,16 @@ import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/re
 import userEvent from "@testing-library/user-event";
 import { Settings, type SettingsProps } from "./Settings.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { usePreviewStore } from "../stores/preview-store.js";
 
 afterEach(() => {
   cleanup();
   useUiStore.getState().setSettingsTab(undefined);
+  usePreviewStore.getState().setSecrets({
+    declared: [],
+    missingByService: {},
+    missingRequired: [],
+  });
 });
 
 const claudeAuthed = { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-sonnet"] };
@@ -617,5 +623,139 @@ describe("Settings - Secrets tab", () => {
       expect(screen.getByTestId("secret-value-0")).toBeInTheDocument();
     });
     expect(screen.getByTestId("secret-value-0")).toHaveAttribute("type", "password");
+  });
+
+  // ---- Phase 5: UI polish — declared section, required, agent, platform ----
+
+  it("renders declared secrets from preview-store snapshot", async () => {
+    usePreviewStore.getState().setSecrets({
+      declared: [{ name: "STRIPE_KEY", services: ["api", "web"] }],
+      missingByService: {},
+      missingRequired: [],
+    });
+    renderOnSecretsTab({ onSecretsLoad: async () => ({}) });
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-declared-STRIPE_KEY")).toBeInTheDocument();
+    });
+    // Per-service scope chips
+    expect(screen.getByTestId("secret-declared-STRIPE_KEY")).toHaveTextContent("api");
+    expect(screen.getByTestId("secret-declared-STRIPE_KEY")).toHaveTextContent("web");
+  });
+
+  it("shows description for declared secrets", async () => {
+    usePreviewStore.getState().setSecrets({
+      declared: [{
+        name: "DATABASE_URL",
+        description: "PostgreSQL connection string",
+        services: ["api"],
+      }],
+      missingByService: {},
+      missingRequired: [],
+    });
+    renderOnSecretsTab({ onSecretsLoad: async () => ({}) });
+    await waitFor(() => {
+      expect(screen.getByText("PostgreSQL connection string")).toBeInTheDocument();
+    });
+  });
+
+  it("shows Required indicator with warning style when value is missing", async () => {
+    usePreviewStore.getState().setSecrets({
+      declared: [{
+        name: "DATABASE_URL",
+        required: true,
+        services: ["api"],
+      }],
+      missingByService: { api: ["DATABASE_URL"] },
+      missingRequired: ["DATABASE_URL"],
+    });
+    renderOnSecretsTab({ onSecretsLoad: async () => ({}) });
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-required-DATABASE_URL")).toBeInTheDocument();
+    });
+  });
+
+  it("shows Agent badge for `agent: true` declarations", async () => {
+    usePreviewStore.getState().setSecrets({
+      declared: [{
+        name: "DATABASE_URL",
+        agent: true,
+        services: ["api"],
+      }],
+      missingByService: {},
+      missingRequired: [],
+    });
+    renderOnSecretsTab({ onSecretsLoad: async () => ({}) });
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-agent-DATABASE_URL")).toBeInTheDocument();
+    });
+  });
+
+  it("renders platform-sourced rows as read-only", async () => {
+    usePreviewStore.getState().setSecrets({
+      declared: [{
+        name: "GITHUB_TOKEN",
+        source: "platform:github_token",
+        services: ["orchestrator"],
+      }],
+      missingByService: {},
+      missingRequired: [],
+    });
+    renderOnSecretsTab({ onSecretsLoad: async () => ({}) });
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-platform-GITHUB_TOKEN")).toBeInTheDocument();
+    });
+    // No editable input for platform-sourced row
+    expect(screen.queryByTestId("secret-value-GITHUB_TOKEN")).not.toBeInTheDocument();
+    // Helpful copy mentions the platform source
+    expect(screen.getByText(/Provided automatically/)).toBeInTheDocument();
+  });
+
+  it("save excludes platform-sourced rows from the payload", async () => {
+    const onSecretsSave = vi.fn();
+    usePreviewStore.getState().setSecrets({
+      declared: [{
+        name: "GITHUB_TOKEN",
+        source: "platform:github_token",
+        services: ["orchestrator"],
+      }],
+      missingByService: {},
+      missingRequired: [],
+    });
+    renderOnSecretsTab({
+      onSecretsSave,
+      onSecretsLoad: async () => ({ GITHUB_TOKEN: "user-stale" }),
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-platform-GITHUB_TOKEN")).toBeInTheDocument();
+    });
+    await userEvent.click(screen.getByTestId("secrets-save"));
+    expect(onSecretsSave).toHaveBeenCalledWith(
+      "https://github.com/org/repo",
+      {}, // platform row stripped, no other declared/custom values
+    );
+  });
+
+  it("editing a declared (non-platform) value persists it on save", async () => {
+    const onSecretsSave = vi.fn();
+    usePreviewStore.getState().setSecrets({
+      declared: [{ name: "STRIPE_KEY", services: ["api"] }],
+      missingByService: {},
+      missingRequired: [],
+    });
+    renderOnSecretsTab({
+      onSecretsSave,
+      onSecretsLoad: async () => ({}),
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-value-STRIPE_KEY")).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId("secret-value-STRIPE_KEY"), {
+      target: { value: "sk_live_x" },
+    });
+    await userEvent.click(screen.getByTestId("secrets-save"));
+    expect(onSecretsSave).toHaveBeenCalledWith(
+      "https://github.com/org/repo",
+      { STRIPE_KEY: "sk_live_x" },
+    );
   });
 });

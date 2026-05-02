@@ -649,6 +649,11 @@ export function PreviewFrame({
         </div>
       </div>
 
+      {/* Missing-required-secrets banner (087 Phase 2). One row at the top of
+          the panel that links to the Secrets settings tab. Only shown when at
+          least one declared secret is `required: true` and has no value. */}
+      <SecretsMissingBanner />
+
       {/* Main content area — iframe pool, one per (session, port) */}
       <div
         ref={deviceContainerRef}
@@ -789,6 +794,49 @@ export function PreviewFrame({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Banner shown above the preview when one or more `required: true` secrets
+ * declared in the compose file have no configured value. Clicking the
+ * "Configure" button opens the Secrets settings tab so the user can fill
+ * them in without leaving the preview pane.
+ *
+ * The banner reads from the live `secrets_status` snapshot in preview-store —
+ * when the user saves, the orchestrator emits a fresh snapshot with empty
+ * `missingRequired` and the banner disappears automatically.
+ */
+function SecretsMissingBanner() {
+  const missingRequired = usePreviewStore((s) => s.secrets.missingRequired);
+  const setSettingsOpen = useUiStore((s) => s.setSettingsOpen);
+  const setSettingsTab = useUiStore((s) => s.setSettingsTab);
+  if (missingRequired.length === 0) return null;
+
+  const label = missingRequired.length === 1
+    ? `${missingRequired[0]} is required`
+    : `${missingRequired.length} required secrets are missing`;
+
+  const openSecrets = () => {
+    setSettingsTab("secrets");
+    setSettingsOpen(true);
+  };
+
+  return (
+    <div
+      role="alert"
+      className="flex items-center gap-2 px-3 py-1.5 border-b border-(--color-warning)/40 bg-(--color-warning)/10 text-xs text-(--color-text-primary)"
+      data-testid="secrets-missing-banner"
+    >
+      <WarningIcon size={ICON_SIZE.SM} className="text-(--color-warning) shrink-0" />
+      <span className="flex-1 truncate">
+        {label}
+        <span className="ml-1 text-(--color-text-secondary)">— this project needs secrets to run.</span>
+      </span>
+      <Button variant="primary" size="sm" onClick={openSecrets} data-testid="secrets-missing-configure">
+        Configure
+      </Button>
     </div>
   );
 }

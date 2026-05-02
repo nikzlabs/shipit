@@ -524,6 +524,51 @@ describe("PreviewFrame", () => {
     }
   });
 
+  // ---- Phase 5: missing-secrets banner ----
+
+  it("shows missing-secrets banner when missingRequired is non-empty", () => {
+    usePreviewStore.getState().setSecrets({
+      declared: [{ name: "DATABASE_URL", required: true, services: ["api"] }],
+      missingByService: { api: ["DATABASE_URL"] },
+      missingRequired: ["DATABASE_URL"],
+    });
+    render(<PreviewFrame preview={null} {...defaultProps} />);
+    expect(screen.getByTestId("secrets-missing-banner")).toBeInTheDocument();
+    expect(screen.getByTestId("secrets-missing-banner")).toHaveTextContent("DATABASE_URL is required");
+  });
+
+  it("hides missing-secrets banner when no required secrets are missing", () => {
+    usePreviewStore.getState().setSecrets({
+      declared: [],
+      missingByService: {},
+      missingRequired: [],
+    });
+    render(<PreviewFrame preview={null} {...defaultProps} />);
+    expect(screen.queryByTestId("secrets-missing-banner")).not.toBeInTheDocument();
+  });
+
+  it("pluralizes the banner message when multiple required secrets are missing", () => {
+    usePreviewStore.getState().setSecrets({
+      declared: [],
+      missingByService: {},
+      missingRequired: ["A", "B", "C"],
+    });
+    render(<PreviewFrame preview={null} {...defaultProps} />);
+    expect(screen.getByTestId("secrets-missing-banner")).toHaveTextContent("3 required secrets are missing");
+  });
+
+  it("Configure button opens the Settings → Secrets tab", async () => {
+    const { useUiStore } = await import("../stores/ui-store.js");
+    usePreviewStore.getState().setSecrets({
+      declared: [],
+      missingByService: {},
+      missingRequired: ["DATABASE_URL"],
+    });
+    render(<PreviewFrame preview={null} {...defaultProps} />);
+    await userEvent.click(screen.getByTestId("secrets-missing-configure"));
+    expect(useUiStore.getState().settingsOpen).toBe(true);
+    expect(useUiStore.getState().settingsTab).toBe("secrets");
+  });
 });
 
 describe("formatErrorForMessage", () => {

@@ -450,6 +450,99 @@ services:
     const services = parseComposeFile(p, { dockerSocket: false });
     expect(services[0].secrets).toEqual(["VALID_NAME"]);
   });
+
+  // ---- Phase 2: object-form metadata captured into secretRequirements ----
+
+  it("populates secretRequirements with description / required / agent / source", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    x-shipit-secrets:
+      - SIMPLE_KEY
+      - name: DATABASE_URL
+        description: PostgreSQL connection string
+        required: true
+        agent: true
+      - name: ANTHROPIC_API_KEY
+        source: platform:claude_oauth
+`);
+    const services = parseComposeFile(p, { dockerSocket: false });
+    const reqs = services[0].secretRequirements;
+    expect(reqs).toBeDefined();
+    expect(reqs).toHaveLength(3);
+
+    const simple = reqs!.find((r) => r.name === "SIMPLE_KEY");
+    expect(simple).toEqual({ name: "SIMPLE_KEY" });
+
+    const db = reqs!.find((r) => r.name === "DATABASE_URL");
+    expect(db).toEqual({
+      name: "DATABASE_URL",
+      description: "PostgreSQL connection string",
+      required: true,
+      agent: true,
+    });
+
+    const api = reqs!.find((r) => r.name === "ANTHROPIC_API_KEY");
+    expect(api).toEqual({
+      name: "ANTHROPIC_API_KEY",
+      source: "platform:claude_oauth",
+    });
+  });
+
+  it("keeps secrets and secretRequirements in lockstep (same order, same names)", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    x-shipit-secrets:
+      - FIRST
+      - name: SECOND
+        required: true
+      - THIRD
+`);
+    const services = parseComposeFile(p, { dockerSocket: false });
+    expect(services[0].secrets).toEqual(["FIRST", "SECOND", "THIRD"]);
+    expect(services[0].secretRequirements?.map((r) => r.name)).toEqual(["FIRST", "SECOND", "THIRD"]);
+  });
+
+  it("ignores extra / unknown object fields without breaking parsing", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    x-shipit-secrets:
+      - name: WITH_EXTRA
+        description: kept
+        unknown_field: value
+        another: 42
+`);
+    const services = parseComposeFile(p, { dockerSocket: false });
+    expect(services[0].secretRequirements?.[0]).toEqual({
+      name: "WITH_EXTRA",
+      description: "kept",
+    });
+  });
+
+  it("treats `required: false` (or absent) as not required", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    x-shipit-secrets:
+      - name: MAYBE
+        required: false
+      - name: ABSENT
+`);
+    const services = parseComposeFile(p, { dockerSocket: false });
+    const reqs = services[0].secretRequirements!;
+    expect(reqs[0].required).toBeUndefined();
+    expect(reqs[1].required).toBeUndefined();
+  });
 });
 
 describe("generateComposeOverride env_file injection", () => {
@@ -485,5 +578,101 @@ describe("generateComposeOverride env_file injection", () => {
     );
     expect(override).toContain(".shipit/.env.web");
     expect(override).toContain(".shipit/.env.api");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 1 follow-up: Docker-secrets mode
+// ---------------------------------------------------------------------------
+
+describe("generateComposeOverride — Docker-secrets mode", () => {
+  const baseOpts = {
+    sessionId: "test-session-123",
+    composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+  };
+
+  function dockerSecretsOpts(perService: Record<string, string[]>) {
+    const allNames = [...new Set(Object.values(perService).flat())].sort();
+    return {
+      secretNames: allNames,
+      perService,
+      filePathFor: (name: string) => `/host/secrets/test-session-123/${name}`,
+      entrypointWorkspacePath: ".shipit/secrets-entrypoint.sh",
+    };
+  }
+
+  it("emits top-level secrets block with file references", () => {
+    const override = generateComposeOverride(
+      [{ name: "api", secrets: ["DATABASE_URL"] }],
+      {
+        ...baseOpts,
+        dockerSecrets: dockerSecretsOpts({ api: ["DATABASE_URL"] }),
+      },
+    );
+    expect(override).toContain("secrets:");
+    expect(override).toContain("shipit-DATABASE_URL");
+    expect(override).toContain("/host/secrets/test-session-123/DATABASE_URL");
+  });
+
+  it("emits per-service secrets references with shipit- prefix", () => {
+    const override = generateComposeOverride(
+      [
+        { name: "web", secrets: ["STRIPE_KEY"] },
+        { name: "api", secrets: ["DATABASE_URL", "STRIPE_KEY"] },
+      ],
+      {
+        ...baseOpts,
+        dockerSecrets: dockerSecretsOpts({
+          web: ["STRIPE_KEY"],
+          api: ["DATABASE_URL", "STRIPE_KEY"],
+        }),
+      },
+    );
+    expect(override).toContain("shipit-STRIPE_KEY");
+    expect(override).toContain("shipit-DATABASE_URL");
+  });
+
+  it("does NOT emit env_file when Docker-secrets mode is active", () => {
+    const override = generateComposeOverride(
+      [{ name: "api", secrets: ["DATABASE_URL"] }],
+      {
+        ...baseOpts,
+        dockerSecrets: dockerSecretsOpts({ api: ["DATABASE_URL"] }),
+      },
+    );
+    expect(override).not.toContain("env_file");
+    expect(override).not.toContain(".shipit/.env.api");
+  });
+
+  it("sets entrypoint to the wrapper script", () => {
+    const override = generateComposeOverride(
+      [{ name: "api", secrets: ["DATABASE_URL"] }],
+      {
+        ...baseOpts,
+        dockerSecrets: dockerSecretsOpts({ api: ["DATABASE_URL"] }),
+      },
+    );
+    expect(override).toContain("/shipit/secrets-entrypoint.sh");
+  });
+
+  it("does NOT add secrets / entrypoint for services without declared secrets", () => {
+    const override = generateComposeOverride(
+      [
+        { name: "api", secrets: ["DATABASE_URL"] },
+        { name: "redis" }, // no secrets
+      ],
+      {
+        ...baseOpts,
+        dockerSecrets: dockerSecretsOpts({ api: ["DATABASE_URL"] }),
+      },
+    );
+    // Top-level secrets block exists but the redis service doesn't reference it
+    const redisIdx = override.indexOf("redis:");
+    const apiIdx = override.indexOf("api:");
+    expect(redisIdx).toBeGreaterThan(0);
+    expect(apiIdx).toBeGreaterThan(0);
+    // redis service block shouldn't contain the entrypoint hijack
+    const afterRedis = override.slice(redisIdx, redisIdx + 200);
+    expect(afterRedis).not.toContain("secrets-entrypoint");
   });
 });

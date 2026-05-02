@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { ServiceManager, type ComposeRunner, type ComposeQuery } from "./service-manager.js";
+import { ServiceManager, type ComposeRunner, type ComposeQuery, type SecretsStatusInternalSnapshot } from "./service-manager.js";
 
 describe("ServiceManager", () => {
   let tmpDir: string;
@@ -572,6 +572,204 @@ services:
     try { await mgr.start(); } catch { /* expected */ }
 
     expect(mgr.getDeclaredSecretNames()).toEqual(["DATABASE_URL", "STRIPE_KEY"]);
+  });
+
+  // ---- Phase 3: agent: true → .env.agent + secrets snapshot ----
+
+  it("writes .shipit/.env.agent for `agent: true` declarations", async () => {
+    const dir = setup();
+    writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    ports: ['3000:3000']
+    x-shipit-secrets:
+      - name: DATABASE_URL
+        agent: true
+      - STRIPE_KEY
+`);
+    const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner: fakeRunner,
+      secretsLoader: async () => ({ DATABASE_URL: "postgres://x", STRIPE_KEY: "sk" }),
+      pollIntervalMs: 0,
+    });
+
+    try { await mgr.start(); } catch { /* expected */ }
+
+    expect(fs.existsSync(path.join(dir, ".shipit/.env.agent"))).toBe(true);
+    const agentEnv = fs.readFileSync(path.join(dir, ".shipit/.env.agent"), "utf-8");
+    expect(agentEnv).toContain("DATABASE_URL=postgres://x");
+    // STRIPE_KEY is service-only — not agent-injected
+    expect(agentEnv).not.toContain("STRIPE_KEY");
+
+    const snap = mgr.getSecretsSnapshot();
+    expect(snap.agentNames).toEqual(["DATABASE_URL"]);
+    expect(snap.agentValues).toEqual({ DATABASE_URL: "postgres://x" });
+  });
+
+  it("removes .shipit/.env.agent when no agent: true declarations remain", async () => {
+    const dir = setup();
+    // Pre-seed an existing .env.agent file from a prior compose definition.
+    fs.mkdirSync(path.join(dir, ".shipit"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".shipit/.env.agent"), "OLD=1\n");
+
+    writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    ports: ['3000:3000']
+    x-shipit-secrets:
+      - STRIPE_KEY
+`);
+    const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner: fakeRunner,
+      secretsLoader: async () => ({ STRIPE_KEY: "sk" }),
+      pollIntervalMs: 0,
+    });
+
+    try { await mgr.start(); } catch { /* expected */ }
+
+    expect(fs.existsSync(path.join(dir, ".shipit/.env.agent"))).toBe(false);
+  });
+
+  // ---- Phase 1 follow-up: Docker-secrets mode ----
+
+  it("Docker-secrets mode writes per-secret files outside the workspace and skips env_file", async () => {
+    const dir = setup();
+    const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "isolated-secrets-root-"));
+    const entrypointPath = path.join(secretsRoot, "secrets-entrypoint.sh");
+    fs.writeFileSync(entrypointPath, "#!/bin/sh\nexec \"$@\"\n", { mode: 0o755 });
+    writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    ports: ['3000:3000']
+    x-shipit-secrets:
+      - DATABASE_URL
+`);
+    const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner: fakeRunner,
+      secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
+      pollIntervalMs: 0,
+      dockerSecretsConfig: {
+        internalDir: secretsRoot,
+        entrypointSourcePath: entrypointPath,
+      },
+    });
+
+    try { await mgr.start(); } catch { /* expected */ }
+
+    // Per-secret file written outside the workspace
+    const secretFile = path.join(secretsRoot, "test-session", "DATABASE_URL");
+    expect(fs.existsSync(secretFile)).toBe(true);
+    expect(fs.readFileSync(secretFile, "utf-8")).toBe("postgres://x");
+
+    // No .env.api in the workspace — agent can't read it
+    expect(fs.existsSync(path.join(dir, ".shipit/.env.api"))).toBe(false);
+
+    // Entrypoint wrapper copied into workspace .shipit/
+    expect(fs.existsSync(path.join(dir, ".shipit/secrets-entrypoint.sh"))).toBe(true);
+
+    // Override references Docker secrets, not env_file
+    const override = fs.readFileSync(path.join(dir, ".shipit/compose.override.yml"), "utf-8");
+    expect(override).toContain("shipit-DATABASE_URL");
+    expect(override).toContain("/shipit/secrets-entrypoint.sh");
+    expect(override).not.toContain("env_file");
+
+    fs.rmSync(secretsRoot, { recursive: true, force: true });
+  });
+
+  it("Docker-secrets mode sweeps any leftover .env.<svc> files from prior env-file mode", async () => {
+    const dir = setup();
+    const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "isolated-secrets-root-"));
+    const entrypointPath = path.join(secretsRoot, "secrets-entrypoint.sh");
+    fs.writeFileSync(entrypointPath, "#!/bin/sh\nexec \"$@\"\n", { mode: 0o755 });
+    // Pre-seed a stale env-file-mode artifact.
+    fs.mkdirSync(path.join(dir, ".shipit"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".shipit/.env.api"), "STALE=value\n");
+
+    writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    ports: ['3000:3000']
+    x-shipit-secrets:
+      - DATABASE_URL
+`);
+    const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner: fakeRunner,
+      secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
+      pollIntervalMs: 0,
+      dockerSecretsConfig: {
+        internalDir: secretsRoot,
+        entrypointSourcePath: entrypointPath,
+      },
+    });
+
+    try { await mgr.start(); } catch { /* expected */ }
+
+    // Stale .env.api removed
+    expect(fs.existsSync(path.join(dir, ".shipit/.env.api"))).toBe(false);
+
+    fs.rmSync(secretsRoot, { recursive: true, force: true });
+  });
+
+  it("emits secrets_status with declared + missingRequired + agentNames", async () => {
+    const dir = setup();
+    writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    ports: ['3000:3000']
+    x-shipit-secrets:
+      - name: DATABASE_URL
+        description: Postgres URL
+        required: true
+        agent: true
+      - SENTRY_DSN
+`);
+    const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner: fakeRunner,
+      secretsLoader: async () => ({}), // no values — both surface as missing
+      pollIntervalMs: 0,
+    });
+
+    const events: { declared: { name: string }[]; missingRequired: string[]; agentNames: string[] }[] = [];
+    mgr.on("secrets_status", (snap: SecretsStatusInternalSnapshot) => {
+      events.push({
+        declared: snap.declared.map((d) => ({ name: d.name })),
+        missingRequired: snap.missingRequired,
+        agentNames: snap.agentNames,
+      });
+    });
+
+    try { await mgr.start(); } catch { /* expected */ }
+
+    expect(events.length).toBeGreaterThan(0);
+    const last = events[events.length - 1];
+    expect(last.declared.map((d) => d.name).sort()).toEqual(["DATABASE_URL", "SENTRY_DSN"]);
+    expect(last.missingRequired).toEqual(["DATABASE_URL"]);
+    expect(last.agentNames).toEqual([]); // no value resolved → empty
   });
 });
 
