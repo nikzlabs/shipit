@@ -273,8 +273,20 @@ export function PreviewFrame({
   const isTransitioning = !activeSlotReady && activePort > 0 && preview?.running && showIframe;
 
   // --- Auth-blocked detection ---
+  // The injected script (see preview-proxy.ts HMR_WS_PATCH) posts a "loaded"
+  // message when the iframe finishes parsing the response HTML. If no message
+  // arrives within MAX_AUTH_TIMEOUT_MS, we suspect the preview is auth-gated
+  // (e.g. Cloudflare Zero Trust) — but slow dev-server boots and missed
+  // postMessages on revisited iframe slots also produce false positives.
+  // To avoid showing the auth overlay for those transient cases, we silently
+  // retry a few times by bumping refreshKey (which force-reloads the iframe)
+  // before surfacing the overlay.
   const [authBlocked, setAuthBlocked] = useState(false);
   const previewLoadedRef = useRef(false);
+  const authRetryRef = useRef(0);
+  const lastAuthUrlRef = useRef<string | null>(null);
+  const MAX_AUTH_TIMEOUT_MS = 5000;
+  const MAX_AUTH_RETRIES = 2;
 
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
@@ -282,6 +294,7 @@ export function PreviewFrame({
       const data = event.data as { source?: string; type?: string } | undefined;
       if (data?.source === "shipit-preview" && data?.type === "loaded") {
         previewLoadedRef.current = true;
+        authRetryRef.current = 0;
         setAuthBlocked(false);
       }
     };
@@ -295,13 +308,26 @@ export function PreviewFrame({
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!activeSlotUrl || !previewSubdomainUrl || isLocalPreview) return;
+    // Reset the retry budget when the user navigates to a different preview URL.
+    // refreshKey changes (manual or auto retry) keep the existing budget.
+    if (lastAuthUrlRef.current !== activeSlotUrl) {
+      lastAuthUrlRef.current = activeSlotUrl;
+      authRetryRef.current = 0;
+    }
     previewLoadedRef.current = false;
     setAuthBlocked(false);
     const timer = setTimeout(() => {
-      if (!previewLoadedRef.current) {
-        setAuthBlocked(true);
+      if (previewLoadedRef.current) return;
+      if (authRetryRef.current < MAX_AUTH_RETRIES) {
+        // Silent auto-reload: the refreshKey effect below will set el.src
+        // again, which forces the iframe to re-fetch and re-run the injected
+        // script. Most "auth required" false positives clear on a single retry.
+        authRetryRef.current += 1;
+        setRefreshKey((k) => k + 1);
+        return;
       }
-    }, 5000);
+      setAuthBlocked(true);
+    }, MAX_AUTH_TIMEOUT_MS);
     return () => clearTimeout(timer);
   }, [activeSlotUrl, previewSubdomainUrl, isLocalPreview, refreshKey]);
 
@@ -474,6 +500,7 @@ export function PreviewFrame({
             size="sm"
             onClick={() => {
               setAuthBlocked(false);
+              authRetryRef.current = 0;
               setRefreshKey((k) => k + 1);
             }}
           >
