@@ -8,11 +8,64 @@ automatically as you edit files.
 1. ShipIt reads `shipit.yaml` for the compose file path (or auto-detects
    `docker-compose.yml` / `compose.yml` at the workspace root).
 2. If `agent.install` commands are specified, they run in the agent container
-   **in parallel** with compose services starting — install does not block previews.
+   **in parallel** with compose services starting — install does not block
+   previews. While install is in flight, a compose service that exits
+   non-zero (typically because dependencies aren't ready yet) is restarted
+   automatically with backoff instead of being marked `error`. Once install
+   finishes, ShipIt does one explicit restart pass on any service still in
+   `error` so a service that crashed just before install completed still
+   recovers without manual intervention.
 3. Services defined in docker-compose.yml start as Docker Compose containers.
    Services marked as `auto` (or with `ports`) start automatically.
 4. ShipIt detects when ports are ready and routes browser traffic through a
    reverse proxy.
+
+## Where to put `npm install`
+
+Put dependency-install commands in `agent.install` only. **Do not** also
+prefix the compose service's `command` with an install step. The cleanest
+shape is:
+
+```yaml
+# shipit.yaml
+agent:
+  install:
+    - cd preview && npm install
+compose: docker-compose.yml
+```
+
+```yaml
+# docker-compose.yml
+services:
+  preview:
+    image: node:20
+    command: npm run dev -- --host 0.0.0.0
+    working_dir: /app/preview
+    ports: ["5173:5173"]
+    volumes: [".:/app"]
+```
+
+The dev server will exit `127` ("vite: not found") on the first cold-boot
+attempt because `node_modules` doesn't exist yet — that's expected. ShipIt
+notices `agent.install` is still running and restarts the service until it
+comes up.
+
+### Common pitfall: duplicate install in compose `command`
+
+A pattern that looks defensive but is actively harmful:
+
+```yaml
+# DON'T — racy duplicate install
+command: sh -c "(test -x node_modules/.bin/vite || npm install) && npm run dev"
+```
+
+When `agent.install` and a compose service both run `npm install` against
+the same bind-mounted `node_modules` at the same time, two different
+containers extract npm tarballs into the same physical directory. The
+result is a flood of `TAR_ENTRY_ERROR ENOENT` warnings, half-extracted
+packages, and a "successful" exit code. The next `test -x` check passes on
+the broken tree, dev server fails with `vite: not found`, container exits
+`127`. Keep install in the agent only.
 
 ## Service types
 

@@ -522,9 +522,15 @@ function setupServiceManager(
   // Fire install on the agent container regardless of compose config — projects
   // without a compose stack (like ShipIt itself) still need their dependencies
   // installed. Non-blocking; progress streams via SSE.
+  //
+  // The returned promise resolves when install fully completes (success,
+  // skipped, or error). We bracket the ServiceManager's `installRunning`
+  // window around it below so dev servers that race install on a shared
+  // bind mount get retried instead of latching to `error`.
   const installCommands = shipitConfig.agent.install;
+  let installPromise: Promise<void> | null = null;
   if (installCommands.length > 0 && runner instanceof ContainerSessionRunner) {
-    void runner.runInstall(installCommands).catch((err: unknown) => {
+    installPromise = runner.runInstall(installCommands).catch((err: unknown) => {
       console.error(`[install:${runner.sessionId}] Install failed:`, getErrorMessage(err));
     });
   }
@@ -593,6 +599,18 @@ function setupServiceManager(
   // Wire ServiceManager to runner for event relay to WS clients
   if (runner.setServiceManager) {
     runner.setServiceManager(mgr);
+  }
+
+  // Open the install-running gate while agent.install is in flight: a service
+  // that exits non-zero during this window is retried with backoff instead
+  // of being marked `error`. Once install resolves, the gate closes and the
+  // manager does one explicit restart pass on services still in `error` /
+  // pending-retry state. Skip when there's nothing to wait for.
+  if (installPromise) {
+    mgr.setInstallRunning(true);
+    void installPromise.finally(() => {
+      mgr.setInstallRunning(false);
+    });
   }
 
   // Clean up on runner dispose

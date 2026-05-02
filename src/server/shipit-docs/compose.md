@@ -214,6 +214,42 @@ All mutation endpoints return `{ "ok": true, "name": "...", "status": "..." }`
 on success or an error with an HTTP 500 status if the operation fails. Service
 names must match those defined in docker-compose.yml.
 
+## Where to put `npm install`
+
+Put dependency installation in `agent.install` (in `shipit.yaml`), **not**
+in the compose service's `command`. The agent container and compose
+services both bind-mount the same workspace, so running `npm install` from
+two places simultaneously corrupts `node_modules` and leaves dev servers
+unable to start.
+
+Recommended:
+
+```yaml
+# shipit.yaml
+agent:
+  install:
+    - npm install
+compose: docker-compose.yml
+```
+
+```yaml
+# docker-compose.yml
+services:
+  web:
+    image: node:20
+    command: npm run dev          # plain run, no install gate
+    working_dir: /app
+    ports: ["5173:5173"]
+    volumes: [".:/app"]
+```
+
+The dev server may exit on its first cold-boot attempt while `node_modules`
+is still being populated — ShipIt restarts it with backoff while
+`agent.install` is in flight, then does one final restart pass once
+install finishes. Do not paper over this with `(test -x ... || npm
+install) && npm run dev` in the compose `command`; that re-introduces the
+race the install-in-agent-only pattern avoids.
+
 ## What not to do
 
 - **Don't mount the Docker socket** (`/var/run/docker.sock`) — ShipIt manages
@@ -224,6 +260,10 @@ names must match those defined in docker-compose.yml.
   setup, run commands in the `command` field or use multi-step entrypoints.
 - **Don't use absolute volume paths** — all paths must be relative to the
   workspace root.
+- **Don't run `npm install` (or pnpm/yarn/bun install) in a service's
+  `command`** when the same install lives in `agent.install`. Two
+  containers writing to the same bind-mounted `node_modules` race each
+  other — see "Where to put `npm install`" above.
 
 ## Pairing with shipit.yaml
 
