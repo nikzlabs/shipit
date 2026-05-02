@@ -427,6 +427,7 @@ interface RawClaudeEvent {
   cache_write_tokens?: number;
   duration_ms?: number;
   result?: string;
+  parent_tool_use_id?: string;
 }
 
 /**
@@ -449,11 +450,13 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
       return {
         type: "agent_assistant",
         content: raw.message?.content ?? [],
+        parentToolUseId: raw.parent_tool_use_id,
       };
     case "user":
       return {
         type: "agent_tool_result",
         content: raw.message?.content ?? [],
+        parentToolUseId: raw.parent_tool_use_id,
       };
     case "result":
       return {

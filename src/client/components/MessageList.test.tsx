@@ -987,7 +987,7 @@ describe("MessageList", () => {
   });
 
   describe("Task/Skill subagent rendering", () => {
-    it("renders Task tool with description and prompt snippet", () => {
+    it("renders Task tool with description (prompt collapsed by default)", () => {
       const tools: ToolUseBlock[] = [
         {
           type: "tool_use",
@@ -996,29 +996,39 @@ describe("MessageList", () => {
           input: {
             subagent_type: "Plan",
             description: "Plan UI beautification approach",
-            prompt: "I need to plan how to render\nthe Task tool use differently\nfrom other tools in the list\nthis line should be hidden",
+            prompt: "I need to plan how to render\nthe Task tool use differently\nfrom other tools in the list",
           },
         },
       ];
       render(
         <MessageList messages={[msg("assistant", "", { toolUse: tools })]} isLoading={false} />
       );
-      expect(screen.getByTestId("subagent-task")).toBeInTheDocument();
-      expect(screen.getByText("Subagent:")).toBeInTheDocument();
+      expect(screen.getByTestId("subagent-call")).toBeInTheDocument();
       expect(screen.getByText("Plan UI beautification approach")).toBeInTheDocument();
-      // Prompt snippet should show first 3 lines
-      expect(screen.getByText(/I need to plan how to render/)).toBeInTheDocument();
+      // Prompt is collapsed by default — toggle is visible, prompt body is not.
+      expect(screen.getByTestId("subagent-prompt-toggle")).toBeInTheDocument();
+      expect(screen.queryByTestId("subagent-prompt")).not.toBeInTheDocument();
     });
 
-    it("renders Task tool without prompt snippet when prompt is missing", () => {
+    it("expands the prompt when the disclosure is clicked", () => {
       const tools: ToolUseBlock[] = [
-        { type: "tool_use", id: "t1", name: "Task", input: { description: "some task" } },
+        {
+          type: "tool_use",
+          id: "t1",
+          name: "Task",
+          input: {
+            description: "Audit the review feature",
+            prompt: "Walk through the review surface and report findings.",
+          },
+        },
       ];
       render(
         <MessageList messages={[msg("assistant", "", { toolUse: tools })]} isLoading={false} />
       );
-      expect(screen.getByTestId("subagent-task")).toBeInTheDocument();
-      expect(screen.getByText("some task")).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("subagent-prompt-toggle"));
+      const prompt = screen.getByTestId("subagent-prompt");
+      expect(prompt).toBeInTheDocument();
+      expect(prompt.textContent).toContain("Walk through the review surface");
     });
 
     it("renders Task tool with fallback when description is missing", () => {
@@ -1028,8 +1038,69 @@ describe("MessageList", () => {
       render(
         <MessageList messages={[msg("assistant", "", { toolUse: tools })]} isLoading={false} />
       );
-      expect(screen.getByTestId("subagent-task")).toBeInTheDocument();
+      expect(screen.getByTestId("subagent-call")).toBeInTheDocument();
       expect(screen.getByText("Running task...")).toBeInTheDocument();
+    });
+
+    it("renders nested subagent work and the final report", () => {
+      const messages: ChatMessage[] = [
+        {
+          role: "assistant",
+          text: "",
+          toolUse: [
+            {
+              type: "tool_use",
+              id: "task-1",
+              name: "Task",
+              input: { description: "Audit", prompt: "audit the codebase" },
+            },
+          ],
+          toolResults: [
+            { toolUseId: "task-1", content: "## Findings\n\nAll good." },
+          ],
+          subagentEvents: [
+            {
+              kind: "assistant",
+              parentToolUseId: "task-1",
+              text: "Reading file...",
+              toolUse: [
+                { type: "tool_use", id: "sub-r1", name: "Read", input: { file_path: "/a.ts" } },
+              ],
+            },
+            {
+              kind: "tool_result",
+              parentToolUseId: "task-1",
+              toolResults: [{ toolUseId: "sub-r1", content: "file contents" }],
+            },
+          ],
+        },
+      ];
+      render(<MessageList messages={messages} isLoading={false} />);
+      expect(screen.getByTestId("subagent-call")).toBeInTheDocument();
+      // Final report is always visible
+      expect(screen.getByTestId("subagent-final-report")).toBeInTheDocument();
+      expect(screen.getByText(/Findings/)).toBeInTheDocument();
+      // "Done" status badge once final report has arrived
+      expect(screen.getByTestId("subagent-done")).toBeInTheDocument();
+      // Work is collapsed by default once final report is in — click to expand.
+      fireEvent.click(screen.getByTestId("subagent-work-toggle"));
+      expect(screen.getByTestId("subagent-work")).toBeInTheDocument();
+      expect(screen.getByText(/Reading file/)).toBeInTheDocument();
+    });
+
+    it("shows running indicator while subagent is still working", () => {
+      const messages: ChatMessage[] = [
+        {
+          role: "assistant",
+          text: "",
+          streaming: true,
+          toolUse: [
+            { type: "tool_use", id: "task-1", name: "Task", input: { description: "Long task", prompt: "do work" } },
+          ],
+        },
+      ];
+      render(<MessageList messages={messages} isLoading={true} />);
+      expect(screen.getByTestId("subagent-running")).toBeInTheDocument();
     });
 
     it("renders Skill tool with skill name", () => {
@@ -1055,7 +1126,7 @@ describe("MessageList", () => {
       // Task should break the tool group, resulting in two separate tool-call-groups
       const groups = screen.getAllByTestId("tool-call-group");
       expect(groups).toHaveLength(2);
-      expect(screen.getByTestId("subagent-task")).toBeInTheDocument();
+      expect(screen.getByTestId("subagent-call")).toBeInTheDocument();
     });
   });
 

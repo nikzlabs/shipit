@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 ---
 
 # 109 — Subagent / Task Tool Transparency
@@ -110,6 +110,43 @@ Component tests for `SubagentCall` covering each disclosure level.
 | `src/client/components/ToolCall/SubagentCall.tsx` | New component |
 | `src/client/utils/group-events-by-parent.ts` | New util |
 | `src/client/components/MessageList.tsx` | Use treed rendering for Task |
+
+## Implementation notes (post-shipping)
+
+The shipped implementation matches the plan with a few clarifications:
+
+- **Where the parent id flows.** Claude CLI's raw `assistant` and `user`
+  events carry a top-level `parent_tool_use_id`. `ClaudeAdapter.mapEvent`
+  copies it onto the normalized `AgentEvent` as `parentToolUseId`. The
+  container path is unchanged — the worker re-uses the same adapter and the
+  field rides through SSE intact.
+- **Server-side splitting.** `agent-listeners.ts` checks `parentToolUseId` on
+  each `agent_assistant` and `agent_tool_result` event. Nested events are
+  attached to the parent group's `subagentEvents` array (a new
+  `ChatMessageGroup` field) instead of being merged into the main
+  `toolUse` / `toolResults` flow. Migration 10 adds a `subagent_events` JSON
+  column to `messages` so reloads see the same tree.
+- **Client tree rendering.** `groupEventsByParent` (new util) trees the flat
+  list of subagent events by parent id. `SubagentCall.tsx` (new component)
+  renders the four disclosure layers from the plan: header, prompt
+  (collapsed), work timeline (auto-collapses once the final report arrives —
+  user toggle wins), and the markdown final report. `MessageList` swaps the
+  legacy "Subagent: <description>" strip for `SubagentCall` whenever it sees
+  a Task tool.
+- **Live updates.** The "work" view streams in real time because each nested
+  `agent_event` is emitted to viewers via the same `runner.emitMessage`
+  path. The renderer just attaches each new event to the parent message in
+  the live messages array.
+- **Per-subagent duration / token usage in the header is not yet wired up.**
+  The Claude CLI does not expose per-subagent usage in its event stream
+  (only the parent turn's totals via `agent_result`). The header will gain a
+  cost/duration chip if/when a future CLI version surfaces it; the current
+  data flow is set up to plumb it through if it appears on the event.
+- **Backward compatibility.** Pre-feature sessions persist with
+  `subagent_events = NULL` and render via the same `SubagentCall` —
+  `groupEventsByParent` returns an empty map, so the work / final-report
+  panels simply don't appear, leaving the header + collapsed prompt as the
+  visible state. No data migration is required.
 
 ## Future extensions
 

@@ -1,5 +1,6 @@
 import type { DatabaseManager } from "../shared/database.js";
 import type { TurnUsage } from "../shared/types.js";
+import type { SubagentEvent } from "./session-runner.js";
 
 /**
  * A single persisted chat message.
@@ -47,6 +48,13 @@ export interface PersistedMessage {
    * context-dial UI on session reload (105).
    */
   turnUsage?: TurnUsage;
+  /**
+   * Events emitted by subagents (Claude's Task tool) whose parent Task tool is
+   * in this message's `toolUse`. Stored as a flat ordered list keyed by
+   * `parentToolUseId` so the client can render the subagent's prompt, work,
+   * and final report under the parent Task call (109 — subagent transparency).
+   */
+  subagentEvents?: SubagentEvent[];
 }
 
 interface MessageRow {
@@ -64,19 +72,20 @@ interface MessageRow {
   tool_results: string | null;
   upload_paths: string | null;
   turn_usage: string | null;
+  subagent_events: string | null;
   created_at: string;
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events)
 `;
 
 const UPDATE_SQL = `
   UPDATE messages SET role=@role, content=@content, tool_use=@tool_use, images=@images,
     files=@files, is_error=@is_error, commit_hash=@commit_hash, parent_commit_hash=@parent_commit_hash,
     in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths,
-    turn_usage=@turn_usage
+    turn_usage=@turn_usage, subagent_events=@subagent_events
   WHERE id = @id
 `;
 
@@ -116,6 +125,7 @@ export class ChatHistoryManager {
       tool_results: msg.toolResults ? JSON.stringify(msg.toolResults) : null,
       upload_paths: msg.uploadPaths ? JSON.stringify(msg.uploadPaths) : null,
       turn_usage: msg.turnUsage ? JSON.stringify(msg.turnUsage) : null,
+      subagent_events: msg.subagentEvents ? JSON.stringify(msg.subagentEvents) : null,
     };
   }
 
@@ -134,6 +144,7 @@ export class ChatHistoryManager {
     if (row.parent_commit_hash) msg.parentCommitHash = row.parent_commit_hash;
     if (row.upload_paths) msg.uploadPaths = JSON.parse(row.upload_paths) as string[];
     if (row.turn_usage) msg.turnUsage = JSON.parse(row.turn_usage) as PersistedMessage["turnUsage"];
+    if (row.subagent_events) msg.subagentEvents = JSON.parse(row.subagent_events) as PersistedMessage["subagentEvents"];
     return msg;
   }
 

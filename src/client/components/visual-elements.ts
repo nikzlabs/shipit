@@ -9,7 +9,7 @@ export const SUBAGENT_TOOLS = new Set(["Task", "Skill", "Agent"]);
 export type VisualElement =
   | { kind: "message"; index: number; hideTools: boolean }
   | { kind: "tool-group"; items: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean }[]; streaming: boolean; messageIndices: number[] }
-  | { kind: "subagent"; tool: ToolUseBlock; streaming: boolean }
+  | { kind: "subagent"; tool: ToolUseBlock; streaming: boolean; messageIndex: number }
   | { kind: "standalone-tool"; tool: ToolUseBlock; result?: ToolResultBlock; streaming: boolean; messageIndex: number };
 
 /**
@@ -105,9 +105,11 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
       flushTools();
     }
 
-    // Emit subagent tools as their own top-level elements
+    // Emit subagent tools as their own top-level elements. Carry the message
+    // index so the renderer can dereference the parent's `subagentEvents` and
+    // `toolResults` for the nested-tree view (109).
     for (const tool of subagentTools) {
-      elements.push({ kind: "subagent", tool, streaming: !!msg.streaming });
+      elements.push({ kind: "subagent", tool, streaming: !!msg.streaming, messageIndex: i });
     }
   }
 

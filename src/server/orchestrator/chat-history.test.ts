@@ -117,6 +117,49 @@ describe("ChatHistoryManager", () => {
     expect(loaded[0].text).toBe("Persisted");
   });
 
+  it("persists subagent events for Task tool transparency (109)", () => {
+    const mgr = new ChatHistoryManager(dbManager);
+    const msg: PersistedMessage = {
+      role: "assistant",
+      text: "Spawning subagent...",
+      toolUse: [
+        {
+          type: "tool_use",
+          id: "task-1",
+          name: "Task",
+          input: { description: "Audit", prompt: "Audit the codebase." },
+        },
+      ],
+      toolResults: [{ toolUseId: "task-1", content: "## Report\n\nDone." }],
+      subagentEvents: [
+        {
+          kind: "assistant",
+          parentToolUseId: "task-1",
+          text: "Reading...",
+          toolUse: [
+            { type: "tool_use", id: "sub-r1", name: "Read", input: { file_path: "/a.ts" } },
+          ],
+        },
+        {
+          kind: "tool_result",
+          parentToolUseId: "task-1",
+          toolResults: [{ toolUseId: "sub-r1", content: "file contents" }],
+        },
+      ],
+    };
+
+    mgr.append("sess-1", msg);
+
+    // Reload via a fresh instance to confirm round-trip serialization works.
+    const mgr2 = new ChatHistoryManager(dbManager);
+    const loaded = mgr2.load("sess-1");
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].subagentEvents).toHaveLength(2);
+    expect(loaded[0].subagentEvents![0].kind).toBe("assistant");
+    expect(loaded[0].subagentEvents![0].parentToolUseId).toBe("task-1");
+    expect(loaded[0].subagentEvents![1].kind).toBe("tool_result");
+  });
+
   describe("updateLastMessage", () => {
     it("merges fields into the last message", () => {
       const mgr = new ChatHistoryManager(dbManager);

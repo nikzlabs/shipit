@@ -30,6 +30,7 @@ interface HistoryResponse {
     files?: unknown[];
     isError?: boolean;
     inProgress?: boolean;
+    subagentEvents?: unknown[];
   }[];
   commits: GitCommit[];
   fileTree: FileTreeNode[];
@@ -61,7 +62,10 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   const data = await res.json() as HistoryResponse;
   const session = useSessionStore.getState();
   session.setMessages(
-    data.messages.map((m) => ({ ...m, streaming: m.inProgress ?? false } as ChatMessage)),
+    data.messages.map((m) => ({
+      ...m,
+      streaming: m.inProgress ?? false,
+    } as unknown as ChatMessage)),
   );
   if (data.agentRunning) {
     session.setIsLoading(true);
