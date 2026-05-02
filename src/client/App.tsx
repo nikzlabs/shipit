@@ -219,16 +219,8 @@ export default function App() {
     send,
   });
 
-  useKeyboardShortcuts({
-    search,
-    searchOpen,
-    setSearchOpen: (updater) => setSearchOpen(updater),
-    shortcutsOpen,
-    setShortcutsOpen: (updater) => setShortcutsOpen(updater),
-    isLoading,
-    settingsOpen,
-    handleInterrupt: () => send({ type: "interrupt_claude" }),
-  });
+  // useKeyboardShortcuts is called after handleNewSessionForRepo is defined
+  // (further down) — the new-session shortcut needs it. See below.
 
   useConnectionSync({ status, send, onSessionConnect: (sid: string) => {
     void useFileStore.getState().hydrateUploads(sid);
@@ -470,6 +462,31 @@ export default function App() {
     },
     [navigate],
   );
+
+  // Keyboard shortcut: Cmd/Ctrl+Shift+O. Prefers the current session's repo,
+  // then the active repo, then falls back to navigating home.
+  const handleNewSessionShortcut = useCallback(() => {
+    const session = useSessionStore.getState();
+    const currentRepo = session.sessions.find((s) => s.id === session.sessionId)?.remoteUrl;
+    const repo = currentRepo ?? useRepoStore.getState().activeRepoUrl;
+    if (repo) {
+      void handleNewSessionForRepo(repo);
+    } else {
+      void navigate("/");
+    }
+  }, [handleNewSessionForRepo, navigate]);
+
+  useKeyboardShortcuts({
+    search,
+    searchOpen,
+    setSearchOpen: (updater) => setSearchOpen(updater),
+    shortcutsOpen,
+    setShortcutsOpen: (updater) => setShortcutsOpen(updater),
+    isLoading,
+    settingsOpen,
+    handleInterrupt: () => send({ type: "interrupt_claude" }),
+    handleNewSession: handleNewSessionShortcut,
+  });
 
   const handleTabChange = useCallback(
     (tab: "preview" | "docs" | "files" | "terminal" | "history" | "services") => {
