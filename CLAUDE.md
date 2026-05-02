@@ -198,6 +198,11 @@ src/
     design-tokens.ts  Icon sizes, spacing, and design constants
     index.css      Tailwind imports + custom animations
     test-setup.ts  Imports @testing-library/jest-dom/vitest
+
+android/         Standalone Android WebView wrapper (separate Gradle build).
+                 Built manually via the "Android build" GitHub Actions workflow.
+                 Node tooling ignores this directory. See android/README.md
+                 and docs/116-android-webview-app/.
 ```
 
 ## Architecture

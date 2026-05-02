@@ -1,49 +1,53 @@
 # Checklist — Android WebView wrapper (configurable host)
 
 ## Cleanup of TWA scaffolding from previous turn
-- [ ] Delete `src/client/public/.well-known/assetlinks.json`.
-- [ ] Remove the explicit `/.well-known/assetlinks.json` route from `src/server/orchestrator/index.ts` (added in the same change that added the manifest).
-- [ ] Confirm `src/client/public/manifest.webmanifest` and the `index.html` PWA meta tags stay — they're useful for iOS "Add to Home Screen" and don't conflict.
+- [x] Delete `src/client/public/.well-known/assetlinks.json`.
+- [x] Remove the explicit `/.well-known/assetlinks.json` route from `src/server/orchestrator/index.ts`.
+- [x] Confirm `src/client/public/manifest.webmanifest` and the `index.html` PWA meta tags stay — verified `dist/client/manifest.webmanifest` ships and `.well-known` is absent.
 
 ## Android project scaffolding
-- [ ] `android/settings.gradle.kts`, `android/build.gradle.kts`, `android/gradle.properties`.
-- [ ] Gradle wrapper committed: `android/gradlew`, `android/gradlew.bat`, `android/gradle/wrapper/gradle-wrapper.jar`, `android/gradle/wrapper/gradle-wrapper.properties`. (Pin a Gradle version known to work with AGP 8.x and JDK 17.)
-- [ ] `android/app/build.gradle.kts` — application module, AGP 8.x, Kotlin, `compileSdk = 34`, `minSdk = 24`, `targetSdk = 34`, AndroidX, view binding on.
-- [ ] `android/app/proguard-rules.pro` (default + WebView keep rules).
+- [x] `android/settings.gradle.kts`, `android/build.gradle.kts`, `android/gradle.properties`.
+- [ ] ~~Gradle wrapper committed.~~ **Skipped intentionally** — not committing `gradle-wrapper.jar` (binary blob). The CI workflow installs Gradle 8.7 via `gradle/actions/setup-gradle@v3` and invokes `gradle` directly. Local builds also use system `gradle`. README documents this.
+- [x] `android/app/build.gradle.kts` — AGP 8.5.2, Kotlin 1.9.24, `compileSdk = 34`, `minSdk = 26`, `targetSdk = 34`, view binding on, signing config that reads from env vars (CI provides them; locally falls back to debug signing so `assembleRelease` doesn't error).
+- [x] `android/app/proguard-rules.pro` (default + JS-bridge keep rules).
 
 ## App code
-- [ ] `Prefs.kt` — wraps `EncryptedSharedPreferences` with one key (`shipit_url`).
-- [ ] `SettingsActivity.kt` — single-field URL form, validates `https://` (allow `http://` only when `BuildConfig.DEBUG`), saves via `Prefs`, finishes.
-- [ ] `MainActivity.kt` — full-bleed `WebView`; if `Prefs.shipitUrl` is empty, launch `SettingsActivity` and finish; otherwise `loadUrl`. Wire `WebViewClient.shouldOverrideUrlLoading` to send OAuth provider URLs to Custom Tabs. Wire `WebChromeClient.onShowFileChooser` for attachments. Hardware back = `webView.goBack()` w/ fallback. Toolbar overflow → re-open `SettingsActivity`.
-- [ ] `OAuthRedirectActivity.kt` — empty Activity registered on the deep-link scheme, forwards to `MainActivity` with the redirect URL. (Optional polish — v1 can ship without it; document this in the file's top comment.)
+- [x] `Prefs.kt` — `EncryptedSharedPreferences` with single `shipit_url` key.
+- [x] `SettingsActivity.kt` — single-field URL form, validates `https://` (allows `http://` only when `BuildConfig.DEBUG`), normalizes (defaults missing scheme to `https://`, strips trailing slashes), saves via `Prefs`, finishes.
+- [x] `MainActivity.kt` — full-bleed `WebView`; if `Prefs.shipitUrl` is empty, launches `SettingsActivity`; otherwise loads the URL. Wires `WebViewClient.shouldOverrideUrlLoading` to send same-host URLs to the WebView and external URLs to the system browser. Wires `WebChromeClient.onShowFileChooser` for attachments via `ActivityResultContracts.GetMultipleContents`. Hardware back via `OnBackPressedDispatcher`. Toolbar overflow → "Open settings" + "Reload".
+- [ ] ~~`OAuthRedirectActivity.kt`.~~ **Skipped for v1.** OAuth callbacks already land on the user's ShipIt origin via the WebView; user back-gestures into the app to continue. Documented as v1.1 polish in `plan.md` and in `android/README.md` under "Known limitations."
 
 ## Resources
-- [ ] `AndroidManifest.xml` — `INTERNET` permission, three activities, `MAIN`/`LAUNCHER` on Settings if no URL else MainActivity (use a launcher activity that picks). Intent filter on `OAuthRedirectActivity` for the deep-link scheme.
-- [ ] `res/layout/activity_main.xml` — single fullscreen `WebView`.
-- [ ] `res/layout/activity_settings.xml` — `EditText` + `Button` + helper text.
-- [ ] `res/values/strings.xml`, `colors.xml`, `themes.xml` — match ShipIt dark theme (`#030712` background).
-- [ ] `res/xml/network_security_config.xml` — clear-text traffic permitted only in debug.
-- [ ] `res/mipmap-*/ic_launcher*.png` — launcher icons. Generate from `src/client/public/favicon.svg` (Android Studio Image Asset wizard equivalent — can be done in CI with a small ImageMagick step or pre-generated and committed).
+- [x] `AndroidManifest.xml` — `INTERNET` + `ACCESS_NETWORK_STATE` permissions, `MainActivity` as `LAUNCHER`, `SettingsActivity` exported=false, network security config + backup rules referenced.
+- [x] `res/layout/activity_main.xml` — CoordinatorLayout + AppBar + WebView, ShipIt-dark background.
+- [x] `res/layout/activity_settings.xml` — TextInputLayout + MaterialButton, ShipIt-dark theme.
+- [x] `res/menu/main.xml` — overflow menu with Reload + Open settings.
+- [x] `res/values/strings.xml`, `colors.xml` (mirrors web UI palette `#030712` + accent), `themes.xml` (DayNight.NoActionBar with system bars themed).
+- [x] `res/xml/network_security_config.xml` — base disallows cleartext; debug-overrides allow it for local dev.
+- [x] `res/xml/backup_rules.xml`, `data_extraction_rules.xml` — exclude the encrypted prefs from cloud backup / device transfer.
+- [x] Adaptive launcher icons via `mipmap-anydpi-v26/ic_launcher.xml` + `ic_launcher_round.xml`, with foreground vector drawable at `drawable/ic_launcher_foreground.xml`. **No PNG bitmaps** — `minSdk = 26` lets us ship XML-only icons. Foreground is a flat-color "rocket" silhouette inspired by the favicon; documented for replacement before Play Store publish.
 
 ## GitHub Actions workflow
-- [ ] `.github/workflows/android.yml` with `on: workflow_dispatch` only — **no** `on: push` or `on: pull_request` triggers.
-- [ ] Inputs: `release: boolean` (default `false`).
-- [ ] Steps: checkout → setup-java 17 → setup-android → cache `~/.gradle/caches` → `cd android && ./gradlew assembleDebug` (or `assembleRelease` if `release == true`).
-- [ ] Release path: restore keystore from `ANDROID_KEYSTORE_BASE64` secret, sign, upload signed APK to a draft GitHub Release for the run's tag (or as a workflow artifact if no tag).
-- [ ] Debug path: upload `app-debug.apk` as a workflow artifact.
+- [x] `.github/workflows/android.yml` with `on: workflow_dispatch` only — **no** `on: push` or `on: pull_request`.
+- [x] Inputs: `release: boolean` (default `false`).
+- [x] Steps: checkout → setup-java 17 → setup-android → setup-gradle (8.7) → `gradle assembleDebug` *or* `gradle assembleRelease`.
+- [x] Release path: keystore restored from `ANDROID_KEYSTORE_BASE64` secret to a file, `ANDROID_KEYSTORE_PATH` env var passed to Gradle, signed APK uploaded as `shipit-release-apk` artifact. Keystore file deleted in `always()` cleanup step.
+- [x] Debug path: uploads `app-debug.apk` as `shipit-debug-apk` artifact.
 
 ## Documentation
-- [ ] `android/README.md` — keystore generation (`keytool -genkey -v -keystore release.keystore -alias shipit -keyalg RSA -keysize 2048 -validity 10000`), how to base64 it into the GitHub secret, how to trigger the workflow manually, how to sideload the APK on a phone.
-- [ ] `CLAUDE.md` — add one-line entry under "Project structure" pointing at `android/`. Mention this is a separate Gradle build that Node tooling ignores.
-- [ ] `.gitignore` — add `android/.gradle/`, `android/app/build/`, `android/build/`, `android/local.properties`, `android/.idea/`, `*.keystore` (so we never accidentally commit a keystore).
+- [x] `android/README.md` — keystore generation (`keytool` invocation), base64-into-secret flow, the four required GitHub secret names, manual workflow trigger, sideload instructions, app-behavior summary, known limitations.
+- [x] `CLAUDE.md` — added `android/` entry under "Project structure" pointing at the README + the design doc.
+- [x] `.gitignore` — added `android/.gradle/`, `android/build/`, `android/app/build/`, `android/local.properties`, `android/.idea/`, `android/captures/`, `android/.cxx/`, `*.keystore`, `*.jks`.
 
 ## Quality gates
-- [ ] `npm run lint` — clean (no JS code changed beyond the cleanup).
-- [ ] `npm run typecheck` — clean.
-- [ ] `npm run test:dev` — clean (the route deletion may affect a test; check).
-- [ ] Trigger the workflow manually with `release: false`, confirm the debug APK is produced.
-- [ ] Sideload the debug APK on a real Android device, verify: settings screen appears on first launch → URL persists → MainActivity loads ShipIt → can log in with GitHub via Custom Tabs → can send a message → can attach a file.
+- [x] `npm run lint` — clean.
+- [x] `npm run typecheck` — clean.
+- [x] `npm run test:dev` — 4 files, 94 tests, all green.
+- [x] `npm run build` — Vite build succeeds; `dist/client/manifest.webmanifest` ships, `.well-known/` correctly absent.
+- [ ] **Manual: trigger the workflow with `release: false`, confirm the debug APK is produced.** *(Operator step — can't run from this container.)*
+- [ ] **Manual: sideload the debug APK on a real Android device, verify the end-to-end flow** (settings → URL persists → WebView loads → login → message → file attach). *(Operator step.)*
 
 ## Wrap-up
-- [ ] Set `status: in-progress` when implementation starts; `done` when all items above are checked.
-- [ ] Update `plan.md` with anything learned during build (e.g., specific OEM WebView quirks, keyboard issues, OAuth provider edge cases).
+- [x] `status: in-progress` set in `docs/116-android-webview-app/plan.md`.
+- [ ] Flip to `status: done` after the two manual operator steps above succeed.
+- [ ] Update `plan.md` with anything learned during the manual smoke test (OEM WebView quirks, keyboard issues, OAuth provider edge cases).
