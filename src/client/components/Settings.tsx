@@ -11,6 +11,11 @@ import { useSettingsStore } from "../stores/settings-store.js";
 
 const MAX_LENGTH = 50_000;
 
+// On mobile the tab list collapses from a vertical sidebar into a horizontal
+// scrollable strip — each trigger sizes to its label and gets pill-like styling
+// so it reads as a tab bar rather than a stretched menu row.
+const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
+
 type Tab = "agent" | "github" | "git" | "instructions" | "advanced" | "deployments" | "secrets";
 
 export interface SettingsProps {
@@ -280,7 +285,7 @@ export function Settings({
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) handleClose(); }}>
       <DialogContent
-        className="rounded-lg border-(--color-border-secondary) max-w-2xl w-full mx-4 flex flex-col h-120"
+        className="rounded-lg border-(--color-border-secondary) max-w-2xl w-full md:mx-4 flex flex-col md:h-120 max-md:h-full"
         data-testid="settings-backdrop"
         onKeyDown={handleKeyDown}
       >
@@ -298,7 +303,7 @@ export function Settings({
           </Button>
         </div>
 
-        {/* Body: sidebar tabs + content */}
+        {/* Body: sidebar tabs + content (vertical sidebar on desktop, horizontal scroll strip on mobile) */}
         <Tabs value={activeTab} onValueChange={(v) => {
           const tab = v as Tab;
           if (tab === "secrets" && !hasActiveSession) return;
@@ -306,22 +311,22 @@ export function Settings({
           if (tab === "instructions") {
             requestAnimationFrame(() => textareaRef.current?.focus());
           }
-        }} className="flex flex-1 min-h-0" orientation="vertical">
-          {/* Left tab sidebar */}
-          <TabsList className="w-40 shrink-0 border-r border-(--color-border-secondary) py-2">
-            <div className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-(--color-text-tertiary)">
+        }} className="flex max-md:flex-col flex-1 min-h-0" orientation="vertical">
+          {/* Tab list — vertical sidebar on desktop, horizontal scroll on mobile */}
+          <TabsList className="md:w-40 md:shrink-0 md:border-r md:py-2 max-md:flex-row max-md:overflow-x-auto max-md:border-b max-md:px-2 max-md:py-1.5 max-md:gap-1 max-md:shrink-0 border-(--color-border-secondary)">
+            <div className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-(--color-text-tertiary) max-md:hidden">
               General
             </div>
             {generalTabs.map((tab) => (
-              <TabsTrigger key={tab} value={tab}>
+              <TabsTrigger key={tab} value={tab} className={mobileTabClass}>
                 {tabLabel(tab)}
               </TabsTrigger>
             ))}
 
-            <div className="px-4 py-1.5 mt-3 text-[10px] font-semibold uppercase tracking-wider text-(--color-text-tertiary)">
+            <div className="px-4 py-1.5 mt-3 text-[10px] font-semibold uppercase tracking-wider text-(--color-text-tertiary) max-md:hidden">
               Project
             </div>
-            <TabsTrigger value="deployments" data-testid="settings-tab-deployments">
+            <TabsTrigger value="deployments" data-testid="settings-tab-deployments" className={mobileTabClass}>
               Deployments
             </TabsTrigger>
             <TabsTrigger
@@ -329,6 +334,7 @@ export function Settings({
               disabled={!hasActiveSession}
               title={!hasActiveSession ? "Requires active session" : undefined}
               data-testid="settings-tab-secrets"
+              className={mobileTabClass}
             >
               Secrets
             </TabsTrigger>
@@ -594,7 +600,7 @@ export function Settings({
                 <p className="text-sm text-(--color-text-secondary)">
                   Check for new versions and update ShipIt in place.
                 </p>
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                   <Button
                     variant="primary"
                     size="md"
