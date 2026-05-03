@@ -120,6 +120,27 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
     setConnectAttempt((n) => n + 1);
   }, []);
 
+  // Force a fresh WebSocket when the tab returns from the background. Mobile
+  // OSes silently kill backgrounded TCP sockets without notifying the JS layer;
+  // the WebSocket's onclose may not fire promptly, so we proactively tear down
+  // and reconnect on visibilitychange → visible. See useServerEvents for the
+  // SSE counterpart of this fix.
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
+  useEffect(() => {
+    if (!url) return;
+    function handleVisibilityChange() {
+      if (!document.hidden && wsRef.current?.readyState !== WebSocket.CONNECTING) {
+        // Reuses the same path as a manual reconnect: close + retry, resetting
+        // the backoff so the user doesn't wait through an exponential delay.
+        reconnect();
+      }
+    }
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [url, reconnect]);
+
   const drainMessages = useCallback((): MessageEvent[] => {
     const msgs = messageQueueRef.current;
     messageQueueRef.current = [];
