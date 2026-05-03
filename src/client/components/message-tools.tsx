@@ -84,7 +84,7 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
         toolUseId={tool.id}
         questions={questions}
         onAnswer={onAnswerQuestion ?? (() => {})}
-        disabled={isQuestionDisabled || isStreaming}
+        disabled={isQuestionDisabled}
       />
     );
   }
@@ -93,7 +93,7 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
     return (
       <PlanApproval
         onSend={onSendFollowUp ?? (() => {})}
-        disabled={isQuestionDisabled || isStreaming}
+        disabled={isQuestionDisabled}
         planContent={planContent}
       />
     );
