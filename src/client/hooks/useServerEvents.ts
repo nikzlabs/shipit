@@ -1,5 +1,5 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: EventSource (SSE) connection lifecycle with cleanup (external system sync)
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -10,9 +10,19 @@ import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats } from "
 /**
  * SSE hook for global push events — session list, repo updates, auth, activity dots.
  * Always active (home page and session page). Replaces WS broadcasts for global state.
+ *
+ * Mobile resilience: when the tab is backgrounded (user switches apps), the OS
+ * often silently terminates the underlying TCP connection. Native EventSource
+ * keeps `readyState === OPEN` and never fires `error`, so its built-in
+ * auto-reconnect never triggers and PR/CI status updates stop arriving — the
+ * UI shows stale data until the user reloads the page. We watch
+ * `visibilitychange` and force a fresh connection when the tab returns to the
+ * foreground; the server re-sends its snapshot (PR statuses, sessions, repos
+ * — see `/api/events` initial-state writes) so the UI catches up immediately.
  */
 export function useServerEvents(): void {
   const eventSourceRef = useRef<EventSource | null>(null);
+  const [connectAttempt, setConnectAttempt] = useState(0);
 
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
@@ -145,6 +155,24 @@ export function useServerEvents(): void {
     return () => {
       es.close();
       eventSourceRef.current = null;
+    };
+  }, [connectAttempt]);
+
+  // Force a fresh SSE connection when the tab returns from the background.
+  // Native EventSource readyState often stays OPEN over a dead socket on
+  // mobile, so we tear down and re-open instead of waiting for a (never-firing)
+  // error event. Closing the previous EventSource is handled by the effect's
+  // cleanup, which re-runs when `connectAttempt` changes.
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
+  useEffect(() => {
+    function handleVisibilityChange() {
+      if (!document.hidden) {
+        setConnectAttempt((n) => n + 1);
+      }
+    }
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
 }
