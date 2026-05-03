@@ -293,7 +293,13 @@ export function MessageList({
         // ── Standalone tool: ExitPlanMode or AskUserQuestion extracted from an empty-text message ──
         if (el.kind === "standalone-tool") {
           const isLastMessage = el.messageIndex === messages.length - 1;
-          const questionDisabled = !isLastMessage || isLoading || el.streaming;
+          // AskUserQuestion / ExitPlanMode block the agent waiting for user
+          // input, so the message stays `streaming` and `isLoading` stays
+          // true while the question is on screen — those flags must NOT
+          // disable the prompt. The tool body is only rendered once the
+          // tool input is fully parsed (see message-tools.tsx), so streaming
+          // partial JSON isn't a concern here.
+          const questionDisabled = !isLastMessage;
           const resolvedPlanContent = el.tool.name === "ExitPlanMode" ? findPlanContent(el.messageIndex) : undefined;
           return (
             <div key={`st-${el.tool.id}`}>
@@ -425,7 +431,11 @@ export function MessageList({
 
               {!hideTools && msg.toolUse && msg.toolUse.length > 0 && (() => {
                 const isLastMessage = i === messages.length - 1;
-                const questionDisabled = !isLastMessage || isLoading || !!msg.streaming;
+                // See note above — AskUserQuestion / ExitPlanMode block the
+                // agent on stdin, so isLoading/msg.streaming are both `true`
+                // while the question is awaiting an answer. Disabling on
+                // those flags would dismiss every user click.
+                const questionDisabled = !isLastMessage;
                 return (
                   <div className="mt-2 space-y-1">
                     {msg.toolUse.map((tool, toolIdx) => {
