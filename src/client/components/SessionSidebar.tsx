@@ -311,13 +311,13 @@ function RepoGroup({
       {/* Session list — hidden when collapsed */}
       {!isCollapsed && (
         <div className="flex flex-col gap-0.5">
-          {/* New session button — big primary, like before the multi-repo refactor */}
+          {/* New session button — outlined secondary, centered (not full-width) */}
           <div className="px-3 py-2 flex justify-center">
             <Button
-              variant="primary"
+              variant="secondary"
               onClick={onNewSession}
               disabled={repo.status === "cloning"}
-              className="w-full justify-center gap-2"
+              className="gap-2"
             >
               <PlusIcon size={ICON_SIZE.SM} />
               New Session
