@@ -154,7 +154,7 @@ describe("Integration: Terminal/logs relay", () => {
     client.close();
   });
 
-  it("sends buffered logs to newly connected clients", async () => {
+  it("sends buffered logs to newly connected clients on the SAME session", async () => {
     // First client triggers some log entries
     const client1 = await TestClient.connect(port);
     await client1.receive(); // preview_status
@@ -189,7 +189,42 @@ describe("Integration: Terminal/logs relay", () => {
     client2.close();
   });
 
-  it("clear_logs empties the log buffer", async () => {
+  it("does NOT leak buffered logs across sessions", async () => {
+    // Session A generates logs
+    const clientA = await TestClient.connect(port);
+    await clientA.receive(); // preview_status
+
+    clientA.send({ type: "send_message", text: "session A work" });
+    await waitForClaude(() => lastClaude);
+
+    await clientA.receiveType("log_entry"); // "Agent process started"
+    lastClaude.emit("log", "stderr", "Session A debug output");
+    await clientA.receiveType("log_entry"); // consume
+
+    // Brand-new client connects to a DIFFERENT (newly-created) session.
+    // It must not receive any of Session A's log entries.
+    const clientB = await TestClient.connect(port);
+    expect(clientB.sessionId).not.toBe(clientA.sessionId);
+
+    const initialMsgs: WsServerMessage[] = [];
+    try {
+      for (let i = 0; i < 6; i++) {
+        initialMsgs.push(await clientB.receive(300));
+      }
+    } catch { /* timeout expected */ }
+
+    const leakedLogs = initialMsgs.filter(
+      (m) => m.type === "log_entry" &&
+        ((m as any).text === "Agent process started" ||
+          (m as any).text === "Session A debug output"),
+    );
+    expect(leakedLogs).toHaveLength(0);
+
+    clientA.close();
+    clientB.close();
+  });
+
+  it("clear_logs empties the log buffer for the current session", async () => {
     // Generate some logs
     const client1 = await TestClient.connect(port);
     await client1.receive(); // preview_status
@@ -202,16 +237,20 @@ describe("Integration: Terminal/logs relay", () => {
     client1.send({ type: "clear_logs" });
     await new Promise((r) => setTimeout(r, 50));
 
-    // New client should not receive any buffered logs
-    const client2 = await TestClient.connect(port);
-    const preview = await client2.receive(); // preview_status
-    expect(preview.type).toBe("preview_status");
+    // New client connecting to the SAME session should not receive any
+    // buffered logs (the buffer for this session is empty after clear_logs).
+    const client2 = await TestClient.connect(port, client1.sessionId);
 
     // Wait a bit — should not receive any log entries
     let gotLog = false;
     try {
-      const msg = await client2.receive(200);
-      if (msg.type === "log_entry") gotLog = true;
+      for (let i = 0; i < 5; i++) {
+        const msg = await client2.receive(200);
+        if (msg.type === "log_entry") {
+          gotLog = true;
+          break;
+        }
+      }
     } catch {
       // Timeout — expected, no logs to receive
     }

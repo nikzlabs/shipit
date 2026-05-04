@@ -56,7 +56,7 @@ export interface ApiDeps {
   runnerRegistry: SessionRunnerRegistry;
   chatHistoryManager: ChatHistoryManager;
   authManager: AuthManager;
-  broadcastLog: (source: "stderr" | "stdout" | "server" | "preview" | "install", text: string) => void;
+  broadcastLog: (sessionId: string, source: "stderr" | "stdout" | "server" | "preview" | "install", text: string) => void;
   sseBroadcast: (event: string, data: unknown) => void;
   getSharedRepoDir: (repoUrl: string) => string;
   createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }>;
