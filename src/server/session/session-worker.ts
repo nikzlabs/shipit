@@ -26,6 +26,8 @@ import type { ServerResponse } from "node:http";
 import { getErrorMessage } from "../shared/utils.js";
 import { ClaudeProcess } from "./claude.js";
 import { ClaudeAdapter } from "./agents/claude-adapter.js";
+import { registerAgentOpsRoutes } from "./agent-ops-routes.js";
+import type { OrchestratorClient } from "./orchestrator-client.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -65,6 +67,8 @@ export interface SessionWorkerDeps {
   createFileWatcher?: () => FileWatcher;
   /** Factory for creating TerminalProcess (injectable for testing). */
   createTerminal?: () => TerminalProcess;
+  /** Factory for the worker→orchestrator client. Injectable so tests can stub the orchestrator. */
+  createOrchestratorClient?: () => OrchestratorClient;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,6 +94,7 @@ export class SessionWorker extends EventEmitter {
   private fileWatcher: FileWatcher | null = null;
   private _createFileWatcher: () => FileWatcher;
   private _createTerminal: () => TerminalProcess;
+  private _createOrchestratorClient?: () => OrchestratorClient;
 
   // Service request/callback state
   private _pendingServiceRequests = new Map<string, PendingServiceRequest>();
@@ -117,6 +122,7 @@ export class SessionWorker extends EventEmitter {
     this.workspaceDir = deps.workspaceDir ?? "/workspace";
     this._createFileWatcher = deps.createFileWatcher ?? (() => new FileWatcher());
     this._createTerminal = deps.createTerminal ?? (() => new TerminalProcess());
+    this._createOrchestratorClient = deps.createOrchestratorClient;
     this.app = this.buildApp();
   }
 
@@ -126,6 +132,9 @@ export class SessionWorker extends EventEmitter {
     app.get("/health", async () => ({ status: "ok" }));
     this.registerSessionEndpoints(app);
     this.registerSSEEndpoint(app);
+    registerAgentOpsRoutes(app, {
+      createOrchestratorClient: this._createOrchestratorClient,
+    });
 
     return app;
   }

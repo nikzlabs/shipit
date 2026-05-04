@@ -240,6 +240,206 @@ export async function enableAutoMerge(
 }
 
 /**
+ * Update an existing pull request (title and/or body).
+ * Pass `state: "open" | "closed"` to reopen/close.
+ */
+export async function updatePullRequest(
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  options: { title?: string; body?: string; state?: "open" | "closed" },
+): Promise<{ success: boolean; url?: string; number?: number; message?: string }> {
+  try {
+    const payload: Record<string, string> = {};
+    if (typeof options.title === "string") payload.title = options.title;
+    if (typeof options.body === "string") payload.body = options.body;
+    if (options.state) payload.state = options.state;
+    if (Object.keys(payload).length === 0) {
+      return { success: false, message: "No fields to update" };
+    }
+
+    const res = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
+      {
+        method: "PATCH",
+        headers: {
+          ...GITHUB_HEADERS(token),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      },
+    );
+
+    if (!res.ok) {
+      const err = (await res.json()) as { message?: string };
+      return { success: false, message: err.message || `GitHub API returned ${res.status}` };
+    }
+
+    const data = (await res.json()) as { html_url: string; number: number };
+    return { success: true, url: data.html_url, number: data.number };
+  } catch (err) {
+    return { success: false, message: getErrorMessage(err) };
+  }
+}
+
+/**
+ * Add an issue-style comment to a pull request. Uses the issues API endpoint
+ * since PRs are issues on GitHub. Returns the comment URL on success.
+ */
+export async function addPullRequestComment(
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  body: string,
+): Promise<{ success: boolean; url?: string; message?: string }> {
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/issues/${pullNumber}/comments`,
+      {
+        method: "POST",
+        headers: {
+          ...GITHUB_HEADERS(token),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ body }),
+      },
+    );
+
+    if (!res.ok) {
+      const err = (await res.json()) as { message?: string };
+      return { success: false, message: err.message || `GitHub API returned ${res.status}` };
+    }
+
+    const data = (await res.json()) as { html_url: string };
+    return { success: true, url: data.html_url };
+  } catch (err) {
+    return { success: false, message: getErrorMessage(err) };
+  }
+}
+
+/**
+ * Mark a draft pull request as ready for review.
+ * Uses the GraphQL API since REST does not expose this transition.
+ */
+export async function markPullRequestReady(
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+): Promise<{ success: boolean; message: string }> {
+  // Get the PR's node ID
+  const prRes = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
+    { headers: GITHUB_HEADERS(token) },
+  );
+  if (!prRes.ok) return { success: false, message: "Failed to fetch PR details" };
+  const prData = (await prRes.json()) as { node_id: string };
+  const nodeId = prData.node_id;
+
+  const graphqlRes = await fetch("https://api.github.com/graphql", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "User-Agent": "ShipIt",
+    },
+    body: JSON.stringify({
+      query: `mutation MarkReady($prId: ID!) {
+        markPullRequestReadyForReview(input: { pullRequestId: $prId }) {
+          pullRequest { isDraft }
+        }
+      }`,
+      variables: { prId: nodeId },
+    }),
+  });
+
+  if (!graphqlRes.ok) return { success: false, message: "Failed to mark PR ready" };
+  const graphqlData = (await graphqlRes.json()) as { errors?: { message: string }[] };
+  if (graphqlData.errors) {
+    return { success: false, message: graphqlData.errors[0]?.message ?? "Unknown error" };
+  }
+  return { success: true, message: "Pull request marked ready for review" };
+}
+
+/**
+ * List open pull requests for a repository.
+ * Returns a small array of PR metadata sorted by most recently updated.
+ */
+export async function listPullRequests(
+  token: string,
+  owner: string,
+  repo: string,
+  state: "open" | "closed" | "all" = "open",
+): Promise<{ url: string; number: number; base: string; title: string; state: "open" | "closed"; isDraft: boolean; head: string }[]> {
+  const res = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/pulls?state=${state}&sort=updated&direction=desc&per_page=30`,
+    { headers: GITHUB_HEADERS(token) },
+  );
+  if (!res.ok) return [];
+  const prs = (await res.json()) as {
+    html_url: string;
+    number: number;
+    base: { ref: string };
+    head: { ref: string };
+    title: string;
+    state: "open" | "closed";
+    draft: boolean;
+  }[];
+  return prs.map((pr) => ({
+    url: pr.html_url,
+    number: pr.number,
+    base: pr.base.ref,
+    head: pr.head.ref,
+    title: pr.title,
+    state: pr.state,
+    isDraft: pr.draft,
+  }));
+}
+
+/**
+ * Fetch a single pull request's details.
+ */
+export async function viewPullRequest(
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+): Promise<{
+  url: string; number: number; base: string; head: string;
+  title: string; body: string;
+  state: "open" | "closed"; isDraft: boolean; merged: boolean;
+  additions: number; deletions: number;
+} | null> {
+  const res = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
+    { headers: GITHUB_HEADERS(token) },
+  );
+  if (!res.ok) return null;
+  const pr = (await res.json()) as {
+    html_url: string; number: number;
+    base: { ref: string }; head: { ref: string };
+    title: string; body: string | null;
+    state: "open" | "closed"; draft: boolean; merged: boolean;
+    additions: number; deletions: number;
+  };
+  return {
+    url: pr.html_url,
+    number: pr.number,
+    base: pr.base.ref,
+    head: pr.head.ref,
+    title: pr.title,
+    body: pr.body ?? "",
+    state: pr.state,
+    isDraft: pr.draft,
+    merged: pr.merged,
+    additions: pr.additions,
+    deletions: pr.deletions,
+  };
+}
+
+/**
  * Disable auto-merge on a pull request.
  * Uses the GraphQL API (`disablePullRequestAutoMerge` mutation).
  */
