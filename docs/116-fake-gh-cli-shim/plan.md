@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in-progress
 priority: high
 ---
 
@@ -159,11 +159,11 @@ Whether to include this is gated by the same `autoCreatePr` setting the harness 
 
 ## Phasing
 
-| Phase | Scope |
-|---|---|
-| **1** | Build the shim + worker `/agent-ops/*` routes + supporting orchestrator endpoints. Update `shipit-docs/github.md`. **No agent prompt changes.** Harness path untouched. The agent *could* use `gh` if it decides to, but nothing nudges it. This phase is fully backwards-compatible. |
-| **2** | Update `agent-instructions.ts` to recommend `gh pr create` when `autoCreatePr` is on. The agent now drives the happy path; harness is the backstop. This is when empty-body PRs go away in practice. |
-| **3** *(optional)* | Reduce the harness fallback to a true backstop that only fires N seconds after turn-end if no PR was created by the agent. Removes the "double work, dedup-saves-us" pattern. Probably not worth doing until we have telemetry showing harness fallback rarely fires. |
+| Phase | Scope | Status |
+|---|---|---|
+| **1** | Build the shim + worker `/agent-ops/*` routes + supporting orchestrator endpoints. Update `shipit-docs/github.md`. **No agent prompt changes.** Harness path untouched. The agent *could* use `gh` if it decides to, but nothing nudges it. This phase is fully backwards-compatible. | done |
+| **2** | Update `agent-instructions.ts` to recommend `gh pr create` when `autoCreatePr` is on. The agent now drives the happy path; harness is the backstop. This is when empty-body PRs go away in practice. | planned |
+| **3** *(optional)* | Reduce the harness fallback to a true backstop that only fires N seconds after turn-end if no PR was created by the agent. Removes the "double work, dedup-saves-us" pattern. Probably not worth doing until we have telemetry showing harness fallback rarely fires. | planned |
 
 ## Security model
 
@@ -191,29 +191,52 @@ The trust boundary that matters: **the worker's `/agent-ops/*` allowlist**. Shim
 
 ## Tests
 
-- **Shim unit tests** — argument parsing, allowlist enforcement, JSON output formatting, exit codes. `src/server/session/agent-shim/gh.test.ts`.
-- **Worker broker tests** — `/agent-ops/pr/create` happy path, malformed input rejected, no-GitHub-auth errors propagated. Co-located with `session-worker.test.ts`.
-- **Integration test** — agent (FakeClaudeProcess) emits a tool call running `gh pr create`; orchestrator's `GitHubAuthManager` (stubbed) records the create call with the right title/body; PR lifecycle card emits `phase=open`. `src/server/orchestrator/integration_tests/agent-driven-pr.test.ts`.
-- **Backstop interaction test** — agent doesn't run `gh`; harness fallback fires; existing `quickCreatePr` flow works unchanged. (Already covered by `pr-auto-create-on-turn.test.ts`; verify it still passes.)
-- **Dedup test** — agent runs `gh pr create`; harness then runs `quickCreatePr`; second call short-circuits via `findPullRequest`.
-- **Allowlist denial tests** — `gh repo create`, `gh api …`, `gh workflow run`, `gh auth login` all exit non-zero with helpful errors.
+Phase 1 coverage shipped:
+
+- **[done] Shim unit tests** — `src/server/session/agent-shim/gh.test.ts` covers
+  argument parsing (positional/value/boolean/`--flag=value`), allowlist
+  enforcement, every supported subcommand's happy path, JSON-field filtering,
+  PR-number fallback to current branch, error formatting (auth/validation),
+  and exit codes. 47 cases.
+- **[done] Worker broker tests** — `src/server/session/agent-ops-routes.test.ts`
+  covers every `/agent-ops/*` route, body+query forwarding, status
+  pass-through, and the misconfigured-orchestrator-client failure mode.
+  11 cases.
+- **[done] Allowlist denial tests** — covered by the shim unit tests above
+  (`gh api`, `gh repo`, `gh release`, `gh workflow`, `gh auth`, `gh secret`,
+  `gh ssh-key`, `gh codespace`, `gh extension`, `gh issue`, `gh gist`,
+  `gh run`, plus unknown subcommands and `--repo`/`--web` flags).
+- **[done] Backstop interaction (regression) test** — `pr-auto-create-on-turn.test.ts`
+  continues to pass unchanged: the harness fallback still fires when the
+  agent doesn't drive PR creation.
+
+Phase 2 coverage to add when prompt nudge lands:
+
+- **Integration test** — agent (FakeClaudeProcess) emits a tool call running
+  `gh pr create`; orchestrator's `GitHubAuthManager` (stubbed) records the
+  create call with the right title/body; PR lifecycle card emits `phase=open`.
+  `src/server/orchestrator/integration_tests/agent-driven-pr.test.ts`.
+- **Dedup test** — agent runs `gh pr create`; harness then runs
+  `quickCreatePr`; second call short-circuits via `findPullRequest`.
 
 ## Key files
 
-| File | Change |
-|---|---|
-| `src/server/session/agent-shim/gh.ts` | **New.** The shim entry point. Parses args, calls the worker, formats output. |
-| `src/server/session/agent-shim/gh.test.ts` | **New.** Unit tests. |
-| `src/server/session/session-worker.ts` | Register `/agent-ops/*` routes; instantiate worker→orchestrator HTTP client. |
-| `src/server/session/agent-ops-routes.ts` | **New.** The narrow allowlist router. |
-| `src/server/session/orchestrator-client.ts` | **New.** Tiny HTTP client for worker→orchestrator. |
-| `src/server/orchestrator/api-routes-github.ts` | Add new endpoints for edit/comment/ready/close/reopen against an existing PR (most are thin wrappers over existing GitHubAuthManager methods). |
-| `src/server/orchestrator/services/github.ts` | Service-layer functions for the new operations. |
-| `src/server/orchestrator/github-auth-prs.ts` | Add Octokit calls (`update`, `createReviewComment`, `markReadyForReview`, etc.) if not already present. |
-| `docker/Dockerfile.session-worker.{dev,prod,docker}` | Compile and install the shim at `/usr/local/bin/gh`, owned by root, mode 0755. |
-| `src/server/shipit-docs/github.md` | Document the shim, the supported subcommands, the rejected ones, the auth model. |
-| `src/server/orchestrator/agent-instructions.ts` | *(Phase 2)* When `autoCreatePr` is on, append the "use `gh pr create`" instruction. |
-| `src/server/orchestrator/integration_tests/agent-driven-pr.test.ts` | **New.** End-to-end coverage of the agent-driven path. |
+| File | Change | Status |
+|---|---|---|
+| `src/server/session/agent-shim/gh.ts` | **New.** The shim entry point. Parses args, calls the worker, formats output. | done |
+| `src/server/session/agent-shim/gh.test.ts` | **New.** Unit tests for parsing, allowlist, every subcommand, error formatting. | done |
+| `src/server/session/session-worker.ts` | Register `/agent-ops/*` routes; accept a `createOrchestratorClient` injection point. | done |
+| `src/server/session/agent-ops-routes.ts` | **New.** The narrow allowlist router. Pipes shim requests to the orchestrator. | done |
+| `src/server/session/agent-ops-routes.test.ts` | **New.** Tests every relay route + misconfig path. | done |
+| `src/server/session/orchestrator-client.ts` | **New.** Tiny HTTP client for worker→orchestrator. Reads `SHIPIT_HOST`/`SHIPIT_PORT`/`SESSION_ID` from env. | done |
+| `src/server/orchestrator/api-routes-github.ts` | New routes: `POST /pr/agent-create`, `PATCH /pr/:n`, `GET /pr/list`, `GET /pr/view`, `POST /pr/:n/{comment,ready,close,reopen}`. | done |
+| `src/server/orchestrator/services/github.ts` | Added `agentCreatePr`, `editPullRequest`, `commentOnPullRequest`, `markPrReady`, `closePullRequest`, `reopenPullRequest`, `viewPullRequest`, `listPullRequests`. | done |
+| `src/server/orchestrator/github-auth-prs.ts` | Added `updatePullRequest`, `addPullRequestComment`, `markPullRequestReady`, `listPullRequests`, `viewPullRequest` (REST + GraphQL via fetch). | done |
+| `src/server/orchestrator/github-auth.ts` | Wrapper methods on `GitHubAuthManager` for the new PR operations. | done |
+| `docker/Dockerfile.session-worker.{dev,prod}` | Install shim at `/usr/local/bin/gh` as a small `sh` wrapper that runs `node --import tsx …/gh.ts`. The `.docker` image inherits via `BASE_IMAGE`. | done |
+| `src/server/shipit-docs/github.md` | Documents the shim — supported / rejected subcommands, push semantics, auth model. | done |
+| `src/server/orchestrator/agent-instructions.ts` | *(Phase 2)* When `autoCreatePr` is on, append the "use `gh pr create`" instruction. | planned |
+| `src/server/orchestrator/integration_tests/agent-driven-pr.test.ts` | *(Phase 2)* End-to-end coverage of the agent-driven path. | planned |
 
 ## Future extensions
 

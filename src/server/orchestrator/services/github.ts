@@ -308,6 +308,309 @@ export async function quickCreatePr(
   };
 }
 
+// ---- Agent-driven PR operations (used by the `gh` shim) ----
+
+/**
+ * Look up an open PR for the session's branch. Returns `null` if none exists.
+ * Throws ServiceError on auth/remote-resolution failures so callers can map to HTTP.
+ */
+async function resolveSessionPr(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  remoteUrl?: string,
+): Promise<{ owner: string; repo: string; head: string; pr: { number: number; url: string; base: string; title: string } | null }> {
+  if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
+  const resolved = await resolveGitHubRemote(git, remoteUrl);
+  if ("error" in resolved) throw new ServiceError(400, resolved.error);
+  const head = await git.getCurrentBranch();
+  const pr = await githubAuthManager.findPullRequest(resolved.owner, resolved.repo, head);
+  return { owner: resolved.owner, repo: resolved.repo, head, pr };
+}
+
+/**
+ * Agent-driven PR create. Like `quickCreatePr` but takes an explicit title and
+ * body from the agent and skips the LLM-derived description path. Pushes the
+ * branch first (same as `quickCreatePr`) and short-circuits if a PR already
+ * exists for this branch.
+ *
+ * Returns the new (or existing) PR's metadata.
+ */
+export async function agentCreatePr(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  options: {
+    title?: string;
+    body?: string;
+    /** Optional override; auto-detects main/master from remote when not given. */
+    base?: string;
+    /** Open the PR as a draft. Defaults to false. */
+    draft?: boolean;
+    /** When true and body is empty/missing, fall back to a basic git-log description. */
+    fill?: boolean;
+    sessionTitle?: string;
+    remoteUrl?: string;
+  },
+): Promise<{
+  number: number;
+  url: string;
+  title: string;
+  baseBranch: string;
+  headBranch: string;
+  insertions: number;
+  deletions: number;
+  alreadyExisted: boolean;
+}> {
+  if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
+
+  const resolved = await resolveGitHubRemote(git, options.remoteUrl);
+  if ("error" in resolved) throw new ServiceError(400, resolved.error);
+
+  const head = await git.getCurrentBranch();
+
+  // Short-circuit if a PR already exists for this branch.
+  const existingPr = await githubAuthManager.findPullRequest(resolved.owner, resolved.repo, head);
+  if (existingPr) {
+    const stats = await git.diffStatVsBranch(existingPr.base);
+    return {
+      number: existingPr.number,
+      url: existingPr.url,
+      title: existingPr.title,
+      baseBranch: existingPr.base,
+      headBranch: head,
+      insertions: stats.insertions,
+      deletions: stats.deletions,
+      alreadyExisted: true,
+    };
+  }
+
+  // Push the branch (same flow as quickCreatePr).
+  try {
+    await git.push("origin", head);
+  } catch (err) {
+    const msg = getErrorMessage(err);
+    if (msg.includes("workflow")) {
+      throw new ServiceError(403,
+        "Your GitHub token is missing the `workflow` scope, which is required because this branch modifies GitHub Actions workflow files.\n" +
+        "Please update your token at https://github.com/settings/tokens to include the `workflow` scope, then reconnect.");
+    }
+    throw new ServiceError(500, `Push failed: ${msg}`);
+  }
+
+  // Resolve base branch
+  let baseBranch = options.base?.trim();
+  if (!baseBranch) {
+    const remoteBranches = await git.listRemoteBranches();
+    baseBranch = remoteBranches.includes("main") ? "main" :
+      remoteBranches.includes("master") ? "master" :
+      remoteBranches[0] ?? "main";
+  }
+
+  // Resolve title — fall back to session title or branch name.
+  const title = options.title?.trim() || options.sessionTitle || head;
+  if (!title) throw new ServiceError(400, "PR title is required");
+  if (title.length > 256) throw new ServiceError(400, "PR title too long (max 256 characters)");
+
+  // Resolve body — agent provides it directly; with --fill we synthesize a
+  // basic markdown description from recent commits.
+  let body = options.body?.trim() ?? "";
+  if (!body && options.fill) {
+    try {
+      const log = await git.log(10);
+      body = [
+        "## Summary",
+        "Changes from ShipIt session.",
+        "",
+        "## Changes",
+        ...log.map((c) => `- ${c.message}`),
+      ].join("\n");
+    } catch {
+      body = "Changes from ShipIt session.";
+    }
+  }
+
+  const result = await githubAuthManager.createPullRequest({
+    owner: resolved.owner,
+    repo: resolved.repo,
+    title,
+    body,
+    head,
+    base: baseBranch,
+    draft: options.draft ?? false,
+  });
+
+  if (!result.success || !result.url || !result.number) {
+    throw new ServiceError(500, result.message ?? "Failed to create pull request");
+  }
+
+  const stats = await git.diffStatVsBranch(baseBranch);
+  return {
+    number: result.number,
+    url: result.url,
+    title,
+    baseBranch,
+    headBranch: head,
+    insertions: stats.insertions,
+    deletions: stats.deletions,
+    alreadyExisted: false,
+  };
+}
+
+/**
+ * Edit an existing PR (title/body). When `prNumber` is not provided, the
+ * service resolves the open PR for the current branch.
+ */
+export async function editPullRequest(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  options: { number?: number; title?: string; body?: string; remoteUrl?: string },
+): Promise<{ number: number; url: string }> {
+  const resolved = await resolveSessionPr(git, githubAuthManager, options.remoteUrl);
+
+  let prNumber = options.number;
+  if (typeof prNumber !== "number") {
+    if (!resolved.pr) throw new ServiceError(404, "No open PR for the current branch");
+    prNumber = resolved.pr.number;
+  }
+
+  if (typeof options.title !== "string" && typeof options.body !== "string") {
+    throw new ServiceError(400, "Provide a title or body to update");
+  }
+
+  const update = await githubAuthManager.updatePullRequest(
+    resolved.owner, resolved.repo, prNumber,
+    { title: options.title, body: options.body },
+  );
+  if (!update.success || !update.url || !update.number) {
+    throw new ServiceError(500, update.message ?? "Failed to update PR");
+  }
+  return { number: update.number, url: update.url };
+}
+
+/** Comment on an existing PR. */
+export async function commentOnPullRequest(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  body: string,
+  options: { number?: number; remoteUrl?: string } = {},
+): Promise<{ number: number; commentUrl: string }> {
+  const trimmed = body.trim();
+  if (!trimmed) throw new ServiceError(400, "Comment body is required");
+
+  const resolved = await resolveSessionPr(git, githubAuthManager, options.remoteUrl);
+  let prNumber = options.number;
+  if (typeof prNumber !== "number") {
+    if (!resolved.pr) throw new ServiceError(404, "No open PR for the current branch");
+    prNumber = resolved.pr.number;
+  }
+
+  const result = await githubAuthManager.addPullRequestComment(
+    resolved.owner, resolved.repo, prNumber, trimmed,
+  );
+  if (!result.success || !result.url) {
+    throw new ServiceError(500, result.message ?? "Failed to add comment");
+  }
+  return { number: prNumber, commentUrl: result.url };
+}
+
+/** Mark a draft PR as ready for review. */
+export async function markPrReady(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  options: { number?: number; remoteUrl?: string } = {},
+): Promise<{ number: number; message: string }> {
+  const resolved = await resolveSessionPr(git, githubAuthManager, options.remoteUrl);
+  let prNumber = options.number;
+  if (typeof prNumber !== "number") {
+    if (!resolved.pr) throw new ServiceError(404, "No open PR for the current branch");
+    prNumber = resolved.pr.number;
+  }
+  const result = await githubAuthManager.markPullRequestReady(resolved.owner, resolved.repo, prNumber);
+  if (!result.success) throw new ServiceError(500, result.message);
+  return { number: prNumber, message: result.message };
+}
+
+/** Close an open PR. */
+export async function closePullRequest(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  options: { number?: number; remoteUrl?: string } = {},
+): Promise<{ number: number; url: string }> {
+  const resolved = await resolveSessionPr(git, githubAuthManager, options.remoteUrl);
+  let prNumber = options.number;
+  if (typeof prNumber !== "number") {
+    if (!resolved.pr) throw new ServiceError(404, "No open PR for the current branch");
+    prNumber = resolved.pr.number;
+  }
+  const result = await githubAuthManager.updatePullRequest(
+    resolved.owner, resolved.repo, prNumber, { state: "closed" },
+  );
+  if (!result.success || !result.url || !result.number) {
+    throw new ServiceError(500, result.message ?? "Failed to close PR");
+  }
+  return { number: result.number, url: result.url };
+}
+
+/** Reopen a closed PR. */
+export async function reopenPullRequest(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  options: { number?: number; remoteUrl?: string } = {},
+): Promise<{ number: number; url: string }> {
+  if (typeof options.number !== "number") {
+    throw new ServiceError(400, "PR number is required to reopen");
+  }
+  if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
+  const remote = await resolveGitHubRemote(git, options.remoteUrl);
+  if ("error" in remote) throw new ServiceError(400, remote.error);
+  const result = await githubAuthManager.updatePullRequest(
+    remote.owner, remote.repo, options.number, { state: "open" },
+  );
+  if (!result.success || !result.url || !result.number) {
+    throw new ServiceError(500, result.message ?? "Failed to reopen PR");
+  }
+  return { number: result.number, url: result.url };
+}
+
+/**
+ * Read a single PR's details. When `number` is omitted, returns the open PR
+ * for the current branch (or null when there is none).
+ */
+export async function viewPullRequest(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  options: { number?: number; remoteUrl?: string } = {},
+): Promise<{
+  url: string; number: number; base: string; head: string;
+  title: string; body: string;
+  state: "open" | "closed"; isDraft: boolean; merged: boolean;
+  additions: number; deletions: number;
+} | null> {
+  if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
+  const remote = await resolveGitHubRemote(git, options.remoteUrl);
+  if ("error" in remote) throw new ServiceError(400, remote.error);
+
+  let prNumber = options.number;
+  if (typeof prNumber !== "number") {
+    const head = await git.getCurrentBranch();
+    const pr = await githubAuthManager.findPullRequest(remote.owner, remote.repo, head);
+    if (!pr) return null;
+    prNumber = pr.number;
+  }
+  return githubAuthManager.viewPullRequest(remote.owner, remote.repo, prNumber);
+}
+
+/** List PRs for the session's repo. */
+export async function listPullRequests(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  options: { state?: "open" | "closed" | "all"; remoteUrl?: string } = {},
+): Promise<{ url: string; number: number; base: string; head: string; title: string; state: "open" | "closed"; isDraft: boolean }[]> {
+  if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
+  const remote = await resolveGitHubRemote(git, options.remoteUrl);
+  if ("error" in remote) throw new ServiceError(400, remote.error);
+  return githubAuthManager.listPullRequests(remote.owner, remote.repo, options.state ?? "open");
+}
+
 /** Generate a conversation-aware PR description. */
 async function generatePrDescriptionFromContext(
   git: GitManager,
