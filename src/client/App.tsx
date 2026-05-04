@@ -717,10 +717,20 @@ export default function App() {
             </div>
           )}
           <MessageList messages={messages} isLoading={isLoading} searchMatches={search.matches} currentMatch={search.currentMatch} onAnswerQuestion={handleAnswerQuestion} onSendFollowUp={handleSendFollowUp} onRollback={handleRollback} onRewind={handleRewind} />
-          {isLoading && <AgentStatusBar activity={activity} />}
-          <MessageAttachmentRow pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} uploads={uploads} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} />
-          {wsSessionId && <RebaseBanner sessionId={wsSessionId} />}
-          {wsSessionId && <PrLifecycleCard sessionId={wsSessionId} />}
+          {/*
+            Bottom stack: thinking indicator, attachment chips, rebase banner, PR card.
+            `gap-2` gives a consistent 8px gap between every rendered sibling, so spacing
+            no longer has to be encoded as `mt-2`/`mb-2` on each individual card. Each
+            non-PR child uses `last:pb-2` (or `last:mb-2`) to add the 8px to MessageInput
+            when nothing renders below it. The PR card has no last-child margin because
+            it visually merges into the input via `rounded-t-xl border-b-0`.
+          */}
+          <div className="flex flex-col gap-2">
+            {isLoading && <AgentStatusBar activity={activity} />}
+            <MessageAttachmentRow pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} uploads={uploads} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} />
+            {wsSessionId && <RebaseBanner sessionId={wsSessionId} />}
+            {wsSessionId && <PrLifecycleCard sessionId={wsSessionId} />}
+          </div>
         </div>
       )}
       {!showHomeScreen && !showNewSessionView && queuedMessages.length > 0 && <QueueIndicator queue={queuedMessages} onCancel={(pos) => send({ type: "cancel_queued_message", position: pos })} />}

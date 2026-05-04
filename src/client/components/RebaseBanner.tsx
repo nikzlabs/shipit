@@ -35,8 +35,11 @@ export function RebaseBanner({ sessionId }: { sessionId: string }) {
   // Nothing to show
   if (!pushRejected && rebaseStatus === "idle") return null;
 
+  // `last:mb-2` provides 8px gap to the MessageInput only when this banner is
+  // the last rendered child of the bottom-stack wrapper. Otherwise the
+  // wrapper's `gap-2` handles spacing to the next card (e.g. the PR card).
   return (
-    <div className="mx-4 mb-2">
+    <div className="mx-4 last:mb-2">
       <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) text-xs">
         {/* Push rejected — offer rebase */}
         {pushRejected && rebaseStatus === "idle" && (
