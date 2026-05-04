@@ -36,7 +36,7 @@ against that version's schema. When absent, the latest version is assumed.
 
 ### `agent` (optional)
 
-Configures the agent container (runs Claude CLI).
+Configures the agent container (runs the AI coding agent — Claude Code or Codex, depending on the session's selected backend).
 
 ```yaml
 agent:

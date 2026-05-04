@@ -78,7 +78,7 @@ function DisplaySettings() {
         <div className="flex items-center justify-between py-1 gap-4">
           <div>
             <span className="text-sm text-(--color-text-primary)">Show session cost</span>
-            <p className="text-xs text-(--color-text-tertiary)">Display the running USD cost of the current session next to the chat input. Hide it if you're on a Claude subscription and don't pay per call.</p>
+            <p className="text-xs text-(--color-text-tertiary)">Display the running USD cost of the current session next to the chat input. Hide it if your provider subscription covers usage and you don't pay per call.</p>
           </div>
           <ToggleSwitch enabled={showSessionCost} onToggle={setShowSessionCost} testId="settings-show-session-cost" />
         </div>

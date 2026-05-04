@@ -17,7 +17,7 @@ You are running inside a Docker container managed by ShipIt.
 - **Node.js 24** (with npm)
 - **git**, **curl**
 - **python3**, **make**, **g++** (for native npm addons)
-- **Claude CLI** (`claude` command)
+- **Agent CLIs** — both `claude` (Claude Code) and `codex` (Codex) are installed; ShipIt invokes whichever the user selected for the session
 - **Playwright** with headless Chrome (available via browser tools)
 
 ## Automatic behaviors

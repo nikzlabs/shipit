@@ -1,7 +1,7 @@
 {
   "name": "ShipIt",
   "short_name": "ShipIt",
-  "description": "Browser-based IDE for vibe coding with Claude.",
+  "description": "Browser-based AI editor — describe what you want, the agent writes the code.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
