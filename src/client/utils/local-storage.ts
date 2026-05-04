@@ -176,6 +176,31 @@ export function saveCollapsedRepos(collapsed: Set<string>): void {
   } catch { /* ignore */ }
 }
 
+const DRAFT_MESSAGE_KEY_PREFIX = "shipit-draft-message:";
+
+/** Read the saved draft message text for a session (or `"new"` for the new-session view). */
+export function getSavedDraftMessage(sessionKey: string): string | undefined {
+  try {
+    const value = localStorage.getItem(DRAFT_MESSAGE_KEY_PREFIX + sessionKey);
+    return value ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Persist (or clear, if `text` is empty) the draft message text for a session. */
+export function saveDraftMessage(sessionKey: string, text: string): void {
+  try {
+    if (text) {
+      localStorage.setItem(DRAFT_MESSAGE_KEY_PREFIX + sessionKey, text);
+    } else {
+      localStorage.removeItem(DRAFT_MESSAGE_KEY_PREFIX + sessionKey);
+    }
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
 const DEVICE_PRESET_KEY = "shipit:devicePreset";
 
 export function getSavedDevicePresetId(): string | null {

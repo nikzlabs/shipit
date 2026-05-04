@@ -194,6 +194,66 @@ describe("MessageInput", () => {
     });
   });
 
+  describe("per-session draft persistence", () => {
+    beforeEach(() => {
+      localStorage.clear();
+    });
+    afterEach(() => {
+      localStorage.clear();
+    });
+
+    it("loads a saved draft for the active session on mount", () => {
+      localStorage.setItem("shipit-draft-message:session-A", "draft for A");
+      render(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-A" />);
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
+      expect(textarea.value).toBe("draft for A");
+    });
+
+    it("saves typed text under the active session's focusKey", () => {
+      render(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-A" />);
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      fireEvent.change(textarea, { target: { value: "in progress" } });
+      expect(localStorage.getItem("shipit-draft-message:session-A")).toBe("in progress");
+    });
+
+    it("swaps drafts when focusKey changes", () => {
+      localStorage.setItem("shipit-draft-message:session-B", "B's draft");
+      const { rerender } = render(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-A" />);
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
+
+      // Type into A.
+      fireEvent.change(textarea, { target: { value: "A's draft" } });
+      expect(textarea.value).toBe("A's draft");
+
+      // Switch to B — A's draft persists, B's draft loads.
+      rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-B" />);
+      expect(textarea.value).toBe("B's draft");
+      expect(localStorage.getItem("shipit-draft-message:session-A")).toBe("A's draft");
+
+      // Switch back to A — A's draft is recovered.
+      rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-A" />);
+      expect(textarea.value).toBe("A's draft");
+    });
+
+    it("shows empty input when switching to a session with no saved draft", () => {
+      const { rerender } = render(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-A" />);
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: "A's draft" } });
+
+      rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-fresh" />);
+      expect(textarea.value).toBe("");
+    });
+
+    it("clears the saved draft after sending", () => {
+      render(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-A" />);
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      fireEvent.change(textarea, { target: { value: "ship it" } });
+      expect(localStorage.getItem("shipit-draft-message:session-A")).toBe("ship it");
+      fireEvent.click(screen.getByLabelText("Send message"));
+      expect(localStorage.getItem("shipit-draft-message:session-A")).toBeNull();
+    });
+  });
+
   describe("file picker", () => {
     it("has a hidden file input that accepts all file types", () => {
       render(<MessageInput onSend={vi.fn()} disabled={false} />);
