@@ -217,6 +217,88 @@ describe("Integration: Image upload", () => {
     client.close();
   });
 
+  it("uploaded image stays at original /uploads/ path so hydration recognizes it as sent", async () => {
+    // Regression test for: "Attached image in one turn often reappears as
+    // attached in subsequent turn." The previous behavior unlinked the
+    // uploaded file from /uploads/ and re-saved it under a randomized name,
+    // which broke the round-trip between chat history's `uploadPaths`
+    // (original name) and the GET /files/uploads listing (renamed file) —
+    // so hydrateUploads couldn't match them and re-marked the image as
+    // pending.
+    const client = await TestClient.connect(port);
+    const sessionId = client.sessionId;
+    await client.receive(); // preview_status
+
+    // 1) Upload an image via the upload endpoint (same path the browser uses).
+    const crypto = await import("node:crypto");
+    const boundary = `----FormBoundary${crypto.randomUUID().replace(/-/g, "")}`;
+    const fileBuf = Buffer.from(TINY_PNG_BASE64, "base64");
+    const payload = Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="file"; filename="screenshot.png"\r\n` +
+        `Content-Type: image/png\r\n\r\n`,
+      ),
+      fileBuf,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+    const uploadRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/files/uploads`,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      payload,
+    });
+    expect(uploadRes.statusCode).toBe(200);
+    const { files: uploaded } = uploadRes.json() as { files: { path: string; name: string }[] };
+    expect(uploaded).toHaveLength(1);
+    const uploadedPath = uploaded[0].path; // e.g. "/uploads/screenshot.png"
+    expect(uploadedPath).toMatch(/^\/uploads\//);
+
+    // 2) Send a message referencing the upload (this is what browser does).
+    client.send({
+      type: "send_message",
+      text: "What's in this image?",
+      uploads: [{ path: uploadedPath, type: "upload" }],
+    });
+    await waitForClaude(() => lastClaude);
+
+    // The agent prompt should reference the ORIGINAL upload path (not a
+    // renamed copy). This is what makes uploadPaths in chat history
+    // match the actual file on disk.
+    expect(lastClaude.lastPrompt).toContain("<attached_images>");
+    expect(lastClaude.lastPrompt).toContain(uploadedPath);
+
+    lastClaude.emit("event", { type: "system", subtype: "init", session_id: "img-hydrate-test" });
+    lastClaude.emit("event", { type: "result", subtype: "success", session_id: "img-hydrate-test" });
+    lastClaude.emit("done", 0);
+
+    // 3) The original uploaded file MUST still exist on disk (we used to unlink it).
+    const listRes = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${sessionId}/files/uploads`,
+    });
+    expect(listRes.statusCode).toBe(200);
+    const { files: onDisk } = listRes.json() as { files: { path: string }[] };
+    const onDiskPaths = onDisk.map((f) => f.path);
+    expect(onDiskPaths).toContain(uploadedPath);
+    // No phantom renamed duplicate should have been created.
+    expect(onDiskPaths).toHaveLength(1);
+
+    // 4) Chat history must record the same path under uploadPaths so the
+    //    client-side hydrateUploads can match them.
+    const historyRes = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${sessionId}/history`,
+    });
+    expect(historyRes.statusCode).toBe(200);
+    const chatHistory = historyRes.json() as { messages: { role: string; uploadPaths?: string[] }[] };
+    const userMsg = chatHistory.messages.find((m) => m.role === "user");
+    expect(userMsg).toBeDefined();
+    expect(userMsg!.uploadPaths).toEqual([uploadedPath]);
+
+    client.close();
+  });
+
   it("send_message with 0 images works normally (no validation error)", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status

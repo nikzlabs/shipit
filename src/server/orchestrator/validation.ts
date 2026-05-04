@@ -201,13 +201,21 @@ export async function resolveUploadRefs(
     const imageMime = IMAGE_EXT_TO_MIME[ext];
 
     if (imageMime) {
-      // Image upload — read binary data and return as ImageAttachment
+      // Image upload — read binary data and return as ImageAttachment.
+      // `existingPath` records the live on-disk location so the orchestrator
+      // doesn't re-save the image with a different name. If the image were
+      // re-saved under a randomized filename and the original deleted, the
+      // chat history's `uploadPaths` (which records the original `/uploads/`
+      // path) would no longer match the file actually present on disk —
+      // breaking `hydrateUploads`'s "is this upload already sent?" check
+      // and causing the image to reappear as attached on next reload.
       try {
         const buf = await fs.readFile(hostPath);
         imageResult.push({
           data: buf.toString("base64"),
           mediaType: imageMime,
           filename,
+          existingPath: ref.path,
         });
         imageHostPaths.push(hostPath);
       } catch {

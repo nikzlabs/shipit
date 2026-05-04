@@ -12,8 +12,16 @@ import { quickCreatePr } from "../services/github.js";
 import { resolveRunner } from "./resolve-runner.js";
 /**
  * Save base64 images to the session's uploads directory on the host.
- * Returns a prompt prefix referencing the saved files (container paths).
+ * Returns a prompt prefix referencing the on-disk files (container paths).
  * The agent reads them with the Read tool, which natively supports images.
+ *
+ * Images that carry `existingPath` (set by `resolveUploadRefs` for images
+ * sourced from `/uploads/` upload refs) are referenced in place — they are
+ * NOT re-saved. Re-saving under a randomized filename would create a
+ * duplicate and the original would have to be deleted, leaving the on-disk
+ * path out of sync with the `uploadPaths` recorded in chat history. That
+ * mismatch was the root cause of uploaded images reappearing as attached
+ * after a reload (see fix history in commits b7375baa5, 654b2c931).
  */
 function saveImagesToUploadsDir(images: ImageAttachment[], workspaceDir: string): string {
   const uploadsDir = path.join(path.dirname(workspaceDir), "uploads");
@@ -21,6 +29,12 @@ function saveImagesToUploadsDir(images: ImageAttachment[], workspaceDir: string)
 
   const containerPaths: string[] = [];
   for (const img of images) {
+    if (img.existingPath) {
+      // Image already lives on disk at this path (came in via an upload ref).
+      // Reference in place — don't re-save under a new name.
+      containerPaths.push(img.existingPath);
+      continue;
+    }
     const ext = img.mediaType.split("/")[1]?.replace("jpeg", "jpg") ?? "png";
     const name = img.filename
       ? `${path.parse(img.filename).name}-${crypto.randomUUID().slice(0, 8)}.${ext}`
@@ -212,9 +226,9 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         nextValidatedFiles = [...nextValidatedFiles, ...uploadResult.files];
         if (uploadResult.images.length > 0) {
           allNextImages = [...(allNextImages ?? []), ...uploadResult.images];
-          for (const p of uploadResult.imageHostPaths) {
-            fs.promises.unlink(p).catch(() => {});
-          }
+          // See send-message.ts: originals are kept in place so
+          // `uploadPaths` in chat history matches the actual on-disk path,
+          // which is what makes hydrateUploads work correctly.
         }
       }
       const nextSession = capturedSessionId
