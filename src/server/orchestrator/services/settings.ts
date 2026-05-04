@@ -10,7 +10,7 @@ import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { ALLOWED_ENV_KEYS } from "../../shared/agent-registry.js";
 import type { AgentId } from "../../shared/types.js";
 import { getGitIdentity, setGitIdentity as writeGitIdentity } from "../git-config.js";
-import { AGENT_SYSTEM_INSTRUCTIONS } from "../agent-instructions.js";
+import { buildAgentSystemInstructions } from "../agent-instructions.js";
 import { ServiceError } from "./types.js";
 import type { AgentInfo, GlobalSettings } from "./types.js";
 
@@ -55,7 +55,11 @@ export async function getGlobalSettings(
   const maxIdleContainers = credentialStore?.getMaxIdleContainers() ?? 5;
   const agentSystemInstructionsEnabled = credentialStore?.getAgentSystemInstructionsEnabled() ?? true;
   const autoCreatePr = credentialStore?.getAutoCreatePr() ?? false;
-  return { gitIdentity, systemPrompt, agents, defaultAgentId, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions: AGENT_SYSTEM_INSTRUCTIONS, autoCreatePr };
+  // Render the instructions with the same conditional sections the WS handler would
+  // (currently just the auto-create-PR nudge) so the Settings UI accurately reflects
+  // what the agent sees on its next turn.
+  const agentSystemInstructions = buildAgentSystemInstructions({ autoCreatePr });
+  return { gitIdentity, systemPrompt, agents, defaultAgentId, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr };
 }
 
 // ---- Mutation operations ----
