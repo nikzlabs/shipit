@@ -20,6 +20,40 @@
 - [x] Add **Restart container** button in `SessionHealthStrip`. On 200, close + reconnect the per-session WS so the factory rebuilds the container.
 - [x] Show a "Restarting container…" overlay on receipt of `container_restarting` until the new container is ready.
 
+## B-followup. Visibility fixes (post-ship bug)
+
+The original B design relied on the client's WS reconnect to drive the
+new container's creation via the factory's fire-and-forget `void (async
+…)` block. That works on the happy path but had two failure modes that
+left the user stuck on "Restarting…" forever:
+
+1. The factory's async `mgr.create()` could throw (Docker error, image
+   missing, resource exhaustion) and the error was only logged
+   server-side — the runner was disposed and the container manager had
+   no entry for the session, so `getContainerHealth` returned
+   `containerState: "missing"` indefinitely with no error context.
+2. The strip's clear-condition (`running && workerReachable`) had no
+   matching clear-on-failure path, so the spinner never resolved.
+
+Fixes:
+
+- [x] Track `lastCreateError` per session in `SessionContainerManager`;
+      clear on successful create or destroy.
+- [x] Record errors from both the warm-standby and fresh-create branches
+      of the runner factory (`app-lifecycle.ts`).
+- [x] Add `lastCreateError`, `lastCreateErrorAt`, `workerUrl`,
+      `containerId` to the `getContainerHealth` response.
+- [x] `restartContainer` now actively calls
+      `runnerRegistry.getOrCreate(...)` after destroy (instead of relying
+      solely on the WS reconnect) and waits up to 8s for either
+      "running" or a recorded create error. Returns `newContainerState`
+      so the client can react immediately.
+- [x] `SessionHealthStrip` now: clears `isRestarting` on a fresh
+      `lastCreateError`, polls at 1.5s while restarting, has a 60s hard
+      timeout on the spinner, shows `lastCreateError` inline, and adds
+      an expandable diagnostics panel (session id, container id, worker
+      url, runner.running, viewers, etc.).
+
 ## C. Auto-watchdog *(deferred — sequence after A+B have shipped)*
 
 - [ ] Periodic `/health` probe loop on `ContainerSessionRunner` (e.g., every 30s) that runs only while a viewer is attached and the container is `running`.
