@@ -5,11 +5,33 @@
  * Visible and toggleable in Settings > Instructions for transparency.
  */
 
+export interface AgentSystemInstructionOptions {
+  /** Optional live preview URL — when present, the agent gets browser tools. */
+  previewUrl?: string;
+  /**
+   * When true, append a section instructing the agent to run `gh pr create`
+   * at end-of-turn. Gated on the same `autoCreatePr` setting that controls
+   * the harness-side fallback (see docs/116-fake-gh-cli-shim/plan.md, Phase 2).
+   */
+  autoCreatePr?: boolean;
+}
+
 /**
  * Build the agent system instructions, optionally including the preview URL
- * for browser tool access.
+ * for browser tool access and an auto-create-PR nudge.
+ *
+ * Backwards-compatible: passing a string is treated as `previewUrl` for the
+ * benefit of older callers.
  */
-export function buildAgentSystemInstructions(previewUrl?: string): string {
+export function buildAgentSystemInstructions(
+  optionsOrPreviewUrl?: AgentSystemInstructionOptions | string,
+): string {
+  const options: AgentSystemInstructionOptions =
+    typeof optionsOrPreviewUrl === "string"
+      ? { previewUrl: optionsOrPreviewUrl }
+      : optionsOrPreviewUrl ?? {};
+  const { previewUrl, autoCreatePr } = options;
+
   const browserSection = previewUrl
     ? `\
 ## Browser access
@@ -37,6 +59,22 @@ If you get a connection error, the dev server may still be starting — wait a m
 You have a built-in browser you can use to interact with web pages. The preview is not running yet — you can still use browser tools to navigate to external URLs. Once the user starts a preview, the URL will be provided in a subsequent turn.
 `;
 
+  const pullRequestSection = autoCreatePr
+    ? `
+## Pull requests
+
+When you finish a meaningful chunk of work and there isn't already an open PR for this branch, run \`gh pr create -t "<title>" -b "<body>"\` to open one. Write a clear, descriptive title and a markdown body with the following sections:
+
+- \`## Summary\` — 1-2 sentences explaining *why* this change exists.
+- \`## Changes\` — bullet list of the key changes.
+- \`## Test plan\` — how to verify the change works.
+
+\`gh\` here is a ShipIt-provided shim that brokers a curated subset of pull-request operations through the orchestrator. It is not the real GitHub CLI: \`gh api\`, \`gh repo\`, \`gh release\`, \`gh workflow\`, \`gh auth\`, and \`gh secret\` are intentionally unavailable. See /shipit-docs/github.md for the full list of supported subcommands.
+
+Use \`gh pr create\` once per session — repeated calls short-circuit if a PR already exists for the branch.
+`
+    : "";
+
   return `\
 You are an expert software engineer working inside ShipIt, a browser-based IDE for building software through conversation. The user sees your responses in a chat panel alongside a live file tree, preview pane, and terminal. Your goal is to help the user build, debug, and ship software efficiently.
 
@@ -62,7 +100,7 @@ If you need to install dependencies, they should be listed in \`agent.install\` 
 
 Users can upload files from their browser. Uploaded files are available at /uploads/ inside the container. This directory is outside the git repo (/workspace/) so files there are never committed. Use /tmp for temporary scratch work (e.g., unpacking archives).
 
-${browserSection}
+${browserSection}${pullRequestSection}
 ## ShipIt platform docs
 
 Reference documentation about the ShipIt platform is at /shipit-docs/. Consult these docs when you need to configure shipit.yaml, write docker-compose.yml for previews, troubleshoot services, or answer questions about platform capabilities (deployment, GitHub integration, environment details). Key docs:
@@ -96,4 +134,10 @@ The user has access to an interactive terminal in the UI. You can run shell comm
 `;
 }
 
+/**
+ * Default rendering of the agent system instructions — no preview URL, no
+ * auto-create PR nudge. Used by the Settings UI as a baseline reference.
+ * The actual prompt assembled in `claude-execution.ts` is computed per-turn
+ * and may include the auto-create PR section when the setting is on.
+ */
 export const AGENT_SYSTEM_INSTRUCTIONS = buildAgentSystemInstructions();
