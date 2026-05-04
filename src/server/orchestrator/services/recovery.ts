@@ -76,7 +76,7 @@ export interface RestartContainerResult {
  * SIGKILL via the worker's `/agent/kill` endpoint; harmless if no agent
  * is currently running.
  *
- * Use this when `interrupt_claude` (SIGINT) didn't take. If the worker
+ * Use this when `interrupt_agent` (SIGINT) didn't take. If the worker
  * itself is unreachable, returns `502` so the UI can advise restarting
  * the container instead.
  */
@@ -115,7 +115,7 @@ export async function killAgent(
   }
 
   // Notify all attached viewers via the buffered message stream.
-  runner.emitMessage({ type: "claude_interrupted" });
+  runner.emitMessage({ type: "agent_interrupted" });
 
   // Reset local running flag — the worker has acknowledged the kill, so
   // any "agent_done" event that would normally do this is no longer

@@ -199,11 +199,11 @@ describe("Integration: multi-tab scenarios", () => {
     await drainUntil(tab2, (m) => m.type === "session_status");
 
     // Tab 2 sends interrupt — should affect the shared runner
-    tab2.send({ type: "interrupt_claude" } as any);
+    tab2.send({ type: "interrupt_agent" } as any);
 
-    // Both tabs should receive claude_interrupted
-    const tab1Interrupt = await drainUntil(tab1, (m) => m.type === "claude_interrupted");
-    const tab2Interrupt = await drainUntil(tab2, (m) => m.type === "claude_interrupted");
+    // Both tabs should receive agent_interrupted
+    const tab1Interrupt = await drainUntil(tab1, (m) => m.type === "agent_interrupted");
+    const tab2Interrupt = await drainUntil(tab2, (m) => m.type === "agent_interrupted");
     expect(tab1Interrupt).toBeTruthy();
     expect(tab2Interrupt).toBeTruthy();
 

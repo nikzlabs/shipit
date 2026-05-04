@@ -70,7 +70,7 @@ export function useServerEvents(): void {
         return next;
       });
       // Clear loading state for system-initiated turns. For user-initiated turns
-      // this is already cleared by agent_result/claude_interrupted WS events.
+      // this is already cleared by agent_result/agent_interrupted WS events.
       if (data.sessionId === store.sessionId) {
         store.setIsLoading(false);
         store.setActivity(undefined);

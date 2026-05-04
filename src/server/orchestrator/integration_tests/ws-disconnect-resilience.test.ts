@@ -219,7 +219,7 @@ describe("Integration: WebSocket disconnect resilience", () => {
     await settle();
 
     turn1.finish("agent-q1");
-    // The queue-drain path inside claude-execution.ts kicks off turn 2.
+    // The queue-drain path inside agent-execution.ts kicks off turn 2.
     // Wait for the new agent to be created.
     const turn2 = await waitForClaude(() => lastClaude, turn1);
     expect(turn2.runCalled).toBe(true);

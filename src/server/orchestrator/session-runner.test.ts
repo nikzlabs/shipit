@@ -55,11 +55,11 @@ describe("SessionRunner", () => {
     const received: any[] = [];
     runner.on("message", (msg) => received.push(msg));
 
-    runner.emitMessage({ type: "claude_interrupted" });
+    runner.emitMessage({ type: "agent_interrupted" });
     runner.emitMessage({ type: "error", message: "test" });
 
     expect(received).toHaveLength(2);
-    expect(received[0].type).toBe("claude_interrupted");
+    expect(received[0].type).toBe("agent_interrupted");
 
     const buffer = runner.getTurnEventBuffer();
     expect(buffer).toHaveLength(2);

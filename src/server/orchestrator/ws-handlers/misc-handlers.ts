@@ -21,17 +21,17 @@ export function handleCancelQueuedMessage(ctx: ConnectionCtx & RunnerCtx, msg: W
   });
 }
 
-export function handleInterruptClaude(ctx: ConnectionCtx & RunnerCtx): void {
+export function handleInterruptAgent(ctx: ConnectionCtx & RunnerCtx): void {
   const runner = resolveRunner(ctx);
   const agent = runner?.getAgent() ?? null;
   if (agent && runner) {
     runner.wasInterrupted = true;
     agent.interrupt();
-    ctx.broadcastLog("server", "Claude process interrupted by user");
+    ctx.broadcastLog("server", "Agent process interrupted by user");
     // Emit via runner so all viewers see the interrupt and reconnects get it
     // from the buffered turn-event log.
-    runner.emitMessage({ type: "claude_interrupted" });
+    runner.emitMessage({ type: "agent_interrupted" });
   } else {
-    ctx.send({ type: "error", message: "No active Claude process to interrupt" });
+    ctx.send({ type: "error", message: "No active agent process to interrupt" });
   }
 }

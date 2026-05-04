@@ -47,11 +47,11 @@ function stopRunner(runner: { running: boolean } | null): void {
 }
 
 /**
- * Core Claude execution logic. Shared between send_message and
+ * Core agent execution logic. Shared between send_message and
  * home_send_with_repo handlers. Session state (activeAppSessionId,
  * activeSessionDir) must already be set before calling this.
  */
-export async function runClaudeWithMessage(ctx: FullCtx, opts: {
+export async function runAgentWithMessage(ctx: FullCtx, opts: {
   userText: string;
   images?: ImageAttachment[];
   validatedFiles: FileAttachment[];
@@ -189,9 +189,9 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
         const fileResult = await resolveFileAttachments(nextFileRefs, dir);
         if (fileResult.error) {
           emitDone({ type: "error", message: fileResult.error });
-          // Use the captured runner directly — ctx.setIsClaudeRunning() goes
-          // through `attachedRunner` which is null after WS disconnect, which
-          // would strand `running=true` and prevent future cleanup.
+          // Use the captured runner directly — going through ctx routes via
+          // `attachedRunner` which is null after WS disconnect, which would
+          // strand `running=true` and prevent future cleanup.
           stopRunner(runner);
           return;
         }
@@ -221,7 +221,7 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
         ? ctx.sessionManager.get(capturedSessionId)
         : undefined;
       try {
-        await runClaudeWithMessage(ctx, {
+        await runAgentWithMessage(ctx, {
           userText: next.text,
           images: allNextImages,
           validatedFiles: nextValidatedFiles,
