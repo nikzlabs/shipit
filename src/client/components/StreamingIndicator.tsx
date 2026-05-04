@@ -2,10 +2,11 @@
  * StreamingIndicator — animated typing indicator and activity status display.
  *
  * Shows a bouncing three-dot animation alongside a contextual status message
- * describing what Claude is currently doing (thinking, editing files, running
- * commands, etc.). Used in the chat when waiting for or receiving Claude responses.
+ * describing what the agent is currently doing (thinking, editing files,
+ * running commands, etc.). Used in the chat when waiting for or receiving
+ * agent responses.
  *
- * Activity labels are derived from Claude CLI NDJSON event types:
+ * Activity labels are derived from the agent CLI's NDJSON event types:
  * - No events yet → "Thinking..."
  * - assistant event with tool_use → tool-specific label (e.g., "Editing src/foo.ts")
  * - user event (tool result) → "Processing..."
@@ -21,7 +22,7 @@ export interface StreamingActivity {
   tool?: string;
 }
 
-/** Bouncing three-dot animation shown while Claude is responding. */
+/** Bouncing three-dot animation shown while the agent is responding. */
 export function TypingDots() {
   return (
     <span className="inline-flex items-center gap-0.5">
@@ -34,7 +35,7 @@ export function TypingDots() {
 
 /**
  * Full thinking indicator with dots and activity label.
- * Shown when Claude is processing but no assistant message has arrived yet.
+ * Shown when the agent is processing but no assistant message has arrived yet.
  */
 export function ThinkingIndicator({ activity }: { activity?: StreamingActivity }) {
   return (

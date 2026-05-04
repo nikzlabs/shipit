@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- We deliberately exclude the encrypted prefs file from cloud backup —
+         the user re-enters their URL on a fresh install. -->
+    <exclude domain="sharedpref" path="shipit_prefs.xml" />
+</full-backup-content>

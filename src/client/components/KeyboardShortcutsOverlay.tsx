@@ -31,7 +31,7 @@ const shortcutGroups: ShortcutGroup[] = [
     shortcuts: [
       { keys: ["Enter"], description: "Send message" },
       { keys: ["Shift", "Enter"], description: "New line in message" },
-      { keys: ["Esc"], description: "Stop Claude while processing" },
+      { keys: ["Esc"], description: "Stop the agent while processing" },
     ],
   },
   {

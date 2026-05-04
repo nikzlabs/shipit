@@ -438,7 +438,7 @@ export function MessageInput({
               <button
                 onClick={onInterrupt}
                 className="flex items-center justify-center shrink-0 rounded-lg p-2 bg-(--color-error) text-white hover:brightness-110 transition-colors"
-                aria-label="Stop Claude"
+                aria-label="Stop the agent"
                 data-testid="stop-button"
               >
                 <StopIcon size={ICON_SIZE.SM} weight="fill" />

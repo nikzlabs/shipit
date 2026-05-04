@@ -1,24 +1,24 @@
 # ShipIt
 
-A browser-based IDE for vibe coding — you talk to Claude in a chat interface and it writes code in real time. Powered by [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) and your existing Claude subscription. No API keys needed.
+A browser-based AI editor — describe what you want in chat, the agent writes the code, and you see results live. Pluggable agent backend: [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) is the default, [Codex CLI](https://github.com/openai/codex) is supported, and the architecture is agent-agnostic so additional backends can be added later. Authentication uses your existing subscription with the chosen provider — no per-call API keys required.
 
-Think of it as a hosted Claude Code session with a web UI: chat panel on the left, live preview on the right, git history as your undo stack.
+Chat panel on the left, live preview on the right, git history as your undo stack — all inside ShipIt itself, no jumping out to other tools.
 
 ## Features
 
-- **Chat-driven development** — describe what you want in natural language, Claude writes the code
+- **Chat-driven development** — describe what you want in natural language; the agent writes the code
 - **Live preview** — embedded iframe shows your app updating in real time via Vite HMR
-- **Git as undo** — every Claude turn auto-commits, roll back to any previous state with one click
+- **Git as undo** — every agent turn auto-commits; roll back to any previous state with one click
 - **Session persistence** — conversations survive page reloads and browser restarts
 - **Inline diffs** — file changes displayed as collapsible red/green diff blocks in the chat
 - **File browser** — read-only file tree with syntax-highlighted content viewer
 - **Markdown docs** — browse and read project documentation without leaving the app
-- **Terminal output** — Claude CLI stderr/stdout in a terminal-like panel for debugging
+- **Terminal output** — agent stdout/stderr in a terminal-like panel for debugging
 - **Project templates** — quick-start scaffolding for React, Vue, Next.js, Svelte, and more
 - **Port auto-detection** — preview pane works with any dev server, not just Vite
 - **Search in chat** — Ctrl+F / Cmd+F to find text across the conversation
 - **Mobile responsive** — tab-based layout on small screens, resizable split panels on desktop
-- **Background notifications** — tab title change and browser notification when Claude finishes
+- **Background notifications** — tab title change and browser notification when the agent finishes
 
 ## Architecture
 
@@ -27,7 +27,7 @@ Three-layer system: browser → orchestrator → session containers.
 ```
 ┌──────────────┐     ┌──────────────────────────────┐     ┌─────────────────────────┐
 │   Browser    │     │     Orchestrator Container    │     │  Session Container(s)   │
-│  (React SPA) │◄───►│  Fastify + WebSocket + SSE   │◄───►│  Claude CLI, terminal,  │
+│  (React SPA) │◄───►│  Fastify + WebSocket + SSE   │◄───►│  Agent CLI, terminal,   │
 │              │     │  Routes, services, managers   │     │  preview server, files  │
 └──────────────┘     └──────────────────────────────┘     └─────────────────────────┘
      WS + SSE              HTTP proxy to containers            HTTP + SSE back
@@ -35,19 +35,23 @@ Three-layer system: browser → orchestrator → session containers.
 
 - **Browser** — React 19 SPA with Zustand stores, dual-channel communication (per-session WebSocket + global SSE)
 - **Orchestrator** — Fastify server handling auth, session management, git repos, and proxying to containers
-- **Session containers** — isolated Docker containers running Claude Code CLI, terminal PTY, preview dev server, and file watcher
+- **Session containers** — isolated Docker containers running the AI agent CLI (Claude Code or Codex), terminal PTY, preview dev server, and file watcher
 
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) and Docker Compose
-- A [Claude Pro or Max](https://claude.ai/upgrade) subscription (for Claude Code CLI authentication)
+- A subscription with the AI provider whose CLI you'll use:
+  - For Claude Code: [Claude Pro or Max](https://claude.ai/upgrade)
+  - For Codex: an OpenAI account with Codex CLI access
 
 For local development without Docker:
 
 - Node.js 20+
 - npm
 - git
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed globally (`npm install -g @anthropic-ai/claude-code`)
+- At least one agent CLI installed globally:
+  - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — `npm install -g @anthropic-ai/claude-code`
+  - [Codex CLI](https://github.com/openai/codex) — `npm install -g @openai/codex`
 
 ## Quick Start (Docker)
 
@@ -64,7 +68,7 @@ docker/local/prod.sh
 
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-On first run, ShipIt will prompt you to authenticate with your Claude account via an OAuth flow in the browser. Credentials are stored in a persistent Docker volume so you only need to do this once.
+On first run, ShipIt prompts you to authenticate with the agent provider you've chosen via an OAuth flow in the browser. Credentials are stored in a persistent Docker volume so you only need to do this once per provider.
 
 ## Local Development
 
@@ -104,14 +108,14 @@ npx vitest run src/server/git.test.ts
 
 1. You type a prompt in the chat input
 2. The React frontend sends a JSON message over WebSocket
-3. The Fastify server spawns `claude -p` (Claude Code CLI in print mode) as a child process
-4. Claude CLI streams NDJSON events to stdout as it thinks, writes files, and runs commands
+3. The Fastify server spawns the configured agent CLI (e.g., `claude -p` for Claude Code, `codex` for Codex) as a child process inside the session container
+4. The agent CLI streams NDJSON events to stdout as it thinks, writes files, and runs commands
 5. The server parses each line and relays events to the browser over WebSocket
 6. The frontend updates in real time — streaming text, inline diffs, tool activity indicators
-7. When Claude finishes, all file changes are auto-committed to git
+7. When the agent finishes, all file changes are auto-committed to git
 8. The Vite dev server picks up changes via HMR and the preview iframe updates
 
-Session continuity is maintained via Claude Code's `--resume` flag. Subsequent messages in the same session resume the conversation context.
+Session continuity is maintained via the agent CLI's resume mechanism (e.g., Claude Code's `--resume` flag). Subsequent messages in the same session resume the conversation context.
 
 ## Project Structure
 
@@ -119,7 +123,7 @@ Session continuity is maintained via Claude Code's `--resume` flag. Subsequent m
 src/
 ├── server/
 │   ├── orchestrator/       # Main process — HTTP routes, services, DI, WebSocket handlers
-│   ├── session/            # Session container worker — Claude CLI, terminal, preview, file watcher
+│   ├── session/            # Session container worker — agent CLI, terminal, preview, file watcher
 │   ├── shared/             # Code shared between orchestrator and session (types, git, utils)
 │   └── shipit-docs/        # Platform docs served to the agent inside containers
 │
@@ -136,7 +140,7 @@ src/
 |-------|-----------|
 | Backend | [Fastify](https://fastify.dev/) 5, @fastify/websocket, TypeScript |
 | Frontend | [React](https://react.dev/) 19, [Vite](https://vite.dev/) 7, [Tailwind CSS](https://tailwindcss.com/) 4 |
-| AI Engine | [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) |
+| Agent backends | [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex) — pluggable, more can be added |
 | Runtime | Node.js 20, Docker |
 | Testing | [Vitest](https://vitest.dev/) 4, @testing-library/react, jsdom |
 
@@ -146,8 +150,8 @@ Two named volumes persist data across container restarts:
 
 | Volume | Mount Point | Purpose |
 |--------|-------------|---------|
-| `workspace` | `/workspace` | Project files that Claude reads and writes |
-| `claude-auth` | `/root/.claude` | Claude CLI OAuth credentials |
+| `workspace` | `/workspace` | Project files that the agent reads and writes |
+| `claude-auth` | `/root/.claude` | Agent CLI OAuth credentials (Claude Code; analogous volumes exist for other providers) |
 
 ## Configuration
 

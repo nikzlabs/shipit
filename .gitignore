@@ -8,3 +8,14 @@ dist/
 *.db-shm
 .update-requested
 .shipit
+
+# Android (see android/ — separate Gradle build, not part of the Node project)
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/captures/
+android/.cxx/
+*.keystore
+*.jks

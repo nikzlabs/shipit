@@ -74,7 +74,7 @@ export function useKeyboardShortcuts(params: {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleNewSession]);
 
-  // Escape key to interrupt Claude while loading (only when not typing in an input or overlay open)
+  // Escape key to interrupt the agent while loading (only when not typing in an input or overlay open)
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
