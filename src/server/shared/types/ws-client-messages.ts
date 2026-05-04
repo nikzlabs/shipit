@@ -34,9 +34,9 @@ export interface WsSetModelMessage {
 
 // ---- Interrupt messages ----
 
-/** Client → Server: interrupt the currently running Claude process. */
-export interface WsInterruptClaude {
-  type: "interrupt_claude";
+/** Client → Server: interrupt the currently running agent process. */
+export interface WsInterruptAgent {
+  type: "interrupt_agent";
 }
 
 // ---- Preview config messages ----
@@ -121,7 +121,7 @@ export type WsClientMessage =
   | WsTerminalInput
   | WsTerminalResize
   | WsCancelQueuedMessage
-  | WsInterruptClaude
+  | WsInterruptAgent
   | WsInitPreviewConfig
   | WsStartService
   | WsStopService

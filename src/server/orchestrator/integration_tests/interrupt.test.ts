@@ -64,7 +64,7 @@ describe("Integration: Interrupt and Redirect", () => {
     }
   });
 
-  it("sends claude_interrupted when interrupting an active process", async () => {
+  it("sends agent_interrupted when interrupting an active agent process", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
@@ -73,10 +73,10 @@ describe("Integration: Interrupt and Redirect", () => {
     await waitForClaude(() => lastClaude);
 
     // Send interrupt
-    client.send({ type: "interrupt_claude" });
+    client.send({ type: "interrupt_agent" });
 
-    const interrupted = await client.receiveType("claude_interrupted");
-    expect(interrupted).toMatchObject({ type: "claude_interrupted" });
+    const interrupted = await client.receiveType("agent_interrupted");
+    expect(interrupted).toMatchObject({ type: "agent_interrupted" });
 
     // The FakeClaudeProcess should have been interrupted
     expect(lastClaude.interrupted).toBe(true);
@@ -89,10 +89,10 @@ describe("Integration: Interrupt and Redirect", () => {
     await client.receive(); // preview_status
 
     // Send interrupt with no active process
-    client.send({ type: "interrupt_claude" });
+    client.send({ type: "interrupt_agent" });
 
     const response = await client.receiveType("error");
-    expect((response as any).message).toBe("No active Claude process to interrupt");
+    expect((response as any).message).toBe("No active agent process to interrupt");
 
     client.close();
   });
@@ -105,12 +105,12 @@ describe("Integration: Interrupt and Redirect", () => {
     client.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
 
-    // Send interrupt — this triggers claude_interrupted immediately,
+    // Send interrupt — this triggers agent_interrupted immediately,
     // and FakeClaudeProcess.interrupt() emits "done" with code 1 after 10ms.
-    client.send({ type: "interrupt_claude" });
+    client.send({ type: "interrupt_agent" });
 
-    const interrupted = await client.receiveType("claude_interrupted");
-    expect(interrupted).toMatchObject({ type: "claude_interrupted" });
+    const interrupted = await client.receiveType("agent_interrupted");
+    expect(interrupted).toMatchObject({ type: "agent_interrupted" });
 
     // Wait for the process to finish (FakeClaudeProcess emits done after 10ms)
     await new Promise((r) => setTimeout(r, 200));
@@ -147,9 +147,9 @@ describe("Integration: Interrupt and Redirect", () => {
     expect(queued).toMatchObject({ type: "message_queued", text: "queued message" });
 
     // Interrupt — should clear the queue
-    client.send({ type: "interrupt_claude" });
+    client.send({ type: "interrupt_agent" });
 
-    await client.receiveType("claude_interrupted");
+    await client.receiveType("agent_interrupted");
 
     // Wait for done handler to fire and clear queue
     await new Promise((r) => setTimeout(r, 200));
@@ -182,8 +182,8 @@ describe("Integration: Interrupt and Redirect", () => {
     const firstClaude = await waitForClaude(() => lastClaude);
 
     // Interrupt
-    client.send({ type: "interrupt_claude" });
-    await client.receiveType("claude_interrupted");
+    client.send({ type: "interrupt_agent" });
+    await client.receiveType("agent_interrupted");
 
     // Wait for done handler to complete
     await new Promise((r) => setTimeout(r, 200));

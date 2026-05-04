@@ -4,13 +4,13 @@ import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, validateImages, resolveFileAttachments, resolveUploadRefs } from "../validation.js";
 import { generateSessionName } from "../session-namer.js";
 import { wireAgentListeners } from "./agent-listeners.js";
-import { runClaudeWithMessage } from "./claude-execution.js";
+import { runAgentWithMessage } from "./agent-execution.js";
 import { postTurnCommit } from "./post-turn.js";
 import { resolveRunner } from "./resolve-runner.js";
 
 // Re-export all public symbols from sub-modules for backwards compatibility
 export { CONTEXT_WINDOW_TOKENS, wireAgentListeners, extractToolResults } from "./agent-listeners.js";
-export { runClaudeWithMessage } from "./claude-execution.js";
+export { runAgentWithMessage } from "./agent-execution.js";
 export { postTurnCommit } from "./post-turn.js";
 
 /** Full handler context — send-message handlers need all three sub-contexts. */
@@ -259,7 +259,7 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
   // even if the WS disconnects between handler entry and `await` resumption.
   const turnRunner = resolveRunner(ctx);
   if (turnRunner) turnRunner.running = true;
-  await runClaudeWithMessage(ctx, {
+  await runAgentWithMessage(ctx, {
     userText,
     images: allImages,
     validatedFiles,

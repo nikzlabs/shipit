@@ -1,4 +1,3 @@
-import type { ClaudeEvent } from "./claude-types.js";
 import type { AgentId, AgentEvent } from "./agent-types.js";
 import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, WsChatHistoryMessage, FileDiff, RepoInfo, SecretRequirement } from "./domain-types.js";
 import type {
@@ -12,11 +11,6 @@ import type {
 } from "./github-types.js";
 import type { WsTerminalOutput, WsTerminalExit, WsTerminalReconnecting, WsLogEntry, WsClearLogs } from "./terminal-types.js";
 import type { WsUsageStats, WsUsageUpdate, WsTurnUsageUpdate } from "./usage-types.js";
-
-export interface WsClaudeEvent {
-  type: "claude_event";
-  event: ClaudeEvent;
-}
 
 export interface WsAgentEvent {
   type: "agent_event";
@@ -209,9 +203,9 @@ export interface WsAgentListMessage {
   defaultAgentId: AgentId;
 }
 
-/** Server → Client: Claude was interrupted by user. */
-export interface WsClaudeInterrupted {
-  type: "claude_interrupted";
+/** Server → Client: the agent was interrupted by user. */
+export interface WsAgentInterrupted {
+  type: "agent_interrupted";
 }
 
 /**
@@ -461,7 +455,6 @@ export interface WsSessionForked {
 }
 
 export type WsServerMessage =
-  | WsClaudeEvent
   | WsAgentEvent
   | WsError
   | WsPreviewStatus
@@ -499,7 +492,7 @@ export type WsServerMessage =
   | WsMessageQueued
   | WsQueueUpdated
   | WsAgentListMessage
-  | WsClaudeInterrupted
+  | WsAgentInterrupted
   | WsContainerRestarting
   | WsFullResetComplete
   | WsClearLogs

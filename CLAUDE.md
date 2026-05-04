@@ -153,7 +153,7 @@ src/
       ws-handlers/   WebSocket-only message handlers (streaming, per-connection state)
         types.ts     HandlerContext interface shared by all handlers
         send-message.ts    send_message, answer_question, home_send_with_repo
-        claude-execution.ts  Claude process lifecycle management
+        agent-execution.ts   Agent process lifecycle management
         agent-listeners.ts   Agent event stream listeners
         post-turn.ts         Post-turn actions (auto-commit, auto-push)
         rollback-handlers.ts Git rollback via WS
@@ -256,7 +256,7 @@ The WebSocket connection is a *transport* between the browser and the orchestrat
 
 Concrete rules:
 
-- **Per-connection state is captured at the top of long-running functions**, never inside async callbacks. `runClaudeWithMessage` and `wireAgentListeners` capture `runner`, `capturedSessionId`, `capturedSessionDir` once at entry. Any code in `agent.on("done")`, `agent.on("event")`, `agent.on("error")`, `setTimeout`, `Promise.then`, or recursive calls reads ONLY those captured values, never `ctx.getX()` or `ctx.setX()`.
+- **Per-connection state is captured at the top of long-running functions**, never inside async callbacks. `runAgentWithMessage` and `wireAgentListeners` capture `runner`, `capturedSessionId`, `capturedSessionDir` once at entry. Any code in `agent.on("done")`, `agent.on("event")`, `agent.on("error")`, `setTimeout`, `Promise.then`, or recursive calls reads ONLY those captured values, never `ctx.getX()` or `ctx.setX()`.
 
 - **Resolve runners via the registry, not via `ctx.getRunner()`.** `ctx.getRunner()` returns the per-connection `attachedRunner`, which becomes `null` on WS close. Use `ctx.getRunnerRegistry().get(capturedSessionId) ?? ctx.getRunner()` so the resolution survives reconnects. The registry persists across the entire process lifetime.
 
@@ -284,7 +284,7 @@ Messages use discriminated unions with a `type` literal field (`ws-client-messag
 
 ### Post-turn flow
 
-After Claude finishes a turn (`agent_result` event in `claude-execution.ts`):
+After the agent finishes a turn (`agent_result` event in `agent-execution.ts`):
 1. `postTurnCommit()` auto-commits changes
 2. `scheduleAutoPush()` debounces a push (5s) if GitHub auth is configured
 3. PR lifecycle card is emitted if a remote exists

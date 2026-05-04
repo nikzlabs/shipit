@@ -123,7 +123,7 @@ function NotificationSettings() {
  * Pull-request automation settings (currently just auto-create PR).
  * Rendered inside the GitHub tab when the user is authenticated — without a
  * GitHub token the server-side gate (`githubAuthManager.authenticated` in
- * `claude-execution.ts`) means toggling this on is a no-op.
+ * `agent-execution.ts`) means toggling this on is a no-op.
  *
  * Mirrors the optimistic-set-then-PUT-with-revert pattern that previously
  * lived in `PrLifecycleCard.tsx`'s `AutoCreatePrToggle`. Surfaces a toast on

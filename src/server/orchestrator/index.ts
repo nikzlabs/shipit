@@ -823,7 +823,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           case "fork_session_from_message": return rollbackHandlers.handleForkSessionFromMessage(ctx, msg);
           case "rewind_to_message": return rewindHandlers.handleRewindToMessage(ctx, msg);
           case "cancel_queued_message": { miscHandlers.handleCancelQueuedMessage(ctx, msg); return; }
-          case "interrupt_claude": { miscHandlers.handleInterruptClaude(ctx); return; }
+          case "interrupt_agent": { miscHandlers.handleInterruptAgent(ctx); return; }
           case "init_preview_config": {
             void sendMessageHandlers.handleSendMessage(ctx, {
               type: "send_message",

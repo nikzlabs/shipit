@@ -53,7 +53,7 @@ export function extractToolResults(event: AgentEvent): ToolResultEntry[] {
 
 /**
  * Wire up common agent event listeners shared across send_message,
- * answer_question, and the queued-message replay inside runClaudeWithMessage.
+ * answer_question, and the queued-message replay inside runAgentWithMessage.
  */
 export function wireAgentListeners(
   ctx: FullCtx,
@@ -64,7 +64,7 @@ export function wireAgentListeners(
     fallbackTitle?: string;
     /**
      * Session ID captured at turn start — immune to session switches. Always
-     * set in production: both `runClaudeWithMessage` and `handleAnswerQuestion`
+     * set in production: both `runAgentWithMessage` and `handleAnswerQuestion`
      * capture this from `ctx.getActiveAppSessionId()`, which is the URL-
      * derived session ID on the per-session WS route. Marked optional only
      * for ergonomics in the rare test that wires listeners directly.
