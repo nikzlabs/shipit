@@ -717,7 +717,7 @@ export default function App() {
             </div>
           )}
           <MessageList messages={messages} isLoading={isLoading} searchMatches={search.matches} currentMatch={search.currentMatch} onAnswerQuestion={handleAnswerQuestion} onSendFollowUp={handleSendFollowUp} onRollback={handleRollback} onRewind={handleRewind} />
-          {isLoading && <AgentStatusBar activity={activity} />}
+          {isLoading && <AgentStatusBar activity={activity} hasPrCard={hasPrCard} />}
           <MessageAttachmentRow pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} uploads={uploads} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} />
           {wsSessionId && <RebaseBanner sessionId={wsSessionId} />}
           {wsSessionId && <PrLifecycleCard sessionId={wsSessionId} />}
