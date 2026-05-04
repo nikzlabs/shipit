@@ -16,7 +16,13 @@
 
 // eslint-disable-next-line no-restricted-imports -- useEffect: health polling interval (external system sync)
 import { useEffect, useState, useCallback, useRef } from "react";
-import { ArrowsClockwiseIcon, SkullIcon, CircleNotchIcon } from "@phosphor-icons/react";
+import {
+  ArrowsClockwiseIcon,
+  SkullIcon,
+  CircleNotchIcon,
+  CaretDownIcon,
+  CaretUpIcon,
+} from "@phosphor-icons/react";
 import { Button } from "./ui/button.js";
 import { StatusDot } from "./ui/status-dot.js";
 import { useApi, ApiError } from "../hooks/useApi.js";
@@ -32,6 +38,17 @@ interface ContainerHealth {
   lastEventAt: number | null;
   runnerRunningFlag: boolean | null;
   viewerCount: number | null;
+  lastCreateError: string | null;
+  lastCreateErrorAt: number | null;
+  workerUrl: string | null;
+  containerId: string | null;
+}
+
+interface RestartContainerResult {
+  ok: true;
+  noContainer: boolean;
+  newContainerState: "running" | "starting" | "missing" | "pending";
+  error: string | null;
 }
 
 export interface SessionHealthStripProps {
@@ -47,6 +64,21 @@ export interface SessionHealthStripProps {
 
 /** Poll interval — short enough to feel responsive, long enough not to spam. */
 const POLL_INTERVAL_MS = 10_000;
+
+/**
+ * Faster poll cadence while a restart is in flight, so the user gets quick
+ * feedback (the new container typically reaches "running" in 2-5s and we
+ * don't want to make them stare at a stale spinner).
+ */
+const RESTART_POLL_INTERVAL_MS = 1500;
+
+/**
+ * Hard ceiling on the "Restarting…" overlay. If the container still hasn't
+ * become healthy after this window, clear the spinner so the user sees the
+ * actual diagnostic state (container state, lastCreateError) instead of a
+ * forever-spinning UI.
+ */
+const RESTART_OVERLAY_TIMEOUT_MS = 60_000;
 
 /** SSE staleness threshold — beyond this, surface a yellow warning. */
 const STALE_EVENT_THRESHOLD_MS = 30_000;
@@ -111,6 +143,15 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
   const [isRestarting, setIsRestarting] = useState(false);
   const [isKilling, setIsKilling] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [showDetails, setShowDetails] = useState(false);
+  /**
+   * Wall-clock timestamp when the most recent restart was issued. Used to
+   * decide whether a server-side `lastCreateError` belongs to THIS restart
+   * (newer than the click) vs. a stale error from before. Without this,
+   * a leftover error from a previous attempt would prematurely clear the
+   * spinner.
+   */
+  const restartStartedAtRef = useRef<number | null>(null);
 
   // Use a ref so the polling effect doesn't restart on every health update.
   const sessionIdRef = useRef(sessionId);
@@ -123,12 +164,23 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
       const data = await api.get<ContainerHealth>(`/api/sessions/${sid}/container/health`);
       setHealth(data);
       setError(null);
-      // If a restart was in flight and the container is back up, clear
-      // the overlay. The fresh container won't necessarily have the
-      // worker reachable yet on the first probe after reconnect —
-      // require both signals to be green.
+      // Clear the "Restarting…" overlay when we have a definitive outcome:
+      //   1. Success — container is running AND worker is reachable.
+      //   2. Failure — a fresh creation error landed AFTER the restart click.
+      // Without (2) the user was stuck on the spinner forever whenever
+      // creation failed (Docker error, image missing, etc.) — the symptom
+      // that prompted the bug report.
       if (data.containerState === "running" && data.workerReachable) {
         setIsRestarting(false);
+        restartStartedAtRef.current = null;
+      } else if (
+        data.lastCreateError &&
+        data.lastCreateErrorAt !== null &&
+        restartStartedAtRef.current !== null &&
+        data.lastCreateErrorAt >= restartStartedAtRef.current
+      ) {
+        setIsRestarting(false);
+        restartStartedAtRef.current = null;
       }
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
@@ -146,16 +198,37 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
     setActionError(null);
     setIsRestarting(false);
     setIsKilling(false);
+    restartStartedAtRef.current = null;
   }, [sessionId]);
 
-  // Poll on mount and every POLL_INTERVAL_MS while a session is selected.
+  // Poll on mount; cadence depends on whether a restart is in flight. While
+  // restarting, poll fast so the new container's transition to "running"
+  // (or the surfaced creation error) is reflected within ~1.5s instead of
+  // the regular 10s window.
   // eslint-disable-next-line no-restricted-syntax -- existing usage pattern: polling external state
   useEffect(() => {
     if (!sessionId) return;
     void poll();
-    const id = setInterval(() => void poll(), POLL_INTERVAL_MS);
+    const interval = isRestarting ? RESTART_POLL_INTERVAL_MS : POLL_INTERVAL_MS;
+    const id = setInterval(() => void poll(), interval);
     return () => clearInterval(id);
-  }, [sessionId, poll]);
+  }, [sessionId, poll, isRestarting]);
+
+  // Hard timeout on the "Restarting…" overlay so it can't get stuck
+  // indefinitely if neither success nor a creation error ever lands
+  // (e.g., the orchestrator is wedged or the container is in some
+  // exotic intermediate state). The diagnostic strip below the spinner
+  // will still be live, so the user has actionable info.
+  // eslint-disable-next-line no-restricted-syntax -- timeout for derived UI state
+  useEffect(() => {
+    if (!isRestarting) return;
+    const id = setTimeout(() => {
+      setIsRestarting(false);
+      restartStartedAtRef.current = null;
+      setActionError("Restart timed out — the new container did not become ready. See diagnostics below.");
+    }, RESTART_OVERLAY_TIMEOUT_MS);
+    return () => clearTimeout(id);
+  }, [isRestarting]);
 
   // Re-render once a second when the strip cares about elapsed time
   // (last event "47s ago" needs to tick). Cheap — only this component.
@@ -186,16 +259,29 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
     if (!sessionId) return;
     setIsRestarting(true);
     setActionError(null);
+    restartStartedAtRef.current = Date.now();
     try {
-      await api.post(`/api/sessions/${sessionId}/container/restart`);
-      // Triggering a fresh WS handshake makes the session worker spin up
-      // a new container via the runner factory. Without this, the WS
-      // sits idle on a disposed runner.
+      const result = await api.post<RestartContainerResult>(
+        `/api/sessions/${sessionId}/container/restart`,
+      );
+      // Triggering a fresh WS handshake makes the session worker reattach
+      // to the new container the recovery service just kicked off.
       onReconnectWs();
+      // If the server already saw a definitive outcome inside its readiness
+      // window, surface it without waiting for the next poll.
+      if (result.newContainerState === "running") {
+        setIsRestarting(false);
+        restartStartedAtRef.current = null;
+      } else if (result.newContainerState === "missing" && result.error) {
+        setActionError(`Container creation failed: ${result.error}`);
+        setIsRestarting(false);
+        restartStartedAtRef.current = null;
+      }
       void poll();
     } catch (e) {
       setActionError(e instanceof ApiError ? e.message : String(e));
       setIsRestarting(false);
+      restartStartedAtRef.current = null;
     }
   }, [api, sessionId, onReconnectWs, poll]);
 
@@ -209,74 +295,172 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
 
   const summary = summarize(health, isRestarting);
   const canKillAgent = !!health?.workerReachable && health.agentRunning === true;
+  // Surface a creation error from the server alongside any client-side
+  // action error. The server-side error is the primary signal when the
+  // factory's async create failed (Docker error, image missing, etc.).
+  const createError = health?.lastCreateError ?? null;
 
   return (
-    <div className="flex items-center justify-between gap-3 px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs">
-      <div className="flex items-center gap-3 min-w-0 flex-1">
-        <span className="flex items-center gap-1.5 shrink-0">
-          <StatusDot status={dotStatus(summary.severity)} />
-          <span className="font-medium text-(--color-text-primary)">{summary.label}</span>
-        </span>
-        {health && !isRestarting && (
-          <>
-            <span className="text-(--color-text-tertiary) truncate">
-              container: <span className="text-(--color-text-secondary)">{health.containerState}</span>
-            </span>
-            <span className="text-(--color-text-tertiary) truncate">
-              worker:{" "}
-              <span className={health.workerReachable ? "text-(--color-text-secondary)" : "text-(--color-error)"}>
-                {health.workerReachable ? formatLatency(health.workerLatencyMs) : "unreachable"}
-              </span>
-            </span>
-            <span className="text-(--color-text-tertiary) truncate">
-              agent:{" "}
-              <span className="text-(--color-text-secondary)">
-                {health.agentRunning === null ? "—" : health.agentRunning ? "running" : "idle"}
-              </span>
-            </span>
-            {health.lastEventAt !== null && (
+    <div className="flex flex-col bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs">
+      <div className="flex items-center justify-between gap-3 px-3 py-1.5">
+        <div className="flex items-center gap-3 min-w-0 flex-1">
+          <span className="flex items-center gap-1.5 shrink-0">
+            <StatusDot status={dotStatus(summary.severity)} />
+            <span className="font-medium text-(--color-text-primary)">{summary.label}</span>
+          </span>
+          {health && !isRestarting && (
+            <>
               <span className="text-(--color-text-tertiary) truncate">
-                last event:{" "}
-                <span className="text-(--color-text-secondary)">{formatStaleness(health.lastEventAt)}</span>
+                container: <span className="text-(--color-text-secondary)">{health.containerState}</span>
+              </span>
+              <span className="text-(--color-text-tertiary) truncate">
+                worker:{" "}
+                <span className={health.workerReachable ? "text-(--color-text-secondary)" : "text-(--color-error)"}>
+                  {health.workerReachable ? formatLatency(health.workerLatencyMs) : "unreachable"}
+                </span>
+              </span>
+              <span className="text-(--color-text-tertiary) truncate">
+                agent:{" "}
+                <span className="text-(--color-text-secondary)">
+                  {health.agentRunning === null ? "—" : health.agentRunning ? "running" : "idle"}
+                </span>
+              </span>
+              {health.lastEventAt !== null && (
+                <span className="text-(--color-text-tertiary) truncate">
+                  last event:{" "}
+                  <span className="text-(--color-text-secondary)">{formatStaleness(health.lastEventAt)}</span>
+                </span>
+              )}
+            </>
+          )}
+          {error && !health && (
+            <span className="text-(--color-error) truncate">{error}</span>
+          )}
+          {actionError && (
+            <span className="text-(--color-error) truncate" title={actionError}>
+              {actionError}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setShowDetails((v) => !v)}
+            className="inline-flex items-center gap-0.5 px-1.5 py-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-tertiary) transition-colors"
+            title={showDetails ? "Hide diagnostics" : "Show diagnostics"}
+          >
+            details
+            {showDetails
+              ? <CaretUpIcon size={ICON_SIZE.XS} />
+              : <CaretDownIcon size={ICON_SIZE.XS} />}
+          </button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => void onKill()}
+            disabled={isKilling || isRestarting || !canKillAgent}
+            title={canKillAgent ? "Force-kill the agent process (SIGKILL). Use when interrupt didn't take." : "No agent running"}
+          >
+            {isKilling
+              ? <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
+              : <SkullIcon size={ICON_SIZE.XS} />}
+            Kill agent
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => void onRestart()}
+            disabled={isRestarting}
+            title="Stop and recreate this session's container. Use when the worker is unresponsive."
+          >
+            {isRestarting
+              ? <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
+              : <ArrowsClockwiseIcon size={ICON_SIZE.XS} />}
+            Restart container
+          </Button>
+        </div>
+      </div>
+      {/* Server-side creation error always renders inline (no toggle) — it's
+          the most actionable signal when the container is missing. */}
+      {createError && (
+        <div className="px-3 py-1.5 border-t border-(--color-border-secondary) bg-(--color-bg-tertiary)">
+          <div className="text-(--color-error) font-medium mb-0.5">
+            Container creation failed
+            {health?.lastCreateErrorAt && (
+              <span className="font-normal text-(--color-text-tertiary) ml-1.5">
+                ({formatStaleness(health.lastCreateErrorAt)})
               </span>
             )}
-          </>
-        )}
-        {error && !health && (
-          <span className="text-(--color-error) truncate">{error}</span>
-        )}
-        {actionError && (
-          <span className="text-(--color-error) truncate" title={actionError}>
-            {actionError}
-          </span>
-        )}
-      </div>
-      <div className="flex items-center gap-2 shrink-0">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => void onKill()}
-          disabled={isKilling || isRestarting || !canKillAgent}
-          title={canKillAgent ? "Force-kill the agent process (SIGKILL). Use when interrupt didn't take." : "No agent running"}
-        >
-          {isKilling
-            ? <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
-            : <SkullIcon size={ICON_SIZE.XS} />}
-          Kill agent
-        </Button>
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => void onRestart()}
-          disabled={isRestarting}
-          title="Stop and recreate this session's container. Use when the worker is unresponsive."
-        >
-          {isRestarting
-            ? <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
-            : <ArrowsClockwiseIcon size={ICON_SIZE.XS} />}
-          Restart container
-        </Button>
-      </div>
+          </div>
+          <div className="text-(--color-text-secondary) font-mono whitespace-pre-wrap break-all">
+            {createError}
+          </div>
+        </div>
+      )}
+      {showDetails && (
+        <div className="px-3 py-2 border-t border-(--color-border-secondary) bg-(--color-bg-tertiary) font-mono text-[11px] leading-relaxed">
+          <DetailRow label="session" value={sessionId} />
+          <DetailRow label="container" value={health?.containerState ?? "—"} />
+          <DetailRow label="container id" value={health?.containerId ?? "—"} />
+          <DetailRow label="worker url" value={health?.workerUrl ?? "—"} />
+          <DetailRow
+            label="worker"
+            value={
+              health
+                ? health.workerReachable
+                  ? `reachable (${formatLatency(health.workerLatencyMs)})`
+                  : "unreachable"
+                : "—"
+            }
+          />
+          <DetailRow
+            label="agent (worker)"
+            value={
+              health?.agentRunning === null || health?.agentRunning === undefined
+                ? "—"
+                : health.agentRunning ? "running" : "idle"
+            }
+          />
+          <DetailRow
+            label="runner.running"
+            value={
+              health?.runnerRunningFlag === null || health?.runnerRunningFlag === undefined
+                ? "—"
+                : String(health.runnerRunningFlag)
+            }
+          />
+          <DetailRow
+            label="viewers"
+            value={
+              health?.viewerCount === null || health?.viewerCount === undefined
+                ? "—"
+                : String(health.viewerCount)
+            }
+          />
+          <DetailRow
+            label="last sse event"
+            value={health?.lastEventAt ? formatStaleness(health.lastEventAt) : "—"}
+          />
+          {error && <DetailRow label="poll error" value={error} valueClass="text-(--color-error)" />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DetailRow({
+  label,
+  value,
+  valueClass,
+}: {
+  label: string;
+  value: string;
+  valueClass?: string;
+}) {
+  return (
+    <div className="flex gap-2">
+      <span className="text-(--color-text-tertiary) shrink-0 w-32">{label}</span>
+      <span className={`text-(--color-text-secondary) break-all ${valueClass ?? ""}`}>{value}</span>
     </div>
   );
 }

@@ -10,6 +10,7 @@
  * report that the previous state was tidy.
  */
 
+import type { AgentId } from "../../shared/types.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionContainerManager } from "../session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
@@ -17,6 +18,14 @@ import { ServiceError } from "./types.js";
 
 /** Short timeout for recovery-time worker calls — never block on a wedged worker. */
 const RECOVERY_WORKER_TIMEOUT_MS = 3000;
+
+/**
+ * How long to wait inside `restartContainer` for the new container to
+ * either reach "running" or surface a creation error. Kept short so the
+ * HTTP request returns promptly — the poll loop on the client picks up
+ * any further progress beyond this window.
+ */
+const RESTART_READY_TIMEOUT_MS = 8000;
 
 /** Subset of ContainerSessionRunner methods that recovery uses. */
 interface RecoveryRunner extends SessionRunnerInterface {
@@ -27,6 +36,13 @@ export interface RecoveryDeps {
   sessionManager: SessionManager;
   containerManager: SessionContainerManager | null;
   runnerRegistry: SessionRunnerRegistry;
+  /**
+   * Default agent ID used to seed the new runner when restart triggers a
+   * fresh `getOrCreate`. The real selection is per-WS-connection and gets
+   * applied on the next reconnect; this is just so the factory has a
+   * non-undefined value during the gap.
+   */
+  defaultAgentId: AgentId;
 }
 
 export interface KillAgentResult {
@@ -41,6 +57,18 @@ export interface RestartContainerResult {
   ok: true;
   /** True when there was no container to destroy (still creates a fresh one on next attach). */
   noContainer: boolean;
+  /**
+   * Final container state observed within the readiness window:
+   *  - "running"  — new container is up and the worker is healthy.
+   *  - "starting" — fresh creation is in flight; client will see "running"
+   *                 on a subsequent poll.
+   *  - "missing"  — creation failed within the window; `error` is populated.
+   *  - "pending"  — readiness window expired before status changed; the
+   *                 client should keep polling.
+   */
+  newContainerState: "running" | "starting" | "missing" | "pending";
+  /** Most recent creation error, when one was recorded during this restart. */
+  error: string | null;
 }
 
 /**
@@ -150,13 +178,70 @@ export async function restartContainer(
   // disconnects); for an explicit user-initiated recovery we override.
   deps.runnerRegistry.dispose(sessionId, { force: true });
 
-  // Destroy the container. The destroy() call swallows "container already
-  // gone" errors internally, so this is safe even if the container has
-  // already exited.
-  const sc = deps.containerManager.get(sessionId);
-  if (!sc) {
-    return { ok: true, noContainer: true };
+  // Destroy the existing container if any. destroy() also clears any prior
+  // create-error so the next attempt starts clean. Safe when no container.
+  const existing = deps.containerManager.get(sessionId);
+  const noContainer = !existing;
+  if (existing) {
+    await deps.containerManager.destroy(sessionId);
+  } else {
+    // No container, but a stale create-error from a previous failed attempt
+    // would persist otherwise — wipe it so we observe only THIS attempt's
+    // outcome below.
+    deps.containerManager.clearCreateError(sessionId);
   }
-  await deps.containerManager.destroy(sessionId);
-  return { ok: true, noContainer: false };
+
+  // Trigger the runner factory to create a fresh container. Previously the
+  // design relied on the client's WS reconnect to call `activateSession` →
+  // `getOrCreate` → factory. If the WS reconnect raced or the factory's
+  // fire-and-forget creation block silently failed, the user was stuck on
+  // "Restarting…" indefinitely (the symptom of bug 112-followup).
+  //
+  // By kicking off `getOrCreate` here we guarantee creation starts as part
+  // of this HTTP call. We then wait briefly for the new container to either
+  // reach "running" or surface a creation error, so the client gets an
+  // informative response without having to wait for the next 10s poll.
+  if (!session.workspaceDir) {
+    throw new ServiceError(500, "Session has no workspaceDir — cannot create container");
+  }
+  deps.runnerRegistry.getOrCreate(sessionId, session.workspaceDir, deps.defaultAgentId);
+
+  const deadline = Date.now() + RESTART_READY_TIMEOUT_MS;
+  let newContainerState: RestartContainerResult["newContainerState"] = "pending";
+  let error: string | null = null;
+  while (Date.now() < deadline) {
+    const sc = deps.containerManager.get(sessionId);
+    if (sc?.status === "running") {
+      newContainerState = "running";
+      break;
+    }
+    const errRecord = deps.containerManager.getLastCreateError(sessionId);
+    if (errRecord) {
+      newContainerState = "missing";
+      error = errRecord.error;
+      break;
+    }
+    if (sc?.status === "starting") {
+      newContainerState = "starting";
+      // Don't break — keep polling for "running" until the deadline.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  // Final read so we don't miss a state transition that happened on the
+  // last sleep before the deadline.
+  if (newContainerState === "pending" || newContainerState === "starting") {
+    const sc = deps.containerManager.get(sessionId);
+    if (sc?.status === "running") {
+      newContainerState = "running";
+    } else if (sc?.status === "starting") {
+      newContainerState = "starting";
+    }
+    const errRecord = deps.containerManager.getLastCreateError(sessionId);
+    if (errRecord && newContainerState !== "running") {
+      newContainerState = "missing";
+      error = errRecord.error;
+    }
+  }
+
+  return { ok: true, noContainer, newContainerState, error };
 }

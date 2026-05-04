@@ -207,6 +207,7 @@ export function buildRunnerFactory(
               mgr.claimStandby(o.sessionId);
               console.log(`[container] Standby container ready for ${o.sessionId} at ${sc.workerUrl}`);
               runner.setWorkerUrl(sc.workerUrl);
+              mgr.clearCreateError(o.sessionId);
               return;
             }
             if (!sc) break; // Creation failed and entry was removed
@@ -229,8 +230,11 @@ export function buildRunnerFactory(
           const sc = await mgr.create(config);
           console.log(`[container] Container ready for ${o.sessionId} at ${sc.workerUrl}`);
           runner.setWorkerUrl(sc.workerUrl);
+          mgr.clearCreateError(o.sessionId);
         } catch (err) {
-          console.error(`[container] Failed to start container for ${o.sessionId}:`, getErrorMessage(err));
+          const errMsg = getErrorMessage(err);
+          console.error(`[container] Failed to start container for ${o.sessionId}:`, errMsg);
+          mgr.recordCreateError(o.sessionId, errMsg);
           // Forced — container start failed, the runner is unusable and must
           // be torn down. The agent isn't actually running on a worker yet.
           runner.dispose({ force: true });
@@ -268,8 +272,14 @@ export function buildRunnerFactory(
         const sc = await mgr.create(config);
         console.log(`[container] Container ready for ${o.sessionId} at ${sc.workerUrl}`);
         runner.setWorkerUrl(sc.workerUrl);
+        mgr.clearCreateError(o.sessionId);
       } catch (err) {
-        console.error(`[container] Failed to start container for ${o.sessionId}:`, getErrorMessage(err));
+        const errMsg = getErrorMessage(err);
+        console.error(`[container] Failed to start container for ${o.sessionId}:`, errMsg);
+        // Record the error so the health endpoint can surface it to the UI.
+        // Without this, async creation failures from the fire-and-forget block
+        // are invisible to the client — the user sees "Restarting…" forever.
+        mgr.recordCreateError(o.sessionId, errMsg);
         // Forced — container start failed, the runner is unusable and must be
         // torn down. The agent isn't running on any worker yet, but if some
         // race ever flipped `_isRunning` (early enqueue, etc.), an unforced

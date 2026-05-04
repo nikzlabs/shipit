@@ -208,6 +208,15 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private standbySessionIds = new Set<string>();
   private healthMonitorState: HealthMonitorState = { eventStream: null };
   private _disposed = false;
+  /**
+   * Per-session record of the most recent container creation failure.
+   * Surfaced via the container health endpoint so the SessionHealthStrip
+   * can display it — without this, async creation errors fired from the
+   * runner factory's fire-and-forget block were only logged server-side
+   * and the user was stuck on "Restarting…" forever. Cleared on
+   * successful create() or destroy().
+   */
+  private lastCreateErrors = new Map<string, { error: string; at: number }>();
 
   constructor(opts: SessionContainerManagerOpts = {}) {
     super();
@@ -367,6 +376,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * by the session through the Docker API proxy.
    */
   async destroy(sessionId: string): Promise<void> {
+    this.lastCreateErrors.delete(sessionId);
     return destroyContainer(this.lifecycleDeps(), sessionId);
   }
 
@@ -389,6 +399,27 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   /** Number of active containers. */
   get size(): number {
     return this.containers.size;
+  }
+
+  /**
+   * Record the most recent container creation failure for a session. Used by
+   * the runner factory's fire-and-forget async block to surface errors that
+   * would otherwise be invisible to the client. Capped TTL is enforced by the
+   * client via the `at` timestamp — the server keeps the latest error until
+   * the next successful create/destroy.
+   */
+  recordCreateError(sessionId: string, error: string): void {
+    this.lastCreateErrors.set(sessionId, { error, at: Date.now() });
+  }
+
+  /** Read the most recent create error for a session, or undefined. */
+  getLastCreateError(sessionId: string): { error: string; at: number } | undefined {
+    return this.lastCreateErrors.get(sessionId);
+  }
+
+  /** Clear the create error for a session — call on successful create/destroy. */
+  clearCreateError(sessionId: string): void {
+    this.lastCreateErrors.delete(sessionId);
   }
 
   /**

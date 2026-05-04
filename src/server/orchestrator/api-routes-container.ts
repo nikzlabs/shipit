@@ -66,6 +66,7 @@ export async function registerContainerRoutes(
             sessionManager: deps.sessionManager,
             containerManager: deps.containerManager ?? null,
             runnerRegistry: deps.runnerRegistry,
+            defaultAgentId: deps.defaultAgentId,
           },
           request.params.id,
         );
@@ -90,6 +91,7 @@ export async function registerContainerRoutes(
             sessionManager: deps.sessionManager,
             containerManager: deps.containerManager ?? null,
             runnerRegistry: deps.runnerRegistry,
+            defaultAgentId: deps.defaultAgentId,
           },
           request.params.id,
         );
