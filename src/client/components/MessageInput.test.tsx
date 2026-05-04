@@ -1,8 +1,29 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { MessageInput } from "./MessageInput.js";
 
 afterEach(cleanup);
+
+/**
+ * Stub `window.matchMedia` so `useIsMobile()` returns the desired value.
+ * Pass `true` to simulate a mobile viewport.
+ */
+function mockMatchMedia(isMobile: boolean) {
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: query === "(max-width: 767px)" ? isMobile : false,
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })),
+  });
+}
+
+beforeEach(() => {
+  // Default to desktop so existing tests keep their previous behavior.
+  mockMatchMedia(false);
+});
 
 describe("MessageInput", () => {
   describe("basic functionality", () => {
@@ -33,6 +54,29 @@ describe("MessageInput", () => {
       fireEvent.change(textarea, { target: { value: "test" } });
       fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
       expect(onSend).toHaveBeenCalledWith("test");
+    });
+
+    it("does NOT send on Enter when on a mobile viewport", () => {
+      // On mobile, the on-screen keyboard's return key should insert a newline
+      // rather than fire-and-forget the message — matches native chat-app
+      // behavior. The user sends via the explicit send button instead.
+      mockMatchMedia(true);
+      const onSend = vi.fn();
+      render(<MessageInput onSend={onSend} disabled={false} />);
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      fireEvent.change(textarea, { target: { value: "test" } });
+      fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
+      expect(onSend).not.toHaveBeenCalled();
+    });
+
+    it("still sends via the send button on a mobile viewport", () => {
+      mockMatchMedia(true);
+      const onSend = vi.fn();
+      render(<MessageInput onSend={onSend} disabled={false} />);
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      fireEvent.change(textarea, { target: { value: "hello mobile" } });
+      fireEvent.click(screen.getByLabelText("Send message"));
+      expect(onSend).toHaveBeenCalledWith("hello mobile");
     });
 
     it("does not send empty messages", () => {
