@@ -100,10 +100,12 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
     validatedFiles = [...validatedFiles, ...uploadResult.files];
     if (uploadResult.images.length > 0) {
       allImages = [...(allImages ?? []), ...uploadResult.images];
-      // Delete originals — data is in memory, saveImagesToUploadsDir will create agent-readable copies
-      for (const p of uploadResult.imageHostPaths) {
-        fs.unlink(p).catch(() => {});
-      }
+      // Don't delete originals: the resolved ImageAttachments carry
+      // `existingPath`, so saveImagesToUploadsDir references them in place
+      // instead of re-saving under randomized names. Keeping the on-disk
+      // path stable is what lets `hydrateUploads` recognize the upload as
+      // already sent (matched against `uploadPaths` in chat history) — see
+      // claude-execution.ts:saveImagesToUploadsDir for full context.
     }
   }
 

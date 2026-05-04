@@ -4,6 +4,16 @@ export interface ImageAttachment {
   data: string;       // base64-encoded image data
   mediaType: string;  // "image/png", "image/jpeg", etc.
   filename?: string;  // optional original filename
+  /**
+   * Container path of an existing on-disk copy of this image (e.g.
+   * `/uploads/screenshot.png`). Set for images that came from `uploads:`
+   * refs, where the file is already in `/uploads/` at a known path. When
+   * set, the orchestrator references this path in the agent prompt instead
+   * of re-saving the image under a new randomized name — keeping the
+   * on-disk path in sync with `uploadPaths` in chat history so
+   * `hydrateUploads` can correctly identify the upload as sent.
+   */
+  existingPath?: string;
 }
 
 export interface FileAttachment {
