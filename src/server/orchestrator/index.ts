@@ -221,7 +221,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // ---- Event wiring (deployment + auth) ----
   wireEventHandlers({
     authManager, agentRegistry,
-    defaultAgentId, broadcastLog, sseBroadcast,
+    defaultAgentId, sseBroadcast,
   });
 
   // ---- Session directory creation ----
@@ -621,7 +621,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             const text = errMsg.includes("workflow")
               ? "Auto-push failed: your GitHub token needs the `workflow` scope to push changes to GitHub Actions workflow files. Update your token at https://github.com/settings/tokens."
               : `Auto-push failed: ${errMsg}`;
-            broadcastLog("server", text);
+            broadcastLog(runner.sessionId, "server", text);
             runner.emitMessage({ type: "log_entry", source: "server", text, timestamp: new Date().toISOString() });
           }
         }, autoPushDebounceMs));
@@ -665,9 +665,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         } catch { return undefined; }
       };
 
-      // Wrap broadcastLog so it both buffers globally AND sends to attached WS viewers
-      const sessionBroadcastLog: typeof broadcastLog = (source, text) => {
-        broadcastLog(source, text); // global buffer
+      // Wrap broadcastLog so it both buffers (per-session) AND sends to attached WS viewers.
+      // The sessionId is captured from the URL — every log line emitted on
+      // this connection belongs to this session, so it goes into THIS
+      // session's buffer only. This is what isolates one session's terminal
+      // panel from another session's logs.
+      const sessionBroadcastLog = (source: WsLogEntry["source"], text: string) => {
+        broadcastLog(sessionId, source, text); // per-session buffer
         const entry: WsLogEntry = { type: "log_entry", source, text, timestamp: new Date().toISOString() };
         if (attachedRunner) {
           attachedRunner.emitMessage(entry);
@@ -705,7 +709,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         },
         getSelectedModel: () => selectedModel,
         setSelectedModel: (m) => { selectedModel = m; },
-        clearLogBuffer: () => { clearLogBuffer(); },
+        clearLogBuffer: () => { clearLogBuffer(sessionId); },
         getRunner: () => attachedRunner,
         getRunnerRegistry: () => runnerRegistry,
         attachToRunner, detachFromRunner,
@@ -722,8 +726,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       // Auto-activate the session on connect
       void activateSession(sessionId);
 
-      // Send log buffer and git identity check
-      const logBuffer = getLogBuffer();
+      // Send log buffer and git identity check.
+      // Replay only THIS session's buffered entries so a newly-connected
+      // viewer doesn't see logs that belong to other sessions.
+      const logBuffer = getLogBuffer(sessionId);
       for (const entry of logBuffer) { send(entry); }
       if (!getGitIdentity()) { send({ type: "git_identity_required" }); }
 

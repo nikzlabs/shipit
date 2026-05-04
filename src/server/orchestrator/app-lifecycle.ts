@@ -777,30 +777,51 @@ export function createPrStatusPoller(
 
 const MAX_LOG_ENTRIES = 500;
 
-/** Create the log buffer and broadcast helper. */
+/**
+ * Create the per-session log buffer and broadcast helper.
+ *
+ * The buffer is keyed by sessionId so that switching sessions (or opening a
+ * new tab into session B) does NOT replay log entries from session A. Every
+ * caller must supply the sessionId that the log line belongs to.
+ *
+ * Background: the buffer used to be process-global and every WS connect
+ * replayed the entire history — meaning logs from every session leaked into
+ * every other session's terminal panel.
+ */
 export function createLogBuffer(): {
-  getLogBuffer: () => WsLogEntry[];
-  clearLogBuffer: () => void;
-  broadcastLog: (source: WsLogEntry["source"], text: string) => void;
+  getLogBuffer: (sessionId: string) => WsLogEntry[];
+  clearLogBuffer: (sessionId: string) => void;
+  removeLogBuffer: (sessionId: string) => void;
+  broadcastLog: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
 } {
-  let logBuffer: WsLogEntry[] = [];
+  const buffers = new Map<string, WsLogEntry[]>();
 
-  const broadcastLog = (source: WsLogEntry["source"], text: string) => {
+  const broadcastLog = (
+    sessionId: string,
+    source: WsLogEntry["source"],
+    text: string,
+  ) => {
     const entry: WsLogEntry = {
       type: "log_entry",
       source,
       text,
       timestamp: new Date().toISOString(),
     };
-    logBuffer.push(entry);
-    if (logBuffer.length > MAX_LOG_ENTRIES) {
-      logBuffer = logBuffer.slice(-MAX_LOG_ENTRIES);
+    let buf = buffers.get(sessionId);
+    if (!buf) {
+      buf = [];
+      buffers.set(sessionId, buf);
+    }
+    buf.push(entry);
+    if (buf.length > MAX_LOG_ENTRIES) {
+      buffers.set(sessionId, buf.slice(-MAX_LOG_ENTRIES));
     }
   };
 
   return {
-    getLogBuffer: () => logBuffer,
-    clearLogBuffer: () => { logBuffer = []; },
+    getLogBuffer: (sessionId: string) => buffers.get(sessionId) ?? [],
+    clearLogBuffer: (sessionId: string) => { buffers.set(sessionId, []); },
+    removeLogBuffer: (sessionId: string) => { buffers.delete(sessionId); },
     broadcastLog,
   };
 }
@@ -812,7 +833,6 @@ export interface EventWiringDeps {
   authManager: AuthManager;
   agentRegistry: AgentRegistry;
   defaultAgentId: AgentId;
-  broadcastLog: (source: WsLogEntry["source"], text: string) => void;
   sseBroadcast: (event: string, data: unknown) => void;
 }
 
