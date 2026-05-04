@@ -48,6 +48,20 @@ export interface ContainerHealth {
   runnerRunningFlag: boolean | null;
   /** Number of attached viewers (browsers connected via WS). */
   viewerCount: number | null;
+  /**
+   * Most recent container creation failure recorded by the runner factory.
+   * Populated when async creation throws (Docker error, image missing,
+   * resource exhaustion). Cleared on the next successful create or on
+   * destroy. Surfaces the error message to the UI so the user can see why
+   * "Restart container" didn't bring a container back.
+   */
+  lastCreateError: string | null;
+  /** Timestamp (Date.now()) of `lastCreateError`, or null when no error. */
+  lastCreateErrorAt: number | null;
+  /** The container's worker URL, when known. Useful for debug display. */
+  workerUrl: string | null;
+  /** The container's Docker ID (short-prefix), when known. Useful for debug display. */
+  containerId: string | null;
 }
 
 export interface ContainerHealthDeps {
@@ -73,6 +87,7 @@ export async function getContainerHealth(
 
   const sc = containerManager.get(sessionId);
   const runner = runnerRegistry.get(sessionId);
+  const lastErr = containerManager.getLastCreateError(sessionId);
 
   // Container state — Docker is authoritative for this signal.
   let containerState: ContainerState = "missing";
@@ -88,6 +103,10 @@ export async function getContainerHealth(
       lastEventAt: runner ? readLastEventAt(runner) : null,
       runnerRunningFlag: runner?.running ?? null,
       viewerCount: runner?.viewerCount ?? null,
+      lastCreateError: lastErr?.error ?? null,
+      lastCreateErrorAt: lastErr?.at ?? null,
+      workerUrl: sc?.workerUrl ?? null,
+      containerId: sc?.id ? sc.id.slice(0, 12) : null,
     };
   }
 
@@ -120,6 +139,10 @@ export async function getContainerHealth(
     lastEventAt: runner ? readLastEventAt(runner) : null,
     runnerRunningFlag: runner?.running ?? null,
     viewerCount: runner?.viewerCount ?? null,
+    lastCreateError: lastErr?.error ?? null,
+    lastCreateErrorAt: lastErr?.at ?? null,
+    workerUrl: sc.workerUrl,
+    containerId: sc.id ? sc.id.slice(0, 12) : null,
   };
 }
 
