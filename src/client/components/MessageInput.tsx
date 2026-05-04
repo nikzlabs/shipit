@@ -9,10 +9,12 @@ import { PlanModeToggle } from "./PlanModeToggle.js";
 import { ModelAgentSelector } from "./ModelAgentSelector.js";
 import { ContextDial } from "./ContextDial.js";
 import { FileAutoComplete } from "./FileAutoComplete.js";
+import { FileAttachmentChips } from "./FileAttachmentChips.js";
+import { FileUploadChips } from "./FileUploadChips.js";
 import { Popover, PopoverAnchor } from "./ui/popover.js";
 import { WithTooltip } from "./ui/tooltip.js";
 import { getSavedDraftMessage, saveDraftMessage } from "../utils/local-storage.js";
-import type { PermissionMode, FileTreeNode, AgentId } from "../../server/shared/types.js";
+import type { PermissionMode, FileContextRef, FileTreeNode, AgentId } from "../../server/shared/types.js";
 import type { UploadItem } from "../hooks/useFileUpload.js";
 import type { AgentOption } from "./AgentPicker.js";
 import type { ModelInfo } from "./StatusBar.js";
@@ -24,10 +26,15 @@ export function MessageInput({
   onInterrupt,
   permissionMode = "auto",
   onPermissionModeChange,
+  pendingFiles = [],
+  onRemoveFile,
   onAddFile,
   fileTree = [],
+  uploads = [],
   allUploads,
   onUploadFiles,
+  onRemoveUpload,
+  onRetryUpload,
   agents = [],
   activeAgentId = "claude",
   onAgentChange,
@@ -46,11 +53,16 @@ export function MessageInput({
   onInterrupt?: () => void;
   permissionMode?: PermissionMode;
   onPermissionModeChange?: (mode: PermissionMode) => void;
+  pendingFiles?: FileContextRef[];
+  onRemoveFile?: (index: number) => void;
   onAddFile?: (filePath: string) => void;
   fileTree?: FileTreeNode[];
+  uploads?: UploadItem[];
   /** All session uploads — for @-autocomplete (persists across sends). */
   allUploads?: UploadItem[];
   onUploadFiles?: (files: File[]) => void;
+  onRemoveUpload?: (index: number) => void;
+  onRetryUpload?: (index: number) => void;
   agents?: AgentOption[];
   activeAgentId?: AgentId;
   onAgentChange?: (agentId: AgentId) => void;
@@ -357,6 +369,20 @@ export function MessageInput({
 
         {/* Unified input box */}
         <div className={`flex flex-col ${hasPrCard ? "rounded-b-xl" : "rounded-xl"} bg-(--color-bg-secondary) border border-(--color-border-secondary) focus-within:border-(--color-accent)/80 focus-within:ring-1 focus-within:ring-(--color-accent)/80`}>
+          {/* Attachment chips — rendered inside the input box, above the
+              textarea, so they're visually contained within the input dialog
+              rather than floating above it and overlapping the chat history. */}
+          {(pendingFiles.length > 0 || uploads.length > 0) && (
+            <div className="px-3 pt-3 space-y-2">
+              {pendingFiles.length > 0 && onRemoveFile && (
+                <FileAttachmentChips files={pendingFiles} onRemove={onRemoveFile} />
+              )}
+              {uploads.length > 0 && onRemoveUpload && onRetryUpload && (
+                <FileUploadChips uploads={uploads} onRemove={onRemoveUpload} onRetry={onRetryUpload} />
+              )}
+            </div>
+          )}
+
           {/* Textarea — full width on top */}
           <textarea
             ref={textareaRef}
@@ -465,7 +491,7 @@ export function MessageInput({
           fileTree={fileTree}
           onSelect={handleAutoCompleteSelect}
           onDismiss={handleAutoCompleteDismiss}
-          uploadPaths={(allUploads ?? []).filter((u) => u.status === "ready" && u.path).map((u) => u.path!)}
+          uploadPaths={(allUploads ?? uploads).filter((u) => u.status === "ready" && u.path).map((u) => u.path!)}
         />
       )}
       </Popover>
