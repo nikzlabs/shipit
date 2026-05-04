@@ -1,6 +1,5 @@
 ---
-status: in-progress
-priority: high
+status: done
 ---
 
 # 116 — Fake `gh` CLI Shim for Agent-Driven PR Creation
@@ -162,7 +161,7 @@ Whether to include this is gated by the same `autoCreatePr` setting the harness 
 | Phase | Scope | Status |
 |---|---|---|
 | **1** | Build the shim + worker `/agent-ops/*` routes + supporting orchestrator endpoints. Update `shipit-docs/github.md`. **No agent prompt changes.** Harness path untouched. The agent *could* use `gh` if it decides to, but nothing nudges it. This phase is fully backwards-compatible. | done |
-| **2** | Update `agent-instructions.ts` to recommend `gh pr create` when `autoCreatePr` is on. The agent now drives the happy path; harness is the backstop. This is when empty-body PRs go away in practice. | planned |
+| **2** | Update `agent-instructions.ts` to recommend `gh pr create` when `autoCreatePr` is on. The agent now drives the happy path; harness is the backstop. This is when empty-body PRs go away in practice. | done |
 | **3** *(optional)* | Reduce the harness fallback to a true backstop that only fires N seconds after turn-end if no PR was created by the agent. Removes the "double work, dedup-saves-us" pattern. Probably not worth doing until we have telemetry showing harness fallback rarely fires. | planned |
 
 ## Security model
@@ -210,14 +209,26 @@ Phase 1 coverage shipped:
   continues to pass unchanged: the harness fallback still fires when the
   agent doesn't drive PR creation.
 
-Phase 2 coverage to add when prompt nudge lands:
+Phase 2 coverage shipped:
 
-- **Integration test** — agent (FakeClaudeProcess) emits a tool call running
-  `gh pr create`; orchestrator's `GitHubAuthManager` (stubbed) records the
-  create call with the right title/body; PR lifecycle card emits `phase=open`.
-  `src/server/orchestrator/integration_tests/agent-driven-pr.test.ts`.
-- **Dedup test** — agent runs `gh pr create`; harness then runs
-  `quickCreatePr`; second call short-circuits via `findPullRequest`.
+- **[done] Agent-instructions unit tests** —
+  `src/server/orchestrator/agent-instructions.test.ts` covers the
+  `autoCreatePr` branch of `buildAgentSystemInstructions`, the no-options
+  default (used by `AGENT_SYSTEM_INSTRUCTIONS`), the preview-URL branch, and
+  the backwards-compatible string-arg form. 9 cases.
+- **[done] Integration test** —
+  `src/server/orchestrator/integration_tests/agent-driven-pr.test.ts` covers
+  - System prompt contains the `gh pr create` nudge when `autoCreatePr` is on
+    AND GitHub is connected.
+  - System prompt does NOT contain the nudge when `autoCreatePr` is off.
+  - System prompt does NOT contain the nudge when GitHub is not connected
+    (even with `autoCreatePr` on).
+  - `POST /api/sessions/:id/pr/agent-create` (the orchestrator end of the
+    shim chain) routes through to `GitHubAuthManager.createPullRequest` with
+    the agent-supplied title and body — not a harness-derived description.
+  - Dedup: when the agent has already created a PR for the branch, the
+    harness backstop's `quickCreatePr` short-circuits via `findPullRequest`
+    and does not double-create.
 
 ## Key files
 
@@ -235,8 +246,12 @@ Phase 2 coverage to add when prompt nudge lands:
 | `src/server/orchestrator/github-auth.ts` | Wrapper methods on `GitHubAuthManager` for the new PR operations. | done |
 | `docker/Dockerfile.session-worker.{dev,prod}` | Install shim at `/usr/local/bin/gh` as a small `sh` wrapper that runs `node --import tsx …/gh.ts`. The `.docker` image inherits via `BASE_IMAGE`. | done |
 | `src/server/shipit-docs/github.md` | Documents the shim — supported / rejected subcommands, push semantics, auth model. | done |
-| `src/server/orchestrator/agent-instructions.ts` | *(Phase 2)* When `autoCreatePr` is on, append the "use `gh pr create`" instruction. | planned |
-| `src/server/orchestrator/integration_tests/agent-driven-pr.test.ts` | *(Phase 2)* End-to-end coverage of the agent-driven path. | planned |
+| `src/server/orchestrator/agent-instructions.ts` | *(Phase 2)* When `autoCreatePr` is on, append the "use `gh pr create`" instruction. Refactored to take an options object (`{ previewUrl, autoCreatePr }`) while preserving the legacy `string` form for backwards-compat. | done |
+| `src/server/orchestrator/agent-instructions.test.ts` | *(Phase 2)* Unit tests for the new `autoCreatePr` branch and the existing branches. | done |
+| `src/server/orchestrator/ws-handlers/claude-execution.ts` | *(Phase 2)* Pass `autoCreatePr = credentialStore.getAutoCreatePr() && githubAuthManager.authenticated` into the agent-instructions builder, so the nudge is gated on the same surface that drives the harness fallback. | done |
+| `src/server/orchestrator/services/settings.ts` | *(Phase 2)* Render `agentSystemInstructions` for the Settings UI through `buildAgentSystemInstructions({ autoCreatePr })` so the displayed copy matches what the agent actually receives. | done |
+| `src/server/orchestrator/integration_tests/agent-driven-pr.test.ts` | *(Phase 2)* End-to-end coverage of the agent-driven path: system-prompt gating, orchestrator → `GitHubAuthManager` wiring, harness dedup. | done |
+| `src/server/orchestrator/integration_tests/test-helpers.ts` | *(Phase 2)* `StubGitHubAuthManager` now records `createPullRequest` calls in `createPullRequestCalls`, so tests can assert on the title/body the orchestrator sent. | done |
 
 ## Future extensions
 

@@ -230,6 +230,17 @@ export class StubGitHubAuthManager extends EventEmitter {
     };
   }
 
+  /** Calls to `createPullRequest`, in order. Inspect from tests. */
+  public createPullRequestCalls: {
+    owner: string;
+    repo: string;
+    title: string;
+    body: string;
+    head: string;
+    base: string;
+    draft?: boolean;
+  }[] = [];
+
   async createPullRequest(options: {
     owner: string;
     repo: string;
@@ -239,6 +250,7 @@ export class StubGitHubAuthManager extends EventEmitter {
     base: string;
     draft?: boolean;
   }) {
+    this.createPullRequestCalls.push({ ...options });
     if (!this._authenticated) {
       return { success: false, message: "Not authenticated with GitHub" };
     }

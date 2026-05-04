@@ -361,9 +361,15 @@ export async function runClaudeWithMessage(ctx: FullCtx, opts: {
   // Preview URL — compose services are accessed via the preview proxy
   const previewUrl: string | undefined = undefined;
 
-  // Build the system prompt, incorporating agent system instructions and conversation replay
+  // Build the system prompt, incorporating agent system instructions and conversation replay.
+  // The auto-create-PR nudge is gated on the same `autoCreatePr` setting that drives the
+  // harness-side fallback in post-turn.ts — so users who turn off auto-PR don't get the
+  // prompt either. See docs/116-fake-gh-cli-shim/plan.md (Phase 2).
   const agentInstructions = ctx.credentialStore.getAgentSystemInstructionsEnabled()
-    ? buildAgentSystemInstructions(previewUrl)
+    ? buildAgentSystemInstructions({
+        previewUrl,
+        autoCreatePr: ctx.credentialStore.getAutoCreatePr() && ctx.githubAuthManager.authenticated,
+      })
     : undefined;
   const userSystemPrompt = await ctx.readSystemPrompt();
   let systemPrompt = [agentInstructions, userSystemPrompt].filter(Boolean).join("\n\n") || undefined;
