@@ -4,7 +4,7 @@ import type { CredentialStore } from "./credential-store.js";
 import { setGitIdentity } from "./git-config.js";
 // Sub-module imports — delegated implementations
 import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl } from "./github-auth-repos.js";
-import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl } from "./github-auth-prs.js";
+import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl } from "./github-auth-prs.js";
 import { getCheckStatus as getCheckStatusImpl, getCheckRunAnnotations as getCheckRunAnnotationsImpl, getJobLogs as getJobLogsImpl } from "./github-auth-checks.js";
 
 export interface GitHubAuthStatus {
@@ -317,6 +317,73 @@ export class GitHubAuthManager extends EventEmitter {
   }
 
   /**
+   * Update an existing pull request (title, body, or state).
+   */
+  async updatePullRequest(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+    options: { title?: string; body?: string; state?: "open" | "closed" },
+  ): Promise<{ success: boolean; url?: string; number?: number; message?: string }> {
+    if (!this._token) return { success: false, message: "Not authenticated with GitHub" };
+    return updatePullRequestImpl(this._token, owner, repo, pullNumber, options);
+  }
+
+  /**
+   * Add a comment to a pull request (issue-style comment).
+   */
+  async addPullRequestComment(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+    body: string,
+  ): Promise<{ success: boolean; url?: string; message?: string }> {
+    if (!this._token) return { success: false, message: "Not authenticated with GitHub" };
+    return addPullRequestCommentImpl(this._token, owner, repo, pullNumber, body);
+  }
+
+  /**
+   * Mark a draft pull request as ready for review.
+   */
+  async markPullRequestReady(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+  ): Promise<{ success: boolean; message: string }> {
+    if (!this._token) return { success: false, message: "Not authenticated" };
+    return markPullRequestReadyImpl(this._token, owner, repo, pullNumber);
+  }
+
+  /**
+   * List pull requests for a repository.
+   */
+  async listPullRequests(
+    owner: string,
+    repo: string,
+    state: "open" | "closed" | "all" = "open",
+  ): Promise<{ url: string; number: number; base: string; head: string; title: string; state: "open" | "closed"; isDraft: boolean }[]> {
+    if (!this._token) return [];
+    return listPullRequestsImpl(this._token, owner, repo, state);
+  }
+
+  /**
+   * Fetch a single PR's details by number.
+   */
+  async viewPullRequest(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+  ): Promise<{
+    url: string; number: number; base: string; head: string;
+    title: string; body: string;
+    state: "open" | "closed"; isDraft: boolean; merged: boolean;
+    additions: number; deletions: number;
+  } | null> {
+    if (!this._token) return null;
+    return viewPullRequestImpl(this._token, owner, repo, pullNumber);
+  }
+
+  /**
    * Get CI check status for a PR's head commit.
    */
   async getCheckStatus(
@@ -403,5 +470,5 @@ export class GitHubAuthManager extends EventEmitter {
 
 // Barrel re-exports from sub-modules for backwards compatibility
 export { createRepo, listUserRepos, searchRepos } from "./github-auth-repos.js";
-export { createPullRequest, findPullRequest, findPullRequestAnyState, mergePullRequest, enableAutoMerge, disableAutoMerge } from "./github-auth-prs.js";
+export { createPullRequest, findPullRequest, findPullRequestAnyState, mergePullRequest, enableAutoMerge, disableAutoMerge, updatePullRequest, addPullRequestComment, markPullRequestReady, listPullRequests, viewPullRequest } from "./github-auth-prs.js";
 export { getCheckStatus, getCheckRunAnnotations, getJobLogs } from "./github-auth-checks.js";

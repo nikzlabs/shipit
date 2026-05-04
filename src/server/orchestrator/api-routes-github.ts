@@ -13,6 +13,14 @@ import {
   searchGitHubRepos,
   createPullRequest,
   quickCreatePr,
+  agentCreatePr,
+  editPullRequest,
+  commentOnPullRequest,
+  markPrReady,
+  closePullRequest,
+  reopenPullRequest,
+  viewPullRequest,
+  listPullRequests,
   mergePullRequest,
   generatePrDescription,
   setGitHubToken,
@@ -113,6 +121,259 @@ export async function registerGitHubRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to create PR: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/pr/agent-create — agent-driven PR create (used by gh shim)
+  app.post<{
+    Params: { id: string };
+    Body: {
+      title?: string;
+      body?: string;
+      base?: string;
+      draft?: boolean;
+      fill?: boolean;
+    };
+  }>(
+    "/api/sessions/:id/pr/agent-create",
+    async (request, reply) => {
+      const session = sessionManager.get(request.params.id);
+      if (!session) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      try {
+        const git = createGitManager(dir);
+        const result = await agentCreatePr(git, deps.githubAuthManager, {
+          title: request.body?.title,
+          body: request.body?.body,
+          base: request.body?.base,
+          draft: request.body?.draft,
+          fill: request.body?.fill,
+          sessionTitle: session.title,
+          remoteUrl: session.remoteUrl,
+        });
+        if (deps.prStatusPoller && session.remoteUrl) {
+          deps.prStatusPoller.trackSession(request.params.id, session.remoteUrl);
+        }
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to create PR: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // PATCH /api/sessions/:id/pr/:number — edit an existing PR
+  app.patch<{
+    Params: { id: string; number: string };
+    Body: { title?: string; body?: string };
+  }>(
+    "/api/sessions/:id/pr/:number",
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      const num = Number(request.params.number);
+      if (!Number.isFinite(num) || num <= 0) {
+        reply.code(400).send({ error: "Invalid PR number" });
+        return;
+      }
+      try {
+        const git = createGitManager(dir);
+        const session = sessionManager.get(request.params.id);
+        return await editPullRequest(git, deps.githubAuthManager, {
+          number: num,
+          title: request.body?.title,
+          body: request.body?.body,
+          remoteUrl: session?.remoteUrl,
+        });
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to update PR: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // GET /api/sessions/:id/pr/list?state=open — list PRs for the session's repo
+  app.get<{ Params: { id: string }; Querystring: { state?: string } }>(
+    "/api/sessions/:id/pr/list",
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      try {
+        const git = createGitManager(dir);
+        const session = sessionManager.get(request.params.id);
+        const stateRaw = request.query.state;
+        const state: "open" | "closed" | "all" =
+          stateRaw === "closed" || stateRaw === "all" ? stateRaw : "open";
+        const prs = await listPullRequests(git, deps.githubAuthManager, {
+          state,
+          remoteUrl: session?.remoteUrl,
+        });
+        return { prs };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to list PRs: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // GET /api/sessions/:id/pr/view — view PR details (current branch's PR by default)
+  // GET /api/sessions/:id/pr/view?number=N — view a specific PR
+  app.get<{ Params: { id: string }; Querystring: { number?: string } }>(
+    "/api/sessions/:id/pr/view",
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      try {
+        const git = createGitManager(dir);
+        const session = sessionManager.get(request.params.id);
+        let num: number | undefined;
+        if (request.query.number) {
+          num = Number(request.query.number);
+          if (!Number.isFinite(num) || num <= 0) {
+            reply.code(400).send({ error: "Invalid PR number" });
+            return;
+          }
+        }
+        const pr = await viewPullRequest(git, deps.githubAuthManager, {
+          number: num,
+          remoteUrl: session?.remoteUrl,
+        });
+        return { pr };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to view PR: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/pr/:number/comment — add a comment to a PR
+  app.post<{
+    Params: { id: string; number: string };
+    Body: { body: string };
+  }>(
+    "/api/sessions/:id/pr/:number/comment",
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      const num = Number(request.params.number);
+      if (!Number.isFinite(num) || num <= 0) {
+        reply.code(400).send({ error: "Invalid PR number" });
+        return;
+      }
+      try {
+        const git = createGitManager(dir);
+        const session = sessionManager.get(request.params.id);
+        return await commentOnPullRequest(git, deps.githubAuthManager, request.body?.body ?? "", {
+          number: num,
+          remoteUrl: session?.remoteUrl,
+        });
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to comment: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/pr/:number/ready — mark draft as ready for review
+  app.post<{ Params: { id: string; number: string } }>(
+    "/api/sessions/:id/pr/:number/ready",
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      const num = Number(request.params.number);
+      if (!Number.isFinite(num) || num <= 0) {
+        reply.code(400).send({ error: "Invalid PR number" });
+        return;
+      }
+      try {
+        const git = createGitManager(dir);
+        const session = sessionManager.get(request.params.id);
+        return await markPrReady(git, deps.githubAuthManager, {
+          number: num,
+          remoteUrl: session?.remoteUrl,
+        });
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to mark PR ready: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/pr/:number/close — close a PR
+  app.post<{ Params: { id: string; number: string } }>(
+    "/api/sessions/:id/pr/:number/close",
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      const num = Number(request.params.number);
+      if (!Number.isFinite(num) || num <= 0) {
+        reply.code(400).send({ error: "Invalid PR number" });
+        return;
+      }
+      try {
+        const git = createGitManager(dir);
+        const session = sessionManager.get(request.params.id);
+        return await closePullRequest(git, deps.githubAuthManager, {
+          number: num,
+          remoteUrl: session?.remoteUrl,
+        });
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to close PR: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/pr/:number/reopen — reopen a closed PR
+  app.post<{ Params: { id: string; number: string } }>(
+    "/api/sessions/:id/pr/:number/reopen",
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      const num = Number(request.params.number);
+      if (!Number.isFinite(num) || num <= 0) {
+        reply.code(400).send({ error: "Invalid PR number" });
+        return;
+      }
+      try {
+        const git = createGitManager(dir);
+        const session = sessionManager.get(request.params.id);
+        return await reopenPullRequest(git, deps.githubAuthManager, {
+          number: num,
+          remoteUrl: session?.remoteUrl,
+        });
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to reopen PR: ${getErrorMessage(err)}` });
       }
     },
   );

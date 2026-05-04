@@ -38,6 +38,12 @@ COPY --from=build /app/src ./src
 # Platform docs for the agent (accessible at /shipit-docs inside the container)
 COPY src/server/shipit-docs/ /shipit-docs/
 
+# Install the curated `gh` shim (see src/server/session/agent-shim/gh.ts).
+# It's a thin Node entry point that talks to the worker's /agent-ops/* router;
+# we wrap it in a small shell script so /usr/local/bin/gh behaves like a normal binary.
+RUN printf '#!/bin/sh\nexec node --import tsx /app/src/server/session/agent-shim/gh.ts "$@"\n' > /usr/local/bin/gh \
+    && chmod 0755 /usr/local/bin/gh
+
 # Credential symlinks (same as dev/prod images)
 RUN mkdir -p /workspace /credentials && ln -s /credentials/.claude /root/.claude && ln -sf /credentials/.claude.json /root/.claude.json
 
