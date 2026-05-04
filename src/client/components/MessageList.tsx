@@ -292,14 +292,23 @@ export function MessageList({
 
         // ── Standalone tool: ExitPlanMode or AskUserQuestion extracted from an empty-text message ──
         if (el.kind === "standalone-tool") {
-          const isLastMessage = el.messageIndex === messages.length - 1;
           // AskUserQuestion / ExitPlanMode block the agent waiting for user
-          // input, so the message stays `streaming` and `isLoading` stays
-          // true while the question is on screen — those flags must NOT
-          // disable the prompt. The tool body is only rendered once the
-          // tool input is fully parsed (see message-tools.tsx), so streaming
-          // partial JSON isn't a concern here.
-          const questionDisabled = !isLastMessage;
+          // input, so the surrounding message keeps `streaming`/`isLoading`
+          // true while the prompt is on screen — those flags would dismiss
+          // every click. We also can't gate on `isLastMessage`: when Claude
+          // continues to emit more content (text or other tool_use blocks)
+          // alongside the question, or when the user's answer appends a
+          // user-message after the question, the question's message stops
+          // being last while the prompt has not yet been answered. That
+          // would silently drop the user's click.
+          //
+          // The right gate is whether the tool itself has been resolved —
+          // `el.result` is set once the agent emits a tool_result for it.
+          // The AskUserQuestion / PlanApproval components track their own
+          // submitted state internally, so leaving `disabled=false` here
+          // and feeding them `result` lets them render the answered state
+          // correctly even after a page reload (where local state is lost).
+          const questionDisabled = !!el.result;
           const resolvedPlanContent = el.tool.name === "ExitPlanMode" ? findPlanContent(el.messageIndex) : undefined;
           return (
             <div key={`st-${el.tool.id}`}>
@@ -429,35 +438,34 @@ export function MessageList({
                 <MessageFileAttachments files={msg.files} />
               )}
 
-              {!hideTools && msg.toolUse && msg.toolUse.length > 0 && (() => {
-                const isLastMessage = i === messages.length - 1;
-                // See note above — AskUserQuestion / ExitPlanMode block the
-                // agent on stdin, so isLoading/msg.streaming are both `true`
-                // while the question is awaiting an answer. Disabling on
-                // those flags would dismiss every user click.
-                const questionDisabled = !isLastMessage;
-                return (
-                  <div className="mt-2 space-y-1">
-                    {msg.toolUse.map((tool, toolIdx) => {
-                      const toolResult = msg.toolResults?.find((r) => r.toolUseId === tool.id);
-                      const resolvedPlanContent = tool.name === "ExitPlanMode" ? findPlanContent(i) : undefined;
-                      return (
-                        <ToolUseItem
-                          key={tool.id}
-                          tool={tool}
-                          result={toolResult}
-                          isLast={toolIdx === msg.toolUse!.length - 1}
-                          isStreaming={!!msg.streaming}
-                          onAnswerQuestion={onAnswerQuestion}
-                          onSendFollowUp={onSendFollowUp}
-                          isQuestionDisabled={questionDisabled}
-                          planContent={resolvedPlanContent}
-                        />
-                      );
-                    })}
-                  </div>
-                );
-              })()}
+              {!hideTools && msg.toolUse && msg.toolUse.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {msg.toolUse.map((tool, toolIdx) => {
+                    const toolResult = msg.toolResults?.find((r) => r.toolUseId === tool.id);
+                    const resolvedPlanContent = tool.name === "ExitPlanMode" ? findPlanContent(i) : undefined;
+                    // See note in the standalone-tool branch above — the
+                    // right disable signal is whether the tool has a result,
+                    // not whether the message is last. AskUserQuestion /
+                    // PlanApproval track their submitted state internally
+                    // and read `result` to render the answered state on
+                    // reload.
+                    const questionDisabled = !!toolResult;
+                    return (
+                      <ToolUseItem
+                        key={tool.id}
+                        tool={tool}
+                        result={toolResult}
+                        isLast={toolIdx === msg.toolUse!.length - 1}
+                        isStreaming={!!msg.streaming}
+                        onAnswerQuestion={onAnswerQuestion}
+                        onSendFollowUp={onSendFollowUp}
+                        isQuestionDisabled={questionDisabled}
+                        planContent={resolvedPlanContent}
+                      />
+                    );
+                  })}
+                </div>
+              )}
 
               {msg.streaming && allElements[elIdx + 1]?.kind !== "tool-group" && !latestTodoTool && (
                 <span className="inline-flex items-center ml-1 align-middle">

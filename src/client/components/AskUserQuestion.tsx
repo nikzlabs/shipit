@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { CheckIcon } from "@phosphor-icons/react";
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
@@ -20,17 +20,98 @@ interface AskUserQuestionProps {
   questions: AskQuestionItem[];
   onAnswer: (toolUseId: string, answers: Record<string, string>) => void;
   disabled: boolean;
+  /**
+   * The agent's tool_result content for this question, when it has been
+   * answered. Local component state (`submittedAnswers`) is the source of
+   * truth during a live session; this prop is what populates the answered
+   * state after a page reload, where the local state is gone but the
+   * tool_result is persisted in chat history.
+   *
+   * The content is the answer text the user submitted (joined with ", "
+   * for multi-select / multi-question prompts). We approximate the
+   * per-question answers by matching against option labels — for prompts
+   * that don't decompose cleanly we still show the raw answer text.
+   */
+  resolvedAnswer?: string;
 }
 
-export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled }: AskUserQuestionProps) {
+/**
+ * Reconstruct a `submittedAnswers` map from the joined tool_result content.
+ * The content carries the user's answer text (e.g. "Redis" or
+ * "Auth, Cache" for multi-select / multi-question). We attempt to assign
+ * each comma-separated chunk to a question whose options contain that
+ * label; chunks that don't match a label are folded into the first
+ * unanswered question as a free-form ("Other") answer.
+ *
+ * Returning `null` means we couldn't derive anything — caller can still
+ * show the raw answer text as a fallback.
+ */
+function deriveAnswersFromResult(
+  questions: AskQuestionItem[],
+  content: string,
+): Record<string, string> | null {
+  const trimmed = content.trim();
+  if (!trimmed) return null;
+  const parts = trimmed.split(",").map((p) => p.trim()).filter(Boolean);
+  const answers: Record<string, string> = {};
+  // Greedy assignment: each part picks the first question whose options
+  // include it. Multi-select answers (which arrive joined) attach to the
+  // matching question; truly free-form answers fall through.
+  const used = new Set<number>();
+  const remaining: string[] = [];
+  for (const part of parts) {
+    let matched = -1;
+    for (let q = 0; q < questions.length; q++) {
+      if (used.has(q)) continue;
+      if (questions[q].options.some((o) => o.label === part)) {
+        matched = q;
+        break;
+      }
+    }
+    if (matched >= 0) {
+      const existing = answers[String(matched)];
+      answers[String(matched)] = existing ? `${existing}, ${part}` : part;
+      // For single-select questions, mark used so the next part picks a
+      // different question; multi-select questions can accumulate multiple
+      // labels.
+      if (!questions[matched].multiSelect) used.add(matched);
+    } else {
+      remaining.push(part);
+    }
+  }
+  if (remaining.length > 0) {
+    // Attach leftover free-form text to the first question that doesn't
+    // already have an answer; if all questions are answered, append it
+    // to question 0 so it still surfaces.
+    let target = 0;
+    for (let q = 0; q < questions.length; q++) {
+      if (answers[String(q)] === undefined) { target = q; break; }
+    }
+    answers[String(target)] = remaining.join(", ");
+  }
+  return Object.keys(answers).length > 0 ? answers : null;
+}
+
+export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, resolvedAnswer }: AskUserQuestionProps) {
   // Track selected options: questionIndex -> Set of selected labels (for multi-select)
   const [selections, setSelections] = useState<Map<number, Set<string>>>(new Map());
   // Track "Other" text inputs per question
   const [otherTexts, setOtherTexts] = useState<Map<number, string>>(new Map());
   // Track which questions are using the "Other" option
   const [usingOther, setUsingOther] = useState<Set<number>>(new Set());
-  // Track the submitted answers (for showing after submit)
-  const [submittedAnswers, setSubmittedAnswers] = useState<Record<string, string> | null>(null);
+  // Track the submitted answers (for showing after submit). Local state is
+  // the source of truth during a live session.
+  const [localSubmitted, setLocalSubmitted] = useState<Record<string, string> | null>(null);
+
+  // Effective submitted answers = local state during the session, OR the
+  // server-persisted result on reload. `useMemo` keeps the reference stable
+  // so the answered-state UI doesn't flicker between renders.
+  const persistedAnswers = useMemo(
+    () => (resolvedAnswer ? deriveAnswersFromResult(questions, resolvedAnswer) : null),
+    [resolvedAnswer, questions],
+  );
+  const submittedAnswers = localSubmitted ?? persistedAnswers;
+  const setSubmittedAnswers = setLocalSubmitted;
 
   const handleOptionClick = useCallback((qIndex: number, label: string, multiSelect: boolean) => {
     if (disabled || submittedAnswers) return;
