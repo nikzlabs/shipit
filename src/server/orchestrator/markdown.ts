@@ -132,6 +132,7 @@ export async function findMarkdownFiles(dir: string, prefix = ""): Promise<DocEn
       let status: DocStatus | undefined;
       let priority: DocPriority | undefined;
       let title: string | undefined;
+      let modifiedAt: string | undefined;
 
       try {
         const handle = await fs.open(path.join(dir, entry.name), "r");
@@ -143,6 +144,10 @@ export async function findMarkdownFiles(dir: string, prefix = ""): Promise<DocEn
           status = fields.status;
           priority = fields.priority;
           title = fields.title;
+          // Capture mtime from the same handle to avoid a second syscall.
+          // Used by the client to surface docs touched in the current session.
+          const stat = await handle.stat();
+          modifiedAt = stat.mtime.toISOString();
         } finally {
           await handle.close();
         }
@@ -155,6 +160,7 @@ export async function findMarkdownFiles(dir: string, prefix = ""): Promise<DocEn
         status,
         priority,
         title: title ?? titleFromPath(relativePath),
+        modifiedAt,
       });
     }
   }
