@@ -197,6 +197,78 @@ describe("DocsViewer", () => {
     });
   });
 
+  describe("modified-in-session group", () => {
+    const SESSION_START = "2026-01-01T00:00:00.000Z";
+    const BEFORE = "2025-12-01T00:00:00.000Z";
+    const AFTER_1 = "2026-01-02T00:00:00.000Z";
+    const AFTER_2 = "2026-01-03T00:00:00.000Z";
+
+    it("does not render the group when sessionStartedAt is missing", () => {
+      const props = defaultProps();
+      props.files = [makeDoc({ path: "a.md", title: "A", status: "planned", modifiedAt: AFTER_1 })];
+      render(<DocsViewer {...props} />);
+      expect(screen.queryByText("Modified in this session")).not.toBeInTheDocument();
+    });
+
+    it("does not render the group when no doc was modified after session start", () => {
+      const props = { ...defaultProps(), sessionStartedAt: SESSION_START };
+      props.files = [makeDoc({ path: "a.md", title: "A", status: "planned", modifiedAt: BEFORE })];
+      render(<DocsViewer {...props} />);
+      expect(screen.queryByText("Modified in this session")).not.toBeInTheDocument();
+    });
+
+    it("surfaces session-modified docs at the top, sorted by recency", () => {
+      const props = { ...defaultProps(), sessionStartedAt: SESSION_START };
+      props.files = [
+        makeDoc({ path: "docs/001-old/plan.md", title: "Old", status: "planned", modifiedAt: BEFORE }),
+        makeDoc({ path: "docs/002-recent/plan.md", title: "Recent", status: "planned", modifiedAt: AFTER_1 }),
+        makeDoc({ path: "docs/003-newest/plan.md", title: "Newest", status: "in-progress", modifiedAt: AFTER_2 }),
+      ];
+      render(<DocsViewer {...props} />);
+      expect(screen.getByText("Modified in this session")).toBeInTheDocument();
+      const items = screen.getAllByRole("button").filter(
+        (btn) => !btn.textContent?.includes("Reload"),
+      );
+      // Most recently modified first.
+      expect(items[0].textContent).toContain("Newest");
+      expect(items[1].textContent).toContain("Recent");
+      // Old (modified before session) appears in the regular Tracked section below.
+      expect(items[2].textContent).toContain("Old");
+    });
+
+    it("renders a Modified badge on docs in the session-modified group", () => {
+      const props = { ...defaultProps(), sessionStartedAt: SESSION_START };
+      props.files = [
+        makeDoc({ path: "a.md", title: "A", status: "planned", modifiedAt: AFTER_1 }),
+      ];
+      render(<DocsViewer {...props} />);
+      expect(screen.getByText("Modified")).toBeInTheDocument();
+    });
+
+    it("excludes session-modified docs from the regular tab counts", () => {
+      const props = { ...defaultProps(), sessionStartedAt: SESSION_START };
+      props.files = [
+        makeDoc({ path: "a.md", title: "A", status: "in-progress", modifiedAt: AFTER_1 }),
+        makeDoc({ path: "b.md", title: "B", status: "planned", modifiedAt: BEFORE }),
+        makeDoc({ path: "README.md", title: "README" }),
+      ];
+      render(<DocsViewer {...props} />);
+      // "A" was modified in session → moved to top group, leaving 1 tracked + 1 other.
+      expect(screen.getByText("Tracked (1)")).toBeInTheDocument();
+      expect(screen.getByText("Other (1)")).toBeInTheDocument();
+    });
+
+    it("includes untracked (no-status) docs in the session-modified group", () => {
+      const props = { ...defaultProps(), sessionStartedAt: SESSION_START };
+      props.files = [
+        makeDoc({ path: "NOTES.md", title: "NOTES", modifiedAt: AFTER_1 }),
+      ];
+      render(<DocsViewer {...props} />);
+      expect(screen.getByText("Modified in this session")).toBeInTheDocument();
+      expect(screen.getByText("NOTES")).toBeInTheDocument();
+    });
+  });
+
   describe("interactions", () => {
     it("calls onFileClick with path when a doc is clicked", () => {
       const props = defaultProps();

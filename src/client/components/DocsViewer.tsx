@@ -9,6 +9,12 @@ export interface DocsViewerProps {
   files: DocEntry[];
   onFileClick: (path: string) => void;
   onRefresh: () => void;
+  /**
+   * ISO timestamp of when the current session was created. When provided, docs
+   * whose `modifiedAt` is later than this are pulled into a "Modified in this
+   * session" group at the top of the panel.
+   */
+  sessionStartedAt?: string;
 }
 
 const STATUS_CONFIG: Record<DocStatus, { label: string; variant: BadgeProps["variant"]; order: number }> = {
@@ -72,18 +78,50 @@ function sortByStatusThenPath(docs: DocEntry[]): DocEntry[] {
   });
 }
 
+/**
+ * Returns true when a doc was modified after the session started.
+ * Both timestamps are ISO 8601 strings; lexical comparison works because
+ * ISO 8601 strings sort chronologically.
+ */
+function wasModifiedInSession(doc: DocEntry, sessionStartedAt: string | undefined): boolean {
+  if (!sessionStartedAt || !doc.modifiedAt) return false;
+  return doc.modifiedAt > sessionStartedAt;
+}
+
 type Tab = "tracked" | "other";
 
-export function DocsViewer({ files, onFileClick, onRefresh }: DocsViewerProps) {
-  const tracked = files.filter((f) => f.status !== undefined);
+export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: DocsViewerProps) {
+  // Docs touched during the current session — shown in a dedicated group at the
+  // top so the user sees what the agent just worked on without scrolling.
+  const modifiedInSession = useMemo(
+    () => files.filter((f) => wasModifiedInSession(f, sessionStartedAt)),
+    [files, sessionStartedAt],
+  );
+  const modifiedPaths = useMemo(
+    () => new Set(modifiedInSession.map((f) => f.path)),
+    [modifiedInSession],
+  );
+
+  // Below the "modified" group, the regular tabs render the rest of the docs.
+  // Excluding the session-modified ones avoids duplication — they're already
+  // visible at the top.
+  const remaining = useMemo(
+    () => files.filter((f) => !modifiedPaths.has(f.path)),
+    [files, modifiedPaths],
+  );
+
+  const tracked = remaining.filter((f) => f.status !== undefined);
   // Hide untracked siblings (e.g. `checklist.md`) when a tracked plan exists
   // in the same directory — they're now reachable via the modal's sibling
-  // tabs, so listing them separately is redundant noise.
-  const untracked = files.filter(
+  // tabs, so listing them separately is redundant noise. We check against the
+  // full `files` list so a tracked plan that was pulled into the "Modified"
+  // group above still suppresses its untracked sibling here.
+  const untracked = remaining.filter(
     (f) => f.status === undefined && !hasTrackedSibling(f.path, files),
   );
   const hasTracked = tracked.length > 0;
   const hasUntracked = untracked.length > 0;
+  const hasModified = modifiedInSession.length > 0;
 
   const [userTab, setUserTab] = useState<Tab | null>(null);
   const activeTab = useMemo<Tab>(() => {
@@ -113,6 +151,14 @@ export function DocsViewer({ files, onFileClick, onRefresh }: DocsViewerProps) {
     );
   }
 
+  // Sort the modified-in-session group by recency (most recent first), with
+  // path as a deterministic tiebreaker.
+  const sortedModified = [...modifiedInSession].sort((a, b) => {
+    const am = a.modifiedAt ?? "";
+    const bm = b.modifiedAt ?? "";
+    if (am !== bm) return am < bm ? 1 : -1;
+    return a.path.localeCompare(b.path);
+  });
   const sortedTracked = sortByStatusThenPath(tracked);
   const showTabs = hasTracked && hasUntracked;
 
@@ -132,34 +178,72 @@ export function DocsViewer({ files, onFileClick, onRefresh }: DocsViewerProps) {
         </Button>
       </div>
 
-      {/* Tabs */}
-      {showTabs && (
-        <div className="flex border-b border-(--color-border-secondary)">
-          <button
-            onClick={() => setUserTab("tracked")}
-            className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer border-b-2 ${
-              activeTab === "tracked"
-                ? "text-(--color-text-primary) border-(--color-accent)"
-                : "text-(--color-text-tertiary) border-transparent hover:text-(--color-text-secondary)"
-            }`}
-          >
-            Tracked ({tracked.length})
-          </button>
-          <button
-            onClick={() => setUserTab("other")}
-            className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer border-b-2 ${
-              activeTab === "other"
-                ? "text-(--color-text-primary) border-(--color-accent)"
-                : "text-(--color-text-tertiary) border-transparent hover:text-(--color-text-secondary)"
-            }`}
-          >
-            Other ({untracked.length})
-          </button>
-        </div>
-      )}
-
-      {/* File list */}
+      {/* List body — modified-in-session group renders above tabs */}
       <div className="flex-1 overflow-y-auto">
+        {hasModified && (
+          <div className="py-1 border-b border-(--color-border-secondary)">
+            <div className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-(--color-text-tertiary)">
+              Modified in this session
+            </div>
+            {sortedModified.map((doc) => {
+              const ctx = pathContext(doc.path);
+              return (
+                <div
+                  key={doc.path}
+                  className="flex items-center justify-between w-full text-left px-3 py-2 hover:bg-(--color-bg-hover) transition-colors gap-2 group/row"
+                >
+                  <button
+                    onClick={() => onFileClick(doc.path)}
+                    className="flex-1 min-w-0 text-left cursor-pointer"
+                  >
+                    <span className="text-sm text-(--color-text-primary) truncate block">
+                      {doc.title}
+                    </span>
+                    {ctx && (
+                      <span className="text-[11px] text-(--color-text-tertiary) truncate block">
+                        {ctx}
+                      </span>
+                    )}
+                  </button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Badge variant="info" className="text-[11px]">Modified</Badge>
+                    {doc.status === "planned" && doc.priority && (
+                      <PriorityBadge priority={doc.priority} />
+                    )}
+                    {doc.status && <StatusBadge status={doc.status} />}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Tabs */}
+        {showTabs && (
+          <div className="flex border-b border-(--color-border-secondary)">
+            <button
+              onClick={() => setUserTab("tracked")}
+              className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer border-b-2 ${
+                activeTab === "tracked"
+                  ? "text-(--color-text-primary) border-(--color-accent)"
+                  : "text-(--color-text-tertiary) border-transparent hover:text-(--color-text-secondary)"
+              }`}
+            >
+              Tracked ({tracked.length})
+            </button>
+            <button
+              onClick={() => setUserTab("other")}
+              className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer border-b-2 ${
+                activeTab === "other"
+                  ? "text-(--color-text-primary) border-(--color-accent)"
+                  : "text-(--color-text-tertiary) border-transparent hover:text-(--color-text-secondary)"
+              }`}
+            >
+              Other ({untracked.length})
+            </button>
+          </div>
+        )}
+
         {(activeTab === "tracked" || !showTabs) && hasTracked && (
           <div className="py-1">
             {!showTabs && (

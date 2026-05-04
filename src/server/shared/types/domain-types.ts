@@ -74,6 +74,11 @@ export interface DocEntry {
   priority?: DocPriority;
   /** Human-readable title. Derived from frontmatter `title:` field, or from filename. */
   title: string;
+  /**
+   * File mtime as ISO 8601 string. Used by the client to surface docs that
+   * were modified during the current session at the top of the docs tab.
+   */
+  modifiedAt?: string;
 }
 
 // ---- Template types ----

@@ -146,6 +146,16 @@ describe("findMarkdownFiles", () => {
     });
   });
 
+  it("returns modifiedAt as an ISO string from the file's mtime", async () => {
+    const filePath = path.join(tmpDir, "feature.md");
+    fs.writeFileSync(filePath, "# Feature");
+    const knownMtime = new Date("2026-01-15T12:34:56.000Z");
+    fs.utimesSync(filePath, knownMtime, knownMtime);
+
+    const docs = await findMarkdownFiles(tmpDir);
+    expect(docs[0].modifiedAt).toBe(knownMtime.toISOString());
+  });
+
   it("uses frontmatter title when present", async () => {
     fs.writeFileSync(
       path.join(tmpDir, "plan.md"),
