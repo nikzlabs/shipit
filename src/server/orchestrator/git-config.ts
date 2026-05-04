@@ -36,6 +36,16 @@ export function initGlobalGitConfig(credentialsDir: string): void {
   } catch {
     // git may not be installed yet (unlikely but safe)
   }
+
+  // Force git to never open an editor. The orchestrator runs git non-interactively
+  // (e.g. `git rebase --continue` after agent-driven conflict resolution), and the
+  // container has no editor installed. Without this, `git rebase --continue` fails
+  // with "cannot run editor: No such file or directory" — the rebase is aborted
+  // and the agent's resolution edits are discarded silently. `GIT_EDITOR=true`
+  // makes the editor a no-op that succeeds, preserving the original commit message.
+  if (!process.env.GIT_EDITOR) {
+    process.env.GIT_EDITOR = "true";
+  }
 }
 
 /**
