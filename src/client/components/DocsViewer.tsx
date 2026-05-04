@@ -1,7 +1,9 @@
 import { useMemo, useState } from "react";
+import { CaretDownIcon, CaretRightIcon } from "@phosphor-icons/react";
 import { Badge } from "./ui/badge.js";
 import type { BadgeProps } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
+import { ICON_SIZE } from "../design-tokens.js";
 import type { DocEntry, DocPriority, DocStatus } from "../../server/shared/types.js";
 import { hasTrackedSibling } from "../utils/doc-paths.js";
 
@@ -129,6 +131,11 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
     return hasTracked ? "tracked" : "other";
   }, [userTab, hasTracked]);
 
+  // Done docs in the Tracked group are collapsed by default — they're
+  // historical context, not active work, and would otherwise dominate the list
+  // as a project ages.
+  const [doneExpanded, setDoneExpanded] = useState(false);
+
   if (files.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
@@ -160,6 +167,10 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
     return a.path.localeCompare(b.path);
   });
   const sortedTracked = sortByStatusThenPath(tracked);
+  // Split tracked into active work and "done" so we can render done items
+  // inside a collapsible group below the active list.
+  const trackedActive = sortedTracked.filter((d) => d.status !== "done");
+  const trackedDone = sortedTracked.filter((d) => d.status === "done");
   const showTabs = hasTracked && hasUntracked;
 
   return (
@@ -251,7 +262,7 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
                 Tracked
               </div>
             )}
-            {sortedTracked.map((doc) => {
+            {trackedActive.map((doc) => {
               const ctx = pathContext(doc.path);
               return (
                 <div
@@ -280,6 +291,47 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
                 </div>
               );
             })}
+            {trackedDone.length > 0 && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setDoneExpanded((v) => !v)}
+                  aria-expanded={doneExpanded}
+                  className="flex items-center gap-1.5 w-full text-left px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-(--color-text-tertiary) hover:text-(--color-text-secondary) cursor-pointer"
+                >
+                  {doneExpanded
+                    ? <CaretDownIcon size={ICON_SIZE.XS} />
+                    : <CaretRightIcon size={ICON_SIZE.XS} />}
+                  <span>Done ({trackedDone.length})</span>
+                </button>
+                {doneExpanded && trackedDone.map((doc) => {
+                  const ctx = pathContext(doc.path);
+                  return (
+                    <div
+                      key={doc.path}
+                      className="flex items-center justify-between w-full text-left px-3 py-2 hover:bg-(--color-bg-hover) transition-colors gap-2 group/row"
+                    >
+                      <button
+                        onClick={() => onFileClick(doc.path)}
+                        className="flex-1 min-w-0 text-left cursor-pointer"
+                      >
+                        <span className="text-sm text-(--color-text-primary) truncate block">
+                          {doc.title}
+                        </span>
+                        {ctx && (
+                          <span className="text-[11px] text-(--color-text-tertiary) truncate block">
+                            {ctx}
+                          </span>
+                        )}
+                      </button>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {doc.status && <StatusBadge status={doc.status} />}
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
+            )}
           </div>
         )}
         {(activeTab === "other" || !showTabs) && hasUntracked && (
