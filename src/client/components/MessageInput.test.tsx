@@ -244,6 +244,29 @@ describe("MessageInput", () => {
       expect(textarea.value).toBe("");
     });
 
+    it("preserves typed text while focusKey is held stable across re-renders (new-session graduation)", () => {
+      // Regression: on the /{slug}/new view, claimSession() resolves a few
+      // seconds after mount and sets sessionId in the store. App.tsx must
+      // keep MessageInput's focusKey="new" across that resolution — otherwise
+      // focusKey flips from "new" to the real session ID mid-type and the
+      // draft-swap logic loads the (empty) draft for the brand-new session,
+      // wiping the user's text. This test pins the contract: a stable focusKey
+      // must NOT clear the textarea on re-render, even when other props change.
+      const { rerender } = render(
+        <MessageInput onSend={vi.fn()} disabled={true} focusKey="new" />,
+      );
+      const textarea = screen.getByPlaceholderText(
+        "Describe what to build... (type @ to attach files)",
+      ) as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: "hello world" } });
+      expect(textarea.value).toBe("hello world");
+
+      // Simulate App.tsx re-rendering after claimSession resolves: other props
+      // change (e.g. `disabled` flips as the WS opens) but focusKey stays "new".
+      rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="new" />);
+      expect(textarea.value).toBe("hello world");
+    });
+
     it("clears the saved draft after sending", () => {
       render(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-A" />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
