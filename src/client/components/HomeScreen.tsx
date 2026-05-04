@@ -32,7 +32,7 @@ export function HomeScreen({ onAddRepo, hasRepos }: HomeScreenProps) {
       <div className="max-w-md space-y-6">
         <div className="text-center space-y-2">
           <h2 className="text-lg font-semibold text-(--color-text-primary)">Welcome to ShipIt</h2>
-          <p className="text-sm text-(--color-text-secondary)">Chat with Claude to build and ship code.</p>
+          <p className="text-sm text-(--color-text-secondary)">An AI editor for building and shipping code from a chat.</p>
         </div>
         <div className="space-y-3 text-sm text-(--color-text-secondary)">
           <div className="flex items-start gap-3">
@@ -41,11 +41,11 @@ export function HomeScreen({ onAddRepo, hasRepos }: HomeScreenProps) {
           </div>
           <div className="flex items-start gap-3">
             <span className="flex items-center justify-center w-5 h-5 rounded-full bg-(--color-success-subtle) text-(--color-success) text-xs font-medium shrink-0 mt-0.5">2</span>
-            <p>Describe what you want to build or change. Claude will write the code for you.</p>
+            <p>Describe what you want to build or change. The agent will write the code for you.</p>
           </div>
           <div className="flex items-start gap-3">
             <span className="flex items-center justify-center w-5 h-5 rounded-full bg-(--color-success-subtle) text-(--color-success) text-xs font-medium shrink-0 mt-0.5">3</span>
-            <p>See live results in the preview panel as Claude makes changes.</p>
+            <p>See live results in the preview panel as the agent makes changes.</p>
           </div>
         </div>
         <div className="pt-2 text-center">

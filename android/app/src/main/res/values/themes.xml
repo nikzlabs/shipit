@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+
+    <style name="Theme.ShipIt" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/shipit_accent</item>
+        <item name="colorPrimaryDark">@color/shipit_bg</item>
+        <item name="colorAccent">@color/shipit_accent</item>
+        <item name="android:colorBackground">@color/shipit_bg</item>
+        <item name="android:windowBackground">@color/shipit_bg</item>
+        <item name="android:statusBarColor" tools:targetApi="21">@color/shipit_bg</item>
+        <item name="android:navigationBarColor" tools:targetApi="21">@color/shipit_bg</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="23">false</item>
+    </style>
+
+</resources>

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ShipIt</string>
+
+    <string name="settings_title">Settings</string>
+    <string name="settings_heading">Connect to ShipIt</string>
+    <string name="settings_subheading">Enter the URL of your self-hosted ShipIt instance.</string>
+    <string name="settings_url_hint">https://shipit.example.com</string>
+    <string name="settings_url_helper">Must be HTTPS. The host you enter is the only origin loaded inside the app — external links open in your browser.</string>
+    <string name="settings_save">Save</string>
+
+    <string name="settings_error_empty">Enter a URL.</string>
+    <string name="settings_error_invalid">That doesn\'t look like a valid URL.</string>
+    <string name="settings_error_https_required">URL must use https://.</string>
+
+    <string name="menu_settings">Open settings</string>
+    <string name="menu_reload">Reload</string>
+</resources>

@@ -1,7 +1,7 @@
 /**
  * Strip the session workspace prefix from absolute file paths.
  *
- * Claude CLI operates inside /workspace/sessions/{uuid}/ (direct mode) or
+ * Agent CLIs operate inside /workspace/sessions/{uuid}/ (direct mode) or
  * /workspace/ (container mode). Tool call file_path values contain the full
  * absolute path. This utility strips either prefix to show the path relative
  * to the session root.

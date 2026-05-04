@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-ShipIt is a browser-based IDE for vibe coding — chat with Claude, it writes code, you see results live. Powered by Claude Code CLI and your Claude subscription.
+ShipIt is a browser-based AI editor — describe what you want in chat, the agent writes the code, and you see results live. The agent runs as a CLI inside a session container; Claude Code CLI is the default backend, Codex CLI is also supported, and the architecture is agent-agnostic so additional backends can be added later. Authentication uses the user's existing subscription with the chosen provider — no per-call API keys required.
 
 ## Product principles
 
@@ -198,6 +198,11 @@ src/
     design-tokens.ts  Icon sizes, spacing, and design constants
     index.css      Tailwind imports + custom animations
     test-setup.ts  Imports @testing-library/jest-dom/vitest
+
+android/         Standalone Android WebView wrapper (separate Gradle build).
+                 Built manually via the "Android build" GitHub Actions workflow.
+                 Node tooling ignores this directory. See android/README.md
+                 and docs/116-android-webview-app/.
 ```
 
 ## Architecture
