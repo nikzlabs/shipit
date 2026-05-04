@@ -2,6 +2,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { useIsMobile } from "../hooks/useMediaQuery.js";
 import { PlusIcon, StopIcon, ArrowUpIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { PlanModeToggle } from "./PlanModeToggle.js";
@@ -70,6 +71,7 @@ export function MessageInput({
   hasPrCard?: boolean;
 }) {
   const showSessionCost = useSettingsStore((s) => s.showSessionCost);
+  const isMobile = useIsMobile();
   const [text, setText] = useState("");
   const [isDragging, setIsDragging] = useState(false);
   const [showAutoComplete, setShowAutoComplete] = useState(false);
@@ -161,6 +163,10 @@ export function MessageInput({
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // Don't handle Enter/Escape if autocomplete is open — let it handle them
     if (showAutoComplete) return;
+    // On mobile, Enter inserts a newline (matches native chat-app behavior — the
+    // on-screen keyboard's return key shouldn't fire-and-forget a message). The
+    // user sends via the send button instead.
+    if (isMobile) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
