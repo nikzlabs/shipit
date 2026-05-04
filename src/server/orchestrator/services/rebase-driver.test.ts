@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -231,6 +231,63 @@ describe("rebase-driver: runRebaseFlow", () => {
     const completeMsg = messages[completeIdx];
     if (completeMsg.type === "rebase_complete") {
       expect(completeMsg.forcePushed).toBe(true);
+    }
+
+    // The force push must surface a github_push_result so the UI can show
+    // confirmation (regression: the rebase used to swallow the result, leaving
+    // the user unsure whether the rebased history actually reached origin).
+    const pushResult = messages.find((m) => m.type === "github_push_result");
+    expect(pushResult).toBeDefined();
+    if (pushResult?.type === "github_push_result") {
+      expect(pushResult.success).toBe(true);
+      expect(pushResult.branch).toBe("feature");
+    }
+  });
+
+  it("force push failure — surfaces github_push_result(success=false) + log_entry", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: workDir,
+      defaultAgentId: "claude",
+    });
+    const messages: WsServerMessage[] = [];
+    runner.on("message", (m: WsServerMessage) => messages.push(m));
+
+    // Let fetch + rebase succeed, then make the force push itself throw.
+    const forcePushSpy = vi
+      .spyOn(git, "forcePush")
+      .mockRejectedValue(new Error("simulated push failure: connection refused"));
+
+    try {
+      const result = await runRebaseFlow({
+        git,
+        githubAuthManager: makeStubAuth(true),
+        runner,
+        sessionManager: makeStubSessionManager(),
+        chatHistoryManager: makeStubHistory([]),
+        agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+        sseBroadcast: () => {},
+      }, "main");
+
+      expect(result.status).toBe("rebased");
+      expect(result).toHaveProperty("forcePushed", false);
+      expect(forcePushSpy).toHaveBeenCalled();
+
+      // Failure must be visible to the user — both as a push result and as a log entry.
+      const pushResult = messages.find((m) => m.type === "github_push_result");
+      expect(pushResult).toBeDefined();
+      if (pushResult?.type === "github_push_result") {
+        expect(pushResult.success).toBe(false);
+        expect(pushResult.message).toMatch(/Force push failed/);
+      }
+      const logEntry = messages.find((m) => m.type === "log_entry");
+      expect(logEntry).toBeDefined();
+    } finally {
+      forcePushSpy.mockRestore();
     }
   });
 
