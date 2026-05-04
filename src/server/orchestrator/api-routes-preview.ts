@@ -77,7 +77,7 @@ export async function registerPreviewRoutes(
         const parts = [validated.message];
         if (validated.stack) parts.push(validated.stack);
         const text = parts.join("\n");
-        deps.broadcastLog("preview", text);
+        deps.broadcastLog(request.params.id, "preview", text);
         // Also emit to the session's runner so connected WS viewers receive it
         const runner = deps.runnerRegistry.get(request.params.id);
         if (runner) {
