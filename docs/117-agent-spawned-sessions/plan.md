@@ -7,37 +7,39 @@ priority: medium
 
 ## Summary
 
-Give the inner agent a narrow tool surface for creating and managing **separate ShipIt sessions** — full sibling sessions in the user's sidebar, each with their own container, workspace, branch, and chat history. The agent's existing in-process subagent primitive (Claude's `Task` tool) stays the default for fan-out work; the new tool only fires when the user explicitly asks for "another session" / "a parallel branch" / "spin up a separate workspace for X".
+Give the inner agent — Claude or Codex — a narrow tool surface for creating and managing **separate ShipIt sessions**: full sibling sessions in the user's sidebar, each with their own container, workspace, branch, and chat history. For Claude, the existing in-process subagent primitive (`Task`) stays the default for fan-out work; the new tool only fires when the user explicitly asks for "another session" / "a parallel branch" / "spin up a separate workspace for X". For Codex, which has no in-process subagent primitive, the new tool is the *only* way for the agent to fan work out across parallel workspaces.
 
-Like the `gh` shim in [doc 116](../116-fake-gh-cli-shim/plan.md), this lands as a sandboxed CLI (`shipit` at `/usr/local/bin/shipit`) brokered through the session worker to the orchestrator. The agent never touches a session-management API directly; the orchestrator owns the trust boundary.
+Like the `gh` shim in [doc 116](../116-fake-gh-cli-shim/plan.md), this lands as a sandboxed CLI (`shipit` at `/usr/local/bin/shipit`) brokered through the session worker to the orchestrator. The CLI surface is agent-agnostic — Claude and Codex see the same `shipit session create` command. The agent never touches a session-management API directly; the orchestrator owns the trust boundary.
 
 ## Motivation
 
 ### The gap
 
-Today the agent has exactly one fan-out primitive: Claude's `Task` tool. `Task` spawns an in-process subagent that:
+Claude has exactly one fan-out primitive today: the `Task` tool. `Task` spawns an in-process subagent that:
 
 - Runs in the same container, against the same workspace.
 - Inherits the parent's tool permissions and instructions.
 - Returns a single synthesized report when it finishes.
 - Disappears from the user's sidebar — its work is *invisible* outside the parent turn (modulo the rendering from [doc 109](../109-subagent-transparency/plan.md)).
 
-That's the right primitive for "fan out three searches and synthesize," "write three test files in parallel," etc. It is the wrong primitive when:
+Codex has no equivalent — its CLI doesn't ship an in-process subagent tool. A Codex agent that wants to do parallel work has no primitive at all today.
+
+Even for Claude, `Task` is the wrong primitive when:
 
 1. **The user wants to review the work as a separate PR.** A subagent's edits all land on the parent's branch; the user can't accept one and reject another.
 2. **The work needs an independent workspace.** Two subagents writing to the same files race each other on the filesystem.
 3. **The user wants to keep the parallel work going across many turns.** `Task` finishes when the parent turn finishes; there's no "go work on this for the next hour and report back."
 4. **The user explicitly asks for "another session"** — e.g. *"spin up a separate session to port the API to TypeScript while we keep working on the UI here."* The user has a mental model of the sidebar; the agent should be able to put a new session in it.
 
-Today the only path for (1)–(4) is *the user opens a new session manually*. That's a chat-shaped IDE handing the user a non-chat-shaped task. The agent should be able to do it.
+Today the only path for (1)–(4) — and for *any* parallel work under Codex — is *the user opens a new session manually*. That's a chat-shaped IDE handing the user a non-chat-shaped task. The agent should be able to do it.
 
 ### Why not just expand `Task`?
 
-`Task` is owned by Anthropic's CLI; we don't get to redefine what it means. Even if we could, the semantics conflict — `Task` is a synchronous "fan out, synthesize, return" primitive. Persistent sibling sessions are asynchronous, user-visible, and outlive the parent turn. They want their own verb.
+`Task` is owned by Anthropic's CLI and isn't available to Codex at all; we don't get to redefine what it means. Even for the Claude path the semantics conflict — `Task` is a synchronous "fan out, synthesize, return" primitive. Persistent sibling sessions are asynchronous, user-visible, and outlive the parent turn. They want their own verb, and that verb has to work the same way regardless of which agent is driving.
 
 ### Non-goals
 
-- **Not** a replacement for `Task`. `Task` is still the right tool for in-turn fan-out and stays the default. The agent should learn when to reach for which.
+- **Not** a replacement for `Task` (Claude). When the parent agent is Claude, `Task` is still the right tool for in-turn fan-out and stays the default; the agent should learn when to reach for which. When the parent agent is Codex, the new tool is the only fan-out primitive, but that doesn't make it cheap — the same "user-prompted, sidebar-visible" guardrails apply.
 - **Not** a way for the agent to bypass the user. New sessions appear in the sidebar immediately and emit a chat-side notification in the parent session. Nothing happens behind the user's back.
 - **Not** cross-account / cross-user. Spawned sessions inherit the parent's owner, GitHub auth, and credential store.
 - **Not** unbounded. Per-turn and per-parent-session caps prevent the agent from spraying the sidebar.
@@ -83,14 +85,15 @@ Three layers, mirroring [doc 116](../116-fake-gh-cli-shim/plan.md):
 2. **Worker broker** — extends the existing `/agent-ops/*` router with `/agent-ops/session/*` routes. The worker injects the parent session ID; the agent never has to (and cannot) name a different parent.
 3. **Orchestrator endpoints** — one new spawn route (`POST /api/sessions/:parentId/spawn`) plus thin reads (`GET /api/sessions/:parentId/children`, `GET /api/sessions/:parentId/children/:childId`) and a narrow message-injection route (`POST /api/sessions/:parentId/children/:childId/message`).
 
-### Why a shim instead of an MCP tool?
+### Why a shim instead of an MCP tool (or two MCP tools)?
 
-Two reasons, both echoing the gh-shim rationale:
+Three reasons, the first two echoing the gh-shim rationale:
 
-1. **The `Task` tool already occupies the "structured tool" namespace.** Adding another tool with overlapping semantics confuses the model — it has to learn when to pick `Task` vs `SpawnSession`. A bash command is a different surface; the agent treats it the way it treats `gh pr create`: an external action with side effects, not a fan-out primitive.
-2. **The shim shares plumbing with `gh`.** Worker `/agent-ops/*` routing, allowlist enforcement, and the orchestrator-client already exist after doc 116. Adding `shipit session *` is incremental.
+1. **One surface for both agents.** A bash CLI works identically under Claude and Codex — both expose a shell tool, both treat external commands the same way. An MCP tool would need separate wiring on each agent's tool surface (Claude's MCP integration vs. Codex's, which differs), and might land with subtly different shapes. The shim sidesteps that entirely.
+2. **For Claude, `Task` already occupies the "structured tool" namespace.** Adding another tool with overlapping semantics confuses the model — it has to learn when to pick `Task` vs `SpawnSession`. A bash command is a different surface; Claude treats it the way it treats `gh pr create`: an external action with side effects, not a fan-out primitive.
+3. **The shim shares plumbing with `gh`.** Worker `/agent-ops/*` routing, allowlist enforcement, and the orchestrator-client already exist after doc 116. Adding `shipit session *` is incremental, and any future agent (a third CLI we haven't shipped yet) inherits it for free.
 
-A future iteration could expose the same operations as an MCP tool if telemetry shows the agent struggles with the CLI surface, but it's not the right starting point.
+A future iteration could expose the same operations as an MCP tool if telemetry shows agents struggle with the CLI surface, but it's not the right starting point.
 
 ### Allowlist (initial)
 
@@ -120,9 +123,11 @@ Tried: shipit session delete xyz123
 See /shipit-docs/sessions.md for the full list.
 ```
 
-### When the agent should reach for `shipit session create` vs `Task`
+### When the agent should reach for `shipit session create`
 
-The agent-facing docs (`shipit-docs/sessions.md`) and a small system-prompt addition will say:
+The agent-facing docs (`shipit-docs/sessions.md`) and a small system-prompt addition vary slightly by agent. `agent-instructions.ts` already branches on agent id, so we just append the right paragraph.
+
+**For Claude (with `Task` available):**
 
 > Use the **`Task` tool** for in-turn fan-out: parallel research, parallel codegen on different files, anything where you'll synthesize the results in your current reply.
 >
@@ -130,7 +135,13 @@ The agent-facing docs (`shipit-docs/sessions.md`) and a small system-prompt addi
 >
 > If you're unsure, ask the user. Spawning a session is a heavier action than running a `Task`.
 
-This is intentionally narrow. The default should remain `Task`; `shipit session create` is a deliberate, user-prompted action.
+**For Codex (no `Task`):**
+
+> Use **`shipit session create`** when the user has explicitly asked for "another session," "a separate branch," "a parallel workspace," or any work the user expects to **review independently as its own PR**. Spawned sessions persist in the sidebar and run in their own container.
+>
+> Don't reach for it as a generic fan-out tool. Spawning a session is heavy and user-visible — only do it when the user has signaled they want parallel work, not as an optimization for your own work.
+
+The default in both cases is "don't spawn unless the user asked." The phrasing is just adjusted so Claude doesn't lose the `Task`-first guidance and Codex doesn't get told to use a tool it doesn't have.
 
 ### Session linkage
 
@@ -158,6 +169,7 @@ The sidebar groups child sessions visually under their parent (a small indent + 
   title?: string;           // session title; defaults to AI-generated from prompt
   branch?: string;          // child branch name; defaults to generated prefix
   base?: string;            // git ref to branch off of; defaults to parent's current HEAD
+  agent?: AgentId;          // optional agent override (claude | codex); defaults to parent's agent
   model?: string;           // optional model override; defaults to parent's model
 }
 ```
@@ -215,7 +227,7 @@ The trust boundary that matters: **the worker's `/agent-ops/session/*` allowlist
 | Agent loops creating sessions | Per-turn quota (`maxSpawnedSessionsPerTurn = 4`) + per-parent total cap (`maxActiveSpawnedSessions = 16`). Both fail-closed. |
 | Agent injects credentials into a child session | Children inherit credentials from the orchestrator's `CredentialStore`, not from agent input. The `prompt` field is just a string sent as a user message. |
 | Agent spawns a session and uses it as a backdoor to mutate the parent's repo | Children push to their own branch, never to the parent's. PR creation goes through the same `gh` shim + auth as anything else. |
-| Agent fans out work to many sessions to avoid the parent's plan-mode constraints | Spawned sessions inherit the parent's permission mode by default. A future flag could allow widening; for v1 it's sticky. |
+| Agent fans out work to many sessions to avoid the parent's plan-mode constraints | If the child's agent supports permission modes (Claude does; Codex doesn't), it inherits the parent's mode by default. A future flag could allow widening; for v1 it's sticky. When the parent is Codex (no permission modes), this row is moot — there's no mode to escape. |
 
 The shim itself is a convenience; the worker is the gate.
 
@@ -321,7 +333,7 @@ In addition to the per-threat table above, two systemic notes:
 | `src/server/shared/types/domain-types.ts` | Add `parentSessionId` and `spawnedByTurn` to `SessionInfo`. |
 | `src/server/shared/types/ws-server-messages.ts` | Add `session_spawned` event. |
 | `src/server/orchestrator/ws-handlers/agent-listeners.ts` | Forward `session_spawned` events to the parent's WS clients. |
-| `src/server/orchestrator/agent-instructions.ts` | *(Phase 2)* Append the "when to use shipit session create vs Task" guidance. |
+| `src/server/orchestrator/agent-instructions.ts` | *(Phase 2)* Append agent-specific guidance: Claude branch gets the "Task vs shipit session create" rule; Codex branch gets the "only spawn when the user asked" rule. |
 | `src/server/shipit-docs/sessions.md` | **New.** Document the shim, the supported subcommands, and the `Task` vs `shipit session create` decision rule. |
 | `src/server/shipit-docs/README.md` | Add the new file to the index. |
 | `docker/Dockerfile.session-worker.{dev,prod,docker}` | Compile and install the shim at `/usr/local/bin/shipit`, owned by root, mode 0755. |
@@ -334,7 +346,7 @@ In addition to the per-threat table above, two systemic notes:
 ## Open questions
 
 1. **Should `shipit session create` block until the child receives the prompt?** Today the home-screen "send" flow returns synchronously after the prompt is enqueued; the runner picks it up async. Recommendation: same — return immediately, let the agent `wait` if it wants synchronous behavior. Avoids tying up the parent's turn on slow container startup.
-2. **Should children inherit the parent's `permissionMode`?** Recommendation for v1: **yes, sticky.** Spawning a session shouldn't be a way for the agent to escape `plan` mode constraints. A future `--permission-mode` flag can relax this once we have telemetry on misuse.
+2. **Should children inherit the parent's `permissionMode`?** Recommendation for v1: **yes, sticky** when the agent supports modes (Claude). For Codex children, the field is ignored — Codex has no permission modes (`AgentRegistry` reports `supportsPermissionModes: false`). Spawning a session shouldn't be a way for a Claude agent to escape `plan` mode constraints; a future `--permission-mode` flag can relax this once we have telemetry on misuse. If a Claude parent spawns a Codex child (via `--agent codex`), the mode is dropped silently with a one-line note in the spawned-session card so the user sees the difference.
 3. **Should the shim live in `src/server/session/agent-shim/shipit.ts` (next to `gh.ts`) or its own package?** Recommendation: **alongside `gh.ts`.** They share infrastructure and the parallel structure is a feature, not a coincidence.
 4. **Should the parent's chat show the child's full streaming output, or just snapshots?** Recommendation: **snapshots only, on demand.** Streaming the child's full output into the parent's chat duplicates content and wrecks the parent's context window. The agent uses `view` / `wait` for the data it needs; the user clicks through to see the full child chat.
 5. **What about the user-driven equivalent — should the user be able to say in chat "spin up a session for X" and have the agent run `shipit session create` automatically?** Yes, that's the main use case. The agent decides when based on phrasing; no special UI affordance is needed.
