@@ -1084,4 +1084,166 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     readdirSyncSpy.mockRestore();
     poller.destroy();
   });
+
+  it("retries workflow detection when first inspection finds no files (negative results not cached)", async () => {
+    // Repo where workflow files appear after the first poll (e.g., shared
+    // clone fetched the workflow files between polls). Our PR has no checks
+    // reported yet, so the override path is the only thing standing between
+    // the user and a falsely-mergeable button.
+    const noCiNode = makeGraphQLPrNode({
+      commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
+    });
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [noCiNode] } } },
+    };
+
+    const githubAuth = makeGitHubAuth(graphqlResult);
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const sseBroadcast = vi.fn();
+
+    // First poll: workflow dir doesn't exist yet.
+    const existsSyncSpy = vi.spyOn(fs, "existsSync").mockReturnValue(false);
+    const readdirSyncSpy = vi.spyOn(fs, "readdirSync").mockReturnValue([] as never);
+
+    const poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      getSharedRepoDir: () => "/repos/owner/repo",
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    // First poll: state stays "none" because no workflows AND no observed checks.
+    expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
+      updates: [expect.objectContaining({
+        sessionId: "s1",
+        checks: expect.objectContaining({ state: "none" }),
+      })],
+    }));
+
+    // Workflow files appear before the next poll.
+    sseBroadcast.mockClear();
+    existsSyncSpy.mockReturnValue(true);
+    readdirSyncSpy.mockReturnValue(["ci.yml"] as never);
+
+    // Advance to the next poll tick.
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    // Now the override should fire — state flips to "pending".
+    expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
+      updates: [expect.objectContaining({
+        sessionId: "s1",
+        checks: expect.objectContaining({ state: "pending" }),
+      })],
+    }));
+
+    existsSyncSpy.mockRestore();
+    readdirSyncSpy.mockRestore();
+    poller.destroy();
+  });
+
+  it("treats 'none' as 'pending' when another PR in the same repo has observed checks (external CI)", async () => {
+    // Repo with no local .github/workflows files, but an existing PR that
+    // already has checks (e.g., from an external CI provider like Vercel or
+    // a third-party status check). A newly opened PR shouldn't show the
+    // merge button just because its workflows haven't registered yet.
+    const newPrNoChecks = makeGraphQLPrNode({
+      number: 100,
+      headRefName: "shipit/abc-feature",
+      commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
+    });
+    const otherPrWithChecks = makeGraphQLPrNode({
+      number: 99,
+      headRefName: "other-branch",
+      commits: {
+        nodes: [{
+          commit: {
+            statusCheckRollup: {
+              state: "SUCCESS",
+              contexts: {
+                nodes: [{ name: "vercel", status: "COMPLETED", conclusion: "SUCCESS" }],
+              },
+            },
+          },
+        }],
+      },
+    });
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [newPrNoChecks, otherPrWithChecks] } } },
+    };
+
+    const githubAuth = makeGitHubAuth(graphqlResult);
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const sseBroadcast = vi.fn();
+
+    // No local workflow files at all.
+    const existsSyncSpy = vi.spyOn(fs, "existsSync").mockReturnValue(false);
+
+    const poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      getSharedRepoDir: () => "/repos/owner/repo",
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Override should fire because the OTHER PR in the same repo has checks
+    // — that's enough signal that the repo runs CI.
+    expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
+      updates: [expect.objectContaining({
+        sessionId: "s1",
+        checks: expect.objectContaining({ state: "pending" }),
+      })],
+    }));
+
+    existsSyncSpy.mockRestore();
+    poller.destroy();
+  });
+
+  it("keeps 'none' for repos that genuinely run no CI (no workflows, no observed checks anywhere)", async () => {
+    // The legitimate case: a personal sandbox repo with no CI configured at
+    // all. The merge button SHOULD appear here — nothing to wait for.
+    const noCiNode = makeGraphQLPrNode({
+      commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
+    });
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [noCiNode] } } },
+    };
+
+    const githubAuth = makeGitHubAuth(graphqlResult);
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const sseBroadcast = vi.fn();
+
+    const existsSyncSpy = vi.spyOn(fs, "existsSync").mockReturnValue(false);
+
+    const poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      getSharedRepoDir: () => "/repos/owner/repo",
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
+      updates: [expect.objectContaining({
+        sessionId: "s1",
+        checks: expect.objectContaining({ state: "none" }),
+      })],
+    }));
+
+    existsSyncSpy.mockRestore();
+    poller.destroy();
+  });
 });
