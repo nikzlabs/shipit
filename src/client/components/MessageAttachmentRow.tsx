@@ -27,8 +27,11 @@ export function MessageAttachmentRow({
   onRetryUpload: (index: number) => void;
 }) {
   if (pendingFiles.length === 0 && uploads.length === 0) return null;
+  // `last:pb-2` provides 8px gap to the MessageInput only when this row is the
+  // last rendered child of the bottom-stack wrapper. Otherwise the wrapper's
+  // `gap-2` handles spacing to the next card.
   return (
-    <div className="px-4 pb-2 space-y-2">
+    <div className="px-4 last:pb-2 space-y-2">
       {pendingFiles.length > 0 && (
         <FileAttachmentChips files={pendingFiles} onRemove={onRemoveFile} />
       )}
