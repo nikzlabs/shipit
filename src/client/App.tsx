@@ -23,7 +23,6 @@ import { formatErrorForMessage } from "./components/PreviewFrame.js";
 import { SessionTopBar } from "./components/SessionTopBar.js";
 import { MessageInput } from "./components/MessageInput.js";
 import { MessageList } from "./components/MessageList.js";
-import { MessageAttachmentRow } from "./components/MessageAttachmentRow.js";
 import { RocketLaunch } from "./components/RocketLaunch.js";
 import { PreviewFrame } from "./components/PreviewFrame.js";
 import { usePreviewErrors, type PreviewError } from "./hooks/usePreviewErrors.js";
@@ -718,23 +717,24 @@ export default function App() {
           )}
           <MessageList messages={messages} isLoading={isLoading} searchMatches={search.matches} currentMatch={search.currentMatch} onAnswerQuestion={handleAnswerQuestion} onSendFollowUp={handleSendFollowUp} onRollback={handleRollback} onRewind={handleRewind} />
           {/*
-            Bottom stack: thinking indicator, attachment chips, rebase banner, PR card.
+            Bottom stack: thinking indicator, rebase banner, PR card.
             `gap-2` gives a consistent 8px gap between every rendered sibling, so spacing
             no longer has to be encoded as `mt-2`/`mb-2` on each individual card. Each
             non-PR child uses `last:pb-2` (or `last:mb-2`) to add the 8px to MessageInput
             when nothing renders below it. The PR card has no last-child margin because
             it visually merges into the input via `rounded-t-xl border-b-0`.
+            Attachment chips are rendered INSIDE MessageInput's rounded box (not here)
+            so they don't visually overlap the chat history.
           */}
           <div className="flex flex-col gap-2">
             {isLoading && <AgentStatusBar activity={activity} />}
-            <MessageAttachmentRow pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} uploads={uploads} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} />
             {wsSessionId && <RebaseBanner sessionId={wsSessionId} />}
             {wsSessionId && <PrLifecycleCard sessionId={wsSessionId} />}
           </div>
         </div>
       )}
       {!showHomeScreen && !showNewSessionView && queuedMessages.length > 0 && <QueueIndicator queue={queuedMessages} onCancel={(pos) => send({ type: "cancel_queued_message", position: pos })} />}
-      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_claude" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(useSessionStore.getState().sessionId, m)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} allUploads={sessionUploads} onUploadFiles={(files) => void uploadFiles(files)} agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} onModelChange={handleModelChange} modelInfo={modelInfo} contextTokens={contextTokens} hasActiveSession={!showNewSessionView && !!sessionId} sessionCostUsd={currentSessionUsage?.totalCostUsd ?? null} onCostBadgeClick={handleUsageBadgeClick} focusKey={wsSessionId ?? (showNewSessionView ? "new" : undefined)} hasPrCard={hasPrCard} />}
+      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_claude" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(useSessionStore.getState().sessionId, m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} uploads={uploads} allUploads={sessionUploads} onUploadFiles={(files) => void uploadFiles(files)} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} onModelChange={handleModelChange} modelInfo={modelInfo} contextTokens={contextTokens} hasActiveSession={!showNewSessionView && !!sessionId} sessionCostUsd={currentSessionUsage?.totalCostUsd ?? null} onCostBadgeClick={handleUsageBadgeClick} focusKey={wsSessionId ?? (showNewSessionView ? "new" : undefined)} hasPrCard={hasPrCard} />}
     </>
   );
 
