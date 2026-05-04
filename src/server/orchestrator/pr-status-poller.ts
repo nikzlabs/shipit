@@ -296,8 +296,23 @@ export class PrStatusPoller {
 
   /** Optional: resolves a repo URL to its shared clone directory on disk. */
   private getSharedRepoDir?: (repoUrl: string) => string;
-  /** repoKey (owner/repo) → whether the repo has .github/workflows files. */
+  /**
+   * repoKey (owner/repo) → whether the repo has .github/workflows files.
+   * Only positive results are cached — a `false` result (no workflow dir found
+   * yet) is rechecked on every poll because the local clone may not have the
+   * workflow files yet (initial fetch, workflow files added on the PR branch,
+   * etc.). Caching a `false` here permanently used to leave the merge button
+   * enabled for repos whose workflows weren't visible on first inspection.
+   */
   private repoHasWorkflows = new Map<string, boolean>();
+  /**
+   * repoKey (owner/repo) → whether we've ever observed any CI checks for any
+   * PR in this repo. Sticky flag — once true, stays true for the process
+   * lifetime. Catches external CI systems (Vercel, third-party status checks)
+   * that don't have local workflow files, plus repos whose `.github/workflows`
+   * directory isn't present in the local shared clone.
+   */
+  private repoHasObservedChecks = new Map<string, boolean>();
 
   /** Timestamp of the last client activity heartbeat. */
   private lastClientActivity = Date.now();
@@ -576,11 +591,13 @@ export class PrStatusPoller {
 
   /**
    * Check whether a repo has GitHub Actions workflow files.
-   * Result is cached per repoKey.
+   * Positive results are cached per repoKey for the process lifetime.
+   * Negative results are NOT cached — we retry on every poll because the
+   * shared clone may not have the workflow files yet (fetch in progress,
+   * workflows added on PR branch only, etc.).
    */
   private checkRepoHasWorkflows(repoKey: string, repoUrl: string): boolean {
-    const cached = this.repoHasWorkflows.get(repoKey);
-    if (cached !== undefined) return cached;
+    if (this.repoHasWorkflows.get(repoKey) === true) return true;
 
     if (!this.getSharedRepoDir) {
       return false;
@@ -600,8 +617,22 @@ export class PrStatusPoller {
       // If we can't read the directory, assume no workflows
     }
 
-    this.repoHasWorkflows.set(repoKey, hasWorkflows);
+    if (hasWorkflows) {
+      this.repoHasWorkflows.set(repoKey, true);
+    }
     return hasWorkflows;
+  }
+
+  /**
+   * Returns true when we have ANY signal that this repo runs CI:
+   * either local workflow files OR we've observed checks on at least one PR.
+   * Used to keep the merge button hidden during the gap between PR creation
+   * and the first check registering on GitHub's side.
+   */
+  private repoRunsCi(repoKey: string, repoUrl: string | undefined): boolean {
+    if (this.repoHasObservedChecks.get(repoKey)) return true;
+    if (repoUrl && this.checkRepoHasWorkflows(repoKey, repoUrl)) return true;
+    return false;
   }
 
   private startPolling(repoKey: string, owner: string, repo: string): void {
@@ -647,10 +678,23 @@ export class PrStatusPoller {
     const prNodes = (result as unknown as GraphQLResponse)?.data?.repository?.pullRequests?.nodes;
     if (!prNodes) return;
 
-    // Build a map of headRefName → PR node for matching
+    // Build a map of headRefName → PR node for matching, and observe whether
+    // ANY PR in this repo has CI checks reported. Once true, stays true: this
+    // sticky signal lets us correctly classify a brand-new PR as "pending"
+    // even before its workflow runs have registered, and it covers external
+    // CI (Vercel, third-party status checks) that wouldn't show up via local
+    // .github/workflows inspection.
     const prByBranch = new Map<string, GraphQLPrNode>();
+    let observedChecksThisPoll = false;
     for (const node of prNodes) {
       prByBranch.set(node.headRefName, node);
+      if (!observedChecksThisPoll) {
+        const contexts = node.commits.nodes[0]?.commit?.statusCheckRollup?.contexts?.nodes;
+        if (contexts && contexts.length > 0) observedChecksThisPoll = true;
+      }
+    }
+    if (observedChecksThisPoll) {
+      this.repoHasObservedChecks.set(repoKey, true);
     }
 
     // Match PRs to sessions by branch name
@@ -673,12 +717,15 @@ export class PrStatusPoller {
 
         const summary = parsePrNode(prNode, session.id);
 
-        // If GitHub reports no checks yet but the repo has workflow files,
-        // treat as "pending" — checks just haven't registered yet.
+        // If GitHub reports no checks yet but we have any signal the repo
+        // runs CI (workflow files in the local clone, or checks observed on
+        // any PR in this repo previously), treat as "pending" — checks just
+        // haven't registered yet. Without this override, the client sees
+        // state: "none" and unconditionally enables the squash-and-merge
+        // button, which is wrong while CI is still spinning up.
         if (
           summary.checks.state === "none" &&
-          session.remoteUrl &&
-          this.checkRepoHasWorkflows(repoKey, session.remoteUrl)
+          this.repoRunsCi(repoKey, session.remoteUrl)
         ) {
           summary.checks.state = "pending";
         }
