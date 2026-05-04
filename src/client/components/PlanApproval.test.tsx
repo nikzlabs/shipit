@@ -151,4 +151,28 @@ describe("PlanApproval", () => {
       expect(onSend).not.toHaveBeenCalled();
     });
   });
+
+  // History-reload counterpart to AskUserQuestion's `resolvedAnswer` —
+  // `resolved` is set when the agent's tool_result for ExitPlanMode has
+  // already arrived, so the chat shouldn't expose the action buttons
+  // again for a plan that's already been answered.
+  describe("resolved (history reload)", () => {
+    it("renders read-only confirmation when resolved is true", () => {
+      const onSend = vi.fn();
+      render(<PlanApproval onSend={onSend} disabled={false} resolved={true} />);
+      expect(screen.queryByTestId("accept-plan")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("suggest-changes")).not.toBeInTheDocument();
+      expect(screen.getByText(/Plan resolved/)).toBeInTheDocument();
+    });
+
+    it("local accept flow takes precedence over resolved when both are set", () => {
+      // Imagine a tool_result arrives mid-render — the local accept message
+      // should still be shown, since the user just saw their click.
+      const onSend = vi.fn();
+      const { rerender } = render(<PlanApproval onSend={onSend} disabled={false} />);
+      fireEvent.click(screen.getByTestId("accept-plan"));
+      rerender(<PlanApproval onSend={onSend} disabled={false} resolved={true} />);
+      expect(screen.getByText(/Plan accepted/)).toBeInTheDocument();
+    });
+  });
 });

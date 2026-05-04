@@ -377,4 +377,121 @@ describe("AskUserQuestion", () => {
       expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Redis", "1": "Postgres" });
     });
   });
+
+  // Reproduces the "missed questions on reload" UX bug: chat history
+  // re-rendered after a refresh used to show the question with no answer
+  // selected, even though the agent had a tool_result for it. Now we
+  // accept a `resolvedAnswer` prop and reconstruct the answered state
+  // from the persisted tool_result content.
+  describe("resolvedAnswer (history reload)", () => {
+    it("highlights the matching option when resolvedAnswer matches a label", () => {
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={singleQuestion}
+          onAnswer={vi.fn()}
+          disabled={false}
+          resolvedAnswer="Redis"
+        />
+      );
+      // Other options are rendered but hidden as un-selected, the matched one
+      // displays the answered checkmark — and the "Other" option is gone.
+      expect(screen.queryByTestId("option-other")).not.toBeInTheDocument();
+      const redisBtn = screen.getByTestId("option-Redis");
+      expect(redisBtn).toBeDisabled();
+      expect(redisBtn.className).toContain("bg-(--color-accent-subtle)");
+    });
+
+    it("renders free-form text as 'Other' when it doesn't match any option", () => {
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={singleQuestion}
+          onAnswer={vi.fn()}
+          disabled={false}
+          resolvedAnswer="MyCustomCache"
+        />
+      );
+      expect(screen.getByText("MyCustomCache")).toBeInTheDocument();
+      // The text input for "Other" should NOT be visible — we're in
+      // read-only answered state.
+      expect(screen.queryByTestId("other-input")).not.toBeInTheDocument();
+    });
+
+    it("does not call onAnswer when clicking an option after reload", () => {
+      const onAnswer = vi.fn();
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={singleQuestion}
+          onAnswer={onAnswer}
+          disabled={false}
+          resolvedAnswer="Redis"
+        />
+      );
+      // Even though `disabled` is false (the message-list passes
+      // `!result` as the disabled flag, not !isLastMessage), clicking a
+      // resolved question must NOT re-fire onAnswer.
+      fireEvent.click(screen.getByTestId("option-In-memory"));
+      expect(onAnswer).not.toHaveBeenCalled();
+    });
+
+    it("attributes each comma-separated answer to its matching question", () => {
+      const twoQuestions: AskQuestionItem[] = [
+        {
+          question: "Pick a cache?",
+          header: "Cache",
+          options: [{ label: "Redis", description: "Fast" }],
+          multiSelect: false,
+        },
+        {
+          question: "Pick a DB?",
+          header: "Database",
+          options: [{ label: "Postgres", description: "Relational" }],
+          multiSelect: false,
+        },
+      ];
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={twoQuestions}
+          onAnswer={vi.fn()}
+          disabled={false}
+          resolvedAnswer="Redis, Postgres"
+        />
+      );
+      const redisBtn = screen.getByTestId("option-Redis");
+      const postgresBtn = screen.getByTestId("option-Postgres");
+      // Both matching options should render the answered highlight.
+      expect(redisBtn.className).toContain("bg-(--color-accent-subtle)");
+      expect(postgresBtn.className).toContain("bg-(--color-accent-subtle)");
+    });
+
+    it("ignores resolvedAnswer once the user submits via the UI (local state wins)", () => {
+      const onAnswer = vi.fn();
+      const { rerender } = render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={singleQuestion}
+          onAnswer={onAnswer}
+          disabled={false}
+        />
+      );
+      fireEvent.click(screen.getByTestId("option-In-memory"));
+      expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "In-memory" });
+      // Now imagine the agent emits a tool_result for some reason; the
+      // local "In-memory" answer should still take precedence.
+      rerender(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={singleQuestion}
+          onAnswer={onAnswer}
+          disabled={false}
+          resolvedAnswer="Redis"
+        />
+      );
+      const inMemoryBtn = screen.getByTestId("option-In-memory");
+      expect(inMemoryBtn.className).toContain("bg-(--color-accent-subtle)");
+    });
+  });
 });

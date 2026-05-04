@@ -1203,4 +1203,92 @@ describe("MessageList", () => {
       expect(document.querySelector("[data-testid='todo-panel']")).toBeInTheDocument();
     });
   });
+
+  // Reproduces the user-reported "missed questions" bug: an
+  // AskUserQuestion shown in chat history (or after Claude has continued
+  // streaming after the prompt) used to be disabled because the question's
+  // message wasn't the last in the array. The fix is to gate disabling on
+  // whether the tool has a result, not on isLastMessage / streaming /
+  // isLoading.
+  describe("AskUserQuestion clickability", () => {
+    const askToolInput = {
+      questions: [
+        {
+          question: "Which cache?",
+          header: "Cache",
+          options: [
+            { label: "Redis", description: "External" },
+            { label: "Memcached", description: "Simple" },
+          ],
+          multiSelect: false,
+        },
+      ],
+    };
+
+    it("remains clickable while the message is streaming and isLoading=true", () => {
+      const onAnswerQuestion = vi.fn();
+      const messages: ChatMessage[] = [
+        msg("user", "Help me decide"),
+        {
+          role: "assistant",
+          text: "",
+          streaming: true,
+          toolUse: [{ type: "tool_use", id: "ask-1", name: "AskUserQuestion", input: askToolInput }],
+        },
+      ];
+      render(
+        <MessageList messages={messages} isLoading={true} onAnswerQuestion={onAnswerQuestion} />
+      );
+      fireEvent.click(screen.getByTestId("option-Redis"));
+      expect(onAnswerQuestion).toHaveBeenCalledWith("ask-1", { "0": "Redis" });
+    });
+
+    it("remains clickable when its message is no longer the last in chat", () => {
+      // Reproduces the case where Claude has continued streaming text
+      // after the AskUserQuestion (or where any other event has bumped
+      // the question off the end of the messages array) before the user
+      // got to answer. Without this fix the click was dropped silently.
+      const onAnswerQuestion = vi.fn();
+      const messages: ChatMessage[] = [
+        msg("user", "Help me decide"),
+        {
+          role: "assistant",
+          text: "",
+          streaming: false,
+          toolUse: [{ type: "tool_use", id: "ask-1", name: "AskUserQuestion", input: askToolInput }],
+        },
+        msg("assistant", "Continuing while I wait..."),
+      ];
+      render(
+        <MessageList messages={messages} isLoading={false} onAnswerQuestion={onAnswerQuestion} />
+      );
+      fireEvent.click(screen.getByTestId("option-Redis"));
+      expect(onAnswerQuestion).toHaveBeenCalledWith("ask-1", { "0": "Redis" });
+    });
+
+    it("renders the answered state (and ignores clicks) when the tool has a result", () => {
+      // After a page reload, the persisted tool_result is the only
+      // signal that a historical AskUserQuestion has already been
+      // answered. The component must read it and render the answered
+      // state; clicks must not re-fire onAnswerQuestion.
+      const onAnswerQuestion = vi.fn();
+      const messages: ChatMessage[] = [
+        msg("user", "Help me decide"),
+        {
+          role: "assistant",
+          text: "Here's the question",
+          streaming: false,
+          toolUse: [{ type: "tool_use", id: "ask-1", name: "AskUserQuestion", input: askToolInput }],
+          toolResults: [{ toolUseId: "ask-1", content: "Redis" }],
+        },
+      ];
+      render(
+        <MessageList messages={messages} isLoading={false} onAnswerQuestion={onAnswerQuestion} />
+      );
+      const redisBtn = screen.getByTestId("option-Redis");
+      expect(redisBtn).toBeDisabled();
+      fireEvent.click(redisBtn);
+      expect(onAnswerQuestion).not.toHaveBeenCalled();
+    });
+  });
 });
