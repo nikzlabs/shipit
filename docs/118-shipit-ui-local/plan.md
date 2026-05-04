@@ -46,7 +46,7 @@ The ShipIt repo gains a `docker-compose.yml` with a single `dev` service that th
 services:
   dev:
     image: node:22
-    command: npm run dev
+    command: sh -c "npm install && npm run dev"   # see "agent.install does not run for compose services"
     working_dir: /workspace
     init: true              # so orphaned agent subprocesses are reapable
     environment:
@@ -76,26 +76,33 @@ If `RUNTIME_MODE` is unset (production deploys, regular dev runs outside a sessi
 ## Subsystems in local mode
 
 ### Loaded and unchanged
-React client, Fastify routes, services layer, WS handlers, SSE event stream, DI, validation, sessions persistence, chat history, usage tracking, file watcher, terminal (local PTY), `GitManager`, `RepoGit`, `RepoStore`, GitHub auth and PR/CI polling, agent registry, `SessionRunner`, `SessionRunnerRegistry`, `ClaudeAdapter` / `CodexAdapter`, post-turn flow (auto-commit, auto-push, PR card).
+React client, Fastify routes, services layer, WS handlers, SSE event stream, DI, validation, sessions persistence, chat history, usage tracking, `GitManager`, `RepoGit`, `RepoStore`, GitHub auth and PR/CI polling, agent registry, `SessionRunner`, `SessionRunnerRegistry`, `ClaudeAdapter` / `CodexAdapter`, post-turn flow (auto-commit, auto-push, PR card), one-shot file-tree scans (`scanFileTree`).
 
 ### Loaded but skipped at boot in local mode
 - `setupContainerManager()` returns `{ containerManager: null, dockerProxyServer: null }`.
-- `cleanupOrphanComposeResources()` skipped (no Compose).
+- `cleanupOrphanComposeResources()` skipped (no Compose for inner sessions).
 - `enforceIdleContainerLimit()` becomes a no-op (no containers to enforce against).
 - `resolveOwnContainerIp()` not called.
 
 ### Not loaded in local mode
 - `SessionContainerManager`, `container-lifecycle`, `container-health`, `container-discovery`
 - `docker-proxy*` (no proxy server, no sanitize, no auth, no helpers)
-- `compose-generator`, `ServiceManager`
-- Warm-session pool (or repurposed as warm-worktree pool — out of scope for v1)
+- `compose-generator`, `ServiceManager` (for *inner sessions*; the **outer** orch's `ServiceManager` is what runs the dev compose service that hosts the inner orch)
+- Warm-session pool
 
-### Degraded behaviors in local mode
+### Degraded or unsupported behaviors in local mode
+
+These were sold as "unchanged" in earlier drafts but actually require container-backed runners. Acknowledging them honestly:
+
+- **Inner UI's terminal panel does not work.** `ws-handlers/terminal-handlers.ts` requires `runner instanceof ContainerSessionRunner`; the in-process `SessionRunner` has terminal *state fields* but no `TerminalProcess` is ever spawned for it. The PTY logic lives in `src/server/session/terminal.ts` and is invoked from `session-worker.ts` (which doesn't run in local mode). Two viable resolutions: (a) accept the loss in v1, render a "terminal unavailable in local mode" message in the inner UI, and rely on the *outer* terminal panel for shell access; (b) add a small change to `SessionRunner` to spawn `TerminalProcess` directly and drop the `instanceof` gate. **v1 picks (a).** If terminal access in the inner UI matters during dogfooding, (b) is small enough to be Phase 1.5.
+- **Inner UI's file watcher does not deliver live updates.** Same shape: the watcher in `src/server/session/file-watcher.ts` runs inside the worker, and `SessionRunner` has no in-process file-watcher path. One-shot `scanFileTree` calls still work, so the file tree renders correctly on initial load and on explicit refresh — it just doesn't auto-update on file changes. **v1 accepts the loss**; a manual refresh button in the inner UI covers the dogfooding loop. Same Phase 1.5 escape hatch as the terminal.
+- **Inner UI's preview status panel.** `SessionRunner.buildPreviewStatus()` is a hardcoded stub returning port 5173 (`session-runner.ts:488`). This is only relevant if Phase 2 ships; for v1 the preview panel is hidden anyway.
 - **No isolation between inner sessions.** Inner sessions share the inner orch's process and filesystem. If one breaks `node_modules`, others see it.
-- **`agent.install` is the inner orch's container's responsibility** (run by the outer orch when starting the dev compose service). Inner-session creation does not run `agent.install` again — there's no fresh container to install into.
-- **No resource caps on inner sessions.** A runaway agent inside an inner session can exhaust the dev compose service's resources.
-- **No reconnect-after-disposal flow** for inner sessions. The ContainerSessionRunner-specific reconnect logic doesn't apply — `SessionRunner` doesn't dispose on idle in the same way (verified in `session-runner.ts`'s in-process runner used by integration tests).
-- **`scanFileTree`, watcher, terminal, and git** all run in the inner orch's container, against the worktree directory. Path semantics are the same as containerized mode — `/workspace/sessions/{id}/...` — because the inner orch's `/workspace` is the outer session's `/workspace`.
+- **`agent.install` from inner-session repos does not run.** `runInstall` is `instanceof ContainerSessionRunner`-gated. For v1 dogfooding (only the ShipIt repo) this is fine; an inner session opening a *different* repo will not have its install honored. Inner UI surfaces "install skipped (local mode)" rather than pretending.
+- **No resource caps on inner sessions.** A runaway agent can exhaust the dev compose service's resources.
+- **No reconnect-after-disposal flow** for inner sessions. The `ContainerSessionRunner`-specific reconnect logic doesn't apply.
+
+The dogfooding loop survives all of these because the **outer** session container is intact: outer terminal works, outer file watcher works, outer preview panel renders the inner UI. The inner UI is a thinner version of itself — fine for editing-via-chat, less complete than production.
 
 ### Unsupported in v1 (Phase 2)
 - **Inner-session preview.** No way to preview an app the user is building inside an inner session. The preview panel in the inner UI shows "preview not available in local mode" or is hidden. Design lives in Phase 2 below.
@@ -122,10 +129,11 @@ Open question for Phase 2: HMR. The existing preview-proxy injects a script that
 | `src/server/orchestrator/app-di.ts` | Add `runtimeMode: "containerized" \| "local"` to `AppDeps` (default from `process.env.RUNTIME_MODE` ?? `"containerized"`). Set the default `agentFactory` to construct `ClaudeAdapter`/`CodexAdapter` when `runtimeMode === "local"` and no factory is injected (today, `agentFactory` defaults to `undefined` because in production agents always live inside a container). Both seams matter: `runner.createAgent` (only exists on `ContainerSessionRunner`) **and** the process-level `agentFactory` fallback. |
 | `src/server/orchestrator/session-runner.ts` | None expected — the existing `SessionRunner` already implements `SessionRunnerInterface`. Verify `dispose()` actually kills agent subprocesses (it calls `agent.kill()` per `session-runner.ts:551`; `ClaudeAdapter` → `ClaudeProcess.kill()` does kill the PTY per `claude.ts:163-172`). |
 | `src/server/orchestrator/platform-credentials.ts` | None expected — already supports `x-shipit-secrets` with `platform:claude_oauth` and `platform:github_token` sources. (Docstring already names ShipIt-in-ShipIt as the flagship use case.) |
-| `src/server/orchestrator/auth.ts`, `github-auth.ts` | Verify both can boot from env-injected credentials (the dev compose service receives them as env vars, not via `/credentials/` mount). If they can't, add an env-var-first init path. |
-| `src/server/shared/fs-constants.ts` | Add `sessions/` and `.inner-shipit/` to `WORKSPACE_SKIP_DIRS`. |
-| `src/server/shared/git.ts` (or wherever auto-`.gitignore` is managed) | Ensure outer's auto-commit `.gitignore` excludes `sessions/` and `.inner-shipit/`. |
-| `src/server/orchestrator/app-di.ts` (state-path split) | Split `workspaceDir` (source) from `stateDir` (metadata: `.shipit.db`, `.vibe-sessions.json`, repo cache, dep cache, chat history, usage, scratchpad, file-review store). Default `stateDir = workspaceDir` for back-compat; in local mode the dev service overrides it to `/workspace/.inner-shipit/`. This is a precondition for 118 — could land as a separate refactor PR. |
+| `src/server/orchestrator/auth.ts`, `github-auth.ts` | Verify both can boot from env-injected credentials (the dev compose service receives them via Compose `env_file:` references generated from `x-shipit-secrets`, which become `process.env.*` for the inner orch). If they can't, add an env-var-first init path. |
+| `src/server/shared/fs-constants.ts` | Add `sessions/`, `.inner-shipit/`, and `.shipit/` to `WORKSPACE_SKIP_DIRS`. |
+| ShipIt repo's checked-in `.gitignore` | Add `sessions/`, `.inner-shipit/`, and `.shipit/`. There is no auto-`.gitignore` mechanism in `git.autoCommit` — these must be checked-in entries. |
+| `src/server/orchestrator/app-di.ts` (state-path split) | Add `stateDir` to `AppDeps`, defaulting to `workspaceDir` (no production migration needed). Route three paths through `stateDir`: the SQLite database (`app-di.ts:159`), `repo-cache/` (`app-lifecycle.ts:901`), `dep-cache/` (`app-lifecycle.ts:914`). `sessionsRoot` stays at `${workspaceDir}/sessions`. |
+| `src/server/orchestrator/services/*` or wherever `compose_not_configured` is emitted | Suppress this event when `runtimeMode === "local"` — either at emission site or in the inner UI's handler. |
 | `src/server/session/agents/claude-adapter.ts`, `codex-adapter.ts` | None expected. Adapters already work in-process. |
 | `docker-compose.yml` (new, in ShipIt repo root) | The `dev` service shown in "Entry point" — including `volumes: [".:/workspace"]`, `init: true`, `x-shipit-secrets`, and `SHIPIT_STATE_DIR`. |
 | `shipit.yaml` (existing, in ShipIt repo root) | Add top-level `compose: docker-compose.yml`. Without this, `setupServiceManager` skips compose and the dev service never starts. |
@@ -181,31 +189,84 @@ Three consequences, all of which need explicit Phase 1 mitigation:
 
 3. **No recursive watch loop.** Outer's watcher only reports; it doesn't write. Inner's writes don't trigger outer's writes. So there's no feedback cycle, just noise (mitigated by #1).
 
-### Credential injection — use existing `platform-credentials.ts`
+### Credential injection — `x-shipit-secrets` plus secrets-dir handling
 
-A previous draft of this plan proposed a new `x-shipit-orchestrator: true` marker. **This was wrong** — the codebase already has the primitive we need.
+A previous draft of this plan proposed a new `x-shipit-orchestrator: true` marker. **This was wrong** — `platform-credentials.ts` already supports this exact use case (its docstring names ShipIt-in-ShipIt as the flagship). However, the *mechanism* is more subtle than "env vars in compose":
 
-`src/server/orchestrator/platform-credentials.ts` exposes a `PlatformCredentialProvider` system whose docstring states: *"The flagship use case is ShipIt-in-ShipIt: the inner orchestrator service needs the outer session's Claude OAuth + GitHub tokens."* The mechanism is the `x-shipit-secrets` field on a Compose service, with sources like `platform:claude_oauth` and `platform:github_token`. The outer orchestrator resolves these and injects them into the service's environment via the existing compose-generation pipeline. Per-secret naming, controlled scope, no special trust marker — strictly better than what we were going to build.
+`secret-resolver.ts` resolves `x-shipit-secrets` by writing per-service `.env` files (e.g. `.shipit/.env.dev`) and emitting `env_file:` references in the generated compose override. By default, those files land **inside the workspace volume**, at `${workspaceDir}/.shipit/.env.<service>`. There is also a hardened path that writes to a separate isolated directory, gated on the `SHIPIT_SECRETS_INTERNAL_DIR` env var on the outer orchestrator (`secret-resolver.ts:writeIsolatedSecretFiles`, called from `index.ts:196`).
 
-The dev service's `x-shipit-secrets` block (shown in the entry-point compose snippet above) is the entire integration:
+For ShipIt-in-ShipIt this matters because `${workspaceDir}` for the dev compose service is `/workspace`, which is *the ShipIt repo's source tree*. Without mitigation:
+- `/workspace/.shipit/.env.dev` contains the user's Claude OAuth + GitHub tokens.
+- The outer agent can `ls` and `cat` it.
+- `git add -A` in the outer ShipIt repo would pick it up.
+- Outer's file watcher fires on every secret refresh.
 
-- **Auth path inside the inner orch.** `AuthManager` and `GitHubAuthManager` need to read these env vars at startup. In production, credentials live on disk under `/credentials/`; in local mode, credentials arrive as env vars. Either both managers already handle env-var-first auth (verify), or local mode needs a small init that materializes the env vars into the credential store the managers already read.
-- **No credential volume mount.** The `/credentials/` volume from `container-lifecycle.ts:buildMounts()` is not extended to compose services and we should not extend it. Env-var injection via `platform-credentials.ts` is the supported path; reuse it.
+**Required Phase 1 actions.**
+
+1. **Add `.shipit/` to the ShipIt repo's checked-in `.gitignore`.** This is the only mechanism that actually works (see "Outer auto-commit gitignore mechanism" below). Without this, secrets land in commits.
+2. **Add `.shipit/` to `WORKSPACE_SKIP_DIRS` in `fs-constants.ts`** so the outer file watcher doesn't fire on secret writes/refreshes.
+3. **Strongly recommended: ensure the outer orchestrator runs with `SHIPIT_SECRETS_INTERNAL_DIR` set.** This routes the secret env files to an isolated directory outside the workspace volume entirely. For dogfooding, the production binary (the *outer* one) should set this in its own deployment config. If we don't control the outer's env, document the limitation: secrets land in the workspace volume but are gitignored and watcher-skipped.
+4. **Auth path inside the inner orch.** `AuthManager` and `GitHubAuthManager` must read credentials from env vars (the inner orch's `process.env.ANTHROPIC_API_KEY`, `process.env.GITHUB_TOKEN`, etc. — populated by Compose's `env_file:`). Verify this works today; if not, add an env-var-first init.
 - **Trust model.** Same as production: services that declare `x-shipit-secrets` get the secrets they ask for. The user owns their `docker-compose.yml`; if they declare these secrets, they've consented to the service receiving them.
 
-### Workspace path collision (substantive gap)
+### Outer auto-commit gitignore mechanism (or lack thereof)
 
-Inside the dev compose service, the inner orch's `WORKSPACE_DIR` defaults to `/workspace` (`app-di.ts:138`). The outer agent's view of `/workspace` is the same directory (because the dev service volume-mounts it from the outer session). This means the inner orch's `.shipit.db`, `.vibe-sessions.json`, `repo-cache/`, and `dep-cache/` will land *in the same directory* as the outer agent's source files — and the outer ShipIt repo already uses some of those names for its own state.
+A previous draft assumed there was an "auto-`.gitignore` mechanism" in `src/server/shared/git.ts` that the implementer could extend. **There isn't one.** `git.autoCommit` runs `git add -A` with no exclusion logic; the only thing that excludes paths is whatever `.gitignore` is checked into the repo.
 
-**Fix.** The inner orch's per-session state must live in a directory that's not part of the ShipIt repo's source tree. Two options:
+The fix is therefore mechanical and lives entirely in the ShipIt repo, not in the orchestrator code: add to the ShipIt repo's `.gitignore`:
 
-1. **Separate state dir env var.** Introduce a `SHIPIT_STATE_DIR` (default to `WORKSPACE_DIR`, override it in the dev service compose to `/workspace/.inner-shipit/`). All managers that today open files under `WORKSPACE_DIR` (sessions persistence, chat history, usage, dep cache, repo cache, file-review store, scratchpad) read from `SHIPIT_STATE_DIR` instead. The inner orch's *workspace* (where source files live and inner sessions get cloned) is still `/workspace`, but its *metadata* is at `/workspace/.inner-shipit/`.
+```
+sessions/
+.inner-shipit/
+.shipit/
+```
 
-2. **Sibling workspace volume.** Mount a second volume (e.g. `inner-shipit-state`) at `/inner-shipit/` and treat that as both the state dir and the parent of inner-session clones. This keeps state cleanly separated but means inner sessions don't share the outer agent's view of the source — i.e. you can't open the same files in the outer and inner UIs at once, which contradicts the dogfooding goal.
+This protects the outer ShipIt repo specifically. Users who later want to use ShipIt-in-ShipIt with their own repos must add the same lines to their own `.gitignore` — or the platform must auto-inject these patterns somewhere upstream (e.g. by making the inner orch refuse to start if the entries are missing). For v1 we just bake them into the ShipIt repo and document the requirement for other repos.
 
-Option 1 is the right shape. The compose snippet above already includes `SHIPIT_STATE_DIR=/workspace/.inner-shipit`. Implementation cost: trace every manager that opens a path under `workspaceDir` in `app-di.ts` and split them into "workspace path" (source) vs "state path" (metadata). Specifically: `SessionManager`, `ChatHistoryManager`, `UsageManager`, `RepoStore`, `FileReviewStore`, the dep cache, the database, and any scratchpad/buffer. This split is good hygiene independent of local mode and could land as a refactor before 118 even starts.
+### Workspace path collision (substantive but narrower than first thought)
 
-Add `.inner-shipit/` to outer's `.gitignore` alongside `sessions/`.
+Inside the dev compose service, the inner orch's `WORKSPACE_DIR` defaults to `/workspace` (`app-di.ts:138`). The outer agent's view of `/workspace` is the same directory (because the dev service volume-mounts it from the outer session). This means the inner orch's metadata files would land *in the same directory* as the outer agent's source files.
+
+A previous draft listed many managers needing changes. After tracing the actual disk paths in `app-di.ts` and `app-lifecycle.ts`, the real list is **three**:
+
+1. **The SQLite database.** `app-di.ts:159` opens `${workspaceDir}/.shipit.db`. Almost all "managers" that an earlier draft listed (chat history, usage, secrets, file review, scratchpad) actually live inside this single database, so moving the DB moves them all.
+2. **`repo-cache/`** — `app-lifecycle.ts:901`.
+3. **`dep-cache/`** — `app-lifecycle.ts:914`.
+
+What does **not** move:
+
+- **`sessionsRoot`** (`${workspaceDir}/sessions`). Inner-session clones must live under the user's view of the workspace — that's how the user sees and edits inner-session files via the outer agent. Moving this would defeat the dogfooding goal. Keep it where it is.
+- **`GitHubAuthManager`'s `cwd`** at `app-di.ts:208` — that's used for `configureGitCredentials`, which writes git config in the *workspace* directory, which is correct.
+
+**Fix.** Add a `stateDir` parameter to `AppDeps`, defaulting to `workspaceDir` for back-compat (existing production installs are unchanged because no migration is needed when the default matches today's behavior). In local mode, the dev compose service sets `SHIPIT_STATE_DIR=/workspace/.inner-shipit/` and the inner orch routes the database, `repo-cache/`, and `dep-cache/` to that path. Implementation is a three-path edit, not a wide manager refactor.
+
+Add `.inner-shipit/` to outer's `.gitignore` alongside `sessions/` and `.shipit/`.
+
+### `compose_not_configured` event flood and similar inner-UI noise
+
+When `setupServiceManager` runs without a `compose:` field configured (which is the case for *every* inner session since they don't have inner Compose stacks), it emits `compose_not_configured` events. In `test-helpers.ts:51` these are filtered out for tests. In production-local they are not, and the inner UI will receive them on every inner-session creation.
+
+**Fix.** The inner UI's WS message handler should suppress `compose_not_configured` (and any other "you didn't configure compose" noise) when `runtimeMode === "local"`. Alternatively, the inner orch's `setupServiceManager` could short-circuit before emitting these events when `runtimeMode === "local"`. The latter is cleaner because it stops the noise at the source.
+
+### `agent.install` does not run for compose services
+
+`ContainerSessionRunner.runInstall()` is invoked via an `instanceof ContainerSessionRunner` check at `app-lifecycle.ts:570`. This applies to *session containers* — the agent containers that the outer orch creates per session. **It does not apply to Compose services**, which start via Docker Compose with whatever `command:` they declare.
+
+This means: the dev compose service that runs the inner orch does **not** get its dependencies installed by `agent.install` from `shipit.yaml`. If `command: npm run dev` runs against an empty `node_modules/`, it crashes.
+
+**Fix.** Bake the install into the compose service's `command`:
+
+```yaml
+command: sh -c "npm install && npm run dev"
+```
+
+This is what the entry-point compose snippet now shows. A previous draft assumed `agent.install` would handle it; that was wrong. (For inner sessions opened in the inner orch, `agent.install` from those sessions' repos is also skipped — see "Degraded or unsupported behaviors.")
+
+### Real `ClaudeAdapter` is not test-exercised
+
+A previous draft claimed local mode is "exercised on every test run" because integration tests use `SessionRunner` + injected `agentFactory`. That's true for the *runner*, but the integration tests inject `FakeClaudeProcess`, not `ClaudeAdapter`. The real adapter's PTY lifecycle, NDJSON parsing, CLI error paths, and OS-process supervision are **not** exercised by `npm test`.
+
+This raises the bar on the manual smoke test: the first time we run the dogfooding loop end-to-end is also the first time `ClaudeAdapter` runs in production-shape (long-lived, real stdin/stdout, real subprocess reaping) outside of an agent container. Expect bugs here. The smoke-test checklist item is therefore important enough to repeat: do it deliberately, watch for orphan processes, watch for stuck PTYs.
 
 ### `agent.install` does not run for inner sessions
 
