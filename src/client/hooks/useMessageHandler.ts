@@ -552,7 +552,7 @@ function processMessage(
       return;
     }
 
-    if (data.type === "claude_interrupted") {
+    if (data.type === "agent_interrupted") {
       session.setIsLoading(false);
       session.setActivity(undefined);
       session.setQueuedMessages([]);

@@ -137,7 +137,7 @@ The user has access to an interactive terminal in the UI. You can run shell comm
 /**
  * Default rendering of the agent system instructions — no preview URL, no
  * auto-create PR nudge. Used by the Settings UI as a baseline reference.
- * The actual prompt assembled in `claude-execution.ts` is computed per-turn
+ * The actual prompt assembled in `agent-execution.ts` is computed per-turn
  * and may include the auto-create PR section when the setting is on.
  */
 export const AGENT_SYSTEM_INSTRUCTIONS = buildAgentSystemInstructions();

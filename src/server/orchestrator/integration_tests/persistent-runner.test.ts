@@ -280,10 +280,10 @@ describe("Integration: persistent session runners", () => {
     const claude = await waitForClaude(() => lastClaude);
 
     // Interrupt
-    client.send({ type: "interrupt_claude" } as any);
+    client.send({ type: "interrupt_agent" } as any);
 
-    // Should receive claude_interrupted
-    const interrupted = await drainUntil(client, (m) => m.type === "claude_interrupted");
+    // Should receive agent_interrupted
+    const interrupted = await drainUntil(client, (m) => m.type === "agent_interrupted");
     expect(interrupted).toBeTruthy();
 
     // Finish Claude
