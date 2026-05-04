@@ -43,6 +43,8 @@ describe("DocsViewer", () => {
       ];
       render(<DocsViewer {...props} />);
       expect(screen.getByText("Auth")).toBeInTheDocument();
+      // "Done" docs are collapsed by default — expand to view them.
+      fireEvent.click(screen.getByRole("button", { name: /Done \(1\)/ }));
       expect(screen.getByText("Deploy")).toBeInTheDocument();
     });
 
@@ -66,8 +68,11 @@ describe("DocsViewer", () => {
       render(<DocsViewer {...props} />);
       expect(screen.getByText("Planned")).toBeInTheDocument();
       expect(screen.getByText("In Progress")).toBeInTheDocument();
-      expect(screen.getByText("Done")).toBeInTheDocument();
       expect(screen.getByText("Paused")).toBeInTheDocument();
+      // The "Done" group is collapsed by default; the toggle header still
+      // renders, but the per-doc Done badge only appears once expanded.
+      fireEvent.click(screen.getByRole("button", { name: /Done \(1\)/ }));
+      expect(screen.getByText("Done")).toBeInTheDocument();
     });
 
     it("shows doc count in header", () => {
@@ -119,8 +124,14 @@ describe("DocsViewer", () => {
         makeDoc({ path: "docs/005-inprog-a/plan.md", title: "A-InProgress", status: "in-progress" }),
       ];
       render(<DocsViewer {...props} />);
+      // Done items live behind a collapsed toggle — expand to assert ordering.
+      fireEvent.click(screen.getByRole("button", { name: /Done \(1\)/ }));
       const items = screen.getAllByRole("button").filter(
-        (btn) => !btn.textContent?.includes("Reload") && !btn.textContent?.includes("Tracked") && !btn.textContent?.includes("Other"),
+        (btn) =>
+          !btn.textContent?.includes("Reload") &&
+          !btn.textContent?.includes("Tracked") &&
+          !btn.textContent?.includes("Other") &&
+          !/^Done \(\d+\)$/.test(btn.textContent ?? ""),
       );
       // in-progress first, sorted alphabetically by path (no priority)
       expect(items[0].textContent).toContain("B-InProgress");
@@ -129,7 +140,7 @@ describe("DocsViewer", () => {
       expect(items[2].textContent).toContain("A-Planned");
       // then paused
       expect(items[3].textContent).toContain("C-Paused");
-      // then done
+      // then done (rendered below the toggle once expanded)
       expect(items[4].textContent).toContain("D-Done");
     });
 
@@ -183,6 +194,8 @@ describe("DocsViewer", () => {
         }),
       ];
       render(<DocsViewer {...props} />);
+      // Done section is collapsed by default — expand it to inspect the badges.
+      fireEvent.click(screen.getByRole("button", { name: /Done \(1\)/ }));
       expect(screen.getByText("Done")).toBeInTheDocument();
       expect(screen.queryByText("High")).not.toBeInTheDocument();
     });
@@ -194,6 +207,49 @@ describe("DocsViewer", () => {
       ];
       render(<DocsViewer {...props} />);
       expect(screen.getByText("docs/001-auth/")).toBeInTheDocument();
+    });
+  });
+
+  describe("done docs collapse", () => {
+    it("collapses done docs by default and renders a toggle with the count", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({ path: "docs/001/plan.md", title: "Active", status: "in-progress" }),
+        makeDoc({ path: "docs/002/plan.md", title: "Finished-One", status: "done" }),
+        makeDoc({ path: "docs/003/plan.md", title: "Finished-Two", status: "done" }),
+      ];
+      render(<DocsViewer {...props} />);
+      // Active doc is visible; done docs are hidden behind the toggle.
+      expect(screen.getByText("Active")).toBeInTheDocument();
+      expect(screen.queryByText("Finished-One")).not.toBeInTheDocument();
+      expect(screen.queryByText("Finished-Two")).not.toBeInTheDocument();
+      // The toggle reflects the count of hidden done docs.
+      expect(
+        screen.getByRole("button", { name: /Done \(2\)/ }),
+      ).toBeInTheDocument();
+    });
+
+    it("expands done docs when the toggle is clicked", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({ path: "docs/001/plan.md", title: "Active", status: "in-progress" }),
+        makeDoc({ path: "docs/002/plan.md", title: "Finished", status: "done" }),
+      ];
+      render(<DocsViewer {...props} />);
+      const toggle = screen.getByRole("button", { name: /Done \(1\)/ });
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      fireEvent.click(toggle);
+      expect(toggle).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByText("Finished")).toBeInTheDocument();
+    });
+
+    it("does not render the Done toggle when there are no done docs", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({ path: "docs/001/plan.md", title: "Active", status: "in-progress" }),
+      ];
+      render(<DocsViewer {...props} />);
+      expect(screen.queryByRole("button", { name: /Done \(/ })).toBeNull();
     });
   });
 
