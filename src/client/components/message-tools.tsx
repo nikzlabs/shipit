@@ -85,6 +85,11 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
         questions={questions}
         onAnswer={onAnswerQuestion ?? (() => {})}
         disabled={isQuestionDisabled}
+        // `result` (when present) is the agent's tool_result for this
+        // question — its content carries the answer text. Passing it lets
+        // the component render the answered state on reload (where the
+        // component's own `submittedAnswers` state has been lost).
+        resolvedAnswer={result?.content}
       />
     );
   }
@@ -95,6 +100,10 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
         onSend={onSendFollowUp ?? (() => {})}
         disabled={isQuestionDisabled}
         planContent={planContent}
+        // Same purpose as above — when a tool_result exists for the
+        // ExitPlanMode tool the plan has already been responded to, so
+        // render the read-only confirmation rather than the action buttons.
+        resolved={!!result}
       />
     );
   }

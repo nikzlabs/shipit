@@ -11,9 +11,18 @@ interface PlanApprovalProps {
   onSend: (text: string) => void;
   disabled: boolean;
   planContent?: string;
+  /**
+   * True when the agent has already emitted a tool_result for this
+   * ExitPlanMode call (i.e. the plan has been accepted or feedback was
+   * already sent in a prior turn). Used to render the read-only
+   * confirmation after a page reload, where the component's local
+   * `submitted` state is gone but the tool_result is persisted in chat
+   * history.
+   */
+  resolved?: boolean;
 }
 
-export function PlanApproval({ onSend, disabled, planContent }: PlanApprovalProps) {
+export function PlanApproval({ onSend, disabled, planContent, resolved }: PlanApprovalProps) {
   const [submitted, setSubmitted] = useState<"accepted" | "feedback" | null>(null);
   const [showFeedback, setShowFeedback] = useState(false);
   const [feedbackText, setFeedbackText] = useState("");
@@ -35,9 +44,16 @@ export function PlanApproval({ onSend, disabled, planContent }: PlanApprovalProp
     onSend(feedbackText.trim());
   }, [disabled, submitted, feedbackText, onSend]);
 
-  const isAnswered = !!submitted;
+  // Treat the plan as answered if the user just submitted, OR if the
+  // server-persisted tool_result indicates it's already resolved. Without
+  // the latter case, a reloaded chat would show the action buttons for a
+  // plan that's already been accepted, inviting a duplicate response.
+  const isAnswered = !!submitted || !!resolved;
 
-  // Read-only state after submission
+  // Read-only state after submission. When the local `submitted` state is
+  // set we know which path the user took; on a reload we only know the
+  // plan was resolved (via `resolved`), so we show a generic "Plan
+  // resolved" line instead of guessing accept-vs-feedback.
   if (isAnswered) {
     return (
       <div className="mt-2 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary)/80 overflow-hidden p-3" data-testid="plan-approval">
@@ -46,10 +62,15 @@ export function PlanApproval({ onSend, disabled, planContent }: PlanApprovalProp
             <CheckCircleIcon size={ICON_SIZE.SM} weight="fill" />
             <span>Plan accepted — executing...</span>
           </div>
-        ) : (
+        ) : submitted === "feedback" ? (
           <div className="text-sm">
             <span className="text-(--color-text-secondary)">Feedback sent:</span>
             <span className="ml-1 text-(--color-text-primary)">{feedbackText}</span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 text-sm text-(--color-success)">
+            <CheckCircleIcon size={ICON_SIZE.SM} weight="fill" />
+            <span>Plan resolved.</span>
           </div>
         )}
       </div>
