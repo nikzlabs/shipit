@@ -26,6 +26,8 @@ import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { ServiceError } from "./types.js";
+import { isNonFastForwardError } from "./git.js";
+import { getErrorMessage } from "../validation.js";
 
 /**
  * Maximum number of conflict iterations before bailing out. A multi-commit
@@ -115,7 +117,7 @@ export async function runRebaseFlow(
 
   // 5. Clean rebase — go straight to force push.
   if (result.status === "clean") {
-    const forcePushed = await tryForcePush(git, githubAuthManager);
+    const forcePushed = await tryForcePush(git, githubAuthManager, runner);
     runner.emitMessage({ type: "rebase_complete", forcePushed });
     return { status: "rebased", forcePushed };
   }
@@ -156,25 +158,47 @@ export async function runRebaseFlow(
   }
 
   // 7. Force push after successful resolution.
-  const forcePushed = await tryForcePush(git, githubAuthManager);
+  const forcePushed = await tryForcePush(git, githubAuthManager, runner);
   runner.emitMessage({ type: "rebase_complete", forcePushed });
   return { status: "conflicts_resolved", iterations: iter, forcePushed };
 }
 
 /**
  * Attempt a force push with lease. Returns true on success, false if push
- * was skipped (no auth) or failed (logged, not thrown).
+ * was skipped (no auth) or failed.
+ *
+ * Emits the same WS events as the regular auto-push flow so the user sees
+ * confirmation on success and an actionable error on failure — without these,
+ * the rebase appears "complete" while the rewritten history never reaches
+ * origin (see also `scheduleAutoPush` in index.ts / app-lifecycle.ts).
  */
 async function tryForcePush(
   git: GitManager,
   githubAuthManager: GitHubAuthManager,
+  runner: SessionRunnerInterface,
 ): Promise<boolean> {
   if (!githubAuthManager.authenticated) return false;
   try {
-    await git.forcePush();
+    const message = await git.forcePush();
+    const branch = await git.getCurrentBranch();
+    runner.emitMessage({ type: "github_push_result", success: true, message, branch });
     return true;
   } catch (err) {
-    console.error("[rebase] force push failed:", err);
+    const errMsg = getErrorMessage(err);
+    console.error("[rebase] force push failed:", errMsg);
+    if (isNonFastForwardError(err)) {
+      runner.emitMessage({
+        type: "git_push_rejected",
+        reason: "non_fast_forward",
+        message: "Force push rejected — remote moved since the last fetch. Try rebasing again.",
+      });
+    } else {
+      const text = errMsg.includes("workflow")
+        ? "Force push failed: your GitHub token needs the `workflow` scope to push GitHub Actions workflow files. Update your token at https://github.com/settings/tokens."
+        : `Force push failed: ${errMsg}`;
+      runner.emitMessage({ type: "github_push_result", success: false, message: text });
+      runner.emitMessage({ type: "log_entry", source: "server", text, timestamp: new Date().toISOString() });
+    }
     return false;
   }
 }
