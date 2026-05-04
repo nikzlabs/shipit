@@ -11,6 +11,7 @@ import { ContextDial } from "./ContextDial.js";
 import { FileAutoComplete } from "./FileAutoComplete.js";
 import { Popover, PopoverAnchor } from "./ui/popover.js";
 import { WithTooltip } from "./ui/tooltip.js";
+import { getSavedDraftMessage, saveDraftMessage } from "../utils/local-storage.js";
 import type { PermissionMode, FileTreeNode, AgentId } from "../../server/shared/types.js";
 import type { UploadItem } from "../hooks/useFileUpload.js";
 import type { AgentOption } from "./AgentPicker.js";
@@ -79,6 +80,35 @@ export function MessageInput({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dragCountRef = useRef(0);
+
+  // Per-session draft persistence: remember what the user has typed when they
+  // switch to a different session, and recover it when they switch back. Keyed
+  // off `focusKey`, which is the session identity from this component's POV
+  // ("new" for the new-session view, or the real session ID otherwise). We
+  // detect focusKey changes during render — same pattern as the focus logic
+  // below — so the swap is synchronous and doesn't flicker the previous text
+  // into view for one frame. Saves on every keystroke as well (via the effect
+  // further down) so the draft also survives reloads, not just session swaps.
+  const draftFocusKeyRef = useRef<string | undefined>(undefined);
+  if (focusKey !== draftFocusKeyRef.current) {
+    // Persist the *previous* session's text under its key before swapping in
+    // the new session's draft. `text` here is still the previous session's
+    // value because state updates from this branch haven't applied yet.
+    if (draftFocusKeyRef.current) {
+      saveDraftMessage(draftFocusKeyRef.current, text);
+    }
+    draftFocusKeyRef.current = focusKey;
+    const loaded = focusKey ? getSavedDraftMessage(focusKey) ?? "" : "";
+    if (loaded !== text) setText(loaded);
+  }
+
+  // Mirror text into localStorage so the draft also survives a tab refresh.
+  // Declared AFTER the prefill effect below in mount-time effect ordering so
+  // a freshly-consumed prefill is what gets persisted (not the empty default).
+  // eslint-disable-next-line no-restricted-syntax -- per-session draft persistence
+  useEffect(() => {
+    if (focusKey) saveDraftMessage(focusKey, text);
+  }, [text, focusKey]);
 
   // Consume prefill text from store (e.g. "Start Session" from docs viewer, "Send to Agent" from services panel)
   // eslint-disable-next-line no-restricted-syntax -- existing usage
