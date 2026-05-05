@@ -194,6 +194,44 @@ describe("MessageInput", () => {
     });
   });
 
+  describe("auto-focus on session change", () => {
+    // Helper: wait two animation frames so the rAF inside the focus block fires.
+    const waitForFocusRaf = async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+    };
+
+    it("focuses the textarea when focusKey changes on desktop", async () => {
+      const { rerender } = render(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-A" />);
+      // Move focus elsewhere so we can observe whether the textarea reclaims it.
+      (document.activeElement as HTMLElement | null)?.blur();
+      document.body.focus();
+      expect(document.activeElement).toBe(document.body);
+
+      rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-B" />);
+      await waitForFocusRaf();
+
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      expect(document.activeElement).toBe(textarea);
+    });
+
+    it("does NOT focus the textarea when focusKey changes on a mobile viewport", async () => {
+      // On mobile, focusing the textarea pops the on-screen keyboard. Switching
+      // sessions shouldn't summon the keyboard — the user can tap to type when
+      // they actually want to.
+      mockMatchMedia(true);
+      const { rerender } = render(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-A" />);
+      (document.activeElement as HTMLElement | null)?.blur();
+      document.body.focus();
+      expect(document.activeElement).toBe(document.body);
+
+      rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-B" />);
+      await waitForFocusRaf();
+
+      expect(document.activeElement).toBe(document.body);
+    });
+  });
+
   describe("per-session draft persistence", () => {
     beforeEach(() => {
       localStorage.clear();

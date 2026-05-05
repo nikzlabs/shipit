@@ -150,13 +150,21 @@ export function MessageInput({
   // so the very first render with a defined focusKey triggers focus — otherwise focus
   // would be deferred until claimSession() resolves and focusKey transitions from
   // "new" to the real session ID, which causes a visible delay on "New Session" clicks.
+  //
+  // Skip on mobile: focusing the textarea pops the on-screen keyboard, which is
+  // intrusive when the user is just navigating between sessions. The user can tap
+  // the input to summon the keyboard when they actually want to type. We still
+  // advance prevFocusKeyRef so a later viewport resize from mobile → desktop
+  // doesn't retroactively fire focus for a session change we already saw.
   const prevFocusKeyRef = useRef<string | undefined>(undefined);
   if (focusKey && focusKey !== prevFocusKeyRef.current) {
     prevFocusKeyRef.current = focusKey;
-    // Schedule focus after paint — safe to call during render since it's a microtask
-    requestAnimationFrame(() => {
-      textareaRef.current?.focus();
-    });
+    if (!isMobile) {
+      // Schedule focus after paint — safe to call during render since it's a microtask
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+      });
+    }
   }
 
   // Guard against iframe focus theft: when the textarea is focused and an iframe
