@@ -189,6 +189,8 @@ Three consequences, all of which need explicit Phase 1 mitigation:
 
 3. **No recursive watch loop.** Outer's watcher only reports; it doesn't write. Inner's writes don't trigger outer's writes. So there's no feedback cycle, just noise (mitigated by #1).
 
+4. **inotify instance exhaustion in the dev compose service.** The dev service runs both `tsx watch` (server) and `vite build --watch` (client) concurrently. Both are chokidar-backed. Chokidar's default inotify mode creates one inotify *instance* per watched source file — with the ShipIt source tree (~300+ TS files plus the client graph), that easily blows past `fs.inotify.max_user_instances` (commonly 128 on Linux hosts), crashing the inner orch with `ENOSPC: System limit for number of file watchers reached`. **Fix:** the dev compose service sets `CHOKIDAR_USEPOLLING=1` and `CHOKIDAR_INTERVAL=1000`, switching both watchers to polling. Polling avoids inotify entirely, sidestepping both `max_user_instances` and `max_user_watches`. The 1s interval is acceptable for the dogfooding loop, and polling is also more reliable on Docker bind-mounts where host→container inotify propagation can be lossy. Bumping the kernel limits would also work but requires host-level sysctl, which isn't portable across the platforms ShipIt runs on.
+
 ### Credential injection — `x-shipit-secrets` plus secrets-dir handling
 
 A previous draft of this plan proposed a new `x-shipit-orchestrator: true` marker. **This was wrong** — `platform-credentials.ts` already supports this exact use case (its docstring names ShipIt-in-ShipIt as the flagship). However, the *mechanism* is more subtle than "env vars in compose":

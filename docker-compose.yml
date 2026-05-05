@@ -60,6 +60,19 @@ services:
       # of the source tree (and don't get auto-committed). `.inner-shipit/`
       # is in .gitignore.
       SHIPIT_STATE_DIR: /workspace/.inner-shipit
+      # Force chokidar (used by both `tsx watch` for the server and
+      # `vite build --watch` for the client) to use polling instead of
+      # inotify. Without this, chokidar creates one inotify instance per
+      # watched source file (~300+ files), which blows past the kernel's
+      # `fs.inotify.max_user_instances` limit (commonly 128 on Linux
+      # hosts) and crashes the dev server with:
+      #   ENOSPC: System limit for number of file watchers reached
+      # Polling avoids inotify entirely; the 1s interval keeps CPU low
+      # while still feeling live. This also tends to be more reliable on
+      # Docker bind-mounts, where inotify events propagating from the
+      # host filesystem can be lossy depending on the host platform.
+      CHOKIDAR_USEPOLLING: "1"
+      CHOKIDAR_INTERVAL: "1000"
     volumes:
       # Required: without this, /workspace inside the dev container is
       # empty. Bind-mounting the outer session's workspace lets the inner
