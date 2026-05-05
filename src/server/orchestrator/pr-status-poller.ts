@@ -23,6 +23,27 @@ const POLL_INTERVAL_MS = 3_000;
 const MAX_AUTO_FIX_ATTEMPTS = 3;
 /** How long after the last client heartbeat before we consider the user idle (ms). */
 const CLIENT_IDLE_TIMEOUT_MS = 30_000;
+/**
+ * Grace window for the "no checks reported but repo runs CI" override.
+ *
+ * When GitHub reports `state: "none"` and we have signals the repo runs CI
+ * (workflow files in the local clone, or checks observed on any other PR in
+ * this repo), we override to `"pending"` to suppress the merge button while
+ * GitHub is still figuring out whether to run anything for this PR.
+ *
+ * That override has to time out, otherwise PRs whose changed paths don't
+ * match any workflow trigger (e.g., docs-only PRs in a repo whose CI is
+ * scoped via `paths:` filters) spin the CI indicator forever and the merge
+ * button never appears. After this window has elapsed without GitHub
+ * registering any check, we trust that no workflows apply, drop the override,
+ * and let the state revert to `"none"` — which the client already treats as
+ * "CI doesn't apply, mergeable."
+ *
+ * 60s is a balance: long enough that a slow GitHub workflow registration
+ * (typically <30s) doesn't get classified as "no CI"; short enough that
+ * the user isn't kept waiting.
+ */
+const NO_CHECKS_GRACE_MS = 60_000;
 
 /** GraphQL query: fetch all open PRs for a repo with CI status. */
 const PR_STATUS_QUERY = `
@@ -313,6 +334,15 @@ export class PrStatusPoller {
    * directory isn't present in the local shared clone.
    */
   private repoHasObservedChecks = new Map<string, boolean>();
+  /**
+   * sessionId → { headSha, observedAt }: when we first observed `state: "none"`
+   * for the current head SHA on this session's PR. Used to time out the
+   * "force pending" override (see `NO_CHECKS_GRACE_MS`). Cleared when a check
+   * is observed (any state other than "none"), when the head SHA changes
+   * (new push — give GitHub fresh time to register workflows), and on
+   * `untrackSession`.
+   */
+  private firstObservedNoChecks = new Map<string, { headSha: string; observedAt: number }>();
 
   /** Timestamp of the last client activity heartbeat. */
   private lastClientActivity = Date.now();
@@ -387,6 +417,7 @@ export class PrStatusPoller {
     this.autoMergeStates.delete(sessionId);
     this.lastPrNodes.delete(sessionId);
     this.pendingCatchUp.delete(sessionId);
+    this.firstObservedNoChecks.delete(sessionId);
 
     if (repoKey) {
       this.maybeStopPolling(repoKey);
@@ -716,6 +747,7 @@ export class PrStatusPoller {
         this.lastPrNodes.set(session.id, prNode);
 
         const summary = parsePrNode(prNode, session.id);
+        const headSha = extractHeadSha(prNode) ?? "";
 
         // If GitHub reports no checks yet but we have any signal the repo
         // runs CI (workflow files in the local clone, or checks observed on
@@ -723,11 +755,29 @@ export class PrStatusPoller {
         // haven't registered yet. Without this override, the client sees
         // state: "none" and unconditionally enables the squash-and-merge
         // button, which is wrong while CI is still spinning up.
-        if (
-          summary.checks.state === "none" &&
-          this.repoRunsCi(repoKey, session.remoteUrl)
-        ) {
-          summary.checks.state = "pending";
+        //
+        // The override is time-boxed: after NO_CHECKS_GRACE_MS without GitHub
+        // registering any check for the current head SHA, we accept that no
+        // workflows apply to this PR (e.g., the changed paths don't match any
+        // workflow's `paths:` filter — common for docs-only PRs) and let the
+        // state fall back to "none", which the client treats as "CI doesn't
+        // apply, mergeable." A new push (new head SHA) resets the timer to
+        // give GitHub a fresh window to register workflows for the new commit.
+        if (summary.checks.state === "none") {
+          if (this.repoRunsCi(repoKey, session.remoteUrl)) {
+            const tracker = this.firstObservedNoChecks.get(session.id);
+            if (tracker?.headSha !== headSha) {
+              this.firstObservedNoChecks.set(session.id, { headSha, observedAt: Date.now() });
+              summary.checks.state = "pending";
+            } else if (Date.now() - tracker.observedAt < NO_CHECKS_GRACE_MS) {
+              summary.checks.state = "pending";
+            }
+            // else: grace expired — leave state as "none" so the merge button appears.
+          }
+        } else {
+          // Any non-"none" state means GitHub registered something — no need
+          // to keep the grace timer running.
+          this.firstObservedNoChecks.delete(session.id);
         }
 
         const prev = this.lastKnown.get(session.id);
