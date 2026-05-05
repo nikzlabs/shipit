@@ -60,7 +60,7 @@ services:
       - .:/workspace        # required — without this, /workspace is empty
     ports:
       - "3000:3000"
-    x-shipit-preview: auto
+    x-shipit-preview: manual  # heavy boot — user starts on demand
     x-shipit-secrets:       # see "Credential injection" hardening note
       - { name: ANTHROPIC_API_KEY,        source: platform:claude_oauth }
       - { name: ANTHROPIC_AUTH_TOKEN,     source: platform:claude_oauth }
@@ -69,7 +69,7 @@ services:
 
 This must be paired with a top-level `compose: docker-compose.yml` field in the ShipIt repo's `shipit.yaml` — without it, `resolveShipitConfig` returns `compose: undefined` and `setupServiceManager` (`app-lifecycle.ts:576`) skips Compose entirely, so the dev service never starts.
 
-The outer orchestrator picks this up via the standard `x-shipit-preview: auto` flow in `service-manager.ts` and `preview-proxy.ts` — no platform changes needed. The inner orchestrator boots, reads `RUNTIME_MODE`, and configures itself for local mode at startup. There is no auto-detect, no `shipit.yaml` field, no `dev:nested` script — only the env var, set explicitly in the compose file that's checked into the repo.
+The outer orchestrator picks this up via the standard `x-shipit-preview` flow in `service-manager.ts` and `preview-proxy.ts` — no platform changes needed. The service is marked `manual` rather than `auto` because the inner orch's boot is heavy (npm install + vite build + a second orch process); paying that cost on every session is wasteful when most sessions don't dogfood the inner UI. Users start it on demand from the preview panel. The inner orchestrator boots, reads `RUNTIME_MODE`, and configures itself for local mode at startup. There is no auto-detect, no `shipit.yaml` field, no `dev:nested` script — only the env var, set explicitly in the compose file that's checked into the repo.
 
 If `RUNTIME_MODE` is unset (production deploys, regular dev runs outside a session), behavior is unchanged.
 
