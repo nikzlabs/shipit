@@ -26,23 +26,20 @@ services:
     # parent dirs). Required because `.inner-shipit/` is in .gitignore
     # and won't exist on a fresh checkout.
     #
-    # The orchestrator serves the React client as static files from
-    # `dist/client/` (see `index.ts:454`). `npm run dev` only boots the
-    # server — it does NOT build the client — so without an explicit
-    # `vite build` step the inner UI 404s on every request. We build
-    # once up front (so the server has something to serve at startup,
-    # since fastifyStatic registers at boot and silently fails if the
-    # directory is missing), then kick off `vite build --watch` in the
-    # background so client edits are picked up live (full reload via
-    # browser refresh — no HMR through the outer preview proxy in this
-    # setup). Then run the server in the foreground.
+    # Dev-mode wiring: Vite's dev server runs on the exposed port 3000
+    # (so the outer preview proxy reaches it directly) and the inner
+    # orchestrator runs on internal port 4000. Vite proxies `/api`,
+    # `/ws`, and `/preview` to the orchestrator using `API_PORT=4000`
+    # (see `vite.config.ts`). This gives real HMR through the outer
+    # preview proxy (which already patches dev-server WS URLs in
+    # `preview-proxy.ts`) — client edits hot-reload instead of
+    # requiring a `vite build` round-trip.
     command: >
       sh -c "
       mkdir -p $${SHIPIT_STATE_DIR:-/workspace/.inner-shipit} &&
       npm install &&
-      npm run build &&
-      (npx vite build --watch >/tmp/vite-watch.log 2>&1 &) &&
-      npm run dev
+      (PORT=4000 npm run dev 2>&1 | sed 's/^/[orch] /' &) &&
+      API_PORT=4000 exec npx vite --host 0.0.0.0 --port 3000
       "
     working_dir: /workspace
     # `init: true` enables a tini-style PID 1 so orphaned agent CLI
@@ -53,7 +50,10 @@ services:
     init: true
     environment:
       RUNTIME_MODE: local
-      PORT: 3000
+      # Note: the orchestrator's PORT (4000) and Vite's port (3000) are set
+      # inline in the `command:` above, not here, because we run two
+      # processes with different ports inside this single service.
+      #
       # Inner-orch's notion of "the workspace the user is editing." This
       # is the bind-mounted source tree below.
       WORKSPACE_DIR: /workspace
