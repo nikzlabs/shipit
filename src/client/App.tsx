@@ -652,6 +652,15 @@ export default function App() {
   // arrives — except for a brand-new-session route, where there's no history to
   // load and the rocket should appear the moment the route mounts.
   const showRocket = messages.length === 0 && !isLoading && (historyLoaded || showNewSessionView);
+  // MessageInput's per-session draft persistence is keyed on focusKey. While the
+  // user is on the new-session view (`/{slug}/new`) we MUST keep this stable as
+  // "new", even after `claimSession()` resolves and `wsSessionId` becomes the
+  // real session ID. Otherwise focusKey flips mid-typing and the draft-swap
+  // logic loads the (empty) draft for the brand-new session, wiping whatever
+  // the user has typed. The graduation to the real session ID happens when the
+  // URL transitions to `/session/{id}` inside handleSend — at that point the
+  // textarea has already been cleared by setText("") so there's nothing to lose.
+  const messageInputFocusKey = showNewSessionView ? "new" : wsSessionId;
 
   // ── Right panel ──
   const rightPanel = (
@@ -734,7 +743,7 @@ export default function App() {
         </div>
       )}
       {!showHomeScreen && !showNewSessionView && queuedMessages.length > 0 && <QueueIndicator queue={queuedMessages} onCancel={(pos) => send({ type: "cancel_queued_message", position: pos })} />}
-      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_agent" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(useSessionStore.getState().sessionId, m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} uploads={uploads} allUploads={sessionUploads} onUploadFiles={(files) => void uploadFiles(files)} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} onModelChange={handleModelChange} modelInfo={modelInfo} contextTokens={contextTokens} hasActiveSession={!showNewSessionView && !!sessionId} sessionCostUsd={currentSessionUsage?.totalCostUsd ?? null} onCostBadgeClick={handleUsageBadgeClick} focusKey={wsSessionId ?? (showNewSessionView ? "new" : undefined)} hasPrCard={hasPrCard} />}
+      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_agent" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(useSessionStore.getState().sessionId, m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} uploads={uploads} allUploads={sessionUploads} onUploadFiles={(files) => void uploadFiles(files)} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} onModelChange={handleModelChange} modelInfo={modelInfo} contextTokens={contextTokens} hasActiveSession={!showNewSessionView && !!sessionId} sessionCostUsd={currentSessionUsage?.totalCostUsd ?? null} onCostBadgeClick={handleUsageBadgeClick} focusKey={messageInputFocusKey} hasPrCard={hasPrCard} />}
     </>
   );
 
