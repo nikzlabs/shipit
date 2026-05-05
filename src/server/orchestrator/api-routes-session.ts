@@ -431,7 +431,7 @@ export async function registerSessionRoutes(
       }
 
       try {
-        return await serializeClaim(url, async () => {
+        const result = await serializeClaim(url, async () => {
           const inFlightWarming = deps.waitForWarmSession?.(url);
           if (inFlightWarming) await inFlightWarming;
 
@@ -552,6 +552,15 @@ export async function registerSessionRoutes(
 
           return { sessionId: appSessionId, sessionDir, fetchDurationMs };
         });
+        // Reset created_at to "now" for the claimed session. Warm-pool warming
+        // inserts the session row before the workspace is cloned, so without
+        // this reset every file in the freshly-cloned workspace would have
+        // mtime > createdAt and the docs viewer's "modified in this session"
+        // group would incorrectly list everything in the repo.
+        if (result?.sessionId) {
+          sessionManager.markStarted(result.sessionId);
+        }
+        return result;
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });

@@ -211,6 +211,42 @@ describe("Integration: warm session lifecycle", () => {
       expect(repoStore.get(REPO_URL)!.warmSessionId).not.toBe(warmSessionId);
     }, 15000);
 
+    it("resets createdAt so workspace files don't appear modified-in-session", async () => {
+      // Regression: warm sessions are inserted into the DB before the workspace
+      // is cloned, so cloned files have mtime > original createdAt. Without a
+      // reset on claim, the docs viewer's "Modified in this session" group
+      // would list every file in the repo immediately after the user creates
+      // a new session. claim-session must update createdAt so that all
+      // workspace files have mtime <= createdAt.
+      await waitFor(
+        () => !!repoStore.get(REPO_URL)?.warmSessionId,
+        10000,
+        "warm session",
+      );
+      const warmSessionId = repoStore.get(REPO_URL)!.warmSessionId!;
+      const warmCreatedAt = sessionManager.get(warmSessionId)!.createdAt;
+
+      // Wait long enough that the post-claim ISO timestamp will differ from
+      // the warming-time one, regardless of millisecond clock granularity.
+      await new Promise((r) => setTimeout(r, 5));
+
+      const encodedUrl = encodeURIComponent(REPO_URL);
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/repos/${encodedUrl}/claim-session`,
+      });
+      expect(res.statusCode).toBe(200);
+
+      const claimedCreatedAt = sessionManager.get(warmSessionId)!.createdAt;
+      expect(claimedCreatedAt > warmCreatedAt).toBe(true);
+
+      // Files cloned during warming must have mtime <= the new createdAt;
+      // otherwise the docs viewer would still flag them as modified.
+      const workspaceDir = sessionManager.get(warmSessionId)!.workspaceDir!;
+      const readmeMtime = fs.statSync(path.join(workspaceDir, "README.md")).mtime.toISOString();
+      expect(readmeMtime <= claimedCreatedAt).toBe(true);
+    }, 15000);
+
     it("triggers re-warming after claim", async () => {
       await waitFor(
         () => !!repoStore.get(REPO_URL)?.warmSessionId,

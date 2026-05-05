@@ -103,6 +103,22 @@ export class SessionManager {
     return this.get(id)!;
   }
 
+  /**
+   * Reset the session's `created_at` to the current time. Called after
+   * workspace setup completes (e.g. clone, refresh) so that filesystem
+   * mtimes captured during setup don't appear as "modified during the
+   * session" — the docs viewer compares `modifiedAt > createdAt` to detect
+   * agent-touched files, and warm-pool warming inserts the session row
+   * before the clone writes files, which would otherwise mark every file
+   * in the workspace as session-modified.
+   */
+  markStarted(id: string): void {
+    const now = new Date().toISOString();
+    this.db.prepare(
+      "UPDATE sessions SET created_at = ?, last_used_at = ? WHERE id = ?",
+    ).run(now, now, id);
+  }
+
   /** Store the agent's conversation ID for a session. */
   setAgentSessionId(id: string, agentSessionId: string): void {
     this.db.prepare("UPDATE sessions SET agent_session_id = ? WHERE id = ?").run(agentSessionId, id);
