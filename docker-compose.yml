@@ -19,7 +19,11 @@ services:
     # service command. Using `npm ci` would be faster but requires an
     # up-to-date package-lock; `npm install` is the safer default for
     # dogfooding (it tolerates lockfile drift across branches).
-    command: sh -c "npm install && npm run dev"
+    # `mkdir -p` ensures SHIPIT_STATE_DIR exists before the inner orch
+    # tries to open its SQLite db there (DatabaseManager doesn't create
+    # parent dirs). Required because `.inner-shipit/` is in .gitignore
+    # and won't exist on a fresh checkout.
+    command: sh -c "mkdir -p $${SHIPIT_STATE_DIR:-/workspace/.inner-shipit} && npm install && npm run dev"
     working_dir: /workspace
     # `init: true` enables a tini-style PID 1 so orphaned agent CLI
     # subprocesses are reaped. In containerized mode the kernel-level
@@ -43,6 +47,23 @@ services:
       # empty. Bind-mounting the outer session's workspace lets the inner
       # orch see (and edit) the live ShipIt source.
       - .:/workspace
+      # Anonymous volume that shadows /workspace/node_modules. Without
+      # this, the outer agent container and this dev container both write
+      # to the same bind-mounted /workspace/node_modules and:
+      #   1. Concurrent tarball extraction races corrupt files (we saw
+      #      `tsx` and `zustand` go missing with TAR_ENTRY_ERROR warnings).
+      #   2. The agent container runs Node 24 while this service is on
+      #      Node 22, so native modules like better-sqlite3 get a prebuilt
+      #      binary for one ABI that fails to load under the other.
+      # An anonymous volume gives the dev container its own node_modules.
+      # Compose preserves it across container restarts (it's only recreated
+      # when the service definition itself changes), so npm install caches.
+      # We use anonymous instead of named because the orchestrator-generated
+      # `.shipit/compose.override.yml` declares its own top-level `volumes:`
+      # block, and compose's multi-file merge ends up dropping the user
+      # file's top-level volume declarations — anonymous volumes don't
+      # need a top-level entry.
+      - /workspace/node_modules
     ports:
       - "3000:3000"
     # Tells the outer orchestrator to surface this service in the preview
