@@ -34,9 +34,10 @@ import type { CredentialStore } from "./credential-store.js";
 import type { SecretStore } from "./secret-store.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
-import type { AgentId, AgentProcess, WsLogEntry } from "../shared/types.js";
+import type { AgentId, AgentProcess, DockerMemoryStats, WsLogEntry } from "../shared/types.js";
 import type { AppDeps, RuntimeMode } from "./app-di.js";
 import { SessionRunner } from "./session-runner.js";
+import { isUnderEvictionPressure } from "./memory-pressure.js";
 
 // ---- Types for lifecycle dependencies ----
 
@@ -343,6 +344,21 @@ export interface IdleEnforcementDeps {
   containerManager: SessionContainerManager | null;
   credentialStore: CredentialStore;
   runnerRegistry: SessionRunnerRegistry;
+  /**
+   * Returns the most recent Docker memory snapshot, or `null` when stats
+   * aren't available yet. When usage crosses the eviction threshold the
+   * enforcer becomes aggressive: bypasses the 60s grace period and drops
+   * effective `maxIdleContainers` to 0 so any session without a viewer or
+   * running agent is reaped immediately. This is the only release valve
+   * when many sessions are concurrently active and the host is running
+   * out of headroom — without it, idle eviction won't fire because every
+   * session is technically "in use."
+   *
+   * Optional: when omitted, the enforcer falls back to the legacy
+   * non-pressure-aware behavior. Tests that don't care about pressure
+   * should leave this off.
+   */
+  getMemoryStats?: () => DockerMemoryStats | null;
 }
 
 /**
@@ -373,11 +389,16 @@ export const IDLE_GRACE_PERIOD_MS = 60_000;
 export function createIdleEnforcer(
   enforceDeps: IdleEnforcementDeps,
 ): () => void {
-  const { containerManager, credentialStore, runnerRegistry } = enforceDeps;
+  const { containerManager, credentialStore, runnerRegistry, getMemoryStats } = enforceDeps;
 
   return () => {
     if (!containerManager) return;
-    const maxIdle = credentialStore.getMaxIdleContainers();
+
+    // When the host is under eviction pressure, ignore the grace period
+    // and drop effective maxIdle to 0. Running agents and attached viewers
+    // are still off-limits — those are real work, not idle slack.
+    const underPressure = getMemoryStats ? isUnderEvictionPressure(getMemoryStats()) : false;
+    const maxIdle = underPressure ? 0 : credentialStore.getMaxIdleContainers();
     const now = Date.now();
     const idleSessionIds: string[] = [];
 
@@ -392,8 +413,14 @@ export function createIdleEnforcer(
       if (runner.running) continue;
       if (runner.viewerCount > 0) continue;
       // Skip runners whose last viewer detach was within the grace period —
-      // a transient disconnect must never lead to disposal.
-      if (runner.lastViewerDetachAt > 0 && now - runner.lastViewerDetachAt < IDLE_GRACE_PERIOD_MS) {
+      // a transient disconnect must never lead to disposal. Under memory
+      // pressure we override this: a closed tab is a closed tab, and the
+      // host needs the bytes back now.
+      if (
+        !underPressure
+        && runner.lastViewerDetachAt > 0
+        && now - runner.lastViewerDetachAt < IDLE_GRACE_PERIOD_MS
+      ) {
         continue;
       }
       idleSessionIds.push(sc.sessionId);
