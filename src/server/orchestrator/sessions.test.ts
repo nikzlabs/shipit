@@ -118,6 +118,26 @@ describe("SessionManager", () => {
     expect(mgr.list()).toHaveLength(1);
   });
 
+  describe("markStarted", () => {
+    it("resets createdAt to the current time", async () => {
+      const mgr = new SessionManager(dbManager);
+      const original = mgr.track("sess-1", "Warm session");
+      // Wait long enough to guarantee a different ISO timestamp.
+      await new Promise((r) => setTimeout(r, 5));
+      mgr.markStarted("sess-1");
+      const updated = mgr.get("sess-1")!;
+      expect(updated.createdAt > original.createdAt).toBe(true);
+      expect(updated.lastUsedAt > original.lastUsedAt).toBe(true);
+    });
+
+    it("is a no-op for unknown ids", () => {
+      const mgr = new SessionManager(dbManager);
+      // Should not throw or insert anything.
+      mgr.markStarted("nonexistent");
+      expect(mgr.list()).toEqual([]);
+    });
+  });
+
   describe("findUngraduatedWarm", () => {
     it("finds a warm session by remote URL", () => {
       const mgr = new SessionManager(dbManager);
