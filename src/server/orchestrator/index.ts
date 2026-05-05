@@ -101,13 +101,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // ---- DI: instantiate all managers ----
   const mgrs = await initializeManagers(deps);
   const {
-    defaultAgentId, workspaceDir, credentialsDir, shouldServeStatic,
+    defaultAgentId, workspaceDir, stateDir, credentialsDir, shouldServeStatic,
     autoPushDebounceMs, sessionsRoot, agentFactory,
     createGitManager, createRepoGit, databaseManager, sessionManager,
     repoStore, chatHistoryManager, usageManager, authManager,
     credentialStore, agentRegistry, githubAuthManager,
     secretStore, reviewStore, generateText,
-    isTestMode,
+    isTestMode, runtimeMode,
   } = mgrs;
 
   const app = Fastify({ logger: false });
@@ -138,15 +138,18 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Container manager (Docker isolation) ----
   const { containerManager, dockerProxyServer } = await setupContainerManager({
-    deps, isTestMode, credentialsDir, sessionManager,
+    deps, isTestMode, credentialsDir, sessionManager, runtimeMode,
   });
 
   // ---- Docker instance for memory stats ----
   const dockerForStats = containerManager ? new Docker() : null;
 
   // ---- Bare repo cache directory ----
-  const getBareCacheDir = createBareCacheDirHelper(workspaceDir);
-  const getDepCacheDir = createDepCacheDirHelper(workspaceDir);
+  // In local mode (dogfooding), `stateDir` lives outside the visible
+  // workspace so the inner orch's repo-cache/dep-cache don't pollute the
+  // outer's source tree. Production keeps stateDir = workspaceDir.
+  const getBareCacheDir = createBareCacheDirHelper(stateDir);
+  const getDepCacheDir = createDepCacheDirHelper(stateDir);
 
   // ---- SSE (Server-Sent Events) ----
   const { sseClients, sseBroadcast } = createSSE();
@@ -155,7 +158,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const { getLogBuffer, clearLogBuffer, broadcastLog } = createLogBuffer();
 
   // ---- Runner factory ----
-  const effectiveRunnerFactory = buildRunnerFactory({ deps, containerManager, credentialsDir });
+  const effectiveRunnerFactory = buildRunnerFactory({ deps, containerManager, credentialsDir, runtimeMode });
 
   // ---- Service manager registry (per-session compose stacks) ----
   const serviceManagers = new Map<string, ServiceManager>();
@@ -207,7 +210,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeWarnings, composeNotConfigured, containerManager,
-    secretStore, platformCredentials,
+    secretStore, platformCredentials, runtimeMode,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
   });
   registryHolder.ref = runnerRegistry;

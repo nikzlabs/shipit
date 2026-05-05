@@ -92,6 +92,10 @@ npm install
 
 The Playwright MCP server is configured and launches its own browser. Use `browser_navigate` to open the ShipIt UI (e.g. `http://127.0.0.1:3000`), then `browser_snapshot` to read page state, `browser_click` to press buttons, `browser_fill_form` to type text, and `browser_take_screenshot` for visual checks.
 
+## Dogfooding ShipIt in ShipIt
+
+When the ShipIt repo is opened in production ShipIt, the outer orchestrator starts the `dev` Compose service from `docker-compose.yml`. That service runs an *inner* orchestrator with `RUNTIME_MODE=local`, which serves the ShipIt UI on port 3000 inside the outer session container. The outer's preview panel renders the inner UI, giving you a chat-driven dev loop on the ShipIt source itself. Local mode skips Docker entirely (no per-inner-session containers, no inner Compose stacks); inner agent processes spawn in-process via `claude-adapter` / `codex-adapter`. See `docs/118-shipit-ui-local/plan.md` for the full design and the list of degraded behaviors (no inner terminal, no inner file watcher, no inner-session preview).
+
 ## Project structure
 
 ```

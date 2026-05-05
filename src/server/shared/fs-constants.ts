@@ -17,6 +17,15 @@ export const WORKSPACE_SKIP_DIRS = new Set([
   ".next",
   ".cache",
   ".vite",
+  // ShipIt-in-ShipIt (feature 118): in local mode the inner orchestrator
+  // creates per-session clones under `sessions/`, writes secret env files
+  // into `.shipit/`, and stores its own SQLite db / caches under
+  // `.inner-shipit/`. Excluding these keeps the outer file watcher from
+  // flooding on inner-agent edits, and prevents inner-orch metadata from
+  // ever appearing in the outer file tree.
+  "sessions",
+  ".shipit",
+  ".inner-shipit",
 ]);
 
 /**
