@@ -52,16 +52,42 @@ function wasCompacted(turns: TurnUsage[]): boolean {
  * the dial is full enough, a hint suggests typing `/compact` in the
  * composer — the slash command travels through the regular send path,
  * so this component never invokes it directly (CLAUDE.md §5).
+ *
+ * The dial is also the canonical surface for *running session cost*. The
+ * trigger button shows the cumulative session cost next to the K-token
+ * reading, and the popover's "Total cost" row opens the full usage modal.
+ * The previous standalone cost pill in the composer toolbar (driven from
+ * the same `currentSessionUsage` the dial now reads) was removed when
+ * these two surfaces were unified.
  */
 export function ContextDial({
   modelInfo,
   turnUsage,
   /** Override the dial's "current context tokens" reading (defaults to the most recent turn's input). */
   contextTokensOverride,
+  /**
+   * Authoritative session-cumulative totals — sourced from `UsageManager`
+   * via `usage_update` / `/history`. Used for the popover's totals row so
+   * it always matches the value `UsageModal` shows (no more $1.31-vs-$5.41
+   * discrepancy between the dial's per-turn sum and the cost pill).
+   */
+  sessionTotalCostUsd,
+  cumulativeInputTokens,
+  cumulativeOutputTokens,
+  /**
+   * Click handler for the popover's "Total cost" row. Wired up to open the
+   * usage modal — the dial is now the entry point that the cost pill used
+   * to be.
+   */
+  onOpenUsageDetails,
 }: {
   modelInfo: ModelInfo | null;
   turnUsage: TurnUsage[];
   contextTokensOverride?: number;
+  sessionTotalCostUsd?: number;
+  cumulativeInputTokens?: number;
+  cumulativeOutputTokens?: number;
+  onOpenUsageDetails?: () => void;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -69,21 +95,24 @@ export function ContextDial({
   const contextTokens = contextTokensOverride ?? lastTurn?.inputTokens ?? 0;
   const compacted = wasCompacted(turnUsage);
 
-  const aggregate = useMemo(() => {
-    let totalCost = 0;
-    let totalInput = 0;
-    let totalOutput = 0;
+  // Cumulative cache totals are still derived from the per-turn series — the
+  // server doesn't currently surface session-level cache totals, and they're
+  // strictly informational (shown only when > 0).
+  const cacheAggregate = useMemo(() => {
     let totalCacheRead = 0;
     let totalCacheCreate = 0;
     for (const t of turnUsage) {
-      totalCost += t.costUsd;
-      totalInput += t.inputTokens;
-      totalOutput += t.outputTokens;
       totalCacheRead += t.cacheRead ?? 0;
       totalCacheCreate += t.cacheCreate ?? 0;
     }
-    return { totalCost, totalInput, totalOutput, totalCacheRead, totalCacheCreate };
+    return { totalCacheRead, totalCacheCreate };
   }, [turnUsage]);
+
+  // Authoritative cost / token totals — fall back to per-turn sums only if
+  // the parent didn't pass them (e.g. tests, or a pre-rehydration render).
+  const totalCost = sessionTotalCostUsd ?? turnUsage.reduce((sum, t) => sum + t.costUsd, 0);
+  const totalInput = cumulativeInputTokens ?? turnUsage.reduce((sum, t) => sum + t.inputTokens, 0);
+  const totalOutput = cumulativeOutputTokens ?? turnUsage.reduce((sum, t) => sum + t.outputTokens, 0);
 
   if (!modelInfo) return null;
 
@@ -112,7 +141,7 @@ export function ContextDial({
         <button
           type="button"
           className="flex items-center gap-1.5 rounded-md px-1.5 py-1 hover:bg-(--color-bg-hover) transition-colors"
-          aria-label={`Context usage: ${Math.round(percentage)}%`}
+          aria-label={`Context usage: ${Math.round(percentage)}%${totalCost > 0 ? `, session cost ${formatCost(totalCost)}` : ""}`}
           data-testid="context-dial"
           data-level={level}
         >
@@ -147,6 +176,14 @@ export function ContextDial({
               data-testid="context-dial-label"
             >
               {formatTokenCount(contextTokens)}
+            </span>
+          )}
+          {totalCost > 0 && (
+            <span
+              className="text-[11px] font-mono text-(--color-accent)"
+              data-testid="context-dial-cost"
+            >
+              {formatCost(totalCost)}
             </span>
           )}
         </button>
@@ -250,31 +287,53 @@ export function ContextDial({
           )}
 
           <div className="border-t border-(--color-border-primary) pt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-(--color-text-secondary)">
-            <span>Total cost</span>
-            <span className="text-(--color-text-primary) text-right font-mono">
-              {formatCost(aggregate.totalCost)}
-            </span>
-            <span>Input tokens</span>
-            <span className="text-(--color-text-primary) text-right font-mono">
-              {formatTokenCount(aggregate.totalInput)}
-            </span>
-            <span>Output tokens</span>
-            <span className="text-(--color-text-primary) text-right font-mono">
-              {formatTokenCount(aggregate.totalOutput)}
-            </span>
-            {aggregate.totalCacheRead > 0 && (
-              <>
-                <span>Cache reads</span>
+            {onOpenUsageDetails ? (
+              <button
+                type="button"
+                onClick={() => {
+                  onOpenUsageDetails();
+                  setOpen(false);
+                }}
+                className="col-span-2 -mx-1 px-1 py-0.5 grid grid-cols-2 gap-x-3 rounded hover:bg-(--color-bg-hover) text-left transition-colors cursor-pointer"
+                data-testid="context-dial-open-usage"
+                aria-label="Open usage details"
+              >
+                <span className="text-(--color-text-secondary) underline decoration-dotted underline-offset-2">
+                  Total cost
+                </span>
                 <span className="text-(--color-text-primary) text-right font-mono">
-                  {formatTokenCount(aggregate.totalCacheRead)}
+                  {formatCost(totalCost)}
+                </span>
+              </button>
+            ) : (
+              <>
+                <span>Total cost</span>
+                <span className="text-(--color-text-primary) text-right font-mono">
+                  {formatCost(totalCost)}
                 </span>
               </>
             )}
-            {aggregate.totalCacheCreate > 0 && (
+            <span>Input tokens</span>
+            <span className="text-(--color-text-primary) text-right font-mono">
+              {formatTokenCount(totalInput)}
+            </span>
+            <span>Output tokens</span>
+            <span className="text-(--color-text-primary) text-right font-mono">
+              {formatTokenCount(totalOutput)}
+            </span>
+            {cacheAggregate.totalCacheRead > 0 && (
+              <>
+                <span>Cache reads</span>
+                <span className="text-(--color-text-primary) text-right font-mono">
+                  {formatTokenCount(cacheAggregate.totalCacheRead)}
+                </span>
+              </>
+            )}
+            {cacheAggregate.totalCacheCreate > 0 && (
               <>
                 <span>Cache writes</span>
                 <span className="text-(--color-text-primary) text-right font-mono">
-                  {formatTokenCount(aggregate.totalCacheCreate)}
+                  {formatTokenCount(cacheAggregate.totalCacheCreate)}
                 </span>
               </>
             )}

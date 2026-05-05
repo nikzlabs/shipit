@@ -178,6 +178,7 @@ describe("Integration: Model context & token tracking", () => {
       lastTurnInputTokens: 5000,
       lastTurnOutputTokens: 1200,
       cumulativeInputTokens: 5000,
+      cumulativeOutputTokens: 1200,
     });
 
     lastClaude.emit("done", 0);

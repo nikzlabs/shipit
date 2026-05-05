@@ -1,9 +1,9 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { UsageModal, type SessionUsage, type UsageStats, type TurnTokenData } from "./UsageModal.js";
+import { UsageModal, type SessionUsage, type UsageStats } from "./UsageModal.js";
 import type { ModelInfo } from "./StatusBar.js";
-import type { SessionInfo } from "../../server/shared/types.js";
+import type { SessionInfo, TurnUsage } from "../../server/shared/types.js";
 
 afterEach(cleanup);
 
@@ -277,9 +277,9 @@ describe("UsageModal", () => {
   });
 
   it("shows per-turn token breakdown", () => {
-    const turnTokens: TurnTokenData[] = [
-      { inputTokens: 5000, outputTokens: 1200, costUsd: 0.05, durationMs: 3000 },
-      { inputTokens: 8000, outputTokens: 2400, costUsd: 0.08, durationMs: 5000 },
+    const turnUsage: TurnUsage[] = [
+      { inputTokens: 5000, outputTokens: 1200, costUsd: 0.05, durationMs: 3000, timestamp: "2026-01-01T00:00:00Z" },
+      { inputTokens: 8000, outputTokens: 2400, costUsd: 0.08, durationMs: 5000, timestamp: "2026-01-01T00:01:00Z" },
     ];
 
     render(
@@ -288,7 +288,7 @@ describe("UsageModal", () => {
         allUsage={mockAllUsage}
         sessions={[]}
         onClose={vi.fn()}
-        turnTokens={turnTokens}
+        turnUsage={turnUsage}
       />
     );
 
@@ -296,9 +296,9 @@ describe("UsageModal", () => {
   });
 
   it("shows token totals section", () => {
-    const turnTokens: TurnTokenData[] = [
-      { inputTokens: 5000, outputTokens: 1200, costUsd: 0.05, durationMs: 3000 },
-      { inputTokens: 8000, outputTokens: 2400, costUsd: 0.08, durationMs: 5000 },
+    const turnUsage: TurnUsage[] = [
+      { inputTokens: 5000, outputTokens: 1200, costUsd: 0.05, durationMs: 3000, timestamp: "2026-01-01T00:00:00Z" },
+      { inputTokens: 8000, outputTokens: 2400, costUsd: 0.08, durationMs: 5000, timestamp: "2026-01-01T00:01:00Z" },
     ];
 
     render(
@@ -307,25 +307,21 @@ describe("UsageModal", () => {
         allUsage={mockAllUsage}
         sessions={[]}
         onClose={vi.fn()}
-        turnTokens={turnTokens}
+        turnUsage={turnUsage}
       />
     );
 
     expect(screen.getByTestId("token-totals-section")).toBeInTheDocument();
   });
 
-  it("handles missing token data gracefully", () => {
-    const turnTokens: TurnTokenData[] = [
-      { costUsd: 0.05, durationMs: 3000 },
-    ];
-
+  it("hides per-turn breakdown when turnUsage is empty", () => {
     render(
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
         sessions={[]}
         onClose={vi.fn()}
-        turnTokens={turnTokens}
+        turnUsage={[]}
       />
     );
 

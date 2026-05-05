@@ -65,6 +65,7 @@ export interface WsUsageUpdate {
   lastTurnInputTokens?: number;
   lastTurnOutputTokens?: number;
   cumulativeInputTokens?: number;
+  cumulativeOutputTokens?: number;
 }
 
 /**

@@ -30,7 +30,8 @@ import { DatabaseManager } from "../../shared/database.js";
 /**
  * Tests for the context-window-display feature (105). Asserts:
  *   1. `turn_usage_update` is emitted at the end of each completed turn.
- *   2. Per-turn usage is persisted in chat history (last group of turn).
+ *   2. The per-turn series is fetchable from `/history` for reload-time
+ *      rehydration of the dial (the canonical source is `usage_turns`).
  *   3. `MODEL_CONTEXT_WINDOWS` resolves correctly for known models.
  *   4. `UsageManager.getPerTurnUsage` returns turn rows with cache + model.
  *   5. A drop in input tokens between turns surfaces (the data the dial
@@ -201,7 +202,7 @@ describe("Integration: Context window usage (105)", () => {
     client.close();
   });
 
-  it("persists turn usage in chat history attached to the last group of the turn", async () => {
+  it("exposes per-turn usage via UsageManager (canonical store) and the /history endpoint", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
@@ -233,26 +234,29 @@ describe("Integration: Context window usage (105)", () => {
     // Wait long enough for finalizeInProgress + auto-commit to complete
     await new Promise((r) => setTimeout(r, 250));
 
-    const chatHistoryManager = new ChatHistoryManager(dbManager);
-    const messages = chatHistoryManager.load(client.sessionId);
-    const assistant = messages.filter((m) => m.role === "assistant");
-    expect(assistant.length).toBeGreaterThan(0);
-    // The last assistant message of the turn carries the usage record.
-    const last = assistant[assistant.length - 1];
-    expect(last.turnUsage).toBeDefined();
-    expect(last.turnUsage).toMatchObject({
-      inputTokens: 3_000,
-      outputTokens: 100,
-      costUsd: 0.02,
-      model: "claude-sonnet-4-20250514",
-    });
-
-    // UsageManager exposes the same turn (per-turn API).
+    // UsageManager (the canonical store) exposes the per-turn record.
     const usageManager = new UsageManager(dbManager);
     const turns = usageManager.getPerTurnUsage(client.sessionId);
     expect(turns).toHaveLength(1);
     expect(turns[0].inputTokens).toBe(3_000);
     expect(turns[0].model).toBe("claude-sonnet-4-20250514");
+
+    // The /history HTTP endpoint surfaces the same per-turn series so the
+    // ContextDial can rehydrate after a session reload without re-running
+    // the agent.
+    const historyRes = await app.inject({ method: "GET", url: `/api/sessions/${client.sessionId}/history` });
+    expect(historyRes.statusCode).toBe(200);
+    const history = historyRes.json() as {
+      turnUsage: { inputTokens: number; outputTokens: number; costUsd: number }[];
+      sessionUsage: { totalCostUsd: number; turnCount: number } | null;
+      cumulativeInputTokens?: number;
+      cumulativeOutputTokens?: number;
+    };
+    expect(history.turnUsage).toHaveLength(1);
+    expect(history.turnUsage[0]).toMatchObject({ inputTokens: 3_000, outputTokens: 100, costUsd: 0.02 });
+    expect(history.sessionUsage).toMatchObject({ totalCostUsd: 0.02, turnCount: 1 });
+    expect(history.cumulativeInputTokens).toBe(3_000);
+    expect(history.cumulativeOutputTokens).toBe(100);
 
     client.close();
   });

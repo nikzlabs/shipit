@@ -256,8 +256,6 @@ export interface DockerMemoryStats {
 
 // ---- Chat history message (shared data type) ----
 
-import type { TurnUsage } from "./usage-types.js";
-
 /**
  * A single nested event emitted by a subagent (Claude's Task tool). The
  * `parentToolUseId` links it back to a tool_use block in the parent message's
@@ -318,8 +316,6 @@ export interface WsChatHistoryMessage {
   parentCommitHash?: string;
   /** Upload paths consumed by this message (for hydration of pending vs sent state). */
   uploadPaths?: string[];
-  /** Per-turn usage for the agent turn that produced this message — only on the last group of a turn. */
-  turnUsage?: TurnUsage;
   /**
    * Events emitted by subagents (Claude's Task tool) under any tool in this
    * message's `toolUse`. The client groups these by `parentToolUseId` and

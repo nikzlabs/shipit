@@ -67,26 +67,6 @@ function ToggleSwitch({ enabled, onToggle, testId }: { enabled: boolean; onToggl
   );
 }
 
-function DisplaySettings() {
-  const showSessionCost = useSettingsStore((s) => s.showSessionCost);
-  const setShowSessionCost = useSettingsStore((s) => s.setShowSessionCost);
-
-  return (
-    <div className="space-y-3">
-      <h3 className="text-sm font-medium text-(--color-text-primary)">Display</h3>
-      <div className="space-y-2">
-        <div className="flex items-center justify-between py-1 gap-4">
-          <div>
-            <span className="text-sm text-(--color-text-primary)">Show session cost</span>
-            <p className="text-xs text-(--color-text-tertiary)">Display the running USD cost of the current session next to the chat input. Hide it if your provider subscription covers usage and you don't pay per call.</p>
-          </div>
-          <ToggleSwitch enabled={showSessionCost} onToggle={setShowSessionCost} testId="settings-show-session-cost" />
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function NotificationSettings() {
   const notifyOnFinish = useSettingsStore((s) => s.notifyOnFinish);
   const soundOnFinish = useSettingsStore((s) => s.soundOnFinish);
@@ -892,10 +872,6 @@ export function Settings({
 
           <TabsContent value="advanced">
             <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
-              <DisplaySettings />
-
-              <div className="border-t border-(--color-border-secondary)" />
-
               <NotificationSettings />
 
               <div className="border-t border-(--color-border-secondary)" />

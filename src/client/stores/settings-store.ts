@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { PermissionMode, FileContextRef } from "../../server/shared/types.js";
-import { getSavedNotifyOnFinish, saveNotifyOnFinish, getSavedSoundOnFinish, saveSoundOnFinish, getSavedShowSessionCost, saveShowSessionCost } from "../utils/local-storage.js";
+import { getSavedNotifyOnFinish, saveNotifyOnFinish, getSavedSoundOnFinish, saveSoundOnFinish } from "../utils/local-storage.js";
 
 interface SettingsState {
   hasSystemPrompt: boolean;
@@ -26,12 +26,6 @@ interface SettingsState {
   notifyOnFinish: boolean;
   soundOnFinish: boolean;
   autoCreatePr: boolean;
-  /**
-   * When true, the per-session cost badge is rendered in the chat input toolbar.
-   * Persisted to localStorage so subscription users who don't pay per-call can
-   * keep it hidden permanently. Defaults to true.
-   */
-  showSessionCost: boolean;
 
   setHasSystemPrompt: (has: boolean) => void;
   setSystemPromptContent: (content: string) => void;
@@ -41,7 +35,6 @@ interface SettingsState {
   setNotifyOnFinish: (enabled: boolean) => void;
   setSoundOnFinish: (enabled: boolean) => void;
   setAutoCreatePr: (enabled: boolean) => void;
-  setShowSessionCost: (enabled: boolean) => void;
   /**
    * Update the permission mode. When `sessionId` is provided, the change is
    * scoped to that session only. When `sessionId` is undefined (e.g. on the
@@ -83,7 +76,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   notifyOnFinish: getSavedNotifyOnFinish(),
   soundOnFinish: getSavedSoundOnFinish(),
   autoCreatePr: false,
-  showSessionCost: getSavedShowSessionCost(),
 
   setHasSystemPrompt: (has) => set({ hasSystemPrompt: has }),
 
@@ -106,11 +98,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 
   setAutoCreatePr: (enabled) => set({ autoCreatePr: enabled }),
-
-  setShowSessionCost: (enabled) => {
-    saveShowSessionCost(enabled);
-    set({ showSessionCost: enabled });
-  },
 
   setPermissionMode: (sessionId, mode) => {
     if (sessionId) {
