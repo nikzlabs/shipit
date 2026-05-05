@@ -23,7 +23,25 @@ services:
     # tries to open its SQLite db there (DatabaseManager doesn't create
     # parent dirs). Required because `.inner-shipit/` is in .gitignore
     # and won't exist on a fresh checkout.
-    command: sh -c "mkdir -p $${SHIPIT_STATE_DIR:-/workspace/.inner-shipit} && npm install && npm run dev"
+    #
+    # The orchestrator serves the React client as static files from
+    # `dist/client/` (see `index.ts:454`). `npm run dev` only boots the
+    # server — it does NOT build the client — so without an explicit
+    # `vite build` step the inner UI 404s on every request. We build
+    # once up front (so the server has something to serve at startup,
+    # since fastifyStatic registers at boot and silently fails if the
+    # directory is missing), then kick off `vite build --watch` in the
+    # background so client edits are picked up live (full reload via
+    # browser refresh — no HMR through the outer preview proxy in this
+    # setup). Then run the server in the foreground.
+    command: >
+      sh -c "
+      mkdir -p $${SHIPIT_STATE_DIR:-/workspace/.inner-shipit} &&
+      npm install &&
+      npm run build &&
+      (npx vite build --watch >/tmp/vite-watch.log 2>&1 &) &&
+      npm run dev
+      "
     working_dir: /workspace
     # `init: true` enables a tini-style PID 1 so orphaned agent CLI
     # subprocesses are reaped. In containerized mode the kernel-level
