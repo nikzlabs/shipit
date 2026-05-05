@@ -50,6 +50,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private sseReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private sseReconnectAttempts = 0;
   private static readonly MAX_RECONNECT_DELAY_MS = 10_000;
+  /**
+   * Idle timeout for the SSE stream. The worker sends a keepalive
+   * comment every 15s (`session-worker.ts`); we treat ≥3 missed
+   * keepalives (45s) as a silently-dead connection and force a
+   * reconnect. Without this, half-open TCP sockets (NAT idle drops,
+   * frozen worker processes) appear "connected" indefinitely and the
+   * agent / terminal / preview surfaces freeze with no recovery.
+   */
+  private static readonly SSE_IDLE_TIMEOUT_MS = 45_000;
   private _sseConnected: Promise<void> | null = null;
   private _resolveSseConnected: (() => void) | null = null;
 
@@ -737,6 +746,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
             this.emitMessage({ type: "terminal_output", data: `\x1bc${  buffered}` });
           }
         }
+      },
+      {
+        idleTimeoutMs: ContainerSessionRunner.SSE_IDLE_TIMEOUT_MS,
+        // Advance the liveness gauge on every byte from the worker,
+        // including keepalive comments. `handleSSEEvent` updates this
+        // too; keeping both write paths means the gauge reflects
+        // connection health (not just "agent emitted something").
+        onActivity: () => { this._lastSseEventAt = Date.now(); },
       },
     );
   }

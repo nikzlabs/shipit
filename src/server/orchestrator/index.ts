@@ -5,8 +5,9 @@ import fastifyStatic from "@fastify/static";
 import path from "node:path";
 import fs from "node:fs/promises";
 import Docker from "dockerode";
-import type { AgentId } from "../shared/types.js";
+import type { AgentId, DockerMemoryStats } from "../shared/types.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry } from "../shared/types.js";
+import { isUnderEvictionPressure } from "./memory-pressure.js";
 import { getErrorMessage } from "./validation.js";
 import { getGitIdentity } from "./git-config.js";
 import { pushToOrigin } from "./git-utils.js";
@@ -167,13 +168,26 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   /** Sessions where compose is not configured in shipit.yaml. */
   const composeNotConfigured = new Set<string>();
 
+  // ---- Latest Docker memory stats (memory pressure cache) ----
+  // The periodic stats poller below writes here on every successful read.
+  // The idle enforcer reads from here to decide whether to switch into
+  // pressure-aware mode (bypass grace period, drop effective maxIdle to 0).
+  // A simple holder is enough — we only need the most recent reading and
+  // it's overwritten in place every 10s.
+  const latestMemoryStats: { value: DockerMemoryStats | null } = { value: null };
+
   // ---- Session runner registry ----
   // Idle enforcement uses a lazy reference to `runnerRegistry` — the callback
   // only fires when a runner goes idle (always after initialization).
   const registryHolder: { ref: SessionRunnerRegistry | null } = { ref: null };
   const enforceIdleContainerLimit = () => {
     if (registryHolder.ref) {
-      createIdleEnforcer({ containerManager, credentialStore, runnerRegistry: registryHolder.ref })();
+      createIdleEnforcer({
+        containerManager,
+        credentialStore,
+        runnerRegistry: registryHolder.ref,
+        getMemoryStats: () => latestMemoryStats.value,
+      })();
     }
   };
 
@@ -329,10 +343,27 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   });
 
   // ---- Docker memory stats broadcast (every 10s) ----
+  // Also caches the latest reading for the pressure-aware idle enforcer
+  // and triggers an immediate eviction pass when usage crosses the
+  // eviction threshold. Without the immediate trigger, eviction would
+  // wait for the next 30s idle-enforcement tick — long enough for the
+  // host to OOM-kill containers underneath us.
   const memoryStatsInterval = dockerForStats ? setInterval(() => {
     void (async () => {
       const stats = await readDockerMemoryStats(dockerForStats);
-      if (stats) sseBroadcast("docker_memory", stats);
+      if (!stats) return;
+      const wasUnderPressure = isUnderEvictionPressure(latestMemoryStats.value);
+      latestMemoryStats.value = stats;
+      sseBroadcast("docker_memory", stats);
+      const nowUnderPressure = isUnderEvictionPressure(stats);
+      if (nowUnderPressure && !wasUnderPressure) {
+        // Edge-triggered: only fire once per pressure crossing so we don't
+        // burn cycles on every poll while pressure persists. The periodic
+        // 30s enforcer continues to run with pressure-aware semantics for
+        // the duration.
+        try { enforceIdleContainerLimit(); }
+        catch (err) { console.error("[memory-pressure] immediate eviction failed:", err); }
+      }
     })();
   }, 10_000) : null;
 

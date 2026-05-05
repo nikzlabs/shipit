@@ -492,6 +492,62 @@ describe("SessionContainerManager", () => {
       // Should not throw when stopping again
       manager.stopHealthMonitor();
     });
+
+    it("auto-restarts the Docker event stream on error so OOM detection survives daemon hiccups", async () => {
+      vi.useFakeTimers();
+      try {
+        await manager.create(buildConfig());
+        await manager.startHealthMonitor();
+        expect(mockDocker.getEvents).toHaveBeenCalledTimes(1);
+
+        // Simulate the Docker event stream dropping (daemon restart, socket
+        // EAGAIN, etc.). Without auto-restart the orchestrator stops seeing
+        // `container_exited` events forever.
+        mockDocker._eventEmitter.emit("error", new Error("daemon went away"));
+
+        // Restart is debounced 5s; advance through it.
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        expect(mockDocker.getEvents).toHaveBeenCalledTimes(2);
+
+        // Subsequent `die` events on the same emitter (mock returns the same
+        // emitter from getEvents) should now fire `container_exited` again.
+        const exited = vi.fn();
+        manager.on("container_exited", exited);
+        mockDocker._eventEmitter.emit("data", Buffer.from(JSON.stringify({
+          Action: "die",
+          Actor: {
+            Attributes: {
+              [CONTAINER_SESSION_ID_LABEL]: "test-session-1",
+              exitCode: "137",
+            },
+          },
+        })));
+        expect(exited).toHaveBeenCalledWith("test-session-1", 137, undefined);
+      } finally {
+        manager.stopHealthMonitor();
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not restart after explicit stopHealthMonitor", async () => {
+      vi.useFakeTimers();
+      try {
+        await manager.startHealthMonitor();
+        expect(mockDocker.getEvents).toHaveBeenCalledTimes(1);
+
+        manager.stopHealthMonitor();
+
+        // Even if a stale "error" sneaks in after stop (e.g. emitted between
+        // destroy() and listener removal), no restart should be scheduled.
+        mockDocker._eventEmitter.emit("error", new Error("late error"));
+        await vi.advanceTimersByTimeAsync(10_000);
+
+        expect(mockDocker.getEvents).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   // --- dispose ---

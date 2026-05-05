@@ -12,6 +12,7 @@ import type { WsStatus } from "./hooks/useWebSocket.js";
 import { LIGHT_THEMES, type Theme } from "./hooks/useTheme.js";
 import type { SessionInfo, RepoInfo, DockerMemoryStats } from "../server/shared/types.js";
 import { DockerMemoryBadge } from "./components/DockerMemoryBadge.js";
+import { MemoryPressureBanner } from "./components/MemoryPressureBanner.js";
 
 interface AppLayoutProps {
   // Header
@@ -109,6 +110,7 @@ export function AppLayout({
 }: AppLayoutProps) {
   return (
     <>
+      <MemoryPressureBanner stats={dockerMemory} />
       <header className="relative flex items-center justify-between px-3 sm:px-6 py-2 sm:py-3 border-b border-(--color-border-primary)">
         <div className="flex items-center gap-2 sm:gap-4 min-w-0">
           {isMobile && (

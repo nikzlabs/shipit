@@ -61,6 +61,11 @@ Fixes:
 - [ ] Client banner that surfaces the unresponsive state and reuses the Restart action from B.
 - [ ] Telemetry / logging for false-positive rate before promoting the banner from "advisory" to "loud."
 
+> Related work: feature 120 (container resilience) closes the silent-SSE-death
+> path that was the most common cause of "agent feels detached." With 120 in
+> place, C's job narrows to genuinely-wedged worker processes (Fastify
+> deadlock, GC stall) that don't manifest as SSE staleness.
+
 ## Quality
 
 - [x] Lint passes (`npm run lint`).

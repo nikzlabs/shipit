@@ -32,6 +32,7 @@ import {
 import {
   startHealthMonitor,
   stopHealthMonitor,
+  createHealthMonitorState,
   type HealthDeps,
   type HealthMonitorState,
 } from "./container-health.js";
@@ -206,7 +207,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private dockerProxyHost?: string;
   private dockerProxyPort?: number;
   private standbySessionIds = new Set<string>();
-  private healthMonitorState: HealthMonitorState = { eventStream: null };
+  private healthMonitorState: HealthMonitorState = createHealthMonitorState();
   private _disposed = false;
   /**
    * Per-session record of the most recent container creation failure.
