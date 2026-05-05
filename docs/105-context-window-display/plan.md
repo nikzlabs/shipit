@@ -51,10 +51,10 @@ The dial re-targets the new model's window immediately. Historic usage is comput
 
 ## Server pieces
 
-- Extend `MessageGroup` with `usage?: { inputTokens, outputTokens, cacheRead, cacheCreate, costUsd, model }`.
-- `usage.ts`: add `getPerTurnUsage(sessionId): TurnUsage[]`.
-- `chat-history.ts`: include usage in stored groups.
+- `usage.ts`: `getPerTurnUsage(sessionId): TurnUsage[]` — canonical per-turn store, sourced from the `usage_turns` table.
+- `usage.ts`: `getSessionTokenTotals` returns cumulative input *and* output. The `usage_update` WS message includes both.
 - New WS server message `turn_usage_update` emitted at end of each turn, so multiple viewers update live.
+- `GET /api/sessions/:id/history` returns `{ turnUsage, sessionUsage, cumulativeInputTokens, cumulativeOutputTokens }` so the dial rehydrates from the canonical store on session attach (not from per-message embedded `turnUsage`, which used to live on `MessageGroup` but was an inconsistent secondary source — see "Cost-display unification" below).
 
 ## Client pieces
 
@@ -96,6 +96,20 @@ Component test for `ContextDial.tsx`: dial color transitions at 70/90% threshold
 | `src/client/components/ContextDial.tsx` | New component |
 | `src/client/components/MessageInput.tsx` | Mount the dial |
 | `src/client/stores/session-store.ts` | `turnUsage` slice |
+
+## Cost-display unification
+
+The original design used two cost surfaces in parallel:
+
+1. A **session-cost pill** in the composer toolbar driven from `currentSessionUsage.totalCostUsd` (= `UsageManager.getSessionUsage()` → `usage_update` WS message). Authoritative.
+2. The dial popover's **"Total cost" row**, computed by summing `costUsd` across whatever `turnUsage` entries the client had observed in this WS connection. Often **less** than the pill because it didn't see turns from before the connection or from outside chat-history.
+
+This shipped a visible $1.31 vs $5.41-style discrepancy. The fix collapses the two into a single surface on the dial:
+
+- The dial's trigger button shows the running session cost next to the K-token reading (`[icon] [K-tokens] [$cost]`).
+- The popover's "Total cost" row reads from `currentSessionUsage` (authoritative) and is wired to open the existing `UsageModal`.
+- The standalone cost pill, the `showSessionCost` setting, and its localStorage key were removed.
+- `turnUsage` rehydration moved from "attach to the last message group of each turn in chat history" to "fetch from `/api/sessions/:id/history` (sourced from `usage_turns`)". `PersistedMessage.turnUsage` and `WsChatHistoryMessage.turnUsage` are gone; the `messages.turn_usage` SQLite column stays (read-only) for back-compat.
 
 ## Future extensions
 

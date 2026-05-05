@@ -44,6 +44,11 @@ import { AllSessionsDialog } from "./components/AllSessionsDialog.js";
 import { NewRepoDialog } from "./components/NewRepoDialog.js";
 import { UsageModal } from "./components/UsageModal.js";
 import type { TurnDiffData } from "./components/DiffPanel.js";
+import type { TurnUsage } from "../server/shared/types.js";
+
+/** Stable empty fallback so the zustand selector never returns a fresh array. */
+const EMPTY_TURN_USAGE: TurnUsage[] = [];
+
 // eslint-disable-next-line no-restricted-syntax -- lazy() named-export pattern
 const DiffPanel = lazy(() => import("./components/DiffPanel.js").then(m => ({ default: m.DiffPanel })));
 import { PrLifecycleCard } from "./components/PrLifecycleCard.js";
@@ -97,6 +102,12 @@ export default function App() {
   const authUrl = useSessionStore((s) => s.authUrl);
   const queuedMessages = useSessionStore((s) => s.queuedMessages);
   const historyLoaded = useSessionStore((s) => s.historyLoaded);
+  // Per-turn usage for the active session — feeds the UsageModal's per-turn
+  // breakdown. Sourced from `usage_turns` via `/history` so reload-time data
+  // is complete (not just turns observed during the current WS connection).
+  const turnUsageForActiveSession = useSessionStore((s) =>
+    sessionId ? s.turnUsage[sessionId] ?? EMPTY_TURN_USAGE : EMPTY_TURN_USAGE,
+  );
 
   const {
     uploads, uploadFiles, removeUpload, retryUpload,
@@ -158,7 +169,6 @@ export default function App() {
   const allUsageStats = useUiStore((s) => s.allUsageStats);
   const modelInfo = useUiStore((s) => s.modelInfo);
   const contextTokens = useUiStore((s) => s.contextTokens);
-  const turnTokens = useUiStore((s) => s.turnTokens);
   const settingsOpen = useUiStore((s) => s.settingsOpen);
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
   const mobileSidebarOpen = useUiStore((s) => s.mobileSidebarOpen);
@@ -743,7 +753,7 @@ export default function App() {
         </div>
       )}
       {!showHomeScreen && !showNewSessionView && queuedMessages.length > 0 && <QueueIndicator queue={queuedMessages} onCancel={(pos) => send({ type: "cancel_queued_message", position: pos })} />}
-      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_agent" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(useSessionStore.getState().sessionId, m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} uploads={uploads} allUploads={sessionUploads} onUploadFiles={(files) => void uploadFiles(files)} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} onModelChange={handleModelChange} modelInfo={modelInfo} contextTokens={contextTokens} hasActiveSession={!showNewSessionView && !!sessionId} sessionCostUsd={currentSessionUsage?.totalCostUsd ?? null} onCostBadgeClick={handleUsageBadgeClick} focusKey={messageInputFocusKey} hasPrCard={hasPrCard} />}
+      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_agent" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(useSessionStore.getState().sessionId, m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} uploads={uploads} allUploads={sessionUploads} onUploadFiles={(files) => void uploadFiles(files)} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} onModelChange={handleModelChange} modelInfo={modelInfo} contextTokens={contextTokens} hasActiveSession={!showNewSessionView && !!sessionId} onOpenUsageDetails={handleUsageBadgeClick} focusKey={messageInputFocusKey} hasPrCard={hasPrCard} />}
     </>
   );
 
@@ -818,7 +828,7 @@ export default function App() {
           onClose={() => { useUiStore.getState().setSettingsOpen(false); useUiStore.getState().setSettingsTab(undefined); }}
         />
       )}
-      {showUsageModal && <UsageModal currentSessionUsage={currentSessionUsage} allUsage={allUsageStats} sessions={sessions} onClose={() => useUiStore.getState().setShowUsageModal(false)} modelInfo={modelInfo} contextTokens={contextTokens} turnTokens={turnTokens} />}
+      {showUsageModal && <UsageModal currentSessionUsage={currentSessionUsage} allUsage={allUsageStats} sessions={sessions} onClose={() => useUiStore.getState().setShowUsageModal(false)} modelInfo={modelInfo} contextTokens={contextTokens} turnUsage={turnUsageForActiveSession} />}
       {diffDialogOpen && turnDiff && (
         <Dialog open onOpenChange={(isOpen) => { if (!isOpen) useGitStore.getState().closeDiffDialog(); }}>
           <DialogContent className="w-[90vw] h-[85vh] max-h-[85vh]! overflow-hidden! flex flex-col" aria-label="Diff view">

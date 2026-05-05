@@ -4,7 +4,6 @@ import type { AgentOption } from "../components/AgentPicker.js";
 import type {
   SessionUsage,
   UsageStats,
-  TurnTokenData,
 } from "../components/UsageModal.js";
 import type { ModelInfo } from "../components/StatusBar.js";
 import type { ToastData } from "../components/Toast.js";
@@ -47,11 +46,29 @@ interface UiState {
   agentList: AgentOption[];
   activeAgentId: AgentId;
   showUsageModal: boolean;
+  /**
+   * Authoritative session-cumulative usage for the active session: cost,
+   * duration, turn count. Mirrors `UsageManager.getSessionUsage()` on the
+   * server. Driven by `usage_update` (live) and seeded from the `/history`
+   * HTTP response on session attach.
+   */
   currentSessionUsage: SessionUsage | null;
   allUsageStats: UsageStats | null;
   modelInfo: ModelInfo | null;
+  /**
+   * Last-turn input tokens (= the current context size in the model's
+   * prompt window). Updated on each `turn_usage_update` and seeded from
+   * `/history`'s last `turnUsage` entry on session reload.
+   */
   contextTokens: number;
-  turnTokens: TurnTokenData[];
+  /**
+   * Cumulative input tokens across every turn in the session. Used for the
+   * popover's "Input tokens" total — distinct from `contextTokens` which is
+   * the most recent turn's input only.
+   */
+  cumulativeInputTokens: number;
+  /** Cumulative output tokens across every turn in the session. */
+  cumulativeOutputTokens: number;
   settingsOpen: boolean;
   settingsTab: SettingsTab;
   sidebarCollapsed: boolean;
@@ -72,10 +89,7 @@ interface UiState {
   setAllUsageStats: (stats: UsageStats | null) => void;
   setModelInfo: (info: ModelInfo | null) => void;
   setContextTokens: (tokens: number) => void;
-  setTurnTokens: (
-    tokens: TurnTokenData[] | ((prev: TurnTokenData[]) => TurnTokenData[]),
-  ) => void;
-  appendTurnToken: (token: TurnTokenData) => void;
+  setCumulativeTokens: (input: number, output: number) => void;
   setSettingsOpen: (open: boolean) => void;
   setSettingsTab: (tab: SettingsTab) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -101,7 +115,8 @@ const initialState = {
   allUsageStats: null as UsageStats | null,
   modelInfo: null as ModelInfo | null,
   contextTokens: 0,
-  turnTokens: [] as TurnTokenData[],
+  cumulativeInputTokens: 0,
+  cumulativeOutputTokens: 0,
   settingsOpen: false,
   settingsTab: undefined as SettingsTab,
   sidebarCollapsed: getSavedSidebarCollapsed(),
@@ -111,7 +126,7 @@ const initialState = {
   dockerMemory: null as DockerMemoryStats | null,
 };
 
-export const useUiStore = create<UiState>((set, get) => ({
+export const useUiStore = create<UiState>((set) => ({
   ...initialState,
 
   setRightTab: (rightTab) => {
@@ -143,16 +158,8 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   setContextTokens: (contextTokens) => set({ contextTokens }),
 
-  setTurnTokens: (tokens) => {
-    if (typeof tokens === "function") {
-      set({ turnTokens: tokens(get().turnTokens) });
-    } else {
-      set({ turnTokens: tokens });
-    }
-  },
-
-  appendTurnToken: (token) =>
-    set((state) => ({ turnTokens: [...state.turnTokens, token] })),
+  setCumulativeTokens: (cumulativeInputTokens, cumulativeOutputTokens) =>
+    set({ cumulativeInputTokens, cumulativeOutputTokens }),
 
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
 
@@ -178,7 +185,8 @@ export const useUiStore = create<UiState>((set, get) => ({
       allUsageStats: null,
       modelInfo: null,
       contextTokens: 0,
-      turnTokens: [],
+      cumulativeInputTokens: 0,
+      cumulativeOutputTokens: 0,
       // rightTab intentionally preserved across session switches (persisted to localStorage)
     }),
 

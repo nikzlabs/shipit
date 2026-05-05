@@ -1,6 +1,6 @@
 import type { ChatMessage } from "../components/MessageList.js";
 import type { GitCommit } from "../components/GitHistory.js";
-import type { SessionInfo, RepoInfo, FileTreeNode } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, FileTreeNode, TurnUsage, SessionUsage } from "../../server/shared/types.js";
 import type { AgentOption } from "../components/AgentPicker.js";
 import type { TemplateInfo } from "../components/TemplateSelector.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -35,6 +35,16 @@ interface HistoryResponse {
   commits: GitCommit[];
   fileTree: FileTreeNode[];
   agentRunning?: boolean;
+  /**
+   * Per-turn usage series for this session — sourced from `usage_turns` so
+   * the ContextDial popover sees a complete history (not just turns observed
+   * during the current WS connection).
+   */
+  turnUsage?: TurnUsage[];
+  /** Cumulative session totals — seeds the cost surface on reload. */
+  sessionUsage?: SessionUsage | null;
+  cumulativeInputTokens?: number;
+  cumulativeOutputTokens?: number;
 }
 
 interface BootstrapResponse {
@@ -76,6 +86,26 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   session.setHistoryLoaded(true);
   useGitStore.getState().setCommits(data.commits);
   useFileStore.getState().setTree(data.fileTree);
+
+  // Seed cost surfaces from the authoritative usage store on reload, so the
+  // ContextDial doesn't have to wait for a fresh `usage_update` to know what
+  // the session has cost so far.
+  const ui = useUiStore.getState();
+  if (data.turnUsage) {
+    session.setTurnUsageForSession(sessionId, data.turnUsage);
+    if (data.turnUsage.length > 0) {
+      ui.setContextTokens(data.turnUsage[data.turnUsage.length - 1].inputTokens);
+    }
+  }
+  if (data.sessionUsage) {
+    ui.setCurrentSessionUsage(data.sessionUsage);
+  } else {
+    ui.setCurrentSessionUsage(null);
+  }
+  ui.setCumulativeTokens(
+    data.cumulativeInputTokens ?? 0,
+    data.cumulativeOutputTokens ?? 0,
+  );
 
   // Fetch preview status via HTTP — reliable fallback in case the WS
   // preview_status message is lost during the initial connection burst.

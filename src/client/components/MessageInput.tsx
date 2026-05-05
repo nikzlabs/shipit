@@ -1,7 +1,7 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: consume prefill text from external store on mount
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useSessionStore } from "../stores/session-store.js";
-import { useSettingsStore } from "../stores/settings-store.js";
+import { useUiStore } from "../stores/ui-store.js";
 import { useIsMobile } from "../hooks/useMediaQuery.js";
 import { PlusIcon, StopIcon, ArrowUpIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
@@ -42,8 +42,7 @@ export function MessageInput({
   modelInfo,
   contextTokens = 0,
   hasActiveSession = false,
-  sessionCostUsd = null,
-  onCostBadgeClick,
+  onOpenUsageDetails,
   focusKey,
   hasPrCard = false,
 }: {
@@ -71,19 +70,16 @@ export function MessageInput({
   contextTokens?: number;
   hasActiveSession?: boolean;
   /**
-   * Total session cost in USD. Rendered as a clickable badge in the toolbar
-   * when > 0 and the user hasn't disabled the badge in settings. `null` while
-   * the first usage_update for the session is pending.
+   * Click handler for the cost / usage entry point. The standalone cost pill
+   * was removed when the cost surface was merged into the context dial — the
+   * dial's popover now wires this to its "Total cost" row.
    */
-  sessionCostUsd?: number | null;
-  /** Click handler for the cost badge — typically opens the usage modal. */
-  onCostBadgeClick?: () => void;
+  onOpenUsageDetails?: () => void;
   /** Changed value triggers textarea focus (e.g. session ID or route change). */
   focusKey?: string;
   /** When true, only round bottom corners (PR card provides the top). */
   hasPrCard?: boolean;
 }) {
-  const showSessionCost = useSettingsStore((s) => s.showSessionCost);
   const isMobile = useIsMobile();
   const [text, setText] = useState("");
   const [isDragging, setIsDragging] = useState(false);
@@ -430,25 +426,16 @@ export function MessageInput({
             {/* Spacer */}
             <div className="flex-1" />
 
-            {/* Session cost badge — only when enabled in settings and we have a non-zero cost */}
-            {showSessionCost && sessionCostUsd !== null && sessionCostUsd > 0 && (
-              <WithTooltip label="View usage details">
-              <button
-                onClick={onCostBadgeClick}
-                className="inline-flex items-center text-xs px-2 py-0.5 mr-1 rounded-full bg-(--color-accent-subtle) text-(--color-accent) hover:bg-(--color-accent) hover:text-(--color-accent-text) transition-colors cursor-pointer"
-                aria-label="Session cost"
-                data-testid="session-cost-badge"
-              >
-                {sessionCostUsd < 0.01 ? `$${sessionCostUsd.toFixed(3)}` : `$${sessionCostUsd.toFixed(2)}`}
-              </button>
-              </WithTooltip>
-            )}
-
-            {/* Context dial — per-turn breakdown popover (105) */}
+            {/* Context dial — per-turn breakdown popover (105). The dial is now
+             * also the cost surface: its trigger shows running session cost
+             * and its popover row opens the usage modal. The standalone cost
+             * pill was removed to eliminate a stale-vs-authoritative
+             * discrepancy between the two. */}
             {(modelInfo ?? contextTokens > 0) && (
               <ContextDialMount
                 modelInfo={modelInfo ?? null}
                 contextTokensFallback={contextTokens}
+                onOpenUsageDetails={onOpenUsageDetails}
               />
             )}
 
@@ -518,9 +505,11 @@ const EMPTY_TURN_USAGE: never[] = [];
 function ContextDialMount({
   modelInfo,
   contextTokensFallback,
+  onOpenUsageDetails,
 }: {
   modelInfo: ModelInfo | null;
   contextTokensFallback: number;
+  onOpenUsageDetails?: () => void;
 }) {
   // Two separate selector subscriptions, each returning a stable reference,
   // so React's `useSyncExternalStore` snapshot stays cached across renders.
@@ -529,11 +518,20 @@ function ContextDialMount({
   const turnUsage = useSessionStore((s) =>
     sessionId ? s.turnUsage[sessionId] ?? EMPTY_TURN_USAGE : EMPTY_TURN_USAGE,
   );
+  // Authoritative session totals so the popover's "Total cost" row matches
+  // the value shown in `UsageModal` rather than summing live-only turns.
+  const sessionTotalCostUsd = useUiStore((s) => s.currentSessionUsage?.totalCostUsd);
+  const cumulativeInputTokens = useUiStore((s) => s.cumulativeInputTokens);
+  const cumulativeOutputTokens = useUiStore((s) => s.cumulativeOutputTokens);
   return (
     <ContextDial
       modelInfo={modelInfo}
       turnUsage={turnUsage}
       contextTokensOverride={turnUsage.length > 0 ? undefined : contextTokensFallback}
+      sessionTotalCostUsd={sessionTotalCostUsd ?? undefined}
+      cumulativeInputTokens={cumulativeInputTokens}
+      cumulativeOutputTokens={cumulativeOutputTokens}
+      onOpenUsageDetails={onOpenUsageDetails}
     />
   );
 }

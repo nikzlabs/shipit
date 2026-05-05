@@ -22,10 +22,11 @@ interface SessionState {
   historyLoaded: boolean;
   /**
    * Per-turn usage history keyed by session ID. Populated from
-   * `turn_usage_update` WS messages and from `chat_history` reloads (where
-   * `turnUsage` is attached to the last message of each turn). Used by
-   * the context-dial UI to render the running context size and per-turn
-   * breakdown without losing data on session switches.
+   * `turn_usage_update` WS messages live, and seeded on session attach from
+   * `GET /api/sessions/:id/history` (sourced from the `usage_turns` table).
+   * Used by the context-dial UI to render the running context size and
+   * per-turn breakdown without losing data on session switches or WS
+   * reconnects.
    */
   turnUsage: Record<string, TurnUsage[]>;
 

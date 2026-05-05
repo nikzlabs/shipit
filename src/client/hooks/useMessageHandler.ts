@@ -5,7 +5,6 @@ import { activityFromTool } from "../components/StreamingIndicator.js";
 import type { InteractiveTerminalHandle } from "../components/InteractiveTerminal.js";
 import type {
   WsServerMessage,
-  WsChatHistoryMessage,
   AgentContentBlock, WsClientMessage,
 } from "../../server/shared/types.js";
 import { SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY } from "../utils/local-storage.js";
@@ -419,25 +418,6 @@ function processMessage(
 
     }
 
-    if (data.type === "chat_history") {
-      const loaded: ChatMessage[] = data.messages.map((m: WsChatHistoryMessage) => ({
-        role: m.role, text: m.text, toolUse: m.toolUse, toolResults: m.toolResults, images: m.images, files: m.files, isError: m.isError, streaming: false,
-        commitHash: m.commitHash, parentCommitHash: m.parentCommitHash, uploadPaths: m.uploadPaths,
-        // Preserve subagent events on history reload so the nested-tree view
-        // re-renders identically to live streaming. (109)
-        subagentEvents: m.subagentEvents as ChatMessage["subagentEvents"],
-      }));
-      session.setMessages(loaded);
-
-      // Rehydrate per-turn usage history from the persisted chat history.
-      // `turnUsage` is attached to the *last* message group of each turn, so
-      // collecting all non-undefined entries reconstructs the per-turn series.
-      const reloadedUsage = data.messages
-        .map((m) => m.turnUsage)
-        .filter((u): u is NonNullable<typeof u> => u !== undefined);
-      session.setTurnUsageForSession(data.sessionId, reloadedUsage);
-    }
-
     if (data.type === "template_applied") {
       ui.setShowTemplates(false);
       const sid = useSessionStore.getState().sessionId;
@@ -467,20 +447,19 @@ function processMessage(
         totalDurationMs: update.totalDurationMs,
         turnCount: update.turnCount,
       });
-      if (update.cumulativeInputTokens !== undefined) {
+      // contextTokens reflects the *last turn's* input tokens (= the current
+      // context size in the model's prompt window), not the cumulative sum.
+      // Falling back to cumulativeInputTokens preserves prior behavior on
+      // sessions that don't yet emit per-turn input data.
+      if (update.lastTurnInputTokens !== undefined) {
+        ui.setContextTokens(update.lastTurnInputTokens);
+      } else if (update.cumulativeInputTokens !== undefined) {
         ui.setContextTokens(update.cumulativeInputTokens);
       }
-      if (update.lastTurnInputTokens !== undefined || update.lastTurnOutputTokens !== undefined) {
-        ui.setTurnTokens((prev) => [
-          ...prev,
-          {
-            inputTokens: update.lastTurnInputTokens,
-            outputTokens: update.lastTurnOutputTokens,
-            costUsd: update.totalCostUsd - prev.reduce((sum, t) => sum + t.costUsd, 0),
-            durationMs: update.totalDurationMs - prev.reduce((sum, t) => sum + t.durationMs, 0),
-          },
-        ]);
-      }
+      ui.setCumulativeTokens(
+        update.cumulativeInputTokens ?? 0,
+        update.cumulativeOutputTokens ?? 0,
+      );
     }
 
     if (data.type === "turn_usage_update") {
