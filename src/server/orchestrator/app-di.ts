@@ -16,7 +16,41 @@ import { initGlobalGitConfig } from "./git-config.js";
 import { SessionContainerManager } from "./session-container.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
+// Local-mode (feature 118) deliberately makes the orchestrator the host of
+// agent CLI subprocesses — `RUNTIME_MODE=local` collapses the worker layer
+// and the orch process becomes the parent of every agent process. The
+// orchestrator/session boundary still applies in production; these imports
+// are the explicit exception that lets the dogfooding seam exist.
+// eslint-disable-next-line no-restricted-imports
+import { ClaudeAdapter } from "../session/agents/claude-adapter.js";
+// eslint-disable-next-line no-restricted-imports
+import { CodexAdapter } from "../session/agents/codex-adapter.js";
 import type { AgentId, AgentEvent, AgentProcess } from "../shared/types.js";
+
+/**
+ * Runtime mode for the orchestrator.
+ *
+ *   - `containerized` (default): production mode. Each session gets a Docker
+ *     container with a session-worker; agents run inside containers; compose
+ *     stacks manage previews. Requires Docker.
+ *   - `local`: dogfooding mode (ShipIt running inside ShipIt). No Docker
+ *     containers are created for inner sessions; agent CLIs are spawned as
+ *     in-process subprocesses; per-session inner-compose stacks are skipped.
+ *     See docs/118-shipit-ui-local/plan.md.
+ *
+ * Selected via the `RUNTIME_MODE` env var on the orchestrator process.
+ *
+ * NOTE: this is NOT the same as `isTestMode`. `isTestMode` means "test harness
+ * with mocks"; `local` means "production behavior minus the container layer."
+ * See "isTestMode ≠ runtimeMode === 'local'" in the plan.
+ */
+export type RuntimeMode = "containerized" | "local";
+
+/** Read RUNTIME_MODE from process.env, defaulting to "containerized". */
+export function resolveRuntimeMode(): RuntimeMode {
+  const v = process.env.RUNTIME_MODE?.toLowerCase();
+  return v === "local" ? "local" : "containerized";
+}
 
 /**
  * Dependencies that can be injected for testing. Every field is optional —
@@ -55,6 +89,14 @@ export interface AppDeps {
   defaultAgentId?: AgentId;
   /** Root workspace directory. Defaults to `/workspace`. */
   workspaceDir?: string;
+  /**
+   * Directory for orchestrator-internal state (SQLite database, repo cache,
+   * dependency cache). Defaults to `workspaceDir`. In local mode (ShipIt
+   * inside ShipIt), set this to a path *outside* the user's source tree so
+   * inner-orch metadata doesn't collide with the outer workspace's files.
+   * See `SHIPIT_STATE_DIR` env var and feature 118 plan.
+   */
+  stateDir?: string;
   /** Directory for persistent credentials (survives full reset). Defaults to `/credentials`. */
   credentialsDir?: string;
   /** Whether to serve static files from dist/client. Defaults to true. */
@@ -100,12 +142,20 @@ export interface AppDeps {
    * one is replaced. Useful for testing auto-fix flows.
    */
   prStatusPoller?: PrStatusPoller;
+  /**
+   * Runtime mode override. When omitted, derived from the `RUNTIME_MODE` env
+   * var (defaults to `"containerized"`). Tests can pin the mode explicitly.
+   * See {@link RuntimeMode}.
+   */
+  runtimeMode?: RuntimeMode;
 }
 
 /** Return type of `initializeManagers()` — all instantiated managers and helpers. */
 export interface ManagerSet {
   defaultAgentId: AgentId;
   workspaceDir: string;
+  /** Resolved state directory for SQLite db, repo-cache, dep-cache. See {@link AppDeps.stateDir}. */
+  stateDir: string;
   credentialsDir: string;
   shouldServeStatic: boolean;
   autoPushDebounceMs: number;
@@ -124,6 +174,8 @@ export interface ManagerSet {
   githubAuthManager: GitHubAuthManager;
   generateText: (prompt: string, cwd: string) => Promise<string>;
   isTestMode: boolean;
+  /** Resolved runtime mode (containerized vs local). See {@link RuntimeMode}. */
+  runtimeMode: RuntimeMode;
   secretStore: SecretStore;
   reviewStore: FileReviewStore;
 }
@@ -141,13 +193,32 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
     autoPushDebounceMs = 5000,
   } = deps;
 
-  // Agent factory — only available in tests (injected via deps.agentFactory).
-  // In production, agent processes live inside session containers; the
-  // orchestrator never spawns agents directly. The ctx.agentFactory delegates
-  // to runner.createAgent() which creates a proxy to the container worker.
-  const agentFactory: ((agentId: AgentId) => AgentProcess) | undefined = deps.agentFactory;
+  // ---- Runtime mode ----
+  // `containerized` = production (Docker per session). `local` = dogfooding
+  // (no Docker; agents spawn in-process). See {@link RuntimeMode} and the
+  // "isTestMode ≠ runtimeMode === 'local'" note in the plan.
+  const runtimeMode: RuntimeMode = deps.runtimeMode ?? resolveRuntimeMode();
+
+  // ---- State directory (orchestrator-internal files) ----
+  // Defaults to the workspace dir for back-compat; in local mode the dev
+  // compose service sets SHIPIT_STATE_DIR to a path *outside* the visible
+  // workspace (e.g. /workspace/.inner-shipit) so the orchestrator's SQLite
+  // db, repo-cache, and dep-cache don't pollute the user's source tree.
+  const envStateDir = process.env.SHIPIT_STATE_DIR;
+  const stateDir = deps.stateDir ?? envStateDir ?? workspaceDir;
+
+  // Agent factory — in production (containerized) this is undefined because
+  // agent processes live inside session containers; the orchestrator never
+  // spawns agents directly. In tests it's injected via deps.agentFactory. In
+  // local mode (dogfooding) we default to spawning real CLI subprocesses
+  // in-process, since there is no container worker to forward to.
+  const agentFactory: ((agentId: AgentId) => AgentProcess) | undefined =
+    deps.agentFactory ?? (runtimeMode === "local" ? defaultLocalAgentFactory : undefined);
 
   // ---- Per-session directory root ----
+  // Inner-session clones still live under the visible workspace (the user
+  // edits them via the outer agent); only orchestrator metadata moves to
+  // stateDir. See "Workspace path collision" note in the plan.
   const sessionsRoot = path.join(workspaceDir, "sessions");
 
   // ---- Per-session GitManager factory ----
@@ -156,7 +227,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
 
   // ---- Database manager (SQLite) ----
   const databaseManager = deps.databaseManager ?? new DatabaseManager(
-    path.join(workspaceDir, ".shipit.db"),
+    path.join(stateDir, ".shipit.db"),
   );
 
   // ---- Session manager ----
@@ -257,6 +328,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   return {
     defaultAgentId,
     workspaceDir,
+    stateDir,
     credentialsDir,
     shouldServeStatic,
     autoPushDebounceMs,
@@ -277,5 +349,27 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
     reviewStore,
     generateText,
     isTestMode,
+    runtimeMode,
   };
+}
+
+/**
+ * Default agent factory used in local mode — spawns real agent CLI
+ * subprocesses (claude, codex) in-process via their adapters. In production
+ * (containerized) the worker process inside the session container does this;
+ * in local mode there is no worker, so the orchestrator is the parent of
+ * every agent subprocess.
+ */
+function defaultLocalAgentFactory(agentId: AgentId): AgentProcess {
+  switch (agentId) {
+    case "claude":
+      return new ClaudeAdapter();
+    case "codex":
+      return new CodexAdapter();
+    default: {
+      // Exhaustiveness check: if a new AgentId is added, surface it loudly.
+      const _exhaustive: never = agentId;
+      throw new Error(`No local agent adapter for agentId: ${_exhaustive as string}`);
+    }
+  }
 }

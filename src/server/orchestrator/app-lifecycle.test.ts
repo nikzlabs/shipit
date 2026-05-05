@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createIdleEnforcer, IDLE_GRACE_PERIOD_MS } from "./app-lifecycle.js";
+import { buildRunnerFactory, createIdleEnforcer, IDLE_GRACE_PERIOD_MS } from "./app-lifecycle.js";
 import { SessionRunner, SessionRunnerRegistry } from "./session-runner.js";
+import { ContainerSessionRunner } from "./container-session-runner.js";
 import type { AgentId } from "../shared/types.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SessionContainerManager } from "./session-container.js";
@@ -301,6 +302,98 @@ describe("Runner dispose protection", () => {
     registry.disposeAll();
     expect(r1.disposed).toBe(true);
     expect(r2.disposed).toBe(true);
+  });
+});
+
+describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
+  it("local mode returns a factory that produces in-process SessionRunner", () => {
+    // The seam: when RUNTIME_MODE=local, the factory must produce
+    // SessionRunner (not ContainerSessionRunner), even if the caller passes
+    // a non-null containerManager. Local mode is the harder branch — local
+    // wins even if some Docker environment is partially present.
+    const factory = buildRunnerFactory({
+      deps: {},
+      containerManager: null,
+      credentialsDir: "/credentials",
+      runtimeMode: "local",
+    });
+
+    expect(factory).toBeDefined();
+    const runner = factory!({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    expect(runner).toBeInstanceOf(SessionRunner);
+    expect(runner).not.toBeInstanceOf(ContainerSessionRunner);
+    // Local runners have no in-container agent worker — `createAgent` should
+    // be undefined so the registry's onRunnerCreated wiring falls through to
+    // the process-level agentFactory.
+    expect(runner.createAgent).toBeUndefined();
+    runner.dispose({ force: true });
+  });
+
+  it("local mode wins over a non-null containerManager", () => {
+    // Defensive: we should never accidentally end up in containerized mode
+    // because some test left a containerManager around.
+    const fakeContainerManager = {
+      get: () => undefined,
+    } as unknown as SessionContainerManager;
+
+    const factory = buildRunnerFactory({
+      deps: {},
+      containerManager: fakeContainerManager,
+      credentialsDir: "/credentials",
+      runtimeMode: "local",
+    });
+
+    const runner = factory!({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    expect(runner).toBeInstanceOf(SessionRunner);
+    expect(runner).not.toBeInstanceOf(ContainerSessionRunner);
+    runner.dispose({ force: true });
+  });
+
+  it("containerized mode without containerManager returns undefined (test-mode default)", () => {
+    // Without an injected runnerFactory and without a containerManager (the
+    // shape integration tests use), the factory is undefined so the registry
+    // falls back to its own default (in-process SessionRunner).
+    const factory = buildRunnerFactory({
+      deps: {},
+      containerManager: null,
+      credentialsDir: "/credentials",
+      runtimeMode: "containerized",
+    });
+    expect(factory).toBeUndefined();
+  });
+
+  it("explicit deps.runnerFactory wins over runtimeMode", () => {
+    // Preserves the test-injection escape hatch — integration tests that
+    // hand-roll a runnerFactory (e.g. to produce stub runners) shouldn't
+    // have it overridden by the local-mode branch.
+    const customRunner = new SessionRunner({
+      sessionId: "x", sessionDir: "/tmp/x", defaultAgentId: "claude" as AgentId,
+    });
+    const customFactory = vi.fn().mockReturnValue(customRunner);
+
+    const factory = buildRunnerFactory({
+      deps: { runnerFactory: customFactory },
+      containerManager: null,
+      credentialsDir: "/credentials",
+      runtimeMode: "local",
+    });
+
+    const runner = factory!({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    expect(customFactory).toHaveBeenCalledOnce();
+    expect(runner).toBe(customRunner);
+    customRunner.dispose({ force: true });
   });
 });
 

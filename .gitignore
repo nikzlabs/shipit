@@ -9,6 +9,15 @@ dist/
 .update-requested
 .shipit
 
+# ShipIt-in-ShipIt (feature 118 — dogfooding mode).
+# When the orchestrator runs with RUNTIME_MODE=local inside a ShipIt session,
+# inner-session clones land under `sessions/` and the inner orch's state
+# (SQLite db, repo-cache, dep-cache) lives under `.inner-shipit/`. Excluding
+# both prevents the outer auto-commit (`git add -A`) from picking them up as
+# embedded gitlinks (mode 160000) or committing inner-orch metadata.
+sessions/
+.inner-shipit/
+
 # Android (see android/ — separate Gradle build, not part of the Node project)
 android/.gradle/
 android/build/

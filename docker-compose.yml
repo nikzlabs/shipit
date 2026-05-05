@@ -1,0 +1,61 @@
+# ShipIt-in-ShipIt (feature 118 — dogfooding mode).
+#
+# When the ShipIt repo is opened in production ShipIt, the outer orchestrator
+# starts this Compose stack as a session-scoped service. The `dev` service
+# runs an *inner* orchestrator with RUNTIME_MODE=local, so it can serve the
+# ShipIt UI from inside the outer session container without trying to spawn
+# Docker containers of its own (which it can't — there's no nested Docker).
+#
+# The outer ShipIt picks up this service automatically because of the
+# `x-shipit-preview: auto` marker, and the preview panel renders the inner
+# UI on port 3000.
+#
+# See docs/118-shipit-ui-local/plan.md for the full design.
+services:
+  dev:
+    image: node:22
+    # `agent.install` from shipit.yaml does NOT run for compose services —
+    # it only runs for session containers. So bake the install into the
+    # service command. Using `npm ci` would be faster but requires an
+    # up-to-date package-lock; `npm install` is the safer default for
+    # dogfooding (it tolerates lockfile drift across branches).
+    command: sh -c "npm install && npm run dev"
+    working_dir: /workspace
+    # `init: true` enables a tini-style PID 1 so orphaned agent CLI
+    # subprocesses are reaped. In containerized mode the kernel-level
+    # cleanup handles this when the session container is destroyed; in
+    # local mode the inner orch is the parent of every agent subprocess
+    # and `init` is the safety net.
+    init: true
+    environment:
+      RUNTIME_MODE: local
+      PORT: 3000
+      # Inner-orch's notion of "the workspace the user is editing." This
+      # is the bind-mounted source tree below.
+      WORKSPACE_DIR: /workspace
+      # Move the inner orch's SQLite db, repo-cache, and dep-cache OUT of
+      # the visible workspace so they don't pollute the outer agent's view
+      # of the source tree (and don't get auto-committed). `.inner-shipit/`
+      # is in .gitignore.
+      SHIPIT_STATE_DIR: /workspace/.inner-shipit
+    volumes:
+      # Required: without this, /workspace inside the dev container is
+      # empty. Bind-mounting the outer session's workspace lets the inner
+      # orch see (and edit) the live ShipIt source.
+      - .:/workspace
+    ports:
+      - "3000:3000"
+    # Tells the outer orchestrator to surface this service in the preview
+    # panel. The outer's preview proxy routes `<sessionId>--3000.localhost`
+    # to this container.
+    x-shipit-preview: auto
+    # Forwards the user's existing Claude OAuth + GitHub token from the
+    # outer (production) ShipIt into the inner orch as env vars. The inner
+    # orch's AuthManager / GitHubAuthManager init from process.env, so the
+    # inner UI is logged in from the start without re-running the OAuth
+    # flow. Resolved by `platform-credentials.ts` — see Phase 4 of the
+    # secrets pipeline.
+    x-shipit-secrets:
+      - { name: ANTHROPIC_API_KEY,    source: platform:claude_oauth }
+      - { name: ANTHROPIC_AUTH_TOKEN, source: platform:claude_oauth }
+      - { name: GITHUB_TOKEN,         source: platform:github_token }
