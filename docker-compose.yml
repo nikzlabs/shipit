@@ -6,9 +6,11 @@
 # ShipIt UI from inside the outer session container without trying to spawn
 # Docker containers of its own (which it can't — there's no nested Docker).
 #
-# The outer ShipIt picks up this service automatically because of the
-# `x-shipit-preview: auto` marker, and the preview panel renders the inner
-# UI on port 3000.
+# The outer ShipIt picks up this service when the user starts it manually
+# (because of the `x-shipit-preview: manual` marker), and the preview panel
+# renders the inner UI on port 3000. The dogfooding inner orch is heavy
+# (npm install + vite build + a second orch process), so we don't pay that
+# cost on every session — it boots only when the user explicitly starts it.
 #
 # See docs/118-shipit-ui-local/plan.md for the full design.
 services:
@@ -85,9 +87,12 @@ services:
     ports:
       - "3000:3000"
     # Tells the outer orchestrator to surface this service in the preview
-    # panel. The outer's preview proxy routes `<sessionId>--3000.localhost`
-    # to this container.
-    x-shipit-preview: auto
+    # panel, but only start it when the user explicitly requests it. The
+    # inner orch is heavyweight (npm install + vite build + a second orch
+    # process), so we don't pay that cost on every session boot. Once
+    # started, the outer's preview proxy routes
+    # `<sessionId>--3000.localhost` to this container.
+    x-shipit-preview: manual
     # Forwards the user's existing Claude OAuth + GitHub token from the
     # outer (production) ShipIt into the inner orch as env vars. The inner
     # orch's AuthManager / GitHubAuthManager init from process.env, so the
