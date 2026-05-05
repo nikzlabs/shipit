@@ -273,6 +273,124 @@ describe("createIdleEnforcer", () => {
     expect(destroy).toHaveBeenCalledWith("a");
     expect(destroy).not.toHaveBeenCalledWith("warm");
   });
+
+  // --- Memory-pressure-aware behavior (feature 122) ---
+
+  it("under eviction pressure: bypasses grace period and disposes idle runners with no viewer", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const containers = [{ sessionId: "a" }];
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const cm = makeContainerManager({ containers, destroy });
+
+    const r = registry.getOrCreate("a", "/tmp/a", "claude" as AgentId);
+    r.attachViewer();
+    r.detachViewer(); // just disconnected — normally protected by grace period
+
+    // High pressure (95% used) — grace period must be bypassed.
+    createIdleEnforcer({
+      containerManager: cm,
+      credentialStore: makeCredentialStore(5),
+      runnerRegistry: registry,
+      getMemoryStats: () => ({ usedBytes: 0.95 * 16 * 1024 ** 3, totalBytes: 16 * 1024 ** 3 }),
+    })();
+
+    expect(destroy).toHaveBeenCalledWith("a");
+  });
+
+  it("under eviction pressure: drops effective maxIdle to 0 even when configured higher", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+
+    // 3 idle containers past the grace period; configured maxIdle is 5.
+    // Without pressure, none would be reaped (3 ≤ 5). With pressure, all 3 go.
+    const containers = [{ sessionId: "a" }, { sessionId: "b" }, { sessionId: "c" }];
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const cm = makeContainerManager({ containers, destroy });
+
+    for (const c of containers) {
+      const r = registry.getOrCreate(c.sessionId, `/tmp/${c.sessionId}`, "claude" as AgentId);
+      r.attachViewer(); r.detachViewer();
+    }
+    vi.advanceTimersByTime(IDLE_GRACE_PERIOD_MS + 1_000);
+
+    createIdleEnforcer({
+      containerManager: cm,
+      credentialStore: makeCredentialStore(5),
+      runnerRegistry: registry,
+      getMemoryStats: () => ({ usedBytes: 0.90 * 16 * 1024 ** 3, totalBytes: 16 * 1024 ** 3 }),
+    })();
+
+    expect(destroy).toHaveBeenCalledWith("a");
+    expect(destroy).toHaveBeenCalledWith("b");
+    expect(destroy).toHaveBeenCalledWith("c");
+  });
+
+  it("under eviction pressure: still refuses to dispose runners whose agent is running", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const containers = [{ sessionId: "a" }];
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const cm = makeContainerManager({ containers, destroy });
+
+    const r = registry.getOrCreate("a", "/tmp/a", "claude" as AgentId);
+    r.running = true;
+
+    createIdleEnforcer({
+      containerManager: cm,
+      credentialStore: makeCredentialStore(0),
+      runnerRegistry: registry,
+      getMemoryStats: () => ({ usedBytes: 0.99 * 16 * 1024 ** 3, totalBytes: 16 * 1024 ** 3 }),
+    })();
+
+    // Even under extreme pressure, an active agent must not be killed.
+    expect(destroy).not.toHaveBeenCalled();
+    expect(registry.get("a")?.disposed).toBe(false);
+
+    registry.dispose("a", { force: true });
+  });
+
+  it("under eviction pressure: still refuses to dispose runners with attached viewers", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const containers = [{ sessionId: "a" }];
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const cm = makeContainerManager({ containers, destroy });
+
+    const r = registry.getOrCreate("a", "/tmp/a", "claude" as AgentId);
+    r.attachViewer();
+
+    createIdleEnforcer({
+      containerManager: cm,
+      credentialStore: makeCredentialStore(0),
+      runnerRegistry: registry,
+      getMemoryStats: () => ({ usedBytes: 0.95 * 16 * 1024 ** 3, totalBytes: 16 * 1024 ** 3 }),
+    })();
+
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("below the eviction threshold: behaves like the legacy enforcer (grace period honored)", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const containers = [{ sessionId: "a" }];
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const cm = makeContainerManager({ containers, destroy });
+
+    const r = registry.getOrCreate("a", "/tmp/a", "claude" as AgentId);
+    r.attachViewer(); r.detachViewer();
+
+    // 50% used — well below the 85% eviction threshold.
+    createIdleEnforcer({
+      containerManager: cm,
+      credentialStore: makeCredentialStore(0),
+      runnerRegistry: registry,
+      getMemoryStats: () => ({ usedBytes: 0.50 * 16 * 1024 ** 3, totalBytes: 16 * 1024 ** 3 }),
+    })();
+
+    expect(destroy).not.toHaveBeenCalled();
+    expect(registry.get("a")?.disposed).toBe(false);
+  });
 });
 
 describe("Runner dispose protection", () => {
