@@ -33,7 +33,10 @@ COPY --from=build /app/node_modules ./node_modules
 
 # Copy only server source needed at runtime (no client source, tests, or docs).
 # Session code runs inside per-session containers — the orchestrator only needs
-# its own code and the shared layer (types, AgentRegistry, GitManager).
+# its own code and the shared layer (types, AgentRegistry, GitManager). The
+# local-mode (feature 118) agent adapters live in session/ but are loaded via
+# dynamic import in app-di.ts only when RUNTIME_MODE=local; that path uses the
+# dev image (which bind-mounts the full repo), not this prod image.
 COPY package.json package-lock.json ./
 COPY tsconfig.json ./
 COPY src/server/orchestrator/ ./src/server/orchestrator/

@@ -182,7 +182,7 @@ export interface RunnerFactoryDeps {
  *   that talk to a per-session Docker worker over HTTP+SSE.
  * - `local` (dogfooding): creates in-process SessionRunner instances; agent
  *   subprocesses are spawned via the process-level `agentFactory` (see
- *   `app-di.ts` `defaultLocalAgentFactory`). No containers, no proxy.
+ *   `app-di.ts` `buildLocalAgentFactory`). No containers, no proxy.
  * - Test/custom: `deps.runnerFactory` overrides everything.
  */
 export function buildRunnerFactory(

@@ -16,15 +16,6 @@ import { initGlobalGitConfig } from "./git-config.js";
 import { SessionContainerManager } from "./session-container.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
-// Local-mode (feature 118) deliberately makes the orchestrator the host of
-// agent CLI subprocesses — `RUNTIME_MODE=local` collapses the worker layer
-// and the orch process becomes the parent of every agent process. The
-// orchestrator/session boundary still applies in production; these imports
-// are the explicit exception that lets the dogfooding seam exist.
-// eslint-disable-next-line no-restricted-imports
-import { ClaudeAdapter } from "../session/agents/claude-adapter.js";
-// eslint-disable-next-line no-restricted-imports
-import { CodexAdapter } from "../session/agents/codex-adapter.js";
 import type { AgentId, AgentEvent, AgentProcess } from "../shared/types.js";
 
 /**
@@ -211,9 +202,11 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // agent processes live inside session containers; the orchestrator never
   // spawns agents directly. In tests it's injected via deps.agentFactory. In
   // local mode (dogfooding) we default to spawning real CLI subprocesses
-  // in-process, since there is no container worker to forward to.
+  // in-process, since there is no container worker to forward to. Local-mode
+  // adapters live in session/ — we resolve them via dynamic import so the
+  // prod image (which omits session/) never has to load them.
   const agentFactory: ((agentId: AgentId) => AgentProcess) | undefined =
-    deps.agentFactory ?? (runtimeMode === "local" ? defaultLocalAgentFactory : undefined);
+    deps.agentFactory ?? (runtimeMode === "local" ? await buildLocalAgentFactory() : undefined);
 
   // ---- Per-session directory root ----
   // Inner-session clones still live under the visible workspace (the user
@@ -354,22 +347,33 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
 }
 
 /**
- * Default agent factory used in local mode — spawns real agent CLI
- * subprocesses (claude, codex) in-process via their adapters. In production
- * (containerized) the worker process inside the session container does this;
- * in local mode there is no worker, so the orchestrator is the parent of
- * every agent subprocess.
+ * Build the local-mode agent factory — spawns real agent CLI subprocesses
+ * (claude, codex) in-process via their adapters. In production (containerized)
+ * the worker process inside the session container does this; in local mode
+ * there is no worker, so the orchestrator is the parent of every agent
+ * subprocess.
+ *
+ * The adapter modules live in session/ and are loaded lazily via dynamic
+ * import so the prod image (which omits session/ to preserve the
+ * orchestrator/session boundary) never has to resolve them. Only the dev
+ * image — used for the dogfooding `RUNTIME_MODE=local` path — actually loads
+ * these.
  */
-function defaultLocalAgentFactory(agentId: AgentId): AgentProcess {
-  switch (agentId) {
-    case "claude":
-      return new ClaudeAdapter();
-    case "codex":
-      return new CodexAdapter();
-    default: {
-      // Exhaustiveness check: if a new AgentId is added, surface it loudly.
-      const _exhaustive: never = agentId;
-      throw new Error(`No local agent adapter for agentId: ${_exhaustive as string}`);
+async function buildLocalAgentFactory(): Promise<(agentId: AgentId) => AgentProcess> {
+  const [{ ClaudeAdapter }, { CodexAdapter }] = await Promise.all([
+    import("../session/agents/claude-adapter.js"),
+    import("../session/agents/codex-adapter.js"),
+  ]);
+  return (agentId: AgentId): AgentProcess => {
+    switch (agentId) {
+      case "claude":
+        return new ClaudeAdapter();
+      case "codex":
+        return new CodexAdapter();
+      default: {
+        const _exhaustive: never = agentId;
+        throw new Error(`No local agent adapter for agentId: ${_exhaustive as string}`);
+      }
     }
-  }
+  };
 }
