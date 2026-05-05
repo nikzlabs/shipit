@@ -15,12 +15,25 @@
 # See docs/118-shipit-ui-local/plan.md for the full design.
 services:
   dev:
-    image: node:22
+    # Built from docker/Dockerfile.dogfood, which pre-installs node_modules
+    # at /workspace/node_modules. The anonymous volume below seeds from that
+    # path on first start, so every new outer session opens with deps already
+    # in place instead of paying ~20s for a cold `npm install`.
+    #
+    # `image:` names the build output so Compose can reuse it across stack
+    # restarts. The first session on a given outer host pays the build cost
+    # once; subsequent sessions hit the Docker layer cache and start fast.
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dogfood
+    image: shipit-dogfood:local
     # `agent.install` from shipit.yaml does NOT run for compose services —
     # it only runs for session containers. So bake the install into the
-    # service command. Using `npm ci` would be faster but requires an
-    # up-to-date package-lock; `npm install` is the safer default for
-    # dogfooding (it tolerates lockfile drift across branches).
+    # service command. With the Dockerfile pre-baking node_modules, this
+    # `npm install` is usually a fast lockfile verify; it only does real
+    # work when the outer session's branch has lockfile drift vs. the image.
+    # We keep `npm install` rather than `npm ci` so drift is tolerated
+    # rather than fatal.
     # `mkdir -p` ensures SHIPIT_STATE_DIR exists before the inner orch
     # tries to open its SQLite db there (DatabaseManager doesn't create
     # parent dirs). Required because `.inner-shipit/` is in .gitignore
