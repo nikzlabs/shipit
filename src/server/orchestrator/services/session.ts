@@ -388,12 +388,18 @@ export async function archiveSession(
   return { sessions: sessionManager.list() };
 }
 
-/** Maximum number of merged sessions to keep before archiving old ones. */
-const MAX_MERGED_SESSIONS = 5;
+/** Maximum number of merged sessions to keep per repository before archiving old ones. */
+const MAX_MERGED_SESSIONS_PER_REPO = 5;
 
 /**
- * Mark a session as merged and archive excess merged sessions beyond the limit.
- * Called when a PR merge is detected — keeps the most recent merged sessions alive.
+ * Mark a session as merged and archive excess merged sessions beyond the
+ * per-repository limit. Called when a PR merge is detected — keeps the most
+ * recent merged sessions alive.
+ *
+ * The limit is applied **per repository**: only merged sessions in the same
+ * repo as the just-merged session are considered for archiving. Sessions in
+ * other repos are left alone, even if they themselves have many merged
+ * sessions — pruning only runs in the repo where activity just occurred.
  */
 export async function markMergedAndPruneExcess(
   sessionManager: SessionManager,
@@ -403,11 +409,21 @@ export async function markMergedAndPruneExcess(
 ): Promise<{ sessions: SessionInfo[] }> {
   sessionManager.markMerged(sessionId);
 
-  const merged = sessionManager.listMergedNotArchived();
-  // Archive oldest merged sessions beyond the limit (list is sorted newest-first)
-  const toArchive = merged.slice(MAX_MERGED_SESSIONS);
-  for (const session of toArchive) {
-    await archiveSession(sessionManager, runnerRegistry, getBareCacheDir, session.id);
+  // Scope pruning to the same repository as the merged session.
+  // Sessions without a remoteUrl (e.g. standalone sessions) cannot be merged
+  // via PRs anyway, so this branch is effectively unreachable — but we guard
+  // against it to keep the function total.
+  const session = sessionManager.get(sessionId);
+  if (!session?.remoteUrl) {
+    return { sessions: sessionManager.list() };
+  }
+
+  const merged = sessionManager.listMergedNotArchivedByRemoteUrl(session.remoteUrl);
+  // Archive oldest merged sessions beyond the per-repo limit
+  // (list is sorted newest-first).
+  const toArchive = merged.slice(MAX_MERGED_SESSIONS_PER_REPO);
+  for (const excess of toArchive) {
+    await archiveSession(sessionManager, runnerRegistry, getBareCacheDir, excess.id);
   }
 
   return { sessions: sessionManager.list() };
