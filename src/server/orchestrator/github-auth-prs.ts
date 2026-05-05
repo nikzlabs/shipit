@@ -155,6 +155,13 @@ export async function findPullRequestAnyState(
 
 /**
  * Merge a pull request.
+ *
+ * `commitTitle` and `commitMessage` override the squash/merge commit's subject
+ * and body. When omitted, GitHub falls back to the repo's "Default commit
+ * message" setting (Settings → General → Pull Requests), which on older repos
+ * defaults to "Default to commit messages" — i.e., concatenates every original
+ * commit. Callers should pass the PR title (and ideally body) so behavior is
+ * independent of per-repo settings.
  */
 export async function mergePullRequest(
   token: string,
@@ -162,7 +169,13 @@ export async function mergePullRequest(
   repo: string,
   pullNumber: number,
   method: "merge" | "squash" | "rebase" = "merge",
+  commitTitle?: string,
+  commitMessage?: string,
 ): Promise<{ success: boolean; message: string }> {
+  const body: Record<string, string> = { merge_method: method };
+  if (typeof commitTitle === "string") body.commit_title = commitTitle;
+  if (typeof commitMessage === "string") body.commit_message = commitMessage;
+
   const res = await fetch(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}/merge`,
     {
@@ -171,7 +184,7 @@ export async function mergePullRequest(
         ...GITHUB_HEADERS(token),
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ merge_method: method }),
+      body: JSON.stringify(body),
     },
   );
 
@@ -189,6 +202,12 @@ export async function mergePullRequest(
 /**
  * Enable auto-merge on a pull request.
  * Uses the GraphQL API since REST doesn't support auto-merge.
+ *
+ * Always passes the PR's title and body as `commitHeadline`/`commitBody` so
+ * that when GitHub eventually performs the squash, the resulting commit
+ * matches the PR — independent of the repo's "Default commit message" setting.
+ * The title and body are read from the same PR fetch we already need for the
+ * node_id, so this adds no extra network round-trip.
  */
 export async function enableAutoMerge(
   token: string,
@@ -197,17 +216,26 @@ export async function enableAutoMerge(
   pullNumber: number,
   method: "MERGE" | "SQUASH" | "REBASE" = "MERGE",
 ): Promise<{ success: boolean; message: string }> {
-  // First, get the PR's node ID (needed for GraphQL)
+  // First, get the PR's node ID + title + body (needed for GraphQL)
   const prRes = await fetch(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
     { headers: GITHUB_HEADERS(token) },
   );
 
   if (!prRes.ok) return { success: false, message: "Failed to fetch PR details" };
-  const prData = (await prRes.json()) as { node_id: string };
+  const prData = (await prRes.json()) as {
+    node_id: string;
+    title: string;
+    body: string | null;
+  };
   const nodeId = prData.node_id;
+  const commitHeadline = prData.title;
+  const commitBody = prData.body ?? "";
 
-  // Enable auto-merge via GraphQL
+  // Enable auto-merge via GraphQL. Pass commitHeadline/commitBody so the
+  // eventual squash commit uses the PR title/body rather than the repo's
+  // "Default commit message" setting (which on older repos concatenates
+  // every original commit message).
   const graphqlRes = await fetch("https://api.github.com/graphql", {
     method: "POST",
     headers: {
@@ -216,12 +244,22 @@ export async function enableAutoMerge(
       "User-Agent": "ShipIt",
     },
     body: JSON.stringify({
-      query: `mutation EnableAutoMerge($prId: ID!, $method: PullRequestMergeMethod!) {
-        enablePullRequestAutoMerge(input: { pullRequestId: $prId, mergeMethod: $method }) {
+      query: `mutation EnableAutoMerge(
+        $prId: ID!,
+        $method: PullRequestMergeMethod!,
+        $commitHeadline: String,
+        $commitBody: String,
+      ) {
+        enablePullRequestAutoMerge(input: {
+          pullRequestId: $prId,
+          mergeMethod: $method,
+          commitHeadline: $commitHeadline,
+          commitBody: $commitBody,
+        }) {
           pullRequest { autoMergeRequest { enabledAt } }
         }
       }`,
-      variables: { prId: nodeId, method },
+      variables: { prId: nodeId, method, commitHeadline, commitBody },
     }),
   });
 

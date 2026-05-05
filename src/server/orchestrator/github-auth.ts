@@ -278,6 +278,13 @@ export class GitHubAuthManager extends EventEmitter {
 
   /**
    * Merge a pull request.
+   *
+   * Fetches the PR's title and body and forwards them as commit_title /
+   * commit_message so the squash/merge commit uses the PR's title and
+   * description rather than the repo's "Default commit message" setting
+   * (which on older repos concatenates every original commit message). If the
+   * PR-detail fetch fails, falls through to the merge with no commit_title
+   * override — preserves the previous behavior as a safety net.
    */
   async mergePullRequest(
     owner: string,
@@ -286,12 +293,24 @@ export class GitHubAuthManager extends EventEmitter {
     method: "merge" | "squash" | "rebase" = "merge",
   ): Promise<{ success: boolean; message: string }> {
     if (!this._token) return { success: false, message: "Not authenticated" };
-    return mergePullRequestImpl(this._token, owner, repo, pullNumber, method);
+    const pr = await viewPullRequestImpl(this._token, owner, repo, pullNumber);
+    return mergePullRequestImpl(
+      this._token,
+      owner,
+      repo,
+      pullNumber,
+      method,
+      pr?.title,
+      pr?.body,
+    );
   }
 
   /**
    * Enable auto-merge on a pull request.
    * Uses the GraphQL API since REST doesn't support auto-merge.
+   *
+   * The impl fetches the PR's title/body and forwards them as
+   * commitHeadline/commitBody — see `enableAutoMerge` in github-auth-prs.ts.
    */
   async enableAutoMerge(
     owner: string,
