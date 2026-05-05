@@ -143,16 +143,30 @@ export class SessionWorker extends EventEmitter {
    * Generate an MCP config file for Playwright browser tools.
    * Only generated for the Claude agent (Codex doesn't support MCP).
    * Returns the config file path, or undefined if not applicable.
+   *
+   * NOTE on cwd: `--output-dir` only governs auto-generated filenames. When the
+   * agent passes a `filename` to `browser_take_screenshot` (or any tool with a
+   * suggestedFilename), `@playwright/mcp` resolves it relative to its own
+   * `process.cwd()` via `workspaceFile()` — NOT relative to `--output-dir`.
+   * If we let the server inherit the workspace as cwd, screenshots like
+   * `shot.png` land in `/workspace/` and get auto-committed. We work around
+   * this by launching the server through `sh -c` with an explicit `cd` into
+   * the output dir so suggested filenames also stay out of the repo.
+   * See coreBundle.js:`workspaceFile()` and `resolveClientFilename()`.
    */
   private generateMcpConfig(agentId: AgentId): string | undefined {
     if (agentId !== "claude") return undefined;
 
     const configPath = `/tmp/mcp-config-${Date.now()}.json`;
+    const outputDir = "/tmp/.playwright-mcp";
     const config = {
       mcpServers: {
         playwright: {
-          command: "playwright-mcp",
-          args: ["--headless", "--no-sandbox", "--output-dir", "/tmp/.playwright-mcp"],
+          command: "sh",
+          args: [
+            "-c",
+            `mkdir -p ${outputDir} && cd ${outputDir} && exec playwright-mcp --headless --no-sandbox --output-dir ${outputDir}`,
+          ],
         },
       },
     };
