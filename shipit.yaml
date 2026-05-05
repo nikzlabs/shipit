@@ -3,3 +3,8 @@ agent:
   cpu: 2.0
   pids: 2048
   install: npm install
+# ShipIt-in-ShipIt (feature 118): tells the outer orchestrator to start the
+# `dev` Compose service when this repo is opened. Without this line the
+# `setupServiceManager` short-circuits on the missing `compose:` key and the
+# inner UI never boots. See docs/118-shipit-ui-local/plan.md.
+compose: docker-compose.yml

@@ -35,7 +35,8 @@ import type { SecretStore } from "./secret-store.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { AgentId, AgentProcess, WsLogEntry } from "../shared/types.js";
-import type { AppDeps } from "./app-di.js";
+import type { AppDeps, RuntimeMode } from "./app-di.js";
+import { SessionRunner } from "./session-runner.js";
 
 // ---- Types for lifecycle dependencies ----
 
@@ -45,6 +46,13 @@ export interface ContainerSetupDeps {
   isTestMode: boolean;
   credentialsDir: string;
   sessionManager: SessionManager;
+  /**
+   * Runtime mode. When `"local"`, container construction is skipped entirely
+   * (no Docker, no proxy, no health monitor). See feature 118 for the cut
+   * between containerized and local modes — and the "isTestMode ≠ runtimeMode
+   * === 'local'" hardening note for why these two flags must not be conflated.
+   */
+  runtimeMode: RuntimeMode;
 }
 
 /** Result of container setup. */
@@ -55,12 +63,22 @@ export interface ContainerSetupResult {
 
 /**
  * Initialize Docker container manager and Docker API proxy.
- * In test mode or when a custom runner factory is provided, returns nulls.
+ * In test mode, local-runtime mode, or when a custom runner factory is
+ * provided, returns nulls (no Docker, no proxy).
  */
 export async function setupContainerManager(
   setupDeps: ContainerSetupDeps,
 ): Promise<ContainerSetupResult> {
-  const { deps, isTestMode, credentialsDir: _credentialsDir, sessionManager } = setupDeps;
+  const { deps, isTestMode, credentialsDir: _credentialsDir, sessionManager, runtimeMode } = setupDeps;
+
+  // Local mode (dogfooding): skip Docker entirely. Inner sessions run as
+  // in-process SessionRunner instances spawning agent CLI subprocesses; no
+  // session containers, no compose for inner sessions, no Docker proxy.
+  // Distinct from `isTestMode` — see hardening note in the plan.
+  if (runtimeMode === "local") {
+    console.log("[server] Runtime mode: local — skipping Docker container setup");
+    return { containerManager: null, dockerProxyServer: null };
+  }
 
   let containerManager: SessionContainerManager | null = null;
   if (deps.sessionContainerManager) {
@@ -153,18 +171,44 @@ export interface RunnerFactoryDeps {
   deps: AppDeps;
   containerManager: SessionContainerManager | null;
   credentialsDir: string;
+  /** Runtime mode — selects ContainerSessionRunner vs in-process SessionRunner. */
+  runtimeMode: RuntimeMode;
 }
 
 /**
- * Build the effective SessionRunnerFactory. In production with Docker,
- * creates ContainerSessionRunner instances. Tests inject a custom factory.
+ * Build the effective SessionRunnerFactory.
+ *
+ * - `containerized` (production): creates ContainerSessionRunner instances
+ *   that talk to a per-session Docker worker over HTTP+SSE.
+ * - `local` (dogfooding): creates in-process SessionRunner instances; agent
+ *   subprocesses are spawned via the process-level `agentFactory` (see
+ *   `app-di.ts` `defaultLocalAgentFactory`). No containers, no proxy.
+ * - Test/custom: `deps.runnerFactory` overrides everything.
  */
 export function buildRunnerFactory(
   factoryDeps: RunnerFactoryDeps,
 ): SessionRunnerFactory | undefined {
-  const { deps, containerManager, credentialsDir } = factoryDeps;
+  const { deps, containerManager, credentialsDir, runtimeMode } = factoryDeps;
 
-  return deps.runnerFactory ?? (containerManager ? ((o: Parameters<SessionRunnerFactory>[0]) => {
+  // Explicit injection always wins (tests, custom orchestrations).
+  if (deps.runnerFactory) return deps.runnerFactory;
+
+  // Local mode: in-process SessionRunner. Agent subprocesses are launched via
+  // the process-level `agentFactory` (claude-adapter / codex-adapter) — there
+  // is no `runner.createAgent` because there is no container worker to proxy
+  // to. The registry's onRunnerCreated wiring falls through to `agentFactory`
+  // when `runner.createAgent` is undefined.
+  if (runtimeMode === "local") {
+    return (o: Parameters<SessionRunnerFactory>[0]) => {
+      return new SessionRunner({
+        sessionId: o.sessionId,
+        sessionDir: o.sessionDir,
+        defaultAgentId: o.defaultAgentId,
+      });
+    };
+  }
+
+  return containerManager ? ((o: Parameters<SessionRunnerFactory>[0]) => {
     const mgr = containerManager;
     // o.sessionDir is session.workspaceDir (e.g. /workspace/sessions/{uuid}/workspace).
     // Derive the parent session dir for container config (uploads mount, etc.).
@@ -289,7 +333,7 @@ export function buildRunnerFactory(
     })();
 
     return runner;
-  }) : undefined);
+  }) : undefined;
 }
 
 // ---- Idle container enforcement ----
@@ -422,6 +466,13 @@ export interface RunnerRegistryDeps {
     hostDir?: string;
     entrypointSourcePath: string;
   };
+  /**
+   * Runtime mode. In `"local"` mode, ServiceManager is not constructed for
+   * inner sessions (no Docker → no Compose). The compose-not-configured
+   * event is also suppressed at the source so the inner UI doesn't see it
+   * for every session creation. See feature 118.
+   */
+  runtimeMode: RuntimeMode;
 }
 
 /**
@@ -435,7 +486,7 @@ export function createRunnerRegistry(
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeWarnings, composeNotConfigured, containerManager,
-    secretStore, platformCredentials, dockerSecretsConfig,
+    secretStore, platformCredentials, dockerSecretsConfig, runtimeMode,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -491,24 +542,31 @@ export function createRunnerRegistry(
         clearInProgress: (sessionId) => chatHistoryManager.clearInProgress(sessionId),
       });
 
-      // Set up compose ServiceManager if the session has a compose config
-      const setupDeps = {
-        sessionManager,
-        serviceManagers,
-        composeWarnings,
-        composeNotConfigured,
-        containerManager,
-        secretStore,
-        platformCredentials,
-        dockerSecretsConfig,
-      };
-      setupServiceManager(runner, setupDeps);
-
-      // Allow re-setup when config files change (e.g. old-format migrated to new)
-      if ("onComposeConfigChanged" in runner) {
-        (runner as { onComposeConfigChanged?: () => void }).onComposeConfigChanged = () => {
-          setupServiceManager(runner, setupDeps);
+      // In local mode (dogfooding), the orchestrator can't manage Docker —
+      // skip ServiceManager wiring entirely for inner sessions. This also
+      // suppresses the noisy `compose_not_configured` event the inner UI
+      // would otherwise see on every session creation. Inner-session
+      // preview is deferred to Phase 2.
+      if (runtimeMode !== "local") {
+        // Set up compose ServiceManager if the session has a compose config
+        const setupDeps = {
+          sessionManager,
+          serviceManagers,
+          composeWarnings,
+          composeNotConfigured,
+          containerManager,
+          secretStore,
+          platformCredentials,
+          dockerSecretsConfig,
         };
+        setupServiceManager(runner, setupDeps);
+
+        // Allow re-setup when config files change (e.g. old-format migrated to new)
+        if ("onComposeConfigChanged" in runner) {
+          (runner as { onComposeConfigChanged?: () => void }).onComposeConfigChanged = () => {
+            setupServiceManager(runner, setupDeps);
+          };
+        }
       }
     },
   });
@@ -904,11 +962,15 @@ export function createSessionDirFactory(
 
 // ---- Bare cache directory ----
 
-/** Create the `getBareCacheDir` helper — returns the bare repo cache path. */
+/**
+ * Create the `getBareCacheDir` helper — returns the bare repo cache path.
+ * Lives under {@link stateDir} (defaults to workspaceDir for back-compat;
+ * in local mode, set to a directory outside the visible workspace).
+ */
 export function createBareCacheDirHelper(
-  workspaceDir: string,
+  stateDir: string,
 ): (repoUrl: string) => string {
-  const cacheRoot = path.join(workspaceDir, "repo-cache");
+  const cacheRoot = path.join(stateDir, "repo-cache");
   return (repoUrl: string): string => {
     return path.join(cacheRoot, repoUrlToHash(repoUrl));
   };
@@ -916,12 +978,12 @@ export function createBareCacheDirHelper(
 
 /**
  * Create the `getDepCacheDir` helper — returns a per-repo dependency cache
- * directory decoupled from the bare cache. Lives at /workspace/dep-cache/{hash}.
+ * directory decoupled from the bare cache. Lives at {stateDir}/dep-cache/{hash}.
  */
 export function createDepCacheDirHelper(
-  workspaceDir: string,
+  stateDir: string,
 ): (repoUrl: string) => string {
-  const depCacheRoot = path.join(workspaceDir, "dep-cache");
+  const depCacheRoot = path.join(stateDir, "dep-cache");
   return (repoUrl: string): string => {
     return path.join(depCacheRoot, repoUrlToHash(repoUrl));
   };
