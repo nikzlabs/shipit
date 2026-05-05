@@ -191,6 +191,17 @@ export class SessionManager {
     return rows.map((r) => this.fromRow(r));
   }
 
+  /**
+   * List merged-but-not-archived sessions scoped to a single repository,
+   * most recently merged first.
+   */
+  listMergedNotArchivedByRemoteUrl(remoteUrl: string): SessionInfo[] {
+    const rows = this.db.prepare(
+      "SELECT * FROM sessions WHERE merged_at IS NOT NULL AND archived = 0 AND remote_url = ? ORDER BY merged_at DESC",
+    ).all(remoteUrl) as SessionRow[];
+    return rows.map((r) => this.fromRow(r));
+  }
+
   /** List all archived sessions, most recently used first. */
   listArchived(): SessionInfo[] {
     const rows = this.db.prepare(
