@@ -147,7 +147,24 @@ export async function registerSessionRoutes(
     // causing messages to appear twice (or be overwritten) on reconnect.
     // The WS listener picks up where the DB snapshot leaves off.
 
-    return { messages, commits, fileTree, agentRunning };
+    // Authoritative per-turn / cumulative usage for the context dial. This
+    // replaces the old "attach turnUsage to the last message group" hack:
+    // the canonical source is `usage_turns`, fetched here so the dial sees
+    // the same number the cost UI does.
+    const turnUsage = deps.usageManager.getPerTurnUsage(request.params.id);
+    const sessionUsage = deps.usageManager.getSessionUsage(request.params.id) ?? null;
+    const tokenTotals = deps.usageManager.getSessionTokenTotals(request.params.id);
+
+    return {
+      messages,
+      commits,
+      fileTree,
+      agentRunning,
+      turnUsage,
+      sessionUsage,
+      cumulativeInputTokens: tokenTotals?.cumulativeInputTokens,
+      cumulativeOutputTokens: tokenTotals?.cumulativeOutputTokens,
+    };
   });
 
   // GET /api/sessions/:id/usage — usage stats

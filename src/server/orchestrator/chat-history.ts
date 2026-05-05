@@ -1,5 +1,4 @@
 import type { DatabaseManager } from "../shared/database.js";
-import type { TurnUsage } from "../shared/types.js";
 import type { SubagentEvent } from "./session-runner.js";
 
 /**
@@ -42,13 +41,6 @@ export interface PersistedMessage {
   /** Upload paths consumed by this message (for hydration of pending vs sent state). */
   uploadPaths?: string[];
   /**
-   * Per-turn token/cost usage for the agent turn that produced this message.
-   * Attached only to the *last* assistant message of a turn; intermediate
-   * message groups within the same turn leave this undefined. Used by the
-   * context-dial UI on session reload (105).
-   */
-  turnUsage?: TurnUsage;
-  /**
    * Events emitted by subagents (Claude's Task tool) whose parent Task tool is
    * in this message's `toolUse`. Stored as a flat ordered list keyed by
    * `parentToolUseId` so the client can render the subagent's prompt, work,
@@ -71,6 +63,13 @@ interface MessageRow {
   in_progress: number;
   tool_results: string | null;
   upload_paths: string | null;
+  /**
+   * Legacy column — older rows may carry a serialized per-turn usage record
+   * here. The canonical per-turn series is now owned by `UsageManager`
+   * (`usage_turns` table); we no longer write to this column. Kept on the
+   * row interface so that `SELECT *` decoding still type-checks against the
+   * existing schema.
+   */
   turn_usage: string | null;
   subagent_events: string | null;
   created_at: string;
@@ -124,7 +123,9 @@ export class ChatHistoryManager {
       in_progress: msg.inProgress ? 1 : 0,
       tool_results: msg.toolResults ? JSON.stringify(msg.toolResults) : null,
       upload_paths: msg.uploadPaths ? JSON.stringify(msg.uploadPaths) : null,
-      turn_usage: msg.turnUsage ? JSON.stringify(msg.turnUsage) : null,
+      // Legacy `turn_usage` column — never written from the new path; the
+      // per-turn series lives in `usage_turns`.
+      turn_usage: null,
       subagent_events: msg.subagentEvents ? JSON.stringify(msg.subagentEvents) : null,
     };
   }
@@ -143,7 +144,7 @@ export class ChatHistoryManager {
     if (row.commit_hash) msg.commitHash = row.commit_hash;
     if (row.parent_commit_hash) msg.parentCommitHash = row.parent_commit_hash;
     if (row.upload_paths) msg.uploadPaths = JSON.parse(row.upload_paths) as string[];
-    if (row.turn_usage) msg.turnUsage = JSON.parse(row.turn_usage) as PersistedMessage["turnUsage"];
+    // `turn_usage` column intentionally ignored — see `PersistedMessage`.
     if (row.subagent_events) msg.subagentEvents = JSON.parse(row.subagent_events) as PersistedMessage["subagentEvents"];
     return msg;
   }

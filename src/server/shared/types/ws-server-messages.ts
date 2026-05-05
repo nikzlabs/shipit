@@ -1,5 +1,5 @@
 import type { AgentId, AgentEvent } from "./agent-types.js";
-import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, WsChatHistoryMessage, FileDiff, RepoInfo, SecretRequirement } from "./domain-types.js";
+import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement } from "./domain-types.js";
 import type {
   WsGitHubStatus,
   WsGitHubPushResult,
@@ -85,12 +85,6 @@ export interface WsDocContent {
   type: "doc_content";
   path: string;
   content: string;
-}
-
-export interface WsChatHistory {
-  type: "chat_history";
-  sessionId: string;
-  messages: WsChatHistoryMessage[];
 }
 
 export interface WsFileTree {
@@ -467,7 +461,6 @@ export type WsServerMessage =
   | WsSessionRenamed
   | WsDocList
   | WsDocContent
-  | WsChatHistory
   | WsFileTree
   | WsFileContent
   | WsLogEntry

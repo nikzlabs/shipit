@@ -1,6 +1,6 @@
 import { Button } from "./ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
-import type { SessionInfo } from "../../server/shared/types.js";
+import type { SessionInfo, TurnUsage } from "../../server/shared/types.js";
 import { formatTokenCount, getContextLevel, type ModelInfo } from "./StatusBar.js";
 
 export interface SessionUsage {
@@ -16,13 +16,6 @@ export interface UsageStats {
   totalTurns: number;
 }
 
-export interface TurnTokenData {
-  inputTokens?: number;
-  outputTokens?: number;
-  costUsd: number;
-  durationMs: number;
-}
-
 interface UsageModalProps {
   currentSessionUsage: SessionUsage | null;
   allUsage: UsageStats | null;
@@ -30,7 +23,11 @@ interface UsageModalProps {
   onClose: () => void;
   modelInfo?: ModelInfo | null;
   contextTokens?: number;
-  turnTokens?: TurnTokenData[];
+  /**
+   * Per-turn breakdown sourced from `UsageManager.getPerTurnUsage()` —
+   * authoritative across reloads, no longer derived from cumulative deltas.
+   */
+  turnUsage?: TurnUsage[];
 }
 
 function formatCost(usd: number): string {
@@ -57,7 +54,7 @@ const levelBarColors: Record<string, string> = {
   red: "bg-(--color-error)",
 };
 
-export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, modelInfo, contextTokens, turnTokens }: UsageModalProps) {
+export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, modelInfo, contextTokens, turnUsage }: UsageModalProps) {
   // Look up session titles by ID
   const getSessionTitle = (sessionId: string): string => {
     const session = sessions.find((s) => s.id === sessionId);
@@ -70,9 +67,9 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
   const contextLevel = getContextLevel(contextPercentage);
 
   // Compute cumulative token totals from turn data
-  const totalInputTokens = turnTokens?.reduce((sum, t) => sum + (t.inputTokens ?? 0), 0) ?? 0;
-  const totalOutputTokens = turnTokens?.reduce((sum, t) => sum + (t.outputTokens ?? 0), 0) ?? 0;
-  const hasTurnTokens = turnTokens?.some((t) => t.inputTokens !== undefined || t.outputTokens !== undefined);
+  const totalInputTokens = turnUsage?.reduce((sum, t) => sum + t.inputTokens, 0) ?? 0;
+  const totalOutputTokens = turnUsage?.reduce((sum, t) => sum + t.outputTokens, 0) ?? 0;
+  const hasTurnTokens = (turnUsage?.length ?? 0) > 0;
 
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
@@ -149,12 +146,12 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
           )}
 
           {/* Per-turn token breakdown */}
-          {hasTurnTokens && turnTokens && turnTokens.length > 0 && (
+          {hasTurnTokens && turnUsage && turnUsage.length > 0 && (
             <section data-testid="turn-breakdown-section">
               <h3 className="text-sm font-medium text-(--color-text-secondary) mb-2">Per-turn breakdown</h3>
               <div className="space-y-1 max-h-40 overflow-y-auto">
-                {[...turnTokens].reverse().map((turn, i) => {
-                  const turnNum = turnTokens.length - i;
+                {[...turnUsage].reverse().map((turn, i) => {
+                  const turnNum = turnUsage.length - i;
                   return (
                     <div
                       key={i}
@@ -162,13 +159,13 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
                     >
                       <span className="text-(--color-text-secondary) w-8">#{turnNum}</span>
                       <span className="text-(--color-text-primary)">
-                        In: {turn.inputTokens !== undefined ? formatTokenCount(turn.inputTokens) : "\u2014"}
+                        In: {formatTokenCount(turn.inputTokens)}
                       </span>
                       <span className="text-(--color-text-primary)">
-                        Out: {turn.outputTokens !== undefined ? formatTokenCount(turn.outputTokens) : "\u2014"}
+                        Out: {formatTokenCount(turn.outputTokens)}
                       </span>
                       <span className="text-(--color-text-secondary)">{formatCost(turn.costUsd)}</span>
-                      <span className="text-(--color-text-secondary)">{formatDuration(turn.durationMs)}</span>
+                      <span className="text-(--color-text-secondary)">{formatDuration(turn.durationMs ?? 0)}</span>
                     </div>
                   );
                 })}

@@ -256,8 +256,11 @@ export function wireAgentListeners(
       }
 
       const usageSessionId = turnSessionId ?? event.sessionId;
-      // Build the per-turn usage record once — reused for the WS emit and for
-      // persistence in chat history.
+      // Build the per-turn usage record for the live `turn_usage_update` emit.
+      // Per-turn data is no longer attached to chat-history messages — the
+      // canonical per-turn series is owned by `UsageManager` and rehydrated
+      // from there via `GET /api/sessions/:id/history` (see B in the
+      // ContextDial cost-display unification).
       let perTurnUsage: TurnUsage | undefined;
       if (event.tokens?.input !== undefined || event.tokens?.output !== undefined || event.cost?.totalUsd !== undefined) {
         perTurnUsage = {
@@ -297,6 +300,7 @@ export function wireAgentListeners(
             lastTurnInputTokens: event.tokens?.input,
             lastTurnOutputTokens: event.tokens?.output,
             cumulativeInputTokens: tokenTotals?.cumulativeInputTokens,
+            cumulativeOutputTokens: tokenTotals?.cumulativeOutputTokens,
           });
           if (perTurnUsage) {
             emitToViewers({
@@ -320,18 +324,18 @@ export function wireAgentListeners(
       }
 
       // Persist each message group as a separate assistant entry so that
-      // reloaded chat history shows the same message boundaries as live streaming.
-      // Attach per-turn usage to the *last* group so reloads can repopulate
-      // the context dial without needing the usage_turns table.
+      // reloaded chat history shows the same message boundaries as live
+      // streaming. Per-turn usage is no longer attached to the last group —
+      // the per-turn cost/token series lives in `usage_turns` and is fetched
+      // alongside chat history by the `/history` HTTP endpoint.
       const groups = runner?.chatMessageGroups ?? [];
       const persistableGroups = groups.filter((g) => g.text || g.toolUse.length > 0);
-      const finalMessages = persistableGroups.map((g, idx) => ({
+      const finalMessages = persistableGroups.map((g) => ({
         role: "assistant" as const,
         text: g.text,
         toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
         toolResults: g.toolResults?.length ? g.toolResults : undefined,
         subagentEvents: g.subagentEvents?.length ? g.subagentEvents : undefined,
-        turnUsage: idx === persistableGroups.length - 1 ? perTurnUsage : undefined,
       }));
       ctx.chatHistoryManager.replaceInProgress(usageSessionId, finalMessages);
       ctx.chatHistoryManager.finalizeInProgress(usageSessionId);
