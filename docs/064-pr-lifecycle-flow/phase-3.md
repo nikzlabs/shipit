@@ -135,6 +135,21 @@ If omitted, uses the stored preference. The endpoint calls the GitHub REST API `
 | `failure` | Disabled / grayed out | — |
 | `none` (no CI) | `[Squash and merge ▾]` | Merges immediately (no checks to wait for) |
 
+### `none` vs `pending` for repos that run CI
+
+When the repo has CI signals (workflow files in the local clone, or checks
+observed on any other PR in this repo) but GitHub hasn't reported any check
+for the current head SHA, the poller force-overrides `none` → `pending` to
+suppress the merge button while workflows are still spinning up.
+
+The override is time-boxed by `NO_CHECKS_GRACE_MS` (60s) per session, keyed
+on the current head SHA. After the grace expires without GitHub registering
+anything, we accept that no workflows apply to this PR — common case: a
+docs-only PR in a repo whose workflows have `paths:` filters excluding
+markdown — and let the state revert to genuine `none`, which unblocks the
+merge button. A new push (new head SHA) restarts the grace timer so the
+next commit gets its own fresh window.
+
 ## Auto-merge toggle
 
 ### GitHub native auto-merge

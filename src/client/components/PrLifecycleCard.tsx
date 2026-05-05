@@ -470,6 +470,11 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
   // heard from the poller yet, so we don't know whether CI exists. Treating
   // undefined as "none" would let the merge button appear in the gap between
   // PR creation and the first poll, before pending workflows have registered.
+  // The poller also force-overrides "none" → "pending" for a grace window
+  // when the repo runs CI but GitHub hasn't registered any checks for the
+  // current head SHA. Once that grace expires (e.g., docs-only PRs whose
+  // changed paths don't match any workflow's `paths:` filter), the state
+  // legitimately becomes "none" and the merge button appears.
   const isCiNone = card.checks?.state === "none";
   const isConflicting = mergeable === "conflicting";
   // Merge button visibility: gate on CI state AND on GitHub-reported

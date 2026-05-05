@@ -1246,4 +1246,213 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     existsSyncSpy.mockRestore();
     poller.destroy();
   });
+
+  it("reverts pending → none after grace window when GitHub never registers checks (paths-filter no-op)", async () => {
+    // Reproduces the docs-only PR case: workflows exist in the repo, but the
+    // PR's changed paths don't match any workflow's `paths:` filter, so
+    // GitHub never registers a check run. Without a timeout, we'd spin the
+    // CI indicator forever and the merge button would never appear.
+    const noCiNode = makeGraphQLPrNode({
+      commits: { nodes: [{ commit: { oid: "sha-1", statusCheckRollup: null } }] },
+    });
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [noCiNode] } } },
+    };
+
+    const githubAuth = makeGitHubAuth(graphqlResult);
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const sseBroadcast = vi.fn();
+
+    const existsSyncSpy = vi.spyOn(fs, "existsSync").mockReturnValue(true);
+    const readdirSyncSpy = vi.spyOn(fs, "readdirSync").mockReturnValue(["ci.yml"] as never);
+
+    const poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      getSharedRepoDir: () => "/repos/owner/repo",
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    // First poll inside grace window — state forced to "pending".
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
+      updates: [expect.objectContaining({
+        sessionId: "s1",
+        checks: expect.objectContaining({ state: "pending" }),
+      })],
+    }));
+
+    sseBroadcast.mockClear();
+
+    // Advance well past the grace window. GitHub still reports no checks.
+    // The override should drop and we should broadcast the flip to "none",
+    // which unblocks the merge button on the client.
+    await vi.advanceTimersByTimeAsync(65_000);
+
+    const noneCall = sseBroadcast.mock.calls.find(([, payload]) => {
+      const updates = (payload as { updates?: { checks?: { state?: string } }[] }).updates;
+      return updates?.some((u) => u.checks?.state === "none");
+    });
+    expect(noneCall, "expected a broadcast flipping state to none after grace").toBeDefined();
+
+    existsSyncSpy.mockRestore();
+    readdirSyncSpy.mockRestore();
+    poller.destroy();
+  });
+
+  it("resets grace window when head SHA changes (new push gives GitHub fresh time)", async () => {
+    // PR starts with sha-1 / no checks, then a new commit lands at sha-2 with
+    // still no checks. The grace timer should restart so we don't immediately
+    // declare the new commit "no CI" — GitHub may yet register workflows.
+    const sha1Node = makeGraphQLPrNode({
+      commits: { nodes: [{ commit: { oid: "sha-1", statusCheckRollup: null } }] },
+    });
+
+    const githubAuth = makeGitHubAuth({
+      data: { repository: { pullRequests: { nodes: [sha1Node] } } },
+    });
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const sseBroadcast = vi.fn();
+
+    const existsSyncSpy = vi.spyOn(fs, "existsSync").mockReturnValue(true);
+    const readdirSyncSpy = vi.spyOn(fs, "readdirSync").mockReturnValue(["ci.yml"] as never);
+
+    const poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      getSharedRepoDir: () => "/repos/owner/repo",
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    // First poll: pending (within grace).
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Just before grace expires, new commit lands.
+    await vi.advanceTimersByTimeAsync(50_000);
+    const sha2Node = makeGraphQLPrNode({
+      commits: { nodes: [{ commit: { oid: "sha-2", statusCheckRollup: null } }] },
+    });
+    (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { repository: { pullRequests: { nodes: [sha2Node] } } },
+    });
+
+    // Trigger a poll on the new SHA (timer + slop for promise resolution).
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    sseBroadcast.mockClear();
+
+    // 20s later (~73s since session start, but only ~23s since the SHA
+    // change) — should still be "pending" because the SHA-change reset the
+    // grace timer. This is the regression we want to guard against.
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    const flippedToNone = sseBroadcast.mock.calls.some(([, payload]) => {
+      const updates = (payload as { updates?: { checks?: { state?: string } }[] }).updates;
+      return updates?.some((u) => u.checks?.state === "none");
+    });
+    expect(flippedToNone, "should not flip to none yet — SHA changed, grace restarted").toBe(false);
+
+    // Advance past the new grace window — now flip should fire.
+    await vi.advanceTimersByTimeAsync(50_000);
+    const flippedNow = sseBroadcast.mock.calls.some(([, payload]) => {
+      const updates = (payload as { updates?: { checks?: { state?: string } }[] }).updates;
+      return updates?.some((u) => u.checks?.state === "none");
+    });
+    expect(flippedNow).toBe(true);
+
+    existsSyncSpy.mockRestore();
+    readdirSyncSpy.mockRestore();
+    poller.destroy();
+  });
+
+  it("clears grace tracker when checks finally arrive — normal pending/success flow resumes", async () => {
+    // PR opens with no checks (override fires), then GitHub registers a
+    // pending check, then it succeeds. The grace tracker should not interfere
+    // with the normal lifecycle.
+    const noCiNode = makeGraphQLPrNode({
+      commits: { nodes: [{ commit: { oid: "sha-1", statusCheckRollup: null } }] },
+    });
+    const githubAuth = makeGitHubAuth({
+      data: { repository: { pullRequests: { nodes: [noCiNode] } } },
+    });
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const sseBroadcast = vi.fn();
+
+    const existsSyncSpy = vi.spyOn(fs, "existsSync").mockReturnValue(true);
+    const readdirSyncSpy = vi.spyOn(fs, "readdirSync").mockReturnValue(["ci.yml"] as never);
+
+    const poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      getSharedRepoDir: () => "/repos/owner/repo",
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+    // Pending (override).
+
+    // GitHub registers an in-progress check.
+    const pendingNode = makeGraphQLPrNode({
+      commits: {
+        nodes: [{
+          commit: {
+            oid: "sha-1",
+            statusCheckRollup: {
+              state: "PENDING",
+              contexts: { nodes: [{ name: "test", status: "IN_PROGRESS", conclusion: null }] },
+            },
+          },
+        }],
+      },
+    });
+    (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { repository: { pullRequests: { nodes: [pendingNode] } } },
+    });
+
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    // Then the check succeeds, well past the original grace window. If the
+    // tracker hadn't been cleared when checks first arrived, a stale "grace
+    // expired" comparison could in theory misclassify state — but since
+    // state !== "none" we now skip the override path entirely, so success
+    // should propagate cleanly.
+    const successNode = makeGraphQLPrNode({
+      commits: {
+        nodes: [{
+          commit: {
+            oid: "sha-1",
+            statusCheckRollup: {
+              state: "SUCCESS",
+              contexts: { nodes: [{ name: "test", status: "COMPLETED", conclusion: "SUCCESS" }] },
+            },
+          },
+        }],
+      },
+    });
+    (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { repository: { pullRequests: { nodes: [successNode] } } },
+    });
+
+    sseBroadcast.mockClear();
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    const sawSuccess = sseBroadcast.mock.calls.some(([, payload]) => {
+      const updates = (payload as { updates?: { checks?: { state?: string } }[] }).updates;
+      return updates?.some((u) => u.checks?.state === "success");
+    });
+    expect(sawSuccess).toBe(true);
+
+    existsSyncSpy.mockRestore();
+    readdirSyncSpy.mockRestore();
+    poller.destroy();
+  });
 });
