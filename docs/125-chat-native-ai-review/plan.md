@@ -88,11 +88,13 @@ the chat surface already exists.
    comments, draft → sent → history, server-persisted per
    `(session, file)` — all preserved. The thing that goes away is the
    button's *implementation*, not the comment surface around it.
-3. **Make AI review a chat turn, optionally with tool-driven write-back.**
-   The user clicks "Ask agent to review," a structured chat message is
-   composed and submitted, and the agent reviews in the dialog. If the
-   agent wants to leave anchored comments in the draft, it does so via
-   a tool call.
+3. **Make AI review a chat turn that delegates to a subagent.** The
+   user clicks "Ask agent to review," a structured chat message is
+   composed and submitted, and the parent agent spawns a subagent to
+   do the actual review. The subagent leaves anchored comments via a
+   tool call. Going through a subagent is not an implementation
+   detail — it is the correctness story for self-review (see
+   "Subagent, not parent agent" below).
 4. **Keep the user in chat for iteration.** Once the agent has reviewed,
    the user steers it the same way they steer anything else — by
    continuing the conversation.
@@ -124,24 +126,119 @@ moved to a capability check rather than a per-endpoint check).
 
 Clicking it does exactly two things on the client:
 
-1. Composes a structured chat message naming the file, its current
-   draft state (any existing user comments), and the focus areas if the
-   user has a quick-pick selector exposed (optional v1; see open
-   questions). Example body:
+1. Composes a structured chat message that **embeds every unaddressed
+   comment verbatim** and instructs the agent to **delegate the review
+   to a subagent**. "Unaddressed" means every comment in the current
+   draft (by definition not yet sent), and — see open questions — the
+   comments from any prior sent review on this file in this session
+   that the agent's subsequent turns did not visibly resolve. The
+   embedded comments matter for two reasons: they tell the subagent
+   what the user already cares about (so it doesn't repeat them or
+   contradict them), and they keep "what's still open" in the prompt
+   instead of summarized away. The subagent matters because the parent
+   agent likely *wrote* the file under review, and asking the author
+   to review their own work produces sycophantic output. A subagent
+   gets a fresh context window with no prior loyalty to the artifact.
+
+   Example body:
 
    ```
    Review docs/064-pr-lifecycle-flow/plan.md.
 
-   The user has 1 draft comment so far on the "Architecture" section
-   ("This is too vague"). Add anchored comments via the
-   `add_review_comment` tool to the current draft. Focus on
-   correctness, completeness, and contradictions with the
-   implementation; skip nits.
+   Use the Task tool to delegate this review to a subagent. You wrote
+   (or recently edited) this file in the current conversation, so a
+   first-person review will be biased toward defending the existing
+   text. The subagent should approach the file fresh, treat it as work
+   it has not seen before, and use the `add_review_comment` tool to
+   leave anchored comments on the current draft.
+
+   Focus on correctness, completeness, internal consistency, and
+   contradictions with the rest of the repo. Skip nits.
+
+   --- Existing unaddressed comments on this file ---
+
+   ## Architecture (section, draft)
+     [user] This section is too vague — what does "unified" mean in
+     concrete terms?
+
+   ## Failure modes (section, sent 2026-05-06, not visibly addressed)
+     [user] What about 5xx from GitHub? Doc still doesn't say.
+
+   line 142 (draft)
+     [user] This contradicts the diagram above.
+
+   ---
+
+   Do not duplicate the comments above; build on them or address gaps
+   they leave. If you agree with an existing comment, add a new
+   comment that extends it rather than repeating it.
    ```
 
 2. Submits that message via the existing `send_message` flow, then
    closes (or minimizes — see open questions) the modal so the user
    can watch the agent work in chat.
+
+### Subagent, not parent agent
+
+The chat message instructs the parent agent to invoke its `Task` tool
+(or whatever the active backend's subagent primitive is) and let the
+subagent perform the review. This is the load-bearing piece of the
+design — it is *why* this works as a quality feature and not just as
+an architectural cleanup.
+
+Concretely:
+
+- The parent agent is the same agent that has been writing in this
+  conversation. By the time the user clicks "Ask agent to review,"
+  the parent has almost certainly authored or edited the file under
+  review somewhere in its history. Asking it to critique its own
+  output produces output that ranges from "lukewarm" to "actively
+  defending the choices it just made."
+- The subagent inherits the system prompt and tool surface but starts
+  with a fresh context. It does not know that the parent wrote the
+  file. It treats the file as foreign code, which is exactly the
+  posture a useful review needs.
+- The subagent has no incentive to keep its prior decisions intact,
+  because it has none. It can flag things the parent would
+  rationalize.
+- The subagent's output is summarized back to the parent — but by
+  that point the comments have already been written to the draft via
+  the tool, so the parent's summarization can't soften them. The
+  durable artifact is the comment list, not the summary.
+
+The chat-message body explicitly names this — "you wrote this file in
+the current conversation, so a first-person review will be biased" —
+rather than relying on the parent to figure out the right move. This
+is the kind of instruction that belongs in the prompt because it's
+about what the *parent* should do (delegate), not what the reviewer
+should do (review).
+
+### Embedding existing comments in the prompt
+
+The composed message embeds every unaddressed comment verbatim, with
+its anchor (section heading or line number) and source (`user` or `ai`
+from a prior turn). Two reasons:
+
+1. **Don't make the subagent re-discover what the user already said.**
+   If the user already wrote "this is too vague" on the Architecture
+   section, the subagent should know that and either build on it
+   ("specifically, X and Y are undefined") or move on to other
+   sections. A summary loses this; verbatim text preserves it.
+2. **Don't waste comments on things already raised.** A duplicate
+   "this is vague" comment from the AI is worse than no comment at
+   all — it implies the AI didn't read the existing draft.
+
+The embedding logic lives client-side in the same place that builds
+the chat-message body, and reads from the existing
+`FileReviewStore.getDraft(sessionId, filePath)` and the most recent
+sent review's comment list. The prompt explicitly tells the subagent
+not to duplicate.
+
+"Unaddressed" for sent reviews is best-effort: we don't have a
+reliable signal that the agent's subsequent edits resolved a given
+comment. v1 includes all comments from the most recent sent review
+unless the user has explicitly marked them resolved (a small UX
+addition — see open questions). v2 can get smarter.
 
 ### Server: a tool, not an endpoint
 
@@ -206,11 +303,22 @@ push for review state, the same way it already receives Send results.
 - **No agent available** (no auth, no runnable session). The button is
   hidden, not disabled-with-spinner. We do not show an affordance for
   something that can't run.
-- **Agent finishes the turn without calling the tool.** The chat
-  shows whatever the agent said; the draft is unchanged. This is fine —
-  the user got a review in chat, which is what they asked for. They
-  can copy any worth-keeping notes into the draft as human comments,
-  or ask the agent to "now add those as anchored comments."
+- **Parent agent skips the subagent and reviews directly.** The
+  prompt is an instruction, not a hard guarantee. If the parent
+  ignores it and reviews in-context, we get the biased review we
+  were trying to avoid. Mitigation: phrase the instruction as a
+  precondition ("before reviewing, spawn a subagent") rather than a
+  suggestion, and verify in dogfooding that current Claude/Codex
+  models follow it. If they don't, the next step is a tool that
+  *only* a subagent is allowed to call (e.g., `add_review_comment`
+  rejects invocations from the root turn), which forces the
+  delegation by construction.
+- **Subagent finishes without calling `add_review_comment`.** The
+  chat shows whatever the subagent (and then the parent) said; the
+  draft is unchanged. This is fine — the user got a review in chat,
+  which is what they asked for. They can copy any worth-keeping notes
+  into the draft as human comments, or ask the agent to "now add
+  those as anchored comments."
 - **Agent anchors a comment to a section that no longer exists** (e.g.,
   user is editing the file mid-review). The existing re-anchoring path
   in `services/reviews.ts` already handles drift; comments fall back to
@@ -220,13 +328,19 @@ push for review state, the same way it already receives Send results.
 
 1. **Chat is the only path to AI review.** No second surface, no
    button-triggered out-of-band agent run.
-2. **The write-back mechanism is a tool call.** Not a JSON-coerced
+2. **The review runs in a subagent, not the parent.** Self-review by
+   the author of the artifact is the failure mode we're designing
+   against; delegating to a subagent is how we avoid it.
+3. **The composed prompt embeds every unaddressed comment verbatim.**
+   Not a summary, not a count — the actual text and anchors. The
+   subagent must see what the user already cares about.
+4. **The write-back mechanism is a tool call.** Not a JSON-coerced
    assistant message, not a separate endpoint.
-3. **The button composes and submits a chat message.** It does not
+5. **The button composes and submits a chat message.** It does not
    directly call any review endpoint.
-4. **Source-of-comment distinction is preserved.** Human vs AI comments
+6. **Source-of-comment distinction is preserved.** Human vs AI comments
    still render differently; the schema is unchanged.
-5. **No migration.** `source: "ai"` rows produced by the old endpoint
+7. **No migration.** `source: "ai"` rows produced by the old endpoint
    stay in place; new ones come from the tool. Both look identical.
 
 ## Open questions
@@ -248,6 +362,20 @@ push for review state, the same way it already receives Send results.
 4. **Tool naming.** `add_review_comment` is descriptive but verbose.
    The existing tool-name convention in `tool-map.ts` should drive the
    final choice.
+5. **Resolved-comment marker.** To make "unaddressed" precise across
+   sent reviews, the user needs a way to mark a comment resolved
+   without sending a new review. Likely a small checkbox in the
+   "Past reviews" disclosure that sets a `resolved_at` column on the
+   comment. The composed prompt then filters out resolved comments.
+   v1 can ship without this and just include all sent comments,
+   accepting the duplication risk; the UI hook is the same shape if
+   we add it later.
+6. **Tool gating to force delegation.** If parent agents prove
+   unreliable about delegating to a subagent, we can make
+   `add_review_comment` reject calls from the root agent turn (only
+   subagent contexts can write). This is the structural fallback if
+   prompting alone isn't enough. Decision deferred until we have
+   real-world signal.
 
 ## Risks
 
