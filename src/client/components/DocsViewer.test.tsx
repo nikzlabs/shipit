@@ -323,6 +323,36 @@ describe("DocsViewer", () => {
       expect(screen.getByText("Modified in this session")).toBeInTheDocument();
       expect(screen.getByText("NOTES")).toBeInTheDocument();
     });
+
+    it("hides an untracked sibling from the modified group when a tracked plan exists alongside it", () => {
+      // Both `plan.md` and `checklist.md` for the same feature got touched in
+      // this session. The two derive the same display title from the parent
+      // directory name, so listing both would render as a visual duplicate.
+      // The checklist remains reachable via the modal's sibling tabs.
+      const props = { ...defaultProps(), sessionStartedAt: SESSION_START };
+      props.files = [
+        makeDoc({
+          path: "docs/124-feature/plan.md",
+          title: "Feature",
+          status: "planned",
+          priority: "high",
+          modifiedAt: AFTER_1,
+        }),
+        makeDoc({
+          path: "docs/124-feature/checklist.md",
+          title: "Feature",
+          modifiedAt: AFTER_2,
+        }),
+      ];
+      render(<DocsViewer {...props} />);
+      expect(screen.getByText("Modified in this session")).toBeInTheDocument();
+      // Only the tracked plan renders — exactly one row, not two.
+      const titles = screen.getAllByText("Feature");
+      expect(titles).toHaveLength(1);
+      // The status/priority badges from plan.md should still be present.
+      expect(screen.getByText("Planned")).toBeInTheDocument();
+      expect(screen.getByText("High")).toBeInTheDocument();
+    });
   });
 
   describe("interactions", () => {
