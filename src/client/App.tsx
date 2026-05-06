@@ -688,7 +688,7 @@ export default function App() {
       <div className="flex-1 min-h-0 relative">
         {/* PreviewFrame is always rendered to preserve iframe state; hidden via CSS when another tab is active */}
         <div className={`absolute inset-0 ${rightTab === "preview" ? "" : "invisible pointer-events-none"}`}>
-          <PreviewFrame preview={previewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} onSendCrashToAgent={handleSendComposeErrorToAgent} onSendComposeHintToAgent={handleSendComposeHintToAgent} />
+          <PreviewFrame preview={previewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} onSendCrashToAgent={handleSendComposeErrorToAgent} onSendComposeHintToAgent={handleSendComposeHintToAgent} onStartService={(name) => send({ type: "start_service", name })} onStopService={(name) => send({ type: "stop_service", name })} />
         </div>
         {rightTab === "docs" ? (
           <DocsViewer files={docFiles} sessionStartedAt={currentSession?.createdAt} onFileClick={(f) => { const doc = docFiles.find((d) => d.path === f); handleOpenDoc(f, doc); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} />
