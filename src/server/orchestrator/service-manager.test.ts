@@ -148,6 +148,46 @@ services:
     expect(events.some(e => e.name === "web" && e.status === "error")).toBe(true);
   });
 
+  it("does not run `compose up` when every service is manual", async () => {
+    const dir = setup();
+    writeCompose(dir, `
+services:
+  dev:
+    image: node:22
+    ports: ["3000:3000"]
+    x-shipit-preview: manual
+`);
+
+    const composeCalls: string[][] = [];
+    const composeRunner: ComposeRunner = (args) => {
+      composeCalls.push(args);
+      return Promise.resolve();
+    };
+    const composeQuery: ComposeQuery = () => Promise.resolve("");
+
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+    });
+
+    await mgr.start();
+
+    // The service must be registered (so the user can start it) and reported
+    // as stopped — but no `compose up` should have been issued, otherwise
+    // compose interprets "no service args" as "all services" and starts the
+    // manual one anyway.
+    expect(mgr.getService("dev")?.preview).toBe("manual");
+    expect(mgr.getService("dev")?.status).toBe("stopped");
+    expect(mgr.started).toBe(true);
+
+    const upCalls = composeCalls.filter((args) => args.includes("up"));
+    expect(upCalls).toHaveLength(0);
+  });
+
   it("throws for unknown service in startService", async () => {
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n");
