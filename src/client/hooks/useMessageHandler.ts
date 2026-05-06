@@ -17,6 +17,7 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
+import { useFileReviewStore } from "../stores/file-review-store.js";
 import type { NotifyContext } from "./useNotification.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 
@@ -656,6 +657,14 @@ function processMessage(
         checks: data.checks,
         errorMessage: data.errorMessage,
       });
+    }
+
+    if (data.type === "ai_review_progress") {
+      useFileReviewStore.getState().setAiProgress(data.sessionId, data.reviewId, data.text);
+    }
+
+    if (data.type === "ai_review_complete") {
+      useFileReviewStore.getState().clearAiProgressForReview(data.sessionId, data.reviewId);
     }
 
     // session_agent_started/finished, repo_status, repo_warm_ready, repo_list

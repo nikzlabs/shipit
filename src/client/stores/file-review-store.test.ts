@@ -81,6 +81,7 @@ describe("file-review-store", () => {
       draftByKey: {},
       historyByKey: {},
       aiLoadingByKey: {},
+      aiProgressByKey: {},
       loadingByKey: {},
     });
   });
@@ -215,6 +216,55 @@ describe("file-review-store", () => {
     expect(newCs).toHaveLength(1);
     const draftNow = useFileReviewStore.getState().getDraft("s1", "plan.md");
     expect(draftNow?.comments[0].source).toBe("ai");
+  });
+
+  it("setAiProgress() routes by reviewId to the matching draft and renders streaming text", async () => {
+    const draftA = makeDraft({ id: "draft-a", filePath: "a.md" });
+    const draftB = makeDraft({ id: "draft-b", filePath: "b.md" });
+    const fake = new FakeFetch();
+    fake.on("POST", "/api/sessions/s1/file-reviews/draft", (body) => {
+      const filePath = (body as { filePath: string }).filePath;
+      return filePath === "a.md" ? draftA : draftB;
+    });
+    fake.on("GET", /file-reviews\?filePath/, () => ({ reviews: [] }));
+    fake.install();
+
+    await useFileReviewStore.getState().load("s1", "a.md");
+    await useFileReviewStore.getState().load("s1", "b.md");
+
+    useFileReviewStore.getState().setAiProgress("s1", "draft-a", "thinking…");
+    expect(useFileReviewStore.getState().aiProgressByKey["s1::a.md"]).toBe("thinking…");
+    expect(useFileReviewStore.getState().aiProgressByKey["s1::b.md"]).toBeUndefined();
+
+    useFileReviewStore.getState().setAiProgress("s1", "draft-a", "thinking… more");
+    expect(useFileReviewStore.getState().aiProgressByKey["s1::a.md"]).toBe("thinking… more");
+  });
+
+  it("setAiProgress() ignores events for unknown reviewIds (e.g. discarded drafts)", async () => {
+    const draft = makeDraft({ id: "draft-real" });
+    const fake = new FakeFetch();
+    fake.on("POST", "/api/sessions/s1/file-reviews/draft", () => draft);
+    fake.on("GET", /file-reviews\?filePath/, () => ({ reviews: [] }));
+    fake.install();
+
+    await useFileReviewStore.getState().load("s1", "plan.md");
+    useFileReviewStore.getState().setAiProgress("s1", "draft-stale", "ghost text");
+    expect(useFileReviewStore.getState().aiProgressByKey["s1::plan.md"]).toBeUndefined();
+  });
+
+  it("clearAiProgressForReview() removes streaming text for the matching draft", async () => {
+    const draft = makeDraft({ id: "draft-c" });
+    const fake = new FakeFetch();
+    fake.on("POST", "/api/sessions/s1/file-reviews/draft", () => draft);
+    fake.on("GET", /file-reviews\?filePath/, () => ({ reviews: [] }));
+    fake.install();
+
+    await useFileReviewStore.getState().load("s1", "plan.md");
+    useFileReviewStore.getState().setAiProgress("s1", "draft-c", "in flight");
+    expect(useFileReviewStore.getState().aiProgressByKey["s1::plan.md"]).toBe("in flight");
+
+    useFileReviewStore.getState().clearAiProgressForReview("s1", "draft-c");
+    expect(useFileReviewStore.getState().aiProgressByKey["s1::plan.md"]).toBeUndefined();
   });
 
   it("discardEmptyDraft() deletes empty drafts on the server", async () => {

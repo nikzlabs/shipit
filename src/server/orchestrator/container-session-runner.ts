@@ -115,6 +115,25 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _detectedPorts: number[] = [];
 
   /**
+   * In-flight one-shot text generations multiplexed over the SSE stream.
+   * Keyed by requestId. The worker emits `generate_text_chunk` / `_done` /
+   * `_error` SSE events with a matching requestId; the SSE handler dispatches
+   * to the right entry here so multiple concurrent generations (e.g. AI
+   * Review + PR description) don't collide with each other or with the
+   * primary agent's `agent_*` events.
+   */
+  private _pendingGenerations = new Map<string, {
+    onProgress?: (text: string) => void;
+    resolve: (text: string) => void;
+    reject: (err: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+    accumulated: string;
+  }>();
+  private _generationCounter = 0;
+  /** Hard ceiling for a single one-shot generation. */
+  private static readonly GENERATION_TIMEOUT_MS = 120_000;
+
+  /**
    * Timestamp (Date.now()) of the most recent SSE event from the worker.
    * Used by the container health endpoint to surface "last event 47s ago"
    * so the user can tell when the SSE stream has stalled even if the
@@ -543,6 +562,59 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     await workerPost(this.workerUrl, "/agent/stdin", { data });
   }
 
+  /**
+   * Run a one-shot text generation against the worker's ephemeral agent
+   * (independent of the user's primary agent). Streams accumulated text via
+   * `opts.onProgress` and resolves with the final text on `generate_text_done`.
+   *
+   * Used by orchestrator-side AI features (AI Review, PR description, etc.)
+   * that previously relied on `app-di.ts`'s in-process agent factory — which
+   * is unavailable in containerized production. Routes through the same SSE
+   * multiplex as the main agent so we don't open a second long-lived stream.
+   */
+  async generateText(
+    prompt: string,
+    opts?: { agentId?: AgentId; onProgress?: (text: string) => void; timeoutMs?: number },
+  ): Promise<string> {
+    await this._workerReady;
+    if (this._disposed) throw new Error("Runner disposed");
+
+    // Ensure SSE is connected so we'll receive the worker's response events.
+    if (!this.sseConnection) {
+      await this.connectEventStream();
+    }
+
+    const agentId = opts?.agentId ?? this._agentId;
+    const requestId = `gen-${++this._generationCounter}-${Date.now()}`;
+    const timeoutMs = opts?.timeoutMs ?? ContainerSessionRunner.GENERATION_TIMEOUT_MS;
+
+    return new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (this._pendingGenerations.delete(requestId)) {
+          reject(new Error("Text generation timed out"));
+        }
+      }, timeoutMs);
+
+      this._pendingGenerations.set(requestId, {
+        onProgress: opts?.onProgress,
+        resolve,
+        reject,
+        timer,
+        accumulated: "",
+      });
+
+      workerPost(this.workerUrl, "/agent/generate", { agentId, prompt, requestId })
+        .catch((err: unknown) => {
+          const entry = this._pendingGenerations.get(requestId);
+          if (entry) {
+            this._pendingGenerations.delete(requestId);
+            clearTimeout(entry.timer);
+            reject(err instanceof Error ? err : new Error(String(err)));
+          }
+        });
+    });
+  }
+
   // --- Worker communication: terminal ---
 
   /** Start a terminal PTY inside the container. */
@@ -851,6 +923,45 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           }
           break;
 
+        // --- One-shot text generation (multiplexed by requestId) ---
+
+        case "generate_text_chunk": {
+          const requestId = data.requestId as string | undefined;
+          const text = (data.text as string) ?? "";
+          if (!requestId) break;
+          const entry = this._pendingGenerations.get(requestId);
+          if (entry) {
+            entry.accumulated = text;
+            entry.onProgress?.(text);
+          }
+          break;
+        }
+
+        case "generate_text_done": {
+          const requestId = data.requestId as string | undefined;
+          if (!requestId) break;
+          const entry = this._pendingGenerations.get(requestId);
+          if (entry) {
+            this._pendingGenerations.delete(requestId);
+            clearTimeout(entry.timer);
+            const finalText = (data.text as string) ?? entry.accumulated;
+            entry.resolve(finalText);
+          }
+          break;
+        }
+
+        case "generate_text_error": {
+          const requestId = data.requestId as string | undefined;
+          if (!requestId) break;
+          const entry = this._pendingGenerations.get(requestId);
+          if (entry) {
+            this._pendingGenerations.delete(requestId);
+            clearTimeout(entry.timer);
+            entry.reject(new Error((data.message as string) ?? "Text generation failed"));
+          }
+          break;
+        }
+
         // --- Terminal events ---
 
         case "terminal_data":
@@ -1109,6 +1220,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this.clearPushTimer();
     // Resolve any awaiters of in-flight install so they don't leak.
     this.signalInstallComplete();
+    // Reject any in-flight one-shot generations so callers fail fast.
+    for (const [, entry] of this._pendingGenerations) {
+      clearTimeout(entry.timer);
+      entry.reject(new Error("Runner disposed"));
+    }
+    this._pendingGenerations.clear();
     this._messageQueue.length = 0;
     this._turnEventBuffer = [];
     this._isRunning = false;

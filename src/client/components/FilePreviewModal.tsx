@@ -297,6 +297,45 @@ function PastReviews({ history }: { history: FileReview[] }) {
   );
 }
 
+// ---------- AI Review streaming progress panel ----------
+
+/**
+ * Renders the live "thinking…" panel above the document while an AI Review
+ * run is in flight. The text is the full accumulated assistant output the
+ * orchestrator has streamed so far — typically a JSON array — so the panel
+ * trims and previews the tail. Once the run completes, the modal hides
+ * the panel and the parsed comments appear inline.
+ */
+function AiReviewProgressPanel({ text }: { text: string }) {
+  // Show a tail-preview of the streaming text so the panel doesn't grow
+  // without bound. The agent's final JSON gets parsed server-side; this
+  // panel exists purely to signal liveness.
+  const PREVIEW_CHARS = 600;
+  const preview = text.length > PREVIEW_CHARS ? `…${text.slice(-PREVIEW_CHARS)}` : text;
+
+  return (
+    <div
+      className="mx-6 mt-4 mb-2 px-3 py-2 rounded border border-purple-400/40 bg-purple-950/30 shrink-0"
+      role="status"
+      aria-live="polite"
+      aria-label="AI Review in progress"
+    >
+      <div className="flex items-center gap-2 text-xs text-purple-300 font-medium mb-1">
+        <RobotIcon size={ICON_SIZE.SM} />
+        <span>AI Review</span>
+        <span className="inline-flex gap-0.5 ml-1" aria-hidden="true">
+          <span className="w-1 h-1 rounded-full bg-purple-300 animate-pulse" />
+          <span className="w-1 h-1 rounded-full bg-purple-300 animate-pulse [animation-delay:200ms]" />
+          <span className="w-1 h-1 rounded-full bg-purple-300 animate-pulse [animation-delay:400ms]" />
+        </span>
+      </div>
+      <div className="text-xs text-(--color-text-secondary) font-mono whitespace-pre-wrap max-h-32 overflow-y-auto">
+        {preview || <span className="italic">Waiting for the agent to start writing…</span>}
+      </div>
+    </div>
+  );
+}
+
 // ---------- Main modal ----------
 
 const EMPTY_HISTORY: FileReview[] = [];
@@ -322,6 +361,9 @@ export function FilePreviewModal({
   );
   const aiLoading = useFileReviewStore((s) =>
     key ? s.aiLoadingByKey[key] ?? false : false,
+  );
+  const aiProgress = useFileReviewStore((s) =>
+    key ? s.aiProgressByKey[key] ?? "" : "",
   );
   const load = useFileReviewStore((s) => s.load);
   const aiReview = useFileReviewStore((s) => s.aiReview);
@@ -433,6 +475,11 @@ export function FilePreviewModal({
             </div>
           )}
         </div>
+
+        {/* AI Review streaming progress panel */}
+        {aiLoading && (
+          <AiReviewProgressPanel text={aiProgress} />
+        )}
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6">

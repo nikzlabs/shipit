@@ -97,7 +97,7 @@ export interface AppDeps {
    * Spawns a short-lived Claude process, collects text output, and returns it.
    * Inject a stub in tests.
    */
-  generateText?: (prompt: string, cwd: string) => Promise<string>;
+  generateText?: (prompt: string, cwd: string, opts?: { onProgress?: (text: string) => void }) => Promise<string>;
   /**
    * Unified credential store for git identity, GitHub token, agent API keys.
    * Defaults to `new CredentialStore(credentialsDir)`.
@@ -163,7 +163,7 @@ export interface ManagerSet {
   credentialStore: CredentialStore;
   agentRegistry: AgentRegistry;
   githubAuthManager: GitHubAuthManager;
-  generateText: (prompt: string, cwd: string) => Promise<string>;
+  generateText: (prompt: string, cwd: string, opts?: { onProgress?: (text: string) => void }) => Promise<string>;
   isTestMode: boolean;
   /** Resolved runtime mode (containerized vs local). See {@link RuntimeMode}. */
   runtimeMode: RuntimeMode;
@@ -286,35 +286,41 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   const reviewStore = new FileReviewStore(databaseManager);
 
   // ---- Text generation (AI-powered features) ----
-  // Tests inject a stub. In production, agentFactory is unavailable (agents
-  // live inside session containers), so the default uses agentFactory only
-  // when provided, otherwise returns empty string (feature gracefully degrades).
-  const generateText = deps.generateText ?? ((prompt: string, cwd: string): Promise<string> => {
-    if (!agentFactory) {
-      // No in-process agent available — return empty to degrade gracefully.
-      return Promise.resolve("");
-    }
-    return new Promise((resolve, reject) => {
-      const agent = agentFactory(defaultAgentId);
-      let text = "";
-      agent.on("event", (event: AgentEvent) => {
-        if (event.type === "agent_assistant") {
-          for (const block of event.content) {
-            if (block.type === "text") text += block.text;
+  // Tests inject a stub. When no in-process agentFactory is available (the
+  // production containerized case — agents live inside session containers),
+  // this fallback returns "" and AI-powered features that don't have a
+  // session-scoped path silently degrade. AI Review and other session-aware
+  // features should resolve a runner from the registry first and call
+  // `runner.generateText()` (which routes to the worker), only falling back
+  // to this factory when no runner is available.
+  const generateText: (prompt: string, cwd: string, opts?: { onProgress?: (text: string) => void }) => Promise<string> =
+    deps.generateText ?? ((prompt, cwd, opts): Promise<string> => {
+      if (!agentFactory) {
+        // No in-process agent available — return empty to degrade gracefully.
+        return Promise.resolve("");
+      }
+      return new Promise((resolve, reject) => {
+        const agent = agentFactory(defaultAgentId);
+        let text = "";
+        agent.on("event", (event: AgentEvent) => {
+          if (event.type === "agent_assistant") {
+            for (const block of event.content) {
+              if (block.type === "text") text += block.text;
+            }
+            if (text) opts?.onProgress?.(text);
           }
-        }
+        });
+        agent.on("done", (exitCode: number) => {
+          if (exitCode === 0 || text.length > 0) {
+            resolve(text);
+          } else {
+            reject(new Error(`Agent process exited with code ${  exitCode}`));
+          }
+        });
+        agent.on("error", (err: Error) => reject(err));
+        agent.run({ prompt, cwd, permissionMode: "auto" });
       });
-      agent.on("done", (exitCode: number) => {
-        if (exitCode === 0 || text.length > 0) {
-          resolve(text);
-        } else {
-          reject(new Error(`Agent process exited with code ${  exitCode}`));
-        }
-      });
-      agent.on("error", (err: Error) => reject(err));
-      agent.run({ prompt, cwd, permissionMode: "auto" });
     });
-  });
 
   const isTestMode = deps.serveStatic === false;
 

@@ -282,6 +282,22 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   // Agent factory (container mode — returns a proxy that delegates to the worker)
   createAgent?(agentId: AgentId): AgentProcess;
 
+  /**
+   * Run a one-shot prompt against an ephemeral agent (separate from the
+   * primary `running` agent) and return its accumulated assistant text.
+   * Optional `onProgress` callback fires on every accumulated chunk so
+   * callers can stream partial output to the UI.
+   *
+   * Container runners route this through the worker's `/agent/generate`
+   * endpoint and multiplex over the existing SSE stream. Optional — direct
+   * runners may omit it and let callers fall back to a process-level
+   * `generateText` factory injected via DI.
+   */
+  generateText?(
+    prompt: string,
+    opts?: { agentId?: AgentId; onProgress?: (text: string) => void; timeoutMs?: number },
+  ): Promise<string>;
+
   // Viewer management
   readonly viewerCount: number;
   attachViewer(): void;

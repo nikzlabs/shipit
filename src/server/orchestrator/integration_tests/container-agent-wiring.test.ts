@@ -299,6 +299,130 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose();
   });
 
+  // ---- One-shot generateText (AI Review, PR description, etc.) ----
+
+  describe("generateText", () => {
+    it("streams onProgress chunks and resolves with the final text", async () => {
+      const runner = new ContainerSessionRunner({
+        sessionId: "test-generate",
+        sessionDir: "/tmp/test",
+        defaultAgentId: "claude",
+        workerUrl,
+      });
+
+      runner.attachViewer();
+      await new Promise((r) => setTimeout(r, 200));
+
+      const progress: string[] = [];
+      const promise = runner.generateText("review this", {
+        onProgress: (text) => progress.push(text),
+      });
+
+      // Wait for the worker to spawn the ephemeral agent (one-shot path
+      // creates a fresh FakeWorkerAgent on each /agent/generate call).
+      await waitFor(() => lastAgent?.runCalled, 3000, "ephemeral agent.run()");
+      expect(lastAgent.lastParams?.prompt).toBe("review this");
+
+      // Emit two assistant chunks then done — the worker accumulates and
+      // broadcasts `generate_text_chunk` events with the running total.
+      lastAgent.emit("event", {
+        type: "agent_assistant",
+        content: [{ type: "text", text: "[" }],
+      });
+      lastAgent.emit("event", {
+        type: "agent_assistant",
+        content: [{ type: "text", text: "{\"x\":1}]" }],
+      });
+      lastAgent.emit("done", 0);
+
+      const finalText = await promise;
+      expect(finalText).toBe("[{\"x\":1}]");
+      expect(progress).toEqual(["[", "[{\"x\":1}]"]);
+
+      runner.dispose();
+    });
+
+    it("multiplexes concurrent generations by requestId", async () => {
+      // Two generations should be tracked independently — each ephemeral
+      // agent gets its own FakeWorkerAgent slot, and chunk events for one
+      // request must not leak into the other.
+      const runner = new ContainerSessionRunner({
+        sessionId: "test-multiplex",
+        sessionDir: "/tmp/test",
+        defaultAgentId: "claude",
+        workerUrl,
+      });
+
+      runner.attachViewer();
+      await new Promise((r) => setTimeout(r, 200));
+
+      // Capture ephemeral agents in the order they're created.
+      const agents: FakeWorkerAgent[] = [];
+      const restore = (worker as unknown as { agentFactory: () => FakeWorkerAgent }).agentFactory;
+      (worker as unknown as { agentFactory: () => FakeWorkerAgent }).agentFactory = () => {
+        const a = new FakeWorkerAgent();
+        agents.push(a);
+        // Track the most recent agent for the existing tests' sake.
+        lastAgent = a;
+        return a;
+      };
+
+      const progressA: string[] = [];
+      const progressB: string[] = [];
+
+      const promiseA = runner.generateText("prompt A", { onProgress: (t) => progressA.push(t) });
+      // Stagger so we get 2 distinct fake agents.
+      await waitFor(() => agents.length >= 1, 3000, "first ephemeral agent");
+      const promiseB = runner.generateText("prompt B", { onProgress: (t) => progressB.push(t) });
+      await waitFor(() => agents.length >= 2, 3000, "second ephemeral agent");
+
+      // Resolve B first to confirm independent streams.
+      agents[1].emit("event", {
+        type: "agent_assistant",
+        content: [{ type: "text", text: "BB" }],
+      });
+      agents[1].emit("done", 0);
+      const textB = await promiseB;
+      expect(textB).toBe("BB");
+      expect(progressB).toEqual(["BB"]);
+
+      agents[0].emit("event", {
+        type: "agent_assistant",
+        content: [{ type: "text", text: "AA" }],
+      });
+      agents[0].emit("done", 0);
+      const textA = await promiseA;
+      expect(textA).toBe("AA");
+      expect(progressA).toEqual(["AA"]);
+
+      // No cross-talk between the two streams.
+      expect(progressA).not.toContain("BB");
+      expect(progressB).not.toContain("AA");
+
+      (worker as unknown as { agentFactory: () => FakeWorkerAgent }).agentFactory = restore;
+      runner.dispose();
+    });
+
+    it("rejects pending generations on dispose", async () => {
+      const runner = new ContainerSessionRunner({
+        sessionId: "test-dispose-cleanup",
+        sessionDir: "/tmp/test",
+        defaultAgentId: "claude",
+        workerUrl,
+      });
+
+      runner.attachViewer();
+      await new Promise((r) => setTimeout(r, 200));
+
+      const promise = runner.generateText("hang");
+      await waitFor(() => lastAgent?.runCalled, 3000, "ephemeral agent.run()");
+
+      runner.dispose({ force: true });
+
+      await expect(promise).rejects.toThrow(/disposed/i);
+    });
+  });
+
   // ---- Error handling ----
 
   it("proxy.run() emits error when worker is unreachable", async () => {

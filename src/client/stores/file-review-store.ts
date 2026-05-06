@@ -16,6 +16,14 @@ function makeKey(sessionId: string, filePath: string): string {
   return `${sessionId}::${filePath}`;
 }
 
+/** Return a copy of `obj` with `key` removed. Used in place of `delete obj[key]`
+ *  to keep the store immutable and dodge the no-dynamic-delete lint rule. */
+function omitKey<T>(obj: Record<string, T>, key: string): Record<string, T> {
+  if (!(key in obj)) return obj;
+  const { [key]: _omitted, ...rest } = obj;
+  return rest;
+}
+
 class FileReviewApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -49,6 +57,12 @@ interface FileReviewState {
   historyByKey: Record<string, FileReview[]>;
   /** True while AI Review is in flight for the given key. */
   aiLoadingByKey: Record<string, boolean>;
+  /**
+   * Streaming partial text from the in-flight AI Review run, keyed by
+   * (session, file) so the modal can render a live "thinking…" panel
+   * while the agent is producing output. Cleared on completion.
+   */
+  aiProgressByKey: Record<string, string>;
   /** True while the initial draft is being loaded for the given key. */
   loadingByKey: Record<string, boolean>;
 
@@ -103,6 +117,22 @@ interface FileReviewState {
    */
   discardEmptyDraft: (sessionId: string, filePath: string) => Promise<void>;
 
+  /**
+   * Push streaming partial text from an in-flight AI Review run. Called
+   * from the per-session WebSocket dispatcher when an `ai_review_progress`
+   * message arrives. The reviewId is matched against the currently-loaded
+   * drafts to find the (session, file) key — events for stale review IDs
+   * (e.g. user discarded the draft mid-flight) are ignored so the panel
+   * doesn't render text from an abandoned run.
+   */
+  setAiProgress: (sessionId: string, reviewId: string, text: string) => void;
+
+  /**
+   * Clear streaming progress for the matching review. Called when an
+   * `ai_review_complete` message arrives.
+   */
+  clearAiProgressForReview: (sessionId: string, reviewId: string) => void;
+
   /** Read helpers used by selectors / tests. */
   getDraft: (sessionId: string, filePath: string) => FileReview | null;
   getHistory: (sessionId: string, filePath: string) => FileReview[];
@@ -112,6 +142,7 @@ export const useFileReviewStore = create<FileReviewState>((set, get) => ({
   draftByKey: {},
   historyByKey: {},
   aiLoadingByKey: {},
+  aiProgressByKey: {},
   loadingByKey: {},
 
   load: async (sessionId, filePath) => {
@@ -240,7 +271,12 @@ export const useFileReviewStore = create<FileReviewState>((set, get) => ({
     const key = makeKey(sessionId, filePath);
     const draft = get().draftByKey[key];
     if (!draft) return [];
-    set((s) => ({ aiLoadingByKey: { ...s.aiLoadingByKey, [key]: true } }));
+    // Reset progress for this run — any leftover text from a previous
+    // run shouldn't bleed into the new "thinking…" panel.
+    set((s) => ({
+      aiLoadingByKey: { ...s.aiLoadingByKey, [key]: true },
+      aiProgressByKey: { ...s.aiProgressByKey, [key]: "" },
+    }));
     try {
       const { comments } = await request<{ comments: ReviewComment[] }>(
         "POST",
@@ -261,7 +297,33 @@ export const useFileReviewStore = create<FileReviewState>((set, get) => ({
       console.error("[file-review-store] aiReview failed:", err);
       return [];
     } finally {
-      set((s) => ({ aiLoadingByKey: { ...s.aiLoadingByKey, [key]: false } }));
+      set((s) => ({
+        aiLoadingByKey: { ...s.aiLoadingByKey, [key]: false },
+        aiProgressByKey: omitKey(s.aiProgressByKey, key),
+      }));
+    }
+  },
+
+  setAiProgress: (sessionId, reviewId, text) => {
+    // Walk the drafts to find the (session, file) key whose draft.id matches.
+    // The keyspace is small (one draft per file the user has opened), so a
+    // linear scan is cheap and avoids a separate reviewId → key index.
+    const drafts = get().draftByKey;
+    const prefix = `${sessionId}::`;
+    for (const [key, draft] of Object.entries(drafts)) {
+      if (!key.startsWith(prefix) || draft?.id !== reviewId) continue;
+      set((s) => ({ aiProgressByKey: { ...s.aiProgressByKey, [key]: text } }));
+      return;
+    }
+  },
+
+  clearAiProgressForReview: (sessionId, reviewId) => {
+    const drafts = get().draftByKey;
+    const prefix = `${sessionId}::`;
+    for (const [key, draft] of Object.entries(drafts)) {
+      if (!key.startsWith(prefix) || draft?.id !== reviewId) continue;
+      set((s) => ({ aiProgressByKey: omitKey(s.aiProgressByKey, key) }));
+      return;
     }
   },
 

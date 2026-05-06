@@ -2,6 +2,8 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { FilePreviewModal } from "./FilePreviewModal.js";
+import { useFileReviewStore } from "../stores/file-review-store.js";
+import { useSessionStore } from "../stores/session-store.js";
 
 // Monaco editor uses dynamic import("monaco-editor") and won't work in jsdom.
 // Mock the module so the CodeEditor sub-component renders a simple div.
@@ -130,5 +132,60 @@ describe("FilePreviewModal", () => {
     );
     const pathEl = screen.getByTitle("very/long/path/to/some/deeply/nested/file.ts");
     expect(pathEl).toBeInTheDocument();
+  });
+
+  it("renders the AI Review streaming progress panel while a run is in flight", () => {
+    // Seed a session and a draft so the modal recognizes (sessionId, filePath).
+    useSessionStore.setState({ sessionId: "s1" });
+    useFileReviewStore.setState({
+      draftByKey: {
+        "s1::plan.md": {
+          id: "draft-1",
+          sessionId: "s1",
+          filePath: "plan.md",
+          fileType: "markdown",
+          status: "draft",
+          comments: [],
+          docSnapshotHash: "h",
+          sectionHeadings: [],
+          createdAt: "x",
+          updatedAt: "x",
+        },
+      },
+      historyByKey: {},
+      aiLoadingByKey: { "s1::plan.md": true },
+      aiProgressByKey: { "s1::plan.md": "[{\"sectionHeading\":\"## A\"…" },
+      loadingByKey: {},
+    });
+
+    render(
+      <FilePreviewModal
+        filePath="plan.md"
+        content="## A\nbody"
+        fileType="markdown"
+        onClose={() => {}}
+      />
+    );
+
+    const panel = screen.getByRole("status", { name: /AI Review in progress/i });
+    expect(panel).toBeInTheDocument();
+    expect(panel.textContent).toContain("sectionHeading");
+  });
+
+  it("hides the streaming panel when AI Review is not loading", () => {
+    useSessionStore.setState({ sessionId: "s1" });
+    useFileReviewStore.setState({
+      draftByKey: {},
+      historyByKey: {},
+      aiLoadingByKey: {},
+      aiProgressByKey: {},
+      loadingByKey: {},
+    });
+
+    render(
+      <FilePreviewModal filePath="plan.md" content="## A" fileType="markdown" onClose={() => {}} />
+    );
+
+    expect(screen.queryByRole("status", { name: /AI Review in progress/i })).toBeNull();
   });
 });

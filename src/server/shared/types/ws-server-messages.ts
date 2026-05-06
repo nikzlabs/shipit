@@ -448,6 +448,39 @@ export interface WsSessionForked {
   sessionName: string;
 }
 
+// ---- AI Review streaming (server → client) ----
+
+/**
+ * Server → Client: streaming progress update for an in-flight AI Review run.
+ * The modal shows the accumulated text in a "thinking…" panel while the
+ * orchestrator drives an ephemeral one-shot agent against the doc.
+ *
+ * `text` is the full accumulated text so far (not a delta) — the client
+ * always replaces the panel contents, so dropped events don't desync.
+ */
+export interface WsAiReviewProgress {
+  type: "ai_review_progress";
+  sessionId: string;
+  reviewId: string;
+  text: string;
+}
+
+/**
+ * Server → Client: terminal event for an AI Review run. The HTTP response
+ * already returns the parsed comments, but this event lets the modal
+ * dismiss the streaming panel even when the parse path produces zero
+ * comments (e.g. agent didn't emit JSON).
+ */
+export interface WsAiReviewComplete {
+  type: "ai_review_complete";
+  sessionId: string;
+  reviewId: string;
+  /** Number of AI comments added. 0 means the agent's response didn't parse. */
+  commentsAdded: number;
+  /** Set when the run failed (e.g. agent crashed, timed out). */
+  error?: string;
+}
+
 export type WsServerMessage =
   | WsAgentEvent
   | WsError
@@ -515,4 +548,6 @@ export type WsServerMessage =
   | WsRebaseStarted
   | WsRebaseConflicts
   | WsRebaseComplete
-  | WsRebaseAborted;
+  | WsRebaseAborted
+  | WsAiReviewProgress
+  | WsAiReviewComplete;

@@ -24,6 +24,7 @@ import {
   generateAiReview,
   ServiceError,
 } from "./services/index.js";
+import type { GenerateTextFn } from "./services/reviews.js";
 import { getErrorMessage } from "./validation.js";
 
 type Source = "human" | "ai";
@@ -245,27 +246,72 @@ export async function registerReviewRoutes(
   // ----------------------------------------------------------------
   // AI Review (markdown only)
   // ----------------------------------------------------------------
+  //
+  // Routes the prompt through the session runner when available — that's the
+  // only path that works in containerized production, since `deps.generateText`
+  // returns "" when no in-process agentFactory is available (agents live
+  // inside session containers). Streams partial output back to the modal via
+  // `ai_review_progress` WS messages so the user sees live activity instead
+  // of a silent "Reviewing…" spinner.
   app.post<{
     Params: { sessionId: string; reviewId: string };
   }>(
     "/api/sessions/:sessionId/file-reviews/:reviewId/ai-review",
     async (request, reply) => {
-      const dir = resolveSessionDir(deps.sessionManager, request.params.sessionId, reply);
+      const { sessionId, reviewId } = request.params;
+      const dir = resolveSessionDir(deps.sessionManager, sessionId, reply);
       if (!dir) return;
+
+      const runner = deps.runnerRegistry.get(sessionId);
+
+      // Stream partial assistant text to all attached viewers of this session
+      // via runner.emitMessage (which buffers into the turn-event log so a
+      // late-attaching viewer still sees in-flight progress).
+      const emitProgress = (text: string): void => {
+        runner?.emitMessage({
+          type: "ai_review_progress",
+          sessionId,
+          reviewId,
+          text,
+        });
+      };
+
+      // Prefer the runner's own generateText (routes through the worker —
+      // works in containerized production). Fall back to deps.generateText
+      // for test mode (stubbed) and local mode (in-process agent).
+      const generateText: GenerateTextFn = runner?.generateText
+        ? (prompt, _cwd, opts) => runner.generateText!(prompt, { onProgress: opts?.onProgress })
+        : (prompt, cwd, opts) => deps.generateText(prompt, cwd, opts);
+
       try {
         const comments = await generateAiReview(
           deps.reviewStore!,
-          request.params.reviewId,
+          reviewId,
           dir,
-          deps.generateText,
+          generateText,
+          { onProgress: emitProgress },
         );
+        runner?.emitMessage({
+          type: "ai_review_complete",
+          sessionId,
+          reviewId,
+          commentsAdded: comments.length,
+        });
         return { comments };
       } catch (err) {
+        const message = err instanceof ServiceError ? err.message : getErrorMessage(err);
+        runner?.emitMessage({
+          type: "ai_review_complete",
+          sessionId,
+          reviewId,
+          commentsAdded: 0,
+          error: message,
+        });
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
           return;
         }
-        reply.code(500).send({ error: `Failed to generate AI review: ${getErrorMessage(err)}` });
+        reply.code(500).send({ error: `Failed to generate AI review: ${message}` });
       }
     },
   );

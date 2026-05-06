@@ -442,15 +442,35 @@ Focus on:
 Be specific and actionable. Do not repeat what the document already says.`;
 
 /**
+ * A `generateText` callable that may also stream partial output.
+ *
+ * The legacy app-di factory has signature `(prompt, cwd) => Promise<string>`
+ * and is still used in tests / local mode. Container runners expose a
+ * richer signature with `onProgress`. We accept either via this adapter
+ * shape — callers always pass `onProgress`, but it's a no-op when the
+ * underlying implementation ignores it.
+ */
+export type GenerateTextFn = (
+  prompt: string,
+  cwd: string,
+  opts?: { onProgress?: (text: string) => void },
+) => Promise<string>;
+
+/**
  * Generate AI review comments for a markdown draft. Currently only supported
  * for markdown files — code AI review is gated until we know the output is
  * useful (see plan §"Decisions and open questions").
+ *
+ * `onProgress`, when provided, fires every time the agent emits more text
+ * — the route uses it to stream partial output to the modal so the user
+ * sees live activity instead of a silent spinner.
  */
 export async function generateAiReview(
   reviewStore: FileReviewStore,
   reviewId: string,
   workspaceDir: string,
-  generateText: (prompt: string, cwd: string) => Promise<string>,
+  generateText: GenerateTextFn,
+  opts?: { onProgress?: (text: string) => void },
 ): Promise<ReviewComment[]> {
   const review = reviewStore.getReview(reviewId);
   if (!review) {
@@ -473,7 +493,7 @@ export async function generateAiReview(
     .replace("{planPath}", review.filePath)
     .replace("{content}", content);
 
-  const aiResponse = await generateText(prompt, workspaceDir);
+  const aiResponse = await generateText(prompt, workspaceDir, { onProgress: opts?.onProgress });
 
   const jsonMatch = /\[[\s\S]*\]/.exec(aiResponse);
   if (!jsonMatch) {

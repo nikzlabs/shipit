@@ -40,7 +40,15 @@ export interface WorkerSSEEvent {
     | "terminal_data" | "terminal_exit"
     | "file_changes"
     | "service_request"
-    | "install_log" | "install_done" | "install_error";
+    | "install_log" | "install_done" | "install_error"
+    /**
+     * One-shot text generation for AI-powered features (AI Review, PR
+     * description, etc.). Distinguished from `agent_*` events by carrying
+     * a `requestId` so multiple concurrent generations can be multiplexed
+     * over the single per-session SSE stream and so they don't conflict
+     * with the user's main agent turn.
+     */
+    | "generate_text_chunk" | "generate_text_done" | "generate_text_error";
   data: unknown;
 }
 
@@ -244,6 +252,66 @@ export class SessionWorker extends EventEmitter {
     app.get("/agent/status", async () => ({
       running: this.agent !== null,
     }));
+
+    // --- One-shot text generation ---
+    //
+    // Spawns an ephemeral agent process to answer a single prompt and stream
+    // its assistant text back to the orchestrator via SSE
+    // (`generate_text_chunk` / `generate_text_done` / `generate_text_error`).
+    // Independent of the main `this.agent` slot so AI-powered features
+    // (AI Review, PR description, etc.) don't block — and aren't blocked
+    // by — the user's primary agent turn.
+    app.post<{ Body: { agentId: AgentId; prompt: string; requestId: string; mcpConfigPath?: string } }>(
+      "/agent/generate",
+      async (request, reply) => {
+        const { agentId, prompt, requestId } = request.body ?? {};
+        if (!agentId || typeof prompt !== "string" || !requestId) {
+          return reply.code(400).send({ error: "agentId, prompt, and requestId are required" });
+        }
+        try {
+          const ephemeralAgent = this.agentFactory(agentId);
+          let accumulated = "";
+
+          ephemeralAgent.on("event", (event: AgentEvent) => {
+            if (event.type === "agent_assistant") {
+              for (const block of event.content) {
+                if (block.type === "text") accumulated += block.text;
+              }
+              if (accumulated) {
+                this.broadcastSSE({
+                  type: "generate_text_chunk",
+                  data: { requestId, text: accumulated },
+                });
+              }
+            }
+          });
+
+          ephemeralAgent.on("done", (exitCode: number) => {
+            this.broadcastSSE({
+              type: "generate_text_done",
+              data: { requestId, text: accumulated, exitCode },
+            });
+          });
+
+          ephemeralAgent.on("error", (err: Error) => {
+            this.broadcastSSE({
+              type: "generate_text_error",
+              data: { requestId, message: err.message },
+            });
+          });
+
+          ephemeralAgent.run({
+            prompt,
+            cwd: this.workspaceDir,
+            permissionMode: "auto",
+          });
+
+          return { started: true };
+        } catch (err) {
+          return reply.code(500).send({ error: getErrorMessage(err) });
+        }
+      },
+    );
 
     // --- Terminal endpoints ---
 

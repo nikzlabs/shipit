@@ -1,10 +1,16 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import type { ReviewComment } from "../../shared/types.js";
+import { DatabaseManager } from "../../shared/database.js";
+import { FileReviewStore } from "../review-store.js";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
   parseMarkdownSections,
   reanchorComments,
   buildReviewPrompt,
   detectFileReviewType,
+  generateAiReview,
 } from "./reviews.js";
 
 // ---- Helpers ----
@@ -283,5 +289,79 @@ describe("buildReviewPrompt (code)", () => {
       [],
     );
     expect(prompt).toContain("Please address each comment.");
+  });
+});
+
+// ============================================================
+// generateAiReview — streaming progress + JSON parsing
+// ============================================================
+
+describe("generateAiReview", () => {
+  let workspace: string;
+  let store: FileReviewStore;
+  let db: DatabaseManager;
+
+  beforeEach(async () => {
+    workspace = await fs.mkdtemp(path.join(os.tmpdir(), "ai-review-test-"));
+    db = new DatabaseManager(":memory:");
+    store = new FileReviewStore(db);
+  });
+
+  it("forwards onProgress callbacks from generateText to the caller", async () => {
+    const planPath = "docs/foo/plan.md";
+    await fs.mkdir(path.join(workspace, "docs/foo"), { recursive: true });
+    await fs.writeFile(path.join(workspace, planPath), "## A\nbody\n");
+    const draft = store.createDraft("s1", planPath, "markdown", "hash", ["## A"]);
+
+    const progressEvents: string[] = [];
+
+    // Stub generateText that streams 3 chunks then resolves.
+    const stub = async (
+      _prompt: string,
+      _cwd: string,
+      opts?: { onProgress?: (text: string) => void },
+    ): Promise<string> => {
+      opts?.onProgress?.("[");
+      opts?.onProgress?.("[{\"sectionHeading\":");
+      opts?.onProgress?.("[{\"sectionHeading\":\"## A\",\"text\":\"feedback\"}]");
+      return "[{\"sectionHeading\":\"## A\",\"text\":\"feedback\"}]";
+    };
+
+    const comments = await generateAiReview(store, draft.id, workspace, stub, {
+      onProgress: (t) => progressEvents.push(t),
+    });
+
+    expect(progressEvents).toEqual([
+      "[",
+      "[{\"sectionHeading\":",
+      "[{\"sectionHeading\":\"## A\",\"text\":\"feedback\"}]",
+    ]);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.source).toBe("ai");
+    expect(comments[0]?.kind === "section" ? comments[0].sectionHeading : "").toBe("## A");
+  });
+
+  it("returns [] (and does not throw) when the agent's response can't be parsed as JSON", async () => {
+    const planPath = "docs/bar/plan.md";
+    await fs.mkdir(path.join(workspace, "docs/bar"), { recursive: true });
+    await fs.writeFile(path.join(workspace, planPath), "## Overview\n");
+    const draft = store.createDraft("s1", planPath, "markdown", "hash", ["## Overview"]);
+
+    const stub = async (): Promise<string> => "the agent's brain melted";
+
+    const comments = await generateAiReview(store, draft.id, workspace, stub);
+    expect(comments).toEqual([]);
+  });
+
+  it("rejects code-file drafts with a 400 ServiceError", async () => {
+    const codePath = "src/foo.ts";
+    await fs.mkdir(path.join(workspace, "src"), { recursive: true });
+    await fs.writeFile(path.join(workspace, codePath), "x");
+    const draft = store.createDraft("s1", codePath, "code", "hash", []);
+
+    const stub = async (): Promise<string> => "[]";
+    await expect(generateAiReview(store, draft.id, workspace, stub)).rejects.toMatchObject({
+      statusCode: 400,
+    });
   });
 });
