@@ -124,6 +124,31 @@ export function useServerEvents(): void {
       useUiStore.getState().setDockerMemory(data);
     });
 
+    /**
+     * Idle / pressure cleanup notice. The orchestrator emits this when
+     * `createIdleEnforcer` reaps a session container, with a `reason` field
+     * the user-facing strings are derived from. Without this handler, the
+     * disposal is silent on the client and the user sees their container
+     * just disappear (`containerState: missing`) without explanation.
+     * See docs/124-session-rescue-and-diagnostics §1.6.
+     */
+    es.addEventListener("session_status", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as {
+        sessionId: string;
+        running?: boolean;
+        reason?: "idle-disposed" | "memory-pressure";
+        idleMs?: number;
+      };
+      // Drop the disposed session from the active-runners set so any
+      // running indicator clears.
+      useSessionStore.getState().setActiveRunnerSessions((prev) => {
+        if (!prev.has(data.sessionId)) return prev;
+        const next = new Set(prev);
+        next.delete(data.sessionId);
+        return next;
+      });
+    });
+
     es.addEventListener("full_reset_complete", () => {
       fullResetAllStores();
       // Hard navigate home — all server state is wiped, a clean page load

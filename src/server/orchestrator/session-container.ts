@@ -129,6 +129,22 @@ export interface SessionContainerManagerEvents {
   container_started: [sessionId: string];
   /** Emitted when a container is destroyed. */
   container_destroyed: [sessionId: string];
+  /**
+   * Emitted when a Compose-managed (i.e. user) container belonging to a
+   * session exits unexpectedly. The Docker event-stream listener used to
+   * filter these out (it only watched containers labeled
+   * `shipit-session=true`), so service OOM kills surfaced ~5s later as
+   * generic "Exited with code 137" via `pollStatus`. With the wider
+   * filter this fires immediately and carries the OOM annotation when
+   * available, which lets the UI distinguish a crash from an OOM kill.
+   * See docs/124-session-rescue-and-diagnostics §1.2.
+   */
+  service_exited: [sessionId: string, info: {
+    serviceName?: string;
+    containerId: string;
+    exitCode: number;
+    oom: boolean;
+  }];
 }
 
 export interface SessionContainerManagerOpts {
