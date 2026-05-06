@@ -187,6 +187,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         credentialStore,
         runnerRegistry: registryHolder.ref,
         getMemoryStats: () => latestMemoryStats.value,
+        sseBroadcast,
+        broadcastLog,
       })();
     }
   };
@@ -224,7 +226,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeWarnings, composeNotConfigured, containerManager,
-    secretStore, platformCredentials, runtimeMode,
+    secretStore, platformCredentials, runtimeMode, broadcastLog,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
   });
   registryHolder.ref = runnerRegistry;
@@ -423,7 +425,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Preview reverse proxy (container mode) ----
   if (containerManager) {
-    registerPreviewProxy(app, { containerManager, serviceManagers });
+    registerPreviewProxy(app, { containerManager, serviceManagers, runnerRegistry });
   }
 
   // ---- Test-only session creation endpoint ----
@@ -917,7 +919,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
 
   // ---- Container health monitoring ----
   if (containerManager) {
-    setupContainerHealthMonitoring(containerManager, runnerRegistry);
+    setupContainerHealthMonitoring(containerManager, runnerRegistry, broadcastLog);
   }
 
   // Graceful shutdown

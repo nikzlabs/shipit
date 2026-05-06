@@ -5,21 +5,52 @@
 
 import http from "node:http";
 
+/**
+ * Default timeout for worker HTTP calls. Every endpoint these helpers reach
+ * (`/agent/start`, `/agent/stdin`, `/agent/interrupt`, `/agent/kill`,
+ * `/terminal/*`, `/files/*`, `/secrets`, `/install`) returns immediately —
+ * any actual long-running work streams back over SSE. So a 10s default
+ * comfortably covers normal latency while still bounding a wedged worker
+ * socket (the failure mode that previously made interrupt/kill hang
+ * forever — see docs/124-session-rescue-and-diagnostics).
+ *
+ * Callers that genuinely need an unbounded request can pass `timeoutMs: 0`.
+ */
+export const DEFAULT_WORKER_TIMEOUT_MS = 10_000;
+
 export interface WorkerHttpOpts {
   /**
    * Request timeout in milliseconds. When set, both connect and idle-read
    * are bounded; on timeout the request is aborted and the promise rejects
-   * with `Error("worker request timed out")`. Default: no timeout (Node's
-   * built-in socket idle timeout applies).
+   * with a {@link WorkerTimeoutError}.
    *
+   * Defaults to {@link DEFAULT_WORKER_TIMEOUT_MS}. Pass `0` to disable.
    * Use a short timeout (e.g. 3000ms) for health probes so a wedged worker
    * doesn't make the orchestrator hang on aggregation requests.
    */
   timeoutMs?: number;
 }
 
-function newTimeoutError(): Error {
-  return new Error("worker request timed out");
+/**
+ * Thrown when a worker HTTP call exceeded its timeout. Distinguishable from
+ * generic transport errors so callers can route it to a user-visible
+ * "worker unreachable" message instead of a generic exception.
+ */
+export class WorkerTimeoutError extends Error {
+  readonly path: string;
+  readonly timeoutMs: number;
+  constructor(path: string, timeoutMs: number) {
+    super(`Worker request timed out after ${timeoutMs}ms: ${path}`);
+    this.name = "WorkerTimeoutError";
+    this.path = path;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+function resolveTimeout(opts?: WorkerHttpOpts): number {
+  // `undefined` → default; `0` → explicitly disabled; otherwise the value.
+  if (opts?.timeoutMs === undefined) return DEFAULT_WORKER_TIMEOUT_MS;
+  return Math.max(0, opts.timeoutMs);
 }
 
 export async function workerPost(baseUrl: string, path: string, body?: unknown, opts?: WorkerHttpOpts): Promise<unknown> {
@@ -32,6 +63,7 @@ export async function workerPost(baseUrl: string, path: string, body?: unknown, 
       headers["Content-Length"] = Buffer.byteLength(payload);
     }
 
+    const timeoutMs = resolveTimeout(opts);
     const req = http.request(
       {
         hostname: url.hostname,
@@ -39,7 +71,7 @@ export async function workerPost(baseUrl: string, path: string, body?: unknown, 
         path: url.pathname,
         method: "POST",
         headers,
-        ...(opts?.timeoutMs ? { timeout: opts.timeoutMs } : {}),
+        ...(timeoutMs > 0 ? { timeout: timeoutMs } : {}),
       },
       (res) => {
         let data = "";
@@ -61,9 +93,9 @@ export async function workerPost(baseUrl: string, path: string, body?: unknown, 
       },
     );
 
-    if (opts?.timeoutMs) {
+    if (timeoutMs > 0) {
       req.on("timeout", () => {
-        req.destroy(newTimeoutError());
+        req.destroy(new WorkerTimeoutError(path, timeoutMs));
       });
     }
 
@@ -92,6 +124,7 @@ export async function workerPut(baseUrl: string, path: string, body?: unknown, o
       headers["Content-Length"] = Buffer.byteLength(payload);
     }
 
+    const timeoutMs = resolveTimeout(opts);
     const req = http.request(
       {
         hostname: url.hostname,
@@ -99,7 +132,7 @@ export async function workerPut(baseUrl: string, path: string, body?: unknown, o
         path: url.pathname,
         method: "PUT",
         headers,
-        ...(opts?.timeoutMs ? { timeout: opts.timeoutMs } : {}),
+        ...(timeoutMs > 0 ? { timeout: timeoutMs } : {}),
       },
       (res) => {
         let data = "";
@@ -121,9 +154,9 @@ export async function workerPut(baseUrl: string, path: string, body?: unknown, o
       },
     );
 
-    if (opts?.timeoutMs) {
+    if (timeoutMs > 0) {
       req.on("timeout", () => {
-        req.destroy(newTimeoutError());
+        req.destroy(new WorkerTimeoutError(path, timeoutMs));
       });
     }
 
@@ -145,13 +178,14 @@ export async function workerGet(baseUrl: string, path: string, opts?: WorkerHttp
   return new Promise((resolve, reject) => {
     const url = new URL(path, baseUrl);
 
+    const timeoutMs = resolveTimeout(opts);
     const req = http.request(
       {
         hostname: url.hostname,
         port: url.port,
         path: url.pathname,
         method: "GET",
-        ...(opts?.timeoutMs ? { timeout: opts.timeoutMs } : {}),
+        ...(timeoutMs > 0 ? { timeout: timeoutMs } : {}),
       },
       (res) => {
         let data = "";
@@ -173,9 +207,9 @@ export async function workerGet(baseUrl: string, path: string, opts?: WorkerHttp
       },
     );
 
-    if (opts?.timeoutMs) {
+    if (timeoutMs > 0) {
       req.on("timeout", () => {
-        req.destroy(newTimeoutError());
+        req.destroy(new WorkerTimeoutError(path, timeoutMs));
       });
     }
 

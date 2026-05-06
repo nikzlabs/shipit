@@ -371,6 +371,67 @@ export interface WsSessionStatus {
   queueLength?: number;
   /** Present when the session encountered a fatal error (e.g. container crash). */
   error?: string;
+  /**
+   * Optional explanation for a notable state transition. Lets the client
+   * surface a non-error inline notice ("Session paused after N minutes
+   * idle. Send a message to resume.") instead of leaving the user to
+   * guess why their container went away.
+   *
+   * - `idle-disposed` — idle enforcer reaped the container after the grace
+   *   period elapsed.
+   * - `memory-pressure` — pressure-aware eviction reaped the container
+   *   (feature 122).
+   * See docs/124-session-rescue-and-diagnostics §1.6.
+   */
+  reason?: "idle-disposed" | "memory-pressure";
+  /** When `reason` is set, how long the session was idle before disposal (ms). */
+  idleMs?: number;
+}
+
+/**
+ * Server → Client: the per-session preview proxy could not reach the
+ * compose-managed container on the requested port (connection refused,
+ * EHOSTUNREACH, HMR upgrade socket destroyed, etc).
+ *
+ * Today, proxy errors only manifest as a 502 JSON body inside the iframe
+ * or an empty WebSocket disconnect — neither of which is observable from
+ * the orchestrator's side and neither of which gives the user actionable
+ * feedback. This message lets the PreviewFrame overlay an explicit
+ * banner and routes a record into the Logs panel.
+ *
+ * See docs/124-session-rescue-and-diagnostics §1.5.
+ */
+export interface WsPreviewError {
+  type: "preview_error";
+  sessionId: string;
+  /** Port the proxy was attempting to reach. */
+  port: number;
+  /** Short human-readable reason (e.g. "Connection refused", "HMR upgrade failed"). */
+  message: string;
+  /** Whether the failure was on the WebSocket-upgrade path (HMR) or plain HTTP. */
+  upgrade?: boolean;
+}
+
+/**
+ * Server → Client: a Compose-managed (i.e. user) container was OOM-killed.
+ *
+ * The Docker event loop in `container-health.ts` historically only watched
+ * containers labeled `shipit-session=true`, which excludes compose
+ * children (which carry `shipit-parent-session={sid}` instead). The
+ * widened filter now catches compose-child OOMs and emits this event so
+ * the user gets an immediate "service was killed for OOM" notice instead
+ * of waiting 5 s for `pollStatus` to flip the service to `error` with the
+ * unhelpful "Exited with code 137" message.
+ *
+ * See docs/124-session-rescue-and-diagnostics §1.2.
+ */
+export interface WsServiceOom {
+  type: "service_oom";
+  sessionId: string;
+  /** Compose service name, when resolvable. */
+  serviceName?: string;
+  /** Underlying Docker container id (short form). */
+  containerId: string;
 }
 
 /** Server → Client: agent started running in a session (broadcast to all clients). */
@@ -506,6 +567,8 @@ export type WsServerMessage =
   | WsServiceList
   | WsServiceLog
   | WsServiceLogBuffer
+  | WsServiceOom
+  | WsPreviewError
   | WsComposeError
   | WsComposeNotConfigured
   | WsSecretsStatus

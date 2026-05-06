@@ -359,6 +359,22 @@ export interface IdleEnforcementDeps {
    * should leave this off.
    */
   getMemoryStats?: () => DockerMemoryStats | null;
+  /**
+   * Optional broadcast hook. When provided, the enforcer fires a
+   * `session_status` SSE event with `reason: "idle-disposed"` (or
+   * `"memory-pressure"`) before tearing down the runner. The orchestrator
+   * uses this to surface "Session paused after N minutes idle. Send a
+   * message to resume." in the client — without it, the user sees
+   * `containerState: missing` in the health strip with no explanation.
+   * See docs/124-session-rescue-and-diagnostics §1.6.
+   */
+  sseBroadcast?: (event: string, data: unknown) => void;
+  /**
+   * Optional per-session log hook. Mirrors the `session_status` SSE event
+   * into the per-session Logs ring buffer so a viewer that reconnects
+   * later still sees why their container went away.
+   */
+  broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
 }
 
 /**
@@ -389,7 +405,10 @@ export const IDLE_GRACE_PERIOD_MS = 60_000;
 export function createIdleEnforcer(
   enforceDeps: IdleEnforcementDeps,
 ): () => void {
-  const { containerManager, credentialStore, runnerRegistry, getMemoryStats } = enforceDeps;
+  const {
+    containerManager, credentialStore, runnerRegistry, getMemoryStats,
+    sseBroadcast, broadcastLog,
+  } = enforceDeps;
 
   return () => {
     if (!containerManager) return;
@@ -438,7 +457,39 @@ export function createIdleEnforcer(
         if (runner && (runner.running || runner.viewerCount > 0)) {
           continue;
         }
-        console.log(`[idle-cleanup] Stopping idle container for session ${sid}`);
+        const reason = underPressure ? "memory-pressure" : "idle-disposed";
+        const idleMs = runner && runner.lastViewerDetachAt > 0
+          ? Math.max(0, now - runner.lastViewerDetachAt)
+          : undefined;
+        console.log(
+          `[idle-cleanup] Stopping idle container for session ${sid}`
+          + ` (reason=${reason}${idleMs !== undefined ? ` idleMs=${idleMs}` : ""})`,
+        );
+        // Surface the disposal to the user before tearing down. Without
+        // this, the user comes back to a tab that just shows
+        // `containerState: missing` with no explanation. The SSE event is
+        // delivered via the global event channel; the runner-attached
+        // emitMessage path is unavailable because we're about to dispose
+        // the runner. Per-session Logs ring also gets a copy so a future
+        // reconnect / diagnostics dump still has the record.
+        // See docs/124-session-rescue-and-diagnostics §1.6.
+        if (sseBroadcast) {
+          sseBroadcast("session_status", {
+            type: "session_status",
+            sessionId: sid,
+            running: false,
+            queueLength: runner?.queueLength ?? 0,
+            reason,
+            ...(idleMs !== undefined ? { idleMs } : {}),
+          });
+        }
+        if (broadcastLog) {
+          const idleLabel = idleMs !== undefined ? `${Math.round(idleMs / 1000)}s` : "idle period";
+          const human = reason === "memory-pressure"
+            ? `Session container reaped (memory pressure).`
+            : `Session container paused after ${idleLabel}. Send a message to resume.`;
+          broadcastLog(sid, "server", human);
+        }
         containerManager.destroy(sid).catch((err: unknown) => {
           console.error(`[idle-cleanup] Failed to destroy container ${sid}:`, getErrorMessage(err));
         });
@@ -500,6 +551,14 @@ export interface RunnerRegistryDeps {
    * for every session creation. See feature 118.
    */
   runtimeMode: RuntimeMode;
+  /**
+   * Per-session log broadcaster. Routes diagnostic strings into the Logs
+   * panel + per-session ring buffer. Wired here so compose-stack failures
+   * (`ServiceManager.emit("stack_error")`) and other manager-level signals
+   * land in the user-visible Logs view rather than the orchestrator's
+   * stdout. See docs/124-session-rescue-and-diagnostics §1.1.
+   */
+  broadcastLog: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
 }
 
 /**
@@ -513,7 +572,7 @@ export function createRunnerRegistry(
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeWarnings, composeNotConfigured, containerManager,
-    secretStore, platformCredentials, dockerSecretsConfig, runtimeMode,
+    secretStore, platformCredentials, dockerSecretsConfig, runtimeMode, broadcastLog,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -585,6 +644,7 @@ export function createRunnerRegistry(
           secretStore,
           platformCredentials,
           dockerSecretsConfig,
+          broadcastLog,
         };
         setupServiceManager(runner, setupDeps);
 
@@ -614,6 +674,7 @@ function setupServiceManager(
     secretStore?: SecretStore;
     platformCredentials?: PlatformCredentialProvider;
     dockerSecretsConfig?: { internalDir: string; hostDir?: string; entrypointSourcePath: string };
+    broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
   },
 ): void {
   const {
@@ -625,6 +686,7 @@ function setupServiceManager(
     secretStore,
     platformCredentials,
     dockerSecretsConfig,
+    broadcastLog,
   } = deps;
   const session = sessionManager.get(runner.sessionId);
   const workspaceDir = session?.workspaceDir ?? runner.sessionDir;
@@ -735,6 +797,30 @@ function setupServiceManager(
   if (runner.setServiceManager) {
     runner.setServiceManager(mgr);
   }
+
+  // Pipe `stack_error` into the per-session Logs panel for diagnostic
+  // visibility. The throw path inside `mgr.start()` already emits a
+  // `compose_error` WS banner (see the `void (async () => …)` block
+  // below); the Logs entry here is *additional* — it preserves the
+  // failure on the per-session ring buffer so a viewer that connects
+  // after the error still sees what went wrong, and so the diagnostics
+  // panel (Part 3 of feature 124) has it as one of its sources.
+  // We also push a live `log_entry` to currently-attached viewers via
+  // `runner.emitMessage`, since the persistent ring buffer alone wouldn't
+  // surface to clients that are already connected (their WS handler's
+  // wrapped `sessionBroadcastLog` is per-connection and we don't have a
+  // reference to it here).
+  // See docs/124-session-rescue-and-diagnostics §1.1.
+  mgr.on("stack_error", (err: Error) => {
+    const text = `[compose] Stack error: ${err.message}`;
+    if (broadcastLog) broadcastLog(runner.sessionId, "server", text);
+    runner.emitMessage({
+      type: "log_entry",
+      source: "server",
+      text,
+      timestamp: new Date().toISOString(),
+    });
+  });
 
   // Open the install-running gate while agent.install is in flight: a service
   // that exits non-zero during this window is retried with backoff instead
@@ -1299,6 +1385,7 @@ export function scheduleStartupTasks(
 export function setupContainerHealthMonitoring(
   containerManager: SessionContainerManager,
   runnerRegistry: SessionRunnerRegistry,
+  broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void,
 ): void {
   containerManager.on("container_exited", (sessionId, _exitCode, error) => {
     console.error(`[container] Session ${sessionId} container exited: ${error ?? "unknown"}`);
@@ -1314,6 +1401,52 @@ export function setupContainerHealthMonitoring(
       // already dead. We must tear down the runner to release resources.
       runner.dispose({ force: true });
     }
+  });
+
+  /**
+   * Compose-child exit (user service crashed or OOM-killed). Emit a
+   * `service_oom` runner message when OOM, and always log to the per-session
+   * Logs panel + ring buffer so the user sees the failure immediately
+   * instead of waiting ~5 s for `pollStatus` to flip the service to
+   * `error` with a generic "Exited with code N" message.
+   *
+   * We intentionally do NOT touch the runner's lifecycle here — the agent
+   * container is fine; only one of its compose siblings died. The
+   * ServiceManager's own `pollStatus` handles the status flip and (where
+   * applicable) retry-during-install backoff. Our job is just visibility.
+   * See docs/124-session-rescue-and-diagnostics §1.2.
+   */
+  containerManager.on("service_exited", (sessionId, info) => {
+    const svcName = info.serviceName ?? "service";
+    if (info.oom) {
+      console.warn(
+        `[container] Session ${sessionId} compose ${svcName} OOM-killed (container=${info.containerId}, exit=${info.exitCode})`,
+      );
+    } else {
+      console.log(
+        `[container] Session ${sessionId} compose ${svcName} exited (container=${info.containerId}, exit=${info.exitCode})`,
+      );
+    }
+    const runner = runnerRegistry.get(sessionId);
+    if (!runner) return;
+    if (info.oom) {
+      runner.emitMessage({
+        type: "service_oom",
+        sessionId,
+        ...(info.serviceName ? { serviceName: info.serviceName } : {}),
+        containerId: info.containerId,
+      });
+    }
+    const logText = info.oom
+      ? `[compose] ${svcName} was OOM-killed (exit ${info.exitCode}). Increase memory limits in docker-compose.yml or reduce service workload.`
+      : `[compose] ${svcName} exited with code ${info.exitCode}.`;
+    if (broadcastLog) broadcastLog(sessionId, "server", logText);
+    runner.emitMessage({
+      type: "log_entry",
+      source: "server",
+      text: logText,
+      timestamp: new Date().toISOString(),
+    });
   });
 }
 

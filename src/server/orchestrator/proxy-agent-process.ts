@@ -70,10 +70,20 @@ export class ProxyAgentProcess extends EventEmitter<{
     });
   }
 
-  /** Fire-and-forget POST to worker /agent/kill. */
+  /**
+   * Fire-and-forget POST to worker /agent/kill. Surfaces failures via the
+   * `log` event (Logs panel) rather than `error` because:
+   *   - the agent may legitimately already be dead (benign race), and an
+   *     `error` event would clear runner state + dump a chat error;
+   *   - on a wedged worker, the user clicking Interrupt or Rescue session
+   *     deserves *some* feedback that the kill failed, not silence.
+   * The Logs panel is the right surface — visible, badged, but
+   * non-disruptive. See docs/124-session-rescue-and-diagnostics §1.4.
+   */
   kill(): void {
-    this.runner.killAgentOnWorker().catch(() => {
-      // Swallow kill errors — the agent may already be dead
+    this.runner.killAgentOnWorker().catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.emit("log", "server", `Failed to kill agent on worker: ${msg}`);
     });
   }
 }
