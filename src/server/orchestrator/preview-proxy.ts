@@ -19,6 +19,7 @@ import type { Duplex } from "node:stream";
 import type { FastifyInstance } from "fastify";
 import type { SessionContainerManager } from "./session-container.js";
 import type { ServiceManager } from "./service-manager.js";
+import type { SessionRunnerRegistry } from "./session-runner.js";
 
 // ---------------------------------------------------------------------------
 // Subdomain parsing
@@ -76,6 +77,21 @@ const HMR_WS_PATCH = `<script>(function(){` +
 // Shared proxy helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Callback invoked when a preview-proxy request fails to reach the upstream
+ * container. Lets the registration site emit a `preview_error` WS message
+ * and a Logs entry so the user gets observable feedback instead of just a
+ * blank iframe / raw 502 JSON.
+ *
+ * See docs/124-session-rescue-and-diagnostics §1.5.
+ */
+type PreviewErrorReporter = (
+  sessionId: string,
+  port: number,
+  message: string,
+  upgrade: boolean,
+) => void;
+
 function proxyHttp(
   containerIp: string,
   targetPort: number,
@@ -84,6 +100,7 @@ function proxyHttp(
   headers: http.IncomingHttpHeaders,
   rawReq: http.IncomingMessage,
   rawRes: http.ServerResponse,
+  onError?: (message: string) => void,
 ): void {
   // Strip accept-encoding so the upstream sends uncompressed content — allows
   // us to inject the HMR WebSocket patch into HTML responses.
@@ -131,7 +148,9 @@ function proxyHttp(
     },
   );
 
-  proxyReq.on("error", () => {
+  proxyReq.on("error", (err) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (onError) onError(msg);
     if (!rawRes.headersSent) {
       rawRes.writeHead(502, { "Content-Type": "application/json" });
     }
@@ -147,6 +166,7 @@ function proxyWebSocket(
   targetPath: string,
   headers: http.IncomingHttpHeaders,
   socket: Duplex,
+  onError?: (message: string) => void,
 ): void {
   const proxyReq = http.request({
     hostname: containerIp,
@@ -179,7 +199,9 @@ function proxyWebSocket(
     socket.on("close", () => proxySocket.destroy());
   });
 
-  proxyReq.on("error", () => {
+  proxyReq.on("error", (err) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (onError) onError(msg);
     socket.destroy();
   });
 
@@ -195,9 +217,54 @@ export function registerPreviewProxy(
   opts: {
     containerManager: SessionContainerManager;
     serviceManagers: Map<string, ServiceManager>;
+    /**
+     * Optional runner registry. When provided, proxy errors emit a
+     * `preview_error` runner event so connected viewers see an inline
+     * "Preview unreachable on port N" overlay, and a `log_entry` so the
+     * Logs panel records the failure. Without this, proxy errors are
+     * iframe-only — the orchestrator side has no record. See
+     * docs/124-session-rescue-and-diagnostics §1.5.
+     */
+    runnerRegistry?: SessionRunnerRegistry;
   },
 ): void {
-  const { containerManager, serviceManagers } = opts;
+  const { containerManager, serviceManagers, runnerRegistry } = opts;
+
+  /**
+   * Throttle per-session preview errors so a flapping dev server doesn't
+   * flood the Logs panel. We emit the first error immediately and then
+   * suppress subsequent errors for the same (sessionId,port) pair within a
+   * short window.
+   */
+  const lastErrorAt = new Map<string, number>();
+  const ERROR_THROTTLE_MS = 5_000;
+
+  const reportError: PreviewErrorReporter = (sessionId, port, message, upgrade) => {
+    if (!runnerRegistry) return;
+    const runner = runnerRegistry.get(sessionId);
+    if (!runner) return;
+    const key = `${sessionId}:${port}`;
+    const now = Date.now();
+    const last = lastErrorAt.get(key) ?? 0;
+    if (now - last < ERROR_THROTTLE_MS) return;
+    lastErrorAt.set(key, now);
+    const human = upgrade
+      ? `Preview HMR unreachable on port ${port} (${message})`
+      : `Preview unreachable on port ${port} (${message})`;
+    runner.emitMessage({
+      type: "preview_error",
+      sessionId,
+      port,
+      message,
+      upgrade,
+    });
+    runner.emitMessage({
+      type: "log_entry",
+      source: "preview",
+      text: human,
+      timestamp: new Date().toISOString(),
+    });
+  };
 
   /**
    * Resolve the container IP for a session + port combination.
@@ -245,6 +312,7 @@ export function registerPreviewProxy(
       request.headers,
       request.raw,
       reply.raw,
+      (msg) => reportError(sessionId, targetPort, msg, false),
     );
     done();
   });
@@ -337,6 +405,7 @@ export function registerPreviewProxy(
       request.headers,
       request.raw,
       reply.raw,
+      (msg) => reportError(sessionId, targetPort, msg, false),
     );
   });
 
@@ -366,6 +435,7 @@ export function registerPreviewProxy(
         const { sessionId, port: targetPort } = subdomainParsed;
         const containerIp = resolveContainerIp(sessionId, targetPort);
         if (!containerIp) {
+          reportError(sessionId, targetPort, "Container not found for HMR upgrade", true);
           socket.destroy();
           return;
         }
@@ -375,6 +445,7 @@ export function registerPreviewProxy(
           req.url || "/",
           req.headers,
           socket,
+          (msg) => reportError(sessionId, targetPort, msg, true),
         );
         return;
       }
@@ -386,6 +457,7 @@ export function registerPreviewProxy(
         const targetPort = Number(portStr);
         const containerIp = sessionId ? resolveContainerIp(sessionId, targetPort) : null;
         if (!containerIp) {
+          if (sessionId) reportError(sessionId, targetPort, "Container not found for HMR upgrade", true);
           socket.destroy();
           return;
         }
@@ -395,6 +467,7 @@ export function registerPreviewProxy(
           `/${restPath}`,
           req.headers,
           socket,
+          (msg) => reportError(sessionId, targetPort, msg, true),
         );
         return;
       }
