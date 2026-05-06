@@ -95,8 +95,17 @@ type Tab = "tracked" | "other";
 export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: DocsViewerProps) {
   // Docs touched during the current session — shown in a dedicated group at the
   // top so the user sees what the agent just worked on without scrolling.
+  // We exclude untracked siblings (e.g. `checklist.md`) when a tracked plan
+  // exists in the same directory: they share the derived title and path
+  // context, so listing both would render visually identical rows. The user
+  // can still reach the checklist via the modal's sibling tabs.
   const modifiedInSession = useMemo(
-    () => files.filter((f) => wasModifiedInSession(f, sessionStartedAt)),
+    () =>
+      files.filter(
+        (f) =>
+          wasModifiedInSession(f, sessionStartedAt) &&
+          (f.status !== undefined || !hasTrackedSibling(f.path, files)),
+      ),
     [files, sessionStartedAt],
   );
   const modifiedPaths = useMemo(
