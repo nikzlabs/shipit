@@ -57,12 +57,17 @@ class FakeChildProcess extends EventEmitter {
   }
 }
 
-// Mock child_process.spawn to return our fake process
+// Mock child_process.spawn to return our fake process. Also capture the env
+// the spawn was called with so the dual-auth tests can assert that
+// OPENAI_API_KEY was (or wasn't) forwarded to the child process. See
+// docs/119-codex-subscription-auth/plan.md.
 let fakeProc: FakeChildProcess;
+let lastSpawnEnv: NodeJS.ProcessEnv | undefined;
 
 vi.mock("node:child_process", () => ({
-  spawn: () => {
+  spawn: (_cmd: string, _args: string[], options: { env?: NodeJS.ProcessEnv } = {}) => {
     fakeProc = new FakeChildProcess();
+    lastSpawnEnv = options.env;
     return fakeProc;
   },
   execFileSync: () => {
@@ -483,5 +488,65 @@ describe("CodexAdapter", () => {
         { type: "text", text: "Second part." },
       ],
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 119 — Codex subscription auth dual-mode resolution
+//
+// Covers the env-key path; the file-auth (ChatGPT subscription) path can't
+// be exercised here because its detection probes /root/.codex/auth.json
+// directly via `node:fs`, and ESM doesn't permit spy-ing on namespace
+// exports. The dual-mode branch table is covered by
+// `src/server/shared/agent-registry.test.ts` (registry layer) and
+// `src/server/orchestrator/codex-auth.test.ts` (manager layer); the
+// `auth_required` branch tested here is the only one the adapter alone
+// owns.
+// ---------------------------------------------------------------------------
+
+describe("CodexAdapter / dual-mode auth (feature 119)", () => {
+  beforeEach(() => {
+    delete process.env.OPENAI_API_KEY;
+    lastSpawnEnv = undefined;
+  });
+
+  afterEach(() => {
+    delete process.env.OPENAI_API_KEY;
+  });
+
+  it("emits auth_required when neither file auth nor OPENAI_API_KEY is present", () => {
+    const adapter = new CodexAdapter();
+    let authRequired = false;
+    adapter.on("auth_required", () => { authRequired = true; });
+    adapter.run({ prompt: "Hello", cwd: "/workspace" });
+    expect(authRequired).toBe(true);
+  });
+
+  it("forwards OPENAI_API_KEY when only the env-key auth path is set", async () => {
+    process.env.OPENAI_API_KEY = "sk-platform-billing";
+
+    const adapter = new CodexAdapter();
+    adapter.on("event", () => { /* drain */ });
+    adapter.run({ prompt: "Hello", cwd: "/workspace" });
+
+    await vi.waitFor(() => {
+      expect(lastSpawnEnv).toBeDefined();
+    });
+
+    expect(lastSpawnEnv?.OPENAI_API_KEY).toBe("sk-platform-billing");
+  });
+
+  it("logs the auth path it chose (Platform API)", async () => {
+    process.env.OPENAI_API_KEY = "sk-platform-billing";
+
+    const adapter = new CodexAdapter();
+    const logs: { source: string; text: string }[] = [];
+    adapter.on("log", (source, text) => logs.push({ source, text }));
+    adapter.run({ prompt: "Hello", cwd: "/workspace" });
+
+    await vi.waitFor(() => expect(lastSpawnEnv).toBeDefined());
+
+    const platformLog = logs.find((l) => l.text.includes("OPENAI_API_KEY"));
+    expect(platformLog).toBeDefined();
   });
 });

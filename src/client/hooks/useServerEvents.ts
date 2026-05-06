@@ -4,6 +4,7 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { usePrStore } from "../stores/pr-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
 import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats } from "../../server/shared/types.js";
 
@@ -109,6 +110,38 @@ export function useServerEvents(): void {
     es.addEventListener("agent_list", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as { agents: { id: string; name: string; installed: boolean; authConfigured: boolean; models?: string[] }[] };
       useUiStore.getState().setAgentList(data.agents.map((a) => ({ ...a, models: a.models ?? [] })));
+    });
+
+    // ---- Codex (ChatGPT subscription) device-auth events ----
+    // The orchestrator drives `codex login --device-auth` and pushes the
+    // verification URL + user code as soon as the CLI prints them. The
+    // CodexAuthCard reads `codexDeviceAuth` from settings-store. See
+    // docs/119-codex-subscription-auth/plan.md.
+
+    es.addEventListener("codex_auth_pending", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as { verificationUri: string; userCode: string; expiresInSec: number };
+      useSettingsStore.getState().setCodexDeviceAuth({
+        verificationUri: data.verificationUri,
+        userCode: data.userCode,
+        expiresInSec: data.expiresInSec,
+      });
+      useSettingsStore.getState().setCodexDeviceAuthError(null);
+    });
+
+    es.addEventListener("codex_auth_complete", () => {
+      useSettingsStore.getState().setCodexDeviceAuth(null);
+      useSettingsStore.getState().setCodexDeviceAuthError(null);
+    });
+
+    es.addEventListener("codex_auth_failed", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as { reason: "timeout" | "denied" | "error"; message?: string };
+      useSettingsStore.getState().setCodexDeviceAuth(null);
+      const fallback = data.reason === "timeout"
+        ? "Sign-in timed out. Try again."
+        : data.reason === "denied"
+          ? "Sign-in was denied."
+          : "Sign-in failed. Try again.";
+      useSettingsStore.getState().setCodexDeviceAuthError(data.message ?? fallback);
     });
 
     es.addEventListener("pr_status", (e: MessageEvent) => {

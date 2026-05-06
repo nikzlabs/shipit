@@ -43,8 +43,14 @@ COPY src/server/orchestrator/ ./src/server/orchestrator/
 COPY src/server/shared/ ./src/server/shared/
 COPY --from=build /app/dist/client ./dist/client
 
-# Workspace for user projects — each session creates its own git repo
-RUN mkdir -p /workspace /credentials && ln -s /credentials/.claude /root/.claude && ln -sf /credentials/.claude.json /root/.claude.json
+# Workspace for user projects — each session creates its own git repo.
+# Symlink Claude + Codex credential directories into /credentials so OAuth
+# logins (Claude) and ChatGPT subscription logins (Codex) survive container
+# restarts and idle cleanup. See docs/119-codex-subscription-auth/plan.md.
+RUN mkdir -p /workspace /credentials \
+ && ln -s /credentials/.claude /root/.claude \
+ && ln -sf /credentials/.claude.json /root/.claude.json \
+ && ln -s /credentials/.codex /root/.codex
 VOLUME /workspace
 VOLUME /credentials
 

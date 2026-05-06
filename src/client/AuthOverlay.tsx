@@ -1,6 +1,7 @@
 import { AuthOverlay as AuthOverlayComponent } from "./components/AuthOverlay.js";
 import { OnboardingWizard } from "./components/OnboardingWizard.js";
 import type { AgentOption } from "./components/AgentPicker.js";
+import type { CodexDeviceAuthState } from "./components/CodexAuthCard.js";
 
 interface AuthOverlayContainerProps {
   authUrl: string | null;
@@ -17,6 +18,11 @@ interface AuthOverlayContainerProps {
   onStartClaudeAuth: () => void;
   onPasteAuthCode: (code: string) => void;
   onRefreshAgents: () => Promise<void>;
+  // Codex (ChatGPT subscription) device-auth — feature 119.
+  codexDeviceAuth?: CodexDeviceAuthState | null;
+  codexDeviceAuthError?: string | null;
+  onStartCodexDeviceAuth?: () => void;
+  onCancelCodexDeviceAuth?: () => void;
   onComplete: () => void;
 }
 
@@ -34,6 +40,10 @@ export function AuthOverlayContainer({
   onStartClaudeAuth,
   onPasteAuthCode,
   onRefreshAgents,
+  codexDeviceAuth,
+  codexDeviceAuthError,
+  onStartCodexDeviceAuth,
+  onCancelCodexDeviceAuth,
   onComplete,
 }: AuthOverlayContainerProps) {
   return (
@@ -57,6 +67,10 @@ export function AuthOverlayContainer({
           authUrl={authUrl}
           onPasteAuthCode={onPasteAuthCode}
           onRefreshAgents={onRefreshAgents}
+          codexDeviceAuth={codexDeviceAuth}
+          codexDeviceAuthError={codexDeviceAuthError}
+          onStartCodexDeviceAuth={onStartCodexDeviceAuth}
+          onCancelCodexDeviceAuth={onCancelCodexDeviceAuth}
           onComplete={onComplete}
         />
       )}

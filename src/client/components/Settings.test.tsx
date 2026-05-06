@@ -369,9 +369,26 @@ describe("Settings - Codex agent section", () => {
   it("calls onSetAgentEnv when codex API key is submitted", async () => {
     const onSetAgentEnv = vi.fn();
     render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} onSetAgentEnv={onSetAgentEnv} />);
+    // The API key input is collapsed by default — feature 119 promotes the
+    // ChatGPT subscription flow as the primary affordance. Expand the
+    // disclosure first.
+    await userEvent.click(screen.getByTestId("codex-toggle-api-key"));
     fireEvent.change(screen.getByTestId("codex-api-key-input"), { target: { value: "sk-test-key" } });
     await userEvent.click(screen.getByTestId("codex-api-key-submit"));
     await waitFor(() => expect(onSetAgentEnv).toHaveBeenCalledWith("codex", "OPENAI_API_KEY", "sk-test-key"));
+  });
+
+  it("calls onStartCodexDeviceAuth when Sign in with ChatGPT is clicked", async () => {
+    const onStartCodexDeviceAuth = vi.fn();
+    render(
+      <Settings
+        {...defaultProps}
+        agentList={[claudeAuthed, codexInstalled]}
+        onStartCodexDeviceAuth={onStartCodexDeviceAuth}
+      />,
+    );
+    await userEvent.click(screen.getByTestId("codex-start-device-auth"));
+    expect(onStartCodexDeviceAuth).toHaveBeenCalledTimes(1);
   });
 });
 

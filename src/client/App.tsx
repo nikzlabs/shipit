@@ -157,6 +157,8 @@ export default function App() {
   const agentSystemInstructionsEnabled = useSettingsStore((s) => s.agentSystemInstructionsEnabled);
   const agentSystemInstructions = useSettingsStore((s) => s.agentSystemInstructions);
   const maxIdleContainers = useSettingsStore((s) => s.maxIdleContainers);
+  const codexDeviceAuth = useSettingsStore((s) => s.codexDeviceAuth);
+  const codexDeviceAuthError = useSettingsStore((s) => s.codexDeviceAuthError);
 
   const rightTab = useUiStore((s) => s.rightTab);
   const mobilePanel = useUiStore((s) => s.mobilePanel);
@@ -785,6 +787,10 @@ export default function App() {
         onStartClaudeAuth={() => { apiPost("/api/auth/start", {}).catch(() => {}); }}
         onPasteAuthCode={(code: string) => { apiPost("/api/auth/code", { code }).catch(() => {}); }}
         onRefreshAgents={async () => { const data = await apiGet<{ agents: AgentOption[] }>("/api/bootstrap"); useUiStore.getState().setAgentList(data.agents); }}
+        codexDeviceAuth={codexDeviceAuth}
+        codexDeviceAuthError={codexDeviceAuthError}
+        onStartCodexDeviceAuth={() => { apiPost("/api/codex-auth/start", {}).catch(() => {}); }}
+        onCancelCodexDeviceAuth={() => { apiPost("/api/codex-auth/cancel", {}).catch(() => {}); }}
         onComplete={() => { setOnboardingDismissed(true); if (gitIdentityNeeded) useGitStore.getState().setIdentityNeeded(false); }}
       />
       {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
@@ -813,6 +819,24 @@ export default function App() {
           onPasteCode={(code) => { apiPost("/api/auth/code", { code }).catch(() => {}); }}
           agentList={agentList}
           onSetAgentEnv={(agentId, key, value) => { apiPost(`/api/agents/${agentId}/env`, { key, value }).catch(() => {}); }}
+          codexDeviceAuth={codexDeviceAuth}
+          codexDeviceAuthError={codexDeviceAuthError}
+          onStartCodexDeviceAuth={() => { apiPost("/api/codex-auth/start", {}).catch(() => {}); }}
+          onCancelCodexDeviceAuth={() => { apiPost("/api/codex-auth/cancel", {}).catch(() => {}); }}
+          onSignOutCodex={async () => {
+            // The DELETE response includes the refreshed agent list, so we
+            // don't need a follow-up bootstrap fetch — but the SSE
+            // `agent_list` broadcast from the server will repaint the list
+            // for any other open tab too.
+            try {
+              const result = await apiDel<{ agents?: AgentOption[] }>("/api/codex-auth");
+              if (result.agents) {
+                useUiStore.getState().setAgentList(result.agents);
+              }
+            } catch (err) {
+              console.error("[settings] Codex sign-out failed:", err);
+            }
+          }}
           onFullReset={async () => { try { await apiPost("/api/reset", {}); } catch (err) { console.error("[settings] Full reset failed:", err); } }}
           gitIdentity={gitIdentity}
           onGitIdentitySave={(name, email) => useGitStore.getState().submitGitIdentity(name, email).catch(() => {})}
